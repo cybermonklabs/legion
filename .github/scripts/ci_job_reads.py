@@ -2200,7 +2200,7 @@ GATES = [
          f"{at('test', 'Test the approval-eval statistics')}: scripts/approval-eval/never-decide.ts:75-77 reads "
          "it, through refusals.ts:720, which __tests__/refusals.test.ts:181-199 runs"),
         ("scripts/spec-review-eval/**", f"{at('test', 'Lint the statement review evaluation')}, typecheck and test"),
-        ("packages/envoy-client/test/dispatch-stack.ts", "scripts/spec-review-eval/run.ts:32-35 imports it (tsc -p scripts/spec-review-eval)"),
+        ("packages/envoy-client/test/dispatch-stack.ts", "scripts/spec-review-eval/run.ts:37-40 imports it (tsc -p scripts/spec-review-eval)"),
         ("packages/envoy-client/test/envoy-stack.ts", "packages/envoy-client/test/dispatch-stack.ts:5-12 imports it"),
         (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:17"),
         (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),

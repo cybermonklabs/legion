@@ -6,13 +6,16 @@
  *     [--omp <path>] [--model <model>] [--fixture <id>]... [--out <dir>]
  *
  * For each run, the command starts a Dispatch server of this checkout with DISPATCH_SPEC_ROOTS
- * naming the two roots of expected.json, and seeds it over HTTP. It creates the project ACME,
- * each root with its terms.md, which the person person@example.com approves, and each fixture
- * as the spec of a child of its root, with a Verification document where the fixture has one.
+ * naming the roots of expected.json, and seeds it over HTTP. It creates the project ACME, each
+ * root with its terms.md, which the person person@example.com approves, and each fixture as the
+ * spec of a child of its root, with a Verification document where the fixture has one. In both
+ * documents, `@ISSUE@` becomes the key of the fixture's own issue.
  * Before any agent runs, it reads `GET /api/v1/artifacts/{id}/spec-form` for each fixture
- * document. Each must be in scope with no finding, because a fixture holds only the faults that
- * no program decides. A document out of scope also means that DISPATCH_SPEC_ROOTS did not reach
- * the server.
+ * document. Each must be in scope, and its form check must give exactly the findings that the
+ * fixture declares in `form`: most declare none, because a fixture holds the faults that no
+ * program decides. A document out of scope also means that DISPATCH_SPEC_ROOTS did not reach the
+ * server. A fixture that declares findings tests that the reviewer leaves them to Dispatch: a
+ * finding of the reviewer at one of those texts fails the run.
  *
  * Each agent is `omp` with a profile and a home of its own, as scripts/approval-eval/fresh-agent.ts
  * spawns it, with the tools read and bash. Its PATH starts with a `dispatch` script that runs this
@@ -21,11 +24,13 @@
  * reviewer to.
  *
  * A run passes when the answer names exactly the planted items of its fixture and the
- * transcript holds a `dispatch spec-form` call. An answer with a `NOT REVIEWED:` line, or with
- * no line of the skill's form, is no verdict and fails the run. The exit status is 0 when every
- * run passes, 1 when one fails, and 2 when the command cannot run.
+ * transcript holds a `dispatch spec-form` call. An answer with a `NOT REVIEWED:` line, or with a
+ * line out of the skill's form, is no verdict and fails the run. The exit status is 0 when every
+ * run passes, 1 when one fails, and 2 when the command cannot run: a flag it refuses, an --out
+ * that holds the files of an earlier run, a stack that does not start, or any other error before
+ * every run has its verdict.
  */
-import { chmod, copyFile, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -96,8 +101,23 @@ export interface Fixture {
   readonly verification?: string;
   readonly planted: readonly PlantedItem[];
   readonly mustNotName: readonly Item[];
+  /** The findings that the form check must give on the spec, which the reviewer must not name. */
+  readonly form: readonly FormFinding[];
   readonly specText: string;
   readonly verificationText?: string;
+}
+
+/** A finding of the form check of Dispatch, by its kind and its node. */
+export interface FormFinding {
+  readonly kind: string;
+  readonly node: string;
+}
+
+/** What formProblems reads of the server's answer to `GET /api/v1/artifacts/{id}/spec-form`. */
+export interface FormRead {
+  readonly in_scope: boolean;
+  readonly scope: string;
+  readonly findings: readonly FormFinding[] | null;
 }
 
 export interface Plan {
@@ -140,8 +160,9 @@ function isKind(value: string): value is Kind {
 
 /**
  * Reads an answer in the skill's output form. A `NOT REVIEWED:` line anywhere makes the answer no
- * verdict. A `FINDING` line out of the form, `NO FINDING` beside a finding, and an answer with
- * neither a `FINDING` nor a `NO FINDING` line are unreadable. Other lines are ignored.
+ * verdict. The skill says "no other text", so any other line, a `FINDING` line out of the form,
+ * and `NO FINDING` beside a finding make the answer unreadable, and so does an answer with
+ * neither a `FINDING` nor a `NO FINDING` line.
  */
 export function parseFindings(text: string): Answer {
   const lines = text
@@ -159,11 +180,10 @@ export function parseFindings(text: string): Answer {
       none = true;
       continue;
     }
-    if (!line.startsWith("FINDING ") && line !== "FINDING") continue;
     const match = FINDING_LINE.exec(line);
     const [, kind = "", node = "", subject = "", sentence = ""] = match ?? [];
     if (match === null || !isKind(kind)) {
-      return { verdict: "unreadable", reason: `a FINDING line out of the skill's form: ${line}` };
+      return { verdict: "unreadable", reason: `a line out of the skill's form: ${line}` };
     }
     findings.push({ kind, node, subject: subject === "-" ? null : subject, sentence });
   }
@@ -200,8 +220,20 @@ function label(node: string, subject: string | null | undefined): string {
 }
 
 /**
+ * The text of a finding of the form check, as the reviewer names a text: a definition is a line
+ * of the node `terms` with the term as its subject, and every other kind is the block of its node.
+ */
+function formItem(finding: FormFinding): Item {
+  return finding.kind === "definition"
+    ? { node: "terms", subject: finding.node }
+    : { node: finding.node };
+}
+
+/**
  * Judges one answer against its fixture. The answer passes when it names each planted item and
- * nothing else. An answer that is no verdict never passes, whatever the fixture plants.
+ * nothing else: no item of `mustNotName`, and no text where the form check finds a fault, which
+ * Dispatch decided already. An answer that is no verdict never passes, whatever the fixture
+ * plants.
  */
 export function compareFindings(fixture: Fixture, answer: Answer): Comparison {
   if (answer.verdict === "not-reviewed") {
@@ -220,6 +252,13 @@ export function compareFindings(fixture: Fixture, answer: Answer): Comparison {
   for (const finding of named) {
     if (fixture.planted.some((item) => matches(finding, item))) continue;
     const where = label(finding.node, finding.subject);
+    const decided = fixture.form.find((item) => matches(finding, formItem(item)));
+    if (decided !== undefined) {
+      problems.push(
+        `named ${finding.kind} ${where}, where the form check finds ${decided.kind} ${decided.node}`
+      );
+      continue;
+    }
     problems.push(
       fixture.mustNotName.some((item) => matches(finding, item))
         ? `named ${where}, which it must not name (${finding.kind})`
@@ -259,8 +298,9 @@ export function blockIds(markdown: string): string[] {
 }
 
 /**
- * The term names of the `- **term**: definition` lines under a heading `Terms`, read as
- * specform.ExtractDocument reads them: the section ends at the next heading of its level or above.
+ * The term names of the `- **term**: definition` lines under a heading `Terms`, with `-`, `*` or
+ * `+`, read as specform.ExtractDocument reads them: the section ends at the next heading of its
+ * level or above.
  */
 export function termNames(markdown: string): string[] {
   const names: string[] = [];
@@ -279,7 +319,7 @@ export function termNames(markdown: string): string[] {
   return names;
 }
 
-/** A Verification document with the key of its own issue in each `serves`. */
+/** A document with the key of its fixture's own issue in each `serves`. */
 export function withIssueKey(markdown: string, key: string): string {
   return markdown.replaceAll(ISSUE_PLACEHOLDER, key);
 }
@@ -288,7 +328,9 @@ export function withIssueKey(markdown: string, key: string): string {
 export async function readPlan(directory: string = HERE): Promise<Plan> {
   const raw = JSON.parse(await readFile(join(directory, "expected.json"), "utf8")) as {
     roots: Omit<Root, "termsText">[];
-    fixtures: Omit<Fixture, "specText" | "verificationText">[];
+    fixtures: (Omit<Fixture, "specText" | "verificationText" | "form"> & {
+      form?: FormFinding[];
+    })[];
   };
   const fixtures = join(directory, "fixtures");
   const text = (name: string): Promise<string> => readFile(join(fixtures, name), "utf8");
@@ -310,6 +352,7 @@ export async function readPlan(directory: string = HERE): Promise<Plan> {
         }
         return {
           ...fixture,
+          form: fixture.form ?? [],
           specText: await text(fixture.spec),
           ...(fixture.verification === undefined
             ? {}
@@ -401,7 +444,11 @@ interface Seeded {
   readonly documents: readonly SeededDocument[];
 }
 
-/** The project, the roots with their approved terms, and one child issue for each fixture. */
+/**
+ * The project, the roots with their approved terms, and one child issue for each fixture. Keys
+ * come in order on the stack's own database, so the fixture's issue gets the key that its spec
+ * names in place of `@ISSUE@`, and the seed refuses a key that is not that one.
+ */
 async function seed(
   stack: DispatchStack,
   plan: Plan,
@@ -439,7 +486,8 @@ async function seed(
     rootKeys.set(root.name, issue.key);
   }
   const seeded: Seeded[] = [];
-  for (const fixture of fixtures) {
+  for (const [index, fixture] of fixtures.entries()) {
+    const key = `${PROJECT}-${plan.roots.length + index + 1}`;
     const issue = await call<{ key: string; primary_artifact_id: string }>(
       stack,
       "POST",
@@ -449,10 +497,15 @@ async function seed(
         title: fixture.id,
         parent: rootKeys.get(fixture.root),
         force: true,
-        spec: fixture.specText,
+        spec: withIssueKey(fixture.specText, key),
       },
       "person"
     );
+    if (issue.key !== key) {
+      throw new CannotRunError(
+        `the fixture ${fixture.id} got the key ${issue.key}, and its spec names ${key}`
+      );
+    }
     const documents: SeededDocument[] = [{ name: "spec.md", artifact: issue.primary_artifact_id }];
     if (fixture.verificationText !== undefined) {
       const verification = await call<{ artifact: { id: string } }>(
@@ -470,29 +523,54 @@ async function seed(
 }
 
 /**
- * Refuses the run unless the form check of Dispatch reads each fixture document in scope and
- * finds nothing in it: a fixture holds only what no program decides.
+ * What is wrong with the form check's read of one seeded document: it is out of scope, or its
+ * findings are not exactly the ones that its fixture declares. A fixture declares the findings of
+ * its spec only, so every other document must hold none.
+ */
+export function formProblems(fixture: Fixture, document: string, read: FormRead): string[] {
+  const where = `${fixture.id} ${document}`;
+  if (!read.in_scope) {
+    return [
+      `${where} is out of scope (${read.scope}), so DISPATCH_SPEC_ROOTS did not reach the server`,
+    ];
+  }
+  const declared = document === "spec.md" ? fixture.form : [];
+  const found = read.findings ?? [];
+  return [
+    ...declared
+      .filter((one) => !found.some((other) => other.kind === one.kind && other.node === one.node))
+      .map(
+        (one) =>
+          `the form check finds no ${one.kind} ${one.node} in ${where}, which the fixture declares`
+      ),
+    ...found
+      .filter(
+        (one) => !declared.some((other) => other.kind === one.kind && other.node === one.node)
+      )
+      .map(
+        (one) =>
+          `the form check finds ${one.kind} ${one.node} in ${where}, which the fixture does not declare`
+      ),
+  ];
+}
+
+/**
+ * Refuses the run unless the form check of Dispatch reads each fixture document in scope with
+ * exactly the findings that its fixture declares: a fixture holds what no program decides, and
+ * the findings it declares are the texts that the reviewer must leave to Dispatch.
  */
 async function checkForm(stack: DispatchStack, seeded: readonly Seeded[]): Promise<void> {
   const problems: string[] = [];
   for (const one of seeded) {
     for (const document of one.documents) {
-      const form = await call<{ scope: string; in_scope: boolean; findings_total: number }>(
+      const read = await call<FormRead>(
         stack,
         "GET",
         `/api/v1/artifacts/${document.artifact}/spec-form`,
         undefined,
         "agent"
       );
-      if (!form.in_scope) {
-        problems.push(
-          `${one.fixture.id} ${document.name} is out of scope (${form.scope}), so DISPATCH_SPEC_ROOTS did not reach the server`
-        );
-      } else if (form.findings_total !== 0) {
-        problems.push(
-          `the form check finds ${form.findings_total} in ${one.fixture.id} ${document.name}, which must hold none`
-        );
-      }
+      problems.push(...formProblems(one.fixture, document.name, read));
     }
   }
   if (problems.length > 0) throw new CannotRunError(problems.join("\n"));
@@ -604,6 +682,17 @@ async function evaluate(flags: Flags): Promise<number> {
   const fixtures = plan.fixtures.filter(
     (fixture) => flags.fixtures.length === 0 || flags.fixtures.includes(fixture.id)
   );
+  if (flags.out !== undefined) {
+    const earlier = await readdir(flags.out).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    if (earlier.length > 0) {
+      throw new CannotRunError(
+        `--out ${flags.out} holds the files of an earlier run; give a directory that is new or empty`
+      );
+    }
+  }
   const out = flags.out ?? (await mkdtemp(join(tmpdir(), "spec-review-eval-")));
   await mkdir(out, { recursive: true });
   const models = await modelsFileOf(flags.omp);
@@ -659,15 +748,23 @@ async function evaluate(flags: Flags): Promise<number> {
   return failed === 0 ? EXIT_PASSES : EXIT_FAILS;
 }
 
+/**
+ * Each error that ends the command, of the command or of the stack, the database and the server
+ * under it, is the exit status 2: no run of it has a verdict that the status could report, and 1
+ * would tell the reader that a reviewer failed.
+ */
 async function main(argv: readonly string[]): Promise<number> {
   try {
     return await evaluate(readFlags(argv));
   } catch (error) {
-    if (error instanceof CannotRunError) {
-      console.error(error.message);
-      return EXIT_CANNOT_RUN;
-    }
-    throw error;
+    console.error(
+      error instanceof CannotRunError
+        ? error.message
+        : error instanceof Error
+          ? (error.stack ?? error.message)
+          : String(error)
+    );
+    return EXIT_CANNOT_RUN;
   }
 }
 
