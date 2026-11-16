@@ -29,8 +29,7 @@ const (
 
 // seedDeployedIssues writes the two deployed issues in the project that owns acme/widgets
 // (seedDeliveryProject), since an attribution holds an issue to the repository the pull request
-// is in, and clears their events, so a run against a database an earlier run left holds only
-// what this test writes. The pull requests and runs are cleared by deliveryTestPool.
+// is in.
 func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
@@ -44,9 +43,6 @@ func seedDeployedIssues(t *testing.T, ctx context.Context, pool *store.Pool) {
 			values ($1, $2, $3, $1, 'done', '{"kind":"system","id":"delivery-test"}', $1)
 			on conflict do nothing`, key, deliveryProject, deployedIssueBand+number); err != nil {
 			t.Fatalf("seed issue %s: %v", key, err)
-		}
-		if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, key); err != nil {
-			t.Fatalf("clear the events of %s: %v", key, err)
 		}
 	}
 }

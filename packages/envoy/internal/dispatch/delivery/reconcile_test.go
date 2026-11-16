@@ -668,11 +668,6 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	key := seedHeadIssue(t, ctx, pool, 5)
-	// deliveryTestPool clears every delivery table, but the events are this database's own and
-	// outlive the run, so an earlier run's issue.deployed must not read as this pass's.
-	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, key); err != nil {
-		t.Fatalf("clear the events of %s: %v", key, err)
-	}
 
 	const (
 		headWas = "1515151515151515151515151515151515151515"
