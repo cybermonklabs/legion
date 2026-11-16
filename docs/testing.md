@@ -115,7 +115,12 @@ itself, whose tests import its sources by relative path.
   test. The Dispatch e2e harness is the same rule at the scale of a run: a port variable left unset
   is port 0, one that is set is used as given, and two variables naming one port are refused where
   the ports resolve rather than by whichever listener loses the race (`harnessPort` and
-  `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`).
+  `harnessPorts` in `packages/dispatch/e2e/harness-ports.ts`). A row that needs a port every
+  connection to is refused holds one the same way, bound and never listening, for as long as the
+  row dials it (`refusingOrigin` in `@legion/test-fixtures/refused-port`): the port of a server the
+  test stopped is free for any other process to take, and port 1 is refused only while nothing on
+  the machine listens there, which a privileged process, or any process of a container whose
+  `ip_unprivileged_port_start` is 0, can.
 
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every

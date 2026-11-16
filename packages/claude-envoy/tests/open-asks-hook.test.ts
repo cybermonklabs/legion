@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { refusingOrigin } from "@legion/test-fixtures/refused-port"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 
@@ -31,6 +32,9 @@ const hookInput = {
   source: "startup",
   hook_event_name: "SessionStart",
 }
+
+/** The Dispatch the unreachable row dials. */
+const refusingDispatch = refusingOrigin()
 
 test("summarises the session's open asks into context and records the session id for its Claude process", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-"))
@@ -95,20 +99,19 @@ test("summarises the session's open asks into context and records the session id
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
-  // Port 1 of loopback, which an unprivileged process cannot bind, so the hook's request is
-  // refused. The port of a server this test stopped would be free for any other process to bind,
-  // and its answer would make the summary unavailable for another reason than this row's.
+  // A port this file holds bound and never listens on (`refusingOrigin`), so the hook's request is
+  // refused, and no other process can bind it to give an answer of its own.
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: "http://127.0.0.1:1",
+      DISPATCH_URL: refusingDispatch,
       DISPATCH_TOKEN: "hook-token",
     })
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary unavailable: ")
-    // The refusal itself, so an answer from something else on the port reads as a failure here.
+    // The refusal itself, so any other failure to answer reads as a failure here.
     expect(result.stdout).toContain("ECONNREFUSED")
     expect(
       await readFile(

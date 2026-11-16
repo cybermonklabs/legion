@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import {
   type AppCredentialSource,
   type AppRole,
@@ -35,10 +36,10 @@ const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
-// A GitHub that never answers: port 1 of loopback, which an unprivileged process cannot bind, so
-// every request to it is refused. The port of a server this file stopped would be free for any
-// other process to bind, and its answers would be another GitHub's.
-const unreachable = "http://127.0.0.1:1/";
+// A GitHub that never answers: a port this file holds bound and never listens on
+// (`refusingOrigin`), so every request to it is refused, and no other process can bind it to
+// answer as another GitHub.
+const unreachable = `${refusingOrigin()}/`;
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
