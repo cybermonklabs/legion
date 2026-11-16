@@ -26,8 +26,9 @@ Usage: race_memory.py <command> [args...], for example
 
 It has no options of its own: everything after the script name is the command. RACE_MEM_LIMIT_KB
 sets the limit in kB, 8388608 (8 GiB) when it is unset or empty. The command's stdout is read
-line by line, so a `go test -json` stream is unwrapped back into the test log it carries and the
-running tests are known; the command's stderr is not touched and goes straight to this script's.
+line by line as UTF-8, a byte that is not UTF-8 read as U+FFFD, so a `go test -json` stream is
+unwrapped back into the test log it carries and the running tests are known; the command's
+stderr is not touched and goes straight to this script's.
 """
 
 import json
@@ -52,9 +53,15 @@ DONE_ACTIONS = frozenset({"pass", "fail", "skip"})
 
 
 def status_field(text: str, field: str) -> str | None:
-    """The value of one `/proc/<pid>/status` field, or None when the kernel gives no such line."""
+    r"""The value of one `/proc/<pid>/status` field, or None when the kernel gives no such line.
+
+    The text is split at "\n" alone, the one character the kernel ends a line with and escapes
+    inside a process's name. str.splitlines() also breaks at "\r", "\v", "\f", "\x1c" to "\x1e",
+    "\x85", "\u2028" and "\u2029", which the kernel leaves in a name as they are, so a process
+    named "a\x1ePPid:\tz" would pass for a `PPid:` line of its own and stop the run.
+    """
     head = field + ":"
-    for line in text.splitlines():
+    for line in text.split("\n"):
         if line.startswith(head):
             return line[len(head) :].strip()
     return None
@@ -82,12 +89,19 @@ def choose_peak(hwm_kb: int | None, rss_kb: int) -> tuple[int, str]:
 
 
 def tree_statuses(root_pid: int) -> list[str]:
-    """The `/proc/<pid>/status` text of the command's own process and of every descendant of it.
+    r"""The `/proc/<pid>/status` text of the command's own process and of every descendant of it.
 
     One pass over /proc reads each process's status once: the text carries the parent pid the tree
     is built from (`PPid:`) along with the sizes. A process that exits between the walk and the
     read is skipped, which is the common case under `go test`: the compiler's children come and go
-    while the sampler walks.
+    while the sampler walks. Its status is then gone before the open (FileNotFoundError) or gone
+    under it (ProcessLookupError), and both are OSErrors.
+
+    Every process on the machine is read, not the tree's alone, and a process's name is whatever
+    bytes it gave itself (prctl(PR_SET_NAME), /proc/self/comm, its executable's file name): the
+    kernel writes them as they are, escaping "\n" and "\\" only. So the text is decoded with
+    U+FFFD for a byte that is not UTF-8. A strict decode stopped a race run with a traceback on a
+    shared machine where a process's name began with the byte 0xff (dispatch://INFRA-3904).
     """
     texts: dict[int, str] = {}
     children: dict[int, list[int]] = {}
@@ -95,9 +109,10 @@ def tree_statuses(root_pid: int) -> list[str]:
         if not entry.name.isdigit():
             continue
         try:
-            text = (entry / "status").read_text()
+            raw = (entry / "status").read_bytes()
         except OSError:
             continue
+        text = raw.decode("utf-8", errors="replace")
         parent = status_field(text, "PPid")
         if parent is None:
             continue
@@ -277,7 +292,9 @@ def main(argv: list[str]) -> int:
     log.line(f"race memory: the limit is {limit_kb} kB ({source})")
 
     try:
-        process = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, bufsize=1)
+        process = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, encoding="utf-8", errors="replace", bufsize=1
+        )
     except OSError as error:
         print(f"race memory: cannot run {argv[0]}: {error}", file=sys.stderr)
         return 127
