@@ -390,6 +390,12 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
+	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
+	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
+	// reaches past the meaning deadline is the test's choice rather than a race between the
+	// meaning query and 300 ms of wall clock (INFRA-3904).
+	crossProjectWait time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
