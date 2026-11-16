@@ -135,7 +135,7 @@ func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
 	if err != nil || granted.State != "granted" || granted.GrantID == nil || granted.Detail != nil {
 		t.Fatalf("Create(AUTO_TOKEN) with no reason = %+v, %v; want it granted at once: no name waits, so none needs a reason", granted, err)
 	}
-	if released, err := m.Values(ctx, *granted.GrantID, enr, nil); err != nil || released.Values["AUTO_TOKEN"] == "" {
+	if released, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); err != nil || released.Values["AUTO_TOKEN"] == "" {
 		t.Fatalf("Values of the reasonless automatic grant = %v, %v; want the value", released.Values, err)
 	}
 }
