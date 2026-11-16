@@ -1252,8 +1252,9 @@ func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.Volu
 //   - A report whose episode a rise raised (shimwire.VolumeEpisodeRise) is sent however recent
 //     the pod's last notice was, where one whose episode a recovery raised waits for the hour.
 //     The launcher raises an episode that way at a reading five points or more above the
-//     highest reading a reported sweep of the episode before it started from, and at no smaller
-//     climb (internal/launcher's episodeOf), and this function reads the word alone.
+//     reading the first reported sweep of the episode before it started from, and at no smaller
+//     climb from that reading (internal/launcher's episodeOf), and this function reads the word
+//     alone.
 //   - Everything else waits an hour from the pod's newest notice, whatever trimmer or episode
 //     wrote it — a recovery-raised episode included, which is a volume doing what it did before.
 func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeCounts, now time.Time) string {

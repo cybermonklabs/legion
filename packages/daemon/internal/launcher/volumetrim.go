@@ -230,7 +230,7 @@ type trimmer struct {
 	episode   int     // 0 until the first reading at or above the high mark
 	raisedBy  string  // which of shimwire's three raised the episode above
 	aboveHigh bool    // a reading has been at or above the high mark since the last recovery
-	anchor    float64 // the highest pre-sweep reading of a sweep that reported in this episode
+	anchor    float64 // the pre-sweep reading of the first sweep that reported in this episode
 	anchored  bool    // whether a sweep has reported in this episode at all
 	pause     int     // intervals left of the pause after a sweep that freed under a point
 	last      volumeUsage
@@ -605,13 +605,14 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 // sweep's, and only of one that ends above the low mark (tick), the one the trimmer sends when it
 // switches itself off aside (switchOff). A recovery is the volume coming back under the low mark
 // after having reached the high one: the next time it fills is news. A rise is a reading five
-// points or more above the highest reading that a reported sweep of this episode started from
-// (anchorAt), and no other growth: each reported sweep raises that reading to its own start where
-// its start is higher, so a volume that climbs by less than five points from one reported sweep to
-// the next raises nothing, however far it climbs in all.
+// points or more above the reading that the first reported sweep of this episode started from
+// (anchorAt), and no other growth. That reading stands still while the volume climbs, so a volume
+// that keeps filling raises a new episode each time it reaches five points above the start of the
+// first reported sweep of the episode it is in, and a smaller climb from that reading raises
+// nothing.
 //
-// The rise is measured against the highest reading at the start of a sweep that reported, never
-// against the figure a report carried, which is a post-sweep low point: anchored there, the
+// The rise is measured against the reading at the start of the episode's first reported sweep,
+// never against the figure a report carried, which is a post-sweep low point: anchored there, the
 // ordinary growth from the low point back to the high mark would read as a five-point
 // deterioration and wake the architect on every cycle.
 func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
@@ -630,18 +631,20 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 	case t.anchored && percent >= t.anchor+volumeRisePoints:
 		anchor := t.anchor
 		t.episode, t.raisedBy, t.anchored = t.episode+1, shimwire.VolumeEpisodeRise, false
-		t.logf(volumeTrimLog+"episode %d (%s): the volume is %.1f%%, %.0f points above the %.1f%% a reported sweep of the last episode started from",
-			t.episode, t.raisedBy, percent, volumeRisePoints, anchor)
+		t.logf(volumeTrimLog+"episode %d (%s): the volume is %.1f%%, %.1f points above the %.1f%% the first reported sweep of the last episode started from, where %.0f points raise a new episode",
+			t.episode, t.raisedBy, percent, percent-anchor, anchor, volumeRisePoints)
 	}
 	if percent >= float64(set.HighPercent) {
 		t.aboveHigh = true
 	}
 }
 
-// anchorAt records the reading a reported sweep started from, which the rise above is measured
-// against: the highest such reading of this episode.
+// anchorAt records the reading a reported sweep started from as the one the rise above is
+// measured against, where no sweep has reported in this episode yet: the anchor is the start of
+// the episode's first reported sweep, and a later reported sweep leaves it where it is, whether
+// that sweep started higher or lower.
 func (t *trimmer) anchorAt(percent float64) {
-	if !t.anchored || percent > t.anchor {
+	if !t.anchored {
 		t.anchor, t.anchored = percent, true
 	}
 }
