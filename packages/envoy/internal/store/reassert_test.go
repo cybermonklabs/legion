@@ -37,7 +37,7 @@ func TestRecreatedInterestAndRoleBucketsGetBackWhatTheCopiesHeld(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
-			reg, err := Open(conn, WithReplicas(1))
+			reg, err := Open(conn, WithReplicas(1), WithMachineID("m1"))
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
@@ -63,9 +63,15 @@ func TestRecreatedInterestAndRoleBucketsGetBackWhatTheCopiesHeld(t *testing.T) {
 			if _, err := reg.SetRole("ses_holder", "m1", "reviewer", false); err != nil {
 				t.Fatalf("claim reviewer: %v", err)
 			}
-			waitUntil(t, "the role copy to name the holder", func() bool {
-				roles, err := reg.RolesHeldBy("ses_holder")
-				return err == nil && len(roles) == 1
+			// A session registered through another listener, and its claim: that listener's to
+			// write back, never this one's.
+			if _, err := reg.SetRole("ses_elsewhere", "m2", "planner", false); err != nil {
+				t.Fatalf("claim planner: %v", err)
+			}
+			waitUntil(t, "the role copy to name both holders", func() bool {
+				own, err := reg.RolesHeldBy("ses_holder")
+				other, otherErr := reg.RolesHeldBy("ses_elsewhere")
+				return err == nil && otherErr == nil && len(own) == 1 && len(other) == 1
 			})
 
 			js, err := conn.JetStream()
@@ -100,6 +106,12 @@ func TestRecreatedInterestAndRoleBucketsGetBackWhatTheCopiesHeld(t *testing.T) {
 			if claimErr != nil {
 				t.Fatalf("the new role bucket's claim of reviewer: %v, want it written back", claimErr)
 			}
+			if _, err := newBuckets[bus.InterestBucket].Get("ses_elsewhere"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+				t.Fatalf("the new interest bucket's row of ses_elsewhere: %v, want none: another listener owns it", err)
+			}
+			if _, err := newBuckets[bus.RoleClaimBucket].Get("planner"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+				t.Fatalf("the new role bucket's claim of planner: %v, want none: its holder registered through another listener", err)
+			}
 			claim, err := DecodeRoleClaim(claimEntry.Value())
 			if err != nil || claim.HolderSessionID != "ses_holder" || claim.ClaimedAt == 0 {
 				t.Fatalf("the written-back claim = %+v, %v; want ses_holder's claim with its claimed_at", claim, err)
@@ -117,7 +129,7 @@ func TestRecreatedInterestAndRoleBucketsGetBackWhatTheCopiesHeld(t *testing.T) {
 func TestARoleReleasedBeforeItsClaimCameBackStaysReleased(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(conn, WithReplicas(1), WithMachineID("m1"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

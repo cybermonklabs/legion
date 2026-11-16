@@ -59,9 +59,9 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 	}
 	r.mu.RLock()
 	var candidates []candidate
-	for sid, item := range r.cache.All() {
-		if now-item.UpdatedAt > allowanceMs {
-			candidates = append(candidates, candidate{sessionID: sid, updatedAt: item.UpdatedAt})
+	for sid, kept := range r.cache.All() {
+		if now-kept.Value.UpdatedAt > allowanceMs {
+			candidates = append(candidates, candidate{sessionID: sid, updatedAt: kept.Value.UpdatedAt})
 		}
 	}
 	r.mu.RUnlock()

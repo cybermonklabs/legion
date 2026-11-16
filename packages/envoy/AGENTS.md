@@ -4026,6 +4026,13 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   a removed session row keeps its last heartbeat for `LastSeen`).
   A read of a bucket whose stream was deleted and created again drops the revision fence, since the new bucket's revisions number from 1 again, and keeps the rows;
   a write, read-through or delete made through a handle of the earlier incarnation (`Handle`, `Epoch`) is not applied to the cache.
+  Before that read can complete and sweep, each store writes back into the new bucket the records it owns (`kvwatch.Reasserter`, `kvwatch.Reassert`, INFRA-4094), from its cache's `BeginRead`:
+  a JetStream publish ack names the stream and its sequence, never the incarnation, so a write only the deleted stream acknowledged is otherwise lost while its writer was told it landed.
+  A store owns the records that name its listener's `ENVOY_MACHINE_ID` (`session.WithSessionOwner`, `session.WithKnownSessionOwner`, `store.WithMachineID`, `cistore.WithMachineID`; a role claim is owned through its holder's interest row), and writes each byte for byte as its copy kept it (`kvwatch.Kept`):
+  create-only, or over an older record by the record's own stamp (`UpdatedAt`, `LastSeen`, `ClaimedAt`, a CI record's event, generation and settlements), never over a later record or a delete marker, and with what remained of its expiry as a per-message TTL where the stream allows them (`bus.KeyValue.WriteBack`).
+  It leaves out a gone or expired session, a known-session record past retention and an expired record; what it could not write it writes at the next read of the same epoch.
+  It logs one line per recreation, `<cache> re-asserted what it owned into the recreated bucket`, with `held`, `written`, `present`, `expired`, `failed`, `elapsed_ms` and `window_ms` (from the new stream's creation).
+  A write whose result the copy drops because the incarnation moved while it was in flight (`kvwatch.Dropped`) is settled in the bucket there is now: a last-writer-wins write again by its stamp (`kvwatch.WriteAgain`), a delete made again, a compare-and-swap read as a lost race, and a claim by `claimAgain` (`internal/store/reassert.go`).
   A read that times out or ends before its end marker removes nothing:
   kvwatch reads a timed-out one again itself 5 s later (`rereadDelay`), and the reconnect hook or the self-health rebuild starts the read after a watcher that ended.
   A cache that asks for it (`kvwatch.WithScheduledRead`) is also read whole again a set time after each read that completed, by these same rules:
@@ -4103,7 +4110,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   That read applies what it finds through the copy's own read protocol (`roleCache`, over `kvwatch.Copy`'s `BeginRead`, `Delivered` and `CompleteRead`), so a claim granted while it runs is not rolled back, and it counts what it repaired (`roleClaimRepair`):
   a claim it stored where the copy held none or another holder is put back, one it removed while the copy held it is taken out, and the first read of an epoch, which fills the copy, counts neither.
   The view decides no act: every act on a role reads the role's claim record from the bucket, and the view only answers the session routes and `sender.roles` and names roles for the renewal and the deregistration release to read.
-  Within one read epoch every update is fenced by revision (`setOwnRoleHolder` and `forgetRoleHolder`, `internal/store/roles.go`, the two writers of that view), the registry's own claim writes included, so none undoes a later one, and a read of a recreated bucket starts a new epoch rather than emptying the view under the old one.
+  Within one read epoch every update is fenced by revision (`setOwnRoleClaim` and `forgetRoleHolder`, `internal/store/roles.go`, the two writers of that view), the registry's own claim writes included, so none undoes a later one, and a read of a recreated bucket starts a new epoch rather than emptying the view under the old one.
 
 - A deregistration (`store.Registry.Remove` with no topics, which `DELETE /v1/interests/<session_id>` and `POST /v1/interests/unsubscribe` with an empty topic list reach) releases every role either of two sources names, each once and each as its own claim record says (`releaseAllRoleClaims`, one claim read per role):
   the role topics of the session's interest record, read from the bucket for this deregistration (`getWithRevision`) and not from the interest cache, which may not yet hold the lane topic a grant on another listener wrote, and the roles the role claim view names it the holder of.
@@ -4878,7 +4885,7 @@ an error a claim joins from several (a lost compare-and-swap with its holder rea
 A write the budget abandons may still land after the 503.
 The session record's put rewrites it, so the caller's retry writes it again and rides the connection ahead of any later write from this listener (`session.SessionRegistry.PutWithin`);
 every interest-row write, every claim and every delete is conditional on the revision it read, so none removes or overwrites a write that landed since.
-A delete whose read found the key absent makes no delete at all and reports it absent, so a registration that stored the row between that read and it is kept (`bus.KeyValue.DeleteAtRead`).
+A delete whose read found the key absent makes no delete at no revision, so a registration that stored the row between that read and it is kept (`bus.KeyValue.DeleteAtRead`): it writes a delete marker only while the key's subject holds no message at all (`bus.KeyValue.MarkDeletedIfNone`), which keeps a listener's write-back into a recreated bucket from bringing the session back; a release that finds no claim marks the role the same way when this listener's copy still holds a claim it frees.
 A session holds a role exactly when the role's claim in `envoy_roles` names it:
 role delivery, `/v1/sessions` and `/v1/registry/<id>` rows and the sender a send stamps all read the claim, never a `notifications.role.<role>` topic on an interest record.
 So a claim's two cleanups - the rollback of the claimant's topic when its claim did not land, and the removal of the role's topic from the old holder's record once it did - are best-effort tidying within the same budget.

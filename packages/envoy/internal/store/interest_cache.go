@@ -10,49 +10,48 @@ import (
 )
 
 // newInterestCopy is the copy of the interest bucket r keeps, which holds every interest it can
-// decode (decodeInterest) and keeps r's subject index in step with its rows (kvwatch.Rows).
-func newInterestCopy(r *Registry) kvwatch.Copy[Interest] {
-	return kvwatch.NewCopy(kvwatch.Rows[Interest]{Decode: decodeInterest, Stored: r.indexInterestLocked, Removed: r.unindexInterestLocked})
+// decode (decodeInterest), each with its record byte for byte (kvwatch.Kept), which a read of a
+// recreated bucket writes back, and keeps r's subject index in step with its rows (kvwatch.Rows).
+func newInterestCopy(r *Registry) kvwatch.Copy[kvwatch.Kept[Interest]] {
+	return kvwatch.NewCopy(kvwatch.Rows[kvwatch.Kept[Interest]]{Decode: decodeInterest, Stored: r.indexInterestLocked, Removed: r.unindexInterestLocked})
 }
 
 // indexInterestLocked and unindexInterestLocked keep the subject index in step with the copy: the
 // index is what Match walks, so every interest the copy stores is set in it and every
 // one it removes is taken out. The copy calls each under r.mu, held for writing.
-func (r *Registry) indexInterestLocked(sessionID string, item Interest) {
+func (r *Registry) indexInterestLocked(sessionID string, kept kvwatch.Kept[Interest]) {
 	if r.index == nil {
 		r.index = newSubjectIndex()
 	}
-	r.index.set(sessionID, item)
+	r.index.set(sessionID, kept.Value)
 }
 
-func (r *Registry) unindexInterestLocked(sessionID string, _ Interest) {
+func (r *Registry) unindexInterestLocked(sessionID string, _ kvwatch.Kept[Interest]) {
 	if r.index != nil {
 		r.index.remove(sessionID)
 	}
 }
 
 // decodeInterest is the interest a put record of the bucket, delivered or read, leaves in the
-// cache.
-func decodeInterest(entry kvwatch.Entry) (Interest, bool, error) {
+// cache, kept byte for byte.
+func decodeInterest(entry kvwatch.Entry) (kvwatch.Kept[Interest], bool, error) {
 	var item Interest
 	if err := json.Unmarshal(entry.Value, &item); err != nil {
-		return Interest{}, false, err
+		return kvwatch.Kept[Interest]{}, false, err
 	}
-	return item, true, nil
+	return kvwatch.KeptEntry(entry, item), true, nil
 }
 
 // interestCache is the registry as the cache its watcher feeds (kvwatch.Cache). The hooks are its
 // own type's, not the registry's methods, so nothing but the watcher calls them.
 type interestCache struct{ r *Registry }
 
-// BeginRead starts a read of the interest bucket (beginInterestRead). The first read of a
-// recreated bucket then writes back the rows the copy held (reassertInterests), before the read
+// BeginRead starts a read of the interest bucket (beginInterestRead), and writes back what that
+// read is due to write (reassertInterests): for the first read of a recreated bucket the rows this
+// registry owns, and for a later read of that epoch what the first could not write, before the read
 // can complete and sweep them, with r.mu released.
 func (c interestCache) BeginRead(read kvwatch.Read) {
-	held := c.r.beginInterestRead(read)
-	if read.Recreated {
-		c.r.reassertInterests(read, held)
-	}
+	c.r.reassertInterests(read, c.r.beginInterestRead(read))
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not

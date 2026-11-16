@@ -149,6 +149,7 @@ type sessionRegistryOpts struct {
 	lastSeenRetention time.Duration
 	log               *slog.Logger
 	now               func() time.Time
+	owner             string
 }
 
 func WithSessionReplicas(n int) SessionRegistryOption {
@@ -211,13 +212,23 @@ func WithSessionClock(now func() time.Time) SessionRegistryOption {
 	return func(o *sessionRegistryOpts) { o.now = now }
 }
 
-// cachedSession is a SessionEntry plus its local expiry deadline. JetStream
-// MaxAge TTL expiry is NOT delivered as a watcher delete event, so the registry
-// enforces the TTL locally: a read reports an entry past expiresAt as absent, and
-// the expiry timer removes it from the cache at that deadline (expireDue).
+// WithSessionOwner names the listener this registry writes for, its ENVOY_MACHINE_ID, which every
+// registration it writes carries (SessionEntry.MachineID). It owns the rows that name it, and a
+// read of a recreated bucket writes back those it still holds live (sessionCache.BeginRead). A
+// registry with no owner owns no row and writes nothing back.
+func WithSessionOwner(machineID string) SessionRegistryOption {
+	return func(o *sessionRegistryOpts) { o.owner = machineID }
+}
+
+// cachedSession is a SessionEntry plus its local expiry deadline and the record it was read from or
+// written as, byte for byte, which a read of a recreated bucket writes back (reassert). JetStream
+// MaxAge TTL expiry is NOT delivered as a watcher delete event, so the registry enforces the TTL
+// locally: a read reports an entry past expiresAt as absent, and the expiry timer removes it from
+// the cache at that deadline (expireDue).
 type cachedSession struct {
 	entry     SessionEntry
 	expiresAt time.Time // zero means never expires (ttl <= 0)
+	record    []byte
 }
 
 func (c cachedSession) expired(now time.Time) bool {
@@ -295,6 +306,11 @@ type SessionRegistry struct {
 	// watcher feeds the cache from the session bucket and holds the handle the registry writes
 	// through. Once a read has completed the cache is consistent with the bucket.
 	watcher *kvwatch.Watcher
+	// owner is the listener this registry writes for (WithSessionOwner), and reassertion what
+	// its write-back into a recreated bucket left to write (kvwatch.Reasserter), which only the
+	// cache's hooks touch.
+	owner       string
+	reassertion kvwatch.Reasserter[*cachedSession]
 
 	log *slog.Logger
 
@@ -449,6 +465,7 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		ttl:               ttl,
 		lastSeen:          map[string]lastSeenSession{},
 		log:               opts.log,
+		owner:             opts.owner,
 	}
 	r.cache = newSessionCopy(r)
 	r.watcher = kvwatch.New("session registry", kv, sessionCache{r}, kvwatch.WithLogger(opts.log))
@@ -520,14 +537,12 @@ func (r *SessionRegistry) logger() *slog.Logger {
 // own type's, not the registry's methods, so nothing but the watcher calls them.
 type sessionCache struct{ r *SessionRegistry }
 
-// BeginRead starts a read of the session bucket (beginRead). The first read of a recreated bucket
-// then writes back the rows the copy held that the new bucket should hold (reassert), before the
-// read can complete and sweep them, with r.mu released.
+// BeginRead starts a read of the session bucket (beginRead), and writes back what that read is due
+// to write (reassert): for the first read of a recreated bucket the rows this registry owns, and for
+// a later read of that epoch what the first could not write, before the read can complete and sweep
+// them, with r.mu released.
 func (c sessionCache) BeginRead(read kvwatch.Read) {
-	held := c.r.beginRead(read)
-	if read.Recreated {
-		c.r.reassert(read, held)
-	}
+	c.r.reassert(read, c.r.beginRead(read))
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not
@@ -571,7 +586,7 @@ func (r *SessionRegistry) decodeLocked(entry kvwatch.Entry) (*cachedSession, boo
 	if err := json.Unmarshal(entry.Value, &item); err != nil {
 		return nil, false, err
 	}
-	return &cachedSession{entry: item, expiresAt: r.expiryFor(entry.Created, item.UpdatedAt)}, true, nil
+	return &cachedSession{entry: item, expiresAt: r.expiryFor(entry.Created, item.UpdatedAt), record: entry.Value}, true, nil
 }
 
 // expiryFor computes the local TTL deadline for a cached entry. It prefers the
@@ -801,7 +816,7 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		return err
 	}
 	r.mu.Lock()
-	outcome := r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
+	outcome := r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt), record: buf}, revision)
 	r.unlockAndNotify()
 	if outcome == kvwatch.Dropped {
 		return r.putAgainWithin(ctx, sessionID, entry, buf)

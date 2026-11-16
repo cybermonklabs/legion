@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A write the listener was told had landed is no longer lost when its key-value bucket is deleted and created again. The ack names the stream and its sequence, never which incarnation of the bucket took the write. When a listener's watcher finds the new bucket, the listener writes back the records it owns: its sessions' registrations, interest rows and role claims, its CI records and its known-session records, each named by its `ENVOY_MACHINE_ID`. It writes a record only where the new bucket holds none or an older one, never over a delete or a later write, and logs one line per recreation (`re-asserted what it owned into the recreated bucket`). A session that ended in the new bucket stays ended: its delete leaves a marker there that the write-back respects. To empty a bucket, stop every listener of the deployment first (`infra/README.md`).
+time: 2026-11-16T23:28:30Z
+custom:
+    Issue: INFRA-4094

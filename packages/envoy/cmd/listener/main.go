@@ -1193,7 +1193,7 @@ func main() {
 	var renames ghrename.Renames
 	if webhookCfg.GitHub != nil {
 		renames = webhookCfg.GitHub.RepositoryRenames
-		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
+		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour), cistore.WithMachineID(cfg.MachineID))
 		if err != nil {
 			log.Fatalf("open the CI store: %v", err)
 		}
@@ -1211,8 +1211,10 @@ func main() {
 
 	// The registry and its cache watcher log through the listener's own handler, so its role-restore
 	// count, its warm-up and its reaper cycles are JSON records with this machine's id. Never
-	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks.
-	registry, err := store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()))
+	// slog.SetDefault instead: see store.WithLogger for the CloudWatch filters that breaks. Every
+	// store is told this listener's machine id, which the records it writes name, so a read of a
+	// recreated bucket writes back the records this listener owns (kvwatch.Reassert, INFRA-4094).
+	registry, err := store.Open(client.Conn, store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithMachineID(cfg.MachineID))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -1291,6 +1293,7 @@ func main() {
 		session.WithSessionMaxAge(cfg.SessionMaxAge),
 		session.WithSessionLiveWindow(sessionLiveWindow),
 		session.WithSessionGoneHorizon(sessionGoneHorizon),
+		session.WithSessionOwner(cfg.MachineID),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -1342,6 +1345,7 @@ func main() {
 		client.Conn,
 		session.WithKnownSessionReplicas(cfg.NATSReplicas),
 		session.WithKnownSessionLogger(logger.Slog()),
+		session.WithKnownSessionOwner(cfg.MachineID),
 	)
 	if knownErr != nil {
 		logger.Error("the known-session store was not built; no session's 30-day record is written or read for the life of this listener",

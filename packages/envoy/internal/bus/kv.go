@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -819,6 +820,50 @@ func (kv KeyValue) MarkDeletedIfNone(key string) error {
 		return nil
 	}
 	return err
+}
+
+// WriteBack writes value for key only while the key's latest revision is last, 0 naming a key
+// whose subject holds no message at all, as Update does, and answers the revision written. A
+// refusal is the wrong last sequence Update answers too (IsCASConflict). ttl, when above 0, rides
+// the write as its own expiry (the Nats-TTL header, whole seconds rounded up): a stream that does
+// not allow per-message TTLs refuses such a write (nats-server 2.11 and later: the stream's
+// AllowMsgTTL, which an update can turn on and never off), so its caller sends one only to a
+// stream whose configuration allows it (StreamAllowsMessageTTL). It is the write a recreated
+// bucket is given back through (kvwatch.Reassert), one JetStream request through kv's jetstream
+// context, waiting no longer than ctx.
+func (kv KeyValue) WriteBack(ctx context.Context, key string, value []byte, last uint64, ttl time.Duration) (uint64, error) {
+	if err := kv.write(key); err != nil {
+		return 0, err
+	}
+	if !natsKeyValid(key) {
+		return 0, invalidKey(key, nats.ErrInvalidKey)
+	}
+	msg := nats.NewMsg("$KV." + kv.Bucket() + "." + key)
+	msg.Data = value
+	msg.Header.Set(nats.ExpectedLastSubjSeqHdr, strconv.FormatUint(last, 10))
+	if ttl > 0 {
+		msg.Header.Set(messageTTLHeader, strconv.FormatInt(int64((ttl+time.Second-1)/time.Second), 10))
+	}
+	ack, err := kv.streams.PublishMsg(ctx, msg)
+	if err != nil {
+		return 0, err
+	}
+	return ack.Sequence, nil
+}
+
+// messageTTLHeader is the header a per-message TTL rides in (nats-server's JSMessageTTL).
+const messageTTLHeader = "Nats-TTL"
+
+// StreamAllowsMessageTTL reports whether the stream behind kv takes a per-message TTL
+// (WriteBack), read once within ctx. The buckets this build creates do not: nats.go's
+// KeyValueConfig has no field that turns it on, so only a stream an operator configured so does.
+func (kv KeyValue) StreamAllowsMessageTTL(ctx context.Context) (bool, time.Time, error) {
+	stream, err := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+	if err != nil {
+		return false, time.Time{}, err
+	}
+	info := stream.CachedInfo()
+	return info.Config.AllowMsgTTL, info.Created, nil
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

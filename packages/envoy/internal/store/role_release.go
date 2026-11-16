@@ -288,6 +288,8 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 // fail the release naming the role, exactly as an exhausted delete does: the caller asked for a
 // hand-back, and a release that left no mark must not report that it made one.
 func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role string, read RoleClaim) error {
+	var marked RoleClaim
+	var record []byte
 	outcome, _, err := r.writeRoleClaim(ctx, read, roleClaimWrite{
 		role:     role,
 		attempts: roleClaimReleaseAttempts,
@@ -300,17 +302,17 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 				claim.ClientInstanceID == read.ClientInstanceID && claim.ClaimedAt == read.ClaimedAt
 		},
 		send: func(claim RoleClaim) (uint64, error) {
-			marked := claim
+			marked = claim
 			marked.HandedBack = true
 			data, err := json.Marshal(marked)
 			if err != nil {
 				return 0, err
 			}
+			record = data
 			return r.roles().Update(role, data, claim.Revision)
 		},
-		landed: func(claim RoleClaim, revision, epoch uint64) kvwatch.Outcome {
-			claim.HandedBack = true
-			return r.setOwnRoleClaim(role, claim, revision, epoch)
+		landed: func(_ RoleClaim, revision, epoch uint64) kvwatch.Outcome {
+			return r.setOwnRoleClaim(role, marked, record, revision, epoch)
 		},
 	})
 	switch {

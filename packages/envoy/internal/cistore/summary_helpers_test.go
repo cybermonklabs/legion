@@ -17,8 +17,8 @@ func (s *Store) List() []State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]State, 0, s.cache.Len())
-	for _, state := range s.cache.All() {
-		out = append(out, state)
+	for _, kept := range s.cache.All() {
+		out = append(out, kept.Value)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return Key(out[i].Owner, out[i].Repo, out[i].Number, out[i].SHA) <

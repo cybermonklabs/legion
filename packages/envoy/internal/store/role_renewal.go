@@ -216,6 +216,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 		return false, err
 	}
 	var renewed RoleClaim
+	var record []byte
 	outcome, _, err := r.writeRoleClaim(ctx, claim, roleClaimWrite{
 		role:     role,
 		attempts: 1,
@@ -231,10 +232,11 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			if err != nil {
 				return 0, err
 			}
+			record = data
 			return r.roles().Update(role, data, claim.Revision)
 		},
 		landed: func(_ RoleClaim, revision, epoch uint64) kvwatch.Outcome {
-			return r.setOwnRoleClaim(role, renewed, revision, epoch)
+			return r.setOwnRoleClaim(role, renewed, record, revision, epoch)
 		},
 	})
 	switch {

@@ -947,7 +947,8 @@ func TestMarkSettledCacheWriteDoesNotOverwriteNewerWatcherRevision(t *testing.T)
 	}
 	key := Key(owner, repo, pr, sha)
 	s.mu.RLock()
-	cached, _ := s.cache.Get(key)
+	kept, _ := s.cache.Get(key)
+	cached := kept.Value
 	cachedRevision := s.cache.FenceFor(s.watcher.Epoch(), key)
 	s.mu.RUnlock()
 	if cached.Generation <= claimedState.Generation || cached.SettledEmitted {

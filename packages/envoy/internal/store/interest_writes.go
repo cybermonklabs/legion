@@ -300,7 +300,7 @@ func (r *Registry) writeRowAt(ctx context.Context, cur Interest, revision uint64
 	if !stored {
 		return Interest{}, false, nil
 	}
-	if r.recordInterest(merged, written, epoch, getErr) == kvwatch.Dropped {
+	if r.recordInterest(merged, buf, written, epoch, getErr) == kvwatch.Dropped {
 		// The write was conditional on a revision of a bucket since recreated, and its ack
 		// cannot say which bucket took it: it is read as refused, so the caller reads the row
 		// the bucket there is now holds - the one the read that found it wrote back, or this
@@ -347,9 +347,9 @@ func (r *Registry) interestRow(cur Interest, getErr error, item Interest, plan I
 // recordInterest caches the row a write stored at its revision, through the handle of epoch it
 // was written with (kvwatch.Copy.Put), logs the replacement of a record this build cannot
 // decode, which getErr reports, and answers what the copy did with the row.
-func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getErr error) kvwatch.Outcome {
+func (r *Registry) recordInterest(merged Interest, record []byte, revision, epoch uint64, getErr error) kvwatch.Outcome {
 	r.mu.Lock()
-	outcome := r.cache.Put(r.watcher, epoch, merged.SessionID, merged, revision)
+	outcome := r.cache.Put(r.watcher, epoch, merged.SessionID, kvwatch.Kept[Interest]{Value: merged, Record: record, Written: r.now()}, revision)
 	r.mu.Unlock()
 	if errors.Is(getErr, ErrMalformedInterest) {
 		r.logger().Warn("registry replaced an interest record it cannot decode",
@@ -686,7 +686,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 			continue
 		}
 		r.mu.Lock()
-		outcome := r.cache.Put(r.watcher, epoch, sessionID, item, written)
+		outcome := r.cache.Put(r.watcher, epoch, sessionID, kvwatch.Kept[Interest]{Value: item, Record: buf, Written: r.now()}, written)
 		r.mu.Unlock()
 		if outcome == kvwatch.Dropped {
 			// A write conditional on a revision of a bucket since recreated: read the row the

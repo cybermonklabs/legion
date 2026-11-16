@@ -228,19 +228,20 @@ func DecodeRoleClaim(value []byte) (RoleClaim, error) {
 	return RoleClaim{HolderSessionID: holder}, nil
 }
 
-// newRoleHolderCopy is an empty copy of the role claim bucket, which keeps each claim it can read:
-// the session it names, which the role views read (RolesHeldBy), and the whole record, which the
-// first read of a recreated bucket writes back (reassertRoleClaims). A claim this build cannot read
-// (ErrMalformedRoleClaim) gives its role to nobody, so the copy keeps no entry for it, as a delete
-// marker leaves none. Each entry it removes is handed to r's repair (roleClaimRepair.swept), which
-// counts the ones a repairing read's sweep took out.
-func newRoleHolderCopy(r *Registry) kvwatch.Copy[RoleClaim] {
-	return kvwatch.NewCopy(kvwatch.Rows[RoleClaim]{Decode: func(entry kvwatch.Entry) (RoleClaim, bool, error) {
+// newRoleHolderCopy is an empty copy of the role claim bucket, which keeps each claim it can read
+// with its record byte for byte (kvwatch.Kept): the session it names, which the role views read
+// (RolesHeldBy), and the record, which the first read of a recreated bucket writes back
+// (reassertRoleClaims). A claim this build cannot read (ErrMalformedRoleClaim) gives its role to
+// nobody, so the copy keeps no entry for it, as a delete marker leaves none. Each entry it removes
+// is handed to r's repair (roleClaimRepair.swept), which counts the ones a repairing read's sweep
+// took out.
+func newRoleHolderCopy(r *Registry) kvwatch.Copy[kvwatch.Kept[RoleClaim]] {
+	return kvwatch.NewCopy(kvwatch.Rows[kvwatch.Kept[RoleClaim]]{Decode: func(entry kvwatch.Entry) (kvwatch.Kept[RoleClaim], bool, error) {
 		claim, err := DecodeRoleClaim(entry.Value)
 		if err != nil {
-			return RoleClaim{}, false, err
+			return kvwatch.Kept[RoleClaim]{}, false, err
 		}
-		return claim, true, nil
+		return kvwatch.KeptEntry(entry, claim), true, nil
 	}, Removed: r.roleRepair.swept})
 }
 
@@ -250,14 +251,12 @@ func newRoleHolderCopy(r *Registry) kvwatch.Copy[RoleClaim] {
 // RoleClaimRepair reports.
 type roleCache struct{ r *Registry }
 
-// BeginRead starts a read of the role claim bucket (beginRoleRead). The first read of a recreated
-// bucket then writes back the claims the copy held (reassertRoleClaims), before the read can
-// complete and sweep them, with holdersMu released.
+// BeginRead starts a read of the role claim bucket (beginRoleRead), and writes back what that read
+// is due to write (reassertRoleClaims): for the first read of a recreated bucket the claims this
+// registry owns, and for a later read of that epoch what the first could not write, before the read
+// can complete and sweep them, with holdersMu released.
 func (c roleCache) BeginRead(read kvwatch.Read) {
-	held := c.r.beginRoleRead(read)
-	if read.Recreated {
-		c.r.reassertRoleClaims(read, held)
-	}
+	c.r.reassertRoleClaims(read, c.r.beginRoleRead(read))
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a claim it could
@@ -273,7 +272,7 @@ func (c roleCache) Apply(entry kvwatch.Entry, _ kvwatch.Read) {
 		before, held := r.roleHolders.Get(entry.Key)
 		malformed = r.roleHolders.Delivered(entry)
 		after, holds := r.roleHolders.Get(entry.Key)
-		r.roleRepair.delivered(entry.Key, before.HolderSessionID, held, after.HolderSessionID, holds)
+		r.roleRepair.delivered(entry.Key, before.Value.HolderSessionID, held, after.Value.HolderSessionID, holds)
 	} else {
 		malformed = r.roleHolders.Delivered(entry)
 	}
@@ -310,17 +309,18 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 	}
 }
 
-// setOwnRoleClaim records claim, a claim write this registry made, at revision through a handle of
-// epoch (kvwatch.Copy.Put), and answers what the copy did with it: a write through a handle on a
-// bucket since recreated is dropped rather than fencing out the new bucket's lower revisions
-// (kvwatch.Dropped), and so is one the fence finds older than the claim the copy already took.
-func (r *Registry) setOwnRoleClaim(role string, claim RoleClaim, revision, epoch uint64) kvwatch.Outcome {
+// setOwnRoleClaim records claim, a claim write this registry made as record, at revision through a
+// handle of epoch (kvwatch.Copy.Put), and answers what the copy did with it: a write through a
+// handle on a bucket since recreated is dropped rather than fencing out the new bucket's lower
+// revisions (kvwatch.Dropped), and so is one the fence finds older than the claim the copy already
+// took.
+func (r *Registry) setOwnRoleClaim(role string, claim RoleClaim, record []byte, revision, epoch uint64) kvwatch.Outcome {
 	if r.roleWatcher == nil {
 		return kvwatch.Applied
 	}
 	r.holdersMu.Lock()
 	defer r.holdersMu.Unlock()
-	return r.roleHolders.Put(r.roleWatcher, epoch, role, claim, revision)
+	return r.roleHolders.Put(r.roleWatcher, epoch, role, kvwatch.Kept[RoleClaim]{Value: claim, Record: record, Written: r.now()}, revision)
 }
 
 // forgetRoleHolder records that the claim of role at revision was deleted through a handle of
@@ -474,8 +474,8 @@ func (r *Registry) RolesHeldBy(sessionID string) ([]string, error) {
 	}
 	roles := []string{}
 	r.holdersMu.RLock()
-	for role, claim := range r.roleHolders.All() {
-		if claim.HolderSessionID == sessionID {
+	for role, kept := range r.roleHolders.All() {
+		if kept.Value.HolderSessionID == sessionID {
 			roles = append(roles, role)
 		}
 	}
@@ -495,8 +495,8 @@ func (r *Registry) RolesBySession() (map[string][]string, error) {
 	}
 	held := map[string][]string{}
 	r.holdersMu.RLock()
-	for role, claim := range r.roleHolders.All() {
-		held[claim.HolderSessionID] = append(held[claim.HolderSessionID], role)
+	for role, kept := range r.roleHolders.All() {
+		held[kept.Value.HolderSessionID] = append(held[kept.Value.HolderSessionID], role)
 	}
 	r.holdersMu.RUnlock()
 	for _, roles := range held {
@@ -757,6 +757,13 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	if !answered {
 		err = fmt.Errorf("write role %s's claim: %w", req.Role, err)
 	}
+	if err == nil && r.setOwnRoleClaim(req.Role, claim, data, revision, epoch) == kvwatch.Dropped {
+		// The bucket was recreated while the claim was in flight, and its ack cannot say which
+		// bucket took it: the claim is settled in the bucket there is now (claimAgain), and a
+		// conditional claim that finds another claim standing there is answered as one that lost
+		// its compare-and-swap, below.
+		err = r.claimAgain(ctx, req, claim, oldClaim, data)
+	}
 	if err != nil {
 		current, holderErr := r.RoleClaim(ctx, req.Role)
 		holder := current.HolderSessionID
@@ -813,11 +820,6 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			return Interest{}, &ErrRoleHeld{Role: req.Role, Holder: holder}
 		}
 		return Interest{}, err
-	}
-	if r.setOwnRoleClaim(req.Role, claim, revision, epoch) == kvwatch.Dropped {
-		if err := r.claimAgain(ctx, req, claim, data); err != nil {
-			return Interest{}, err
-		}
 	}
 
 	if oldSessionID != "" && oldSessionID != req.SessionID {

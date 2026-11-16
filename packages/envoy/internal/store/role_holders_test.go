@@ -34,8 +34,8 @@ func (r *Registry) resetRoleHolders() {
 func holderOf(r *Registry, role string) string {
 	r.holdersMu.RLock()
 	defer r.holdersMu.RUnlock()
-	claim, _ := r.roleHolders.Get(role)
-	return claim.HolderSessionID
+	kept, _ := r.roleHolders.Get(role)
+	return kept.Value.HolderSessionID
 }
 
 // servableView reports whether the role claim view can be served, which is what RolesHeldBy
@@ -545,13 +545,13 @@ func TestAClaimWriteAnsweredAcrossARecreatedRoleBucketLeavesTheNewBucketsView(t 
 	reg.roleWatcher.Stop()
 	epoch := reg.roleWatcher.Epoch()
 
-	reg.setOwnRoleClaim("reviewer", RoleClaim{HolderSessionID: "ses_old_bucket"}, 7, epoch+1)
+	reg.setOwnRoleClaim("reviewer", RoleClaim{HolderSessionID: "ses_old_bucket"}, nil, 7, epoch+1)
 	reg.applyRoleClaim(roleClaimEntry("reviewer", "ses_new_bucket", 1))
 	if got := holderOf(reg, "reviewer"); got != "ses_new_bucket" {
 		t.Fatalf("after a watch moved the epoch, reviewer's holder = %q, want ses_new_bucket: the old bucket's claim write at revision 7 fenced out the new bucket's revision 1", got)
 	}
 
-	reg.setOwnRoleClaim("planner", RoleClaim{HolderSessionID: "ses_written"}, 7, epoch)
+	reg.setOwnRoleClaim("planner", RoleClaim{HolderSessionID: "ses_written"}, nil, 7, epoch)
 	reg.applyRoleClaim(roleClaimEntry("planner", "ses_delayed", 6))
 	if got := holderOf(reg, "planner"); got != "ses_written" {
 		t.Fatalf("with no recreate, planner's holder = %q, want ses_written: a delayed delivery at revision 6 undid the registry's own write at 7", got)

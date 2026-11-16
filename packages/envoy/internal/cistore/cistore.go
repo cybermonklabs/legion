@@ -158,6 +158,11 @@ type State struct {
 	// written by a listener that settled only a pull request's head has none (legacyBacklog). An
 	// older listener ignores the field, and its own writes drop it.
 	Schema int `json:"schema,omitempty"`
+	// Writer is the listener that last wrote the record (WithMachineID), which owns it: a read of
+	// a recreated bucket on that listener writes it back (ciCache.BeginRead). Empty on a record an
+	// earlier build wrote, and on one Dispatch's reconcile pass wrote (OpenWriter), which no
+	// listener owns. Hash leaves it out, so a write by another listener is no new snapshot.
+	Writer string `json:"writer,omitempty"`
 }
 
 // recordSchema stamps every record this listener writes.
@@ -276,7 +281,7 @@ type Store struct {
 	// cache is the copy of the bucket: its records, revision fence, marks and read epoch
 	// (kvwatch.Copy, decodeState), which every write site reaches through. A record it removes is
 	// a change for the summary loop (removedLocked).
-	cache kvwatch.Copy[State]
+	cache kvwatch.Copy[kvwatch.Kept[State]]
 	// watcher feeds the cache and holds the handle the store writes through. Every watcher it
 	// installs reads the whole bucket again (ciCache): the cache keeps every record through the
 	// read and removes those the read found no evidence of only once it completes. The summary
@@ -316,11 +321,25 @@ type Store struct {
 
 	// logger writes the store's JSON lines, which an alarm can count (write).
 	logger *logging.Logger
+
+	// owner is the listener this store writes for (WithMachineID), which every record it writes
+	// names (State.Writer), and reassertion what its write-back into a recreated bucket left to
+	// write, which only the cache's hooks touch.
+	owner       string
+	reassertion kvwatch.Reasserter[kvwatch.Kept[State]]
 }
 
 type openOpts struct {
 	replicas int
 	ttl      time.Duration
+	owner    string
+}
+
+// WithMachineID names the listener this store writes for, its ENVOY_MACHINE_ID: every record it
+// writes names it (State.Writer), and a read of a recreated bucket writes back the records that
+// name it (ciCache.BeginRead). A store with no machine id owns no record.
+func WithMachineID(machineID string) Option {
+	return func(o *openOpts) { o.owner = machineID }
 }
 
 // Option configures Open.
@@ -373,6 +392,7 @@ func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error)
 		rewatched:   make(chan struct{}),
 		changedWake: make(chan struct{}, 1),
 		logger:      logger,
+		owner:       o.owner,
 	}
 	s.cache = newCICopy(s)
 	s.watcher = kvwatch.New("cistore", kv, ciCache{s}, kvwatch.WithLogger(logger.Slog()))
@@ -490,71 +510,81 @@ func (s *Store) Rewatch(conn *nats.Conn) error {
 // type's, not the store's methods, so nothing but the watcher calls them.
 type ciCache struct{ s *Store }
 
-// BeginRead starts a read of the CI bucket (beginRead). The first read of a recreated bucket then
-// writes back the records the copy held (reassert), before the read can complete and sweep them,
-// with s.mu released.
+// BeginRead starts a read of the CI bucket (beginRead), and writes back what that read is due to
+// write (reassert): for the first read of a recreated bucket the records this store owns, and for a
+// later read of that epoch what the first could not write, before the read can complete and sweep
+// them, with s.mu released.
 func (c ciCache) BeginRead(read kvwatch.Read) {
-	held := c.s.beginRead(read)
-	if read.Recreated {
-		c.s.reassert(read, held)
-	}
+	c.s.reassert(read, c.s.beginRead(read))
 }
 
 // beginRead starts a read of the CI bucket (kvwatch.Copy.BeginRead); every record stays through
-// it. For the first read of a recreated bucket it answers the records to write back into it
-// (reassert): each record the copy holds, encoded as it is held, so a record a head-gated listener
-// last wrote keeps its missing schema stamp (encodeRecord says what that stamp decides), but one
-// whose last event is older than the new bucket's TTL. Every write of a record follows one of its
-// events within the settlement debounce, so such a record is one the deleted bucket had already
-// expired, which the copy kept only because the bucket delivers no event for an expiry, and a
-// write would give it another TTL. The copy never holds a retired head record or a state under a
-// foreign key (decodeState), so neither is written back.
+// it. It answers the records the read writes back (kvwatch.Reasserter.Due): for the first read of a
+// recreated bucket, the records this store owns - the ones its own listener last wrote, which name
+// it (State.Writer) - expiring one bucket TTL after their write, which the write-back does not
+// write past; for a later read of the same epoch, the records that write-back could not write. A
+// record Dispatch's reconcile pass last wrote names no listener: that pass reads a head whose
+// record is missing again in full (internal/dispatch/cireconcile). The copy never holds a retired
+// head record or a state under a foreign key (decodeState), so neither is written back.
 //
 // The bucket was deleted and created again, so nothing the summary loop knew of it still stands:
 // it drops what it knew at its next pass (takeChanges), and this read tells it afresh.
-func (s *Store) beginRead(read kvwatch.Read) []kvwatch.Held[State] {
+func (s *Store) beginRead(read kvwatch.Read) []kvwatch.Held[kvwatch.Kept[State]] {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cache.BeginRead(read)
-	if !read.Recreated {
-		return nil
-	}
-	if s.feedAttached {
+	if read.Recreated && s.feedAttached {
 		s.cacheReset = true
 		s.changed = nil
 		s.wakeSummary()
 	}
-	expired := int64(0)
-	if read.MaxAge > 0 {
-		expired = time.Now().Add(-read.MaxAge).UnixMilli()
-	}
-	var held []kvwatch.Held[State]
-	for key, st := range s.cache.All() {
-		if st.LastEventAt > 0 && st.LastEventAt < expired {
-			continue
+	return s.reassertion.Due(read, func() []kvwatch.Held[kvwatch.Kept[State]] {
+		if s.owner == "" {
+			return nil
 		}
-		buf, err := json.Marshal(st)
-		if err != nil {
-			continue
+		var held []kvwatch.Held[kvwatch.Kept[State]]
+		for key, kept := range s.cache.All() {
+			if kept.Value.Writer == s.owner && len(kept.Record) > 0 {
+				held = append(held, kvwatch.HeldFrom(key, kept, read.MaxAge))
+			}
 		}
-		held = append(held, kvwatch.Held[State]{Key: key, Record: buf, Value: st})
-	}
-	return held
+		return held
+	})
 }
 
 // reassert writes held, the records beginRead answered for read, into the recreated CI bucket
-// (kvwatch.Reassert), each only where that bucket holds nothing for its key, and stores each one it
-// took in the copy at read's epoch, so the read's sweep keeps it, marking it changed for the
-// summary loop as a delivered record is (markStoredLocked). It runs in the read's BeginRead with
-// s.mu released.
-func (s *Store) reassert(read kvwatch.Read, held []kvwatch.Held[State]) {
-	kvwatch.Reassert(s.watcher, read, held, func(h kvwatch.Held[State], revision uint64) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		moved := s.movedLocked(read.Epoch, h.Key, revision)
-		s.cache.Put(s.watcher, read.Epoch, h.Key, h.Value, revision)
-		s.markStoredLocked(h.Key, moved)
-	})
+// (kvwatch.Reasserter.Write): where the bucket holds nothing for the key, and over a record behind
+// the held one (recordedSince), never over a later one. It stores each record the bucket took in
+// the copy at read's epoch, so the read's sweep keeps it, marking it changed for the summary loop
+// as a delivered record is (markStoredLocked). It runs in the read's BeginRead with s.mu released.
+func (s *Store) reassert(read kvwatch.Read, held []kvwatch.Held[kvwatch.Kept[State]]) {
+	s.reassertion.Write(s.watcher, read, held,
+		func(stored []byte, h kvwatch.Held[kvwatch.Kept[State]]) bool {
+			var standing State
+			return json.Unmarshal(stored, &standing) == nil && recordedSince(standing, h.Value.Value)
+		},
+		func(h kvwatch.Held[kvwatch.Kept[State]], revision uint64) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			moved := s.movedLocked(read.Epoch, h.Key, revision)
+			s.cache.Put(s.watcher, read.Epoch, h.Key, h.Value, revision)
+			s.markStoredLocked(h.Key, moved)
+		})
+}
+
+// recordedSince reports whether standing is as far along as held or further: a later event
+// (LastEventAt), or for the same event, a later generation of its snapshot (Generation) or more of
+// its settlements emitted (EmittedCount). A record's every write moves one of them on or leaves it
+// where it was.
+func recordedSince(standing, held State) bool {
+	switch {
+	case standing.LastEventAt != held.LastEventAt:
+		return standing.LastEventAt > held.LastEventAt
+	case standing.Generation != held.Generation:
+		return standing.Generation > held.Generation
+	default:
+		return standing.EmittedCount >= held.EmittedCount
+	}
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not
@@ -589,34 +619,34 @@ func (c ciCache) CompleteRead(kvwatch.Read) {
 // one place a record the bucket no longer holds is reported to the summary loop. Every removal
 // the copy makes for the bucket's sake comes through Removed -- a delete or purge marker, a
 // retired head, a record it cannot decode, and a read's sweep -- so the loop hears of each once.
-func newCICopy(s *Store) kvwatch.Copy[State] {
-	return kvwatch.NewCopy(kvwatch.Rows[State]{Decode: decodeState, Removed: s.removedLocked})
+func newCICopy(s *Store) kvwatch.Copy[kvwatch.Kept[State]] {
+	return kvwatch.NewCopy(kvwatch.Rows[kvwatch.Kept[State]]{Decode: decodeState, Removed: s.removedLocked})
 }
 
-// decodeState is the state a put record of the bucket leaves in the cache. A retired head record,
-// and a state stored under a key other than the one its identity builds, are not kept: the summary
-// loop addresses a record by the key its identity builds, so a record stored under any other key
-// could never be claimed, and it waits out its TTL uncached.
-func decodeState(entry kvwatch.Entry) (State, bool, error) {
+// decodeState is the state a put record of the bucket leaves in the cache, kept byte for byte. A
+// retired head record, and a state stored under a key other than the one its identity builds, are
+// not kept: the summary loop addresses a record by the key its identity builds, so a record stored
+// under any other key could never be claimed, and it waits out its TTL uncached.
+func decodeState(entry kvwatch.Entry) (kvwatch.Kept[State], bool, error) {
 	var marker struct {
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(entry.Value, &marker); err == nil && marker.Kind == retiredHeadKind {
-		return State{}, false, nil
+		return kvwatch.Kept[State]{}, false, nil
 	}
 	var st State
 	if err := json.Unmarshal(entry.Value, &st); err != nil {
-		return State{}, false, err
+		return kvwatch.Kept[State]{}, false, err
 	}
 	if entry.Key != Key(st.Owner, st.Repo, st.Number, st.SHA) {
-		return State{}, false, nil
+		return kvwatch.Kept[State]{}, false, nil
 	}
-	return st, true, nil
+	return kvwatch.KeptEntry(entry, st), true, nil
 }
 
 // removedLocked is what the copy records beside it when it removes a record for the bucket's sake
 // (kvwatch.Rows.Removed): the key is a change for the summary loop. Callers hold s.mu.
-func (s *Store) removedLocked(key string, _ State) {
+func (s *Store) removedLocked(key string, _ kvwatch.Kept[State]) {
 	s.markChangedLocked(key)
 }
 
@@ -712,7 +742,8 @@ func (s *Store) takeChanges() (keys map[string]struct{}, reset bool) {
 func (s *Store) cachedState(key string) (State, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cache.Get(key)
+	kept, ok := s.cache.Get(key)
+	return kept.Value, ok
 }
 
 // WatchErr is the cache watcher's terminal error, or nil while it runs.
@@ -912,6 +943,7 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if !ok {
 			return state, false, nil
 		}
+		state.Writer = s.owner
 		buf, err := encodeRecord(&state)
 		if err != nil {
 			return State{}, false, err
@@ -920,7 +952,7 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if err == nil {
 			s.mu.Lock()
 			moved := s.movedLocked(epoch, key, revision)
-			outcome := s.cache.Put(s.watcher, epoch, key, state, revision)
+			outcome := s.cache.Put(s.watcher, epoch, key, kvwatch.Kept[State]{Value: state, Record: buf, Written: time.Now()}, revision)
 			if moved && outcome != kvwatch.Dropped {
 				s.markChangedLocked(key)
 			}

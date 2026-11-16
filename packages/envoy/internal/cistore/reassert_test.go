@@ -1,6 +1,7 @@
 package cistore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -19,11 +20,10 @@ type withoutReassert struct{ ciCache }
 
 func (c withoutReassert) BeginRead(read kvwatch.Read) { c.s.beginRead(read) }
 
-// A head's CI record the copy held when the bucket was deleted and created again empty is in the
-// new bucket once the read that finds it completes, encoded as it was held (a record with no schema
-// stamp keeps none), and a record whose last event is older than the new bucket's TTL, which the
-// deleted bucket had already expired, is left out. The control runs the same schedule with the
-// write-back left out, and the record is missing.
+// A head's CI record this listener last wrote (State.Writer) and the copy held when the bucket was
+// deleted and created again empty is in the new bucket once the read that finds it completes, byte
+// for byte as it was held, and a record another listener last wrote is left to that listener. The
+// control runs the same schedule with the write-back left out, and the record is missing.
 func TestARecreatedCIBucketGetsBackTheRecordsTheCopyHeld(t *testing.T) {
 	for _, reassert := range []bool{true, false} {
 		name := "write-back"
@@ -34,6 +34,7 @@ func TestARecreatedCIBucketGetsBackTheRecordsTheCopyHeld(t *testing.T) {
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			s := openStore(t, conn)
+			s.owner = "m1"
 			t.Cleanup(s.StopWatch)
 			var cache kvwatch.Cache = ciCache{s}
 			if !reassert {
@@ -45,19 +46,21 @@ func TestARecreatedCIBucketGetsBackTheRecordsTheCopyHeld(t *testing.T) {
 			s.watcher.Start()
 			waitFollowing(t, s, 0)
 
-			fresh := State{Owner: "o", Repo: "r", Number: "1", SHA: "fresh", LastEventAt: time.Now().UnixMilli(), Generation: 3}
-			aged := State{Owner: "o", Repo: "r", Number: "1", SHA: "aged", LastEventAt: time.Now().Add(-2 * time.Hour).UnixMilli()}
-			for _, st := range []State{fresh, aged} {
+			own := State{Owner: "o", Repo: "r", Number: "1", SHA: "own", LastEventAt: time.Now().UnixMilli(), Generation: 3, Writer: "m1"}
+			foreign := State{Owner: "o", Repo: "r", Number: "1", SHA: "foreign", LastEventAt: time.Now().UnixMilli(), Writer: "m2"}
+			raws := map[string][]byte{}
+			for _, st := range []State{own, foreign} {
 				raw, err := json.Marshal(st)
 				if err != nil {
 					t.Fatalf("encode %s: %v", st.SHA, err)
 				}
+				raws[st.SHA] = raw
 				if _, err := base.Put(Key(st.Owner, st.Repo, st.Number, st.SHA), raw); err != nil {
 					t.Fatalf("put %s: %v", st.SHA, err)
 				}
 			}
-			waitCached(t, s, Key("o", "r", "1", "fresh"), func(st State) bool { return st.Generation == 3 })
-			waitCached(t, s, Key("o", "r", "1", "aged"), func(State) bool { return true })
+			waitCached(t, s, Key("o", "r", "1", "own"), func(st State) bool { return st.Generation == 3 })
+			waitCached(t, s, Key("o", "r", "1", "foreign"), func(State) bool { return true })
 
 			js, err := conn.JetStream()
 			if err != nil {
@@ -72,22 +75,21 @@ func TestARecreatedCIBucketGetsBackTheRecordsTheCopyHeld(t *testing.T) {
 			}
 			waitFollowing(t, s, 1)
 
-			entry, err := recreated.Get(Key("o", "r", "1", "fresh"))
+			entry, err := recreated.Get(Key("o", "r", "1", "own"))
 			if !reassert {
 				if !errors.Is(err, natsgo.ErrKeyNotFound) {
-					t.Fatalf("with no write-back the new bucket's record of the fresh head = %v, want none", err)
+					t.Fatalf("with no write-back the new bucket's record of the own head = %v, want none", err)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("the new bucket's record of the fresh head: %v, want it written back", err)
+				t.Fatalf("the new bucket's record of the own head: %v, want it written back", err)
 			}
-			var got State
-			if err := json.Unmarshal(entry.Value(), &got); err != nil || got.Generation != 3 || got.Schema != 0 {
-				t.Fatalf("the written-back record = %+v, %v; want generation 3 and no schema stamp, as held", got, err)
+			if !bytes.Equal(entry.Value(), raws["own"]) {
+				t.Fatalf("the written-back record = %s, want the held record byte for byte: %s", entry.Value(), raws["own"])
 			}
-			if _, err := recreated.Get(Key("o", "r", "1", "aged")); !errors.Is(err, natsgo.ErrKeyNotFound) {
-				t.Fatalf("the new bucket's record of the aged head = %v, want none: its last event is past the TTL", err)
+			if _, err := recreated.Get(Key("o", "r", "1", "foreign")); !errors.Is(err, natsgo.ErrKeyNotFound) {
+				t.Fatalf("the new bucket's record of the foreign head = %v, want none: another listener wrote it", err)
 			}
 		})
 	}

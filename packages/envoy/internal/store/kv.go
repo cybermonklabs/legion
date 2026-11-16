@@ -22,9 +22,10 @@ type Registry struct {
 	openedAt              time.Time
 	restoredRoleRevisions map[string]uint64
 	mu                    sync.RWMutex
-	// cache is the copy of the interest bucket: its interests, revision fence, marks and read epoch
-	// (kvwatch.Copy, newInterestCopy), which every write site reaches through.
-	cache kvwatch.Copy[Interest]
+	// cache is the copy of the interest bucket: its interests, each with its record byte for byte
+	// (kvwatch.Kept), revision fence, marks and read epoch (kvwatch.Copy, newInterestCopy), which
+	// every write site reaches through.
+	cache kvwatch.Copy[kvwatch.Kept[Interest]]
 	// index indexes the cached interests' topic patterns by subject token (subjectIndex), which is
 	// what Match walks rather than every cached interest. The copy's own hooks keep it
 	// in step (indexInterestLocked, unindexInterestLocked), so a recreated bucket's read takes its
@@ -50,11 +51,17 @@ type Registry struct {
 	// beside the copy they repair.
 	roleWatcher *kvwatch.Watcher
 	holdersMu   sync.RWMutex
-	roleHolders kvwatch.Copy[RoleClaim]
+	roleHolders kvwatch.Copy[kvwatch.Kept[RoleClaim]]
 	roleRepair  roleClaimRepair
 	// renewalFailures is this registry's record of the role claim renewals that failed, by role
 	// and holder session (RenewalFailedWithin), under a mutex of its own (role_renewal.go).
 	renewalFailures renewalFailures
+	// owner is the listener this registry writes for (WithMachineID). interestReassertion and
+	// roleReassertion are what each bucket's write-back into a recreated bucket left to write
+	// (kvwatch.Reasserter), which only that bucket's cache hooks touch.
+	owner               string
+	interestReassertion kvwatch.Reasserter[kvwatch.Kept[Interest]]
+	roleReassertion     kvwatch.Reasserter[kvwatch.Kept[RoleClaim]]
 }
 
 // OpenOption configures the registry.
@@ -65,6 +72,15 @@ type openOpts struct {
 	now       func() time.Time
 	log       *slog.Logger
 	roleWatch []kvwatch.Option
+	owner     string
+}
+
+// WithMachineID names the listener this registry writes for, its ENVOY_MACHINE_ID, which every
+// interest row a registration through it writes carries (Interest.MachineID). It owns those rows
+// and the role claims of their sessions, and a read of a recreated bucket writes back those it
+// still holds (reassertInterests, reassertRoleClaims). A registry with no machine id owns nothing.
+func WithMachineID(machineID string) OpenOption {
+	return func(o *openOpts) { o.owner = machineID }
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -131,6 +147,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 		now:                   opts.now,
 		openedAt:              opts.now(),
 		restoredRoleRevisions: restoredRoleRevisions,
+		owner:                 opts.owner,
 	}
 	r.cache = newInterestCopy(r)
 	r.roleHolders = newRoleHolderCopy(r)

@@ -24,6 +24,19 @@ More than 1 needs a clustered NATS: a single server, which is what `aws:NatsServ
 `gcp:NatsHub` deploy, refuses it, and the listener's start then stops with an error naming
 `ENVOY_NATS_REPLICAS`.
 
+Deleting a bucket while listeners run does not empty it. When a listener's watcher finds a bucket
+that was deleted and created again, the listener writes back the records it owns, the ones that
+name its `ENVOY_MACHINE_ID`: the registrations of its sessions (`envoy_sessions`), their interest
+rows (`envoy_interests`) and role claims (`envoy_roles`), the CI records it wrote
+(`envoy_ci_state`) and its known-session records (`envoy_known_sessions`). It writes a record only
+where the new bucket holds no record of that key, or an older one, and never over a delete made in
+the new bucket. It does not write back a session that is gone or past its deadline, a record that
+expired, the records of a listener that is not running, or the CI records Dispatch wrote. Each
+write-back logs one INFO line, `<cache> re-asserted what it owned into the recreated bucket`, with
+`bucket`, `held`, `written`, `present`, `expired`, `failed` and `window_ms`, the time from the new
+bucket's creation to the end of the write-back. To empty a bucket, stop every listener of the
+deployment first, then delete the bucket, then start the listeners.
+
 The command, `envoy-infra`, writes a NATS user's nkey seed into a secret store and checks the seed
 stored there ([NATS seeds](#nats-seeds)), and prints what the AWS components register for a program
 that needs it outside Pulumi ([`envoy-infra render`](#envoy-infra-render)).

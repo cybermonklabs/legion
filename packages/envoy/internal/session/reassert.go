@@ -1,10 +1,11 @@
 package session
 
-// The session registry's part in a bucket deleted and created again (INFRA-4094): the rows its
-// copy held, written back into the new bucket from the read that finds it (beginRead, reassert),
-// and the write whose own result the copy dropped because the bucket was recreated while it was in
-// flight, written again into the bucket the handle reaches now (putAgainWithin). kvwatch.Reassert
-// says why an ack cannot name the incarnation that took it.
+// The session registry's and the known-session store's part in a bucket deleted and created again
+// (INFRA-4094): the records each owns - the ones its own listener wrote, which name that listener
+// - written back into the new bucket from the read that finds it (beginRead, reassert), and the
+// write whose own result the copy dropped because the bucket was recreated while it was in flight,
+// written again into the bucket the handle reaches now (putAgainWithin, writeAgainWithin).
+// kvwatch.Reassert says why an ack cannot name the incarnation that took it.
 
 import (
 	"context"
@@ -16,14 +17,17 @@ import (
 
 // beginRead starts a read of the session bucket (kvwatch.Copy.BeginRead) with the bucket's MaxAge
 // as the ttl when it has one, so a bucket recreated with another TTL expires its rows by its own.
-// Every row stays. For the first read of a recreated bucket it answers the rows to write back into
-// it (reassert): each row the copy holds, as its record, but for two the new bucket should not hold
-// again. A row past its deadline is one the bucket's MaxAge would already have dropped, and writing
-// it back would give it another MaxAge. A gone session's row (StateOf) is one the session reaper
-// deletes at its next pass, so it is not brought back for that pass to delete again; every listener
-// judges it on the same windows, so none brings it back. A session that ended after the recreate is
-// not in the copy's way either: its delete marked the key in the new bucket (DeleteAtRead), which
-// refuses the write.
+// Every row stays. It answers the rows the read writes back (kvwatch.Reasserter.Due): for the
+// first read of a recreated bucket, the rows this registry owns - registered through its own
+// listener (SessionEntry.MachineID is the owner) - and still holds live; for a later read of the
+// same epoch, the rows that write-back could not write. A row another listener registered is that
+// listener's to write back, and a row no listener runs - one whose listener stopped - is no
+// listener's: a session registers again through whichever listener it reaches next. Of its own
+// rows it leaves out a gone session's (StateOf), which the session reaper deletes at its next
+// pass, and expires the rest at their deadlines (kvwatch.Held.Expires), which the write-back does
+// not write past. A session that ended after the recreate is not brought back either: its delete
+// marked the key in the new bucket (bus.KeyValue.DeleteAtRead), which the write-back leaves
+// standing.
 func (r *SessionRegistry) beginRead(read kvwatch.Read) []kvwatch.Held[*cachedSession] {
 	r.mu.Lock()
 	defer r.unlockAndNotify()
@@ -31,34 +35,44 @@ func (r *SessionRegistry) beginRead(read kvwatch.Read) []kvwatch.Held[*cachedSes
 	if read.MaxAge > 0 {
 		r.ttl = read.MaxAge
 	}
-	if !read.Recreated {
-		return nil
-	}
-	now := r.now()
-	var held []kvwatch.Held[*cachedSession]
-	for sessionID, row := range r.cache.All() {
-		if row.expired(now) || r.stateOf(row.entry, now) == Gone {
-			continue
+	return r.reassertion.Due(read, func() []kvwatch.Held[*cachedSession] {
+		if r.owner == "" {
+			return nil
 		}
-		record, err := json.Marshal(row.entry)
-		if err != nil {
-			continue
+		now := r.now()
+		var held []kvwatch.Held[*cachedSession]
+		for sessionID, row := range r.cache.All() {
+			if row.entry.MachineID != r.owner || len(row.record) == 0 || r.stateOf(row.entry, now) == Gone {
+				continue
+			}
+			held = append(held, kvwatch.Held[*cachedSession]{Key: sessionID, Record: row.record, Value: row, Expires: row.expiresAt})
 		}
-		held = append(held, kvwatch.Held[*cachedSession]{Key: sessionID, Record: record, Value: row})
-	}
-	return held
+		return held
+	})
 }
 
 // reassert writes held, the rows beginRead answered for read, into the recreated bucket
-// (kvwatch.Reassert), each only where that bucket holds nothing for its key, and stores each one
-// it took in the copy at read's epoch, so the read's sweep keeps it. It runs in the read's
-// BeginRead with r.mu released, and takes r.mu for each row it stores.
+// (kvwatch.Reasserter.Write): where the bucket holds nothing for the key, and over a row registered
+// before the held one (UpdatedAt), never over a delete or a later registration. It stores each
+// row the bucket took in the copy at read's epoch, so the read's sweep keeps it. It runs in the
+// read's BeginRead with r.mu released, and takes r.mu for each row it stores.
 func (r *SessionRegistry) reassert(read kvwatch.Read, held []kvwatch.Held[*cachedSession]) {
-	kvwatch.Reassert(r.watcher, read, held, func(h kvwatch.Held[*cachedSession], revision uint64) {
-		r.mu.Lock()
-		r.cache.Put(r.watcher, read.Epoch, h.Key, h.Value, revision)
-		r.unlockAndNotify()
-	})
+	r.reassertion.Write(r.watcher, read, held,
+		func(stored []byte, h kvwatch.Held[*cachedSession]) bool {
+			return registeredSince(stored, h.Value.entry.UpdatedAt)
+		},
+		func(h kvwatch.Held[*cachedSession], revision uint64) {
+			r.mu.Lock()
+			defer r.unlockAndNotify()
+			r.cache.Put(r.watcher, read.Epoch, h.Key, h.Value, revision)
+		})
+}
+
+// registeredSince reports whether stored, a registration record, was made at updatedAt or later,
+// by the stamp every registration carries (SessionEntry.UpdatedAt).
+func registeredSince(stored []byte, updatedAt int64) bool {
+	var row SessionEntry
+	return json.Unmarshal(stored, &row) == nil && row.UpdatedAt >= updatedAt
 }
 
 // putAgainWithin writes entry, encoded as buf, for sessionID again into the bucket the handle
@@ -70,14 +84,11 @@ func (r *SessionRegistry) reassert(read kvwatch.Read, held []kvwatch.Held[*cache
 // deleted stands deleted; its next heartbeat registers it again if it still runs.
 func (r *SessionRegistry) putAgainWithin(ctx context.Context, sessionID string, entry SessionEntry, buf []byte) error {
 	return kvwatch.WriteAgain(ctx, r.watcher, sessionID, buf,
-		func(stored []byte) bool {
-			var row SessionEntry
-			return json.Unmarshal(stored, &row) == nil && row.UpdatedAt >= entry.UpdatedAt
-		},
+		func(stored []byte) bool { return registeredSince(stored, entry.UpdatedAt) },
 		func(epoch, revision uint64) kvwatch.Outcome {
 			r.mu.Lock()
 			defer r.unlockAndNotify()
-			return r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
+			return r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt), record: buf}, revision)
 		},
 		func(read kvwatch.Entry, epoch uint64) {
 			r.mu.Lock()
@@ -87,47 +98,59 @@ func (r *SessionRegistry) putAgainWithin(ctx context.Context, sessionID string, 
 }
 
 // beginRead starts a read of the known-session bucket (kvwatch.Copy.BeginRead); every record stays
-// through it. For the first read of a recreated bucket it answers the records to write back into
-// it (reassert): each record the copy holds but one aged out of KnownSessionRetention, which the
-// bucket's TTL would already have dropped and the sweep drops from the copy, and which a write
-// would give another 30 days. The bucket has no delete path, so no other record ends while the
-// bucket is away.
-func (s *KnownSessions) beginRead(read kvwatch.Read) []kvwatch.Held[KnownSession] {
-	cutoff := s.cutoff()
+// through it. It answers the records the read writes back (kvwatch.Reasserter.Due): for the first
+// read of a recreated bucket, the records this store owns - the ones its own listener last wrote,
+// which name it (KnownSession.MachineID) - expiring one bucket TTL after their write, which the
+// write-back does not write past; for a later read of the same epoch, the records that write-back
+// could not write. The bucket has no delete path, so no record of its own ends while the bucket is
+// away. A record an earlier build wrote names no listener, and none writes it back.
+func (s *KnownSessions) beginRead(read kvwatch.Read) []kvwatch.Held[kvwatch.Kept[KnownSession]] {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.records.BeginRead(read)
-	if !read.Recreated {
-		return nil
-	}
-	var held []kvwatch.Held[KnownSession]
-	for sessionID, record := range s.records.All() {
-		if record.LastSeen < cutoff {
-			continue
+	return s.reassertion.Due(read, func() []kvwatch.Held[kvwatch.Kept[KnownSession]] {
+		if s.owner == "" {
+			return nil
 		}
-		buf, err := json.Marshal(record)
-		if err != nil {
-			continue
+		cutoff := s.cutoff()
+		var held []kvwatch.Held[kvwatch.Kept[KnownSession]]
+		for sessionID, kept := range s.records.All() {
+			// A record past the retention is one the store answers as none and its sweep
+			// drops: it is not written back to live a retention again.
+			if kept.Value.MachineID != s.owner || len(kept.Record) == 0 || kept.Value.LastSeen < cutoff {
+				continue
+			}
+			held = append(held, kvwatch.HeldFrom(sessionID, kept, read.MaxAge))
 		}
-		held = append(held, kvwatch.Held[KnownSession]{Key: sessionID, Record: buf, Value: record})
-	}
-	return held
+		return held
+	})
 }
 
 // reassert writes held, the records beginRead answered for read, into the recreated bucket
-// (kvwatch.Reassert), each only where that bucket holds nothing for its key, and stores each one it
-// took in the copy at read's epoch, so the read's sweep keeps it. It runs in the read's BeginRead
-// with s.mu released.
-func (s *KnownSessions) reassert(read kvwatch.Read, held []kvwatch.Held[KnownSession]) {
+// (kvwatch.Reasserter.Write): where the bucket holds nothing for the key, and over a record last
+// written before the held one (LastSeen), never over a later write. It stores each record the
+// bucket took in the copy at read's epoch, so the read's sweep keeps it. It runs in the read's
+// BeginRead with s.mu released.
+func (s *KnownSessions) reassert(read kvwatch.Read, held []kvwatch.Held[kvwatch.Kept[KnownSession]]) {
 	watcher := s.watch()
 	if watcher == nil {
 		return
 	}
-	kvwatch.Reassert(watcher, read, held, func(h kvwatch.Held[KnownSession], revision uint64) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.records.Put(watcher, read.Epoch, h.Key, h.Value, revision)
-	})
+	s.reassertion.Write(watcher, read, held,
+		func(stored []byte, h kvwatch.Held[kvwatch.Kept[KnownSession]]) bool {
+			return seenSince(stored, h.Value.Value.LastSeen)
+		},
+		func(h kvwatch.Held[kvwatch.Kept[KnownSession]], revision uint64) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.records.Put(watcher, read.Epoch, h.Key, h.Value, revision)
+		})
+}
+
+// seenSince reports whether stored, a known-session record, was written at lastSeen or later.
+func seenSince(stored []byte, lastSeen int64) bool {
+	var record KnownSession
+	return json.Unmarshal(stored, &record) == nil && record.LastSeen >= lastSeen
 }
 
 // writeAgainWithin writes record, encoded as buf, again into the bucket watcher's handle reaches
@@ -136,15 +159,13 @@ func (s *KnownSessions) reassert(read kvwatch.Read, held []kvwatch.Held[KnownSes
 // read, and an older one - the record the copy held, written back by the read that found the new
 // bucket - is written over.
 func (s *KnownSessions) writeAgainWithin(ctx context.Context, watcher *kvwatch.Watcher, record KnownSession, buf []byte) error {
+	written := s.now()
 	return kvwatch.WriteAgain(ctx, watcher, record.SessionID, buf,
-		func(stored []byte) bool {
-			var held KnownSession
-			return json.Unmarshal(stored, &held) == nil && held.LastSeen >= record.LastSeen
-		},
+		func(stored []byte) bool { return seenSince(stored, record.LastSeen) },
 		func(epoch, revision uint64) kvwatch.Outcome {
 			s.mu.Lock()
 			defer s.mu.Unlock()
-			return s.records.Put(watcher, epoch, record.SessionID, record, revision)
+			return s.records.Put(watcher, epoch, record.SessionID, kvwatch.Kept[KnownSession]{Value: record, Record: buf, Written: written}, revision)
 		},
 		func(read kvwatch.Entry, epoch uint64) {
 			s.mu.Lock()

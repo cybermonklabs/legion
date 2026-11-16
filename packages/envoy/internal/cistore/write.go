@@ -109,6 +109,7 @@ func (s *Store) write(ctx context.Context, identity State, observations int, mut
 		if rev != 0 && st.Hash() != beforeHash && st.Generation == generation {
 			bumpGeneration(&st)
 		}
+		st.Writer = s.owner
 		buf, err := encodeRecord(&st)
 		if err != nil {
 			return err
@@ -132,6 +133,7 @@ func (s *Store) write(ctx context.Context, identity State, observations int, mut
 			}
 			st = stored
 			st.Overflowed = true
+			st.Writer = s.owner
 			if buf, err = encodeRecord(&st); err != nil {
 				return err
 			}

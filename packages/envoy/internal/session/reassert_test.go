@@ -70,7 +70,7 @@ func newReassertRig(t *testing.T, cache func(*SessionRegistry) kvwatch.Cache) *r
 	t.Helper()
 	client := setupNATS(t)
 	now := &clock{}
-	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now))
+	r, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(time.Minute), WithSessionClock(now.Now), WithSessionOwner("m1"))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
@@ -149,7 +149,7 @@ func reassertLines(t *testing.T, logs *logtest.Buffer) []map[string]any {
 		if err := json.Unmarshal(scanner.Bytes(), &line); err != nil {
 			t.Fatalf("decode log line %q: %v", scanner.Text(), err)
 		}
-		if msg, _ := line["msg"].(string); strings.Contains(msg, "re-asserted what it held") {
+		if msg, _ := line["msg"].(string); strings.Contains(msg, "re-asserted what it owned") {
 			lines = append(lines, line)
 		}
 	}
@@ -174,8 +174,10 @@ func (rig *reassertRig) refreshUntilAcked(t *testing.T, sessionID, title string)
 // new bucket writes back what the copy held, the registration among it, so the new bucket holds it
 // once that read has completed: the session is in the bucket, not only in this listener's copy.
 //
-// A row the copy holds for a gone session is left out (beginRead): the reaper would delete it. The
-// re-assert logs one line, with what it held and wrote.
+// Only this listener's own rows are written back: a row the copy holds for a gone session is left
+// out (beginRead), since the reaper would delete it, and so is a live row registered through
+// another listener (MachineID m2), which is that listener's to write back. The write-back logs one
+// line, with what it held and wrote.
 //
 // At main the new bucket holds no record of the session, and the completed read removes it from
 // the copy too. The control below runs the same schedule with the write-back left out.
@@ -185,7 +187,8 @@ func TestARegistrationOnlyTheDeletedBucketAckedIsInTheNewBucketAfterTheReassert(
 		t.Fatalf("register ses_target: %v", err)
 	}
 	putRaw(t, rig.delayed.KeyValue, "ses_gone", SessionEntry{MachineID: "m1", Title: "gone", UpdatedAt: rig.now.Now().Add(-2 * GoneHorizon).UnixMilli()})
-	waitFor(t, 5*time.Second, func() bool { _, state := rig.r.Lookup("ses_gone"); return state == Gone && rig.r.CacheSize() == 2 })
+	putRaw(t, rig.delayed.KeyValue, "ses_elsewhere", SessionEntry{MachineID: "m2", Title: "elsewhere", UpdatedAt: rig.now.Now().UnixMilli()})
+	waitFor(t, 5*time.Second, func() bool { _, state := rig.r.Lookup("ses_gone"); return state == Gone && rig.r.CacheSize() == 3 })
 	rig.now.advance(time.Second)
 
 	held, done := rig.refreshUntilAcked(t, "ses_target", "refreshed")
@@ -207,6 +210,9 @@ func TestARegistrationOnlyTheDeletedBucketAckedIsInTheNewBucketAfterTheReassert(
 	}
 	if _, ok := stored(t, recreated, "ses_gone"); ok {
 		t.Fatal("the new bucket holds ses_gone, a gone session's row the reaper would delete")
+	}
+	if _, ok := stored(t, recreated, "ses_elsewhere"); ok {
+		t.Fatal("the new bucket holds ses_elsewhere, which another listener registered and owns")
 	}
 	lines := reassertLines(t, rig.logs)
 	if len(lines) != 1 {
@@ -351,7 +357,7 @@ func TestARecreatedKnownSessionBucketGetsBackTheRecordsTheCopyHeld(t *testing.T)
 	client := setupNATS(t)
 	now := &clock{}
 	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now.Now),
-		withKnownSessionWatch(kvwatch.WithStreamProbeInterval(0)))
+		WithKnownSessionOwner("m1"), withKnownSessionWatch(kvwatch.WithStreamProbeInterval(0)))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}

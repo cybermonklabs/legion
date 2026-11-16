@@ -93,6 +93,10 @@ type KnownSession struct {
 	// LastSeen is when the record was last written, in unix milliseconds, as
 	// SessionEntry.UpdatedAt is.
 	LastSeen int64 `json:"last_seen"`
+	// MachineID is the listener that last wrote the record (WithKnownSessionOwner), which owns
+	// it: a read of a recreated bucket on that listener writes it back (knownCache.BeginRead).
+	// Empty on a record an earlier build wrote, which no listener owns until one writes it again.
+	MachineID string `json:"machine_id,omitempty"`
 }
 
 type KnownSessionsOption func(*knownSessionsOpts)
@@ -110,6 +114,8 @@ type knownSessionsOpts struct {
 	// (withKnownSessionWatch, export_test.go): a clock to move past the stale bound, or a short
 	// scan idle timeout. No deployment sets it.
 	watch []kvwatch.Option
+	// owner is WithKnownSessionOwner's listener.
+	owner string
 }
 
 // WithKnownSessionReplicas sets the copies the bucket is created with, as the deployment's replica
@@ -132,6 +138,13 @@ func WithKnownSessionLogger(log *slog.Logger) KnownSessionsOption {
 // throttle with it. The cache watcher's stale bound is measured on its own clock (kvwatch.WithNow).
 func WithKnownSessionClock(now func() time.Time) KnownSessionsOption {
 	return func(o *knownSessionsOpts) { o.now = now }
+}
+
+// WithKnownSessionOwner names the listener this store writes for, its ENVOY_MACHINE_ID: every
+// record it writes carries it (KnownSession.MachineID), and a read of a recreated bucket writes
+// back the records that name it (knownCache.BeginRead). A store with no owner owns no record.
+func WithKnownSessionOwner(machineID string) KnownSessionsOption {
+	return func(o *knownSessionsOpts) { o.owner = machineID }
 }
 
 // KnownSessions is a cache-backed view of the envoy_known_sessions bucket: every session that
@@ -168,10 +181,16 @@ type KnownSessions struct {
 
 	// mu guards records and topics, which are kept in step: every record the copy stores or
 	// removes for the bucket's sake is indexed or unindexed through its rows (newKnownSessions),
-	// and the sweep removes from both.
+	// and the sweep removes from both. Each entry keeps its record byte for byte
+	// (kvwatch.Kept), which a read of a recreated bucket writes back.
 	mu      sync.RWMutex
-	records kvwatch.Copy[KnownSession]
+	records kvwatch.Copy[kvwatch.Kept[KnownSession]]
 	topics  *store.TopicMatcher
+	// owner is the listener this store writes for (WithKnownSessionOwner), and reassertion
+	// what its write-back into a recreated bucket left to write, which only the cache's hooks
+	// touch.
+	owner       string
+	reassertion kvwatch.Reasserter[kvwatch.Kept[KnownSession]]
 
 	// openMu guards conn, watcher, asked and covered. The watcher is installed when the bucket
 	// opens, which is at OpenKnownSessions for a listener whose user may open it and at a later
@@ -226,25 +245,26 @@ func newKnownSessions(conn *nats.Conn, opts knownSessionsOpts) *KnownSessions {
 		retryMax:     opts.retryMax,
 		watchOptions: opts.watch,
 		topics:       store.NewTopicMatcher(),
+		owner:        opts.owner,
 		conn:         conn,
 		wake:         make(chan struct{}, 1),
 		stopped:      make(chan struct{}),
 	}
-	s.records = kvwatch.NewCopy(kvwatch.Rows[KnownSession]{
+	s.records = kvwatch.NewCopy(kvwatch.Rows[kvwatch.Kept[KnownSession]]{
 		Decode:  decodeKnownSession,
-		Stored:  func(key string, record KnownSession) { s.topics.Set(key, record.Topics) },
-		Removed: func(key string, _ KnownSession) { s.topics.Remove(key) },
+		Stored:  func(key string, kept kvwatch.Kept[KnownSession]) { s.topics.Set(key, kept.Value.Topics) },
+		Removed: func(key string, _ kvwatch.Kept[KnownSession]) { s.topics.Remove(key) },
 	})
 	return s
 }
 
-// decodeKnownSession is the record a put of the bucket leaves in the copy.
-func decodeKnownSession(entry kvwatch.Entry) (KnownSession, bool, error) {
+// decodeKnownSession is the record a put of the bucket leaves in the copy, kept byte for byte.
+func decodeKnownSession(entry kvwatch.Entry) (kvwatch.Kept[KnownSession], bool, error) {
 	var record KnownSession
 	if err := json.Unmarshal(entry.Value, &record); err != nil {
-		return KnownSession{}, false, err
+		return kvwatch.Kept[KnownSession]{}, false, err
 	}
-	return record, true, nil
+	return kvwatch.KeptEntry(entry, record), true, nil
 }
 
 // OpenKnownSessions opens the envoy_known_sessions bucket, creating it with a 30-day TTL
@@ -653,11 +673,11 @@ func (s *KnownSessions) cached(sessionID string) (KnownSession, bool) {
 	cutoff := s.cutoff()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	record, ok := s.records.Get(sessionID)
-	if !ok || record.LastSeen < cutoff {
+	kept, ok := s.records.Get(sessionID)
+	if !ok || kept.Value.LastSeen < cutoff {
 		return KnownSession{}, false
 	}
-	return record, true
+	return kept.Value, true
 }
 
 // MatchEach calls visit with each record whose topics match topic (routing.Match's rules), once
@@ -680,8 +700,8 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	s.topics.Match(topic, func(key string) {
-		if record, ok := s.records.Get(key); ok && record.LastSeen >= cutoff {
-			visit(record)
+		if kept, ok := s.records.Get(key); ok && kept.Value.LastSeen >= cutoff {
+			visit(kept.Value)
 		}
 	})
 }
@@ -718,6 +738,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	}
 	now := s.now()
 	record.LastSeen = now.UnixMilli()
+	record.MachineID = s.owner
 	buf, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -755,7 +776,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	// write of the key. A write through a handle on a bucket since recreated is dropped there, and
 	// is written again into the bucket the handle reaches now (writeAgainWithin).
 	s.mu.Lock()
-	outcome := s.records.Put(watcher, epoch, record.SessionID, record, revision)
+	outcome := s.records.Put(watcher, epoch, record.SessionID, kvwatch.Kept[KnownSession]{Value: record, Record: buf, Written: now}, revision)
 	s.mu.Unlock()
 	if outcome == kvwatch.Dropped {
 		return s.writeAgainWithin(ctx, watcher, record, buf)
@@ -899,14 +920,12 @@ func (s *KnownSessions) cutoff() int64 {
 // type's, not the store's methods, so nothing but the watcher calls them.
 type knownCache struct{ s *KnownSessions }
 
-// BeginRead starts a read of the bucket (beginRead). The first read of a recreated bucket then
-// writes back the records the copy held that the new bucket should hold (reassert), before the
-// read can complete and sweep them, with s.mu released.
+// BeginRead starts a read of the bucket (beginRead), and writes back what that read is due to write
+// (reassert): for the first read of a recreated bucket the records this store owns, and for a later
+// read of that epoch what the first could not write, before the read can complete and sweep them,
+// with s.mu released.
 func (c knownCache) BeginRead(read kvwatch.Read) {
-	held := c.s.beginRead(read)
-	if read.Recreated {
-		c.s.reassert(read, held)
-	}
+	c.s.reassert(read, c.s.beginRead(read))
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could
@@ -951,8 +970,8 @@ func (s *KnownSessions) sweep() {
 	cutoff := s.cutoff()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for key, record := range s.records.All() {
-		if record.LastSeen < cutoff {
+	for key, kept := range s.records.All() {
+		if kept.Value.LastSeen < cutoff {
 			s.records.Remove(key)
 			s.topics.Remove(key)
 		}
