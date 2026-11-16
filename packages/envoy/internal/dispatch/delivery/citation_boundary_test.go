@@ -206,6 +206,11 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // for every match and the comma body costs many times the space one; a reader that reads a
 // bounded run pays the same for both.
 //
+// The two bodies are timed in turn, three times each, and each keeps its quickest: the machine's
+// load only ever adds to a time, and in turn it reaches both bodies over the same stretch of the
+// run, where all three runs of one body and then all three of the other put whatever the load did
+// between them into the ratio.
+//
 // Measured in this pod at this head, best of three each: 5.83 ms and 5.05 ms, a ratio under one.
 // The same bodies against the walk this change replaced (ebb65528's reader): 5.74 ms and
 // 134.77 ms, a ratio of 23. The bound below is 8, which no linear reader approaches and no
@@ -216,18 +221,15 @@ func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	prose := strings.Repeat("a", 65536)
 	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
 	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
-	best := func(body string) time.Duration {
-		var quickest time.Duration
-		for attempt := 0; attempt < 3; attempt++ {
-			started := time.Now()
-			citedIssues(repo, body)
-			if took := time.Since(started); quickest == 0 || took < quickest {
-				quickest = took
-			}
-		}
-		return quickest
+	timed := func(body string) time.Duration {
+		started := time.Now()
+		citedIssues(repo, body)
+		return time.Since(started)
 	}
-	space, comma := best(bySpace), best(byComma)
+	space, comma := timed(bySpace), timed(byComma)
+	for range 2 {
+		space, comma = min(space, timed(bySpace)), min(comma, timed(byComma))
+	}
 	if comma > 8*space {
 		t.Errorf("citing %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space)
 	}
