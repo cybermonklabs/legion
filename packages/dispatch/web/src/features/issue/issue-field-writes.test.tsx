@@ -870,9 +870,6 @@ async function pickAndReload(picks: readonly string[], pressedAgo: number) {
   return after;
 }
 
-/** `pickAndReload` of two picks, P0 and then P3. */
-const pickTwiceAndReload = (pressedAgo: number) => pickAndReload(["0", "3"], pressedAgo);
-
 test("picks kept across a reload are sent again within five minutes, in the order they were made, and show from the first answer after it", async () => {
   const resent = Promise.withResolvers<void>();
   const patchIssue = answerIssuePatches()
@@ -882,7 +879,7 @@ test("picks kept across a reload are sent again within five minutes, in the orde
       return stores(key, input);
     });
   try {
-    const after = await pickTwiceAndReload(0);
+    const after = await pickAndReload(["0", "3"], 0);
     // The page after the reload holds nothing yet: the first read of the issue to answer, which
     // Dispatch composed before it had either pick, has the newest pick laid over it.
     const reads = dispatchReads();
@@ -907,7 +904,7 @@ test("picks kept across a reload for more than five minutes are not sent again, 
     .mockImplementation(stores);
   let indicator: RenderResult | undefined;
   try {
-    const after = await pickTwiceAndReload(KEPT_SEND_RESUME_MS + 1_000);
+    const after = await pickAndReload(["0", "3"], KEPT_SEND_RESUME_MS + 1_000);
     indicator = renderIn(after, <PendingWritesIndicator />);
     const shown = await screen.findByTestId("pending-writes");
     expect(shown).toHaveTextContent("CORE-1 set to P0");
@@ -954,7 +951,7 @@ test("picks kept across a reload and refused put back the priority of Dispatch's
     });
   let surfaces: RenderResult | undefined;
   try {
-    const after = await pickTwiceAndReload(0);
+    const after = await pickAndReload(["0", "3"], 0);
     // The page after the reload draws the issue, its project's list and the Inbox: its first
     // answers carry P1, the priority Dispatch held before either pick.
     const reads = dispatchReads();
@@ -1406,11 +1403,12 @@ test("a read that answers after the pick landed with the value from before it do
 });
 
 // A read held at a landing that the page then cancels (`cancelQueries`, as a board's drop, the
-// Inbox's writes and a components save do) is given up: its answer never lands, so its hold ends
-// with it, and the list keeps the landed value. The watch of the client's picks lives as long as
-// the client does, so the list's next read, sent after the landing, answers for itself: with P3,
-// which another person set since.
-test("a read held at a landing that is then cancelled lets go of its hold: the list keeps the landed value, and its next read answers for itself", async () => {
+// Inbox's writes and a components save do) is given up: its answer never lands, and the list
+// keeps the landed value. The watch of the client's picks lives as long as the client does, so
+// the list's next read, sent after the landing, answers for itself: with P3, which another person
+// set since. No row sees the cancel end the read's hold: the next read ends it as it is sent, so
+// the hold's end at the cancel (`givenUp` in `answered`) frees its memory and nothing more.
+test("a read held at a landing that is then cancelled leaves the list at the landed value, and its next read answers for itself", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const client = signedIn();

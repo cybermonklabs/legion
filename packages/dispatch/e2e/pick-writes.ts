@@ -17,7 +17,7 @@ import { expect, type Locator, type Page, type Request } from "@playwright/test"
 import type { IssueField } from "../web/src/features/issue/issue-field-writes";
 import { getIssueEvents } from "./api";
 import { drawer, peekTrigger } from "./inbox-drawer";
-import { keptWrites } from "./keyed-writes";
+import { keptWrites, pendingWrites } from "./keyed-writes";
 
 /** At least how long `holdIssuePatches` holds each save: long enough for a row to make its next
  *  pick, reload, or have a read sent and answered while the save is out, as a slow network would. */
@@ -104,9 +104,10 @@ export interface RefusedPatches {
  * Answers every save of `issueKey` the page makes as Dispatch answers one its database is too busy
  * to take, `503 DATABASE_BUSY` with `Retry-After: 1`, until the row lets the saves through
  * (`admit`), then passes each on to the server. The write store makes a save so answered again
- * under its key once that second is out (`busyRetryAfterMs`, `web/src/features/writes/
- * keyed-write.ts`), so a pick is still being tried when it passes `SEND_DEADLINE_MS` and goes
- * late, and its first attempt after `admit` reaches the server about a second later.
+ * under its key once that second is out (`busyRetryAfterMs`, `web/src/api/client.ts`, a wait
+ * `web/src/features/writes/keyed-write.ts` keeps), so a pick is still being tried when it passes
+ * `SEND_DEADLINE_MS` and goes late, and its first attempt after `admit` reaches the server about
+ * a second later.
  */
 export async function refuseIssuePatches(page: Page, issueKey: string): Promise<RefusedPatches> {
   const refused: number[] = [];
@@ -137,8 +138,7 @@ export async function refuseIssuePatches(page: Page, issueKey: string): Promise<
  *  and still being tried, and gone once it ends (`web/src/features/writes/
  *  PendingWritesIndicator.tsx`). */
 export function stopTrying(page: Page, label: string): Locator {
-  return page
-    .getByRole("region", { name: "Pending changes" })
+  return pendingWrites(page)
     .getByRole("listitem")
     .filter({ hasText: label })
     .getByRole("button", { name: "Stop trying", exact: true });

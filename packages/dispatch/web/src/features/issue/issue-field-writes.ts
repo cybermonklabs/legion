@@ -160,6 +160,11 @@ function pickedFields({ assignee, priority, repo, resolved_repo }: IssueFields):
   return { assignee, priority, repo, resolved_repo };
 }
 
+/** The person each of `rows`, the Inbox rows of one issue, waits on, by the row's id. */
+function waitingOf(rows: readonly InboxRow[]): ReadonlyMap<string, string | undefined> {
+  return new Map(rows.map((each) => [each.id, each.waiting_on_person]));
+}
+
 /** How `rows`, the Inbox rows of one issue, show the fields of the issue a pick changes: as the
  *  first of them carries them - its priority, and its issue's assignee where it names its issue -
  *  with the person each of them waits on. Undefined where there is no row. */
@@ -169,7 +174,7 @@ function inboxLook(rows: readonly InboxRow[]): Look | undefined {
   const { issue, priority } = row;
   return {
     fields: issue === undefined ? { priority } : { assignee: issue.assignee, priority },
-    waiting: new Map(rows.map((each) => [each.id, each.waiting_on_person])),
+    waiting: waitingOf(rows),
   };
 }
 
@@ -196,7 +201,7 @@ function lookOf(
   }
   const look = issueLook(field, issue);
   if (field !== "assignee") return look;
-  return { ...look, waiting: new Map(rows.map((each) => [each.id, each.waiting_on_person])) };
+  return { ...look, waiting: waitingOf(rows) };
 }
 
 /** The row of `issueKey` in the first list of issues the client holds that has one. */
@@ -799,7 +804,8 @@ function answered(client: QueryClient, watch: Watch, event: QueryCacheNotifyEven
   if (fetched && drawn) keepAnswer(client, query);
   if (watch.held.size === 0 && !watching(watch)) return;
   // A read cancelled (`cancelQueries`) is given up: the query takes back the state it had before
-  // the read, idle, and the read's answer never lands.
+  // the read, idle, and the read's answer never lands. Its hold ends here only to free it: the
+  // query's next read, sent from idle, ends it as it is sent (`fetch`), before any answer lands.
   const givenUp = action.type === "setState" && query.state.fetchStatus === "idle";
   const held = watch.held.get(query.queryHash);
   if (

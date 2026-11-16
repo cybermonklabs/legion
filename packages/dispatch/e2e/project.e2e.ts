@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
 import { nextFrames } from "./frames";
+import { pendingWrites } from "./keyed-writes";
 import {
   detailRead,
   expectReadWhileHeld,
@@ -457,15 +458,14 @@ test("picker keeps a pick on screen: a reload shows the newest pick from its fir
 // A pick Dispatch keeps answering `503` passes the write store's deadline and is still tried,
 // under its key, each second: it is late, and the shell offers Stop trying for it. A late pick is
 // as live as one within its deadline, so a read of the issue answered while it is late, carrying
-// P3, never reaches the badge, and the pick is stored once a save of it gets through.
-// SLOW(>=2s): the pick waits out the write store's 30 s deadline (`SEND_DEADLINE_MS`) on the wall
-// clock before the row reads it late.
+// P3, never reaches the badge, and the pick is stored once a save of it gets through. The page's
+// own clock runs the pick past its deadline (`SEND_DEADLINE_MS`), and runs on at the wall clock's
+// pace around that jump.
+// SLOW(>=2s): the store waits a second between attempts (`Retry-After: 1`), and the row waits for
+// one attempt after the read is answered and for the first one after `admit`.
 test("a pick that is late and still being tried stays on screen over a read, and is stored once a save gets through", async ({
   browser,
 }) => {
-  // The deadline is waited out on the wall clock, on top of the suite's budget for the rest of
-  // the row.
-  test.setTimeout(SEND_DEADLINE_MS + 60_000);
   const key = await issueAtP3();
   const seq = await lastEventSeq(key);
   const renamed = "Priority under a late save, renamed while it is late";
@@ -477,16 +477,20 @@ test("a pick that is late and still being tried stays on screen over a read, and
     const reads = logReads(page, detailRead(key));
     const picker = pagePicker(page, `Priority of ${key}`);
     const late = stopTrying(page, `${key} set to P1`);
+    await page.clock.install();
     await page.goto(`/issues/${key}`);
     await expect(picker).toHaveValue("3");
 
     await picker.selectOption("1");
     await expect.poll(() => shown.values.at(-1)).toBe("1");
     const fromPick = shown.values.length - 1;
+    // The store has tried the pick, so its deadline runs: the page's clock jumps past it.
+    await expect.poll(() => busy.refused.length, "the store tried the pick").toBeGreaterThan(0);
+    await page.clock.fastForward(SEND_DEADLINE_MS + 1);
     await expect(
       late,
       "the shell offers Stop trying once the pick is past its deadline"
-    ).toBeVisible({ timeout: SEND_DEADLINE_MS + 15_000 });
+    ).toBeVisible();
     // A rename of the issue, straight to the server: its live event has the page read the issue
     // again, and the answer, carrying P3, lands while the pick is late.
     const renamedAt = Date.now();
@@ -509,7 +513,7 @@ test("a pick that is late and still being tried stays on screen over a read, and
 
     busy.admit();
     await expect.poll(async () => (await getIssue(key)).priority).toBe(1);
-    await expect(page.getByRole("region", { name: "Pending changes" })).toHaveCount(0);
+    await expect(pendingWrites(page)).toHaveCount(0);
     expect(
       await storedValues(key, "priority", seq),
       `the server stored the pick once; the route passed on ${JSON.stringify(busy.forwarded)}`
