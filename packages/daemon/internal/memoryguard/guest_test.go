@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -68,10 +69,16 @@ func (c *fakeCgroup) path(name string) string { return filepath.Join(c.dir, name
 // setKills writes the kill counter: v2's memory.events, v1's memory.oom_control.
 func (c *fakeCgroup) setKills(n uint64) {
 	if c.version == cgroupV2 {
-		c.write("memory.events", fmt.Sprintf("low 0\nhigh 0\nmax 41\noom 3\noom_kill %d\noom_group_kill 0\n", n))
+		c.setEvents(41, n)
 		return
 	}
 	c.write("memory.oom_control", fmt.Sprintf("oom_kill_disable 0\nunder_oom 0\noom_kill %d\n", n))
+}
+
+// setEvents writes v2's memory.events: atMax times the cgroup reached its limit (max) and kills
+// kills (oom_kill).
+func (c *fakeCgroup) setEvents(atMax, kills uint64) {
+	c.write("memory.events", fmt.Sprintf("low 0\nhigh 0\nmax %d\noom 3\noom_kill %d\noom_group_kill 0\n", atMax, kills))
 }
 
 func (c *fakeCgroup) setUsage(n uint64) {
@@ -267,7 +274,9 @@ type guestHarness struct {
 }
 
 // newGuestHarness is a watch of proc and the cgroup at cgroupDir whose classifier answers classes
-// for every scan.
+// for every scan. Its watch of the file-modified event never fires (neverModified), so each kill
+// a test writes is read at the scan the test lets the watch take; a test of the wake sets the
+// kernel's watch (watchModified) before run.
 func newGuestHarness(t *testing.T, proc, cgroupDir string, classes map[int]Class) *guestHarness {
 	t.Helper()
 	h := &guestHarness{t: t, clock: newFakeClock(), log: &lineLog{}}
@@ -280,7 +289,25 @@ func newGuestHarness(t *testing.T, proc, cgroupDir string, classes map[int]Class
 			h.kills = append(h.kills, k)
 		},
 	})
+	h.g.watchModified = neverModified
 	return h
+}
+
+// neverModified is a watch of a file-modified event that starts and never fires: the tests write
+// memory.events in place (setKills), which the kernel's watch would wake the watch at, between two
+// of the scans they let the watch take one at a time.
+func neverModified(string) (<-chan struct{}, func(), error) {
+	return make(chan struct{}), func() {}, nil
+}
+
+// awaitKills waits in real time, 5 seconds at most, for the sink to have taken n kills, and
+// answers them: a wake names a kill on the watch's goroutine, at no scan the test lets it take.
+func (h *guestHarness) awaitKills(n int) []Kill {
+	h.t.Helper()
+	if !testwait.Holds(testwait.Bounded(h.t, 5*time.Second, time.Second), time.Millisecond, func() bool { return len(h.reported()) >= n }) {
+		h.t.Fatalf("the sink took %+v in 5 seconds, want %d kills; the log:\n%s", h.reported(), n, h.logged())
+	}
+	return h.reported()
 }
 
 // run starts the watch and returns once its start and its first scan are done.
@@ -1119,6 +1146,420 @@ func TestGuestReportsAKillOfARolesProtectedProcessWithTheProtectedCause(t *testi
 	}
 }
 
+// requireInotify skips a test of the wake where the kernel's file-modified event is not read: it
+// is Linux's inotify (watchModified).
+func requireInotify(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("the file-modified event the wake waits on is Linux's inotify")
+	}
+}
+
+// relayedWatch hands the watch the kernel's file-modified events (watchModified) through out,
+// which holds none, and tells taken each time the watch takes one: a test so knows that a wake has
+// begun, and, once the watch takes a value the test sends itself, that the wake has ended.
+type relayedWatch struct {
+	out   chan struct{}
+	taken chan struct{}
+}
+
+// relayWatch sets h's watch of the file-modified event to the kernel's, relayed.
+func relayWatch(h *guestHarness) *relayedWatch {
+	r := &relayedWatch{out: make(chan struct{}), taken: make(chan struct{}, 16)}
+	h.g.watchModified = func(path string) (<-chan struct{}, func(), error) {
+		modified, stop, err := watchModified(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		stopped := make(chan struct{})
+		go func() {
+			for range modified {
+				select {
+				case r.out <- struct{}{}:
+				case <-stopped:
+					return
+				}
+				select {
+				case r.taken <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		return r.out, func() { close(stopped); stop() }, nil
+	}
+	return r
+}
+
+// awaitWake returns once the watch has taken a file-modified event, and so begun a wake.
+func (r *relayedWatch) awaitWake(t *testing.T) {
+	t.Helper()
+	select {
+	case <-r.taken:
+	case <-time.After(testwait.Bounded(t, 5*time.Second, time.Second)):
+		t.Fatal("the watch took no file-modified event in 5 seconds")
+	}
+}
+
+// awaitWakeEnd returns once the watch has taken a value the test sends itself, which it takes
+// only once the wake it is in has ended.
+func (r *relayedWatch) awaitWakeEnd(t *testing.T) {
+	t.Helper()
+	select {
+	case r.out <- struct{}{}:
+	case <-time.After(testwait.Bounded(t, 5*time.Second, time.Second)):
+		t.Fatal("the watch's wake did not end in 5 seconds")
+	}
+}
+
+// On cgroup v2 the watch wakes at the kernel's file-modified event of memory.events, which the
+// write of a rise of oom_kill raises, and names the process that shows the kernel's kill at once,
+// with no scan after the rise: the tester's python3, still in /proc with SIGKILL pending while its
+// memory is freed, has the guard's own line, and the tester one Kill, at the wake's time, with its
+// size at the scan before and the cgroup's memory at the rise.
+func TestGuestWakesAtTheFileModifiedEventOfMemoryEventsAndNamesTheKillWithNoScan(t *testing.T) {
+	requireInotify(t)
+	const python = 920
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9200, "python3", 1400, 1500*mib))
+	classes[python] = Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+	h.g.watchModified = watchModified
+	h.run()
+	if off := h.lines("wake off"); len(off) != 0 {
+		t.Fatalf("the watch logged %q, want it to wake on memory.events", off)
+	}
+
+	cgroup.setUsage(3900 * mib)
+	cgroup.setStat(fakeStat{anon: 3500 * mib, file: 400 * mib, inactiveFile: 120 * mib, shmem: 32 * mib})
+	reaped(pod, python, 9200, "python3")
+	cgroup.setKills(1)
+	kills := h.awaitKills(1)
+	wantKill := Kill{
+		LauncherMemoryKill: shimwire.LauncherMemoryKill{
+			Guard: h.g.ID(), Sequence: 1, PID: python, Executable: "python3", SizeBytes: 1500 * mib,
+			ReadingBytes: 3500 * mib, CounterBytes: 3900 * mib, LimitBytes: podLimit, At: h.clock.Now(), Cause: shimwire.MemoryKillCauseKernel,
+		},
+		Role: "tester",
+	}
+	if len(kills) != 1 || kills[0] != wantKill {
+		t.Fatalf("the sink took %+v, want the one kill %+v; the log:\n%s", kills, wantKill, h.logged())
+	}
+	want := fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d executable="python3"`,
+		python, 1500*mib, 3500*mib, 3900*mib, 32*mib, podLimit)
+	if got := h.log.with("ended "); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the kill lines are %q, want %q; the log:\n%s", got, want, h.logged())
+	}
+}
+
+// The kernel raises the counter just before it sends the SIGKILL, so the wake's first pass can
+// read the victim before the signal. While the kill is pending the wake reads again after each
+// pause of its schedule, 1, 2, 4, 8 and 16 ms. Where the tester's python3 shows the kill from the
+// second read again on, the wake names it then, after pauses of 1 and 2 ms, with no scan after the
+// rise. Where no process shows it, the wake pauses for the whole schedule and writes no unnamed
+// line: the scan does, once the wait has passed.
+func TestGuestWakeReadsAgainAfterShortPausesForAKillTheKernelHasNotSentYet(t *testing.T) {
+	requireInotify(t)
+	for _, tc := range []struct {
+		name  string
+		shows bool
+	}{
+		{"python3 shows the kill from the second read again on", true},
+		{"no process shows the kill", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const python = 921
+			pod := newFakePod(t)
+			pod.setSelfScore(0)
+			classes := guestTree(pod, 0)
+			pod.addGuest(command(python, 9210, "python3", 1400, 1500*mib))
+			classes[python] = Class{Role: "tester"}
+			cgroup := newFakeCgroup(t, cgroupV2)
+			h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+			h.g.watchModified = watchModified
+			// python3's status once the kernel's SIGKILL reaches it, which the second pause puts in
+			// place of its status.
+			status := filepath.Join(pod.proc, strconv.Itoa(python), "status")
+			killed := status + ".killed"
+			pod.writeWhole(killed, fmt.Sprintf(
+				"Name:\tpython3\nState:\tR (running)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n",
+				python, python))
+			var mu sync.Mutex
+			var pauses []time.Duration
+			var sent error
+			h.g.pause = func(d time.Duration) {
+				mu.Lock()
+				defer mu.Unlock()
+				pauses = append(pauses, d)
+				if tc.shows && len(pauses) == 2 {
+					sent = os.Rename(killed, status)
+				}
+			}
+			paused := func() []time.Duration {
+				mu.Lock()
+				defer mu.Unlock()
+				return slices.Clone(pauses)
+			}
+			h.run()
+
+			cgroup.setKills(1)
+			if tc.shows {
+				kills := h.awaitKills(1)
+				if len(kills) != 1 || kills[0].PID != python || kills[0].Role != "tester" || kills[0].SizeBytes != 1500*mib ||
+					!kills[0].At.Equal(h.clock.Now()) {
+					t.Fatalf("the sink took %+v, want the one kill of the tester's python3 (%d) at the wake; the log:\n%s", kills, python, h.logged())
+				}
+				mu.Lock()
+				err := sent
+				mu.Unlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, want := paused(), []time.Duration{time.Millisecond, 2 * time.Millisecond}; !slices.Equal(got, want) {
+					t.Fatalf("the wake paused %v, want %v: it names python3 at the read after the second pause", got, want)
+				}
+				return
+			}
+			schedule := []time.Duration{time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond, 16 * time.Millisecond}
+			if !testwait.Holds(testwait.Bounded(t, 5*time.Second, time.Second), time.Millisecond, func() bool { return len(paused()) >= len(schedule) }) {
+				t.Fatalf("the wake paused %v in 5 seconds, want %v; the log:\n%s", paused(), schedule, h.logged())
+			}
+			if got := paused()[:len(schedule)]; !slices.Equal(got, schedule) {
+				t.Fatalf("the wake paused %v, want %v", got, schedule)
+			}
+			h.tick()
+			if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+				t.Fatalf("the watch logged %q before the wait passed, want no unnamed line yet", unnamed)
+			}
+			h.tickAfter(guestKillWait)
+			if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+				t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
+			}
+			if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+				t.Fatalf("the watch wrote %q and reported %+v, want neither", ended, kills)
+			}
+		})
+	}
+}
+
+// A file-modified event of memory.events with no rise of oom_kill, as the kernel raises when the
+// cgroup reaches its limit (max) and reclaims with no kill, costs the read of the counter alone.
+// The wake scans no process, so the reviewer's rg, started since the last scan, keeps its score
+// until the next scan raises it. It reads no process's status, so the tester's python3, which a
+// role's own kill -9 has left in /proc with SIGKILL pending, is not marked as having shown a kill.
+// It pauses for no read again, and it names nothing.
+func TestGuestWakeWithNoRiseReadsTheCounterAlone(t *testing.T) {
+	requireInotify(t)
+	const python, rg = 922, 923
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9220, "python3", 1400, 1500*mib))
+	classes[python], classes[rg] = Class{Role: "tester"}, Class{Role: "reviewer"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+	relay := relayWatch(h)
+	var mu sync.Mutex
+	var pauses []time.Duration
+	h.g.pause = func(d time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		pauses = append(pauses, d)
+	}
+	h.run()
+
+	pod.addGuest(guestProcess{fakeProcess: fakeProcess{pid: rg, ppid: 1, start: 9230, args: []string{"rg"}, resident: 50 * mib}, score: 1300})
+	showKill(pod, python, "python3", false)
+	cgroup.setEvents(42, 0)
+	relay.awaitWake(t)
+	relay.awaitWakeEnd(t)
+	if got := pod.score(rg); got != 0 {
+		t.Fatalf("rg (pid %d) reads oom_score_adj %d after the wake, want 0: a wake scans no process", rg, got)
+	}
+	mu.Lock()
+	paused := slices.Clone(pauses)
+	mu.Unlock()
+	if len(paused) != 0 {
+		t.Fatalf("the wake paused %v with no kill pending, want no pause", paused)
+	}
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v with no rise, want neither; the log:\n%s", ended, kills, h.logged())
+	}
+
+	h.tick()
+	if got := pod.score(rg); got != raisedScore {
+		t.Fatalf("rg (pid %d) reads oom_score_adj %d after the next scan, want %d", rg, got, raisedScore)
+	}
+	if w := h.g.known[procKey{pid: python, start: 9220}]; w == nil || w.sigkill {
+		t.Fatalf("the watch holds python3 as %+v, want it held and not marked: no pass read its status", w)
+	}
+	if ended, unnamed := h.log.with("ended "), h.lines("killed unnamed"); len(ended) != 0 || len(unnamed) != 0 {
+		t.Fatalf("the watch wrote %q and %q with no rise, want neither", ended, unnamed)
+	}
+}
+
+// On cgroup v1, whose memory.oom_control raises no file-modified event, the watch starts no watch
+// of one: it logs why once, and names a kill at the next scan, as ever.
+func TestGuestOnCgroupV1LogsItsWakeOffOnceAndNamesTheKillAtTheNextScan(t *testing.T) {
+	const python = 924
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(python, 9240, "python3", 1400, 1500*mib))
+	classes[python] = Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV1)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+	var mu sync.Mutex
+	var watched []string
+	h.g.watchModified = func(path string) (<-chan struct{}, func(), error) {
+		mu.Lock()
+		watched = append(watched, path)
+		mu.Unlock()
+		return watchModified(path)
+	}
+	h.run()
+
+	reaped(pod, python, 9240, "python3")
+	cgroup.setKills(1)
+	h.tick()
+	at := h.clock.Now()
+	if kills := h.reported(); len(kills) != 1 || kills[0].PID != python || kills[0].Role != "tester" || !kills[0].At.Equal(at) {
+		t.Fatalf("the sink took %+v, want the one kill of the tester's python3 (%d) at the scan; the log:\n%s", kills, python, h.logged())
+	}
+	h.tick()
+	h.tickAfter(guestKillWait)
+	want := "launcher: guest memory: wake off reason=cgroup v1's memory.oom_control raises no file-modified event"
+	if got := h.lines("wake off"); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the watch logged %q, want %q once; the log:\n%s", got, want, h.logged())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(watched) != 0 {
+		t.Fatalf("the watch watched %q on cgroup v1, want no watch", watched)
+	}
+}
+
+// On cgroup v2, where the watch of the file-modified event cannot start, or starts and later ends,
+// the watch logs why once and goes on with its scans, which name a kill at the next scan as ever.
+func TestGuestWhoseWakeCannotStartOrEndsLogsWhyOnceAndNamesTheKillAtTheNextScan(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		start  error
+		reason func(c *fakeCgroup) string
+	}{
+		{"the watch cannot start", &os.SyscallError{Syscall: "inotify_init1", Err: syscall.EMFILE},
+			func(*fakeCgroup) string { return "inotify_init1: too many open files" }},
+		{"the watch ends", nil,
+			func(c *fakeCgroup) string { return "the watch of " + c.path("memory.events") + " ended" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const python = 925
+			pod := newFakePod(t)
+			pod.setSelfScore(0)
+			classes := guestTree(pod, 0)
+			pod.addGuest(command(python, 9250, "python3", 1400, 1500*mib))
+			classes[python] = Class{Role: "tester"}
+			cgroup := newFakeCgroup(t, cgroupV2)
+			h := newGuestHarness(t, pod.proc, cgroup.dir, classes)
+			modified := make(chan struct{})
+			h.g.watchModified = func(string) (<-chan struct{}, func(), error) {
+				if tc.start != nil {
+					return nil, nil, tc.start
+				}
+				return modified, func() {}, nil
+			}
+			h.run()
+			if tc.start == nil {
+				if off := h.lines("wake off"); len(off) != 0 {
+					t.Fatalf("the watch logged %q while its watch ran", off)
+				}
+				close(modified)
+				if !testwait.Holds(testwait.Bounded(t, 5*time.Second, time.Second), time.Millisecond, func() bool { return len(h.lines("wake off")) > 0 }) {
+					t.Fatalf("the watch logged no wake off line in 5 seconds after its watch ended; the log:\n%s", h.logged())
+				}
+			}
+
+			reaped(pod, python, 9250, "python3")
+			cgroup.setKills(1)
+			h.tick()
+			if kills := h.reported(); len(kills) != 1 || kills[0].PID != python || kills[0].Role != "tester" {
+				t.Fatalf("the sink took %+v, want the one kill of the tester's python3 (%d); the log:\n%s", kills, python, h.logged())
+			}
+			h.tick()
+			h.tickAfter(guestKillWait)
+			want := "launcher: guest memory: wake off reason=" + tc.reason(cgroup)
+			if got := h.lines("wake off"); !slices.Equal(got, []string{want}) {
+				t.Fatalf("the watch logged %q, want %q once; the log:\n%s", got, want, h.logged())
+			}
+		})
+	}
+}
+
+// The kernel's watch of a file's file-modified event takes a value at a write of the file in
+// place, as a cgroup's counter changes, and ends, its channel closed, once the file goes away and
+// once it is stopped. A file that is not there has no watch.
+func TestWatchModifiedTakesAWriteInPlaceAndEndsWhenTheFileGoesOrItIsStopped(t *testing.T) {
+	requireInotify(t)
+	bound := testwait.Bounded(t, 5*time.Second, time.Second)
+	closed := func(modified <-chan struct{}, after string) {
+		t.Helper()
+		deadline := time.After(bound)
+		for {
+			select {
+			case _, open := <-modified:
+				if !open {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("the watch's channel is open 5 seconds after %s", after)
+			}
+		}
+	}
+	dir := t.TempDir()
+	events := filepath.Join(dir, "memory.events")
+	if err := os.WriteFile(events, []byte("oom_kill 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modified, stop, err := watchModified(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	if err := os.WriteFile(events, []byte("oom_kill 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case _, open := <-modified:
+		if !open {
+			t.Fatal("the watch ended at a write of its file")
+		}
+	case <-time.After(bound):
+		t.Fatal("the watch took no value in 5 seconds after a write of its file")
+	}
+	if err := os.Remove(events); err != nil {
+		t.Fatal(err)
+	}
+	closed(modified, "its file went away")
+
+	other := filepath.Join(dir, "memory.oom.group")
+	if err := os.WriteFile(other, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modified, stopOther, err := watchModified(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopOther()
+	closed(modified, "it was stopped")
+
+	missing := filepath.Join(dir, "missing")
+	if _, _, err := watchModified(missing); err == nil || err.Error() != "inotify_add_watch "+missing+": no such file or directory" {
+		t.Fatalf("the watch of %s answers %v, want inotify_add_watch's no such file or directory", missing, err)
+	}
+}
+
 // Each hour from its start the watch writes one line: the hour's last usage and working set, their
 // highs and when they were read, the last memory.stat figures and limit, the hour's kills, unnamed
 // kills, score writes and failed score writes. The working set is the usage less the inactive file
@@ -1275,7 +1716,8 @@ func TestGuestLogsAFailedScoreWriteOnceAndCountsIt(t *testing.T) {
 // process that reads /proc: v2's single hierarchy, at the path under the mount's root, or at the
 // mount point itself in a cgroup namespace, a path with an escaped space undone; and v1's memory
 // controller where a hybrid host mounts both. Its start line names the version, the directory,
-// v2's memory.oom.group and the starting score, and with a counter it reads, no other line.
+// v2's memory.oom.group and the starting score, and with a counter it reads, no other line but,
+// on v1, whose memory.oom_control raises no file-modified event, the line of its wake off.
 func TestGuestFindsItsCgroupByItsOwnCgroupFileAndMountTable(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1319,9 +1761,12 @@ func TestGuestFindsItsCgroupByItsOwnCgroupFileAndMountTable(t *testing.T) {
 				cgroup.write("memory.oom.group", "1\n")
 			}
 			h := newGuestHarness(t, pod.proc, "", nil).run()
-			want := fmt.Sprintf("launcher: guest memory: start cgroup=%s dir=%s oom_group=%s score=0", tc.version, dir, tc.oomGroup)
-			if got := h.log.all(); !slices.Equal(got, []string{want}) {
-				t.Fatalf("the watch logged %q, want its start line %q alone", got, want)
+			want := []string{fmt.Sprintf("launcher: guest memory: start cgroup=%s dir=%s oom_group=%s score=0", tc.version, dir, tc.oomGroup)}
+			if tc.version == cgroupV1 {
+				want = append(want, "launcher: guest memory: wake off reason=cgroup v1's memory.oom_control raises no file-modified event")
+			}
+			if got := h.log.all(); !slices.Equal(got, want) {
+				t.Fatalf("the watch logged %q, want %q", got, want)
 			}
 		})
 	}

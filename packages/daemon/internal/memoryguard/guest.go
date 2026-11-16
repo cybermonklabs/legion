@@ -46,20 +46,29 @@ import (
 // status has SIGKILL pending, and whose stat, read after that status, has the start time the
 // watch holds, shows the kill (attribute). It is marked, and never read again while the watch
 // holds it, so a victim still freeing its memory, or a zombie, is evidence for one kill alone. The
-// processes newly marked at a scan are named, in pid order, one kill each, where they are no more
-// than the kills pending; where they are more, the evidence does not say which of them the kernel
-// killed, and none of them is named. A process is never named because it left /proc, or because
-// it ranked first before the rise: a command that exits by itself in that second leaves as well.
-// The kills no process has been named for by guestKillWait after the burst's latest rise have one
-// unnamed line, with the pod's memory at its first rise, and no role is told of them. The rule has
-// two limits. A process that something other than the kernel has sent SIGKILL, and that is still
-// in /proc while kills are pending and the kernel's own victim has already left it, is named in
-// the victim's place; in a microVM pod only a role's own kill -9 or a timeout tool sends it. And a
-// victim that its parent reaps before the next scan shows nothing, and its kill has the unnamed
-// line. Each killed process has the guard's own endedLine, with its resident size at the scan
-// before the one that showed its kill and the pod's memory at the burst's first rise, and, in a
-// role, a Kill to the sink with the watch's id and its own sequence from 1, as the guard's kills
-// have (writeKill), and Cause shimwire.MemoryKillCauseKernel, or
+// processes newly marked at one pass are named, in pid order, one kill each, where they are no
+// more than the kills pending; where they are more, the evidence does not say which of them the
+// kernel killed, and none of them is named. A process is never named because it left /proc, or
+// because it ranked first before the rise: a command that exits by itself in that second leaves as
+// well. The kernel shows that evidence only while it reaps the victim, 51 to 85 ms for a 1.5 GiB
+// process its parent reaps at once, and a scan every guestInterval alone named such a victim 3
+// times of 5. So on cgroup v2 the watch also wakes on the file-modified event of memory.events,
+// which the kernel raises whenever one of its counters changes (wake): it reads the counter at
+// once, and while kills are pending it runs the evidence pass at once over the processes the last
+// scan left it, and again after each pause of wakeRereads while kills stay pending, since the
+// kernel raises the counter just before it sends the SIGKILL. The scan stays the fallback, and it
+// is the only pass where the cgroup is v1, whose memory.oom_control raises no such event, or where
+// the watch of the event cannot start or ends, each of which has one line. The kills no process
+// has been named for by guestKillWait after the burst's latest rise have one unnamed line, with
+// the pod's memory at its first rise, and no role is told of them. The rule has two limits. A
+// process that something other than the kernel has sent SIGKILL, and that is still in /proc while
+// kills are pending and the kernel's own victim has already left it, is named in the victim's
+// place; in a microVM pod only a role's own kill -9 or a timeout tool sends it. And a victim that
+// its parent reaps before a pass reads it shows nothing, and its kill has the unnamed line. Each
+// killed process has the guard's own endedLine, with its resident size at the last scan before the
+// pass that showed its kill and the pod's memory at the burst's first rise, and, in a role, a Kill
+// to the sink with the watch's id and its own sequence from 1, as the guard's kills have
+// (writeKill), and Cause shimwire.MemoryKillCauseKernel, or
 // shimwire.MemoryKillCauseKernelProtected for a process the classifier protected: one of the
 // processes that run the role's session, whose end the role is told of in its own words. A process
 // of no role, protected or not, has the line alone.
@@ -87,6 +96,13 @@ type Guest struct {
 	// writeScore writes a process's oom_score_adj: writeScoreFile, as NewGuest sets it. The tests
 	// set one that fails as a write to a process that is not dumpable does.
 	writeScore func(path string, value []byte) error
+	// watchModified starts the watch of a file's file-modified event that the watch wakes on
+	// (wake): watchModified, as NewGuest sets it. The tests set one that never fires, since they
+	// write memory.events in place between two scans, and a test of the wake sets this one back.
+	watchModified func(path string) (modified <-chan struct{}, stop func(), err error)
+	// pause waits between two evidence passes of a wake (wakeRereads): time.Sleep, as NewGuest
+	// sets it. A test of the wake sets one that records each pause.
+	pause func(time.Duration)
 
 	// The rest is Run's own.
 	cgroup cgroupFiles
@@ -102,6 +118,10 @@ type Guest struct {
 	// countsKills is a kill counter the watch read at start, and kills its last reading.
 	countsKills bool
 	kills       uint64
+	// modified is the file-modified event of the counter's memory.events, which wakes the watch
+	// (wake), nil where the watch has none, and unwatch ends the watch of it (stopWake).
+	modified <-chan struct{}
+	unwatch  func()
 	// known is every process the watch has read and not let go, by pid and start time: each one
 	// the last scan held, and each one whose stat that scan could not read. The evidence pass runs
 	// before this scan's snapshot lets go of what this scan no longer holds, so a process that has
@@ -188,9 +208,9 @@ type watched struct {
 	sigkill    bool
 }
 
-// killMemory is the pod's memory as a kill line writes it, read at the scan that saw the rise:
-// memory.stat's anonymous memory (reading), the usage (counter), memory.stat's shared memory and
-// the limit (reportLimit).
+// killMemory is the pod's memory as a kill line writes it, read at the scan or the wake that saw
+// the rise: memory.stat's anonymous memory (reading), the usage (counter), memory.stat's shared
+// memory and the limit (reportLimit).
 type killMemory struct{ reading, counter, shmem, limit uint64 }
 
 // guestWindow is one hour of the watch's readings and counts, from its start onward: each hour's
@@ -217,6 +237,8 @@ func NewGuest(cfg GuestConfig) *Guest {
 		self:          os.Getpid(),
 		pageSize:      uint64(os.Getpagesize()),
 		writeScore:    writeScoreFile,
+		watchModified: watchModified,
+		pause:         time.Sleep,
 		scoreFailures: map[int]uint64{},
 		known:         map[procKey]*watched{},
 		small:         make([]byte, 64),
@@ -244,22 +266,36 @@ func roleKills(sink func(Kill)) func(Kill) {
 // report's sequence it names one kill, so a report sent twice is applied once.
 func (g *Guest) ID() string { return g.id }
 
-// Run watches until ctx ends: one start line, then a scan every guestInterval.
+// Run watches until ctx ends: one start line, then a scan every guestInterval, and between two
+// scans a wake at each file-modified event of memory.events (wake), on this one goroutine, so the
+// wake and the scan share the watch's state with no lock. A wake does not move the next scan, which
+// comes guestInterval after the last one however many events come between. Where the event's watch
+// ends, the watch has one line and goes on with the scan alone.
 func (g *Guest) Run(ctx context.Context) {
 	defer g.cgroup.close()
 	g.begin()
+	defer g.stopWake()
+	scan := g.clock.After(guestInterval)
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-g.clock.After(guestInterval):
+		case _, open := <-g.modified:
+			if !open {
+				g.stopWake()
+				g.logf(guestWakeOffLine, fmt.Sprintf("the watch of %s ended", g.cgroup.kills.path))
+				continue
+			}
+			g.wake(g.clock.Now())
+		case <-scan:
+			g.tick(g.clock.Now())
+			scan = g.clock.After(guestInterval)
 		}
-		g.tick(g.clock.Now())
 	}
 }
 
 // begin finds the cgroup and the starting score, logs the start line and what the watch cannot
-// do, and takes the first scan.
+// do, starts the wake where it reads a kill counter (watchKills), and takes the first scan.
 func (g *Guest) begin() {
 	now := g.clock.Now()
 	version, dir, cgroupErr := g.findCgroup()
@@ -279,6 +315,7 @@ func (g *Guest) begin() {
 		g.logf(guestKillsUnnamedLine, cgroupErr)
 	} else {
 		g.countsKills = true
+		g.watchKills()
 	}
 	if startErr != nil {
 		g.logf(guestOffLine, fmt.Sprintf("no readable starting score in %s: %v", scorePath, startErr))
@@ -287,6 +324,30 @@ func (g *Guest) begin() {
 	}
 	g.window = guestWindow{start: now, end: now.Add(time.Hour)}
 	g.tick(now)
+}
+
+// watchKills starts the watch of the file-modified event of v2's memory.events, which wakes the
+// watch (wake), or logs why there is none: v1's memory.oom_control raises no such event, and a
+// watch that cannot start says why. Without it the scan alone reads the counter.
+func (g *Guest) watchKills() {
+	if g.cgroup.version != cgroupV2 {
+		g.logf(guestWakeOffLine, "cgroup v1's memory.oom_control raises no file-modified event")
+		return
+	}
+	modified, stop, err := g.watchModified(g.cgroup.kills.path)
+	if err != nil {
+		g.logf(guestWakeOffLine, err)
+		return
+	}
+	g.modified, g.unwatch = modified, stop
+}
+
+// stopWake ends the watch of the file-modified event, if one runs, and the wakes with it.
+func (g *Guest) stopWake() {
+	if g.unwatch != nil {
+		g.unwatch()
+	}
+	g.modified, g.unwatch = nil, nil
 }
 
 // findCgroup is the cgroup the config names, its version by the files it holds, or the one the
@@ -319,6 +380,39 @@ func (g *Guest) tick(now time.Time) {
 		g.attribute(now)
 	}
 	g.snapshot(t, classes)
+}
+
+// wakeRereads are the pauses of a wake before each of its evidence passes after the first, about
+// 31 ms in all: the kernel raises the counter just before it sends the SIGKILL a victim shows
+// (__oom_kill_process), so the pass at the event's instant can read the victim before the signal.
+var wakeRereads = [...]time.Duration{
+	1 * time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond, 16 * time.Millisecond,
+}
+
+// wake is the kill pass at a file-modified event of memory.events (Run). It reads the counter
+// alone (count): most such events are another of the file's counters changing, max or high, and
+// they cost that one read. It scans no process and takes no snapshot. Where kills are then
+// pending, it runs the evidence pass at once over the processes the last scan left known
+// (attribute), and again after each pause of wakeRereads while kills stay pending; where the watch
+// reads no /proc, it writes them unnamed at once, as a scan does. The pass writes the kills no
+// process showed unnamed only once the wait has passed, so a wake writes none before then.
+func (g *Guest) wake(now time.Time) {
+	g.count(now)
+	if g.pending == 0 {
+		return
+	}
+	if !g.watching {
+		g.unnamed(g.pending)
+		return
+	}
+	g.attribute(now)
+	for _, d := range wakeRereads {
+		if g.pending == 0 {
+			return
+		}
+		g.pause(d)
+		g.attribute(now)
+	}
 }
 
 // look scans the processes and sets their scores, or answers nil where the watch reads no /proc: a
@@ -388,7 +482,7 @@ func (g *Guest) score(t *Table, classes map[int]Class) {
 }
 
 // count reads the kill counter. A rise that finds no kill pending starts a burst, the wait for the
-// processes it killed to show the kill, as of this scan (riseAt, riseMemory); a rise while kills
+// processes it killed to show the kill, as of this read (riseAt, riseMemory); a rise while kills
 // are pending adds its own to the burst, which keeps the first rise's time and memory, and moves
 // the wait's end to guestKillWait after it. A read that fails sees no rise; a counter below the
 // last reading, a cgroup made anew, is the next rise's base.
@@ -538,11 +632,11 @@ func (g *Guest) unnamed(n uint64) {
 	g.logf(guestKilledUnnamedLine, n, g.kills, m.reading, m.counter, m.shmem, m.limit)
 }
 
-// memoryNow is the pod's memory for the kill lines of a rise: memory.stat and the limit read
-// again, and this scan's usage.
+// memoryNow is the pod's memory for the kill lines of a rise: memory.stat, the limit and the usage
+// read again, so a wake, which reads no usage of its own, writes the usage at the rise.
 func (g *Guest) memoryNow() killMemory {
 	g.stat, g.limit = g.cgroup.readStat(), g.cgroup.readLimit()
-	return killMemory{reading: g.stat.anon.n, counter: g.usage.n, shmem: g.stat.shmem.n, limit: g.reportLimit()}
+	return killMemory{reading: g.stat.anon.n, counter: g.cgroup.readUsage().n, shmem: g.stat.shmem.n, limit: g.reportLimit()}
 }
 
 // reportLimit is the limit a kill line and its report carry: the cgroup's, or where it sets none,

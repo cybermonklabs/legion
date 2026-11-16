@@ -3463,7 +3463,16 @@ The kernel raises the counter and then sends SIGKILL to the process it stops (`_
 So while kills are pending, at each scan the watch reads the `status` of each process it holds, and of each one that the last scan held, a process that has just become a zombie among them.
 It then reads that process's start time again, so that a pid back with another start time, which is another process, is not taken for it.
 Each process that shows SIGKILL pending is named for one kill, with its reads from the scan before, and it is never named for a later kill while it stays in `/proc`.
-Where more processes show SIGKILL pending at one scan than there are kills left to name, the sign does not say which one the kernel stopped, and the watch names none of them.
+Where more processes show SIGKILL pending at one read than there are kills left to name, the sign does not say which one the kernel stopped, and the watch names none of them.
+
+The kernel shows that sign only until the process's parent reaps it.
+For a 1.5 GiB process whose parent reaps it at once, the sign showed for 51 to 85 ms, and the 100 ms scan alone named such a process 3 times of 5.
+So on cgroup v2 the watch also wakes on the file-modified event of `memory.events`, which the kernel raises whenever one of the file's counters changes.
+At that event the watch reads the counter at once, and where the counter did not rise and no kill is pending, as when the cgroup only reached its limit, it reads nothing more.
+While kills are pending, it then reads at once the `status` of each process that the last scan left it, and again after pauses of 1, 2, 4, 8 and 16 ms, about 30 ms in all, until no kill is left to name, because the kernel raises the counter just before it sends SIGKILL.
+The wake does not scan `/proc` or set any score.
+The 100 ms scan stays as the fallback.
+It is the only path on cgroup v1, whose `memory.oom_control` raises no such event, and where the watch of the event cannot start or ends (`wake off`, "The lines", below).
 
 The watch never names a process because it left `/proc`, or because it had the highest `oom_score` before the rise.
 A command that exits by itself in the same moment leaves `/proc` too, and in a burst of kills the kernel's next victim is often the process that grew after the first kill.
@@ -3478,7 +3487,7 @@ When the wait ends, the kills that the watch named no process for have one `kill
 - A process that something other than the kernel has sent SIGKILL is named in place of the kernel's victim, where it is still in `/proc` while kills are pending and the victim has already left.
   In a microVM pod the memory guard is off, so only a role's own `kill -9`, or a timeout tool that sends SIGKILL, can send it.
 
-- A victim whose parent reaps it before the next scan, 100 ms at most, shows no sign, and its kill has the `killed unnamed` line.
+- A victim whose parent reaps it before the watch reads its `status`, at the wake or at the next scan, shows no sign, and its kill has the `killed unnamed` line.
   How many kills a microVM pod's watch names, and how many it leaves unnamed, has not been measured.
   dispatch://INFRA-3735's canary is the first pod where it can be read.
 
@@ -3504,7 +3513,7 @@ The guest watch fills it from what it read:
 - `limit` is the cgroup's limit, `memory.max` (`memory.limit_in_bytes` on v1).
   Where the cgroup sets no limit, it is the `MemTotal` of the guest's `/proc/meminfo`, the microVM's own memory, which then bounds the pod.
 
-The pod's four figures are the ones the watch read at the scan that saw the first rise of the counter in the wait, and a figure it could not read is 0.
+The pod's four figures are the ones the watch read when it saw the first rise of the counter in the wait, at a scan or at a wake, and a figure it could not read is 0.
 
 **The report and the note.**
 For a process of a role, the watch also gives a report to that role's part of the launcher, which sends it as the guard's report is sent ("The report and the note" in [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), with these differences:
@@ -3564,6 +3573,7 @@ The watch's own lines start `launcher: guest memory: ` in the `roles` container'
 launcher: guest memory: start cgroup=<v1|v2|-> dir=<directory|-> oom_group=<n|-> score=<n|->
 launcher: guest memory: off reason=<why>
 launcher: guest memory: kills unnamed reason=<why>
+launcher: guest memory: wake off reason=<why>
 launcher: guest memory: killed unnamed count=<k> oom_kill=<total> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes>
 launcher: guest memory: score failed pid=<pid> start_time=<ticks> score=<n> reason=<why>
 launcher: guest memory: hour start=<time> end=<time> current=<bytes> current_high=<bytes> current_high_at=<time> working_set=<bytes> working_set_high=<bytes> working_set_high_at=<time> anon=<bytes> file=<bytes> inactive_file=<bytes> shmem=<bytes> limit=<bytes> oom_kills=<n> unnamed=<n> raised=<n> unraised=<n>
@@ -3580,8 +3590,12 @@ From then on the watch raises nothing and names nothing, writes each rise of the
 `kills unnamed` comes once, at the start, where the watch reads no kill counter, such as where it finds no memory cgroup or a kill file with no `oom_kill` line.
 The watch then names no kill, and it still raises scores and writes its hourly line, which do not need the counter.
 
+`wake off` comes once where the watch reads a kill counter but does not wake on the file-modified event of `memory.events`.
+Its reason is `cgroup v1's memory.oom_control raises no file-modified event` on cgroup v1, the error where the watch of the event cannot start, or `the watch of <dir>/memory.events ended` where that watch ends.
+The watch then reads the counter at its 100 ms scan alone, so it names a stopped process only where that process still shows SIGKILL pending at a scan.
+
 `killed unnamed` comes when a wait ends with kills that no process was named for, and at each rise of the counter once the watch is off.
-It is the kill line with the process unknown: no process showed SIGKILL pending, or more showed it at one scan than there were kills left to name.
+It is the kill line with the process unknown: no process showed SIGKILL pending, or more showed it at one read than there were kills left to name.
 It gives the count of those kills, the counter's total, and the pod's four figures as an `ended` line gives them, read at the first rise of the wait, and it tells no role.
 
 `score failed` comes once for each process a score write failed on, with that process's start time in clock ticks since boot and the score the write would have set.
