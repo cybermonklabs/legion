@@ -371,21 +371,24 @@ type LauncherVolumeMissing struct {
 // of readings the daemon's notice bounds count against, so what raised it is what a reader needs
 // to tell three reports apart: one of a volume that has just filled, one of a volume that fell
 // below its low mark and has filled again, and one whose episode began at a reading five points
-// or more above the reading the first reported sweep of the episode before it had started from.
+// or more above the reading the episode before it began from.
 const (
 	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
 	VolumeEpisodeFirst = "first"
 	// VolumeEpisodeRecovery is a reading that fell below the low mark after having been at or
 	// above the high mark.
 	VolumeEpisodeRecovery = "recovery"
-	// VolumeEpisodeRise is a reading five percentage points or more above the reading at the
-	// start of the first sweep that reported in the episode the reading ends, and no other
-	// growth: that reading stands still while the volume climbs, so a volume that keeps filling
-	// raises a new episode each time it reaches five points above the start of the first
-	// reported sweep of the episode it is in, and a smaller climb from that reading raises
-	// nothing. The daemon sends a report of an episode raised this way without holding it for
-	// the pod's hour, and holds it to the three of its episode like any other
-	// (internal/workflow's volumeNoticeHeldBy).
+	// VolumeEpisodeRise is a reading five percentage points or more above the anchor of the
+	// episode it ends, and no other growth. The anchor is the reading the episode began from:
+	// the start of its first reported sweep, for the first episode and for one a recovery
+	// raised, or the reading that raised it, for one a rise raised. It stands still for the rest
+	// of the episode, so a volume that keeps filling raises a new episode at each five points it
+	// climbs above the anchor of the episode it is in, and a smaller climb from the anchor raises
+	// nothing. An anchor above 95% can never be passed, since a reading is at most 100%, so an
+	// episode that began above 95% is told at most three times and no rise follows it. The
+	// daemon sends a report of an episode raised this way without holding it for the pod's
+	// hour, and holds it to the three of its episode like any other (internal/workflow's
+	// volumeNoticeHeldBy).
 	VolumeEpisodeRise = "rise"
 )
 

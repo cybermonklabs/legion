@@ -247,9 +247,10 @@ func TestANewTrimmerStartsTheCountOver(t *testing.T) {
 
 // A report whose episode a rise raised is sent however recent the pod's last notice was. The
 // launcher raises an episode that way at a reading five points or more above the reading the
-// first reported sweep of the episode before it started from, and at no smaller climb from that
-// reading (internal/launcher's episodeOf); what this case holds is what the daemon does with the
-// word.
+// episode before it began from — the start of that episode's first reported sweep, or the
+// reading that raised it where a rise did — and at no smaller climb from that reading
+// (internal/launcher's episodeOf), so an episode that began above 95% is followed by no rise, a
+// reading being at most 100%; what this case holds is what the daemon does with the word.
 func TestARiseRaisedSweepIsToldAtOnce(t *testing.T) {
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())

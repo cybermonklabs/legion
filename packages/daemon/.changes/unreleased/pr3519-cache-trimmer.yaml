@@ -18,13 +18,15 @@ body: |-
   A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
   trimmer that switches itself off after three panics in a row, reach the issue's architect as a
   new `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
-  A report skips the hour, and not the three, where the trimmer raised its episode at a reading
-  five points or more above the reading that the first reported sweep of the episode before it
-  started from. That reading stands still while the volume climbs, so a volume that keeps filling
-  raises a new episode each time it reaches five points above the start of the first reported
-  sweep of the episode it is in; a smaller climb from that reading raises none. The switched-off
-  notice is sent whatever the bounds stand at. A rollback below this release has the operator
-  delete the queued notices first, as docs/kubernetes.md says.
+  A report skips the hour, and not the three, where a rise raised its episode: a reading five
+  points or more above the reading the episode before it began from, which is the start of that
+  episode's first reported sweep or, where a rise raised that episode too, the reading that did.
+  That reading stands still for the rest of the episode, so a volume that keeps filling raises a
+  new episode at each five points it climbs above the reading its episode began from; a smaller
+  climb from that reading raises none. A reading is at most 100%, so an episode that began above
+  95% is told at most three times and no rise follows it. The switched-off notice is sent
+  whatever the bounds stand at. A rollback below this release has the operator delete the queued
+  notices first, as docs/kubernetes.md says.
 
   A `worker-died` notice of the tree architect, and of a held phase, now names the pod's own end
   — `Evicted: The node was low on resource: ephemeral-storage. ...` above all — when the claim's
