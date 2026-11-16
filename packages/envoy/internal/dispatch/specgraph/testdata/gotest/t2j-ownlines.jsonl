@@ -1,0 +1,13 @@
+{"Time":"2026-11-16T17:37:29.704451143Z","Action":"start","Package":"example.com/acme/gotest/ownlines"}
+{"Time":"2026-11-16T17:37:29.725082095Z","Action":"run","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAFailLineOfItselfThenPasses"}
+{"Time":"2026-11-16T17:37:29.725127132Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAFailLineOfItselfThenPasses","Output":"=== RUN   TestPrintsAFailLineOfItselfThenPasses\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:29.725154125Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAFailLineOfItselfThenPasses","Output":"--- FAIL: TestPrintsAFailLineOfItselfThenPasses (0.00s)\n"}
+{"Time":"2026-11-16T17:37:29.725164586Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAFailLineOfItselfThenPasses","Output":"--- PASS: TestPrintsAFailLineOfItselfThenPasses (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:29.725167465Z","Action":"pass","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAFailLineOfItselfThenPasses","Elapsed":0}
+{"Time":"2026-11-16T17:37:29.72517753Z","Action":"run","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAPassLineOfItselfThenFails"}
+{"Time":"2026-11-16T17:37:29.725179802Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAPassLineOfItselfThenFails","Output":"=== RUN   TestPrintsAPassLineOfItselfThenFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:29.725182541Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAPassLineOfItselfThenFails","Output":"--- PASS: TestPrintsAPassLineOfItselfThenFails (0.00s)\n"}
+{"Time":"2026-11-16T17:37:29.725187243Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAPassLineOfItselfThenFails","Output":"--- FAIL: TestPrintsAPassLineOfItselfThenFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:29.725191374Z","Action":"fail","Package":"example.com/acme/gotest/ownlines","Test":"TestPrintsAPassLineOfItselfThenFails","Elapsed":0}
+{"Time":"2026-11-16T17:37:29.725196092Z","Action":"output","Package":"example.com/acme/gotest/ownlines","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T17:37:29.73687055Z","Action":"fail","Package":"example.com/acme/gotest/ownlines","Elapsed":0.032}

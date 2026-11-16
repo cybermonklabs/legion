@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The secrets broker mints a Dispatch token that only reads. `BROKER_EXCHANGE_READ_ACCOUNTS` lists read entries, `<service account>=<service>=<session>`, and a pod of such an account exchanges its projected token for one that holds the OAuth scope `read` alone and the project scope `none`, names that service and that session, and names no person and no project.
+
+  Dispatch serves such a token on the routes its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`, before the route's handler, its sign-in check and its idempotency key. The shared broker-token verifier accepts the token only where a service asks for it, so the Envoy listener answers it `401`.

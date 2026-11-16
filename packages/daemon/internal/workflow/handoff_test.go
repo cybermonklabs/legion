@@ -131,6 +131,57 @@ func TestIgnoredCompletionsAreRefused(t *testing.T) {
 	}
 }
 
+// R2: a worker's completion that arrives while its issue stands at admitted is refused and
+// records nothing, though the daemon started that worker on the issue and its row holds no
+// handoff, which is what records the completion of a worker the issue moved on without
+// (engine's leftItsPhase). Admitted is the architect's own phase (phase.RoleFor) and comes
+// before every phase a worker works, so no worker's phase there is one the issue left, and
+// leftItsPhase records no completion while the issue stands there. The control is the same
+// completion with the issue in implementing, a phase the planner has left, where it is recorded.
+func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		at       phase.Phase
+		recorded bool
+	}{
+		{name: "the issue stands at admitted", at: phase.Admitted},
+		{name: "the control, the issue has moved on to implementing", at: phase.Implementing, recorded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.at, Generation: 1, Status: "in_progress", Rank: "U"})
+			seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 1, ApprovedVersion: new(1)})
+			token := seedPhaseWorker(t, pool, "LEGION-208", claim.RolePlanner, "")
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RolePlanner, Claim: token})
+
+			result, err := intake.ApplyFact(t.Context(), pool, "api", "planner-late", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+				Role: claim.RolePlanner, Claim: token, Commit: "late", HandoffRecord: "plan", HandoffVersion: 2},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			if err != nil {
+				t.Fatalf("ApplyFact: %v", err)
+			}
+			assertPhase(t, pool, tc.at)
+			var rows int
+			if err := pool.QueryRow(t.Context(), "select count(*) from phases where issue = 'LEGION-208' and role = 'planner' and handoff_record <> ''").Scan(&rows); err != nil {
+				t.Fatalf("count the planner's recorded handoff: %v", err)
+			}
+			if !tc.recorded {
+				if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" {
+					t.Fatalf("refusal = %+v, want 409 HANDOFF_NOT_CURRENT_PHASE", result.Refusal)
+				}
+				if rows != 0 {
+					t.Fatalf("the refused completion recorded the planner's handoff on %d rows", rows)
+				}
+				return
+			}
+			if result.Refusal != nil || rows != 1 {
+				t.Fatalf("refusal = %+v and %d planner rows hold the handoff, want the completion recorded on the planner's row", result.Refusal, rows)
+			}
+		})
+	}
+}
+
 // A role's completion of a phase is taken whether it names a commit or not: the planner, the
 // tester and the reviewer send one only when their record names a head, so a taken completion
 // can hold a record and no commit. Such a role has reported its phase. Once the issue has left
