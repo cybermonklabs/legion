@@ -333,10 +333,11 @@ const (
 
 // MaxRequestWaitSeconds is the longest wait GET /v1/requests/{id}?wait= takes, in whole seconds:
 // the broker refuses a longer one 400 REQUEST_WAIT_INPUT, and agent-secrets asks for no longer
-// one, so a client and a broker of one build agree on it. A held read of this length ends well
-// inside the broker's own request deadline (45 s, cmd/broker's requestDeadline) and the
-// agent-secrets client's whole-call timeout (30 s, leasetime.RenewClientTimeout), so neither cuts
-// it short; a client that waits longer asks again.
+// one, so a client and a broker of one build agree on it. A held read of this length must end
+// inside cmd/broker's requestDeadline and the agent-secrets client's whole-call timeout,
+// leasetime.RenewClientTimeout, so neither cuts it short; a test beside each holds that order
+// (TestTheWaitLimitEndsInsideTheRequestDeadline, TestTheWaitLimitEndsInsideTheClientsCallTimeout).
+// A client that waits longer asks again.
 const MaxRequestWaitSeconds = 20
 
 // ClipArgument is arg cut to its first MaxCommandArgumentBytes bytes on a character's boundary:

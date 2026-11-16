@@ -1207,10 +1207,8 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			}
 			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
 			// rounded up so the last read covers the deadline, at most
-			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision (its
-			// requestWaitStep, 500 ms), so the command learns of it at once rather than at its
-			// next poll. It is computed here alone, and the check below compares with what was
-			// sent.
+			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision, so
+			// the command learns of it at once rather than at its next poll.
 			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
 			sent := time.Now()
 			status, _, err := c.GetRequest(ctx, signer, requestID, asked)

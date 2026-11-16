@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -112,6 +113,16 @@ func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 	if err := refusePortZeroPublicURLInProduction("https://broker.invalid", ""); err != nil {
 		t.Fatalf("a real BROKER_PUBLIC_URL: want nil, got %v", err)
+	}
+}
+
+// TestTheWaitLimitEndsInsideTheRequestDeadline: a held read of the longest wait the broker takes
+// (GET /v1/requests/{id}?wait=) ends before requestDeadline ends its request. A deadline that fell
+// to the limit or under it would end every undecided held read as 503 REQUEST_ENDED, which
+// agent-secrets answers with its backoff, so R1's second would become up to ten.
+func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
+	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; limit >= requestDeadline {
+		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under requestDeadline (%s)", limit, requestDeadline)
 	}
 }
 

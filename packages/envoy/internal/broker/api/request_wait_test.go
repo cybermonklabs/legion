@@ -1,19 +1,25 @@
 // request_wait_test.go pins GET /v1/requests/{id}?wait=N: the broker holds a session's read of its
-// own pending request for up to N seconds, 1 to 20, and answers the request's state as soon as it
-// is no longer pending, whichever broker process decided it, or pending once N seconds pass. Any
-// other wait is refused 400 REQUEST_WAIT_INPUT. It is what lets a waiting `agent-secrets NAME --
-// command` learn of a decision within a second of it rather than at its next poll.
+// own pending request for up to N seconds, 1 to record.MaxRequestWaitSeconds, and answers the
+// request's state as soon as it is no longer pending, whichever broker process decided it, or
+// pending once N seconds pass. Any other wait is refused 400 REQUEST_WAIT_INPUT. It is what lets a
+// waiting `agent-secrets NAME -- command` learn of a decision within a second of it rather than at
+// its next poll.
 package api_test
 
 import (
 	"context"
 	"crypto/ecdsa"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // otherBroker is a second broker process on ts's database, as the broker's second replica is: a
@@ -127,12 +133,13 @@ func TestReadRequestWaitEndsPending(t *testing.T) {
 	t.Logf("GET /v1/requests/{id}?wait=2 answered pending after %s", took)
 }
 
-// TestReadRequestWaitRefusesBadInput: a wait that is not a whole number of seconds from 1 to 20
-// is refused 400 REQUEST_WAIT_INPUT, at once, for a request that is pending.
+// TestReadRequestWaitRefusesBadInput: a wait that is not a whole number of seconds from 1 to
+// record.MaxRequestWaitSeconds is refused 400 REQUEST_WAIT_INPUT, at once, for a request that is
+// pending.
 func TestReadRequestWaitRefusesBadInput(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
-	for _, wait := range []string{"21", "x", "0", "-1", "1.5"} {
+	for _, wait := range []string{strconv.Itoa(record.MaxRequestWaitSeconds + 1), "x", "0", "-1", "1.5"} {
 		start := time.Now()
 		status, body := ts.session(t, key, enrollmentID, http.MethodGet, "/v1/requests/"+asked.RequestID+"?wait="+wait, nil)
 		took := time.Since(start)
@@ -209,5 +216,54 @@ func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {
 	}
 	if took >= 5*time.Second {
 		t.Fatalf("GET /v1/requests/{id}?wait=5 answered after %s, want the refusal at the step after the move, not at the wait's end", took)
+	}
+}
+
+// TestReadRequestWaitEndedByItsCallerIsNoFailure: a held read whose caller goes away a second in
+// (a Ctrl-C, a tool's timeout that killed the command, a front door that cut the call) is counted
+// outcome="cancelled" and writes no line, since the broker failed at nothing and nobody reads the
+// answer. It is counted neither as the failed 503 a store fault is nor with the ERROR line one
+// writes.
+func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServer(t)
+	enrollmentID, key, asked := ts.pendingRequest(t)
+	const (
+		cancelled = `outcome="cancelled",code="HTTP_503",caller_class="session"`
+		failed    = `outcome="failed",code="HTTP_503",caller_class="session"`
+	)
+
+	path := "/v1/requests/" + asked.RequestID
+	p, err := proof.Sign(key, enrollmentID, http.MethodGet, ts.URL+path, time.Now())
+	if err != nil {
+		t.Fatalf("proof.Sign: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	read, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+path+"?wait=10", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read.Header.Set("Proof", p)
+	if resp, err := http.DefaultClient.Do(read); err == nil {
+		resp.Body.Close()
+		t.Fatalf("GET /v1/requests/{id}?wait=10 answered %d before its caller went away, want the read held", resp.StatusCode)
+	}
+	// The handler ends once the closed connection cancels its request, and its answer is counted
+	// when it returns, after the caller has already stopped waiting for it.
+	for wait := time.Now().Add(5 * time.Second); ts.answersCounted(t, cancelled) == 0 && time.Now().Before(wait); {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := ts.answersCounted(t, cancelled); n != 1 {
+		t.Fatalf("broker_answers_total{%s} = %d, want 1: the read its caller ended", cancelled, n)
+	}
+	if n := ts.answersCounted(t, failed); n != 0 {
+		t.Errorf("broker_answers_total{%s} = %d, want 0: a caller that went away is no failure", failed, n)
+	}
+	for _, r := range capture.Records() {
+		if strings.Contains(r.Message, "read request") {
+			t.Errorf("the read its caller ended logged %q at %s, want no line", r.Message, r.Level)
+		}
 	}
 }

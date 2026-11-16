@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
@@ -20,21 +21,23 @@ const (
 )
 
 // waitBroker is a fake broker with one request, WAIT_ME's waitRequestID, which turns granted
-// grantAfter after POST /v1/requests made it. With honoursWait it answers a status read as the
-// broker does a GET /v1/requests/{id}?wait=N: held until the request is granted or N seconds
-// pass, whichever is first; without it, it answers at once, as a broker from before the
-// parameter does. It checks every proof as the broker does (proofKey.verify), so a client that
-// signed its query would be refused.
+// grantAfter after its start: the request's creation by POST /v1/requests, or, with
+// afterFirstHold, the moment the first status read it held for its whole wait answers pending.
+// With honoursWait it answers a status read as the broker does a GET /v1/requests/{id}?wait=N:
+// held until the request is granted or N seconds pass, whichever is first; without it, it answers
+// at once, as a broker from before the parameter does. It checks every proof as the broker does
+// (proofKey.verify), so a client that signed its query would be refused.
 type waitBroker struct {
 	*httptest.Server
 	mu        sync.Mutex
 	created   time.Time // when POST /v1/requests made the request
+	grantAt   time.Time // when the request turns granted; zero until afterFirstHold's hold ends
 	released  time.Time // when POST /v1/grants/{id}/values released its value
 	waits     []string  // each status read's wait parameter, "" for none
 	badProofs int
 }
 
-func newWaitBroker(t *testing.T, key *proofKey, honoursWait bool, grantAfter time.Duration) *waitBroker {
+func newWaitBroker(t *testing.T, key *proofKey, honoursWait, afterFirstHold bool, grantAfter time.Duration) *waitBroker {
 	t.Helper()
 	b := &waitBroker{}
 	var publicURL string
@@ -64,6 +67,9 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait bool, grantAfter tim
 		}
 		b.mu.Lock()
 		b.created = time.Now()
+		if !afterFirstHold {
+			b.grantAt = b.created.Add(grantAfter)
+		}
 		b.mu.Unlock()
 		writeJSON(w, map[string]any{
 			"request_id": waitRequestID, "state": "pending", "grant_id": nil, "record_id": "rec-wait",
@@ -77,17 +83,27 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait bool, grantAfter tim
 		wait := r.URL.Query().Get("wait")
 		b.mu.Lock()
 		b.waits = append(b.waits, wait)
-		grantAt := b.created.Add(grantAfter)
+		grantAt := b.grantAt
 		b.mu.Unlock()
 		if seconds, err := strconv.Atoi(wait); honoursWait && err == nil && seconds >= 1 && seconds <= record.MaxRequestWaitSeconds {
-			until := min(time.Until(grantAt), time.Duration(seconds)*time.Second)
+			hold := time.Duration(seconds) * time.Second
+			if !grantAt.IsZero() {
+				hold = min(time.Until(grantAt), hold)
+			}
 			select {
-			case <-time.After(until):
+			case <-time.After(hold):
 			case <-r.Context().Done():
 				return
 			}
 		}
-		writeJSON(w, state(!time.Now().Before(grantAt)))
+		b.mu.Lock()
+		if b.grantAt.IsZero() {
+			// afterFirstHold: this read is the first, and its hold has just ended undecided.
+			b.grantAt = time.Now().Add(grantAfter)
+		}
+		granted := !time.Now().Before(b.grantAt)
+		b.mu.Unlock()
+		writeJSON(w, state(granted))
 	})
 	mux.HandleFunc("POST /v1/grants/grant-wait/values", func(w http.ResponseWriter, r *http.Request) {
 		if !verified(w, r) {
@@ -132,11 +148,11 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey) {
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 	const grantAfter = 3 * time.Second
 	key := newProofKey(t)
-	b := newWaitBroker(t, key, true, grantAfter)
+	b := newWaitBroker(t, key, true, false, grantAfter)
 	runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	lag := b.released.Sub(b.created.Add(grantAfter))
+	lag := b.released.Sub(b.grantAt)
 	if lag >= time.Second {
 		t.Errorf("the grant was released %s after the request was granted, want under 1 s", lag)
 	}
@@ -151,13 +167,49 @@ func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
 	}
 }
 
+// TestExecLearnsOfAGrantAfterAFullHold: R1's usual case, a person who decides after the first
+// held read has run its whole wait. The fake holds that read for all record.MaxRequestWaitSeconds
+// and grants 300 ms after it answers pending; the next read, sent with no sleep, is held until the
+// grant, so the value is released less than a second after it, in 2 status reads. A loop that
+// slept its backoff after every pending answer, a held one too, would read again 2 s later and
+// release 1.7 s after the grant.
+func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
+	key := newProofKey(t)
+	b := newWaitBroker(t, key, true, true, 300*time.Millisecond)
+	runWaiting(t, b, key)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	full := strconv.Itoa(record.MaxRequestWaitSeconds)
+	if len(b.waits) == 0 || b.waits[0] != full {
+		t.Fatalf("status reads asked waits %q, want the first to ask %s, the whole wait", b.waits, full)
+	}
+	lag := b.released.Sub(b.grantAt)
+	if lag >= time.Second {
+		t.Errorf("the grant, 300 ms after the first full hold ended, was released %s after it, want under 1 s", lag)
+	}
+	t.Logf("the grant was released %s after the request was granted, after %d status reads (waits %q)", lag, len(b.waits), b.waits)
+	if len(b.waits) != 2 {
+		t.Errorf("the broker served %d status reads (waits %q), want 2: the full hold, then the read the grant ends", len(b.waits), b.waits)
+	}
+}
+
+// TestTheWaitLimitEndsInsideTheClientsCallTimeout: a held read of the longest wait the broker
+// takes ends before this client's whole-call timeout cuts it (leasetime.RenewClientTimeout). A
+// timeout that fell to the limit or under it would cut every undecided held read, which the exec
+// form reads as a failed read and answers with its backoff, so R1's second would become up to ten.
+func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
+	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; limit >= leasetime.RenewClientTimeout {
+		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under leasetime.RenewClientTimeout (%s)", limit, leasetime.RenewClientTimeout)
+	}
+}
+
 // TestExecBacksOffAgainstABrokerThatIgnoresWait: a broker from before the parameter answers each
 // read at once, pending until 9 s after the request was made. The loop does not read it in a
 // tight loop: an answer that is still pending well before the wait it asked has run out makes it
 // sleep its old backoff, so the child runs after at most 6 reads.
 func TestExecBacksOffAgainstABrokerThatIgnoresWait(t *testing.T) {
 	key := newProofKey(t)
-	b := newWaitBroker(t, key, false, 9*time.Second)
+	b := newWaitBroker(t, key, false, false, 9*time.Second)
 	runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()

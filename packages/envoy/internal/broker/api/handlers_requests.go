@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -402,10 +404,15 @@ const requestWaitStep = 500 * time.Millisecond
 // within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
 // absent or empty one answers at once, as before the parameter.
 //
-// A store that fails is 503 DATABASE_UNAVAILABLE, and a request that ended while the read was
-// held (the caller went away, or the request deadline came) is 503 REQUEST_ENDED: agent-secrets
-// reads both as a failed read and keeps waiting (retryable), where a 500 would end its wait with
-// nothing run while the request stays pending.
+// A store that fails is 503 DATABASE_UNAVAILABLE, which agent-secrets reads as a failed read and
+// waits through (retryable), where a 500 would end its wait with nothing run while the request
+// stays pending. A request that ended while the read was held is 503 REQUEST_ENDED and logs
+// nothing, as the reread's does: anyone can end a request. Where its caller ended it, by closing
+// the connection (a Ctrl-C, a tool's timeout that killed the command, a front door that cut the
+// call), nobody reads that answer and the broker failed at nothing, so it is counted cancelled
+// rather than failed (answer.Recorder.NoteCallerEnded). On the API port a request's context is
+// cancelled by its caller's connection alone; the request deadline ends it otherwise, which a
+// held read never reaches (TestTheWaitLimitEndsInsideTheRequestDeadline, cmd/broker).
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
@@ -425,6 +432,9 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
 		return
 	case err != nil && ctx.Err() != nil:
+		if errors.Is(ctx.Err(), context.Canceled) {
+			answer.FromContext(ctx).NoteCallerEnded()
+		}
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
 		return
 	case err != nil:
@@ -449,7 +459,7 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	}
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds < 1 || seconds > record.MaxRequestWaitSeconds {
-		writeError(w, http.StatusBadRequest, "REQUEST_WAIT_INPUT", "wait is a whole number of seconds from 1 to 20")
+		writeError(w, http.StatusBadRequest, "REQUEST_WAIT_INPUT", fmt.Sprintf("wait is a whole number of seconds from 1 to %d", record.MaxRequestWaitSeconds))
 		return 0, false
 	}
 	return time.Duration(seconds) * time.Second, true

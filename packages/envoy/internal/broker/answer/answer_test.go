@@ -284,6 +284,38 @@ func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
 	}
 }
 
+// An answer whose caller had gone (NoteCallerEnded) is counted cancelled, under the code its
+// status gives, and writes no line: a 503 is not counted failed, nor a refusal refused, since the
+// broker failed at nothing and nobody reads the answer.
+func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
+	for _, row := range []struct {
+		name, body, code, otherwise string
+		status                      int
+	}{
+		{"a 503", `{"code":"REQUEST_ENDED","error":"the request ended"}`, "HTTP_503", `outcome="failed",code="HTTP_503"`, http.StatusServiceUnavailable},
+		{"a refusal", `{"code":"NOT_YOURS","error":"another session's"}`, "NOT_YOURS", `outcome="refused",code="NOT_YOURS"`, http.StatusForbidden},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				answer.FromContext(req.Context()).NoteCallerEnded()
+				writeJSON(w, row.status, row.body)
+			}))
+			if w := r.serve(httptest.NewRequest(http.MethodGet, "/", nil)); w.Code != row.status {
+				t.Fatalf("answer = %d, want %d", w.Code, row.status)
+			}
+			if lines := r.lines(t); len(lines) != 0 {
+				t.Errorf("an answer whose caller ended wrote %v, want no line", lines)
+			}
+			if got := r.count(t, `outcome="cancelled",code="`+row.code+`",caller_class="public"`); got != "1" {
+				t.Errorf("counted %s cancelled under %s, want 1", got, row.code)
+			}
+			if got := r.count(t, row.otherwise+`,caller_class="public"`); got != "0" {
+				t.Errorf("counted %s under %s, want 0", got, row.otherwise)
+			}
+		})
+	}
+}
+
 // The line names the pattern of the route the mux matched, read from the request the recorder
 // hands the mux, though a handler outside the recorder handed it a request of its own, and an empty
 // route for the mux's own 404 and 405. A caller's X-Correlation-Id is kept as its printable ASCII,
