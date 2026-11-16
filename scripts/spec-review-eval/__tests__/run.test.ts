@@ -1,9 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Answer,
   blockIds,
   compareFindings,
   type Fixture,
+  type FormRead,
+  formProblems,
+  KINDS,
   parseFindings,
   readPlan,
   specFormCalled,
@@ -133,6 +139,21 @@ describe("parseFindings", () => {
       parseFindings("NO FINDING\nFINDING principle inbox-simple -: It states a quality.").verdict
     ).toBe("unreadable");
   });
+
+  // Step 6 of the skill says "no other text" for both answers, so a line out of the form makes
+  // the answer no clean verdict: a reader that skipped such a line would pass what the skill
+  // refuses.
+  test("refuses prose before NO FINDING", () => {
+    expect(parseFindings("I read each statement and each check.\nNO FINDING").verdict).toBe(
+      "unreadable"
+    );
+  });
+
+  test("refuses prose beside a FINDING line", () => {
+    expect(
+      parseFindings("FINDING principle inbox-simple -: It states a quality.\nThat is all.").verdict
+    ).toBe("unreadable");
+  });
 });
 
 describe("compareFindings", () => {
@@ -220,6 +241,34 @@ describe("compareFindings", () => {
     expect(result.pass).toBe(false);
     expect(result.problems[0]).toStartWith("gave an unreadable answer");
   });
+
+  // Fixture 9 breaks the form on purpose. Dispatch decided those texts already, so a finding the
+  // reviewer writes at one of them fails the run, whatever its kind.
+  test("passes fixture 9 when the answer names its planted noun and no text the form check found", () => {
+    const answer = parseFindings(
+      "FINDING undefined-noun voucher-print voucher: Neither the list nor the terms of the request define voucher."
+    );
+    expect(compareFindings(fixture("9-form-findings"), answer)).toEqual({
+      pass: true,
+      problems: [],
+    });
+  });
+
+  test("fails a run that names a text the form check found", () => {
+    const answer = parseFindings(
+      [
+        "FINDING principle night-quiet -: It has three sentences.",
+        "FINDING undefined-noun voucher-print voucher: Nothing defines voucher.",
+        "FINDING repeated-meaning terms parcel: The list defines parcel already.",
+      ].join("\n")
+    );
+    const result = compareFindings(fixture("9-form-findings"), answer);
+    expect(result.pass).toBe(false);
+    expect(result.problems).toEqual([
+      "named principle night-quiet, where the form check finds statement night-quiet",
+      "named repeated-meaning terms parcel, where the form check finds definition parcel",
+    ]);
+  });
 });
 
 describe("specFormCalled", () => {
@@ -244,8 +293,54 @@ describe("specFormCalled", () => {
   });
 });
 
+// Before any agent runs, the command reads the form check of each seeded document. A fixture that
+// declares no finding must get none, and fixture 9 must get exactly the two it declares, so the
+// agent meets the findings that the skill tells it to leave alone.
+describe("formProblems", () => {
+  const nine = fixture("9-form-findings");
+  const read = (findings: [string, string][], inScope = true): FormRead => ({
+    in_scope: inScope,
+    scope: inScope ? "covered" : "no_root",
+    findings: findings.map(([kind, node]) => ({ kind, node })),
+  });
+
+  test("passes a spec whose form check gives exactly the findings that its fixture declares", () => {
+    const found = read([
+      ["definition", "parcel"],
+      ["statement", "night-quiet"],
+    ]);
+    expect(formProblems(nine, "spec.md", found)).toEqual([]);
+  });
+
+  test("fails a spec where the form check gives a declared finding no more, or one more", () => {
+    const found = read([
+      ["statement", "night-quiet"],
+      ["claim", "v-other"],
+    ]);
+    expect(formProblems(nine, "spec.md", found)).toEqual([
+      "the form check finds no definition parcel in 9-form-findings spec.md, which the fixture declares",
+      "the form check finds claim v-other in 9-form-findings spec.md, which the fixture does not declare",
+    ]);
+  });
+
+  test("fails a document of a fixture that declares nothing, when the form check finds a text", () => {
+    expect(
+      formProblems(fixture("1-principle"), "spec.md", read([["statement", "inbox-simple"]]))
+    ).toEqual([
+      "the form check finds statement inbox-simple in 1-principle spec.md, which the fixture does not declare",
+    ]);
+    expect(formProblems(nine, "verification.md", read([]))).toEqual([]);
+  });
+
+  test("fails a document out of scope, because DISPATCH_SPEC_ROOTS did not reach the server", () => {
+    expect(formProblems(fixture("1-principle"), "spec.md", read([], false))).toEqual([
+      "1-principle spec.md is out of scope (no_root), so DISPATCH_SPEC_ROOTS did not reach the server",
+    ]);
+  });
+});
+
 describe("the fixtures", () => {
-  test("hold six change requests under the two roots", () => {
+  test("hold nine change requests under the three roots", () => {
     expect(plan.fixtures.map((one) => one.id)).toEqual([
       "1-principle",
       "2-undefined-noun",
@@ -253,15 +348,66 @@ describe("the fixtures", () => {
       "4-other-meaning",
       "5-repeated-meaning",
       "6-checks-in-verification",
+      "7-check-faults",
+      "8-check-shape-passing",
+      "9-form-findings",
     ]);
-    expect(plan.roots.map((root) => root.key)).toEqual(["ACME-1", "ACME-2"]);
+    expect(plan.roots.map((root) => root.key)).toEqual(["ACME-1", "ACME-2", "ACME-3"]);
   });
 
-  test("each planted and each listed node is in its fixture's text", () => {
+  test("plant each of the seven kinds of the skill in some fixture", () => {
+    const planted = new Set(plan.fixtures.flatMap((one) => one.planted.map((item) => item.kind)));
+    expect([...planted].sort()).toEqual([...KINDS].sort());
+  });
+
+  test("hold one change request that plants the three faults of a check's shape together", () => {
+    const three = ["wide-claim", "agent-choice", "agent-where-program"];
+    const holders = plan.fixtures.filter((one) =>
+      three.every((kind) => one.planted.some((item) => item.kind === kind))
+    );
+    expect(holders.map((one) => one.id)).toEqual(["7-check-faults"]);
+  });
+
+  test("fixture 8 is fixture 7 without its three planted faults", () => {
+    const seven = fixture("7-check-faults");
+    const eight = fixture("8-check-shape-passing");
+    const planted = seven.planted.map((item) => item.node);
+    const kept = blockIds(seven.specText).filter((id) => !planted.includes(id));
+    expect(blockIds(eight.specText)).toEqual(kept);
+    for (const id of kept) {
+      expect(blockText(eight.specText, id), id).toBe(blockText(seven.specText, id));
+    }
+    expect(eight.planted).toEqual([]);
+  });
+
+  test("fixture 9 declares the two findings of the form check, and no other fixture declares one", () => {
+    expect(fixture("9-form-findings").form).toEqual([
+      { kind: "statement", node: "night-quiet" },
+      { kind: "definition", node: "parcel" },
+    ]);
+    for (const one of plan.fixtures.filter((other) => other.id !== "9-form-findings")) {
+      expect(one.form, one.id).toEqual([]);
+    }
+  });
+
+  // The form check reads a term line that starts with -, * or +. A Terms part that Dispatch
+  // stores after an insert holds two lists, the second of them with *, so this fixture fails a
+  // reviewer whose skill reads - lines alone.
+  test("fixture 9 defines its own term on a * line, which the form check reads as a term", () => {
+    const nine = fixture("9-form-findings");
+    expect(nine.specText).toMatch(/^\* \*\*quiet hours\*\*: /m);
+    expect(termNames(nine.specText)).toEqual(["parcel", "quiet hours"]);
+  });
+
+  test("each planted, listed and form node is in its fixture's text", () => {
     for (const one of plan.fixtures) {
       const ids = [...blockIds(one.specText), ...blockIds(one.verificationText ?? ""), "terms"];
       for (const item of [...one.planted, ...one.mustNotName]) {
         expect(ids, `${one.id}: ${item.node}`).toContain(item.node);
+      }
+      for (const finding of one.form) {
+        const names = finding.kind === "definition" ? termNames(one.specText) : ids;
+        expect(names, `${one.id}: ${finding.kind} ${finding.node}`).toContain(finding.node);
       }
     }
   });
@@ -298,6 +444,71 @@ describe("the fixtures", () => {
     expect(text).not.toContain("@ISSUE@");
     expect(text).toContain('serves="dispatch://ACME-9/spec#b-second-answer-refused"');
   });
+});
+
+// The header of run.ts says 2 when the command cannot run, and 1 only when a review failed. Each
+// case below stops before any agent runs, so a 1 would tell the reader that a reviewer failed.
+describe("the exit status of a command that cannot run", () => {
+  const RUN = join(import.meta.dir, "..", "run.ts");
+  const CLOSED_PORT = "postgres://127.0.0.1:1/postgres?sslmode=disable";
+  let scratch = "";
+  let stub = "";
+
+  beforeAll(async () => {
+    scratch = await mkdtemp(join(tmpdir(), "spec-review-eval-exit-"));
+    stub = join(scratch, "omp");
+    await writeFile(stub, "#!/bin/sh\necho /nonexistent-omp-config\n", "utf8");
+    await chmod(stub, 0o755);
+  });
+  afterAll(async () => {
+    await rm(scratch, { recursive: true, force: true });
+  });
+
+  async function command(
+    database: string | undefined,
+    out: string
+  ): Promise<{ code: number; stderr: string }> {
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) {
+      if (value !== undefined && name !== "DISPATCH_TEST_DATABASE_URL") env[name] = value;
+    }
+    if (database !== undefined) env.DISPATCH_TEST_DATABASE_URL = database;
+    const child = Bun.spawn({
+      cmd: [process.execPath, RUN, "--omp", stub, "--out", out],
+      env,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+    return { code, stderr };
+  }
+
+  async function emptyOut(name: string): Promise<string> {
+    const out = join(scratch, name);
+    await mkdir(out);
+    return out;
+  }
+
+  test("is 2 with no DISPATCH_TEST_DATABASE_URL", async () => {
+    const { code, stderr } = await command(undefined, await emptyOut("no-database"));
+    expect(stderr).toContain("DISPATCH_TEST_DATABASE_URL");
+    expect(code).toBe(2);
+  }, 30_000);
+
+  test("is 2 with a database that refuses the connection", async () => {
+    const { code, stderr } = await command(CLOSED_PORT, await emptyOut("closed-port"));
+    expect(stderr).not.toBe("");
+    expect(code).toBe(2);
+  }, 30_000);
+
+  test("is 2 with an --out that an earlier run used, and names it", async () => {
+    const out = await emptyOut("used");
+    await mkdir(join(out, "run-1", "stack", "home"), { recursive: true });
+    const { code, stderr } = await command(CLOSED_PORT, out);
+    expect(stderr).toContain(`--out ${out} holds the files of an earlier run`);
+    expect(code).toBe(2);
+  }, 30_000);
 });
 
 /** The body of the block whose id is `node`. */
