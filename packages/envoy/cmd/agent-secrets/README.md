@@ -37,9 +37,11 @@ code, which whoever answers at that URL could fill with the credential it carrie
 code prints there only where it is one the program matched against its own list: `renew`'s exit
 on a terminal refusal, and the helper's log of a refusal it acts on; the helper's log of a
 sign-in the broker refused names its code as that marker. What these programs print or log of an
-answer they accept is as it came, whatever the URL: `--json` writes a 2xx body verbatim, `machine
-login` prints the `user_code` and `verification_uri` the broker answered, and `machine
-login-status` prints that `user_code`. People and
+answer they accept is as it came, whatever the URL; among those outputs, `--json` writes a 2xx
+body verbatim, `machine login` prints the `user_code` and `verification_uri` the broker answered,
+`machine login-status` prints that `user_code`, a pending secret request's line names the
+`approve_url` above, and the helper's log lines name the `credential_id` of the machine login the
+broker issued. People and
 launchers use its other forms to log a
 machine in
 (`agent-secrets machine
