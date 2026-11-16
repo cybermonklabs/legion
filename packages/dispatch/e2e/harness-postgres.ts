@@ -15,8 +15,13 @@
  *    no Docker socket, and they name that installation's directory.
  *
  *  Both keep the stack's data under the run's own temporary directory, which the pool makes and
- *  removes (`e2e/harness-pool.ts`), and both answer on 127.0.0.1: the server's dev sign-in
- *  refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
+ *  removes (`e2e/harness-pool.ts`), and neither serves on a port picked free and handed over, which
+ *  another process could bind first: a Postgres server cannot inherit a held socket the way the
+ *  harness's own listeners do (`scripts/e2e/lib/held-port.py`). The binaries' server listens on a
+ *  unix socket in the stack's own directory and on no TCP port at all (`listen_addresses` empty),
+ *  and an image's container port is published on a 127.0.0.1 port Docker chooses and binds as it
+ *  starts the container, read back with `docker port`. Both are hosts the server's dev sign-in
+ *  takes: it refuses a `DATABASE_URL` whose host is neither loopback nor a unix socket
  *  (`e2e/run-server.sh`).
  *
  *  The binaries provider runs `initdb` once per run and copies the data directory it made per
@@ -30,7 +35,6 @@
  *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once. */
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -156,15 +160,17 @@ async function serverSettings(env: NodeJS.ProcessEnv): Promise<string[]> {
 }
 /** How long a stack's server may take to answer `select 1`. */
 const readyMs = 120_000;
-/** How many ports a cluster tries before it gives up (see `freePort`). */
-const bindAttempts = 3;
+/** The port a binaries server names its unix socket with (`.s.PGSQL.<port>` in its directory). It
+ *  listens on no TCP port, so every stack's server can name the same one. */
+const socketPort = 5432;
 
 /** One stack's Postgres. */
 export interface StackDatabase {
   /** The `DATABASE_URL` this stack's servers and psql use. */
   readonly url: string;
-  /** The port it serves on, which the harness logs and no other stack shares. */
-  readonly port: number;
+  /** Where it serves, which the harness logs: the directory of a binaries server's unix socket,
+   *  or the `127.0.0.1:<port>` Docker published an image's container on. */
+  readonly address: string;
   stop(): Promise<void>;
 }
 
@@ -177,31 +183,6 @@ export interface StackPostgres {
    *  is the pool's own stop: a Ctrl-C while this waits for the server to answer ends the wait as
    *  `Interrupted` rather than as a start that failed. */
   start(index: number, signal?: AbortSignal): Promise<StackDatabase>;
-}
-
-/** A port the OS chose and nothing holds. Another listener can take it between here and the
- *  moment the server binds it, which is why `startCluster` and the image provider try another
- *  port rather than failing: a Postgres server cannot inherit the socket the way the harness's
- *  own listeners do (`scripts/e2e/lib/held-port.py`). */
-async function freePort(): Promise<number> {
-  const socket = createServer();
-  const chosen = Promise.withResolvers<number>();
-  socket.once("error", chosen.reject);
-  socket.listen(0, "127.0.0.1", () => {
-    const address = socket.address();
-    if (address === null || typeof address === "string") {
-      chosen.reject(new Error("the OS named no port for a listening socket"));
-    } else {
-      chosen.resolve(address.port);
-    }
-  });
-  try {
-    return await chosen.promise;
-  } finally {
-    const closed = Promise.withResolvers<void>();
-    socket.close(() => closed.resolve());
-    await closed.promise;
-  }
 }
 
 /** One stack's server, with a stop under way reported as the interruption it is: psql rejects a
@@ -220,7 +201,7 @@ async function stackOf(
 }
 
 /** Waits until `url` answers `select 1`: a server that is up has read its data directory, run
- *  its own recovery and opened its port. */
+ *  its own recovery and opened its socket. */
 async function ready(url: string, what: string, signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + readyMs;
   for (;;) {
@@ -242,49 +223,53 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
   }
 }
 
-/** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
- *  it serves on. Returns or throws with no postmaster of `data` left running. */
+/** The `DATABASE_URL` of `database` on the binaries server whose unix socket is in `dir`. */
+function socketUrl(dir: string, database: string): string {
+  return (
+    `postgres://postgres@/${database}?host=${encodeURIComponent(dir)}&port=${socketPort}` +
+    "&sslmode=disable"
+  );
+}
+
+/** Starts the cluster in `data`, with its log and its unix socket in `dir` and no TCP listener at
+ *  all (`-h ''`): no other process can take a socket in the stack's own directory, where a port
+ *  picked free for the server could be bound by one before the server binds it. Returns or
+ *  throws with no postmaster of `data` left running. */
 async function startCluster(
   bin: string,
   data: string,
   dir: string,
   what: string,
   env: NodeJS.ProcessEnv
-): Promise<number> {
-  let last = "";
+): Promise<void> {
   const started = await serverSettings(env);
-  for (let attempt = 1; attempt <= bindAttempts; attempt++) {
-    const port = await freePort();
-    const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
-    try {
-      await execFileAsync(join(bin, "pg_ctl"), [
-        "-D",
-        data,
-        "-l",
-        join(dir, "postgres.log"),
-        "-o",
-        options.join(" "),
-        "-w",
-        "start",
-      ]);
-      return port;
-    } catch (error) {
-      last = error instanceof Error ? error.message : String(error);
-      // `pg_ctl -w start` gives up its own wait after `PGCTLTIMEOUT` and exits non-zero, but
-      // the postmaster it started goes on running and holding `postmaster.pid`: the next
-      // attempt's start would fail on that lock rather than on its port, and a throw here would
-      // leave a server serving a loopback port while the pool removes the data directory under
-      // it (`e2e/harness-pool.ts`). A stop that fails is a server that never bound, which is why
-      // the failure the caller sees stays the start's.
-      await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
-        () => {}
-      );
-    }
+  // pg_ctl hands `-o` to the server through a shell, which reads `''` as the empty address list.
+  const options = [`-p ${socketPort}`, "-h ''", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
+  try {
+    await execFileAsync(join(bin, "pg_ctl"), [
+      "-D",
+      data,
+      "-l",
+      join(dir, "postgres.log"),
+      "-o",
+      options.join(" "),
+      "-w",
+      "start",
+    ]);
+  } catch (error) {
+    // `pg_ctl -w start` gives up its own wait after `PGCTLTIMEOUT` and exits non-zero, but the
+    // postmaster it started goes on running and holding `postmaster.pid`, and a throw here would
+    // leave a server running while the pool removes the data directory under it
+    // (`e2e/harness-pool.ts`). A stop that fails is a server that never started, which is why
+    // the failure the caller sees stays the start's.
+    await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]).catch(
+      () => {}
+    );
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${what} did not start (${join(dir, "postgres.log")}): ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
   }
-  throw new Error(
-    `The Dispatch e2e harness cannot start: ${what} did not start on any of ${bindAttempts} ` +
-      `ports (${join(dir, "postgres.log")}): ${last}`
-  );
 }
 
 function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): StackPostgres {
@@ -313,20 +298,16 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
       "-E",
       "UTF8",
     ]);
-    const port = await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
+    await startCluster(bin, data, templateDir, "the stacks' Postgres template", env);
     try {
-      const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
+      const admin = socketUrl(templateDir, "postgres");
       await ready(admin, "the stacks' Postgres template", signal);
       await sqlAt(admin, [`create database ${databaseName}`], signal);
-      await sqlAt(
-        `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`,
-        ["create extension vector"],
-        signal
-      );
+      await sqlAt(socketUrl(templateDir, databaseName), ["create extension vector"], signal);
     } finally {
       // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
-      // left it running would leave it serving a loopback port while the pool removes the data
-      // directory under it.
+      // left it running would leave it serving while the pool removes the data directory under
+      // it.
       await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
     }
     return data;
@@ -342,23 +323,23 @@ function binariesProvider(dir: string, bin: string, env: NodeJS.ProcessEnv): Sta
         // `cp -a` keeps the 0700 a data directory's server refuses to start without.
         await execFileAsync("cp", ["-a", await template, data]);
         const what = `stack ${index}'s Postgres`;
-        const port = await startCluster(bin, data, stackDir, what, env);
+        await startCluster(bin, data, stackDir, what, env);
         const stop = async (): Promise<void> => {
           await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "immediate", "-w", "stop"]);
         };
-        const url = `postgres://postgres@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
+        const url = socketUrl(stackDir, databaseName);
         try {
           await ready(url, what, signal);
         } catch (error) {
           // The postmaster is up from `startCluster` on, and a wait the run's signal or the
           // deadline ended returns no `StackDatabase`, so no caller holds a stop for it: the
-          // pool would delete this data directory under a server still serving a loopback port.
-          // A stop that fails here is a server that is already gone, which is why the failure
-          // the caller sees is the wait's.
+          // pool would delete this data directory under a server still serving. A stop that
+          // fails here is a server that is already gone, which is why the failure the caller
+          // sees is the wait's.
           await stop().catch(() => {});
           throw error;
         }
-        return { port, url, stop };
+        return { address: stackDir, url, stop };
       }),
   };
 }
@@ -381,79 +362,78 @@ function imageProvider(image: string, run: string, env: NodeJS.ProcessEnv): Stac
     start: (index, signal) =>
       stackOf(signal, async (): Promise<StackDatabase> => {
         const what = `stack ${index}'s Postgres`;
-        let refused = "";
         const started = await serverSettings(env);
-        for (let attempt = 1; attempt <= bindAttempts; attempt++) {
-          // The name carries the attempt: a container whose port was taken keeps its name until it
-          // is removed, and the run removes it with the stack.
-          const container = `dispatch-e2e-pg-${run}-${index}-${attempt}`;
-          const port = await freePort();
-          const remove = async (): Promise<void> => {
-            await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(
-              () => {}
-            );
-          };
-          try {
-            await execFileAsync("docker", [
-              "run",
-              "--detach",
-              "--name",
-              container,
-              "--publish",
-              `127.0.0.1:${port}:5432`,
-              "--env",
-              "POSTGRES_PASSWORD=dispatch",
-              "--env",
-              `POSTGRES_DB=${databaseName}`,
-              "--env",
-              "POSTGRES_INITDB_ARGS=--no-sync",
-              // Nothing is mounted at the data directory, so the image places it itself and it
-              // dies with the container, which is what a stack's data is meant to do. Two mounts
-              // were tried and refused: a bind mount of a directory this process made, which the
-              // image's own user may neither write nor chown, and a tmpfs at
-              // /var/lib/postgresql/data, which this image's Postgres 18 entrypoint reports as
-              // "an unused mount/volume" and then exits, since 18 wants one mount a level up
-              // (docker-library/postgres#1259).
-              image,
-              ...started.flatMap((setting) => ["-c", setting]),
-            ]);
-          } catch (error) {
-            // `docker run` publishes the port itself, so this is the port another listener took
-            // between `freePort` and here, which is what another port answers.
-            refused = `${error instanceof Error ? error.message : String(error)}; the container said: ${await containerLog(container)}`;
-            await remove();
-            continue;
-          }
-          const url = `postgres://postgres:dispatch@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
-          try {
-            await ready(url, what, signal);
-            // The image carries the extension; the database the image made still has to install it,
-            // as migration 0072 needs it.
-            await sqlAt(url, ["create extension if not exists vector"], signal);
-          } catch (error) {
-            // The container holds the port, so no other port is a different question: it is the
-            // server inside that never answered, and the refusal says that rather than counting
-            // ports. Its own last lines are read before it is removed.
-            const said = await containerLog(container);
-            await remove();
-            throw new Error(
-              `The Dispatch e2e harness cannot start: ${what} came up from ${image} on port ` +
-                `${port} and then ${error instanceof Error ? error.message : String(error)}; ` +
-                `the container said: ${said}`
-            );
-          }
-          return {
-            port,
-            url,
-            stop: async () => {
-              await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
-            },
-          };
+        const container = `dispatch-e2e-pg-${run}-${index}`;
+        const remove = async (): Promise<void> => {
+          await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(() => {});
+        };
+        const refusal = async (error: unknown, after: string): Promise<Error> => {
+          // Its own last lines are read before it is removed.
+          const said = await containerLog(container);
+          await remove();
+          return new Error(
+            `The Dispatch e2e harness cannot start: ${what} ${after}` +
+              `${error instanceof Error ? error.message : String(error)}; the container said: ${said}`
+          );
+        };
+        try {
+          await execFileAsync("docker", [
+            "run",
+            "--detach",
+            "--name",
+            container,
+            // No host port: Docker chooses one and binds it as it starts the container, and holds
+            // it for the container's life, so no other process can take it before the server
+            // answers there, as one could take a port picked free here and handed over.
+            "--publish",
+            "127.0.0.1::5432",
+            "--env",
+            "POSTGRES_PASSWORD=not-a-secret",
+            "--env",
+            `POSTGRES_DB=${databaseName}`,
+            "--env",
+            "POSTGRES_INITDB_ARGS=--no-sync",
+            // Nothing is mounted at the data directory, so the image places it itself and it
+            // dies with the container, which is what a stack's data is meant to do. Two mounts
+            // were tried and refused: a bind mount of a directory this process made, which the
+            // image's own user may neither write nor chown, and a tmpfs at
+            // /var/lib/postgresql/data, which this image's Postgres 18 entrypoint reports as
+            // "an unused mount/volume" and then exits, since 18 wants one mount a level up
+            // (docker-library/postgres#1259).
+            image,
+            ...started.flatMap((setting) => ["-c", setting]),
+          ]);
+        } catch (error) {
+          throw await refusal(error, `did not start from ${image}: `);
         }
-        throw new Error(
-          `The Dispatch e2e harness cannot start: ${what} got none of ${bindAttempts} ports from ` +
-            `${image}: ${refused}`
-        );
+        let address: string;
+        try {
+          // `docker port` names the host address and port the container port is published on.
+          const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+          const published = /^127\.0\.0\.1:([1-9][0-9]*)$/m.exec(stdout)?.[1];
+          if (published === undefined) {
+            throw new Error(`docker port named no 127.0.0.1 port: ${JSON.stringify(stdout)}`);
+          }
+          address = `127.0.0.1:${published}`;
+        } catch (error) {
+          throw await refusal(error, `came up from ${image} and `);
+        }
+        const url = `postgres://postgres:not-a-secret@${address}/${databaseName}?sslmode=disable`;
+        try {
+          await ready(url, what, signal);
+          // The image carries the extension; the database the image made still has to install it,
+          // as migration 0072 needs it.
+          await sqlAt(url, ["create extension if not exists vector"], signal);
+        } catch (error) {
+          throw await refusal(error, `came up from ${image} on ${address} and then `);
+        }
+        return {
+          address,
+          url,
+          stop: async () => {
+            await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
+          },
+        };
       }),
   };
 }

@@ -95,19 +95,21 @@ test("summarises the session's open asks into context and records the session id
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
-  const closed = Bun.serve({ port: 0, fetch: () => new Response() })
-  const port = closed.port
-  closed.stop(true)
+  // Port 1 of loopback, which an unprivileged process cannot bind, so the hook's request is
+  // refused. The port of a server this test stopped would be free for any other process to bind,
+  // and its answer would make the summary unavailable for another reason than this row's.
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: `http://127.0.0.1:${port}`,
+      DISPATCH_URL: "http://127.0.0.1:1",
       DISPATCH_TOKEN: "hook-token",
     })
 
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toStartWith("Dispatch authored-ask summary unavailable: ")
+    // The refusal itself, so an answer from something else on the port reads as a failure here.
+    expect(result.stdout).toContain("ECONNREFUSED")
     expect(
       await readFile(
         join(scratch, "plugin-data", "sessions", String(process.pid), "session-id"),

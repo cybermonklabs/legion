@@ -35,10 +35,10 @@ const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
-// A GitHub that never answers: the port of a server stopped before any run.
-const closed = Bun.serve({ port: 0, fetch: () => new Response() });
-const unreachable = `http://127.0.0.1:${closed.port}/`;
-await closed.stop(true);
+// A GitHub that never answers: port 1 of loopback, which an unprivileged process cannot bind, so
+// every request to it is refused. The port of a server this file stopped would be free for any
+// other process to bind, and its answers would be another GitHub's.
+const unreachable = "http://127.0.0.1:1/";
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
@@ -505,6 +505,8 @@ describe("app-logins.ts", () => {
     expect(code).toBe(1);
     expect(stdout).toBe("");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    // The refusal itself, so an answer from something else on the port reads as a failure here.
+    expect(stderr).toContain("failed: ECONNREFUSED");
   });
 
   test("two roles on one App are refused, as the daemon refuses them at boot", async () => {
@@ -761,6 +763,7 @@ describe("read_app_logins", () => {
     expect(code).toBe(1);
     expect(stdout).not.toContain("after-read");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain("failed: ECONNREFUSED");
     expect(stderr).toMatch(/^FAIL boot: /m);
   });
 });

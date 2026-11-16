@@ -360,14 +360,13 @@ describe("postSlackReply", () => {
   });
 
   test("a Slack that does not answer is a failure that says the reply may have been posted", async () => {
-    // A port nothing listens on: the poster's request fails after the grant.
-    const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
-    const url = `http://127.0.0.1:${closed.port}/api`;
-    closed.stop(true);
-    const { env } = brokerEnvironment("granted", url);
+    // Port 1 of loopback, which an unprivileged process cannot bind, so the poster's request is
+    // refused after the grant. The port of a server this test stopped would be free for any other
+    // process to bind, and an answer from it would be another failure than the one this row reads.
+    const { env } = brokerEnvironment("granted", "http://127.0.0.1:1/api");
 
     await expect(postSlackReply(reply, { env })).rejects.toThrow(
-      "the reply may have been posted, and posting it again may put it in the thread twice"
+      "Slack did not answer chat.postMessage: the reply may have been posted, and posting it again may put it in the thread twice"
     );
   });
 

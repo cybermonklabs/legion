@@ -287,15 +287,16 @@ that failed, and 2 is a refusal.
 
 ## local-stack.sh
 
-The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
-port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
+The loopback Envoy stack the two smokes above bring up, in one sourced file: the natsd and
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
-revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
-and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
-never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
-messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
-exhausted port range is reported through, `refuse` in both smokes here.
+revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`),
+the port each one binds (natsd's `-p -1` and `-m -1`, the listener's `PORT=0`: a port the kernel
+chooses, read back from the line the service logs with `reported_port`, so no other process can
+take it before the service serves there, as it could a port picked free and handed over) and when
+it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced, never run:
+it starts no process, so every script keeps its own isolation, logs, traps, timeouts, messages and
+exit codes.
 `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
 
 ## listener-api.sh

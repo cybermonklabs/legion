@@ -129,18 +129,13 @@ function startUpstream(name: DispatchProcess) {
   return upstream;
 }
 
-/** A port nothing listens on at the moment it is asked for. */
-function freePort(): number {
-  const probe = Bun.serve({ fetch: () => new Response(), hostname: "127.0.0.1", port: 0 });
-  const port = Number(probe.url.port);
-  probe.stop(true);
-  return port;
-}
-
 const a = startUpstream("a");
 const b = startUpstream("b");
-const proxyPort = freePort();
-const origin = `http://127.0.0.1:${proxyPort}`;
+// The proxy's own port is one the kernel chose for it: with DISPATCH_E2E_PORT unset it binds port 0
+// and names the origin it serves in its listening line, which `beforeAll` reads. A port picked free
+// here and handed over by number could be bound by another process before the proxy binds it.
+let proxyPort = 0;
+let origin = "";
 let proxy: Subprocess<"ignore", "pipe", "inherit">;
 /** A home for every child this file starts, so none of them reads the caller's. */
 const childHome = temporaryDirectory("round-robin-proxy-home");
@@ -151,7 +146,7 @@ beforeAll(async () => {
       PATH: process.env.PATH ?? "",
       HOME: childHome,
       TMPDIR: tmpdir(),
-      DISPATCH_E2E_PORT: String(proxyPort),
+      // No DISPATCH_E2E_PORT: the proxy binds a port the kernel chooses.
       DISPATCH_E2E_PORT_A: String(a.server.port),
       DISPATCH_E2E_PORT_B: String(b.server.port),
       DISPATCH_E2E_PROCESSES: "2",
@@ -159,15 +154,19 @@ beforeAll(async () => {
     stderr: "inherit",
     stdout: "pipe",
   });
-  // The proxy logs one line once it listens.
+  // The proxy logs one line once it listens, naming the origin it serves.
   const reader = proxy.stdout.getReader();
   let logged = "";
-  while (!logged.includes("round-robin proxy on")) {
+  let listening: RegExpExecArray | null = null;
+  while (listening === null) {
     const { done, value } = await reader.read();
     if (done) throw new Error(`the proxy exited before it listened: ${logged}`);
     logged += new TextDecoder().decode(value);
+    listening = /round-robin proxy on (http:\/\/127\.0\.0\.1:(\d+)) for /.exec(logged);
   }
   reader.releaseLock();
+  origin = listening[1] ?? "";
+  proxyPort = Number(listening[2]);
 });
 
 afterAll(async () => {

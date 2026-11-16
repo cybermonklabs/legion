@@ -329,10 +329,10 @@ describe("agentViewRefusal", () => {
   });
 
   test("a live socket that cannot be opened at all says so", async () => {
-    const dispatch = dispatchAnswering(() => undefined);
-    const port = new URL(dispatch.url).port;
-    for (const server of servers.splice(0)) server.stop();
-    expect(await refusalFrom(`http://127.0.0.1:${port}`, {}, SESSION)).toBe(
+    // Port 1 of loopback, which an unprivileged process cannot bind, so the socket's connection
+    // is refused. The port of a server this test stopped would be free for any other process to
+    // bind, and a socket opened on it would end some other way than the one this row reads.
+    expect(await refusalFrom("http://127.0.0.1:1", {}, SESSION)).toBe(
       "the live socket could not be opened"
     );
   });
