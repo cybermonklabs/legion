@@ -63,6 +63,11 @@ func TestTheListenerBinaryHoldsProjectedTokensToItsListAndCountsThem(t *testing.
 	}{
 		{name: "held to ENVOY_OIDC_ACCOUNTS", machineID: "oidc-accounts-held", env: append([]string{"ENVOY_OIDC_ACCOUNTS=" + listenerListedSubject}, pair...),
 			wantUnlisted: http.StatusUnauthorized, wantOIDC: 1},
+		// Written with commas, the list holds the listed subject itself, not "<subject>,", so its
+		// caller is admitted.
+		{name: "held to a list written with commas", machineID: "oidc-accounts-commas",
+			env:          append([]string{"ENVOY_OIDC_ACCOUNTS=" + listenerListedSubject + ", system:serviceaccount:example:other"}, pair...),
+			wantUnlisted: http.StatusUnauthorized, wantOIDC: 1},
 		{name: "with no list, as before", machineID: "oidc-accounts-unset", env: pair,
 			wantUnlisted: http.StatusOK, wantOIDC: 2},
 	} {

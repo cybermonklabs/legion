@@ -503,6 +503,13 @@ func TestResolveListenerOIDCAccounts(t *testing.T) {
 		{name: "a value of only a no-break space", value: "\u00a0", issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
 		{name: "a value of only spaces with no verifier", value: "  ", wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
 		{name: "whitespace-separated subjects", value: " " + listenerListedSubject + "\n\t" + listenerUnlistedSubject + " ", issuer: issuer, want: []string{listenerListedSubject, listenerUnlistedSubject}},
+		// Commas separate entries as white space does, as in ENVOY_ALLOWED_HOSTS beside it, and an
+		// entry a comma leaves empty is refused, naming where it is.
+		{name: "comma-separated subjects", value: listenerListedSubject + "," + listenerUnlistedSubject, issuer: issuer, want: []string{listenerListedSubject, listenerUnlistedSubject}},
+		{name: "subjects separated by a comma and a space", value: listenerListedSubject + ", " + listenerUnlistedSubject, issuer: issuer, want: []string{listenerListedSubject, listenerUnlistedSubject}},
+		{name: "a trailing comma leaves an empty entry", value: listenerListedSubject + ",", issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS holds an empty entry"},
+		{name: "two commas leave an empty entry", value: listenerListedSubject + ", ," + listenerUnlistedSubject, issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS holds an empty entry"},
+		{name: "a leading comma leaves an empty entry", value: "," + listenerListedSubject, issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS holds an empty entry"},
 		{name: "a list with no verifier to hold to it", value: listenerListedSubject, wantError: "ENVOY_OIDC_ACCOUNTS needs ENVOY_OIDC_ISSUER"},
 		{name: "an entry that is not a ServiceAccount subject", value: listenerListedSubject + " dispatch:envoy-broker", issuer: issuer, wantError: `"dispatch:envoy-broker"`},
 		{name: "a subject with no name", value: "system:serviceaccount:dispatch:", issuer: issuer, wantError: `"system:serviceaccount:dispatch:"`},
@@ -547,6 +554,14 @@ func TestResolveListenerGoogleConfig(t *testing.T) {
 		{name: "an audience no account is listed for", env: map[string]string{"ENVOY_OIDC_GOOGLE_AUDIENCE": listenerGoogleAudience}, wantError: "ENVOY_OIDC_GOOGLE_ACCOUNTS is required when ENVOY_OIDC_GOOGLE_AUDIENCE is set"},
 		{name: "accounts with no audience", env: map[string]string{"ENVOY_OIDC_GOOGLE_ACCOUNTS": listenerGoogleAccount}, wantError: "ENVOY_OIDC_GOOGLE_AUDIENCE is required when ENVOY_OIDC_GOOGLE_ACCOUNTS is set"},
 		{name: "an entry that is not an address", env: map[string]string{"ENVOY_OIDC_GOOGLE_AUDIENCE": listenerGoogleAudience, "ENVOY_OIDC_GOOGLE_ACCOUNTS": "example-sink"}, wantError: `"example-sink"`},
+		{
+			name:         "accounts separated by a comma and a space",
+			env:          map[string]string{"ENVOY_OIDC_GOOGLE_AUDIENCE": listenerGoogleAudience, "ENVOY_OIDC_GOOGLE_ACCOUNTS": listenerGoogleAccount + ", " + listenerGoogleOtherEmail},
+			wantAudience: listenerGoogleAudience,
+			wantAccounts: []string{listenerGoogleAccount, listenerGoogleOtherEmail},
+		},
+		{name: "a trailing comma leaves an empty entry", env: map[string]string{"ENVOY_OIDC_GOOGLE_AUDIENCE": listenerGoogleAudience, "ENVOY_OIDC_GOOGLE_ACCOUNTS": listenerGoogleAccount + ","}, wantError: "ENVOY_OIDC_GOOGLE_ACCOUNTS holds an empty entry"},
+		{name: "only commas", env: map[string]string{"ENVOY_OIDC_GOOGLE_AUDIENCE": listenerGoogleAudience, "ENVOY_OIDC_GOOGLE_ACCOUNTS": ", ,"}, wantError: "ENVOY_OIDC_GOOGLE_ACCOUNTS holds an empty entry"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

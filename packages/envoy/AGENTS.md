@@ -5366,16 +5366,17 @@ Targeted issue `message.created` skips bound-route and author fan-out because th
 — when `ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE` are both set, one without the other being a startup refusal naming the missing variable
 — a projected service-account token that issuer signed for that audience;
 and — when `ENVOY_OIDC_GOOGLE_AUDIENCE` and `ENVOY_OIDC_GOOGLE_ACCOUNTS` are both set — a Google identity token.
-`ENVOY_OIDC_ACCOUNTS`, whitespace-separated `system:serviceaccount:<namespace>:<name>` subjects, holds the projected-token branch to the subjects it lists:
+`ENVOY_OIDC_ACCOUNTS`, `system:serviceaccount:<namespace>:<name>` subjects separated by commas or white space, holds the projected-token branch to the subjects it lists:
 any pod of the cluster can project a token for any audience, and that branch names no session, so a verified token alone does not say which caller it is.
 Unset or empty, the branch admits every subject the issuer signed for, as it did before the list existed;
 set beside no `ENVOY_OIDC_ISSUER` it refuses the start naming the pair it needs, and holding an entry of any other shape it refuses the start naming the entry.
 A value that names no account (only blanks or commas) refuses the start naming the setting, so a list emptied by mistake never admits every pod.
-Both account lists are whitespace-separated: an entry holding a comma, which a list written like `ENVOY_ALLOWED_HOSTS` would hold, refuses the start naming the setting and the entry, rather than starting with an entry no token carries and refusing that caller as `not_listed`.
+Both account lists take commas and white space alike between entries (`splitAccountList`), so `A, B`, `A,B` and `A B` each name A and B, as `ENVOY_ALLOWED_HOSTS` beside them is written with commas;
+a comma that leaves an entry empty (a leading or trailing comma, or two commas with nothing between them) refuses the start naming the setting and which entry is empty, so no list starts holding an entry no token carries.
 An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
 The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
 The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
-and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (whitespace-separated addresses, compared in lower case) whose address Google verified,
+and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, compared in lower case) whose address Google verified,
 so the caller asks its metadata server for the token with `format=full`, the form that carries the address (`oidc.Verifier.VerifyGoogleIdentity`).
 One of the pair without the other refuses the start, naming the missing one, and so does an entry that is not an address.
 A refused Google token is one `listener: Google identity token rejected` warning carrying the class
