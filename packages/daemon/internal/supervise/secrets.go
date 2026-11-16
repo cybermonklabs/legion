@@ -62,12 +62,16 @@ type Registrar interface {
 
 // PodSession is one pod's registration to trade under one session name, bound to the role's own
 // key: Thumbprint is the RFC 7638 thumbprint the role's shim hello named, which every write sends.
-// Token answers the pod's own projected token for the broker's audience, which is what names the
-// pod to the broker; it is asked once per write, and the first time inside the decision that
-// starts the registration. After is the machine's clock, and Bound the longest one write may
-// take.
+// Generation is the launch generation of the process it registers (SandboxLocator.Generation, the
+// claim's generation, which every launch raises and stores before it starts the process): it rises
+// with each process of the claim, a process never sends two, and a daemon restart reads it back
+// from the claim, so the broker orders two processes' writes of one (pod, session) by it. Token
+// answers the pod's own projected token for the broker's audience, which is what names the pod to
+// the broker; it is asked once per write, and the first time inside the decision that starts the
+// registration. After is the machine's clock, and Bound the longest one write may take.
 type PodSession struct {
 	PodUID, Session, Thumbprint string
+	Generation                  uint64
 	Token                       func(ctx context.Context) (string, error)
 	After                       func(d time.Duration, f func()) (stop func() bool)
 	Bound                       time.Duration
@@ -241,7 +245,7 @@ func (m *Machine) ensureRegistered() {
 	// the session in ending does not end it, the process's let-go (its stop) or the machine's end
 	// does. The first write's outcome is the registrar's to log; nothing here decides on it.
 	stop, _ := m.deps.Registrar.KeepPodSession(m.ctx, PodSession{
-		PodUID: loc.Sandbox.PodUID, Session: session, Thumbprint: thumbprint, Bound: m.deps.Timeouts.RPC,
+		PodUID: loc.Sandbox.PodUID, Session: session, Thumbprint: thumbprint, Generation: loc.Sandbox.Generation, Bound: m.deps.Timeouts.RPC,
 		Token: m.podToken(m.identity.PodToken),
 		After: func(d time.Duration, f func()) func() bool { return m.deps.Clock.AfterFunc(d, f).Stop },
 	})

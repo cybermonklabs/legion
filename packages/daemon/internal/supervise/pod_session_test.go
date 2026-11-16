@@ -125,7 +125,7 @@ type clientRegistrar struct {
 
 func (c clientRegistrar) KeepPodSession(ctx context.Context, s PodSession) (func(), error) {
 	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
-		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Token: s.Token, After: c.timers.after, Bound: s.Bound,
+		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.timers.after, Bound: s.Bound,
 	})
 }
 
@@ -228,16 +228,19 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 	}
 }
 
-// keyRecorder is a Registrar that records the thumbprint of every registration a machine starts.
+// keyRecorder is a Registrar that records the thumbprint and the generation of every registration
+// a machine starts.
 type keyRecorder struct {
 	mu   sync.Mutex
 	keys []string
+	gens []uint64
 }
 
 func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.keys = append(r.keys, s.Thumbprint)
+	r.gens = append(r.gens, s.Generation)
 	return func() {}, nil
 }
 
@@ -245,6 +248,58 @@ func (r *keyRecorder) registered() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.keys)
+}
+
+func (r *keyRecorder) generations() []uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.gens)
+}
+
+// TestEachProcessRegistersAtItsLaunchGeneration: every registration carries the launch generation
+// of the process it registers — the claim's generation, which each launch raises and stores before
+// it starts the process (launchNow), and which the locator records (SandboxLocator.Generation) — so
+// the broker can order two processes' writes of one (pod, session) row. A relaunch in the same pod
+// registers at a higher generation than the process it replaced, and a daemon restart, which
+// registers the running process again at its shim's first hello, sends that process's own
+// generation again, never a lower one.
+func TestEachProcessRegistersAtItsLaunchGeneration(t *testing.T) {
+	const pod = "pod-uid-8"
+	h := newHarness(t)
+	h.withSecrets()
+	recorder := &keyRecorder{}
+	h.deps.Registrar = recorder
+	h.start(h.store.load(h.token))
+	inPod := func(generation uint64) fake.SpawnResult {
+		return fake.SpawnResult{Locator: runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: runtime.SandboxIncarnation(pod, generation),
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: generation},
+		}}
+	}
+	hello := func() {
+		t.Helper()
+		h.conns.Register(h.token, h.conn)
+		h.must(StreamHello{Claim: h.token, Generation: h.generation(), AgentSecrets: &AgentSecretsIdentity{Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken}})
+	}
+
+	h.rt.ScriptSpawn(inPod(1))
+	h.launch()
+	hello()
+	h.register()
+	h.ready()
+	h.rt.ScriptResume(inPod(2))
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
+	hello()
+	h.restart()
+	hello()
+
+	if got, want := h.generation(), uint64(2); got != want || h.locator().Sandbox.Generation != want {
+		t.Fatalf("the claim is at generation %d, its locator at %d, want both %d: the test drives two launches", got, h.locator().Sandbox.Generation, want)
+	}
+	if got, want := recorder.generations(), []uint64{1, 2, 2}; !slices.Equal(got, want) {
+		t.Fatalf("the session of pod %s was registered at generations %v, want %v: the first process at 1, the relaunch at 2, and the restart registering the running process again at its own 2", pod, got, want)
+	}
 }
 
 // TestARegistrationKeepsTheKeyItsProcessFirstHelloNamed: a registration's thumbprint is pinned at

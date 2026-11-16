@@ -6214,7 +6214,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
 
-  - The registration needs a broker that binds it to the key: a broker before this release refuses the `thumbprint` field as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
+  - The registration needs a broker that binds it to the key and orders it by generation: a broker before this release refuses the `thumbprint` and `generation` fields as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
     Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
 
   - An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
@@ -6224,6 +6224,10 @@ each issue's pod (every role of it alike) and the image probe's.
   - The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, with the same thumbprint, and stops when the role's process ends.
 
   - When a role's process ends, the daemon waits for that registration's write in flight to be answered, up to the RPC timeout, before its next process writes its own, so the session ends bound to the new process's key.
+
+  - Every write also sends the claim's launch generation, which rises with every launch of the claim and is stored with the claim, so no two processes send the same one and it survives a daemon restart.
+    The broker writes a registration only when the generation sent is at least the one it holds, and answers the registration it holds, so a late write of an earlier process, one the wait above gave up on, cannot put that process's key back.
+    An answer at a later generation than the daemon sent is a later process's registration: the daemon logs it, naming the pod, the session and both generations, and stops writing that registration.
 
   - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
     that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.

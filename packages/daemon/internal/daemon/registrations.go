@@ -30,6 +30,6 @@ type brokerRegistrar struct{ client *agentsecrets.Client }
 
 func (b brokerRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
 	return b.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
-		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Token: s.Token, After: s.After, Bound: s.Bound,
+		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: s.After, Bound: s.Bound,
 	})
 }
