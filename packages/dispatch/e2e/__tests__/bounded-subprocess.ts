@@ -368,14 +368,15 @@ interface Running {
  *  other caller passes any. */
 interface Collaborators {
   /** Whether `read` lists processes from `/proc`, with their tokens and `unknown` reads: this
-   *  machine's `procfs`. The rows pass `true`, so they run the path that reads again on any
-   *  machine. */
+   *  machine's `procfs`. The rows pass it, so they run either path on any machine. */
   readonly procfs?: boolean;
   /** Reads the process table: `processTable`. */
   readonly read?: () => readonly Listed[] | undefined;
   /** Sends SIGKILL to one pid, and may throw where it is gone: `process.kill`. */
   readonly signal?: (pid: number) => void;
-  /** Waits before a read made for `unknown` processes alone: `Bun.sleepSync(execPause)`. */
+  /** Waits after a read that finds nothing new but lists an `unknown` process that started at or
+   *  after the child and that this kill has not signalled, the `maxReads`-th read too, after
+   *  which no read follows: `Bun.sleepSync(execPause)`. */
   readonly pause?: () => void;
 }
 
@@ -403,12 +404,16 @@ interface Collaborators {
  *  child cannot carry its token, and one this kill signalled is exiting, not exec'ing, so
  *  neither keeps the reads going.
  *
- *  Four rows of `bounded-subprocess.test.ts` hold those reads with no clock and no real process,
- *  each driving this loop over a scripted table through the second argument below. A process
- *  read `unknown` and then with the child's token is read again after one pause and killed, and
- *  the next read, which finds nothing new, ends the reads; an unknown process that started
- *  before the child, or that this kill signalled, ends them at once; and one that stays unknown
- *  ends them at `maxReads`. The row whose child leaves a `setsid sleep` behind does not hold the
+ *  The rows of `bounded-subprocess.test.ts` that drive this loop over a scripted table, through
+ *  the second argument below, hold each condition of it and of `treeOf` with no clock and no real
+ *  process. Of the reads: a process read `unknown` and then with the child's token is read again
+ *  after one pause and killed, and the next read, which finds nothing new, ends the reads; an
+ *  unknown process that started before the child, or that this kill signalled, ends them at once,
+ *  as a process started since the child that reads whole without the token does; and one that
+ *  stays unknown ends them at `maxReads`. Others hold what is taken: a running child through
+ *  `child.kill` alone and what it started by parent pid, an ended child by its token alone, the
+ *  one read where `/proc` is missing, this process never, and a walk that ends where the table
+ *  lists a loop of parents. The row whose child leaves a `setsid sleep` behind does not hold the
  *  second read: a kill without it misses that sleep only where the sleep is caught in its exec,
  *  which was 2 of the 500 runs above.
  *
@@ -434,10 +439,9 @@ interface Collaborators {
  *  process, so the child's pid seeds only the first read, taken before the child is killed, and
  *  a child that has exited is found by its token alone.
  *
- *  The second argument is for those four rows, which are why this is exported, and no other
- *  caller passes it: each of its fields defaults to the real one (`Collaborators`). `child.kill`
- *  is the child's own, so the rows hand a stand-in child, one that has exited and is never
- *  killed. */
+ *  The second argument is for those rows, which are why this is exported, and no other caller
+ *  passes it: each of its fields defaults to the real one (`Collaborators`). `child.kill` is the
+ *  child's own, so the rows hand a stand-in child, whose `kill` only records. */
 export function stopTree(
   { child, start, token }: Running,
   {
