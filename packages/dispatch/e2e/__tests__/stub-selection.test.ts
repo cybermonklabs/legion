@@ -3,16 +3,23 @@
  *  The three answers decide a lot and are easy to get wrong in one direction without anyone
  *  noticing in the other: a run given the static file server where there is none to start dies
  *  before its first row, and a run refused it has no page at all. These rows fix the cases the
- *  config cannot show on a pull request, the deployed run and two-process mode among them.
+ *  config cannot show on a pull request, the deployed run, two-process mode and outside sign-in
+ *  among them.
  */
 import { describe, expect, test } from "bun:test";
 
+import type { HarnessSignIn } from "../harness-signin";
 import { stubOnlyVariable, stubRecordVariable, stubSelection } from "../stub/selection";
 
 const projects = ["stub", "stub-phone"];
 
-function selectionOf(argv: readonly string[], env: NodeJS.ProcessEnv = {}, processes = 1) {
-  return stubSelection({ argv, env, processes, projects });
+function selectionOf(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = {},
+  processes = 1,
+  signIn: HarnessSignIn = "dev"
+) {
+  return stubSelection({ argv, env, processes, projects, signIn });
 }
 
 describe("which runs hold a stubbed row", () => {
@@ -29,7 +36,7 @@ describe("which runs hold a stubbed row", () => {
     expect(selectionOf([]).holdsStubRow).toBe(true);
   });
 
-  test("a deployed run and two-process mode hold none", () => {
+  test("a deployed run, two-process mode and outside sign-in hold none", () => {
     // `bun run e2e:deployed` names no project and builds no web/dist: given the server it
     // would either refuse to start or replay these rows against a stale local build rather
     // than against the deployed image.
@@ -37,6 +44,10 @@ describe("which runs hold a stubbed row", () => {
       false
     );
     expect(selectionOf([], {}, 2).holdsStubRow).toBe(false);
+    // DISPATCH_E2E_SIGNIN=google runs its own project list with one process as with two.
+    const google = selectionOf([], {}, 1, "google");
+    expect(google.declared).toBe(false);
+    expect(google.holdsStubRow).toBe(false);
   });
 });
 
