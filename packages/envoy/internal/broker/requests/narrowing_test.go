@@ -70,7 +70,7 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 		narrowing *secrets.GitHubNarrowing
 		want      string
 	}{{nil, "owner-wide-token"}, {narrowing, "narrowed-token"}, {nil, "owner-wide-token"}} {
-		release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, step.narrowing)
+		release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, step.narrowing, ReleaseCall{})
 		if err != nil || release.Values["APP_KEY"] != step.want {
 			t.Fatalf("release %d = %v, %v; want APP_KEY=%s", i, release.Values, err, step.want)
 		}
@@ -113,7 +113,7 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 		if err != nil || request.GrantID == nil {
 			t.Fatalf("Create(%v) = %+v, %v; want a grant", names, request, err)
 		}
-		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing); !errors.Is(err, ErrNarrowingNotApplicable) || release.Values != nil {
+		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing, ReleaseCall{}); !errors.Is(err, ErrNarrowingNotApplicable) || release.Values != nil {
 			t.Fatalf("narrowed Values(%v) = %v, %v; want ErrNarrowingNotApplicable and no value", names, release.Values, err)
 		}
 	}
@@ -125,7 +125,7 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(APP_KEY, LOGIN_KEY, PLAIN_KEY) = %+v, %v; want a grant", request, err)
 	}
-	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing)
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing, ReleaseCall{})
 	if err != nil || release.Values["APP_KEY"] != "narrowed-token" || release.Values["LOGIN_KEY"] != "access-token" || release.Values["PLAIN_KEY"] != "plain-v1" {
 		t.Fatalf("narrowed Values(APP_KEY, LOGIN_KEY, PLAIN_KEY) = %v, %v; want each value", release.Values, err)
 	}
@@ -157,7 +157,7 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
-	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "outsider", ReadOnly: true})
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "outsider", ReadOnly: true}, ReleaseCall{})
 	if !errors.Is(err, ErrNarrowingOwnerNotListed) || release.Values != nil || !strings.Contains(err.Error(), "APP_KEY") || !strings.Contains(err.Error(), "outsider") {
 		t.Fatalf("Values narrowed to an unlisted owner = %v, %v; want ErrNarrowingOwnerNotListed naming APP_KEY and outsider, no value", release.Values, err)
 	}
@@ -168,7 +168,7 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 		t.Fatalf("a refused narrowing wrote grant.used rows %v, want none", audits)
 	}
 	for _, narrowing := range []*secrets.GitHubNarrowing{{Owner: "ada", ReadOnly: true}, nil} {
-		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing); err != nil || release.Values["APP_KEY"] != "token" || release.Values["PLAIN_KEY"] != "plain-v1" {
+		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing, ReleaseCall{}); err != nil || release.Values["APP_KEY"] != "token" || release.Values["PLAIN_KEY"] != "plain-v1" {
 			t.Fatalf("Values narrowed to %+v = %v, %v; want both values", narrowing, release.Values, err)
 		}
 	}
@@ -189,7 +189,7 @@ func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
-	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"missing"}})
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"missing"}}, ReleaseCall{})
 	if !errors.Is(err, secrets.ErrMintNarrowingRefused) || errors.Is(err, ErrMintFailed) || release.Values != nil {
 		t.Fatalf("Values = %v, %v; want ErrMintNarrowingRefused, not ErrMintFailed, and no value", release.Values, err)
 	}
@@ -219,7 +219,7 @@ func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 	narrowing := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"proofs"}, ReadOnly: true}
 	_, behind := grantOf(t, machine, enrollmentID, key, "read the App key", "APP_KEY", "AUTO_TOKEN")
 
-	release, err := machine.Values(t.Context(), behind, enrollmentID, narrowing)
+	release, err := machine.Values(t.Context(), behind, enrollmentID, narrowing, ReleaseCall{})
 	if !errors.Is(err, ErrNarrowingBehindAirlock) || release.Values != nil || release.Airlock != nil {
 		t.Fatalf("narrowed Values of a grant behind the airlock = %+v, %v; want ErrNarrowingBehindAirlock and no release", release, err)
 	}
@@ -234,7 +234,7 @@ func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 	}
 
 	// The same grant releases as it always did when it asks for no narrowing.
-	release, err = machine.Values(t.Context(), behind, enrollmentID, nil)
+	release, err = machine.Values(t.Context(), behind, enrollmentID, nil, ReleaseCall{})
 	if err != nil || release.Airlock == nil || release.Airlock.Names["APP_KEY"].Value == "" {
 		t.Fatalf("Values of the same grant with no narrowing = %+v, %v; want the airlock's placeholders", release, err)
 	}
@@ -245,7 +245,7 @@ func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 
 	// A grant no name of which the rules name narrows as it did before the airlock.
 	_, open := grantOf(t, machine, enrollmentID, key, "read the other App key", "OPEN_APP_KEY")
-	release, err = machine.Values(t.Context(), open, enrollmentID, narrowing)
+	release, err = machine.Values(t.Context(), open, enrollmentID, narrowing, ReleaseCall{})
 	if err != nil || !strings.Contains(release.Values["OPEN_APP_KEY"], "ghs_the_real_installation_token") {
 		t.Fatalf("narrowed Values of a grant the rules do not name = %v, %v; want the minted value", release.Values, err)
 	}

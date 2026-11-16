@@ -62,22 +62,16 @@ agent-secrets LEGION_SLACK_BOT_TOKEN -- \
 ```
 
 Your own shell expands `$LEGION_SLACK_BOT_TOKEN` before `agent-secrets` runs, and in your shell that
-name is empty. Measured on 2026-11-04 from a Legion issue pod: Slack answered
-`{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
+name is empty. Slack then answers `{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
 a secret behind the airlock — exists only in the environment of the command the client starts, so
 that command must read it itself. Put the command in single quotes, inside
-`sh -c`, where the quotes keep the expansion for the child:
+`sh -c`, where the quotes keep the expansion for the child, and give `curl` the header on standard
+input (`-H @-`), so the value is in no command's arguments:
 
 ```sh
 # right
 agent-secrets LEGION_SLACK_BOT_TOKEN -- \
-  sh -c 'curl -sS -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" https://slack.com/api/auth.test'
-```
-
-The repository uses the same form for a GitHub App token in `docs/deployment.md`:
-
-```sh
-agent-secrets LEGION_IMPLEMENT_APP --reason=… -- sh -c 'printf %s "$LEGION_IMPLEMENT_APP"'
+  sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
 
 ## A secret behind the airlock
@@ -130,13 +124,42 @@ Your transcript keeps everything a command prints.
 
 - Never echo or print the value, and never run `curl -v`, `curl --trace` or a shell with `set -x`
   around it: each of those writes the header, and so the value, to your output.
-- Check a value's shape by its length and its prefix alone. For a secret behind the airlock, that
-  reads the placeholder's shape and not the value's:
+- Check a plain value's shape by its length and its prefix alone:
 
   ```sh
   agent-secrets NAME --reason 'check the shape of this credential' -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'
   ```
 
+- A value may be a JSON document, with the credential one level down or deeper: a GitHub App
+  secret asked for without `--github-token` is the JSON object of installations, and its tokens
+  are inside it. Check a JSON value's shape by its key paths and the length of each leaf, and
+  never by printing a leaf. A probe that masks one key prints every other key's value, the
+  nested ones too, so print no value at all, masked or not. These print the key paths, then each
+  leaf's path with its length. For a value that is not JSON, jq exits 5 and writes
+  `jq: error (at <unknown>): the value is not JSON` to stderr (jaq writes
+  `Error: "the value is not JSON"`), and nothing of the value: `try … catch` keeps jq's own parse
+  error out, which quotes the text (`… (while parsing '<the value>')`):
+
+  ```sh
+  agent-secrets NAME --reason 'check the shape of this credential' -- \
+    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") | join(".")]'
+  agent-secrets NAME --reason 'check the shape of this credential' -- \
+    jq -n 'env.NAME | try fromjson catch error("the value is not JSON") | [paths(type != "object" and type != "array") as $p | {path: ($p | join(".")), length: (getpath($p) | tostring | length)}]'
+  ```
+
+- Take a credential out of a JSON value inside the command, and pass it on there without
+  printing it. `jq -e` exits 1 when the path holds nothing, so the command stops rather than
+  sending an empty credential:
+
+  ```sh
+  agent-secrets NAME --reason '…' -- sh -c '
+    token=$(printf %s "$NAME" | jq -er ".path.to.token" 2>/dev/null) || { echo "no token at .path.to.token" >&2; exit 1; }
+    curl -sS -H "Authorization: Bearer $token" https://api.example.com/'
+  ```
+
+  For a GitHub App secret, `--github-owner <account> --github-token` hands the command that one
+  account's token under the secret's name, with no JSON to take apart.
+- For a secret behind the airlock, every one of these reads the placeholder and not the value.
 - Compare two values only as equal or not equal. Never print, slice or diff their characters.
 
 ## Read the answer, not the status alone
@@ -235,8 +258,7 @@ A session on a person's own development box is not a pod, and `agent-secrets ide
 for two reasons:
 
 - **The machine is not logged in.** `agent-secrets machine login-status` prints `issued` only while
-  the machine holds its credential. The person logs the machine in; step 4b of `docs/joining.md` in
-  theorem-labs/agent-infra, "Log the VM in to the secrets broker", is that step.
+  the machine holds its credential. The person logs the machine in, as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows.
 - **The agent is not a broker session.** The helper knows only the process tree it registered. The
   person restarts the agent as one:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.
@@ -260,15 +282,15 @@ reaches no shell history.
 
 ```sh
 agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+  printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" |
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @- \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'
 ```
 
-Measured on 2026-11-04 from a Legion issue pod: it exited 0 and answered `"ok": true` with the 12
-messages of the thread. A `ts` that names no message answers
+It exits 0 and answers `"ok": true` with the messages of the thread. A `ts` that names no message answers
 `{"ok":false,"error":"thread_not_found"}`, also at exit 0, which is why the body decides and not the
 status. A thread read needs the app's `channels:history` scope in a public channel and
 `groups:history` in a private one; without them Slack answers `missing_scope`, which only a person

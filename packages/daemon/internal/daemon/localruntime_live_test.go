@@ -24,10 +24,9 @@
 //     issue and its pane `%<pid>`, so `Locator.Label` still reads as a place. The incarnation is
 //     the tmux runtime's own `<pid>:<start ticks>`, read from /proc, so a reissued pid is told from
 //     the process the locator recorded exactly as it is there.
-//   - The inner Oh My Pi command is an argv rather than a shell fragment. A pane's shell expands
-//     `$(cat <role prompt files>)` inside one `--append-system-prompt` word (omplaunch's
-//     SystemPromptArgument); with no shell, promptArgument reads the same files and composes the
-//     same word.
+//   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
+//     prompt file as a pane's does: the prompt composed (runtime.ComposePrompt) and written to
+//     runtime.WriteSystemPrompt under the claim's name, and that path as the one `--append-system-prompt` value.
 //   - No GitHub credential is minted and no `gh` bundle is written: the pane of this proof pushes
 //     nothing, so its spec carries no repository and PaneInputs names no owners directory, which
 //     is the same pane a runtime with no GitHubCredential function opens.
@@ -329,7 +328,11 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err := runtime.WriteSecretFiles(r.stateDir, []runtime.SecretFile{bootToken}); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	prompt, err := promptArgument(spec.Prompt)
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+	}
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
@@ -346,7 +349,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		r.legion, "worker-shim",
 		"--connect", r.stream,
 		"--boot-token-file", bootToken.Path,
-		"--", r.omp, "--mode", "rpc", "--append-system-prompt", prompt,
+		"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
 	}
 	if spec.ResumeSessionFile != "" {
 		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
@@ -420,40 +423,6 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
 	return append(env, variables...)
-}
-
-// promptArgument is the value of the one `--append-system-prompt` word, as a pane's shell produces
-// it from omplaunch.SystemPromptArgument: the role prompt files concatenated, the addressing, then
-// the deployment instructions, separated by a blank line, with each command substitution's trailing
-// newlines dropped as `$(…)` drops them.
-func promptArgument(parts runtime.PromptParts) (string, error) {
-	read := func(paths ...string) (string, error) {
-		var body strings.Builder
-		for _, path := range paths {
-			file, err := os.ReadFile(path)
-			if err != nil {
-				return "", fmt.Errorf("read the prompt file: %w", err)
-			}
-			body.Write(file)
-		}
-		return strings.TrimRight(body.String(), "\n"), nil
-	}
-	roles, err := read(parts.RolePromptPaths...)
-	if err != nil {
-		return "", err
-	}
-	fragments := []string{roles}
-	if parts.Addressing != "" {
-		fragments = append(fragments, parts.Addressing)
-	}
-	if parts.DeploymentInstructionsPath != "" {
-		instructions, err := read(parts.DeploymentInstructionsPath)
-		if err != nil {
-			return "", err
-		}
-		fragments = append(fragments, instructions)
-	}
-	return strings.Join(fragments, "\n\n"), nil
 }
 
 func (r *localRuntime) Suspend(ctx context.Context, loc runtime.Locator) error {

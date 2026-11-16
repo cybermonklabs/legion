@@ -146,9 +146,11 @@ Options:
                           it every case is asked of the model again.
   --scorer-records <file> Required under a read of the reserve, and refused without one; may be
                           given more than once. A record of what a live scorer read: every id
-                          it names counts as an ask the scorer read (item 6 c).
+                          it names counts as an ask the scorer read (item 6 c). A file that names
+                          no id is refused.
   --round-sessions <file> Required under a read of the reserve, and refused without one. The ids
-                          of the sessions of the round that makes the claim (item 6 d).
+                          of the sessions of the round that makes the claim (item 6 d). A file
+                          that names no id is refused.
 
 Exit status: 0 when the draw was written, 2 when it could not run.`;
 
