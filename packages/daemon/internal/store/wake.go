@@ -370,21 +370,23 @@ func LatestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (in
 	return id, nil
 }
 
-// OpenPodResume is the newest wake of issue's role with no first turn yet, and whether there is
-// one: the resume a pod-ready or first-turn observation stamps. It is read rather than remembered
-// so a daemon that restarted between the wake and the first turn still stamps it.
-func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (int64, bool, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx, `select id from pod_resumes
+// OpenPodResume is the newest wake of issue's role with no first turn yet, the project pause that
+// held it (pod_resumes.pause_id, 0 for a wake no pause held), and whether there is one: the resume
+// a pod-ready or first-turn observation stamps, and the resume a delivery wake meets when the take
+// refuses it (internal/daemon's wakeForDelivery), which says by the pause whether that resume is a
+// pause's held wake waiting on its start (decision 15 of dispatch://INFRA-3759). It is read rather
+// than remembered so a daemon that restarted between the wake and the first turn still stamps it.
+func (s *Store) OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error) {
+	err = s.pool.QueryRow(ctx, `select id, coalesce(pause_id, 0) from pod_resumes
 		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
-		order by id desc limit 1`, project, issue, string(role)).Scan(&id)
+		order by id desc limit 1`, project, issue, string(role)).Scan(&id, &pause)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return 0, 0, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read the open resume of %s's %s: %w", issue, role, err)
+		return 0, 0, false, fmt.Errorf("read the open resume of %s's %s: %w", issue, role, err)
 	}
-	return id, true, nil
+	return id, pause, true, nil
 }
 
 // ListenerReadyAt is when the Envoy listener last reported itself ready for project, and whether

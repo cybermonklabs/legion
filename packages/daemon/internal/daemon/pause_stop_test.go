@@ -799,6 +799,67 @@ func TestAPauseStopTheResumeOvertakesStopsNothing(t *testing.T) {
 	}
 }
 
+// The resume wakes every lane at once (projectPause.Resumed), so a held notice of a role whose
+// stop took the pause's held wake can run before that wake's start row. The notice finds its
+// architect released, and the delivery wake's take is refused by the role's open resume, which is
+// the held wake: the pause's owed launch, not a resume no process came behind. The daemon says so
+// at Info, writes no Warn that the resume stands open with no process behind it, and resumes the
+// role through the wake pacing; the held wake's start row, which runs next, finds the role
+// running, and the role launches once.
+func TestANoticeThatMeetsThePausesHeldWakeAtTheResumeWarnsOfNoStuckResume(t *testing.T) {
+	const stuck = `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`
+	const heldWake = `"msg":"wake: a released role's open resume is its pause's held wake; this wake resumes the role through the wake pacing"`
+	r := newPauseRig(t, claim.RoleArchitect)
+	sup, rt := r.supervisor()
+	machine := releasedClaim(t, sup, claim.RoleArchitect)
+	architect := machine.Claim().Token
+	held := r.pauseLegion()
+	r.mustStop(r.claim(claim.RoleArchitect, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID, LaunchOwed: true})
+	if _, open := r.heldWakes(held.ID, claim.RoleArchitect); open != 1 {
+		t.Fatalf("the architect's open held wakes = %d, want the one its stop took for the launch it is owed", open)
+	}
+	if starts := r.starts(claim.RoleArchitect); len(starts) != 1 || starts[0].pause != held.ID {
+		t.Fatalf("the architect's starts = %+v, want the held wake's start of pause %d", starts, held.ID)
+	}
+	ended := r.resume()
+	if err := machine.Handle(r.ctx, supervise.ResumePause{Claim: architect, Pause: ended.ID}); err != nil {
+		t.Fatalf("the resume's event: %v", err)
+	}
+	if got := machine.Claim(); !got.Released() {
+		t.Fatalf("the architect is %s by %s after the resume's event, want it still released: its launch is the held wake's",
+			got.State, got.SuspendedBy)
+	}
+	logs := &testlog.Buffer{}
+	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, trees: r.st, project: "legion",
+		dispatchProject: "LEGION", notices: &outboxPublisher{}, log: slog.New(slog.NewJSONHandler(logs, nil)), now: time.Now}
+
+	notice := leasedOutboxRow(t, r.pool, runner.records, mustOutboxRow(t, pauseIssue,
+		record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, time.Now()))
+	if err := runner.execute(r.ctx, notice); !errors.Is(err, errNoticeWaits) {
+		t.Fatalf("the notice that met the held wake = %v, want it waiting for the architect it woke", err)
+	}
+
+	if lines := loggedLines(t, logs.String(), stuck); len(lines) != 0 {
+		t.Fatalf("the wake that met the pause's held wake logged %v, want no Warn of a resume no process came behind", lines)
+	}
+	lines := loggedLines(t, logs.String(), heldWake)
+	if len(lines) != 1 || lines[0]["level"] != "INFO" || int64(lines[0]["pause"].(float64)) != held.ID {
+		t.Fatalf("the held wake's lines = %v, want one at INFO naming pause %d; log:\n%s", lines, held.ID, logs.String())
+	}
+	if got := machine.Claim(); got.Released() {
+		t.Fatalf("the architect is %s by %s after the notice's wake, want it resumed", got.State, got.SuspendedBy)
+	}
+	if err := runner.RunOnce(r.ctx); err != nil {
+		t.Fatalf("run the held wake's start: %v", err)
+	}
+	if starts := r.starts(claim.RoleArchitect); len(starts) != 0 {
+		t.Fatalf("the architect's starts left = %+v, want the held wake's start run", starts)
+	}
+	if got := len(resumesOf(rt, architect)); got != 1 {
+		t.Fatalf("the architect was resumed %d times, want once: the notice's wake and the held wake's start are one launch", got)
+	}
+}
+
 // A wake's start finishes without acting once a park, a close or a moved phase took its role over
 // while the row waited — the pause holds a wake's row for as long as it stands (decision 10): the
 // claim the daemon suspended stays suspended by the daemon. The same row over a role still

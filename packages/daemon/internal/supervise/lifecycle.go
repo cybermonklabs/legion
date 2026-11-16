@@ -200,7 +200,7 @@ func (m *Machine) relaunchLater(wait time.Duration, relaunch func(context.Contex
 func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
-	if m.holding() {
+	if m.held != nil {
 		return m.suspendedFor(ctx, *m.held, true)
 	}
 	return relaunch(ctx)

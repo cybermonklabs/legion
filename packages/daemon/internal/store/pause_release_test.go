@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -200,19 +199,15 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 	}
 }
 
-// heldOpenResume is the pause that holds role's open resume, and whether role has an open resume.
+// heldOpenResume is the pause that holds role's open resume, and whether role has an open resume,
+// read as the delivery wake reads it (OpenPodResume).
 func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
 	t.Helper()
-	var pause int64
-	err := st.Pool().QueryRow(context.Background(), `select coalesce(pause_id, 0) from pod_resumes
-		where issue = $1 and role = $2 and first_turn_at is null and closed_at is null`, rootIssue, string(role)).Scan(&pause)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false
-	}
+	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, role)
 	if err != nil {
 		t.Fatalf("read the open resume of %s: %v", role, err)
 	}
-	return pause, true
+	return pause, open
 }
 
 // Decision 14 of dispatch://INFRA-3759: the stuck warning's read and the stranded read measure a

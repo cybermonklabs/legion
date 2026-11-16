@@ -198,7 +198,7 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 	if err := m.interrupted(ctx, interruption, outOfMemory); err != nil {
 		return err
 	}
-	if m.holding() {
+	if m.held != nil {
 		return m.endHeld(ctx, false)
 	}
 	return m.launch(ctx, ending)

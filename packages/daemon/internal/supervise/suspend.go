@@ -69,11 +69,12 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     suspension holds waits instead, and a project pause's hold whose pause is still the open
 //     one stays (decision 5 of dispatch://INFRA-3759's plan). Every other end of the process
 //     drops it with the process (letGo).
-//   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped where it
-//     fires instead of run (holding), and the resume drops it at once (ResumePause). A pause's
-//     request that reaches a claim whose suspension is already held writes its own pause's id on
-//     a released hold — the idle release's, or an earlier pause's — so that hold fires for the
-//     open pause; a held daemon's or operator's suspension keeps its own source and reason.
+//   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped at the start
+//     of the claim's next decision instead of run (dropEndedPauseHold), the resume's event
+//     (ResumePause) among them. A pause's request that reaches a claim whose suspension is already
+//     held writes its own pause's id on a released hold — the idle release's, or an earlier
+//     pause's — so that hold fires for the open pause; a held daemon's or operator's suspension
+//     keeps its own source and reason.
 //   - It lives in memory only. A restart forgets it, so whoever holds the request asks again: the
 //     outbox retries its suspend row until the claim answers nil. A restart starts the operator's
 //     stop timeout over; a deadline the daemon names is a time, so it holds as named.
@@ -205,7 +206,7 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // exceptions that keep a stronger hold's own words: a released request — the idle release's or a
 // pause's — leaves a held daemon's suspension its source and reason (an operator's is kept by
 // suspendRequest before this reads it), and the idle release's leaves a pause's hold its pause, so
-// that hold still fires for the pause and is dropped with it (holding, ResumePause).
+// that hold still fires for the pause and is dropped once that pause ends (dropEndedPauseHold).
 func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -283,7 +284,8 @@ func suspensionRank(source SuspendSource) int {
 
 // suspendAtTimeout is the held suspension's timer: the turn did not end by the hold's deadline, so
 // the process is stopped mid-turn; or an earlier stop failed, and it is tried again. A project
-// pause's hold whose pause has ended by then is dropped instead, and the turn runs on (holding).
+// pause's hold whose pause has ended by then is dropped at the start of the decision, and this
+// timer with it (dropEndedPauseHold, dropHeld), so the fence drops the timer and the turn runs on.
 //
 // A stop forced mid-turn is not the turn's end: the confirmed task did not finish, so it goes back
 // interrupted, as a death in a turn takes it back. The task is taken back before the stop, as died
@@ -296,7 +298,7 @@ func suspensionRank(source SuspendSource) int {
 // it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
 // Machine.cutTurnOf, recordEnd).
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
-	if !m.holding() {
+	if m.held == nil {
 		return nil
 	}
 	if m.claim.State == StateWorking {

@@ -14,8 +14,9 @@ package supervise
 //     claim (persistStop). One that fails is owed on the owed mark (owedClaimWrite.stops), and
 //     every write of the claim goes through it until one lands (putStops).
 //   - The holds (decision 5): a pause's held suspension survives a start while its pause is open
-//     (StartedBy), a later pause's request takes it over (holdSuspension), it is dropped where it
-//     fires once its pause has ended (holding), and the resume drops it at once (ResumePause).
+//     (StartedBy), a later pause's request takes it over (holdSuspension), and once its pause has
+//     ended it is dropped at the start of the claim's next decision, before anything of that
+//     decision reads it (dropEndedPauseHold); the resume's event (ResumePause) is such a decision.
 
 import (
 	"context"
@@ -91,26 +92,27 @@ func (m *Machine) startCutShort() bool {
 	return m.startStopped && m.launchRecordsNoProcess()
 }
 
-// holding is whether a suspension is held over the claim and still stands, read where a held
-// suspension fires: the end of a turn or of a compaction, the agent's ready, the hold's own timer,
-// a prompt retirement, a death, a stale address, a stall, a wake's turn and a waiting relaunch. A
-// project pause's hold whose pause has ended is dropped here instead of run (decision 5): the
-// resume drops it at once (ResumePause), and this is where one goes that the resume's event has
-// not reached — or never will, the event of a resume this daemon did not make — so a role in a
-// turn runs on and a launch held until ready goes ahead. Its pause has ended when it is not the
-// open pause, a later pause's included: a later pause's own request writes its id on the hold
-// (holdSuspension), so a hold that still names an earlier one was taken over by no pause.
-func (m *Machine) holding() bool {
-	if m.held == nil {
-		return false
+// dropEndedPauseHold drops a project pause's held suspension whose pause is no longer the open one
+// (decision 5), and is the one place such a hold goes. It runs at the start of every decision,
+// once the lock is taken and before settle and the fence (Handle), and at the start of a start
+// run against the claim (StartedBy), the one decision that does not go through Handle. So every
+// row, timer, event and send of a decision reads a held suspension only while it still stands: a
+// compaction is not refused for an ended pause's hold, a task is not held back behind one, and
+// where a held suspension fires — the end of a turn or of a compaction, the agent's ready, the
+// hold's own timer, a prompt retirement, a death, a stale address, a stall, a wake's turn and a
+// waiting relaunch — a role in a turn runs on and a launch held until ready goes ahead. The
+// resume's event (ResumePause) is one such decision, and a resume whose event never reaches this
+// machine — one another daemon made — is met by the claim's next decision. Its pause has ended
+// when it is not the open pause, a later pause's included: a later pause's own request writes its
+// id on the hold (holdSuspension), so a hold that still names an earlier one was taken over by no
+// pause.
+func (m *Machine) dropEndedPauseHold() {
+	if m.held == nil || m.held.Pause == 0 || m.pauseOpen(m.held.Pause) {
+		return
 	}
-	if m.held.Pause != 0 && !m.pauseOpen(m.held.Pause) {
-		m.log.Info("supervise: the held suspension's pause has ended; it is dropped rather than run",
-			"pause", m.held.Pause, "reason", m.held.Reason)
-		m.dropHeld()
-		return false
-	}
-	return true
+	m.log.Info("supervise: the held suspension's pause has ended; it is dropped rather than run",
+		"pause", m.held.Pause, "reason", m.held.Reason)
+	m.dropHeld()
 }
 
 // launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing
@@ -130,12 +132,11 @@ func (m *Machine) holdsTask() bool {
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
 // the wake gate before its exempt return (reserveWake), from a parked wake's turn (wakeNow), and
 // from a dropped wake taken up again (reparkWake). The launch runs nothing, takes no token from
-// the pacing and arms no retry: it waits on the machine as a parked wake does (parkWake), with no
-// timer and no moment (wake.pause). A claim that records no process is written launching and
-// persisted, so a restart finds a launch to relaunch, which meets the gate again
-// (relaunchUnfinished in internal/daemon); one whose process runs keeps its state, the timers
-// that watch that process disarmed as a park disarms them, since the launch held is to replace
-// it.
+// the pacing and arms no retry: it waits on the machine as a parked wake does (waitOnMachine),
+// with no timer and no moment (wake.pause). A claim that records no process is written launching
+// and persisted, so a restart finds a launch to relaunch, which meets the gate again
+// (relaunchUnfinished in internal/daemon); one whose process runs keeps its state, since the
+// launch held is to replace that process.
 //
 // The decision ends in a state its own row names (Handle). A suspension made inside it would not:
 // no row that launches names suspended, and the hold that would excuse it is read before the row
@@ -143,19 +144,11 @@ func (m *Machine) holdsTask() bool {
 // machine posts itself every event it owes itself, and is made there (pauseStopDue).
 func (m *Machine) pauseGate(ctx context.Context, waiting *wake, pause int64) error {
 	waiting.pause = pause
-	m.wake = waiting
 	m.disarm(TimerWake)
 	m.arm(TimerPause, 0, "")
 	m.log.Info("supervise: the project is paused; its gate holds this claim's launch, and the claim is stopped for the pause",
 		"pause", pause, "kind", waiting.kind, "state", m.claim.State)
-	if m.claim.Locator != nil {
-		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
-			m.disarm(kind)
-		}
-		return nil
-	}
-	m.claim.State = StateLaunching
-	return m.persist(ctx)
+	return m.waitOnMachine(ctx, waiting)
 }
 
 // pauseStopDue is the gate's own stop (TimerPause): the machine posting itself the suspension of
@@ -242,20 +235,16 @@ func (m *Machine) letOutHeldLaunch(ctx context.Context) error {
 }
 
 // resumePause is the resume's event (ResumePause): what this claim holds of the pause that ended
-// goes, and nothing of any other pause. A suspension held for that pause is dropped, so a role in a
-// turn runs on and a launch held until ready goes ahead; a launch the gate held for it goes to the
-// wake pacing, or is stopped for a later pause that holds the project by now (pauseStopDue); and
-// the task the claim holds is sent where it may now go, which is the daemon's step of handing each
-// role its held task at the resume (decision 22).
+// goes, and nothing of any other pause. A suspension held for that pause has gone already, at the
+// start of this decision (dropEndedPauseHold), so a role in a turn runs on and a launch held until
+// ready goes ahead; a launch the gate held for it goes to the wake pacing, or is stopped for a
+// later pause that holds the project by now (pauseStopDue); and the task the claim holds is sent
+// where it may now go, which is the daemon's step of handing each role its held task at the
+// resume (decision 22).
 func resumePause(m *Machine, ctx context.Context, ev Event) error {
 	pause := ev.(ResumePause).Pause
 	if pause <= 0 {
 		return fmt.Errorf("supervise: the resume reaching %s names pause %d, which is no pause's id", m.claim.Token, pause)
-	}
-	if m.held != nil && m.held.Pause == pause {
-		m.log.Info("supervise: the project's resume drops the pause's held suspension; the claim runs on",
-			"pause", pause, "reason", m.held.Reason)
-		m.dropHeld()
 	}
 	if w := m.wake; w != nil && w.pause == pause {
 		if _, holds := m.pauseHolds(); holds {
@@ -354,10 +343,11 @@ func (m *Machine) stopWaitsForResult() bool {
 }
 
 // pauseHoldAtResult is whether a project pause's held suspension waited for the result that has
-// just come in (stopWaitsForResult): the turn it was held for is over, and the hold still stands
-// for an open pause (holding drops one whose pause has ended).
+// just come in (stopWaitsForResult): the turn it was held for is over, and the hold still stands,
+// so its pause is still the open one (dropEndedPauseHold dropped it at the start of this decision
+// had that pause ended).
 func (m *Machine) pauseHoldAtResult() bool {
-	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0 && m.holding()
+	return m.claim.State == StateIdle && m.held != nil && m.held.Pause != 0
 }
 
 // stopAtResult runs the project pause's held suspension that waited for this result

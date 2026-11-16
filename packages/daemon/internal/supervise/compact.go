@@ -412,7 +412,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return nil
 	}
-	if m.holding() {
+	if m.held != nil {
 		// A suspension that arrived while the compaction ran was held for it, as one that
 		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
 		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {

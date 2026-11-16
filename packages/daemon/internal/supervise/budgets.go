@@ -189,7 +189,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 			"limit", m.deps.Limits.PromptFailures)
 		return m.persist(ctx)
 	}
-	if m.holding() {
+	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
 	retires := m.claim.Budgets.PromptRetires + 1

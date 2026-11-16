@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -445,7 +446,8 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 // record: a resume that failed after its take committed, and a daemon that came back up between
 // the two and reads the claim released with the resume open. The wake that meets it takes no wake
 // of its own — the resume already recorded is still the role's one open resume — and brings the
-// claim back.
+// claim back. No pause held that resume, so the wake says at Warn that it stands open with no
+// process behind it (logRefusedByOpenResume).
 func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -460,14 +462,23 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	if err != nil || !taken {
 		t.Fatalf("take the wake whose resume never ran = %t, %v; want it taken", taken, err)
 	}
-	resume, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
-	if err != nil || !open {
-		t.Fatalf("the open resume after that take = %d, %t, %v; want the one it recorded", resume, open, err)
+	resume, pause, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	if err != nil || !open || pause != 0 {
+		t.Fatalf("the open resume after that take = %d, pause %d, %t, %v; want the one it recorded, which no pause held", resume, pause, open, err)
 	}
+	logs := &testlog.Buffer{}
+	rig.runner.log = slog.New(slog.NewJSONHandler(logs, nil))
 
 	woken, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key)
 	if err != nil || !woken {
 		t.Fatalf("the wake meeting the open resume = %t, %v; want the claim woken", woken, err)
+	}
+	stuck := loggedLines(t, logs.String(), `"msg":"wake: a released pod's resume stands open with no process behind it; this wake resumes it"`)
+	if len(stuck) != 1 || stuck[0]["level"] != "WARN" {
+		t.Fatalf("the stuck resume's lines = %v, want one at WARN; log:\n%s", stuck, logs.String())
+	}
+	if held := loggedLines(t, logs.String(), "its pause's held wake"); len(held) != 0 {
+		t.Fatalf("the wake logged %v, want no line of a pause's held wake: no pause held this resume", held)
 	}
 	if got := rig.machine.Claim(); got.Released() {
 		t.Fatalf("the claim after the wake that met the open resume = %s by %s, want it resumed: no release will ever close that resume",
@@ -475,7 +486,7 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	}
 	// The heal takes no wake of its own: the resume the first take recorded is still the one
 	// open, so the records hold one resume of this release rather than two.
-	again, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
+	again, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer)
 	if err != nil || !open || again != resume {
 		t.Fatalf("the open resume after the heal = %d, %t, %v; want the first take's %d", again, open, err, resume)
 	}

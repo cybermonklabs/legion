@@ -410,8 +410,9 @@ type RequestReady struct {
 // SuspendedByReleased — any other source with a pause, or a negative id, is refused
 // (suspendRequest). A suspension that carries one ends in the pause's stop transaction rather than
 // the plain claim write (Deps.PauseStopped, suspendedFor), and a hold of one is the pause's: kept
-// across a start while its pause is open (StartedBy), dropped where it fires once that pause has
-// ended (holding), and dropped by the resume's event (ResumePause).
+// across a start while its pause is open (StartedBy), and dropped at the start of the claim's next
+// decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
+// them.
 type RequestSuspend struct {
 	Claim     claim.Token
 	Reason    string
@@ -427,12 +428,14 @@ type RequestResume struct{ Claim claim.Token }
 
 // ResumePause is the daemon's word, posted to every machine of its project once a resume of the
 // project has committed (decision 22 of dispatch://INFRA-3759's plan), that pause Pause is over.
-// The daemon clears its flag (Deps.Paused) before it posts this. The machine drops a suspension it
-// holds for that pause, so a role in a turn runs on and a launch held until its agent is ready
-// goes ahead; it takes a launch the pause's gate held for that pause into the wake pacing — a
-// reservation from the limiter, then its timer — or, where a later pause holds the project by
-// then, stops the claim for that one (pauseStopDue); and it sends the task it holds where it may
-// now go (sendPending), so the daemon's resume needs nothing else to hand a role its held task.
+// The daemon clears its flag (Deps.Paused) before it posts this, so the decision drops a
+// suspension the machine holds for that pause before its row runs, as every decision drops the
+// hold of a pause that has ended (dropEndedPauseHold): a role in a turn runs on and a launch held
+// until its agent is ready goes ahead. The row takes a launch the pause's gate held for that pause
+// into the wake pacing — a reservation from the limiter, then its timer — or, where a later pause
+// holds the project by then, stops the claim for that one (pauseStopDue); and it sends the task
+// the claim holds where it may now go (sendPending), so the daemon's resume needs nothing else to
+// hand a role its held task.
 // It touches nothing of any other pause: a hold or a held launch a later pause took over carries
 // that pause's id, so an event that arrives after the next pause began finds nothing of its own.
 // Pause is the ended pause's id (store.Pause.ID), never 0, which is refused.
@@ -2032,7 +2035,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.askFirst, m.busyTurn = false, false
-	if m.holding() && !m.stopWaitsForResult() {
+	if m.held != nil && !m.stopWaitsForResult() {
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
@@ -2418,7 +2421,7 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
 	m.disarm(TimerRegistration)
-	if m.holding() {
+	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)
@@ -2451,7 +2454,7 @@ func finishReady(m *Machine, ctx context.Context) error {
 // suspension still wins: the retry completes that suspension instead of publishing ready and
 // releasing notices to a claim the operator or workflow is stopping.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.holding() {
+	if m.held != nil {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)

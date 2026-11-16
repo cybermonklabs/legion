@@ -883,10 +883,10 @@ type Deps struct {
 	// the gate that holds every launch of a claim that is not the controller's while the project
 	// is paused (reserveWake, wakeNow, pauseGate), the send that hands such a claim no task then
 	// (sendPending), a start that keeps the hold of the open pause (StartedBy), and a pause's
-	// hold that is dropped where it fires once its pause is no longer the open one (holding). The
-	// controller's claim (claim.IsController) is never held by it. nil is a project never paused,
-	// which is today's behaviour: nothing is gated, and a hold that names a pause is one whose
-	// pause has ended.
+	// hold that is dropped at the start of a decision once its pause is no longer the open one
+	// (dropEndedPauseHold). The controller's claim (claim.IsController) is never held by it. nil
+	// is a project never paused, which is today's behaviour: nothing is gated, and a hold that
+	// names a pause is one whose pause has ended.
 	Paused func() (int64, bool)
 	// PauseStopped is the stop transaction (decision 6): the claim write a suspension a project
 	// pause asked for (RequestSuspend.Pause) ends in, in place of the plain write, together with
@@ -1466,6 +1466,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
 	m.repair(ctx)
+	// A project pause's hold whose pause has ended goes before anything of the decision reads the
+	// hold, so the fence, the row, the send and every place a hold fires read only one that stands.
+	m.dropEndedPauseHold()
 	// Settle first, so the fence judges the task the row will find: a settle after the fence could
 	// retire the very task it let the event through for.
 	if err := m.settle(ctx); err != nil {
@@ -1604,7 +1607,9 @@ func (c Claim) ReleasedLaunch() bool {
 // dispatch://INFRA-3759's plan): a start leased before the pause began must not let the role it
 // starts run past the pause's stop, which the outbox's pause rule would otherwise have held back
 // (record's outboxPauseFree). Its task waits as every task does while the project is paused
-// (sendPending). A pause's hold whose pause has ended is dropped as a daemon's is.
+// (sendPending). A pause's hold whose pause has ended is gone before the start reads the hold, as
+// it is at the start of every decision (dropEndedPauseHold): this is the one decision that does
+// not go through Handle.
 //
 // It is also what releases a task held because its root had no architect to hear it (sendPending,
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the
@@ -1613,6 +1618,7 @@ func (c Claim) ReleasedLaunch() bool {
 func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 	m.mu.Lock()
 	defer m.unlock()
+	m.dropEndedPauseHold()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
@@ -1622,7 +1628,7 @@ func (m *Machine) StartedBy(ctx context.Context, row int64) error {
 	m.claim.LastStartRow = row
 	switch {
 	case m.held == nil:
-	case m.held.Pause != 0 && m.pauseOpen(m.held.Pause):
+	case m.held.Pause != 0:
 		m.log.Info("supervise: a start keeps the held suspension of the open pause", "row", row,
 			"pause", m.held.Pause, "reason", m.held.Reason)
 	default:
@@ -2698,7 +2704,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
 	}
-	if m.holding() {
+	if m.held != nil {
 		return m.endHeld(ctx, false)
 	}
 	if m.claim.DeathCharged {

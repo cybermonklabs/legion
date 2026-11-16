@@ -262,24 +262,9 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 		pluginMark: m.takePluginRelaunch()}, at.Sub(now))
 }
 
-// parkWake is the park the gate and the re-park share (reserveWake, reparkWake): waiting waits on
-// the machine, TimerWake is armed for after — what is left of its wait — and a claim that records
-// no process is written launching and persisted, which is what reserveWake states. A claim that
-// still records its process is left exactly as it stands.
-//
-// What that claim does not keep is the four timers that watch the process this wake replaces: its
-// boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
-// uncertain answer armed (judge), and the wait for the turn an acknowledged prompt began (acked).
-// The process is kept until the turn, so every one of those timers would otherwise fire into the
-// wait — the boot interval of a process that died while it booted charging a launch failure of
-// its own at each one, which is a claim failing before launch_failure_limit real failures
-// (judge's own guard answers what they report, and this keeps them from reporting, as probe's
-// own guard keeps the probe interval from being armed again inside the wait). The turn replaces
-// the process and arms the new one's timers (launchNow, armBoot), a turn whose own lifecycle
-// recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
-// and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
-// held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
-// the wake's turn does not run.
+// parkWake is the park the gate and the re-park share (reserveWake, reparkWake): TimerWake is
+// armed for after — what is left of the wait — and waiting waits on the machine (waitOnMachine),
+// which is what reserveWake states.
 //
 // The credit of the refresh gate this machine may hold outlives a park of this lane's own kind
 // and no other (endRefreshLane, dispatch://INFRA-2712 R1): that wake is the one the credit was
@@ -297,8 +282,30 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 // raises one later is held to the rule by ending its decision, with nothing for this park to
 // remember (endRefreshLane).
 func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Duration) error {
-	m.wake = waiting
 	m.arm(TimerWake, after, "")
+	return m.waitOnMachine(ctx, waiting)
+}
+
+// waitOnMachine is the tail a parked wake and a launch the pause's gate holds share (parkWake,
+// pauseGate), each having armed its own timer first: waiting waits on the machine (Machine.wake),
+// and a claim that records no process is written launching and persisted. A claim that still
+// records its process is left exactly as it stands.
+//
+// What that claim does not keep is the four timers that watch the process this wake replaces: its
+// boot interval and its registration deadline (armBoot, armRegistration), the probe interval an
+// uncertain answer armed (judge), and the wait for the turn an acknowledged prompt began (acked).
+// The process is kept until the turn, so every one of those timers would otherwise fire into the
+// wait — the boot interval of a process that died while it booted charging a launch failure of
+// its own at each one, which is a claim failing before launch_failure_limit real failures
+// (judge's own guard answers what they report, and this keeps them from reporting, as probe's
+// own guard keeps the probe interval from being armed again inside the wait). The turn replaces
+// the process and arms the new one's timers (launchNow, armBoot), a turn whose own lifecycle
+// recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
+// and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
+// held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
+// the wake's turn does not run.
+func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
+	m.wake = waiting
 	if m.claim.Locator != nil {
 		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
 			m.disarm(kind)
@@ -361,11 +368,12 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // stopped for the pause (pauseGate). The gate is asked after the held suspension, because a held
 // suspension ends the claim here without a launch, for its own source — the pause's own hold
 // among them, whose stop then owes the role this launch (endHeld) — and a pause's hold whose pause
-// has ended is dropped first, as it is wherever a hold fires (holding).
+// has ended is gone before this row runs, as it is at the start of every decision
+// (dropEndedPauseHold).
 func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	m.wake = nil
-	if m.holding() {
+	if m.held != nil {
 		// Every kind a machine parks today starts a process (StartsProcess), and this hold is
 		// ended for one (endHeld): the process that launch would replace is stopped by the
 		// suspension instead. The branch is what keeps a kind added later that starts no process
