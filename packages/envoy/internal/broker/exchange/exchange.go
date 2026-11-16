@@ -537,8 +537,8 @@ type mapping struct{ person, project string }
 //
 // reads are the read entries, which list Kubernetes service accounts as accounts does. An
 // account both lists name is refused, naming its read entry, for the reason an identity listed
-// twice is: it would have two answers, a token that writes a project and one that only reads. A
-// read entry's session is required as well as usable, and is reserved for the account as an
+// twice is: it would have two answers, a token that writes as its person and one that only reads.
+// A read entry's session is required as well as usable, and is reserved for the account as an
 // account entry's fixed one is.
 //
 // signInDomain is the Google Workspace domain BROKER_SIGNIN_DOMAIN names, which Person holds a
