@@ -694,7 +694,8 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // assignment ends with the move, and the start of the phase it moved to delivers the next one.
 // Every move a backward row serves applies, and counts the implementer one pass, as every move
 // back to an earlier phase does; the review rounds stand, since no review requested changes. A
-// move onto accepting starts nobody: the tree's architect, whose phase it is, is already live.
+// move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is
+// already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
 		for _, to := range requiredBackwardTargets(from) {

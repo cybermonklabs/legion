@@ -831,8 +831,9 @@ func TestAMachineRefusesLimitsOrTimeoutsThatCannotWork(t *testing.T) {
 }
 
 // A failed claim stays failed until someone decides otherwise: the architect's retry of a held
-// phase decides it for a worker, and the operator's retry for an architect, which nothing else
-// relaunches, and for a phase worker whose own retries do not reach it. Each relaunches the same
+// phase decides it for a worker, and the operator's retry for an architect, which a later start
+// the daemon writes for it also relaunches (a child's next phase start, a re-admission of its
+// tree), and for a phase worker whose own retries do not reach it. Each relaunches the same
 // session with fresh budgets.
 func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	for _, tc := range []struct {

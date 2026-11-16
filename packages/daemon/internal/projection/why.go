@@ -269,8 +269,8 @@ func linkReason(waitsOn []string) string {
 }
 
 // atWorkPastReview is an issue whose work is running now in a phase past its own review:
-// accepting, where the tree's architect reads the head the issue's worker built, its retro, and
-// its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
+// accepting, where the architect that owns the issue reads the head the issue's worker built, its
+// retro, and its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
 // (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
 // whyStates standing in none of the three lists that place an issue: the held list names it
 // instead, under the ladder's at_work where no earlier word is true of it (record.HeldAtWork).

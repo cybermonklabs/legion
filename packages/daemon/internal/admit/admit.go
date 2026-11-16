@@ -2766,11 +2766,11 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The per-issue tests of the shared selection (phaseWorkerOf) bound the phase workers it names,
 // and they are what keeps it from starting a worker the cap has not admitted:
-// workflow.OpenPhaseRole answers no worker role for accepting, the tree's architect's own phase,
-// so the selection passes over it, and record.AtWork is false for accepting. So the widening
-// reaches the worker of a retro and of a merging, where the merger's own work ends the phase, and
-// no other phase worker. An issue at work that holds no row because it waits in the line is not
-// reached, which is the cap bypass this repair must never be.
+// workflow.OpenPhaseRole answers no worker role for accepting, which is the own phase of the
+// architect that owns the issue, so the selection passes over it, and record.AtWork is false for
+// accepting. So the widening reaches the worker of a retro and of a merging, where the merger's
+// own work ends the phase, and no other phase worker. An issue at work that holds no row because
+// it waits in the line is not reached, which is the cap bypass this repair must never be.
 //
 // The root's own architect is the second role, and record.AtWork is not its reading: that rule
 // answers false for a root at admitted once its design gate has opened, where the architect is
@@ -2988,7 +2988,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// cutover left stopped (workflow's cutoverMergerRepair), which no wake would start.
 
 		// A claim an operator suspended is passed over whatever entry it stands on: `legion
-		// claims stop` stopped that worker and only the operator's own resume starts it again
+		// claims suspend` suspended that worker and only the operator's own resume starts it again
 		// (supervise's RuleHolds, which no start the daemon queues gets past). A claim the
 		// daemon itself suspended is repaired, which is what the idle rule's release and the
 		// daemon's own suspend both leave behind.

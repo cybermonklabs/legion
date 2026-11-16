@@ -454,7 +454,7 @@ func TestWaveReleaseRecordsATodoChildOfAChildTheSameWaveReleases(t *testing.T) {
 
 // A child whose parent still has not reached the daemon does not make an architect retry forever.
 // After the bounded backoff attempts, release_children answers CHILD_RELEASE_STALLED and queues one
-// notice to the tree architect.
+// notice to the architect that released it.
 func TestWaveReleaseBoundsAnUnrecordedChildRetryAndNotifiesTheArchitect(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()

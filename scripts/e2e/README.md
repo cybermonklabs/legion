@@ -836,7 +836,7 @@ The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work di
 It proves admission order and a child that stands in its tree with no slot of its own
 — a slot is one issue the daemon has started, held as root `AGENTS.md`'s "Admission" says; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
-its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
+its first turns come from the task its start carries and the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
 — a review ends when its reviewer completes it, so the round returns to implementing only once the reviewer's handoff is recorded on the Dispatch issue under the reviewer's claim session, and each review, like the final approval, names the issue branch's head at that round's reviewer completion, the implementer's last pushed head (the order the Go reviewer prompt gives;
 the proof names only the decision); in round one the proof human, a GitHub App and so a bot account like a CI bot and none of Legion's role Apps, also opens a file-level review thread (the run reads the thread's author back and stops, naming it, when the devbox `gh` posted as anything else, such as the user after its App routing failed).
@@ -2472,7 +2472,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 
 - `spec-posted`
 
-  each admitted architect, prompted by nothing but the daemon's `catch-up` notice, posts its spec and registers the gate;
+  each admitted architect, prompted by nothing but the task its start carries and the daemon's `catch-up` notice, posts its spec and registers the gate;
   with `gates.design: off`, the empty list, the daemon moves the tree to planning
 
 - `advertise-host`

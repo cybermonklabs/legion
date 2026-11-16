@@ -258,7 +258,7 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 			change: func(f *architectSweepFixture) {
 				f.state, f.suspendedBy = supervise.StateSuspended, supervise.SuspendedByOperator
 			},
-			why: "`legion claims stop` stopped that architect and only the operator's own resume starts it again",
+			why: "`legion claims suspend` suspended that architect and only the operator's own resume starts it again",
 		},
 		{
 			name: "a root whose architect claim is retired", change: func(f *architectSweepFixture) { f.state = supervise.StateRetired },

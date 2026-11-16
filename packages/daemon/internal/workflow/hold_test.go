@@ -23,11 +23,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A tree's architect is who every notice of its tree reaches, so its own claim failing — its
-// launches or prompts ran out — would reach nobody unless the daemon says so: the failure is a
-// worker-died notice naming the architect and the phase the root is in, written for the architect
-// that owns the issue and for the controller. Nothing is held: a phase is its worker's, and the root's planner here
-// keeps its phase.
+// A tree's architect is who every notice of its tree reaches that no child's own architect takes,
+// so its own claim failing — its launches or prompts ran out — would reach nobody unless the daemon
+// says so: the failure is a worker-died notice naming the architect and the phase the root is in,
+// written for the architect that owns the issue and for the controller. Nothing is held: a phase
+// is its worker's, and the root's planner here keeps its phase.
 func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -113,7 +113,7 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RoleArchitect, wantPhase: phase.Implementing,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing,
-				Reason: "LEGION-209's own architect failed; its notices come to you until the daemon starts it again at LEGION-209's next phase start"}},
+				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -713,7 +713,7 @@ func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) 
 		{
 			name: "a child's sub-architect while the child is in accepting", key: "LEGION-209", at: phase.Accepting, child: true,
 			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Accepting,
-				Reason: "LEGION-209's own architect failed; its notices come to you until the daemon starts it again at LEGION-209's next phase start"}},
+				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -307,7 +307,8 @@ wait_for_architect() {
   assert_claim_endpoints "$1" architect
 }
 # architect_registers_gate ISSUE LABEL waits for a root's architect to register its gate on its
-# own. Nobody prompts it: its first turn is the daemon's catch-up notice, from which it writes the
+# own. The proof prompts it with nothing: from the task its start carries and the daemon's
+# catch-up notice it writes the
 # spec (requesting approval when the design gate is armed) and registers the gate. The registration
 # must name the one primary artifact Dispatch created, so a real agent cannot register an unrelated
 # document.

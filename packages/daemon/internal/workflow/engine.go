@@ -665,12 +665,12 @@ func recordedResolution(issue record.Issue) Resolution {
 
 // ReenterChild takes a recorded child set back to todo into a new run under its live tree, the way
 // recordChildUnderLiveTree enters an unrecorded one: the run is the child's next generation, so no
-// row its previous run queued acts on it; the previous run's facts are cleared, and the tree's
-// architect is told. A child whose tree is not live is an orphan, which admission, running after
-// this handler, admits as a root of its own. fact carries the values the new generation takes — a
-// live todo event's for a reopened child, or the child's own already-recorded ones for admission's
-// promotion of a stranded child no live event ever reopened, so the run is exported for that caller
-// too: one re-entry, not two.
+// row its previous run queued acts on it; the previous run's facts are cleared, and the architect
+// above the child is told. A child whose tree is not live is an orphan, which admission, running
+// after this handler, admits as a root of its own. fact carries the values the new generation
+// takes — a live todo event's for a reopened child, or the child's own already-recorded ones for
+// admission's promotion of a stranded child no live event ever reopened, so the run is exported
+// for that caller too: one re-entry, not two.
 //
 // A done child's open production check closes as not run before the new run starts
 // (markCheckClosed). The run's generation fences a completion left by an interrupted phase, and
@@ -723,9 +723,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 //
 // A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
 // to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
-// and the tree's architect is told so here. The two doors an agent uses refuse such a child
-// outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move to
-// todo, which the daemon records rather than undoes: the record is the honest one, and the
+// and the architect above the child is told so here. The two doors an agent uses refuse such a
+// child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
+// to todo, which the daemon records rather than undoes: the record is the honest one, and the
 // notice says what the daemon will and will not do with it.
 //
 // It draws nothing: the one entry the daemon holds no record of the child before is
@@ -901,10 +901,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // architect and the controller of the hold; the worker-died that comes with it is the architect's
 // alone. The tree's architect failing holds nothing, since a phase is its worker's; it is told as a
 // worker-died of the architect, lingering or not, and the controller hears it from a row of its
-// own, because every other notice of the tree reaches that architect and nobody inside the tree is
-// left to act on its own. That is why the architect's branch comes before the lingering tree's
-// guard. The row sent to the architect's own role finishes undelivered once its claim has failed
-// (the daemon's notice executor).
+// own, because every notice of the tree that no child's own architect takes reaches that
+// architect and nobody inside the tree is left to act on its own. That is why the architect's
+// branch comes before the lingering tree's guard. The row sent to the architect's own role
+// finishes undelivered once its claim has failed (the daemon's notice executor).
 //
 // The hold, the copy of it the controller reads and the worker-died beside them name the failure
 // the fact carries: the one word for what failed the claim, the sentence written beside it and
@@ -919,11 +919,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // the architect on the child, which reaches the architect above it, since the owner walk starts
 // at the child's parent for an architect's own worker-died (record.OwningArchitect). That
 // architect takes the child's notices from then on, because the failed claim no longer holds its
-// role, until the daemon starts the child's architect again at the child's next phase start
-// (start). The worker-died names the failure, as a finished role's does, so the architect above
-// it reads why the child's architect stopped; no controller copy goes with it, since an architect
-// inside the tree is left to act on it. A child that left the workflow or a member of a lingering
-// tree tells nobody, as below.
+// role, until the child's architect runs again: the daemon starts it again at the child's next
+// phase start (start), and so do a re-admission of the tree while the child stands in a phase
+// (admit's startMidPhaseMembers) and an operator's retry. The worker-died names the failure, as a
+// finished role's does, so the architect above it reads why the child's architect stopped; no
+// controller copy goes with it, since an architect inside the tree is left to act on it. A child
+// that left the workflow or a member of a lingering tree tells nobody, as below.
 //
 // A phase role that finished its phase stays live until its issue closes, so its claim can fail
 // while another role works the issue's phase, or while the issue waits on a person: the architect
@@ -952,7 +953,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
-			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
+			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
 	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
@@ -1615,7 +1616,8 @@ func (e *Engine) row(from phase.Phase, trigger TriggerKind, target phase.Phase, 
 // tells the architect above the child that it started (ChildStartedNotice). It is the half of the
 // old gate-opening behaviour that needs a slot, and it is deliberately the only half here.
 //
-// It is the one place a child's architect starts, because every door into a child's run — an
+// It is the one place a child's first phase starts the child's architect (a later phase start
+// starts a failed one again, reviveArchitect), because every door into a child's run — an
 // architect's release_children or rerun_child, a person's todo under a live tree, the close of the
 // last issue a child waited on — reaches the child's first phase only here. A start in each door
 // would start an architect for a child that then waits at admitted for a slot, and build a pod

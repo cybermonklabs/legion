@@ -209,8 +209,8 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 // (the mirror's intake.ChildAdoption arm), and StartUnblockedChildren starts it once nothing
 // holds it. Only the adopted root itself carries that read: a member of its tree was named by no
 // release, and waits on what the mirror says. Any other status keeps it as a parked child at
-// done, which a todo runs again (ReenterChild). The tree's architect is told with a child-status
-// notice. Everything is written in the caller's transaction.
+// done, which a todo runs again (ReenterChild). The architect that owns its parent is told with a
+// child-status notice. Everything is written in the caller's transaction.
 func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, child intake.AdoptedChild) error {
 	members, err := e.store.TreeIssues(ctx, tx, issue.Key)
 	if err != nil {
@@ -275,11 +275,12 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	return e.store.PutIssue(ctx, tx, member)
 }
 
-// joinedTheTree is the child-status notice an adoption sends the architect of the tree that
-// takes an issue, so that architect reads that the issue joined and where it came from. Both
-// routes send it, each naming its own from: a queued root with its own tree's members (Adopt)
-// comes from the admission queue, and the one member of a closed tree a release takes
-// (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its old root.
+// joinedTheTree is the child-status notice an adoption sends about an issue a tree takes: the owner
+// walk starts at that issue's parent, so the architect that owns the parent reads that the issue
+// joined and where it came from. Both routes send it, each naming its own from: a queued root with
+// its own tree's members (Adopt) comes from the admission queue, and the one member of a closed
+// tree a release takes (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its
+// old root.
 func joinedTheTree(issue, root, from string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s joined the tree of %s from %s", issue, root, from)}
@@ -322,9 +323,10 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // (ReenterChild). That branch is what a member a person took out of the workflow needs: a
 // release may name a child Dispatch shows in triage, backlog or icebox (api's releasableChild),
 // and a record at admitted carrying such a status would be an issue in the live tree that no
-// list of the state names and nothing starts. The tree's architect is told with a child-status
-// notice (joinedTheTree), and with a catch-up where a person's decision on the member is kept
-// for it (catchUpOnWhatTheTreeIsOwed). Everything is written in the caller's transaction.
+// list of the state names and nothing starts. The architect that owns its parent is told with a
+// child-status notice (joinedTheTree), and the tree root's architect is written a catch-up where a
+// person's decision on the member is kept for it (catchUpOnWhatTheTreeIsOwed). Everything is
+// written in the caller's transaction.
 func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, child intake.AdoptedChild) error {
 	if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 		return err

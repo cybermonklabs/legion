@@ -70,8 +70,8 @@ func TestAChildIsRecordedOnItsResolvedRepositoryAndItsDefaultBranch(t *testing.T
 }
 
 // A child whose repository resolves to none, to one Legion leaves out, or to one not mapped to the
-// project is not recorded: the daemon says why on the child and tells the tree's architect, once
-// for one resolution, so a repeated event says nothing again.
+// project is not recorded: the daemon says why on the child and tells the architect that owns its
+// parent, once for one resolution, so a repeated event says nothing again.
 func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing.T) {
 	for _, tc := range []struct {
 		name, resolved, note, reason string

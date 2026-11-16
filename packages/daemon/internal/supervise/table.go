@@ -452,8 +452,8 @@ type RequestIssueClose struct{ Claim claim.Token }
 type RequestOperatorClose struct{ Claim claim.Token }
 
 // RequestRetry relaunches a failed or retired claim's session with fresh budgets: the workflow's
-// decision that the role runs again — the tree's architect retrying a held phase, or a closed tree
-// re-admitted after its linger stopped every claim.
+// decision that the role runs again — the architect that owns an issue retrying its held phase, or
+// a closed tree re-admitted after its linger stopped every claim.
 //
 // FreshSession asks for a new session in place of the recorded one. It is a field rather than an
 // event of its own, as the closes are, because both answers are the same decision made by the same
@@ -2456,10 +2456,12 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // operatorRetry is the operator's retry of a claim that runs nothing: retry, for an architect —
-// its tree's root, which no workflow start relaunches, or a child's own architect, which the
-// workflow starts again only at its child's next phase start when it failed and at the child's
-// next first phase start when an operator stopped it (workflow's reviveArchitect and
-// StartFirstPhase) — and for a phase worker whose issue works no phase of its role, which the
+// its tree's root, which no phase start relaunches (admission starts it with its tree, and a
+// person's answer resumes it: workflow's StartArchitect and ResumeAwaitedRoot), or a child's own
+// architect, which the daemon starts again at its child's next phase start when it failed, at the
+// child's next first phase start when an operator stopped it, and at a re-admission of its tree
+// while the child stands in a phase (workflow's reviveArchitect and StartFirstPhase, admit's
+// startMidPhaseMembers) — and for a phase worker whose issue works no phase of its role, which the
 // route has already established before it reaches the machine (api's retryStart starts the
 // phase itself for every other one). The daemon's controller has a retry of its own, its keeper,
 // so it alone is refused. A claim's role never changes, so the refusal cannot race the decision it

@@ -1666,8 +1666,8 @@ export const LegionWaveReleaseRequest = z.strictObject({
 });
 
 /** `api.PhaseBackwardRequest`, a request to return an issue to an earlier phase: a phase worker's
- * on its own issue, or the tree architect's on an issue it owns, from `accepting`. An architect's
- * grant serves its whole tree, so its request names `issue` (required for that grant); a phase
+ * on its own issue, or an architect's on an issue it owns, from `accepting`. An architect may own
+ * more issues than its own, so its request names `issue` (required for that grant); a phase
  * worker's grant names its own issue, so `issue` may be left out and, when given, must be the
  * grant's (`ISSUE_NOT_GRANTS`). */
 export const LegionPhaseBackwardRequest = z.strictObject({
@@ -1677,7 +1677,7 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   issue: nonEmptyString.optional(),
 });
 
-/** `api.PhaseRetryRequest`, the tree architect's retry-or-escalate decision for a held issue.
+/** `api.PhaseRetryRequest`, the retry-or-escalate decision of the architect that owns a held issue.
  * `reason` says why the decision was made, and both decisions carry it: a retry writes it into
  * the task the restarted role is given and into the daemon's own log line for the release, and
  * an escalation sends it to the controller in the held notice, beside the cause that hold

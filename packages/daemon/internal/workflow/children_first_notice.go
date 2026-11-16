@@ -25,10 +25,10 @@ func ChildCycleReason(child, ancestor string) string {
 	return fmt.Sprintf("%s is blocked_by %s, which stands above it on its own Dispatch parent chain, so neither can start until a person takes that link off", child, ancestor)
 }
 
-// ChildrenFirstNotice is what the tree's architect is told when a parent's own first phase begins
-// to wait for its children: the parent, each open child with the Dispatch status that holds it,
-// what ends the wait, and each cycle among them. It is told once per issue and run of its tree —
-// the mark's key is the issue, its tree and that tree's root generation (admit's
+// ChildrenFirstNotice is what the architect that owns a parent is told when the parent's own first
+// phase begins to wait for its children: the parent, each open child with the Dispatch status that
+// holds it, what ends the wait, and each cycle among them. It is told once per issue and run of
+// its tree — the mark's key is the issue, its tree and that tree's root generation (admit's
 // tellChildrenFirst) — so a child filed later during one wait tells nobody again, while a
 // re-admitted tree, whose architect writes its spec anew, and a sub-parent handed over to a tree
 // of its own are told anew.

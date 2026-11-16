@@ -740,8 +740,9 @@ manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-l
 cat >"$work/instructions.md" <<'EOF'
 # Stage 3 proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
@@ -799,9 +800,10 @@ pass
 
 begin panes-pinned-to-the-rig-before-any-agent-turn
 # The two admitted architects are the only panes before any phase worker: each takes its first turn
-# from the daemon's catch-up notice, not from the proof. Every later pane is checked when it
-# registers and again before each instruction. An architect whose root already waits on a person
-# (it registered its closed gate and stays live) was checked by the pane watcher at its launch.
+# from the task its start carries and the daemon's catch-up notice, not from the proof. Every later
+# pane is checked when it registers and again before each instruction. An architect whose root
+# already waits on a person (it registered its closed gate and stays live) was checked by the pane
+# watcher at its launch.
 wait_for_architect "$root_issue"
 wait_for_architect "$held_issue"
 note "$(wc -l <"$evidence/pane-endpoints-checked.txt") pane checks: DISPATCH_URL=http://127.0.0.1:$port_dispatch, DISPATCH_TOKEN_FILE=$state/secrets/dispatch-token, ENVOY_URL=http://127.0.0.1:$port_listener, ENVOY_NATS_URL=nats://127.0.0.1:$port_nats"

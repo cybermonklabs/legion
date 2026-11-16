@@ -20,7 +20,7 @@ import (
 // IssueSuspend finishes without acting on the check's start (store.IssueSuspension's restarted
 // fence), and the start resumes the checking role in the still-live pod. A child ends only itself:
 // it leaves the table, its phase parked in done, so no transition or status write follows the
-// human's move; the tree's architect is told, and decides what the rest of its tree does, as the
+// human's move; the architect above it is told, and decides what the rest of its tree does, as the
 // shipped daemon routes a child's close to the architect. A later todo re-enters the child. What
 // becomes of the child's claims is the status's: a child parked in backlog, icebox or triage has
 // every claim suspended with its session, for a later todo to resume; a child closed as done with

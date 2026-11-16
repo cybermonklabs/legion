@@ -5508,7 +5508,7 @@ two generations never share a working copy.
 
 A phase worker or sub-architect pod that dies mid-task
 — its container crashed, or the pod was deleted
-— is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`), and prompted with the daemon's catch-up rather than a replay of the interrupted task (LEGION-179).
+— is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`): a phase worker is sent the task its dead turn held again, behind the sentence that says what the relaunch ended, or its phase's task when it held none, and a sub-architect is sent its catch-up at its ready (LEGION-179).
 The death is seen twice over: at once, when the pod's worker stream closes and the daemon's one reconnect (`connect` awaiting a fresh registration for `worker_rpc_timeout_seconds`) finds none;
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.

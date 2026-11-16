@@ -176,9 +176,10 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 // enqueueStallNotice writes the owner's notice rows, both in one call so a stall told to one
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
 // for one call). A worker's stall is its issue's architect's to read, as its death is. A tree
-// architect's own stall is told to the controller as well, in a row of its own: every other
-// notice of the tree reaches that architect, and nobody inside the tree is left to act on it
-// (workflow's claimFailed, which tells a failed tree architect's death the same way).
+// architect's own stall is told to the controller as well, in a row of its own: every notice of the
+// tree that no child's own architect takes reaches that architect, and nobody inside the tree is
+// left to act on it (workflow's claimFailed, which tells a failed tree architect's death the same
+// way).
 func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) error {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}

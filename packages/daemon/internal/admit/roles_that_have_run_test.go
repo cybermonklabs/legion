@@ -167,9 +167,10 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 	t.Run("a member in a phase with no worker of its own", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
-		// Accepting waits on the tree's architect, which the promotion starts, so the member's own
-		// phase has no worker and no row of its own waits for a slot. The roles that have run come
-		// back all the same, each start claimable at once, because such a start waits for nothing.
+		// Accepting waits on the architect that owns the member, here the tree's, which the promotion
+		// starts, so the member's own phase has no worker and no row of its own waits for a slot. The
+		// roles that have run come back all the same, each start claimable at once, because such a
+		// start waits for nothing.
 		seedTree(t, pool, phase.Accepting, "needs_review")
 		tokens := hasRun(t, pool, member, claim.RoleTester, claim.RolePlanner, claim.RoleImplementer)
 

@@ -206,7 +206,7 @@ func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice rec
 // the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
 // the architect the same notice again. Every hold is told this way, since the architect answers one
 // with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every other notice of the tree reaches that architect.
+// claim, since every notice of the tree that no child's own architect takes reaches that architect.
 func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
 	if err := e.notice(ctx, tx, issue, notice); err != nil {
 		return err
@@ -890,7 +890,7 @@ func HeldNotice(issue record.Issue) record.Notice {
 	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
-// ChildReenteredNotice is the notice a re-entered child's tree architect is told, whichever path
+// ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
 // root's own promotion made the tree live.

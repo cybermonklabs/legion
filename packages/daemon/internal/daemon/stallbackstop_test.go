@@ -474,8 +474,8 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 }
 
 // A tree architect's own stall is told to the controller as well, in a row of its own: every
-// other notice of the tree reaches that architect, so nobody outside it would hear of the turn
-// the daemon ended. A worker's stall is its architect's alone.
+// notice of the tree that no child's own architect takes reaches that architect, so nobody outside
+// it would hear of the turn the daemon ended. A worker's stall is its architect's alone.
 func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall(t *testing.T) {
 	rig := newBackstopRig(t)
 	root := rig.claim(claim.RolePlanner, "LEGION-220", backstopBound+time.Hour, true)

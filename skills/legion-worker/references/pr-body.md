@@ -57,8 +57,9 @@ to it (below). Then it pushes and completes. It never waits for, watches or poll
 allows, and they read no check; `skill://legion-worker`, *Every role pushes its own commits*,
 gives them).
 Under the Go daemon a check that settles red on the head moves the issue nowhere: the daemon names
-every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's
-architect, the worker of the issue's current phase and the implementer, and judges none of them.
+every check GitHub reported, with the conclusion GitHub gave it, in one message to the architect
+that owns the issue, the worker of the issue's current phase and the implementer, and judges none
+of them.
 That message is the implementer's to act on while it still works the issue: a red that failed on
 its own is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks
 event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a

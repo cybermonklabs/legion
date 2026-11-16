@@ -94,9 +94,9 @@ func (wr WaveReleaseResponse) MarshalJSON() ([]byte, error) {
 // keeps `blockedBy` an array here too, empty rather than `null`.
 type HeldChild = record.BlockedIssue
 
-// PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or the
-// tree's architect to return an issue it owns from accepting. An architect's grant serves its
-// whole tree, so it names the issue; a phase worker's names its own, so issue may be left out and,
+// PhaseBackwardRequest asks a phase worker to return its own issue to an earlier phase, or an
+// architect to return an issue it owns from accepting. An architect may own more issues than its
+// own, so it names the issue; a phase worker's grant names its own, so issue may be left out and,
 // when given, must be the grant's.
 type PhaseBackwardRequest struct {
 	GrantID string      `json:"grantId"`
@@ -108,7 +108,7 @@ type PhaseBackwardRequest struct {
 // PhaseBackwardResponse confirms the phase-backward fact committed.
 type PhaseBackwardResponse struct{}
 
-// PhaseRetryRequest records the tree architect's retry-or-escalate choice for a held issue.
+// PhaseRetryRequest records the retry-or-escalate choice of the architect that owns a held issue.
 // Reason is why the architect made it, and both decisions carry it: a retry writes it into the
 // task the restarted role is given and into the daemon's own log line for the release, and an
 // escalation sends it to the controller in the held notice, beside the cause that hold already
@@ -562,11 +562,12 @@ const (
 // by those issues' own events (one on a served repository whose event the consumer has not
 // applied yet, or one on another unread repository that recovers later): the child stands
 // released, neither started nor held, with nothing to retry, and the recovery tells the architect
-// if it did not record it after all. Otherwise the chain stops at a parent that is not todo (one
-// in backlog, say), which nothing will record: the child stands released too, and the architect is
-// told at once that it waits for that parent's release. Either way the wave goes on: the answer is
-// the unread repository
-// (the child pending), and ok is false only when the answer was written (a read failed).
+// that owns the child's parent, else the tree root's architect, if it did not record it after all.
+// Otherwise the chain stops at a parent that is not todo (one in backlog, say), which nothing will
+// record: the child stands released too, and the architect that released it is told at once that
+// it waits for that parent's release. Either way the wave goes on: the answer is the unread
+// repository (the child pending), and ok is false only when the answer was written (a read
+// failed).
 // CHILD_NOT_RECORDED's few quick retries would run out in seconds of an outage and say the parent
 // never reached the daemon, and an error would leave the rest of the wave unreleased.
 func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, read issueReader, todoNow func(string) bool) (string, bool) {
@@ -999,9 +1000,10 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	// A todo child left unrecorded because a repository it or its parent chain resolves to is
 	// unread (Options.RepositoryUnread) ends nothing: enterTodoChild answers it as the recovery will
 	// leave it and the wave goes on (pending, by key, with the unread repository). A child to write
-	// under one of those is not written, since its parent is not recorded, and its architect is told
-	// to release it again; the recovery of that repository tells the architect again of each child
-	// it left unrecorded.
+	// under one of those is not written, since its parent is not recorded, and the architect that
+	// released it is told to release it again; the recovery of that repository tells the architect
+	// that owns each such child's parent, else the tree root's architect, of each child it left
+	// unrecorded (the daemon's tellReleaseWaits).
 	byKey := make(map[string]releasedChild, len(children))
 	for _, child := range children {
 		byKey[child.view.Key] = child
@@ -1029,8 +1031,8 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 				pending[child.view.Key] = repo
 				parent := intake.ObservedIssue(child.view).Parent
 				if !s.tellReleaseWait(w, r, grant, child.view.Key, parent, repo, fmt.Sprintf(
-					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
-					child.view.Key, above, repo, child.view.Key, above, repo)) {
+					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded. If %s is still not recorded when the daemon recovers %s, the daemon tells the architect that owns %s, or the tree root's architect if %s is not recorded in this tree then.",
+					child.view.Key, above, repo, child.view.Key, above, child.view.Key, repo, parent, parent)) {
 					return
 				}
 				continue
@@ -1257,8 +1259,8 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 	return outside
 }
 
-// phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or the
-// tree architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
+// phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or an
+// architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
 // accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED).
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest

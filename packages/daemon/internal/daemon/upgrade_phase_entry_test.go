@@ -184,7 +184,7 @@ type upgradeShape struct {
 //     the sweep sends that entry's work. Its completion is accepted besides, where the release
 //     before this one refused it for an assignment it was never given.
 //  4. A claim an operator suspended is sent nothing whatever entry it stands on: `legion claims
-//     stop` stopped that worker, and only the operator's own resume starts it again
+//     suspend` suspended that worker, and only the operator's own resume starts it again
 //     (supervise.Claim.RuleHolds, supervise.SuspendedByOperator).
 //  5. A claim the idle release suspended (supervise.SuspendedByReleased) that was never given its
 //     entry is behind like any other: no wake is armed for work it was never given, so the sweep
