@@ -1,0 +1,23 @@
+{"Time":"2026-11-16T16:19:24.536003561Z","Action":"start","Package":"example.com/acme/gotest/markedparallel"}
+{"Time":"2026-11-16T16:19:24.560362859Z","Action":"run","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails"}
+{"Time":"2026-11-16T16:19:24.560455522Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Output":"=== RUN   TestRunningFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560484735Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Output":"=== PAUSE TestRunningFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.56048743Z","Action":"pause","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails"}
+{"Time":"2026-11-16T16:19:24.560495013Z","Action":"run","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter"}
+{"Time":"2026-11-16T16:19:24.560497633Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter","Output":"=== RUN   TestPrinter\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560502841Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter","Output":"=== PAUSE TestPrinter\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560504772Z","Action":"pause","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter"}
+{"Time":"2026-11-16T16:19:24.560508663Z","Action":"cont","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails"}
+{"Time":"2026-11-16T16:19:24.56051174Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Output":"=== CONT  TestRunningFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560514867Z","Action":"cont","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter"}
+{"Time":"2026-11-16T16:19:24.560516752Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter","Output":"=== CONT  TestPrinter\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560521661Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Output":"--- PASS: TestRunningFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560524595Z","Action":"pass","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:24.560533118Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter","Output":"--- PASS: TestPrinter (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560534781Z","Action":"pass","Package":"example.com/acme/gotest/markedparallel","Test":"TestPrinter","Elapsed":0}
+{"Time":"2026-11-16T16:19:24.560536983Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Output":"    markedparallel_test.go:21: fails for real, after TestPrinter printed that it passed\n","OutputType":"error"}
+{"Time":"2026-11-16T16:19:24.560545875Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Output":"--- FAIL: TestRunningFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.560548447Z","Action":"fail","Package":"example.com/acme/gotest/markedparallel","Test":"TestRunningFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:24.560550012Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.564016392Z","Action":"output","Package":"example.com/acme/gotest/markedparallel","Output":"FAIL\texample.com/acme/gotest/markedparallel\t0.028s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:24.564065349Z","Action":"fail","Package":"example.com/acme/gotest/markedparallel","Elapsed":0.028}

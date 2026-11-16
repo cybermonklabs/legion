@@ -215,6 +215,13 @@ func TestRenderNatsStartScriptWithACallout(t *testing.T) {
 			`    xkey: "XBVCTZK3PV5Y7TBIVYTDZBP3O2YGHUUL7MMENN4DTZIREJCPGLTAF6EL"`+"\n"+
 			"  }\n"+
 			"}\n", 1)
+		// The ping lines end the configuration; the comment's apostrophe is quoted for the shell's
+		// single-quoted printf argument.
+		want = strings.Replace(want, "\n' > /tmp/n.conf", "\n"+
+			`# a replica of the auth service that answers nothing is dropped from the callout'"'"'s queue group within 80 s`+"\n"+
+			`ping_interval: "20s"`+"\n"+
+			"ping_max: 2\n"+
+			"' > /tmp/n.conf", 1)
 		if stdout != want {
 			t.Errorf("stdout:\n%s\nwant:\n%s", stdout, want)
 		}

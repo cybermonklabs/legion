@@ -1004,7 +1004,7 @@ Nothing adds the two lines to these commits:
 - A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
   A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
-- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (anthropics/claude-code#46696).
+- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (Claude Code issue 46696).
   That subagent's `git commit` still gets the `Legion-Role` line.
 
 **The git author and committer name no role.**

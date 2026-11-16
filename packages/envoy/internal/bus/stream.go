@@ -657,7 +657,12 @@ func migrateRoleLanesOffStream(js nats.JetStreamContext, oldConfig, newConfig *n
 // subjectsOverlap reports whether some subject matches both patterns. JetStream refuses two such
 // subjects in one stream.
 func subjectsOverlap(a, b string) bool {
-	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
+	return tokensOverlap(strings.Split(a, "."), strings.Split(b, "."))
+}
+
+// tokensOverlap is subjectsOverlap on two subjects already split into their tokens, for a caller
+// that weighs each subject against many others and splits it once.
+func tokensOverlap(aTokens, bTokens []string) bool {
 	for index := 0; index < len(aTokens) && index < len(bTokens); index++ {
 		aToken, bToken := aTokens[index], bTokens[index]
 		if aToken == ">" || bToken == ">" {

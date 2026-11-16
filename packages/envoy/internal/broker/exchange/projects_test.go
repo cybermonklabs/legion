@@ -53,6 +53,12 @@ func TestATradeNamesOnlyProjectsItsPersonSeesUnderItsEntry(t *testing.T) {
 			t.Fatalf("a fleet's service naming %s = %+v, %v; want ErrProjectsNoPerson naming its account", project, claims, err)
 		}
 	})
+	t.Run("a read entry's service", func(t *testing.T) {
+		claims, err := set.Pod(podToken(readerAccount, podUID), "", []string{project})
+		if !errors.Is(err, exchange.ErrProjectsNoPerson) || !strings.Contains(err.Error(), readerAccount) {
+			t.Fatalf("a read entry's pod naming %s = %+v, %v; want ErrProjectsNoPerson naming its account", project, claims, err)
+		}
+	})
 	t.Run("a machine credential and a sign-in carry the asked list", func(t *testing.T) {
 		asked := []string{"OTHER", "PRIV"}
 		machine, err := set.Machine(credentialID, person, "ada-devbox", asked)
@@ -86,6 +92,7 @@ func TestMappedProjects(t *testing.T) {
 		{releasePrincipal, person, []string{project}, true},
 		{pinnedPrincipal, person, []string{project}, true},
 		{poolPrincipal, "", nil, true},
+		{readerPrincipal, "", nil, true},
 		{personPrincipal, "", nil, false},
 		{"account:system:serviceaccount:example-ns:example-other", "", nil, false},
 		{"google:" + strangerAccount, "", nil, false},

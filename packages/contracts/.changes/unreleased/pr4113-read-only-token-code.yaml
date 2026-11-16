@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `DISPATCH_READ_ONLY_TOKEN` (`READ_ONLY_TOKEN`), the code of the `403` for a request by a broker token that holds only the OAuth scope `read`, to a route Dispatch's read list does not name. `bun run gen:go` writes it into the Go package as `contracts.DispatchReadOnlyToken`.
