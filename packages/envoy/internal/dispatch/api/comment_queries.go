@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -318,13 +319,28 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor,
 }
 
 // loadComment reads comment id as who may read it (access.ItemOwnerClause): a comment of a project who
-// does not see is pgx.ErrNoRows, as an id no row holds is.
+// does not see is pgx.ErrNoRows, as an id no row holds is, and so is an id Postgres will not read
+// as a uuid (malformedIDIsNoRow), which the prefix layer leaves as written when no comment's id
+// starts with it.
 func (s *server) loadComment(ctx context.Context, q queryer, who model.Actor, id string) (model.Comment, error) {
-	return scanComment(q.QueryRow(ctx, `
+	comment, err := scanComment(q.QueryRow(ctx, `
 		select `+commentColumns+`
 		from comments c where c.id = $1 and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$2"),
 		id, refs.VisibilityArg(who)))
+	return comment, malformedIDIsNoRow(err)
 }
+
+// malformedIDIsNoRow answers pgx.ErrNoRows for an id Postgres refused to read as a uuid (SQLSTATE
+// 22P02, which it reports as it binds the parameter), and err as it is otherwise: an id that is no
+// uuid is an id no row holds, never the database's error.
+func malformedIDIsNoRow(err error) error {
+	var refused *pgconn.PgError
+	if errors.As(err, &refused) && refused.Code == "22P02" {
+		return pgx.ErrNoRows
+	}
+	return err
+}
+
 func (s *server) loadCommentForUpdate(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
 	return scanComment(tx.QueryRow(ctx, `
 		select `+commentColumns+`

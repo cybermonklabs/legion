@@ -325,8 +325,9 @@ func TestATargetNobodyHoldsAnswersAProjectScopedTokenAsItAnswersAPerson(t *testi
 		t.Run(name, func(t *testing.T) {
 			scoped := rig.serve(caller.presenting(t, request.method, request.path, token, request.body))
 			person := rig.asPerson(t, request.method, request.path, request.body)
-			if scoped.Code != person.Code || scoped.Body.String() != person.Body.String() || scoped.Code < http.StatusBadRequest {
-				t.Fatalf("the scoped token: status=%d body=%s; a person: status=%d body=%s, want the handler's one refusal for both",
+			if scoped.Code != person.Code || scoped.Body.String() != person.Body.String() ||
+				scoped.Code < http.StatusBadRequest || scoped.Code >= http.StatusInternalServerError {
+				t.Fatalf("the scoped token: status=%d body=%s; a person: status=%d body=%s, want the handler's one refusal for both, and no 500",
 					scoped.Code, scoped.Body.String(), person.Code, person.Body.String())
 			}
 			if refusal := decodeBody[refusalAnswer](t, scoped); refusal.Code == codeProjectScope {

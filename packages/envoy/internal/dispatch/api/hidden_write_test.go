@@ -126,6 +126,73 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 	t.Logf("walked %d body fields that name an object", len(bodyReferences))
 }
 
+// TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds walks every route whose {id} names an item by uuid -
+// a document, an ask, a comment or a message, which the prefix layer resolves (idRoutes), and every
+// other route idRoutes says takes a uuid - and calls it, as alice, with an id that is neither a uuid
+// nor a prefix any item carries, and with a uuid nobody holds. The first is answered either as the
+// second - the same status and the same bytes, the second's id written as the first's - or by the
+// route's own refusal of an id that is no id (400 <KIND>_ID_INPUT, which reads nothing), and never
+// by a 500: a value Postgres will not read as a uuid is never the database's error.
+func TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	const notAUUID = "not-a-uuid"
+	var walked int
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name := route.Method + " " + route.Pattern
+		entry, named := idRoutes[name]
+		if !named || !strings.Contains(route.Pattern, "{id}") || !(entry.Kind != "" || takesAUUID(entry.Reason)) {
+			continue
+		}
+		var body any
+		if probe, ok := writeProbes[name]; ok && probe.Body != "" {
+			body = json.RawMessage(probe.Body)
+		}
+		nobodys := uuid.NewString()
+		fill := func(id string) string {
+			return patternWildcard.ReplaceAllStringFunc(route.Pattern, func(match string) string {
+				wildcard := patternWildcard.FindStringSubmatch(match)[1]
+				if wildcard == "id" {
+					return id
+				}
+				object := writeProbes[name].Probe[wildcard]
+				if object == "" {
+					object = readClasses[name].Probe[wildcard]
+				}
+				return walk.fills[object].besideValue()
+			})
+		}
+		malformed := walk.request(t, callerAlice, route.Method, fill(notAUUID), body)
+		missing := walk.request(t, callerAlice, route.Method, fill(nobodys), body)
+		walked++
+		var refusal refusalAnswer
+		_ = json.Unmarshal(malformed.Body.Bytes(), &refusal)
+		asMissing := malformed.Code == missing.Code &&
+			malformed.Body.String() == strings.ReplaceAll(missing.Body.String(), nobodys, notAUUID)
+		refusedAsInput := malformed.Code == http.StatusBadRequest && strings.HasSuffix(refusal.Code, "_ID_INPUT")
+		if !asMissing && !refusedAsInput {
+			t.Errorf("%s: an id that is no uuid answers %d %s, and a uuid nobody holds %d %s", name,
+				malformed.Code, strings.TrimSpace(malformed.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+	}
+	if walked == 0 {
+		t.Fatal("no route was walked: idRoutes names no route whose {id} is a uuid")
+	}
+	t.Logf("walked %d routes whose {id} is a uuid", walked)
+}
+
+// takesAUUID reports whether an idRoutes reason says the route's id is a uuid of a kind the prefix
+// layer does not resolve.
+func takesAUUID(reason string) bool {
+	for _, kind := range []string{"a handoff id", "a check result id", "a personal agent token id", "a thread id",
+		"a credential grant id", "a credential request id", "a machine login id", "a Delivery session group id",
+		"a broadcast id", "a going request's run id"} {
+		if strings.HasPrefix(reason, kind) {
+			return true
+		}
+	}
+	return false
+}
+
 // missingAnswers is what a row answers for an object nobody holds where that is no 404, and why.
 var missingAnswers = map[string]struct {
 	status int
