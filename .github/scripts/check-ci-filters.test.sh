@@ -1582,6 +1582,77 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file that closure reads outside the filter, or the go env write" "$(contains "$out" 'other\|go env')"
 
+# A caller can set any variable the go command reads, and the python3 that starts the engine can
+# be a version manager's shim that gives it a GOROOT and a PATH of its own: mise's gives it the
+# GOROOT of the Go it picks, go1.27.0 where go.work names go1.27.3, which under a caller's
+# GOTOOLCHAIN=local made every go command of the check refuse go.work. The check must answer under
+# all of that as it answers under none of it. The shim here starts the check's Python with a
+# stand-in GOROOT, whose go only refuses, and with that go first on its PATH. The caller sets one
+# variable of each other kind, and the fixture shows what each would do: GOFLAGS, and GOFLAGS
+# again in the default `go env -w` file under XDG_CONFIG_HOME, which an empty GOFLAGS does not
+# override, set the tag that compiles mod/lib/polluted.go, and GOOS compiles mod/lib/lib_plan9.go,
+# each of which imports mod/other, a package the filter leaves out; GO111MODULE=off lists in GOPATH
+# mode, which cannot find mod/dep, the package mod/lib/dep.go imports; GOWORK=off leaves go.work
+# out of the module files; GOEXPERIMENT names an experiment no go knows. CGO_ENABLED=0 and
+# GOTOOLCHAIN=local are set too with no file of their own: which files cgo puts in turns on
+# whether the machine has a C compiler, and this fixture's go line is below every go's. Both runs
+# start from a go binary, not a version manager's shim of it, which would put a GOROOT of its own
+# in place of the caller's. The clean answer is held to the green one first, so the two cannot
+# agree by both failing.
+echo "case: a caller's Go variables and a python3 shim's GOROOT and PATH change nothing it reports"
+root=$(fixture caller-go-setup)
+printf '//go:build polluted\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/polluted.go"
+printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_plan9.go"
+mkdir -p "$root/mod/dep"
+printf 'package dep\n' > "$root/mod/dep/dep.go"
+printf 'package lib\n\nimport _ "example.com/m/dep"\n' > "$root/mod/lib/dep.go"
+replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" $'              - \'mod/lib/*\'\n              - \'mod/dep/*\''
+go_bin="$(cd "$work" && go env GOROOT)/bin"
+python=$(python3 -c 'import sys; print(sys.executable)')
+standin="$work/standin-goroot"
+shim="$work/python3-shim"
+mkdir -p "$standin/bin" "$shim" "$work/caller-config/go"
+printf '#!/bin/sh\necho "the stand-in go ran" >&2\nexit 3\n' > "$standin/bin/go"
+# shellcheck disable=SC2016 # $PATH and "$@" are the shim's own, written into it unexpanded
+printf '#!/bin/sh\ntouch "%s"\nGOROOT="%s" PATH="%s:$PATH" exec "%s" "$@"\n' \
+  "$shim/started" "$standin" "$standin/bin" "$python" > "$shim/python3"
+chmod +x "$standin/bin/go" "$shim/python3"
+printf 'GOFLAGS=-tags=polluted\n' > "$work/caller-config/go/env"
+check "the go env file sets GOFLAGS for a go command that reads it" \
+  "$(is "$(cd "$work" && env -u GOENV -u GOFLAGS XDG_CONFIG_HOME="$work/caller-config" "$go_bin/go" env GOFLAGS)" "-tags=polluted")"
+set +e
+clean=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u CGO_ENABLED -u GOEXPERIMENT \
+  -u GO111MODULE PATH="$go_bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+clean_status=$?
+polluted=$(env PATH="$shim:$go_bin:$PATH" XDG_CONFIG_HOME="$work/caller-config" GOTOOLCHAIN=local \
+  GOFLAGS=-tags=polluted GOWORK=off GOOS=plan9 CGO_ENABLED=0 GOEXPERIMENT=pollutedexperiment GO111MODULE=off \
+  "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+polluted_status=$?
+set -e
+answer() { grep -Ev '^::stop-commands::[0-9a-f]{32}$|^::[0-9a-f]{32}::$' <<<"$1" || true; }
+check "passes clean" "$(is "$clean_status" 0)"
+check "counts the job's files clean" "$(contains "$clean" '^report: app: [0-9]* files, 0 uncovered (filter app)$')"
+check "the polluted run's Python is the one the shim started" \
+  "$(is "$(test -e "$shim/started" && echo started || echo missing)" started)"
+check "gives the clean answer under the caller's variables and the shim's GOROOT and PATH" \
+  "$(is "$polluted_status:$(answer "$polluted")" "$clean_status:$(answer "$clean")")"
+
+# The check starts from the go its own PATH resolves. A PATH holding no go - the bash and dirname
+# the script needs before it looks, and nothing else - is refused at once, naming it, rather than
+# failing in the engine on the first go command with a traceback.
+echo "case: no go on PATH"
+root=$(fixture no-go)
+mkdir -p "$work/no-go-path"
+ln -s "$(type -P bash)" "$work/no-go-path/bash"
+ln -s "$(type -P dirname)" "$work/no-go-path/dirname"
+set +e
+out=$(PATH="$work/no-go-path" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "says there is no go on PATH" \
+  "$(contains "$out" '^::error file=.github/scripts/check-ci-filters.sh::no go on PATH, so this check cannot list the closure of any go command')"
+
 echo "case: a claimed command that cds into another module of the workspace before it runs"
 root=$(fixture cd-other-module)
 mkdir -p "$root/mod2/cmd/app" "$root/mod2/lib"
