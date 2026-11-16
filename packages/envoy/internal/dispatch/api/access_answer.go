@@ -14,7 +14,8 @@ import (
 // and one person's member kind. It is plain data read outside any transaction. Only a Kubernetes
 // service account the deployment names in DISPATCH_ACCESS_ACCOUNTS reads it, with its own projected
 // token; every other caller, a person included, is 403 ACCESS_ACCOUNT_REQUIRED before anything is
-// read. A deployment that names no such account answers every caller so.
+// read (the read class accessAccount, which withinReadScope holds both routes to). A deployment
+// that names no such account answers every caller so.
 
 // accessAccountOf answers the service-account subject a request's verified projected token names,
 // and false for every other credential: a broker-issued token that names a fleet as its service
@@ -27,7 +28,8 @@ func accessAccountOf(actor model.Actor) (string, bool) {
 	return *actor.Service, true
 }
 
-// requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names.
+// requireAccessAccount admits a request only from a service account DISPATCH_ACCESS_ACCOUNTS names:
+// withinReadScope's check of every row of the read class accessAccount.
 func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bool {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
@@ -45,9 +47,6 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 // getAccessProject answers project {key}'s membership answer for ?person=, which may be left out
 // to read the project alone (visible false, member_kind none).
 func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAccessAccount(w, r) {
-		return
-	}
 	pool, err := s.readyPool()
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -63,9 +62,6 @@ func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 
 // getAccessPerson answers ?person='s member kind.
 func (s *server) getAccessPerson(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAccessAccount(w, r) {
-		return
-	}
 	person := strings.TrimSpace(r.URL.Query().Get("person"))
 	if person == "" {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "person is required: the email whose member kind to read")

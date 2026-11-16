@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -216,6 +217,57 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/artifacts/{id}/_test/room-counters": reads("this process's counters of one document's room", byDocument, readclass.TestHook),
 	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": reads("whether a live write of one document parked at an armed pause",
 		readProbe{"id": probeDocument, "point": probeLivePause}, readclass.TestHook),
+}
+
+// withinReadScope runs the read check in front of one GET row's handler, decided once at mount
+// from the row's classes (apiRoute.Reads), as withinProjectScope decides a write's:
+//
+//   - accessAccount: only a service account DISPATCH_ACCESS_ACCOUNTS names reads the row
+//     (requireAccessAccount); every other caller is 403 ACCESS_ACCOUNT_REQUIRED before anything
+//     is read.
+//   - project, graph, people, agents and deployment need the viewer: the reader is resolved once
+//     (readerOf) and put in the request's context, where every read of the row finds it, so no
+//     handler resolves it a second time. A caller whose credential does not resolve is refused as
+//     every gate refuses one.
+//   - deployment besides: what the row reads belongs to the whole deployment and to no project a
+//     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
+//     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row.
+//   - none, caller and testHook need neither, and the handler runs as it is.
+func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
+	if slices.Contains(route.Reads, readclass.AccessAccount) {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if s.requireAccessAccount(w, r) {
+				handler(w, r)
+			}
+		}
+	}
+	if !slices.ContainsFunc(route.Reads, readsForAViewer) {
+		return handler
+	}
+	deployment := slices.Contains(route.Reads, readclass.Deployment)
+	return func(w http.ResponseWriter, r *http.Request) {
+		reader, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		if deployment && !reader.Viewer.Open {
+			writeError(w, "DEPLOYMENT_READ_REFUSED", http.StatusForbidden, fmt.Sprintf(
+				"%s %s reads the whole deployment, which only a caller that sees every public project reads: this caller is a restricted member, or its credential lists the projects it may use",
+				route.Method, route.Pattern))
+			return
+		}
+		handler(w, r.WithContext(withReader(r.Context(), reader)))
+	}
+}
+
+// readsForAViewer reports whether a read of class answers what its caller may see, so needs the
+// caller's viewer.
+func readsForAViewer(class readclass.Class) bool {
+	switch class {
+	case readclass.Project, readclass.Graph, readclass.People, readclass.Agents, readclass.Deployment:
+		return true
+	}
+	return false
 }
 
 // undecidedReads names every GET row of routes that classes gives no class, and every entry of
