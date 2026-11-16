@@ -252,12 +252,18 @@ for server in main twin; do
   printf -v "$database_var" '%s' ''
   own_database "$database_var" "$server"
   # The server as start_server starts it, with the bus on and the deployment's own settings for
-  # what this check reads: private projects allowed, the dev embedder for the meaning leg, the
-  # test hooks the route index lists, and the GitHub App the proxy mints its tokens as.
+  # what this check reads: the projects it has provisioned as private, the dev embedder for the
+  # meaning leg, the test hooks the route index lists, and the GitHub App the proxy mints its
+  # tokens as. DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects a deployment
+  # has provisioned as private (cmd/dispatch privateProjectsSetting, which refuses the boot for
+  # any entry that is no project key): main provisions PRIV, and the twin, which never makes a
+  # project private, sets none.
+  private_projects=()
+  [ "$server" = twin ] || private_projects=(DISPATCH_PRIVATE_PROJECTS=PRIV)
   envoy_port=$envoy_port database_url=${!database_var} start_server "$server" "$work/bin/dispatch" "${!port_var}" \
     DISPATCH_NATS_DISABLED= \
     NATS_URLS="nats://127.0.0.1:$nats_port" \
-    DISPATCH_PRIVATE_PROJECTS=1 \
+    "${private_projects[@]}" \
     DISPATCH_DEV_EMBEDDER=1 \
     DISPATCH_TEST_HOOKS=1 \
     DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
