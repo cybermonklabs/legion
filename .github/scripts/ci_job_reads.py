@@ -2447,14 +2447,12 @@ GATES = [
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:3-6 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
-        (ENVOY_CLIENT_SRC, "packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, so the two suites "
-                           "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it)"),
-        ("packages/broker-client/src/**", "packages/dispatch/e2e/read-token-live.ts:37 imports "
-                                          "@legion/envoy-client/broker-credential, whose src/broker-credential.ts:21-34 imports "
-                                          "@legion/broker-client/*, so the dashboard's tsc program compiles broker-client's "
-                                          "sources (check-ts-filters.sh measures it); no suite this job runs imports the script"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
-    ) + bun_job("dispatch-ui")),
+    ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "
+                         "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
+                         "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
+                         "(check-ts-filters.sh measures it)")
+      + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
     # projects, the two-process job, the visual job and the merge job, all in

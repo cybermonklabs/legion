@@ -2359,13 +2359,9 @@ jobs:
               # local-instance-support.test.ts:2-5, run in this job's test step and in no other,
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
+              # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
+              - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
-              # e2e/read-token-live.ts:37 imports @legion/envoy-client/broker-credential, whose
-              # src/broker-credential.ts:21-34 imports @legion/broker-client/*, so the dashboard's
-              # tsc program compiles broker-client's sources too, and check-ts-filters.sh holds
-              # this filter to them. Nothing this job runs loads them: the script is a live proof
-              # run by hand against a running broker and Dispatch, and no suite imports it.
-              - 'packages/broker-client/src/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
             # fake-embedder job, the visual review and the merge job. Every entry is something a
