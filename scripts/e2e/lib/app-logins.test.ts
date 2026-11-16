@@ -15,6 +15,7 @@ import {
   type AppRole,
   appCredentialSources,
   appLogin,
+  firstInstallationToken,
 } from "./app-logins";
 import {
   appPrivateKey,
@@ -484,6 +485,42 @@ describe("app-logins.ts", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(JSON.parse(stdout).implement).toBe("example-implement[bot]");
+  });
+
+  // As the daemon's own reader is proved (internal/appauth,
+  // TestTokenModeReleaseKeysAreGitHubLogins): a managed user's login, which ends in
+  // `_<shortcode>`, is read like any other, up to GitHub's 39 characters, and so is one that merely
+  // opens like a token while holding no token form. What no login can be is refused by the one
+  // message that names no key, a token form shorter than a real token among them, which the
+  // underscore a login holds would otherwise let through, so no refusal quotes what may be a token.
+  test("a release keyed by a managed user's login is read, and a key no login can be is refused without naming it", () => {
+    const field = "github_apps.implement.token_command";
+    const now = new Date("2026-11-16T12:00:00Z");
+    for (const owner of ["mona-cat_octo", "Mona-Cat_Octo", "ghs_acme", "a".repeat(39)]) {
+      expect(firstInstallationToken(release({ [owner]: tokenOf(101) }), field, now), owner).toBe(
+        tokenOf(101)
+      );
+    }
+    for (const owner of [
+      "a.b",
+      "a/b",
+      "-acme",
+      "_acme",
+      "a".repeat(40),
+      "",
+      "ghs_0123456789abcdef",
+      "github_pat_0123456789abcdef",
+    ]) {
+      let refusal = "";
+      try {
+        firstInstallationToken(release({ [owner]: tokenOf(101) }), field, now);
+      } catch (error) {
+        refusal = (error as Error).message;
+      }
+      expect(refusal, JSON.stringify(owner)).toBe(
+        `${field} released an installation whose account is not a GitHub login`
+      );
+    }
   });
 
   test("a token GitHub refuses is named by the App and GitHub's status, its echo of the token masked", async () => {
