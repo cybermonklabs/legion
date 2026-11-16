@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The generated Legion architect skill explains the costs of large and small pull requests,
+  prefers neither count, and allows a child to wait on a sibling's merge in the same
+  repository through its blocked-by link.

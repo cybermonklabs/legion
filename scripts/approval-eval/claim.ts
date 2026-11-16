@@ -2,10 +2,11 @@
  * Who may read the reserve of INFRA-2897's next final test (`reserve.ts`), committed by a reviewed
  * pull request before the read.
  *
- * The registered rule (dispatch://INFRA/artifact/infra-2897-final-test-reserve-md) lets one claim
- * run read the reserve (items 3 and 4), and ends the reserve at that round's draw or at the owner's
- * written release (item 6). A final test is read once, by the bundle the claim names: a second
- * arm, build or run that reads it makes it development data (dispatch://INFRA-3189, "Data sets").
+ * The registered rule (dispatch://INFRA/artifact/infra-2897-final-test-reserve-md, version 2) lets
+ * one claim run read the reserve (items 5 and 6), and ends the reserve at that run's recorded
+ * result or at the owner's written release (item 7). A final test is read once, by the bundle the
+ * claim names: a second arm, build or run that reads it makes it development data
+ * (dispatch://INFRA-3189, "Data sets").
  * So a run reads the reserve only when `APPROVAL_EVAL_RESERVE=read:<reference>` names a read listed
  * here and the run's digest (`runDigestOf` in `reserve.ts`) is the one listed with it. A refused
  * run prints its digest, which is what a registration copies.
@@ -28,8 +29,8 @@ export const RESERVE_READS: readonly ReserveRead[] = [];
  * The record that ended the reserve, as a dispatch:// reference, or null while it holds: the claim
  * run's result, once the claim has read its final test, or the owner's written release. Once it is
  * set no case is held, the drawn final test included: every reserved case is development data and
- * any run reads it. Item 6 ends the reserve's pool at the draw, but the final test that draw takes
- * is still read once, by the claim run after it, so this record is never set at the draw: only
- * the claim's result or a release sets it.
+ * any run reads it. Item 7 ends the reserve at the claim's recorded result, not at the draw: the
+ * final test the draw takes is still read once, by the claim run after it, so this record is never
+ * set at the draw.
  */
 export const RESERVE_ENDED: string | null = null;
