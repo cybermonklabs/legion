@@ -418,7 +418,10 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = first.Rollback(ctx) }()
-	if opened, err := OpenPausePodHoldTx(ctx, first, pause.ID, "LEGION-208", pausedAt); err != nil || !opened {
+	if err := LockIssueForPause(ctx, first, "LEGION-208"); err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := OpenPausePodHoldTx(ctx, first, pause, "LEGION-208", pausedAt); err != nil || !opened {
 		t.Fatalf("the first writer's hold = %t, %v; want it opened", opened, err)
 	}
 

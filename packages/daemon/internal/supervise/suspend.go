@@ -317,7 +317,10 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	if request.By != SuspendedByOperator && request.By != SuspendedByDaemon && request.By != SuspendedByReleased {
 		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names source %q, not operator, daemon or released", m.claim.Token, request.By)
 	}
-	if request.Pause < 0 || (request.Pause != 0 && request.By != SuspendedByReleased) {
+	if request.Pause < 0 {
+		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names pause %d, which is no pause's id", m.claim.Token, request.Pause)
+	}
+	if request.Pause != 0 && request.By != SuspendedByReleased {
 		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names pause %d with source %q; a pause's stop names its pause's id with source %q",
 			m.claim.Token, request.Pause, request.By, SuspendedByReleased)
 	}

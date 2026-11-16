@@ -127,7 +127,7 @@ func (r *pauseRig) count(sql string, args ...any) int {
 
 // pauseStopRecord is one stop row of a pause.
 type pauseStopRecord struct {
-	end  string
+	end  store.PauseStopEnd
 	owed bool
 }
 
@@ -143,10 +143,15 @@ func (r *pauseRig) stops(pause int64, role claim.Role) []pauseStopRecord {
 	var stops []pauseStopRecord
 	for rows.Next() {
 		var s pauseStopRecord
-		if err := rows.Scan(&s.end, &s.owed); err != nil {
+		var end string
+		if err := rows.Scan(&end, &s.owed); err != nil {
 			r.t.Fatal(err)
 		}
+		s.end = store.PauseStopEnd(end)
 		stops = append(stops, s)
+	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the stops of pause %d: %v", pause, err)
 	}
 	return stops
 }
@@ -177,6 +182,9 @@ func (r *pauseRig) starts(role claim.Role) []heldStart {
 		}
 		starts = append(starts, s)
 	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the starts of the %s: %v", role, err)
+	}
 	return starts
 }
 
@@ -202,7 +210,7 @@ func (r *pauseRig) releasedLines() []map[string]any {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			r.t.Fatalf("decode the log line %q: %v", line, err)
 		}
-		if entry["msg"] == pauseHeldRowReleased {
+		if entry["msg"] == pause.HeldRowReleasedMessage {
 			lines = append(lines, entry)
 		}
 	}
@@ -254,13 +262,13 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 	}
 	r.mustStop(tester, owed)
 
-	if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: "stopped"}) {
+	if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped}) {
 		t.Fatalf("the implementer's stops = %+v, want one stopped and owed no launch", got)
 	}
 	if got := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer'`, pauseIssue); got != 1 {
 		t.Fatalf("the implementer's backstops = %d, want the one its first stop armed", got)
 	}
-	if got := r.stops(held.ID, claim.RoleTester); len(got) != 1 || got[0] != (pauseStopRecord{end: "stopped", owed: true}) {
+	if got := r.stops(held.ID, claim.RoleTester); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
 		t.Fatalf("the tester's stops = %+v, want one stopped and owed its launch", got)
 	}
 	if all, open := r.heldWakes(held.ID, claim.RoleTester); all != 1 || open != 1 {
@@ -296,10 +304,10 @@ func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 	r.mustStop(r.claim(claim.RoleImplementer, supervise.StateLaunching), supervise.PauseStop{Pause: held.ID})
 	r.mustStop(r.claim(claim.RoleTester, supervise.StateLaunching), supervise.PauseStop{Pause: held.ID, LaunchOwed: true})
 
-	if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0].end != "stopped" {
+	if got := r.stops(held.ID, claim.RoleImplementer); len(got) != 1 || got[0].end != store.PauseStopStopped {
 		t.Fatalf("the implementer's stops = %+v, want its stop recorded", got)
 	}
-	if got := r.stops(held.ID, claim.RoleTester); len(got) != 1 || got[0] != (pauseStopRecord{end: "stopped", owed: true}) {
+	if got := r.stops(held.ID, claim.RoleTester); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
 		t.Fatalf("the tester's stops = %+v, want its stop recorded with the launch it was owed", got)
 	}
 	if got := r.count(`select count(*) from claims where issue = $1 and state = 'launching'`, pauseIssue); got != 2 {
@@ -327,8 +335,7 @@ func TestAStopOwedToAClaimRunningAgainRecordsTheStopAlone(t *testing.T) {
 // with the stopped implementer's unpushed work on its disk. A stop that ends after the resume holds
 // the pod only where no role of it is live then (decision 6 of dispatch://INFRA-3759): the
 // implementer's stop, with the tester live, holds nothing, and the tester's, the pod's last live
-// role, holds it. Check k4's sixth pod found the first half missing: the stop held the pod only
-// where no role was live, whether its pause stood or not.
+// role, holds it.
 func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(t *testing.T) {
 	t.Run("while the pause stands", func(t *testing.T) {
 		r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
@@ -358,9 +365,8 @@ func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(
 // (projectPause.askBootStops): a stop its claim held for a turn waits on its row's bounded retry,
 // and the hold itself was in the stopped daemon's memory, so the row is made due and its stop is
 // asked of the restarted machine as soon as the outbox runs. Left waiting, a turn that ended
-// inside the wait left the role idle and unstopped (check k3 of dispatch://INFRA-3759 found it:
-// the role in a turn at the restart did not stop when its turn ended). A stop already asked is
-// asked of no second row.
+// inside the wait would leave the role idle and unstopped. A stop already asked is asked of no
+// second row.
 func TestTheBootOfAPausedProjectAsksItsWaitingStopsAgainAtOnce(t *testing.T) {
 	r := newPauseRig(t, claim.RoleImplementer)
 	held := r.pauseLegion()
@@ -460,7 +466,7 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 		t.Fatalf("%s's hold = %+v, %t, %v; want the tester's stop to hold the pod for pause %d", pauseIssue, hold, found, err, held.ID)
 	}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-		if got := r.stops(held.ID, role); len(got) != 1 || got[0].end != "stopped" {
+		if got := r.stops(held.ID, role); len(got) != 1 || got[0].end != store.PauseStopStopped {
 			t.Fatalf("the %s's stops = %+v, want the cancelled stop recorded stopped", role, got)
 		}
 	}
@@ -519,10 +525,10 @@ func TestAResumeWaitsForAStopTransactionUnderWay(t *testing.T) {
 		t.Fatalf("resume: %v", got.err)
 	}
 
-	if stops := r.stops(held.ID, claim.RoleImplementer); len(stops) != 1 || stops[0] != (pauseStopRecord{end: "stopped", owed: true}) {
+	if stops := r.stops(held.ID, claim.RoleImplementer); len(stops) != 1 || stops[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
 		t.Fatalf("the implementer's stops = %+v, want its stop recorded before the resume", stops)
 	}
-	if stops := r.stops(held.ID, claim.RoleTester); len(stops) != 1 || stops[0].end != "cancelled" {
+	if stops := r.stops(held.ID, claim.RoleTester); len(stops) != 1 || stops[0].end != store.PauseStopCancelled {
 		t.Fatalf("the tester's stops = %+v, want the one the resume cancelled", stops)
 	}
 	starts := r.starts(claim.RoleImplementer)
@@ -552,7 +558,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 	later := r.pauseLegion()
 
 	r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: earlier.ID, LaunchOwed: true})
-	if got := r.stops(earlier.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: "stopped", owed: true}) {
+	if got := r.stops(earlier.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
 		t.Fatalf("the earlier pause's stops = %+v, want its cancelled stop recorded stopped with the launch owed", got)
 	}
 	if hold, found, err := r.st.PausePodHoldOf(r.ctx, pauseIssue); err != nil || !found || hold.Pause != earlier.ID {
@@ -588,7 +594,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 		Role: claim.RoleImplementer, Generation: 1, Pause: later.ID, Reason: "project LEGION is paused"}, time.Now())); err != nil {
 		t.Fatalf("run the later pause's stop of the implementer: %v", err)
 	}
-	if got := r.stops(later.ID, claim.RoleImplementer); len(got) != 1 || got[0].end != "taken_over" {
+	if got := r.stops(later.ID, claim.RoleImplementer); len(got) != 1 || got[0].end != store.PauseStopTakenOver {
 		t.Fatalf("the later pause's stops = %+v, want its stop ended: the earlier pause's late stop stopped the role", got)
 	}
 
@@ -624,7 +630,8 @@ func TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers(t *testing.T) {
 			Role: role, Generation: 1, Pause: pause, Reason: "project LEGION is paused"}, now))
 	}
 
-	for role, want := range map[claim.Role]string{claim.RoleImplementer: "stopped", claim.RoleTester: "failed", claim.RoleReviewer: "taken_over"} {
+	for role, want := range map[claim.Role]store.PauseStopEnd{claim.RoleImplementer: store.PauseStopStopped, claim.RoleTester: store.PauseStopFailed,
+		claim.RoleReviewer: store.PauseStopTakenOver} {
 		if err := stopOf(held.ID, role); err != nil {
 			t.Fatalf("the %s's stop: %v", role, err)
 		}
@@ -644,7 +651,7 @@ func TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers(t *testing.T) {
 	if err := stopOf(ended.ID, claim.RoleMerger); err != nil {
 		t.Fatalf("the merger's stop once the pause ended: %v", err)
 	}
-	if got := r.stops(held.ID, claim.RoleMerger); len(got) != 1 || got[0].end != "cancelled" {
+	if got := r.stops(held.ID, claim.RoleMerger); len(got) != 1 || got[0].end != store.PauseStopCancelled {
 		t.Fatalf("the merger's stops after the resume = %+v, want the resume's cancel alone", got)
 	}
 	m, _ := sup.Machine(mustClaimToken(t, pauseIssue, claim.RoleMerger))
@@ -713,6 +720,9 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 				t.Fatal(err)
 			}
 			roles = append(roles, role)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
 		}
 		return roles
 	}

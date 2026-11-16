@@ -305,8 +305,8 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 // pause saves no workspace and deletes no pod, so a release whose save had not run when the pause
 // began is cancelled and keeps its pod, whatever reached its roles first (decision 12 and
 // departure 4 of dispatch://INFRA-3759). A release that saved before the pause finishes as it
-// does today: its role stops and its teardown read no pause. The open pause is the one fact this
-// reads of it, in this transaction.
+// does while the project runs: its role stops and its teardown read no pause. The open pause is
+// the one fact this reads of it, in this transaction.
 //
 // The decision carries the release's id, which the save puts on the bundle it stores
 // (PutWorkspaceBundle): the restore of the pod that replaces the released one names the release

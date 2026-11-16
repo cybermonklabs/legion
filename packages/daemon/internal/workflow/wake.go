@@ -87,8 +87,9 @@ type Pods interface {
 //
 // The row is marked with the wake's kind, so the start finishes without acting once a park, a
 // close or a moved phase has taken the role over while the row waited (decision 10 of
-// dispatch://INFRA-3759), and with the pause that held the wake, 0 for none (decision 15): the
-// outbox holds the row while that pause stands.
+// dispatch://INFRA-3759), and with the pause that held the wake, 0 for none (decision 15), which
+// the outbox's lines of the start name. The outbox holds every start of a paused project, marked
+// or not (record's outboxPauseFree).
 func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task string) record.SuperviseRequest {
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task,
 		WakeKind: kind, Pause: pause}
@@ -96,10 +97,10 @@ func wakeRow(issue record.Issue, role claim.Role, kind string, pause int64, task
 
 // PauseWakeRow is the start a project's pause owes a role it stopped with a launch owed: the row
 // the stop transaction writes beside its held wake (pods.WakePause, decision 6 of
-// dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so the
-// outbox holds it while a pause stands and finishes it without acting once a park, a close or a
-// moved phase has taken the role over (decision 10). It carries no task: the task the role holds
-// pending, if any, is what its launch delivers.
+// dispatch://INFRA-3759), in wakeRow's shape, marked with the wake's kind and the pause, so it
+// finishes without acting once a park, a close or a moved phase has taken the role over (decision
+// 10). The outbox holds it while a pause stands, as it holds every start of a paused project. It
+// carries no task: the task the role holds pending, if any, is what its launch delivers.
 func PauseWakeRow(issue record.Issue, role claim.Role, pause int64) record.SuperviseRequest {
 	return wakeRow(issue, role, pods.WakePause, pause, "")
 }

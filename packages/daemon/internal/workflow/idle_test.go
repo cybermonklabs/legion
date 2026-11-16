@@ -397,11 +397,23 @@ func TestTheRuleForAnIssueWithNoLiveClaim(t *testing.T) {
 			sandbox: true, want: IdleHoldUnownedPauseHeld,
 		},
 		{
-			// A project paused now holds no pod in this rule: the release's own transaction
-			// refuses the mark while the project is paused (store.ReleaseIdleIssue).
+			// A pod this rule would release while the project is paused is kept: the release's
+			// own transaction marks nothing while the project is paused (store.ReleaseIdleIssue).
 			name:    "the project is paused and no pause holds the pod",
 			view:    func() pods.IdleView { v := unownedIssue(); v.Paused = true; return v }(),
-			sandbox: true, want: IdleHoldNone,
+			sandbox: true, want: IdleHoldPaused,
+		},
+		{
+			// The pause's conjunct is the last: a pod inside its quiet period is not this rule's
+			// yet, paused or not.
+			name: "the project is paused and the pod is not idle",
+			view: func() pods.IdleView {
+				v := unownedIssue()
+				v.Paused = true
+				v.Claims[0].UpdatedAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			sandbox: true, want: IdleHoldUnownedNotIdle,
 		},
 		{
 			name:    "a release of that Sandbox is already under way",

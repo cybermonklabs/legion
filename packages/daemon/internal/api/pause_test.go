@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync"
@@ -90,10 +91,7 @@ func (h *pauseHarness) serveWith(svc PauseService) {
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Log: quiet,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{&factRecorder{}}, Dispatch: h.statuses,
-	}
-	if svc != nil {
-		options.Pause = svc
+		Handlers: []intake.Handler{&factRecorder{}}, Dispatch: h.statuses, Pause: svc,
 	}
 	h.handler = NewServer("127.0.0.1", 8437, options).Handler
 }
@@ -121,31 +119,21 @@ const (
 )
 
 // beganPause is the pause a 200 answer of the pause route began.
-func beganPause(t *testing.T, body []byte) PauseView {
+func beganPause(t *testing.T, recorder *httptest.ResponseRecorder) PauseView {
 	t.Helper()
 	var answer ProjectPauseResponse
-	decodeStrictBody(t, body, &answer)
+	decodeInto(t, recorder, &answer)
 	return answer.Pause
 }
 
-// decodeStrictBody decodes body into into, refusing a key into does not name.
-func decodeStrictBody(t *testing.T, body []byte, into any) {
-	t.Helper()
-	decoder := json.NewDecoder(strings.NewReader(string(body)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(into); err != nil {
-		t.Fatalf("decode %s: %v", body, err)
-	}
-}
-
-// pauseOK sends a pause or resume and requires a 200, answering its body.
-func (h *pauseHarness) pauseOK(target string, body any, header http.Header) []byte {
+// pauseOK sends a pause or resume and requires a 200, answering the response.
+func (h *pauseHarness) pauseOK(target string, body any, header http.Header) *httptest.ResponseRecorder {
 	h.t.Helper()
 	recorder := h.request(http.MethodPost, target, body, header)
 	if recorder.Code != http.StatusOK {
 		h.t.Fatalf("POST %s = %d, want 200; body %s", target, recorder.Code, recorder.Body)
 	}
-	return recorder.Body.Bytes()
+	return recorder
 }
 
 // pauseRefused sends a request and requires the refusal status and code, answering its body.
@@ -156,7 +144,7 @@ func (h *pauseHarness) pauseRefused(target string, body any, header http.Header,
 		h.t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, status, recorder.Body)
 	}
 	var refused PauseFailure
-	decodeStrictBody(h.t, recorder.Body.Bytes(), &refused)
+	decodeInto(h.t, recorder, &refused)
 	if refused.Code != code || refused.Error == "" {
 		h.t.Fatalf("POST %s refused %+v, want code %s and a sentence", target, refused, code)
 	}
@@ -278,7 +266,7 @@ func TestPauseRoutes(t *testing.T) {
 
 		h.clock.advance(20 * time.Minute)
 		var resumed ProjectResumeResponse
-		decodeStrictBody(t, h.pauseOK(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil), &resumed)
+		decodeInto(t, h.pauseOK(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil), &resumed)
 		if resumed.Pause.ID != began.ID || resumed.Pause.EndedBy == nil || *resumed.Pause.EndedBy != controller ||
 			resumed.Pause.EndedAt == nil || !resumed.Pause.EndedAt.Equal(pauseStartsAt.Add(20*time.Minute)) {
 			t.Fatalf("the resume answered %+v, want pause %d ended by the controller's session 20 minutes on", resumed.Pause, began.ID)
@@ -305,7 +293,7 @@ func TestPauseRoutes(t *testing.T) {
 		}
 		h.clock.advance(5 * time.Minute)
 		var resumed ProjectResumeResponse
-		decodeStrictBody(t, h.pauseOK(operatorResumeRoute, nil, bearer), &resumed)
+		decodeInto(t, h.pauseOK(operatorResumeRoute, nil, bearer), &resumed)
 		if resumed.Pause.ID != began.ID || resumed.Pause.EndedBy == nil || *resumed.Pause.EndedBy != operator {
 			t.Fatalf("the operator's resume answered %+v, want pause %d ended by the operator", resumed.Pause, began.ID)
 		}
@@ -344,7 +332,7 @@ func TestPauseRoutes(t *testing.T) {
 			t.Fatalf("a pause through the operator's grant = %+v, want it the operator's", began)
 		}
 		var resumed ProjectResumeResponse
-		decodeStrictBody(t, h.pauseOK(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil), &resumed)
+		decodeInto(t, h.pauseOK(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil), &resumed)
 		if resumed.Pause.EndedBy == nil || *resumed.Pause.EndedBy != operator {
 			t.Fatalf("a resume through the operator's grant = %+v, want it the operator's", resumed.Pause)
 		}
@@ -358,20 +346,17 @@ func TestPauseRoutes(t *testing.T) {
 	// answers 403 CONTROLLER_REQUIRED at both controller routes; none of them pauses anything.
 	t.Run("a caller that is not the controller or the operator is refused", func(t *testing.T) {
 		h := newPauseHarness(t, pauseCapable())
-		refusals := 0
 		for _, target := range []string{operatorPauseRoute, operatorResumeRoute} {
 			for _, header := range []http.Header{nil, {"Authorization": {"Bearer not-the-operator"}}} {
 				wantRefusal(t, h.request(http.MethodPost, target, OperatorPauseRequest{Reason: "x"}, header), http.StatusForbidden, invalidOperatorToken)
-				refusals++
 			}
 		}
 		worker := newLiveClaim(t, h.harness, "LEGION-208", claim.RoleImplementer)
 		grant := worker.grant(t)
 		h.pauseRefused(controllerPauseRoute, ProjectPauseRequest{GrantID: grant, Reason: "a worker's pause"}, nil, http.StatusForbidden, "CONTROLLER_REQUIRED")
 		h.pauseRefused(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil, http.StatusForbidden, "CONTROLLER_REQUIRED")
-		refusals += 2
-		if n := h.pauseCount(); refusals == 0 || n != 0 {
-			t.Fatalf("%d refused calls left %d pauses, want none", refusals, n)
+		if n := h.pauseCount(); n != 0 {
+			t.Fatalf("the refused calls left %d pauses, want none", n)
 		}
 		if _, open := h.svc.Paused(); open {
 			t.Fatal("a refused call set the pause flag")
@@ -407,7 +392,7 @@ func TestPauseRoutes(t *testing.T) {
 
 		h.clock.advance(10 * time.Minute)
 		var resumed ProjectResumeResponse
-		decodeStrictBody(t, h.pauseOK(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil), &resumed)
+		decodeInto(t, h.pauseOK(controllerResumeRoute, ProjectResumeRequest{GrantID: grant}, nil), &resumed)
 		if resumed.Pause.ID != began.ID || resumed.Pause.By != operator || resumed.Pause.EndedBy == nil || *resumed.Pause.EndedBy != controller {
 			t.Fatalf("the controller's resume of the operator's pause answered %+v, want pause %d by the operator ended by the controller",
 				resumed.Pause, began.ID)
@@ -474,7 +459,7 @@ func TestPauseRoutes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(refused) == 0 || len(before) == 0 || !reflect.DeepEqual(after, before) {
+		if len(before) == 0 || !reflect.DeepEqual(after, before) {
 			t.Fatalf("the %d refused requests changed the %d claims:\nbefore %+v\nafter  %+v", len(refused), len(before), before, after)
 		}
 		if got := len(h.runtime.Calls()); got != calls {
@@ -687,7 +672,7 @@ func TestPauseStateTxReadsThePauseThroughTheStatesSnapshot(t *testing.T) {
 			startHeld = true
 		}
 	}
-	if len(open.Held) == 0 || !startHeld {
+	if !startHeld {
 		t.Fatalf("the pause holds %+v, want the implementer's start, due two minutes", open.Held)
 	}
 

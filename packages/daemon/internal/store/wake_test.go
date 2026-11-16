@@ -231,7 +231,7 @@ func TestTakingAReleasedPodOverCancelsItsBackstops(t *testing.T) {
 		Role: claim.RoleImplementer, DueAt: at}); err != nil {
 		t.Fatalf("arm the backstop: %v", err)
 	}
-	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue); err != nil {
+	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue, ""); err != nil {
 		t.Fatalf("cancel the pod's backstops: %v", err)
 	}
 	if open, err := store.DuePodBackstops(ctx, "legion", at.Add(time.Hour)); err != nil || len(open) != 0 {
@@ -411,7 +411,7 @@ func TestAWakeCancelsTheWokenRolesBackstopAlone(t *testing.T) {
 
 	// A path that takes the whole released pod over leaves none of them: nothing of that pod is
 	// a wake's any more.
-	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue); err != nil {
+	if err := store.CancelPodBackstopsOf(ctx, "legion", rootIssue, ""); err != nil {
 		t.Fatalf("cancel the pod's backstops: %v", err)
 	}
 	if open, err := store.DuePodBackstops(ctx, "legion", at.Add(2*time.Hour)); err != nil || len(open) != 0 {

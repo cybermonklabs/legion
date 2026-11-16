@@ -358,7 +358,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// probe: the work after them has a budget of its own.
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
-	// machines (gap finding 1 of dispatch://INFRA-3759).
+	// machines (dispatch://INFRA-3759).
 	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
 	if err != nil {
 		st.Close()
@@ -2345,9 +2345,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var await func(repo, tree, child, parent string)
 	var githubAPI string
 	var consumerLag func(context.Context) []intake.ConsumerLag
-	// The pause service exists only with the workflow (projectPause): a daemon without one hands
-	// the API none, which answers every pause PAUSE_UNAVAILABLE. The nil check keeps a nil
-	// *pause.Service out of the interface, which would read as a service there.
+	// The pause service exists only with the workflow, which run builds it with (projectPause): a
+	// daemon without one leaves pauses the nil interface, which the API reads as no pause service
+	// and answers every pause and resume PAUSE_UNAVAILABLE.
 	var pauses api.PauseService
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
@@ -2355,9 +2355,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		handoffCompleted = workflow.handoffCompleted
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
-		if workflow.pauses != nil {
-			pauses = workflow.pauses.service
-		}
+		pauses = workflow.pauses.service
 	}
 	// Under `controller: daemon` the keeper launches and keeps the project's controller, and takes
 	// its ready. The liveness sweep runs beside it under either mode, never behind it.
@@ -2736,7 +2734,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	// The state's now is the daemon's one clock, which the wakes' stuck clocks are judged against
-	// (gap finding 1 of dispatch://INFRA-3759); a source a test builds by hand reads the wall clock.
+	// (dispatch://INFRA-3759); a source a test builds by hand reads the wall clock.
 	now := time.Now().UTC()
 	if s.now != nil {
 		now = s.now().UTC()

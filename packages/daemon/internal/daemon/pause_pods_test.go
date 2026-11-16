@@ -12,7 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -30,9 +29,9 @@ func (c *factCollector) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (in
 
 // Decision 22 of dispatch://INFRA-3759: the resume's one admission pass is a fact of its own,
 // intake.ProjectResumed, applied through the workflow's handlers and keyed on the ended pause, so
-// a resume applies it once; it is no controller tick, which would queue a tick notice
-// (internal/admit's TestTheResumesPassPromotesAndQueuesNoTickNotice holds what admission does
-// with it).
+// a resume applies it once and the resume of another pause applies its own. It is no controller
+// tick, which would queue a tick notice (internal/admit's
+// TestTheResumesPassPromotesAndQueuesNoTickNotice holds what admission does with it).
 func TestTheResumesPassIsAFactOfItsOwnAppliedOnce(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	collector := &factCollector{}
@@ -41,16 +40,10 @@ func TestTheResumesPassIsAFactOfItsOwnAppliedOnce(t *testing.T) {
 
 	p.applyResumePass(context.Background(), store.Pause{ID: 7})
 	p.applyResumePass(context.Background(), store.Pause{ID: 7})
+	p.applyResumePass(context.Background(), store.Pause{ID: 8})
 
-	if len(collector.facts) != 1 || collector.facts[0] != (intake.ProjectResumed{Pause: 7}) {
-		t.Fatalf("facts applied = %#v, want one ProjectResumed of pause 7", collector.facts)
-	}
-	var ticks int
-	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'controller_notice'`).Scan(&ticks); err != nil {
-		t.Fatal(err)
-	}
-	if ticks != 0 {
-		t.Fatalf("controller notices queued by the resume's pass = %d, want none", ticks)
+	if len(collector.facts) != 2 || collector.facts[0] != (intake.ProjectResumed{}) || collector.facts[1] != (intake.ProjectResumed{}) {
+		t.Fatalf("facts applied = %#v, want one ProjectResumed for pause 7 and one for pause 8", collector.facts)
 	}
 }
 
@@ -145,22 +138,6 @@ func TestAPodHoldEndsAtTheReadyOfARoleOfThePod(t *testing.T) {
 	})
 }
 
-// deletingRuntime deletes an issue's pod on the store's authorization, as the Sandbox runtime's
-// SuspendIssue does, and counts the deletions.
-type deletingRuntime struct {
-	runtime.Runtime
-	deleted int
-}
-
-func (r *deletingRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
-	act, err := authorize(ctx)
-	if err != nil || !act {
-		return err
-	}
-	r.deleted++
-	return nil
-}
-
 // closeAuthorizingTrees is the store with the issue's close authorized or refused, as act says.
 type closeAuthorizingTrees struct {
 	outboxTrees
@@ -176,11 +153,12 @@ func (c closeAuthorizingTrees) IssueSuspension(context.Context, string, store.Is
 // authorize deletes nothing and leaves the hold standing.
 func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		act  bool
-		end  string
+		name    string
+		act     bool
+		end     string
+		deleted int
 	}{
-		{name: "the store authorizes the close", act: true, end: string(store.PausePodHoldDeleted)},
+		{name: "the store authorizes the close", act: true, end: string(store.PausePodHoldDeleted), deleted: 1},
 		{name: "the store refuses the close", act: false, end: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,13 +169,16 @@ func TestAPodHoldEndsWhenTheIssuesSuspensionDeletesThePod(t *testing.T) {
 			if _, err := st.OpenPausePodHold(ctx, pause, "LEGION-208", time.Now().Add(-time.Hour)); err != nil {
 				t.Fatalf("hold the pod: %v", err)
 			}
-			rt := &deletingRuntime{Runtime: fake.NewRuntime()}
+			rt := &releaseRuntime{Runtime: fake.NewRuntime()}
 			runner := &outbox{supervisor: &supervisor{deps: supervise.Deps{Runtime: rt}}, trees: closeAuthorizingTrees{outboxTrees: st, act: tc.act},
 				project: "legion", log: quietLogger(), now: time.Now}
 
 			if err := runner.suspendIssue(ctx, record.OutboxRow{ID: 7, Issue: "LEGION-208"},
 				record.IssueSuspend{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1}); err != nil {
 				t.Fatalf("the issue's suspension: %v", err)
+			}
+			if _, deleted := rt.reads(); deleted != tc.deleted {
+				t.Fatalf("the suspension deleted the pod %d times, want %d", deleted, tc.deleted)
 			}
 			if got := podHoldEnd(t, pool, "LEGION-208"); got != tc.end {
 				t.Fatalf("the pod's hold ended %q, want %q", got, tc.end)

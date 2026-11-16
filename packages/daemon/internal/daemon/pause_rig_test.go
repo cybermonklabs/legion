@@ -8,7 +8,7 @@ package daemon
 // minute in bursts of one, and the daemon launching its own controller. Its runtime is the fake
 // one, grown the issue-pod calls the idle release makes (pauseRuntime), and one waveClock is every
 // clock the daemon reads: the machines', the workflow engine's, the idle and wake passes', the
-// stuck warning's and the state's (overrides.clock, gap finding 1 of the plan).
+// stuck warning's and the state's (overrides.clock).
 //
 // The test reaches the machines and the workflow's handlers through the one seam run hands them
 // over (overrides.supervising): turns, readiness and a provider's refusal are the machines' own
@@ -40,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -61,16 +62,16 @@ const (
 	pauseRigPodUpdateGrace  = 15 * time.Minute
 )
 
-// The four lines a pause writes (decision 23 of the plan): the pause service's two and its line
-// for each held row a resume released, and the machine's line for each role it stopped.
+// The three lines of a pause the checks read (decision 23 of the plan): the pause service's line
+// of the pause and its line for each held row a resume released, and the machine's line for each
+// role it stopped.
 const (
 	pausePausedLine   = "pause: the project is paused"
-	pauseResumedLine  = "pause: the project is resumed"
 	pauseStoppedLine  = supervise.PauseRoleStoppedMessage
-	pauseReleasedLine = pauseHeldRowReleased
+	pauseReleasedLine = pause.HeldRowReleasedMessage
 )
 
-// pauseRigOperator is the reason the rig's operator gives for every pause.
+// pauseRigReason is the reason the rig's operator gives for every pause.
 const pauseRigReason = "the model provider is refusing every request"
 
 // pauseRuntime is the fake runtime with the moment of every launch on the test clock, as
@@ -177,7 +178,7 @@ func (r *pauseRuntime) podReads() (deleted, bundled []string) {
 	return slices.Clone(r.deleted), slices.Clone(r.bundled)
 }
 
-// suspendedLocators is the incarnation of every process the runtime was asked to stop.
+// suspendedOf is how many times the runtime was asked to stop a process of token.
 func (r *pauseRuntime) suspendedOf(token claim.Token) int {
 	count := 0
 	for _, call := range r.CallsOf("Suspend") {
@@ -197,7 +198,6 @@ func (r *pauseRuntime) suspendedOf(token claim.Token) int {
 // (hold). The registry read and the clean session stop are answered as a listener with no record
 // of the session answers them.
 type pauseEnvoy struct {
-	t     *testing.T
 	clock *waveClock
 	url   string
 	mu    sync.Mutex
@@ -207,13 +207,13 @@ type pauseEnvoy struct {
 
 // pauseEnvoyPublish is one publish the listener took.
 type pauseEnvoyPublish struct {
-	topic, message, key string
-	at                  time.Time
+	topic, message string
+	at             time.Time
 }
 
 func newPauseEnvoy(t *testing.T, clock *waveClock) *pauseEnvoy {
 	t.Helper()
-	e := &pauseEnvoy{t: t, clock: clock, held: map[string]bool{}}
+	e := &pauseEnvoy{clock: clock, held: map[string]bool{}}
 	server := httptest.NewServer(http.HandlerFunc(e.serve))
 	t.Cleanup(server.Close)
 	e.url = server.URL
@@ -225,9 +225,8 @@ func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/publish":
 		var body struct {
-			Topic     string `json:"topic"`
-			Message   string `json:"message"`
-			DedupeKey string `json:"dedupe_key"`
+			Topic   string `json:"topic"`
+			Message string `json:"message"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -241,7 +240,7 @@ func (e *pauseEnvoy) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, `{"error":"the role's holder is not live","reason":"holder_lapsed","holder":"a-stopped-session","holder_state":"unresponsive"}`)
 			return
 		}
-		e.sent = append(e.sent, pauseEnvoyPublish{topic: body.Topic, message: body.Message, key: body.DedupeKey, at: e.clock.Now()})
+		e.sent = append(e.sent, pauseEnvoyPublish{topic: body.Topic, message: body.Message, at: e.clock.Now()})
 		_, _ = io.WriteString(w, `{}`)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
 		_, _ = io.WriteString(w, `{"deleted":true}`)
@@ -310,17 +309,11 @@ func newPauseDaemonRig(t *testing.T, tune func(*config.Config)) *pauseDaemonRig 
 	board.lists = true
 	cfg.DispatchURL = board.url
 	// Boot reads runtime.kubernetes' kubeconfig whatever runtime it is given (readSandbox), so the
-	// rig names a stand-in API of its own, which nothing dials: the runtime the boot is given is
-	// the rig's own.
-	kube := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"NotFound","code":404}`)
-	}))
-	t.Cleanup(kube.Close)
+	// rig names an API address, which nothing dials: the runtime the boot is given is the rig's
+	// own.
 	cfg.Runtime = config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{
 		Namespace: "legion", Image: idleRigImage, StorageClass: "standard", IssueVolume: "1Gi",
-		Kubeconfig: writeKubeconfig(t, kube.URL, "test"), Resources: config.DefaultResources(),
+		Kubeconfig: writeKubeconfig(t, "https://127.0.0.1:1", "test"), Resources: config.DefaultResources(),
 		RepositoryCache: config.DefaultRepositoryCache(),
 		IdleRelease:     config.IdleReleaseConfig{IdleMinutes: pauseRigIdleMinutes, BackstopMinutes: pauseRigBackstopMinutes},
 	}}
@@ -407,7 +400,7 @@ func (r *pauseDaemonRig) root(issue string, ph phase.Phase) record.Issue {
 // of an issue runs in its one pod.
 func podLocator(token claim.Token, issue string) *runtime.Locator {
 	pod := "pod-" + strings.ToLower(issue)
-	return &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: pod + "/1",
+	return &runtime.Locator{Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
 		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "sandbox-" + strings.ToLower(issue), PodUID: pod,
 			Container: runtime.IssuePodContainer, Generation: 1}}
 }
@@ -446,11 +439,12 @@ func (r *pauseDaemonRig) unfinished(issue string, role claim.Role) supervise.Cla
 		BootTokenHash: supervise.HashBootToken(pauseRigBootToken(token))}
 }
 
-// seed records root as an admitted tree with its claims (seedWorkflowTree), puts it on the board
-// at its status, writes each claim's role prompt, and stands its pod up in the runtime.
+// seed records root as an admitted tree with its claims through the rig's open store
+// (seedWorkflowTreeIn), puts it on the board at its status, writes each claim's role prompt, and
+// stands its pod up in the runtime.
 func (r *pauseDaemonRig) seed(root record.Issue, claims ...supervise.Claim) {
 	r.t.Helper()
-	seedWorkflowTree(r.t, r.cfg.PostgresDSN, r.project, root, claims...)
+	seedWorkflowTreeIn(r.t, r.st, r.project, root, claims...)
 	r.board.show(root.Key, root.DispatchStatus)
 	for _, c := range claims {
 		writePrompt(r.t, r.cfg, c.Token)
@@ -630,25 +624,30 @@ func (r *pauseDaemonRig) advance(d time.Duration) {
 	r.awaitPasses()
 }
 
-// awaitPasses waits until the daemon's idle and wake passes have run twice since the call: the
-// wake pass's tick reads the clock once a tick, and the second run is one that began after the
-// call. Each pass writes its debug line of the pods it decided (releaseIdlePods,
-// releaseUnownedPods) or none; the wake tick runs on the same period, so two ticks of either are
-// two of both.
+// awaitPasses waits until the daemon's idle pass has run twice wholly after the call, at the
+// clock's new moment. A pass writes one line for each pod it keeps (releaseIdlePod,
+// releaseUnownedPod) and one for the unowned pass as a whole (releaseUnownedPods), so each such
+// line comes once a pass: the first of one after the call may belong to a pass that read the
+// clock before it moved, and its second and third to passes that began after it. The wake tick
+// runs beside the idle tick on a ticker of its own and writes nothing when nothing is due, so two
+// more of the tick's periods are slept for it to have read the clock's new moment too.
 func (r *pauseDaemonRig) awaitPasses() {
 	r.t.Helper()
-	ticks := func() int {
-		return len(r.lines("idle release: the pod is kept")) + len(r.lines("unowned release: the pod is kept")) +
-			len(r.lines("unowned release: decided every pod of the project no claim owns"))
-	}
-	for range 2 {
-		before := ticks()
-		testwait.Eventually(r.t, "a pass of the idle release at the clock's new moment", func() bool {
-			return ticks() > before
-		})
-	}
-	// Two more of the tick's periods, so the wake tick, which runs beside the idle tick on its own
-	// ticker, has read the clock's new moment too.
+	since := r.mark()
+	testwait.Eventually(r.t, "two passes of the idle release at the clock's new moment", func() bool {
+		seen := map[string]int{}
+		for _, msg := range []string{"idle release: the pod is kept", "unowned release: the pod is kept",
+			"unowned release: decided every pod of the project no claim owns"} {
+			for _, line := range r.linesAfter(since, msg) {
+				key := msg + " " + fmt.Sprint(line["issue"])
+				seen[key]++
+				if seen[key] == 3 {
+					return true
+				}
+			}
+		}
+		return false
+	})
 	time.Sleep(2 * pauseRigTick)
 }
 
@@ -865,14 +864,17 @@ func (r *pauseDaemonRig) startRows(issue string, role claim.Role) []string {
 		}
 		starts = append(starts, kind+"/"+pause)
 	}
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the starts of %s's %s: %v", issue, role, err)
+	}
 	return starts
 }
 
-// heldIn is the rows of held of issue, and of kind where kind is not "".
+// heldIn is the rows of held of issue and of kind.
 func heldIn(held []api.PauseHeldView, kind string, issue string) []api.PauseHeldView {
 	var of []api.PauseHeldView
 	for _, row := range held {
-		if row.Issue == issue && (kind == "" || row.Kind == kind) {
+		if row.Issue == issue && row.Kind == kind {
 			of = append(of, row)
 		}
 	}

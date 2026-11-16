@@ -115,18 +115,20 @@ func TestAReleaseSaveIsCancelledWhileTheProjectIsPaused(t *testing.T) {
 }
 
 // Decision 12 of dispatch://INFRA-3759: a cancel made while the project is paused queues no resume.
-// It records each role the release had stopped as stopped by the pause, holds the pod, and arms the
-// backstop of the open phase's worker serving the issue's generation, as the stop transaction
-// does; the architect gets none. A role a wake already owes a launch keeps that wake, owes the
-// launch in its stop, and gets no backstop.
+// It records each role the release had stopped as stopped by the pause, holds the pod whatever
+// the pod's other roles do, and arms the backstop of the open phase's worker serving the issue's
+// generation, as the stop transaction does while its pause stands; the architect gets none. A role
+// a wake already owes a launch keeps that wake, owes the launch in its stop, and gets no backstop.
 func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		woken    bool
 		backstop bool
+		live     bool
 	}{
 		{name: "no wake owes the implementer a launch", backstop: true},
 		{name: "a wake taken while paused owes the implementer its launch", woken: true},
+		{name: "another role of the pod is live", backstop: true, live: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -134,13 +136,17 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			openRunningTree(t, st)
 			servingReleasedClaim(t, st, claim.RoleArchitect)
 			servingReleasedClaim(t, st, claim.RoleImplementer)
+			if tc.live {
+				if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion",
+					Tree: rootIssue, Issue: rootIssue, Role: claim.RoleTester, TreeEpoch: 1, Generation: 1,
+					ServingGeneration: 1, State: supervise.StateReady}); err != nil {
+					t.Fatalf("seed the live tester: %v", err)
+				}
+			}
 			markRelease(t, st, 18, 20, 22, 0, claim.RoleArchitect, claim.RoleImplementer)
 			pause, _ := pauseLegion(t, st, pausedAt)
 			if tc.woken {
-				records, err := st.PodRecordsOf("LEGION")
-				if err != nil {
-					t.Fatal(err)
-				}
+				records := podRecords(t, st)
 				inTx(t, st, func(tx pgx.Tx) error {
 					if taken, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
 						t.Fatalf("take the held wake = %t, %v", taken, err)
@@ -186,8 +192,9 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = 'architect'`, rootIssue); n != 0 {
 				t.Fatalf("the architect's backstops = %d, want none: an architect's phase is its own", n)
 			}
-			if _, open := heldOpenResume(t, st, claim.RoleImplementer); open != tc.woken {
-				t.Fatalf("the implementer's held wake open = %t, want %t: the cancel leaves the wake that owes the launch", open, tc.woken)
+			if held, open := heldOpenResume(t, st, claim.RoleImplementer); open != tc.woken || (open && held != pause.ID) {
+				t.Fatalf("the implementer's open resume = pause %d, open %t; want open %t, held by pause %d: the cancel leaves the wake that owes the launch",
+					held, open, tc.woken, pause.ID)
 			}
 		})
 	}
@@ -250,10 +257,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 	if stuck, unfinished := reads(pausedAt); len(stuck) != 0 || len(unfinished) != 0 {
 		t.Fatalf("while paused the reads = %+v and %+v, want none: the pause holds every launch", stuck, unfinished)
 	}
-	records, err := st.PodRecordsOf("LEGION")
-	if err != nil {
-		t.Fatal(err)
-	}
+	records := podRecords(t, st)
 	inTx(t, st, func(tx pgx.Tx) error {
 		if taken, err := records.TakeHeldPodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
 			t.Fatalf("take the implementer's held wake = %t, %v", taken, err)

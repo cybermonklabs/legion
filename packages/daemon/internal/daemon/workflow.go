@@ -457,7 +457,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
 	// The engine stamps its deadlines on the daemon's one clock, which the machines and this
-	// runtime's passes read too (gap finding 1 of dispatch://INFRA-3759).
+	// runtime's passes read too (dispatch://INFRA-3759).
 	engineCfg.Clock = clock
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)

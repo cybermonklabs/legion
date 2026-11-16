@@ -900,22 +900,8 @@ type Deps struct {
 	// writes both. stop names the pause (store.Pause.ID) and whether the role is owed a launch at
 	// the resume (PauseStop.LaunchOwed, which the machine decides).
 	//
-	// The daemon's implementation runs, in one transaction: the issue's advisory lock
-	// (store.LockIssueForPause); the row of stop.Pause by its id, for share
-	// (store.LockPauseTx), whether that pause is still open or has ended — a resume can commit
-	// while the runtime's stop ran, and the stop's records are written all the same; the claim
-	// row, and the delivery where c.Pending is set, as the plain write writes them; the stop
-	// (store.RecordPauseStoppedTx with stop.LaunchOwed, which ends the claim's open or cancelled
-	// stop row as stopped, or inserts one already stopped); the pod's hold, opened only where no
-	// role of the pod is live then (store.OpenPausePodHoldTx); the role's open resume closed
-	// (store.CloseRoleOpenResumeTx); then, where stop.LaunchOwed, a held wake of kind
-	// pods.WakePause with its start row (store.PodRecords.TakeHeldPodWake with the pause's id,
-	// which also cancels the role's own backstop), and otherwise, where the role is the worker of
-	// an open phase, the role's backstop (store.ArmPodBackstopTx, never CancelPodBackstopsOf).
-	// Where the pause has ended it also reads the project's open pause, for share, and logs the
-	// owed start row as a released held row (decision 23) only when no pause is open. It writes
-	// no log line of the stop itself: the machine writes PauseRoleStoppedMessage once the
-	// transaction lands.
+	// internal/daemon's projectPause.stopped is the implementation, and it owns what the
+	// transaction writes beside the claim and in what order.
 	//
 	// Its error is read by the rule a plain write's is (writeOwed). A failure the rule owes
 	// leaves the stop owed on the machine (owedClaimWrite.stops), and every later claim write
@@ -923,22 +909,22 @@ type Deps struct {
 	// decision, and every write that settles an owed write when it lands (putClaim,
 	// putClaimAndPending, the stop-first write of retirePending, StartedBy's persist). So c can
 	// be a claim that is no longer suspended by then — a later write of a claim whose stop is
-	// owed — and the transaction writes the stop's records all the same. It must therefore be
-	// safe to run again for one pause and claim: a commit whose answer the deadline cut off is
-	// owed and made again, and must not open a second stop row, a second held wake or a second
-	// pod hold. nil writes the claim through the plain write and records nothing of a pause.
+	// owed — and the transaction records the stop all the same. It must therefore be safe to run
+	// again for one pause and claim: a commit whose answer the deadline cut off is owed and made
+	// again, and must not open a second stop row, a second held wake or a second pod hold. nil
+	// writes the claim through the plain write and records nothing of a pause.
 	PauseStopped func(ctx context.Context, c Claim, stop PauseStop) error
-	// WakeLetOut is told the moment the wake pacing lets a launch of claim c out, at each
-	// reservation the machine takes for one (decision 14): the gate's own (reserveWake), the one
-	// that lets the launch out at once included, and the let-out of a launch the pause's gate
-	// held once its pause has ended (letOutHeldLaunch). at is the moment the reservation
-	// answered, never before the decision's now. The daemon sets the stuck clock of the role's
-	// open resume to it (store.Store.SetResumeClock on pod_resumes.clock_at, which never moves a
-	// clock back), so a launch that waits its turn in a long queue is not warned stuck for the
-	// wait. It is called inside the machine's decision, so it returns at once and does its write
-	// on a goroutine of its own, as the durable-state report's podResume does in internal/daemon;
-	// c is a copy the goroutine may keep. nil stamps nothing.
-	WakeLetOut func(c Claim, at time.Time)
+	// WakeLetOut is told the moment the wake pacing lets a launch of the claim token (of issue's
+	// role) out, at each reservation the machine takes for one (decision 14): the gate's own
+	// (reserveWake), the one that lets the launch out at once included, and the let-out of a
+	// launch the pause's gate held once its pause has ended (letOutHeldLaunch). at is the moment
+	// the reservation answered, never before the decision's now. The daemon sets the stuck clock
+	// of the role's open resume to it (store.Store.SetResumeClock on pod_resumes.clock_at, which
+	// never moves a clock back), so a launch that waits its turn in a long queue is not warned
+	// stuck for the wait. It is called inside the machine's decision, so it returns at once and
+	// does its write on a goroutine of its own, as the durable-state report's podResume does in
+	// internal/daemon. nil stamps nothing.
+	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
 	// beside whatever goroutine feeds the machine its events, and the decision writes the claim

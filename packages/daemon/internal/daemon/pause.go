@@ -32,7 +32,7 @@ import (
 //   - what runs after a pause or a resume commits (projectPause.Paused and projectPause.Resumed,
 //     the service's Effects, decisions 3 and 22);
 //   - the boot's read of the flag before any claim is restored, and its pass over the claims a
-//     restart finds live while paused (supervision.start, decision 5);
+//     restart finds live while paused (supervision.start, decision 18 and R5);
 //   - the outbox's `pause_stop` executor (outbox.pauseStop, decision 4).
 
 // pauseStopWait is how long a `pause_stop` row waits before it asks its claim again while the
@@ -42,11 +42,6 @@ import (
 // transaction, which makes the row due at once when it records the claim stopped
 // (store.ExpeditePauseStopRowsTx) and wakes its lane.
 const pauseStopWait = 10 * time.Minute
-
-// pauseHeldRowReleased is the line the pause service writes for each row a resume released
-// (decision 23, internal/pause's Service.Resume); the stop transaction writes it too for the start
-// it owes once its pause has ended with no pause open after it, so the log names that row as well.
-const pauseHeldRowReleased = "pause: a held row released"
 
 // projectPause is the daemon's half of its project's pause: the service, which holds the flag and
 // makes each act, and what the service hands the daemon to do (pause.Effects). It is built only
@@ -152,7 +147,7 @@ func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supe
 		p.workflow.wakeOutbox(c.Issue, record.OutboxKindSupervise)
 	}
 	if made.released != 0 {
-		p.log.Info(pauseHeldRowReleased, "pause", stop.Pause, "row", made.released, "kind", string(record.OutboxKindSupervise),
+		p.log.Info(pause.HeldRowReleasedMessage, "pause", stop.Pause, "row", made.released, "kind", string(record.OutboxKindSupervise),
 			"issue", c.Issue, "claim", string(c.Token))
 	}
 	return nil
@@ -191,8 +186,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if err != nil {
 		return made, err
 	}
-	first, err := store.RecordPauseStoppedTx(ctx, tx, held.ID, store.PauseStopClaim{Claim: c.Token, Tree: c.Tree, Issue: c.Issue,
-		Role: c.Role, Generation: c.Generation}, at, stop.LaunchOwed)
+	first, err := store.RecordPauseStoppedTx(ctx, tx, held.ID, pauseStopClaimOf(c), at, stop.LaunchOwed)
 	if err != nil {
 		return made, err
 	}
@@ -212,7 +206,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 			hold = !live
 		}
 		if hold {
-			if _, err := store.OpenPausePodHoldTx(ctx, tx, held.ID, c.Issue, at); err != nil {
+			if _, err := store.OpenPausePodHoldTx(ctx, tx, held, c.Issue, at); err != nil {
 				return made, err
 			}
 		}
@@ -253,21 +247,21 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 }
 
 // wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment the wake pacing lets a launch
-// of c out becomes the stuck clock of its role's open resume (store.Store.SetResumeClock, which
-// never moves a clock back), so a launch that waited its turn in a long queue is not warned stuck
-// for the wait. The machine calls it inside its decision, so the write runs on a goroutine of its
-// own, as podResume's stamp does, under a hold mark of its own; a failed write is logged and the
-// clock keeps the moment it had.
-func (p *projectPause) wakeLetOut(c supervise.Claim, at time.Time) {
-	if c.Issue == "" || c.Role == claim.RoleController {
+// of the claim token out becomes the stuck clock of its role's open resume
+// (store.Store.SetResumeClock, which never moves a clock back), so a launch that waited its turn
+// in a long queue is not warned stuck for the wait. The machine calls it inside its decision, so
+// the write runs on a goroutine of its own, as podResume's stamp does, under a hold mark of its
+// own; a failed write is logged and the clock keeps the moment it had.
+func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Role, at time.Time) {
+	if issue == "" || role == claim.RoleController {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
-		if _, err := p.store.SetResumeClock(ctx, p.token, c.Issue, c.Role, at); err != nil {
+		if _, err := p.store.SetResumeClock(ctx, p.token, issue, role, at); err != nil {
 			p.log.Warn("wake: could not start a resume's stuck clock at its launch's let-out moment",
-				"claim", c.Token, "at", at, "error", err)
+				"claim", token, "at", at, "error", err)
 		}
 	}()
 }
@@ -292,7 +286,7 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 		if named[c.Token] || !pausable(c) {
 			continue
 		}
-		missed = append(missed, store.PauseStopClaim{Claim: c.Token, Tree: c.Tree, Issue: c.Issue, Role: c.Role, Generation: c.Generation})
+		missed = append(missed, pauseStopClaimOf(c))
 	}
 	if len(missed) > 0 {
 		caught, err := p.store.AskPauseStops(ctx, held.ID, missed, p.now().UTC(), pause.StopRow)
@@ -341,7 +335,7 @@ func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 func (p *projectPause) applyResumePass(ctx context.Context, ended store.Pause) {
 	w := p.workflow
 	eventID := fmt.Sprintf("project-resumed:%s:%d", p.project, ended.ID)
-	if _, err := intake.ApplyFact(ctx, w.pool, "pause", eventID, intake.ProjectResumed{Pause: ended.ID}, w.handlers...); err != nil {
+	if _, err := intake.ApplyFact(ctx, w.pool, "pause", eventID, intake.ProjectResumed{}, w.handlers...); err != nil {
 		p.log.Error("pause: the resume's admission pass failed; the next fact or tick promotes the line",
 			"pause", ended.ID, "error", err)
 	}
@@ -361,7 +355,7 @@ func (p *projectPause) endLiveHolds(ctx context.Context, ended store.Pause) {
 		return
 	}
 	for _, hold := range holds {
-		released, err := p.endLiveHold(ctx, hold.Issue)
+		released, err := p.store.EndLivePausePodHold(ctx, p.token, hold.Issue, store.PausePodHoldResumed, p.now().UTC())
 		switch {
 		case err != nil:
 			p.log.Error("pause: the resume could not end a pod's hold; it stays until a role of the pod is ready",
@@ -373,18 +367,12 @@ func (p *projectPause) endLiveHolds(ctx context.Context, ended store.Pause) {
 	}
 }
 
-// endLiveHold ends issue's pod hold where a role of the pod is live, and answers whether it did
-// (store.Store.EndLivePausePodHold, under the issue's lock).
-func (p *projectPause) endLiveHold(ctx context.Context, issue string) (bool, error) {
-	return p.store.EndLivePausePodHold(ctx, p.token, issue, store.PausePodHoldResumed, p.now().UTC())
-}
-
-// askBootStops is the boot's pass while the project is paused (decision 5): once every claim is
-// restored, each live claim of the project but the controller's that the open pause has asked no
-// stop of — a role an earlier daemon launched before the pause reached it, or whose stop it never
-// queued — is asked to stop (store.Store.AskLivePauseStops). Its rows run once the outbox's boot
-// sweep starts the lanes, and the relaunches and the stale-plugin pass of this boot meet the
-// gate meanwhile, so the boot launches nothing but the controller.
+// askBootStops is the boot's pass while the project is paused (decision 18 and R5): once every
+// claim is restored, each live claim of the project but the controller's that the open pause has
+// asked no stop of — a role an earlier daemon launched before the pause reached it, or whose stop
+// it never queued — is asked to stop (store.Store.AskLivePauseStops). Its rows run once the
+// outbox's boot sweep starts the lanes, and the relaunches and the stale-plugin pass of this boot
+// meet the gate meanwhile, so the boot launches nothing but the controller.
 //
 // The stops the pause still waits on are asked again at once as well (store.Store.ExpeditePauseStops):
 // a stop its claim held for a turn waits on its row's bounded retry, up to pauseStopWait out, and
@@ -428,6 +416,11 @@ func stopTokens(stops []store.PauseStopClaim) []string {
 		tokens[i] = string(stop.Claim)
 	}
 	return tokens
+}
+
+// pauseStopClaimOf is c as a pause's stop names it (store.PauseStopClaim).
+func pauseStopClaimOf(c supervise.Claim) store.PauseStopClaim {
+	return store.PauseStopClaim{Claim: c.Token, Tree: c.Tree, Issue: c.Issue, Role: c.Role, Generation: c.Generation}
 }
 
 // pauseStop is the `pause_stop` executor (decision 4): one role's stop for one pause. A row whose

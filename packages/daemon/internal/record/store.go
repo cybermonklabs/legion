@@ -2527,11 +2527,7 @@ func kindNames(kinds []OutboxKind) []string {
 // claims only an id a list gave it, because a lease taken on another project's row is what would
 // take it from its own daemon.
 func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string, kinds []OutboxKind, now time.Time) ([]OutboxRow, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+` from outbox
-		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
-		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))
-		and `+outboxClaimable+`
-		order by next_at, id`, outboxDueArgs(now, project, issue, kindNames(kinds))...)
+	rows, err := tx.Query(ctx, dueRowsSQL, outboxDueArgs(now, project, issue, kindNames(kinds))...)
 	if err != nil {
 		return nil, fmt.Errorf("list due outbox rows: %w", err)
 	}
@@ -2549,6 +2545,13 @@ func (s *Postgres) DueRows(ctx context.Context, tx pgx.Tx, project, issue string
 	}
 	return due, nil
 }
+
+// dueRowsSQL is DueRows' statement, built once from the outbox's rules (outboxClaimable).
+var dueRowsSQL = `select ` + outboxColumns + ` from outbox
+		where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
+		and (cardinality($8::text[]) = 0 or outbox.kind = any($8::text[]))
+		and ` + outboxClaimable + `
+		order by next_at, id`
 
 // ClaimRow leases row id for leaseFor from now, if a lane may still run it at now: it is in the
 // outbox, due, under no live lease, in order, and no other lifecycle row of its issue is running
@@ -2595,9 +2598,7 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 		where id = $1 and kind = $2 and payload->>'kind' = 'catch-up'`, id, string(OutboxKindNotice)); err != nil {
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
-	row, err := scanOutbox(tx.QueryRow(ctx, `update outbox set lease_token = $7, lease_until = $8
-		where outbox.id = $6 and `+outboxClaimable+`
-		returning `+outboxColumns, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
+	row, err := scanOutbox(tx.QueryRow(ctx, claimRowSQL, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return OutboxRow{}, false, nil
 	}
@@ -2606,6 +2607,11 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 	}
 	return row, true, nil
 }
+
+// claimRowSQL is ClaimRow's update, built once from the outbox's rules (outboxClaimable).
+var claimRowSQL = `update outbox set lease_token = $7, lease_until = $8
+		where outbox.id = $6 and ` + outboxClaimable + `
+		returning ` + outboxColumns
 
 // RenewOutboxLease moves the lease on row id to until while leaseToken still holds it, so a lane
 // running a long row keeps it from the lapse that would let another claim it mid-run. False is a
@@ -2683,13 +2689,7 @@ func (s *Postgres) UnfinishedLanes(ctx context.Context, tx pgx.Tx, project strin
 // and refuses a statement with one it never uses, and the ordering rules' kinds are among the
 // parameters every fragment shares.
 func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue string, now time.Time) ([]HeldRow, error) {
-	rows, err := tx.Query(ctx, `select `+outboxColumns+`, (select min(running.id) from outbox running
-			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on
-		from outbox where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
-		and outbox.kind = any($5::text[])
-		and `+outboxUnleasedDue+` and not (`+outboxClaimable+`) and not `+outboxLaneFree+`
-		order by next_at, id`,
-		outboxDueArgs(now, project, issue)...)
+	rows, err := tx.Query(ctx, heldRowsSQL, outboxDueArgs(now, project, issue)...)
 	if err != nil {
 		return nil, fmt.Errorf("list the held outbox rows of %s: %w", project, err)
 	}
@@ -2709,6 +2709,15 @@ func (s *Postgres) HeldRows(ctx context.Context, tx pgx.Tx, project, issue strin
 	return held, nil
 }
 
+// heldRowsSQL is HeldRows' statement, built once from the outbox's rules (outboxClaimable,
+// outboxLaneFree).
+var heldRowsSQL = `select ` + outboxColumns + `, (select min(running.id) from outbox running
+			where running.issue = outbox.issue and running.id <> outbox.id and running.kind = any($5::text[]) and running.lease_until > $1) as waits_on
+		from outbox where split_part(outbox.issue, '-', 1) = $6 and ($7::text = '' or outbox.issue = $7::text)
+		and outbox.kind = any($5::text[])
+		and ` + outboxUnleasedDue + ` and not (` + outboxClaimable + `) and not ` + outboxLaneFree + `
+		order by next_at, id`
+
 // PauseHeldRows is every row of project's issues that the project's open pause holds at now
 // (outboxPauseFree negated) and that is due and under no live lease, by next_at then id: what the
 // state lists under the pause (decision 25 of dispatch://INFRA-3759) and what the resume logs as
@@ -2722,9 +2731,7 @@ func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string,
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
-	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(outbox.payload->>'role', '') from outbox
-		where split_part(outbox.issue, '-', 1) = $2 and `+outboxUnleasedDue+` and not `+outboxPauseFree+`
-		order by next_at, id`, now, project)
+	rows, err := tx.Query(ctx, pauseHeldRowsSQL, now, project)
 	if err != nil {
 		return nil, fmt.Errorf("list the rows %s's pause holds: %w", project, err)
 	}
@@ -2745,6 +2752,12 @@ func (s *Postgres) PauseHeldRows(ctx context.Context, tx pgx.Tx, project string,
 	}
 	return held, nil
 }
+
+// pauseHeldRowsSQL is PauseHeldRows' statement, built once from the outbox's rules
+// (outboxUnleasedDue, outboxPauseFree).
+var pauseHeldRowsSQL = `select ` + outboxColumns + `, coalesce(outbox.payload->>'role', '') from outbox
+		where split_part(outbox.issue, '-', 1) = $2 and ` + outboxUnleasedDue + ` and not ` + outboxPauseFree + `
+		order by next_at, id`
 
 // pauseHeldClaim is the claim a held row is for, where the row names one, and "" where it names
 // none (PauseHeldRow). project is the project token and role the payload's `role`. A start, a

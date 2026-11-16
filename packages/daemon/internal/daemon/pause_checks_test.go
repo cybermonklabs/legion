@@ -6,7 +6,9 @@ package daemon
 // (`k1: …`), failing when a count it reads is 0.
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -233,10 +235,11 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	r.claimsRowOf(q, qRow)
 
 	// No stopped role is stranded.
-	for _, role := range strandedRoles(state) {
+	stranded := strandedRoles(state)
+	for _, role := range stranded {
 		for _, token := range stopped {
 			if c := r.claim(token); role == c.Issue+" "+string(c.Role) {
-				t.Fatalf("the state names %s stranded, want no role the pause stopped among them: %v", role, strandedRoles(state))
+				t.Fatalf("the state names %s stranded, want no role the pause stopped among them: %v", role, stranded)
 			}
 		}
 	}
@@ -265,10 +268,11 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 		t.Fatal("no turn of the controller started after the pause, want the one its task started")
 	}
 
+	stops := len(r.linesAfter(paused, pauseStoppedLine))
 	t.Logf("k1: held rows=%d, stopped roles=%d, stranded checked=%d, turns started after the pause=%d (controller's)",
-		len(held), len(stopped), len(stopped), len(started))
-	if len(held) == 0 || len(stopped) == 0 {
-		t.Fatalf("k1 read %d held rows and %d stopped roles, want both above 0", len(held), len(stopped))
+		len(held), stops, len(stranded), len(started))
+	if len(held) == 0 || stops == 0 {
+		t.Fatalf("k1 read %d held rows and %d stopped roles, want both above 0", len(held), stops)
 	}
 }
 
@@ -434,12 +438,12 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 
 	// One wake line for each launch, each paced, and one line for each held row released, naming
 	// its claim.
-	wakes := r.linesAfter(mark, "supervise: wake ran")
+	wakes := r.linesAfter(mark, supervise.WakeRanMessage)
 	if len(wakes) != launches {
-		t.Fatalf("%d `supervise: wake ran` lines after the resume, want one for each of the %d launches", len(wakes), launches)
+		t.Fatalf("%d `%s` lines after the resume, want one for each of the %d launches", len(wakes), supervise.WakeRanMessage, launches)
 	}
 	for _, line := range wakes {
-		if line["paced"] != true || line["kind"] != "launch" {
+		if line["paced"] != true || line["kind"] != string(supervise.WakeLaunch) {
 			t.Fatalf("a wake line after the resume says paced %v kind %v, want a paced launch: %v", line["paced"], line["kind"], line)
 		}
 	}
@@ -633,14 +637,15 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 	r.advance(time.Minute)
 	launched := 0
 	for _, token := range []claim.Token{H, T, R} {
-		if got := len(r.rt.launchesOf(token)) - before[token]; got != 1 {
+		got := len(r.rt.launchesOf(token)) - before[token]
+		if got != 1 {
 			t.Fatalf("%s launched %d times after the resume, want once", token, got)
 		}
-		lines := r.linesOf("supervise: wake ran", token)
+		lines := r.linesOf(supervise.WakeRanMessage, token)
 		if len(lines) == 0 || lines[len(lines)-1]["paced"] != true {
 			t.Fatalf("%s's launch after the resume wrote %v, want a wake line that says paced", token, lines)
 		}
-		launched++
+		launched += got
 	}
 	if got := len(r.rt.launchesOf(S)) - before[S]; got != 0 {
 		t.Fatalf("S launched %d times after the resume, want none: nothing was held for it", got)
@@ -727,8 +732,9 @@ func TestPauseKeepsThePods(t *testing.T) {
 	// Pod 3's architect ends its turn after its worker has stopped; the worker keeps its backstop.
 	r.handle(architect(3), supervise.StreamTurnEnd{Claim: architect(3)})
 	r.awaitState(architect(3), supervise.StateSuspended, "pod 3's architect stops at its turn's end")
-	if got := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`, pods[2]); got != 1 {
-		t.Fatalf("pod 3's worker has %d backstops armed once its architect stopped, want the one its own stop armed", got)
+	kept := r.count(`select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and not fired`, pods[2])
+	if kept != 1 {
+		t.Fatalf("pod 3's worker has %d backstops armed once its architect stopped, want the one its own stop armed", kept)
 	}
 
 	// Past the idle period and past the rounds' bound, with the project paused.
@@ -742,18 +748,25 @@ func TestPauseKeepsThePods(t *testing.T) {
 	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
 		t.Fatalf("%d workspaces saved while the project is paused, want none", saved)
 	}
+	roundsHeld := 0
 	for _, n := range []int{2, 6} {
 		issue := pods[n-1]
-		if replaced := r.replacedPods(issue); replaced != 0 {
+		replaced := r.replacedPods(issue)
+		if replaced != 0 {
 			t.Fatalf("pod %d's update round replaced its pod %d times while the pause held it, want none", n, replaced)
 		}
-		if c := r.claim(worker(n)); !c.InPodRound() || c.UpdateToldAt != nil {
+		c := r.claim(worker(n))
+		if !c.InPodRound() || c.UpdateToldAt != nil {
 			t.Fatalf("pod %d's worker is in round %q told at %v while the pause holds the pod, want the round open and its bound not reached",
 				n, c.UpdateRound, c.UpdateToldAt)
 		}
-		if told := r.count(`select count(*) from outbox where kind = 'controller_notice' and payload->>'kind' = 'update-stalled'
-			and issue = $1`, issue); told != 0 {
+		told := r.count(`select count(*) from outbox where kind = 'controller_notice' and payload->>'kind' = 'update-stalled'
+			and issue = $1`, issue)
+		if told != 0 {
 			t.Fatalf("pod %d's round was told past its bound %d times while the pause held the pod, want never", n, told)
+		}
+		if replaced == 0 && c.InPodRound() && c.UpdateToldAt == nil && told == 0 {
+			roundsHeld++
 		}
 	}
 	if c := r.claim(architect(6)); c.State != supervise.StateWorking {
@@ -778,13 +791,12 @@ func TestPauseKeepsThePods(t *testing.T) {
 		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
 			deleted, bundled)
 	}
-	held := 0
 	for _, issue := range []string{pods[0], pods[1], pods[2], pods[3]} {
 		if !r.openPodHold(issue) {
 			t.Fatalf("no pause holds %s's pod after the resume, want the hold to stand until a role of it runs again", issue)
 		}
-		held++
 	}
+	held := r.count(`select count(*) from project_pause_pod_holds where issue = any($1) and ended_at is null`, pods[:4])
 
 	// The wake launches pod 1's worker in pod 1, on its own session and disk, and the hold ends at
 	// the worker's ready. The wake is a delivery of the daemon for the stopped worker, a hook's
@@ -814,9 +826,9 @@ func TestPauseKeepsThePods(t *testing.T) {
 		t.Fatal("the pause still holds pod 1 once its worker is ready")
 	}
 
-	t.Logf("k4: pods=%d, deleted=%v, held after the resume=%d, rounds held=2, backstops kept=1", len(pods), deleted, held)
-	if held == 0 {
-		t.Fatal("k4 read no pod held after the resume, want the four it checks")
+	t.Logf("k4: pods=%d, deleted=%v, held after the resume=%d, rounds held=%d, backstops kept=%d", len(pods), deleted, held, roundsHeld, kept)
+	if held == 0 || roundsHeld == 0 || kept == 0 {
+		t.Fatalf("k4 read %d pods held after the resume, %d rounds held and %d backstops kept, want each above 0", held, roundsHeld, kept)
 	}
 }
 
@@ -877,7 +889,9 @@ func (r *pauseDaemonRig) pullRequest(issue string, number int, head string) {
 }
 
 // noPrompt is sh reading no prompt from the daemon within a second: whatever else the daemon
-// sends on the connection, it sends the agent no prompt.
+// sends on the connection, it sends the agent no prompt. The read ends at its deadline; a
+// connection that ends any other way fails the check, since a closed one would read no prompt
+// whatever the daemon meant to send.
 func (r *pauseDaemonRig) noPrompt(sh *shim, why string) {
 	r.t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -886,8 +900,11 @@ func (r *pauseDaemonRig) noPrompt(sh *shim, why string) {
 			r.t.Fatalf("set the read deadline: %v", err)
 		}
 		line, err := sh.lines.ReadBytes('\n')
-		if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return
+		}
+		if err != nil {
+			r.t.Fatalf("%s: the connection ended before the second was out: %v", why, err)
 		}
 		frame, err := shimwire.Decode(line)
 		if err != nil {

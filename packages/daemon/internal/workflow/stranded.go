@@ -30,10 +30,10 @@ const StrandedReleaseWake = 10 * time.Minute
 // project's) and hands them in, so this rule stays what every other rule here is: a judgement
 // over values.
 //
-// ClockAt is the resume's stuck clock (pod_resumes.clock_at), never the wake's own moment: the
-// moment the wake pacing let the launch out, or a project's resume ended the pause that held it,
-// whichever came later (decision 14 of dispatch://INFRA-3759). A wake that waited its turn in the
-// pacing, or waited out a pause, is no wake the replacement pod failed to come back from.
+// ClockAt is the resume's stuck clock (pod_resumes.clock_at): the latest of the wake's own moment,
+// the moment the wake pacing let the launch out, and the moment a project's resume ended the pause
+// that held it (decision 14 of dispatch://INFRA-3759). A wake that waited its turn in the pacing,
+// or waited out a pause, is no wake the replacement pod failed to come back from.
 type ReleasedWake struct {
 	Issue   string
 	Role    string

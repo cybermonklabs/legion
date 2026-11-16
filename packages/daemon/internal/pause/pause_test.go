@@ -347,6 +347,9 @@ func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 		stops = append(stops, row)
 	}
 	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the stop rows: %v", err)
+	}
 	if len(stops) != 2 {
 		t.Fatalf("supervise rows = %d, want one pause_stop row for each of the two live roles", len(stops))
 	}
@@ -372,7 +375,7 @@ func TestTheControllersPauseAndResumeSetAndClearTheFlag(t *testing.T) {
 		t.Fatalf("Effects.Paused ran %d times, want once", len(calls))
 	}
 	asked := tokens(calls[0].asked)
-	if calls[0].pause.ID != pause.ID || len(asked) == 0 || !slices.Equal(asked, []claim.Token{implementer, tester}) {
+	if calls[0].pause.ID != pause.ID || !slices.Equal(asked, []claim.Token{implementer, tester}) {
 		t.Fatalf("Effects.Paused got pause %d asking %v, want pause %d asking the implementer and the tester", calls[0].pause.ID, asked, pause.ID)
 	}
 	if calls[0].flag != pause.ID || calls[0].logged {
@@ -741,7 +744,7 @@ func TestThePauseAndTheResumeLogTheirLines(t *testing.T) {
 	line := paused[0]
 	claims, _ := line["claims"].([]any)
 	if line["level"] != "INFO" || line["pause"] != float64(pause.ID) || line["by"] != "operator" || line["by_session"] != "" ||
-		line["reason"] != reason || line["stops"] != float64(2) || len(claims) == 0 ||
+		line["reason"] != reason || line["stops"] != float64(2) ||
 		!slices.Equal(claims, []any{string(implementer), string(tester)}) || line["told_controller"] != true {
 		t.Fatalf("pause line = %v, want pause %d by the operator for %q, asking %s and %s to stop, with the controller told",
 			line, pause.ID, reason, implementer, tester)
@@ -757,7 +760,7 @@ func TestThePauseAndTheResumeLogTheirLines(t *testing.T) {
 		t.Fatalf("resume line = %v, want pause %d ended by the controller's session, made by the operator, holding 2 rows", line, pause.ID)
 	}
 
-	released := lines(t, r.log, "pause: a held row released")
+	released := lines(t, r.log, HeldRowReleasedMessage)
 	if len(released) != 2 {
 		t.Fatalf("released-row lines = %d, want one for each of the 2 held rows:\n%s", len(released), r.log.String())
 	}
@@ -782,6 +785,10 @@ func TestARefreshWaitsForAPauseUnderWay(t *testing.T) {
 	r := newRig(t)
 	seedClaims(t, r.st)
 	r.effects.hold = make(chan struct{})
+	// The pause's after-commit steps wait on hold, and so do the pause and the refresh behind
+	// them: a test that fails before it lets them go still lets them go when it ends.
+	release := sync.OnceFunc(func() { close(r.effects.hold) })
+	t.Cleanup(release)
 
 	var pause store.Pause
 	var pauseErr, refreshErr error
@@ -802,7 +809,7 @@ func TestARefreshWaitsForAPauseUnderWay(t *testing.T) {
 	if testwait.Holds(200*time.Millisecond, testwait.Poll, refreshed.Load) {
 		t.Fatal("Refresh returned while the pause's after-commit steps still ran")
 	}
-	close(r.effects.hold)
+	release()
 	testwait.Eventually(t, "the pause and the refresh to return", func() bool { return paused.Load() && refreshed.Load() })
 	if pauseErr != nil || refreshErr != nil {
 		t.Fatalf("pause = %v, refresh = %v", pauseErr, refreshErr)

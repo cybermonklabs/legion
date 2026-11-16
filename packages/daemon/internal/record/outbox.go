@@ -165,8 +165,8 @@ var pauseHolds = []pauseHold{
 // (Store.PauseHeldRows). Claim is the claim the row is for where the row names one, and empty
 // where it names none: an architect's notice goes to the architect that owns its issue when it
 // runs (the daemon's readNoticeRoute walks the tree for it), and a production check's rows name
-// no role. WaitedSeconds counts from the moment the row came due (next_at), as HeldRow's do in the
-// state (api.HeldOutboxRow).
+// no role. WaitedSeconds counts from the moment the row came due (next_at), as api.HeldOutboxRow's
+// do in the state.
 type PauseHeldRow struct {
 	OutboxRow
 	Claim         claim.Token
@@ -950,9 +950,9 @@ type SuperviseRequest struct {
 	// carries none.
 	Pause int64 `json:"pause,omitempty"`
 	// WakeKind marks a start that brings a released role back for a wake: the wake's kind, one of
-	// the pods vocabulary (pods.WakeDelivery and the five beside it), as the resume the wake took
-	// records it. The start finishes without acting when its claim is no longer released, since
-	// a park, a close or a moved phase took the role over while the row waited (decision 10).
+	// the pods wake kinds (validWakeKind), as the resume the wake took records it. The start
+	// finishes without acting when its claim is suspended by the daemon, since a park, a close or
+	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
 }
@@ -1710,7 +1710,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a supervise %s names pause %d; only a pause's stop and a start name one", value.Op, value.Pause)
 		}
 		if value.WakeKind != "" && (value.Op != "start" || !validWakeKind(value.WakeKind)) {
-			return fmt.Errorf("a supervise %s names the wake kind %q; only a start names one, and it is one of the pod wake kinds (pods.WakeDelivery and the five beside it)", value.Op, value.WakeKind)
+			return fmt.Errorf("a supervise %s names the wake kind %q; only a start names one, and it is one of the pods wake kinds", value.Op, value.WakeKind)
 		}
 		if value.WakeKind == pods.WakePause && value.Pause == 0 {
 			return fmt.Errorf("a start for a %s wake names the pause that owed it", value.WakeKind)
@@ -1925,8 +1925,8 @@ func validSuperviseOp(op SuperviseOp) bool {
 	}
 }
 
-// validWakeKind says whether kind is one of the pod wake kinds a resume records (pods.WakeDelivery
-// and the five beside it), the one vocabulary a start's WakeKind is held to.
+// validWakeKind says whether kind is one of the pods wake kinds a resume records, the one
+// vocabulary a start's WakeKind is held to.
 func validWakeKind(kind string) bool {
 	switch kind {
 	case pods.WakeDelivery, pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakePause:

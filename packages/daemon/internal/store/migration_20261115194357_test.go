@@ -97,6 +97,10 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("who ended it with no end", "23514", `update project_pauses set ended_by_kind = 'operator', ended_by_session = '' where id = $1`, paused)
 	refused("an end by the controller with no session", "23514",
 		`update project_pauses set ended_at = $2, ended_by_kind = 'controller', ended_by_session = '' where id = $1`, paused, at)
+	refused("an end by the operator with a session", "23514",
+		`update project_pauses set ended_at = $2, ended_by_kind = 'operator', ended_by_session = 'session-1' where id = $1`, paused, at)
+	refused("an end by someone else", "23514",
+		`update project_pauses set ended_at = $2, ended_by_kind = 'reviewer', ended_by_session = '' where id = $1`, paused, at)
 
 	stopRow := `insert into project_pause_stops (pause_id, claim, issue, role, asked_at) values ($1, $2, 'LEGION-208', 'implementer', $3)`
 	if err := exec(stopRow, paused, "legion-legion-legion-208-implementer", at); err != nil {
@@ -107,6 +111,12 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("a cancelled stop that owed a launch", "23514",
 		`update project_pause_stops set ended_at = $2, ended_as = 'cancelled', launch_owed = true where pause_id = $1`, paused, at)
 	refused("a stop of a pause no row holds", "23503", stopRow, paused+100, "legion-legion-legion-208-tester", at)
+	stopOf := `insert into project_pause_stops (pause_id, claim, issue, role, asked_at) values ($1, $2, $3, $4, $5)`
+	refused("a stop naming no claim", "23514", stopOf, paused, "", "LEGION-208", "tester", at)
+	refused("a stop naming no role", "23514", stopOf, paused, "legion-legion-legion-208-tester", "LEGION-208", "", at)
+	refused("a stop of something that is not an issue key", "23514", stopOf, paused, "legion-legion-legion-208-tester", "legion-208", "tester", at)
+	refused("an end of a stop that says no way it ended", "23514", `update project_pause_stops set ended_at = $2 where pause_id = $1`, paused, at)
+	refused("a way a stop ended with no end", "23514", `update project_pause_stops set ended_as = 'stopped' where pause_id = $1`, paused)
 
 	holdRow := `insert into project_pause_pod_holds (pause_id, project, issue, held_at) values ($1, $2, $3, $4)`
 	if err := exec(holdRow, paused, "LEGION", "LEGION-208", at); err != nil {
@@ -116,6 +126,9 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("a hold of another project's issue", "23514", holdRow, paused, "LEGION", "INFRA-208", at)
 	refused("a hold naming its pause under another project", "23503", holdRow, paused, "INFRA", "INFRA-208", at)
 	refused("a hold ended for no reason", "23514", `update project_pause_pod_holds set ended_at = $2 where pause_id = $1`, paused, at)
+	refused("a hold ended for a reason it does not know", "23514",
+		`update project_pause_pod_holds set ended_at = $2, ended_why = 'forgotten' where pause_id = $1`, paused, at)
+	refused("a hold of something that is not an issue key", "23514", holdRow, paused, "LEGION", "LEGION-x", at)
 
 	refused("a held resume that pairs with a release", "23514",
 		`insert into pod_resumes (release_id, project, issue, role, kind, at, pause_id) values (7, 'legion', 'LEGION-211', 'tester', 'pause', $1, $2)`, at, paused)

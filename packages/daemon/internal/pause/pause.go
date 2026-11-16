@@ -43,6 +43,12 @@ const (
 // store refuses such a pause too (store.Store.Pause); this refusal comes first and writes nothing.
 var ErrReasonRequired = errors.New("a pause needs a reason")
 
+// HeldRowReleasedMessage is the line the resume writes for each row the pause held that it
+// released (decision 23, Service.Resume). The daemon's stop transaction writes it too for the
+// start it owes once its pause has ended with no pause open after it, so the log names that row
+// as well.
+const HeldRowReleasedMessage = "pause: a held row released"
+
 // Setting is a setting of legion.yaml under which a daemon cannot hold a pause, spelled as the
 // file spells it, with the path of its key as the config package's own errors name a key
 // (config's readIdleRelease).
@@ -94,10 +100,10 @@ func (e *UnavailableError) Error() string {
 
 // Effects is what the daemon does once a pause or a resume has committed: the machines, the pod
 // holds, the outbox lanes and the admission pass are the daemon's, so it supplies these steps, and
-// a test runs the service with a fake of them (gap finding 15). Each runs after the flag is set
-// or cleared and before the act is logged, under the service's lock, so the next act, Load and
-// Refresh wait for it: it must call nothing of the Service but Paused. Its context is the act's,
-// never cancelled, because the transaction it follows has committed.
+// a test runs the service with a fake of them. Each runs after the flag is set or cleared and
+// before the act is logged, under the service's lock, so the next act, Load and Refresh wait for
+// it: it must call nothing of the Service but Paused. Its context is the act's, never cancelled,
+// because the transaction it follows has committed.
 type Effects interface {
 	// Paused runs once pause has committed and the flag is set. asked are the claims the pause's
 	// transaction asked to stop; the daemon asks the stop of every other live role of the project
@@ -262,7 +268,7 @@ func (s *Service) Resume(ctx context.Context, by store.PauseActor) (store.Pause,
 	s.log.Info("pause: the project is resumed", "pause", ended.ID, "by", string(ended.EndedBy.Kind), "by_session", ended.EndedBy.Session,
 		"paused_by", string(ended.By.Kind), "paused_by_session", ended.By.Session, "held", len(held), "told_controller", tell)
 	for _, row := range held {
-		s.log.Info("pause: a held row released", "pause", ended.ID, "row", row.ID, "kind", string(row.Kind), "issue", row.Issue,
+		s.log.Info(HeldRowReleasedMessage, "pause", ended.ID, "row", row.ID, "kind", string(row.Kind), "issue", row.Issue,
 			"claim", string(row.Claim))
 	}
 	return ended, held, nil
@@ -284,7 +290,7 @@ func (s *Service) Load(ctx context.Context) (store.Pause, bool, error) {
 }
 
 // Refresh is Load at each outbox sweep, so a pause made or ended through another daemon of a
-// rolling restart reaches this daemon's flag within one sweep (decision 18, gap finding 8).
+// rolling restart reaches this daemon's flag within one sweep (decision 18).
 func (s *Service) Refresh(ctx context.Context) error {
 	_, _, err := s.Load(ctx)
 	return err

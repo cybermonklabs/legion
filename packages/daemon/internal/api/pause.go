@@ -226,8 +226,10 @@ func (s *server) pauseProject(w http.ResponseWriter, r *http.Request, by store.P
 
 // resumeProject ends the project's pause, by `by`, through the pause service, which refuses a
 // project that is not paused; that refusal names the project's last pause, where one has ended,
-// so a caller that finds the pause already ended learns who ended it and when. A resume is never
-// refused for the configuration (pause.Service.Resume).
+// so a caller that finds the pause already ended learns who ended it and when. A daemon that runs
+// no workflow has no pause service and refuses a resume PAUSE_UNAVAILABLE, as it refuses a pause
+// (refuseWithoutPause); otherwise a resume is never refused for the configuration
+// (pause.Service.Resume).
 func (s *server) resumeProject(w http.ResponseWriter, r *http.Request, by store.PauseActor) {
 	if s.pause == nil {
 		refuseWithoutPause(w, "resume")
@@ -271,29 +273,26 @@ func refuseWithoutPause(w http.ResponseWriter, act string) {
 // PauseStateTx is the state's `paused` and `lastPause` (decision 25), read through tx, the state's
 // own snapshot: while the project is paused, its open pause with the claims whose stop it still
 // waits on and every row it holds at now, and no last pause; while it runs, its newest ended
-// pause, or neither while no pause has ended. project is the Dispatch key.
+// pause, or neither while no pause has ended. One read answers which (store.OpenOrLastPauseTx).
+// project is the Dispatch key.
 func PauseStateTx(ctx context.Context, tx pgx.Tx, project string, now time.Time) (*PausedView, *PauseView, error) {
-	open, paused, err := store.OpenPauseTx(ctx, tx, project)
-	if err != nil {
-		return nil, nil, err
-	}
-	if paused {
-		stops, err := store.OpenPauseStopsTx(ctx, tx, open.ID)
-		if err != nil {
-			return nil, nil, err
-		}
-		held, err := record.NewStore().PauseHeldRows(ctx, tx, project, now)
-		if err != nil {
-			return nil, nil, err
-		}
-		return pausedViewOf(open, stops, held), nil, nil
-	}
-	ended, found, err := store.LastEndedPauseTx(ctx, tx, project)
+	p, found, err := store.OpenOrLastPauseTx(ctx, tx, project)
 	if err != nil || !found {
 		return nil, nil, err
 	}
-	view := pauseViewOf(ended)
-	return nil, &view, nil
+	if p.Ended() {
+		view := pauseViewOf(p)
+		return nil, &view, nil
+	}
+	stops, err := store.OpenPauseStopsTx(ctx, tx, p.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	held, err := record.NewStore().PauseHeldRows(ctx, tx, project, now)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pausedViewOf(p, stops, held), nil, nil
 }
 
 func pauseActorViewOf(a store.PauseActor) PauseActorView {

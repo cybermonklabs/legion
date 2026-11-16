@@ -21,7 +21,7 @@ const derivedIntakeHandlerLimitLine = "intake: one fact's handling is cut after 
 // check: the check names the intake handler limit when the window derives one above the floor,
 // and says nothing about it when the floor still decides it. Both halves matter, and the quiet
 // one matters most. The line is a report an operator reads back, so a check that printed it for
-// every file would add a fifth line to the output of every deployment on the default window —
+// every file would add one line more to the output of every deployment on the default window —
 // including the ones this package's other rows assert whole, character for character
 // (TestStartCheckConfigValidatesAndStartsNothing and its neighbours) — and would tell an operator
 // nothing they could not read in the daemon's own default. The derived half is asserted verbatim

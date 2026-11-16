@@ -16,10 +16,11 @@
 -- project_pause_stops holds one row for each role a pause asks to stop: the pause, the claim, its
 -- issue and role, when the pause asked, and when and how the stop ended. A stop ends `stopped`
 -- (the role stopped, with launch_owed saying whether a launch was owed when it stopped),
--- `taken_over` (a park, a close or an operator took the role over first), `failed` (the claim
--- failed or retired) or `cancelled` (the resume ended the pause first). A pause has at most one
--- open stop per claim. The open stops are what the state names as the roles the pause still
--- waits on.
+-- `taken_over` (a park, a close, a linger, an operator, an earlier pause's late stop or an idle
+-- release stopped the role first), `failed` (the claim failed or retired) or `cancelled` (the
+-- resume ended the pause first). A pause has at most one open stop per claim. The open stops are
+-- what the state names as the roles the pause still waits on. The second index serves the reads
+-- by claim (the newest stop of a claim, whatever its pause) as well as by pause and claim.
 --
 -- project_pause_pod_holds holds one row for each pod a pause keeps: the pause, its project, the
 -- issue whose pod it is, when the hold began, and when and why it ended (`resumed`: the resume
@@ -42,12 +43,16 @@
 --
 -- Migrations here are forward-only and this one has no down file. A daemon of an earlier release
 -- on a shared database reads none of these tables and none of the two columns, so the tables stay
--- and are read again by the roll forward. Resume the project before the earlier image runs: that
--- release has no pause, and it launches every role a pause still holds. Then the outbox needs
--- three operator steps, with the daemon stopped. The earlier release decodes a row strictly
--- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row it cannot decode fails and is
--- retried on its backoff for ever, as 20261111041503 says of its notice kind. The rows of the two
--- new notice kinds go:
+-- and are read again by the roll forward. Three steps come before the earlier image runs, in this
+-- order (docs/kubernetes.md, "Rolling back the project pause"). First, resume the project while
+-- this release still runs: the earlier release has no pause, and it launches every role a pause
+-- still holds. Second, resume one role of each pod a pause still holds, until each hold has ended
+-- (select issue from project_pause_pod_holds where ended_at is null): the earlier release reads
+-- no hold, and it deletes a held pod in which no role is live as a pod no claim owns, with the
+-- unpushed work on its disk. Third, with the daemon stopped, run the three statements below. The
+-- earlier release decodes a row strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so
+-- a row it cannot decode fails and is retried on its backoff for ever, as 20261111041503 says of
+-- its notice kind. The rows of the two new notice kinds go:
 --
 --   delete from outbox where kind = 'controller_notice'
 --     and payload->>'kind' in ('project-paused', 'project-resumed');
@@ -96,7 +101,7 @@ create table project_pause_stops (
   constraint project_pause_stops_owed_only_when_stopped check (not launch_owed or ended_as = 'stopped')
 );
 create unique index project_pause_stops_one_open on project_pause_stops (pause_id, claim) where ended_at is null;
-create index project_pause_stops_pause_claim on project_pause_stops (pause_id, claim);
+create index project_pause_stops_claim_pause on project_pause_stops (claim, pause_id);
 
 create table project_pause_pod_holds (
   id bigserial primary key,

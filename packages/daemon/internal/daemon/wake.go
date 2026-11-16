@@ -316,7 +316,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
 // backstop has nothing left to bring back.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
-	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key); err != nil {
+	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
 		return err
 	}
 	if r.backstop <= 0 {
@@ -361,13 +361,7 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 	if r.trees == nil {
 		return
 	}
-	var err error
-	if role == "" {
-		err = r.trees.CancelPodBackstopsOf(ctx, r.project, issue)
-	} else {
-		err = r.trees.CancelRolePodBackstops(ctx, r.project, issue, role)
-	}
-	if err != nil {
+	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue, role); err != nil {
 		r.log.Warn("wake: could not forget the wakes of a pod another path took over", "issue", issue, "role", role, "error", err)
 	}
 }

@@ -359,15 +359,18 @@ func TestALaunchTheGateMeetsWhilePausedRunsNothingAndStopsTheClaimWithALaunchOwe
 	})
 
 	t.Run("a stalled turn's replacement", func(t *testing.T) {
-		h, flag, stops := pauseHarness(t, queuedClaim())
+		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate))
+		taken := countedReserve(h)
+		h.start(queuedClaim())
 		last, swept := stalledSweep(h)
+		before := taken()
 		flag.set(7)
 
 		h.must(h.backstopOf(last, swept))
 
-		gated(t, h, func() int { return 0 }, 1, StateWorking)
+		gated(t, h, func() int { return taken() - before }, 1, StateWorking)
 		// The turn is held to a deadline of now and cut off there, its task taken back.
-		stopped(t, h, stops, func() int { return 0 }, 1)
+		stopped(t, h, stops, func() int { return taken() - before }, 1)
 		if p := h.pending(); !p.ConfirmedAt.IsZero() {
 			t.Fatalf("the stopped claim holds %+v, want its task taken back for the launch it is owed", p)
 		}
@@ -844,7 +847,7 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		t.Helper()
 		var stamps []time.Time
 		h, flag, stops := pauseHarness(t, queuedClaim(), pacedDeps(wakeRate), func(d *Deps) {
-			d.WakeLetOut = func(_ Claim, at time.Time) { stamps = append(stamps, at) }
+			d.WakeLetOut = func(_ claim.Token, _ string, _ claim.Role, at time.Time) { stamps = append(stamps, at) }
 		})
 		taken := countedReserve(h)
 		h.start(queuedClaim())
@@ -917,10 +920,10 @@ func TestTheWakeLetOutStampIsTheMomentOfEachReservation(t *testing.T) {
 	var mu sync.Mutex
 	var stamps []stamp
 	h := pacedHarness(t, wakeRate, func(d *Deps) {
-		d.WakeLetOut = func(c Claim, at time.Time) {
+		d.WakeLetOut = func(token claim.Token, _ string, _ claim.Role, at time.Time) {
 			mu.Lock()
 			defer mu.Unlock()
-			stamps = append(stamps, stamp{token: c.Token, at: at})
+			stamps = append(stamps, stamp{token: token, at: at})
 		}
 	})
 	second := h.machineFor(wakeClaim(secondToken, StateQueued))

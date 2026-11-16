@@ -283,15 +283,16 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 	return marked, nil
 }
 
-// insertOutboxRow queues one row of a release, encoded by the caller, and answers the id the
-// outbox gave it: the ids of the release's own rows are the range its mark is read against
-// (IssueReleaseStop), and a resume a cancel queues takes its id from the same sequence, above
-// every row of the release it ends.
+// insertOutboxRow queues one outbox row, encoded by the caller, and answers the id the outbox gave
+// it: the ids of a release's own rows are the range its mark is read against (IssueReleaseStop),
+// and a resume a cancel queues takes its id from the same sequence, above every row of the release
+// it ends. A pause's stop rows and its notices are queued through it too (queuePauseStopRow,
+// queuePauseNotice).
 func insertOutboxRow(ctx context.Context, tx pgx.Tx, issue string, row IdleReleaseRow) (int64, error) {
 	var id int64
 	if err := tx.QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
 		values ($1, $2, $3, 0, now(), '', '') returning id`, row.Kind, issue, string(row.Payload)).Scan(&id); err != nil {
-		return 0, fmt.Errorf("queue the %s of %s's release: %w", row.Kind, issue, err)
+		return 0, fmt.Errorf("queue the %s row of %s: %w", row.Kind, issue, err)
 	}
 	return id, nil
 }
@@ -455,9 +456,10 @@ type ReleaseCancelPause struct {
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
 // it queued a resume for, and SuspendsNoRole whether the release was one that suspends no role.
-// Pause is the open pause of the issue's project the cancel met, 0 while the project runs, and
-// Stopped the roles it recorded stopped by that pause in place of resuming them; a cancel that
-// met a pause resumes none.
+// Stopped are the roles it recorded stopped by the open pause of the issue's project in place of
+// resuming them, and Pause that pause; Pause is 0 where the cancel recorded no role stopped: while
+// the project runs, and while it is paused where the cancel found no role to resume. A cancel
+// that met a pause resumes none.
 type ReleaseCancelled struct {
 	Resumed        []claim.Role
 	SuspendsNoRole bool
@@ -470,10 +472,12 @@ type ReleaseCancelled struct {
 // (internal/daemon's projectPause.stopTx, decision 6 of dispatch://INFRA-3759): its stop
 // (RecordPauseStoppedTx), owing a launch where a wake taken since the release already owes it
 // one; for the worker of the issue's open phase serving the issue's generation and owed no
-// launch, its backstop (ArmPodBackstopTx), on the first record of its stop; and the pod's hold,
-// where no role of the pod is live (OpenPausePodHoldTx). A wake taken since is left open: it is
-// the launch the role is owed, and its start row runs at the resume. The caller holds the
-// issue's lock and held's row for share.
+// launch, its backstop (ArmPodBackstopTx), on the first record of its stop; and the pod's hold
+// (OpenPausePodHoldTx), whatever the pod's other roles do, as the stop transaction holds it while
+// its pause stands: an update round past its bound or an idle rule would otherwise take a pod
+// that holds the stopped roles' unpushed work. A wake taken since is left open: it is the launch
+// the role is owed, and its start row runs at the resume. The caller holds the issue's lock and
+// held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At
@@ -502,11 +506,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 			return err
 		}
 	}
-	live, err := IssueHasLiveRoleTx(ctx, tx, project, issue)
-	if err != nil || live {
-		return err
-	}
-	_, err = OpenPausePodHoldTx(ctx, tx, held.ID, issue, at)
+	_, err := OpenPausePodHoldTx(ctx, tx, held, issue, at)
 	return err
 }
 

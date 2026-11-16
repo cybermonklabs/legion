@@ -100,7 +100,7 @@ func TestTheResumesPassPromotesAndQueuesNoTickNotice(t *testing.T) {
 	}
 
 	endTestPause(t, pool, pause)
-	if _, err := intake.ApplyFact(context.Background(), pool, "pause", "project-resumed", intake.ProjectResumed{Pause: pause},
+	if _, err := intake.ApplyFact(context.Background(), pool, "pause", "project-resumed", intake.ProjectResumed{},
 		engineStub{}, admission); err != nil {
 		t.Fatalf("apply the resume's pass: %v", err)
 	}

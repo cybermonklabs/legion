@@ -253,7 +253,7 @@ func TestPauseCommands(t *testing.T) {
 		for _, tc := range []struct {
 			name, config, want string
 		}{
-			{"runtime: tmux", tmux, "pause unavailable: runtime: tmux\n"},
+			{"runtime: tmux", tmux, tmuxPauseUnavailable},
 			{"idle_minutes: 0", kubernetesCheckConfig(t, "    idle_release: {idle_minutes: 0}\n"),
 				"pause unavailable: runtime.kubernetes.idle_release.idle_minutes: 0\n"},
 			{"worker_wakes_per_minute: 0", kubernetesCheckConfig(t, "worker_wakes_per_minute: 0\n"), "pause unavailable: worker_wakes_per_minute: 0\n"},

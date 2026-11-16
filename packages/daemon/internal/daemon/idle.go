@@ -207,12 +207,8 @@ func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold), as the idle pass records its own: that is a pod release would have taken and
-// something else stopped. Four of this rule's ten holds are such a hold, and recordableHold is
+// something else stopped. Five of this rule's eleven holds are such a hold, and recordableHold is
 // what says which. The release itself is recorded where it completes (outbox.releaseIssue).
-//
-// A pod the rule would release while the project is paused is kept as IdleHoldPaused: the
-// release's transaction marks no release while the project is paused (store.ReleaseIdleIssue,
-// decision 12 of dispatch://INFRA-3759), and the hold says what kept the pod.
 func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (workflow.IdleHold, bool) {
 	now := w.clockNow().UTC()
 	if _, present := w.idleRuntime.IssueSandbox(issue); !present {
@@ -238,9 +234,6 @@ func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (
 		since, found := view.QuietSince()
 		quiet = found && now.Sub(since) >= w.idlePeriod
 		holding = view.Holding
-		if decision.Release && view.Paused {
-			decision = workflow.IdleDecision{Hold: workflow.IdleHoldPaused}
-		}
 		if !decision.Release {
 			return store.IdleReleaseMark{}, nil
 		}

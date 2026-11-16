@@ -631,8 +631,8 @@ func seedWakePause(t *testing.T, pool *pgxpool.Pool, at time.Time) int64 {
 
 // Decision 15 of dispatch://INFRA-3759: a wake taken while the project is paused is held by the
 // pause. Its resume records the pause and pairs with release 0, though the issue has a release
-// recorded, and its start row names the wake's kind and the pause, so the outbox holds it until
-// the resume. A wake taken once the pause has ended is an ordinary wake again.
+// recorded, and its start row names the wake's kind and the pause. A wake taken once the pause has
+// ended is an ordinary wake again.
 func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *testing.T) {
 	rig := newWakeRig(t)
 	ctx := context.Background()
@@ -677,8 +677,9 @@ func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *te
 }
 
 // Decision 16 of dispatch://INFRA-3759, through the engine: the task of a wake says the pause
-// stopped the session when the role's newest stop is a pause's that ended stopped after the
-// issue's newest pod release, and says the release did once a release is recorded after that stop.
+// stopped the session when the role's newest stop is a pause's stop that ended as `stopped` after
+// the issue's newest pod release, and says the release did once a release is recorded after that
+// stop.
 func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -706,7 +707,7 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 				t.Fatalf("resume LEGION: %v", err)
 			}
 
-			rig.apply("backstop-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-1"})
+			rig.apply("agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-1"})
 
 			starts := wakeStarts(t, rig.pool)
 			if len(starts) != 1 {

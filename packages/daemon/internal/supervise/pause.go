@@ -105,7 +105,7 @@ func (m *Machine) holdsTask() bool {
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
 // the wake gate before its exempt return (reserveWake), from a parked wake's turn (wakeNow), and
-// from a dropped hold taken up again (reparkWake). The launch runs nothing, takes no token from
+// from a dropped wake taken up again (reparkWake). The launch runs nothing, takes no token from
 // the pacing and arms no retry: it waits on the machine as a parked wake does (parkWake), with no
 // timer and no moment (wake.pause). A claim that records no process is written launching and
 // persisted, so a restart finds a launch to relaunch, which meets the gate again
@@ -251,11 +251,11 @@ func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 		m.owedWrite.stops = oweStop(m.owedWrite.stops, stop)
 		return m.persist(ctx)
 	}
-	// Published here as putClaim publishes, before the write.
+	// Published before the write, so View shows the stopped claim while the stop's transaction
+	// runs.
 	m.publish()
-	err := m.putStop(ctx, m.stored(), stop)
-	if writeOwed(err) {
-		m.oweWrite("PauseStopped", err)
+	err := m.owes("PauseStopped", m.putStop(ctx, m.stored(), stop))
+	if m.owedWrite != nil {
 		m.owedWrite.stops = []PauseStop{stop}
 	}
 	return err
@@ -343,6 +343,6 @@ func (m *Machine) stopAtResult(ctx context.Context) error {
 // (reserveWake) and the let-out of a launch the pause's gate held (letOutHeldLaunch).
 func (m *Machine) wakeLetOut(at time.Time) {
 	if m.deps.WakeLetOut != nil {
-		m.deps.WakeLetOut(copyClaim(m.claim), at)
+		m.deps.WakeLetOut(m.claim.Token, m.claim.Issue, m.claim.Role, at)
 	}
 }
