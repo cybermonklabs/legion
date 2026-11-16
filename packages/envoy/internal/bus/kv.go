@@ -763,11 +763,15 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 // DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
 // returns that revision, 0 when there was none to read.
 //
-// A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
-// sends no expected-last-subject-sequence header for revision 0, so that delete would take
-// whatever the bucket holds, and a write that landed between the read and it - a registration
-// storing the row this delete read none of - would be deleted whole. So no delete is made for it:
-// the key is reported absent, at revision 0, and there is nothing there to remove.
+// A key the read finds missing is not deleted at no revision, which fences nothing: nats.go sends
+// no expected-last-subject-sequence header for revision 0, so that delete would take whatever the
+// bucket holds, and a write that landed between the read and it - a registration storing the row
+// this delete read none of - would be deleted whole. It gets a delete marker only while its subject
+// holds no message at all (MarkDeletedIfNone), which a write landing in between refuses, and is
+// reported absent, at revision 0. That marker is what keeps a key deleted in a bucket recreated
+// since the other listeners last read it: each of them re-asserts what its copy held
+// (kvwatch.Reassert) with a create-only write the marker refuses, so a session that ended after the
+// recreate is not brought back by a listener that still held its registration.
 //
 // A key it may not read (ErrRefused) it may not write either, since a write is held to the longest
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
@@ -780,12 +784,41 @@ func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
 		revision := entry.Revision()
 		return revision, kv.Delete(key, nats.LastRevision(revision))
 	case errors.Is(err, nats.ErrKeyNotFound):
-		return 0, nil
+		return 0, kv.MarkDeletedIfNone(key)
 	case errors.Is(err, ErrRefused):
 		return 0, kv.Delete(key)
 	default:
 		return 0, err
 	}
+}
+
+// MarkDeletedIfNone writes a delete marker for key only while the key's subject holds no message
+// at all: the publish carries the expected-last-subject-sequence 0, which nats.go's Delete never
+// sends (it sends that header only for a revision above 0). A subject that holds anything - a live
+// record, a marker already, or a write that landed after the caller's read - refuses it, and that
+// refusal is no error: the key is already deleted, or a write the caller read none of stands.
+//
+// It is the delete of a key that a recreated bucket has not yet been given back: the new bucket's
+// subject is empty, and a create-only re-assert of the key (kvwatch.Reassert) is refused once this
+// marker is there, whichever listener sends it. The publish is one JetStream request through kv's
+// jetstream context, bounded by RequestTimeout.
+func (kv KeyValue) MarkDeletedIfNone(key string) error {
+	if err := kv.write(key); err != nil {
+		return err
+	}
+	if !natsKeyValid(key) {
+		return invalidKey(key, nats.ErrInvalidKey)
+	}
+	msg := nats.NewMsg("$KV." + kv.Bucket() + "." + key)
+	msg.Header.Set(kvOperationHeader, kvDeleteMarker)
+	msg.Header.Set(nats.ExpectedLastSubjSeqHdr, "0")
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+	_, err := kv.streams.PublishMsg(ctx, msg)
+	if err != nil && IsCASConflict(err) {
+		return nil
+	}
+	return err
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

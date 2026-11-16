@@ -19,6 +19,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // RoleReleaseAuthority is how a release of a session's role claims is authorised: the process
@@ -222,7 +223,9 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		send: func(claim RoleClaim) (uint64, error) {
 			return 0, r.roles().Delete(role, nats.LastRevision(claim.Revision))
 		},
-		landed: func(claim RoleClaim, _, epoch uint64) { r.forgetRoleHolder(role, claim.Revision, epoch) },
+		landed: func(claim RoleClaim, _, epoch uint64) kvwatch.Outcome {
+			return r.forgetRoleHolder(role, claim.Revision, epoch)
+		},
 	})
 	switch {
 	case err != nil:
@@ -234,6 +237,12 @@ func (r *Registry) releaseReadRoleClaim(ctx context.Context, sessionID, role str
 		// beat this one did (roleClaimWriteMissing). Either way the role is free, and free is
 		// not standing as this session's.
 		return false, nil
+	}
+	if stood.Revision == 0 {
+		// No record claims the role. Where this registry's copy still holds a claim this release
+		// frees, the bucket was recreated since and has not been given that claim back yet:
+		// marking the key keeps another listener from writing it back (releaseUnreturned).
+		return false, r.releaseUnreturned(ctx, sessionID, role, release)
 	}
 	// The claim that stands is one this release may not free - another session's, another
 	// process's, or no record at all - so the role is still its holder's, and the hand-back
@@ -299,7 +308,10 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 			}
 			return r.roles().Update(role, data, claim.Revision)
 		},
-		landed: func(_ RoleClaim, revision, epoch uint64) { r.setOwnRoleHolder(role, sessionID, revision, epoch) },
+		landed: func(claim RoleClaim, revision, epoch uint64) kvwatch.Outcome {
+			claim.HandedBack = true
+			return r.setOwnRoleClaim(role, claim, revision, epoch)
+		},
 	})
 	switch {
 	case err != nil:

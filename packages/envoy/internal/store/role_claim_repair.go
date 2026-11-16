@@ -95,7 +95,7 @@ func (repair *roleClaimRepair) delivered(role, before string, held bool, after s
 // swept is the role claim copy's Rows.Removed (newRoleHolderCopy): it counts role's entry, which
 // the copy removed, as taken out when the sweep at a repairing read's completion removed it
 // (sweeping), since that read found no evidence the bucket still holds the claim.
-func (repair *roleClaimRepair) swept(role, _ string) {
+func (repair *roleClaimRepair) swept(role string, _ RoleClaim) {
 	if repair.sweeping && repair.repairing {
 		repair.read.noteTookOut(role)
 	}
@@ -103,7 +103,7 @@ func (repair *roleClaimRepair) swept(role, _ string) {
 
 // sweep runs holders' sweep at a read's completion (kvwatch.Copy.CompleteRead) with sweeping on,
 // so swept counts what that sweep removes and nothing the copy removes at any other time.
-func (repair *roleClaimRepair) sweep(holders *kvwatch.Copy[string]) {
+func (repair *roleClaimRepair) sweep(holders *kvwatch.Copy[RoleClaim]) {
 	repair.sweeping = true
 	holders.CompleteRead()
 	repair.sweeping = false

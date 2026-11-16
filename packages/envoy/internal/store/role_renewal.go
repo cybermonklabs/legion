@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // RoleRenewal is what one registration's renewal of its role claims weighed and what it wrote
@@ -214,6 +215,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 		r.renewalFailures.record(r.now(), key, err)
 		return false, err
 	}
+	var renewed RoleClaim
 	outcome, _, err := r.writeRoleClaim(ctx, claim, roleClaimWrite{
 		role:     role,
 		attempts: 1,
@@ -222,7 +224,7 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 				(claim.ClientInstanceID == "" || claim.HeldByProcess(clientInstanceID))
 		},
 		send: func(claim RoleClaim) (uint64, error) {
-			renewed := claim
+			renewed = claim
 			renewed.ClientInstanceID = clientInstanceID
 			renewed.RenewedAt = r.now().UnixMilli()
 			data, err := json.Marshal(renewed)
@@ -231,7 +233,9 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 			}
 			return r.roles().Update(role, data, claim.Revision)
 		},
-		landed: func(_ RoleClaim, revision, epoch uint64) { r.setOwnRoleHolder(role, sessionID, revision, epoch) },
+		landed: func(_ RoleClaim, revision, epoch uint64) kvwatch.Outcome {
+			return r.setOwnRoleClaim(role, renewed, revision, epoch)
+		},
 	})
 	switch {
 	case err != nil:

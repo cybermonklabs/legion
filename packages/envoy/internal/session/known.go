@@ -752,10 +752,14 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	// fence (kvwatch.Copy.Put): while this write was in flight the watcher can have applied a
 	// newer revision another listener wrote - a re-registration of the same session through that
 	// listener - and putting this record back over it would answer the older one until the next
-	// write of the key. A write through a handle on a bucket since recreated is dropped there too.
+	// write of the key. A write through a handle on a bucket since recreated is dropped there, and
+	// is written again into the bucket the handle reaches now (writeAgainWithin).
 	s.mu.Lock()
-	s.records.Put(watcher, epoch, record.SessionID, record, revision)
+	outcome := s.records.Put(watcher, epoch, record.SessionID, record, revision)
 	s.mu.Unlock()
+	if outcome == kvwatch.Dropped {
+		return s.writeAgainWithin(ctx, watcher, record, buf)
+	}
 	return nil
 }
 
@@ -895,11 +899,14 @@ func (s *KnownSessions) cutoff() int64 {
 // type's, not the store's methods, so nothing but the watcher calls them.
 type knownCache struct{ s *KnownSessions }
 
-// BeginRead starts a read of the bucket (kvwatch.Copy.BeginRead). Every record stays through it.
+// BeginRead starts a read of the bucket (beginRead). The first read of a recreated bucket then
+// writes back the records the copy held that the new bucket should hold (reassert), before the
+// read can complete and sweep them, with s.mu released.
 func (c knownCache) BeginRead(read kvwatch.Read) {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	c.s.records.BeginRead(read)
+	held := c.s.beginRead(read)
+	if read.Recreated {
+		c.s.reassert(read, held)
+	}
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could

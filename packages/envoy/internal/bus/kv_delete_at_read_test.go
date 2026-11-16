@@ -71,3 +71,49 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 		t.Fatalf("%s holds %q, want %q", key, got, "registered")
 	}
 }
+
+// A delete whose read found the key missing leaves a delete marker while the key's subject holds
+// nothing at all (MarkDeletedIfNone), so a create-only write of the key - another listener writing
+// back the record its copy held for a bucket recreated since (kvwatch.Reassert) - is refused, and
+// the key reads deleted. The control is the same create-only write of a key no delete touched,
+// which the bucket takes. A second delete of the marked key leaves the marker as it is.
+func TestADeleteAtReadOfAMissingKeyMarksItSoACreateOnlyWriteIsRefused(t *testing.T) {
+	client, err := Connect([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	js, err := client.Conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	const bucket = "kv_delete_at_read_marker"
+	kv, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+
+	if _, err := kv.Update("ses_untouched", []byte("written back"), 0); err != nil {
+		t.Fatalf("control: a create-only write of a key no delete touched: %v, want it taken", err)
+	}
+	if revision, err := kv.DeleteAtRead("ses_ended"); err != nil || revision != 0 {
+		t.Fatalf("delete the missing ses_ended = %d, %v; want revision 0 and no error", revision, err)
+	}
+	if _, err := kv.Update("ses_ended", []byte("written back"), 0); err == nil || !IsCASConflict(err) {
+		t.Fatalf("a create-only write of the deleted ses_ended = %v, want it refused as a wrong last sequence", err)
+	}
+	if _, err := kv.Get("ses_ended"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("ses_ended after the refused write: %v, want not found", err)
+	}
+	if _, err := kv.DeleteAtRead("ses_ended"); err != nil {
+		t.Fatalf("delete the marked ses_ended again: %v, want no error", err)
+	}
+	state, err := kv.ReadStreamState()
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	if state.Msgs != 2 {
+		t.Fatalf("the stream holds %d messages, want 2: the control's record and one marker", state.Msgs)
+	}
+}

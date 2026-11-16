@@ -45,12 +45,14 @@ func decodeInterest(entry kvwatch.Entry) (Interest, bool, error) {
 // own type's, not the registry's methods, so nothing but the watcher calls them.
 type interestCache struct{ r *Registry }
 
-// BeginRead starts a read of the interest bucket (kvwatch.Copy.BeginRead). Every interest stays.
+// BeginRead starts a read of the interest bucket (beginInterestRead). The first read of a
+// recreated bucket then writes back the rows the copy held (reassertInterests), before the read
+// can complete and sweep them, with r.mu released.
 func (c interestCache) BeginRead(read kvwatch.Read) {
-	r := c.r
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cache.BeginRead(read)
+	held := c.r.beginInterestRead(read)
+	if read.Recreated {
+		c.r.reassertInterests(read, held)
+	}
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not

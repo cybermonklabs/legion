@@ -40,7 +40,8 @@ type Registry struct {
 	// claims with no bucket call (RolesHeldBy), which answers only while its copy can be served
 	// (kvwatch.Watcher.Servable). A role's holder is never read from it: every act that turns on
 	// who holds a role reads that role's claim record (RoleClaim). holdersMu guards
-	// roleHolders, the copy of the role bucket: the session each role's claim names, its revision
+	// roleHolders, the copy of the role bucket: each role's claim, whose holder the views read and
+	// whose record a recreated bucket's first read writes back (reassertRoleClaims), its revision
 	// fence, which keeps a delayed watcher record from undoing a claim this registry wrote or read,
 	// its marks and its read epoch (kvwatch.Copy, newRoleHolderCopy), so a claim write this registry
 	// made through a handle on a bucket since recreated cannot land in the new bucket's view and
@@ -49,7 +50,7 @@ type Registry struct {
 	// beside the copy they repair.
 	roleWatcher *kvwatch.Watcher
 	holdersMu   sync.RWMutex
-	roleHolders kvwatch.Copy[string]
+	roleHolders kvwatch.Copy[RoleClaim]
 	roleRepair  roleClaimRepair
 	// renewalFailures is this registry's record of the role claim renewals that failed, by role
 	// and holder session (RenewalFailedWithin), under a mutex of its own (role_renewal.go).

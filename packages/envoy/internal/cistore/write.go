@@ -77,6 +77,9 @@ func (s *Store) write(ctx context.Context, identity State, observations int, mut
 			}
 			time.Sleep(casBackoff(attempt - 1))
 		}
+		// The epoch is read before the handle, so a recreate between the two reads as one under
+		// the write (recreatedSince), never the reverse.
+		epoch := s.watchedEpoch()
 		kv := s.kv()
 		entry, err := kvCall(ctx, s.logger, s.nextRewatch(), func() (nats.KeyValueEntry, error) { return kv.Get(key) })
 		var st State
@@ -140,8 +143,14 @@ func (s *Store) write(ctx context.Context, identity State, observations int, mut
 			return kv.Update(key, buf, rev)
 		})
 		switch {
-		case err == nil:
+		case err == nil && !s.recreatedSince(epoch):
 			return refused
+		case err == nil:
+			// The bucket was recreated while the write was in flight, and its ack cannot say
+			// which bucket took it. The write is read again from the bucket there is now - the
+			// record the read that found it wrote back, or this write - and mutate applied to
+			// it, which changes nothing where the write landed there.
+			retryErr = errRecreatedUnderWrite
 		case errors.Is(err, errKVUnanswered):
 			return spent(attempt+1, err)
 		case kvErrorLasts(err):
@@ -189,6 +198,28 @@ var errKVRewatched = errors.New("cistore: store rewatched before the KV call was
 // errKVUnanswered is what a KV call answers, wrapping ctx's error, when ctx ended before its
 // answer came.
 var errKVUnanswered = errors.New("cistore: the KV call did not answer")
+
+// errRecreatedUnderWrite is a write the bucket acknowledged while it was being recreated
+// (recreatedSince), which write reads again rather than takes as landed.
+var errRecreatedUnderWrite = errors.New("cistore: the bucket was recreated while the write was in flight")
+
+// watchedEpoch is the epoch of the bucket the store's watcher reads (kvwatch.Watcher.Epoch), and 0
+// for a writer, which has no watcher (OpenWriter).
+func (s *Store) watchedEpoch() uint64 {
+	if s.watcher == nil {
+		return 0
+	}
+	return s.watcher.Epoch()
+}
+
+// recreatedSince reports whether the bucket the store's watcher reads was recreated since epoch
+// was read (watchedEpoch): a write sent in between may have been acknowledged by the bucket that
+// was deleted, since an ack names no incarnation (kvwatch.Reassert). A writer, which has no
+// watcher, cannot tell; Dispatch's reconcile pass, its one caller, reads a head whose record is
+// missing again in full (internal/dispatch/cireconcile).
+func (s *Store) recreatedSince(epoch uint64) bool {
+	return s.watcher != nil && s.watcher.Epoch() != epoch
+}
 
 // kvCall returns call's answer, errKVRewatched if rewatched closes first, or errKVUnanswered if ctx
 // ends first; a ctx that has already ended starts no call. A legacy nats.go KV call takes no

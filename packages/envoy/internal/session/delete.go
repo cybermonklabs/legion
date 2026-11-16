@@ -22,24 +22,35 @@ import (
 // bucket call waiting no longer than ctx (bus.Bounded): DELETE /v1/sessions/<session_id> passes its
 // request's own context. A delete ctx abandoned may still land after this answer, and that is safe:
 // it deletes only the revision it read, so a registration that landed since is kept, and an entry
-// the read found absent is left alone rather than deleted at no revision, which would take the
-// entry a registration wrote between that read and the delete.
+// the read found absent is not deleted at no revision, which would take the entry a registration
+// wrote between that read and the delete: it gets a marker only while the key holds nothing at all,
+// which keeps another listener from writing back the registration it still held for a bucket
+// recreated since (DeleteAtRead).
+//
+// A delete whose result the copy drops was made through a handle on a bucket since recreated
+// (kvwatch.Dropped): it may have reached only the deleted bucket, while the read that found the
+// new one wrote back the row the copy held (reassert). So it is made again through the handle the
+// watcher holds now, up to kvwatch.WriteAgainAttempts times.
 func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
-	// The fence read before the delete is the bucket's this handle reaches only when the read under
-	// way began in its epoch (kvwatch.Copy.FenceFor).
-	r.mu.RLock()
-	kv, epoch := r.watcher.Handle()
-	revision := r.cache.FenceFor(epoch, sessionID)
-	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
-	if !answered {
-		return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
+	for range kvwatch.WriteAgainAttempts {
+		// The fence read before the delete is the bucket's this handle reaches only when the read
+		// under way began in its epoch (kvwatch.Copy.FenceFor).
+		r.mu.RLock()
+		kv, epoch := r.watcher.Handle()
+		revision := r.cache.FenceFor(epoch, sessionID)
+		r.mu.RUnlock()
+		read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+		if !answered {
+			return fmt.Errorf("delete session %s from the bucket: %w", sessionID, err)
+		}
+		if err != nil {
+			return err
+		}
+		if r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read)) != kvwatch.Dropped {
+			return nil
+		}
 	}
-	if err != nil {
-		return err
-	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read))
-	return nil
+	return fmt.Errorf("delete session %s: %w (%d deletes)", sessionID, kvwatch.ErrRecreatedUnderEachWrite, kvwatch.WriteAgainAttempts)
 }
 
 // DeleteOutcome is what a conditional delete (DeleteIf) did with the entry it was asked to
@@ -136,29 +147,57 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 // no reason. A second lost compare-and-swap answers EntryKeptAfterLostRace and no error, the
 // outcome that says the entry stayed without claiming whose registration it is now.
 //
+// An entry the read finds absent is EntryDeleted. Where the copy holds a row for it that every
+// condition admits, or none, the key also gets a marker while it holds nothing at all
+// (bus.KeyValue.MarkDeletedIfNone): a bucket recreated since another listener last read it is
+// written back from that listener's copy (reassert), and the marker keeps this deregistration from
+// being undone there. A row the conditions keep - another instance's, or a later registration - is
+// left for that write-back to restore.
+//
 // EntryDeleted and no error means the entry is gone; any kept outcome and no error means the
 // entry stayed, and the caller keeps whatever it names; an error means the bucket did not answer,
 // ctx's end among them, and the outcome is EntryUnanswered. The cache follows the bucket
-// afterwards exactly as it does after Delete. A delete ctx abandoned may still land after this
-// answer, and that is safe: it deletes only the revision it compared.
+// afterwards exactly as it does after Delete, and a delete whose result the copy drops is made
+// again through the current handle, as Delete's is. A delete ctx abandoned may still land after
+// this answer, and that is safe: it deletes only the revision it compared.
 func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, conditions DeleteConditions) (DeleteOutcome, error) {
+	for range kvwatch.WriteAgainAttempts {
+		outcome, dropped, err := r.deleteIfOnce(ctx, sessionID, conditions)
+		if !dropped {
+			return outcome, err
+		}
+	}
+	return EntryUnanswered, fmt.Errorf("delete session %s: %w (%d deletes)", sessionID, kvwatch.ErrRecreatedUnderEachWrite, kvwatch.WriteAgainAttempts)
+}
+
+// deleteIfOnce is one DeleteIf through the handle the watcher holds now, and reports whether the
+// copy dropped the delete's result because that handle's bucket was recreated since (dropped).
+func (r *SessionRegistry) deleteIfOnce(ctx context.Context, sessionID string, conditions DeleteConditions) (DeleteOutcome, bool, error) {
 	// The handle and the fence are read together before the bucket calls, as Delete reads them:
 	// the fence is the bucket's this handle reaches only when the read under way began in its
 	// epoch (kvwatch.Copy.FenceFor).
 	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
 	fence := r.cache.FenceFor(epoch, sessionID)
+	held, holds := r.cache.Get(sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
 		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 		if !answered {
-			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
+			return EntryUnanswered, false, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
 		if errors.Is(err, nats.ErrKeyNotFound) {
-			return EntryDeleted, nil
+			if holds && conditions.keeps(held.entry) != EntryDeleted {
+				return EntryDeleted, false, nil
+			}
+			_, answered, err := bus.Bounded(ctx, func() (struct{}, error) { return struct{}{}, kv.MarkDeletedIfNone(sessionID) })
+			if !answered || err != nil {
+				return EntryUnanswered, false, fmt.Errorf("mark session %s deleted in the bucket: %w", sessionID, err)
+			}
+			return EntryDeleted, false, nil
 		}
 		if err != nil {
-			return EntryUnanswered, err
+			return EntryUnanswered, false, err
 		}
 		revision := entry.Revision()
 		var stored SessionEntry
@@ -179,25 +218,25 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			)
 		}
 		if kept := conditions.keeps(stored); kept != EntryDeleted {
-			return kept, nil
+			return kept, false, nil
 		}
 		_, answered, err = bus.Bounded(ctx, func() (struct{}, error) {
 			return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
 		})
 		if !answered {
-			return EntryUnanswered, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)
+			return EntryUnanswered, false, fmt.Errorf("delete session %s from the bucket at revision %d: %w", sessionID, revision, err)
 		}
 		if errors.Is(err, nats.ErrKeyExists) {
 			if attempt == 0 {
 				continue
 			}
-			return EntryKeptAfterLostRace, nil
+			return EntryKeptAfterLostRace, false, nil
 		}
 		if err != nil {
-			return EntryUnanswered, err
+			return EntryUnanswered, false, err
 		}
-		r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, revision))
-		return EntryDeleted, nil
+		dropped := r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, revision)) == kvwatch.Dropped
+		return EntryDeleted, dropped, nil
 	}
 }
 
@@ -208,9 +247,9 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 // the delete acted on, so the watcher's own in-flight update for an older revision cannot restore
 // the entry. revision is the newest revision the caller knows of for the key, and epoch the one
 // the kv handle was read in: a result through a handle of an earlier epoch reaches the copy no
-// more here than anywhere else (kvwatch.Copy). It calls OnChange's functions for sessionID once it
-// has released r.mu, when it changed the cache.
-func (r *SessionRegistry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64) {
+// more here than anywhere else (kvwatch.Copy), and the answer is what the copy did with it. It
+// calls OnChange's functions for sessionID once it has released r.mu, when it changed the cache.
+func (r *SessionRegistry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64) kvwatch.Outcome {
 	// A history that does not answer falls back to the fence below: the delete itself answered.
 	// ReadHistory ends with ctx; bus.RequestTimeout bounds it for a caller that answers no request
 	// and so passes a context that never ends.
@@ -220,15 +259,16 @@ func (r *SessionRegistry) reconcileDeleted(ctx context.Context, kv bus.KeyValue,
 	r.mu.Lock()
 	defer r.unlockAndNotify()
 	if err != nil || len(entries) == 0 {
-		r.cache.Evict(r.watcher, epoch, sessionID, revision+1)
-		return
+		return r.cache.Evict(r.watcher, epoch, sessionID, revision+1)
 	}
 	latest := kvwatch.JetStreamEntry(entries[len(entries)-1])
-	if _, malformed := r.cache.Apply(r.watcher, epoch, latest); malformed != nil {
+	outcome, malformed := r.cache.Apply(r.watcher, epoch, latest)
+	if malformed != nil {
 		r.logger().Warn("session registry cache evicted malformed value",
 			slog.String("key", latest.Key),
 			slog.Uint64("revision", latest.Revision),
 			slog.String("error", malformed.Error()),
 		)
 	}
+	return outcome
 }

@@ -520,16 +520,13 @@ func (r *SessionRegistry) logger() *slog.Logger {
 // own type's, not the registry's methods, so nothing but the watcher calls them.
 type sessionCache struct{ r *SessionRegistry }
 
-// BeginRead starts a read of the session bucket (kvwatch.Copy.BeginRead) with the bucket's MaxAge
-// as the ttl when it has one, so a bucket recreated with another TTL expires its rows by its own.
-// Every row stays.
+// BeginRead starts a read of the session bucket (beginRead). The first read of a recreated bucket
+// then writes back the rows the copy held that the new bucket should hold (reassert), before the
+// read can complete and sweep them, with r.mu released.
 func (c sessionCache) BeginRead(read kvwatch.Read) {
-	r := c.r
-	r.mu.Lock()
-	defer r.unlockAndNotify()
-	r.cache.BeginRead(read)
-	if read.MaxAge > 0 {
-		r.ttl = read.MaxAge
+	held := c.r.beginRead(read)
+	if read.Recreated {
+		c.r.reassert(read, held)
 	}
 }
 
@@ -782,7 +779,9 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 // connection ahead of any write this listener sends on it later, so it cannot undo one, and
 // against another listener's write it is last-writer-wins, as every Put already is. The write
 // reaches the cache through the handle's epoch (kvwatch.Copy.Put), so a write made through a
-// handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows.
+// handle on a bucket since recreated is dropped rather than fencing out the new bucket's rows, and
+// is then written again into the bucket the handle reaches now (putAgainWithin): its ack cannot
+// say whether the deleted bucket took it.
 func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry SessionEntry) error {
 	// Several live processes can hold the same session (shared on-disk state) - a harness can
 	// keep a session's state on shared disk - and each heartbeats a claim of its own. The route
@@ -802,8 +801,11 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 		return err
 	}
 	r.mu.Lock()
-	r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
+	outcome := r.cache.Put(r.watcher, epoch, sessionID, &cachedSession{entry: entry, expiresAt: r.expiryFor(time.Time{}, entry.UpdatedAt)}, revision)
 	r.unlockAndNotify()
+	if outcome == kvwatch.Dropped {
+		return r.putAgainWithin(ctx, sessionID, entry, buf)
+	}
 	return nil
 }
 

@@ -12,6 +12,7 @@
 package cistore
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -489,19 +490,71 @@ func (s *Store) Rewatch(conn *nats.Conn) error {
 // type's, not the store's methods, so nothing but the watcher calls them.
 type ciCache struct{ s *Store }
 
-// BeginRead starts a read of the CI bucket (kvwatch.Copy.BeginRead). Every record stays.
+// BeginRead starts a read of the CI bucket (beginRead). The first read of a recreated bucket then
+// writes back the records the copy held (reassert), before the read can complete and sweep them,
+// with s.mu released.
 func (c ciCache) BeginRead(read kvwatch.Read) {
-	s := c.s
+	held := c.s.beginRead(read)
+	if read.Recreated {
+		c.s.reassert(read, held)
+	}
+}
+
+// beginRead starts a read of the CI bucket (kvwatch.Copy.BeginRead); every record stays through
+// it. For the first read of a recreated bucket it answers the records to write back into it
+// (reassert): each record the copy holds, encoded as it is held, so a record a head-gated listener
+// last wrote keeps its missing schema stamp (encodeRecord says what that stamp decides), but one
+// whose last event is older than the new bucket's TTL. Every write of a record follows one of its
+// events within the settlement debounce, so such a record is one the deleted bucket had already
+// expired, which the copy kept only because the bucket delivers no event for an expiry, and a
+// write would give it another TTL. The copy never holds a retired head record or a state under a
+// foreign key (decodeState), so neither is written back.
+//
+// The bucket was deleted and created again, so nothing the summary loop knew of it still stands:
+// it drops what it knew at its next pass (takeChanges), and this read tells it afresh.
+func (s *Store) beginRead(read kvwatch.Read) []kvwatch.Held[State] {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cache.BeginRead(read)
-	if read.Recreated && s.feedAttached {
-		// The bucket was deleted and created again, so nothing the loop knew of it still stands:
-		// it drops what it knew at its next pass (takeChanges), and this read tells it afresh.
+	if !read.Recreated {
+		return nil
+	}
+	if s.feedAttached {
 		s.cacheReset = true
 		s.changed = nil
 		s.wakeSummary()
 	}
+	expired := int64(0)
+	if read.MaxAge > 0 {
+		expired = time.Now().Add(-read.MaxAge).UnixMilli()
+	}
+	var held []kvwatch.Held[State]
+	for key, st := range s.cache.All() {
+		if st.LastEventAt > 0 && st.LastEventAt < expired {
+			continue
+		}
+		buf, err := json.Marshal(st)
+		if err != nil {
+			continue
+		}
+		held = append(held, kvwatch.Held[State]{Key: key, Record: buf, Value: st})
+	}
+	return held
+}
+
+// reassert writes held, the records beginRead answered for read, into the recreated CI bucket
+// (kvwatch.Reassert), each only where that bucket holds nothing for its key, and stores each one it
+// took in the copy at read's epoch, so the read's sweep keeps it, marking it changed for the
+// summary loop as a delivered record is (markStoredLocked). It runs in the read's BeginRead with
+// s.mu released.
+func (s *Store) reassert(read kvwatch.Read, held []kvwatch.Held[State]) {
+	kvwatch.Reassert(s.watcher, read, held, func(h kvwatch.Held[State], revision uint64) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		moved := s.movedLocked(read.Epoch, h.Key, revision)
+		s.cache.Put(s.watcher, read.Epoch, h.Key, h.Value, revision)
+		s.markStoredLocked(h.Key, moved)
+	})
 }
 
 // Apply takes one record the read delivered (kvwatch.Copy.Delivered), and logs a value it could not
@@ -836,11 +889,14 @@ func casBackoff(attempt int) time.Duration {
 // retrying a lost compare-and-swap within recordBudget. A written record reaches the cache only
 // while the bucket the write went to is the one the watcher reads (kvwatch.Watcher.Handle): a
 // revision of a bucket since recreated would fence out the new bucket's, which number from 1
-// again.
+// again. A write the copy drops for that reason (kvwatch.Dropped) may have been acknowledged by the
+// bucket that was deleted, since an ack names no incarnation (kvwatch.Reassert): it stands only
+// where the bucket there is now holds exactly the record it wrote, and is otherwise read and
+// applied again over the record that bucket holds, as a lost compare-and-swap is.
 func (s *Store) casState(key string, apply func(st *State) (ok bool, err error)) (State, bool, error) {
-	kv, epoch := s.watcher.Handle()
 	deadline := time.Now().Add(recordBudget)
 	for attempt := 0; ; attempt++ {
+		kv, epoch := s.watcher.Handle()
 		entry, err := kv.Get(key)
 		if err != nil {
 			return State{}, false, err
@@ -864,14 +920,19 @@ func (s *Store) casState(key string, apply func(st *State) (ok bool, err error))
 		if err == nil {
 			s.mu.Lock()
 			moved := s.movedLocked(epoch, key, revision)
-			s.cache.Put(s.watcher, epoch, key, state, revision)
-			if moved {
+			outcome := s.cache.Put(s.watcher, epoch, key, state, revision)
+			if moved && outcome != kvwatch.Dropped {
 				s.markChangedLocked(key)
 			}
 			s.mu.Unlock()
-			return state, true, nil
-		}
-		if !bus.IsCASConflict(err) {
+			if outcome != kvwatch.Dropped {
+				return state, true, nil
+			}
+			current, _ := s.watcher.Handle()
+			if got, err := current.Get(key); err == nil && bytes.Equal(got.Value(), buf) {
+				return state, true, nil
+			}
+		} else if !bus.IsCASConflict(err) {
 			return State{}, false, err
 		}
 		if time.Now().After(deadline) {
