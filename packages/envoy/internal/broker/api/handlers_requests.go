@@ -409,12 +409,15 @@ const requestWaitStep = 500 * time.Millisecond
 // A store that fails is 503 DATABASE_UNAVAILABLE, logged at ERROR and counted failed, which
 // agent-secrets reads as a failed read and waits through (retryable), where a 500 would end its
 // wait with nothing run while the request stays pending. A held read whose caller went away before
-// the broker owed its answer, within one step (half a second) after its wait, is 503 REQUEST_ENDED,
-// logs nothing, as the reread's does, and is counted cancelled (answer.Recorder.NoteCallerEnded).
-// Any other read that ends early is a store failure: a read with no wait owes its answer at once,
-// and the pool sets no statement timeout, so a store that stalls holds a read until its caller
-// gives up or the request deadline ends it. That stall is logged and counted failed, as it is when
-// it holds the proof check.
+// the broker owed its answer, before its wait ran out or in the one step (half a second) after it,
+// is 503 REQUEST_ENDED, logs nothing, as the reread's does, and is counted cancelled
+// (answer.Recorder.NoteCallerEnded). Any other read that ends early is a store failure: a read
+// with no wait owes its answer at once, and the pool sets no statement timeout, so a store that
+// stalls holds a read until its caller gives up or the request deadline ends it. That stall is
+// logged and counted failed, as it is when it holds the proof check. The wait counts from the
+// request's arrival, so a caller that goes away while its proof is still being checked leaves
+// inside its wait, but it never reaches this handler: the proof check ends instead, as `broker:
+// verify proof failed`, a failed 503 (sessionCaller).
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
@@ -426,13 +429,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	recorder := answer.FromContext(ctx)
-	arrived := recorder.Arrived()
-	if arrived.IsZero() {
-		// A request served outside answer.Middleware, which cmd/broker wraps every request in,
-		// counts its wait from here.
-		arrived = time.Now()
-	}
-	deadline := arrived.Add(wait)
+	deadline := recorder.Arrived().Add(wait)
 	req, err := s.readHeld(ctx, id, enrollmentID, deadline)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):

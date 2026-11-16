@@ -9,11 +9,13 @@ body: |-
   `400 REQUEST_WAIT_INPUT`; an absent one answers at once, as before. A read of a request that
   moved to another session while it was held is `403 NOT_YOURS`, and a store that fails is
   `503 DATABASE_UNAVAILABLE` (it was `500 INTERNAL`), logged and counted failed, which
-  `agent-secrets` waits through. A held read whose caller went away within half a second after
-  its wait (a Ctrl-C, a tool's timeout, a front door that cut the call) answers
+  `agent-secrets` waits through. A held read whose caller went away before its wait ran out or in
+  the half second after it (a Ctrl-C, a tool's timeout, a front door that cut the call) answers
   `503 REQUEST_ENDED`, logs nothing, and is counted in `broker_answers_total` under a new outcome,
   `cancelled`. Every other read that ends early is still a logged failure: a read with no wait,
-  and a held read the database stalled until its caller gave up or the request deadline ended it.
-  The exec form asks each read to hold for what is left of `--wait`, at most 20 s; against a
-  broker from before this change, which answers every read at once, it sleeps its old backoff
-  between reads. `agent-secrets status` sends no wait.
+  and a held read the database stalled until its caller gave up or the request deadline ended it,
+  are `read request failed`; and a caller that goes away while its proof is still being checked,
+  inside its wait since the wait counts from arrival, ends that check, which is `verify proof
+  failed`. The exec form asks each read to hold for what is left of `--wait`, at most 20 s;
+  against a broker from before this change, which answers every read at once, it sleeps its old
+  backoff between reads. `agent-secrets status` sends no wait.

@@ -255,12 +255,13 @@ func (ts *testServer) countedSoon(t *testing.T, labels string) int {
 }
 
 // lockTable takes ACCESS EXCLUSIVE on table, in this test's own schema, on a pooled connection of
-// its own, after delay, and holds it until the test ends, whichever way the test ends: the release
-// is a cleanup, registered after the server's, so it runs before the store's pool is closed, which
-// would otherwise wait on the lock's connection for as long as the test binary lives. locked
-// receives the lock's error, nil once the lock is held; a lock not granted within testLockWait is
-// that error, so a test never waits on the lock without bound either.
-func (ts *testServer) lockTable(t *testing.T, table string, delay time.Duration) (locked <-chan error) {
+// its own, after delay, and holds it for hold, or until the test ends when hold is 0, whichever
+// way the test ends: the release is a cleanup, registered after the server's, so it runs before
+// the store's pool is closed, which would otherwise wait on the lock's connection for as long as
+// the test binary lives. locked receives the lock's error, nil once the lock is held; a lock not
+// granted within testLockWait is that error, so a test never waits on the lock without bound
+// either.
+func (ts *testServer) lockTable(t *testing.T, table string, delay, hold time.Duration) (locked <-chan error) {
 	t.Helper()
 	ctx := context.Background()
 	result := make(chan error, 1)
@@ -274,9 +275,24 @@ func (ts *testServer) lockTable(t *testing.T, table string, delay time.Duration)
 			err = lockInTx(ctx, tx, table)
 		}
 		result <- err
-		<-release
+		if hold == 0 {
+			<-release
+			return
+		}
+		select {
+		case <-release:
+		case <-time.After(hold):
+		}
 	}()
 	return result
+}
+
+// lockNow is lockTable with no delay, failing t unless the lock is held when it returns.
+func (ts *testServer) lockNow(t *testing.T, table string, hold time.Duration) {
+	t.Helper()
+	if err := <-ts.lockTable(t, table, 0, hold); err != nil {
+		t.Fatalf("lock the %s table: %v", table, err)
+	}
 }
 
 // testLockWait bounds how long a test waits for a table lock it takes (lock_timeout), so a lock
@@ -292,30 +308,41 @@ func lockInTx(ctx context.Context, tx pgx.Tx, table string) error {
 	return err
 }
 
-// The two series of a read's 503: its caller's own end, and a failure.
+// The series of a request read's 503: a held read's caller's own end, a failure the read itself
+// met, and a failure of its proof check, which counts its caller unauthenticated.
 const (
-	readCancelled = `outcome="cancelled",code="HTTP_503",caller_class="session"`
-	readFailed    = `outcome="failed",code="HTTP_503",caller_class="session"`
+	readCancelled     = `outcome="cancelled",code="HTTP_503",caller_class="session"`
+	readFailed        = `outcome="failed",code="HTTP_503",caller_class="session"`
+	proofCheckFailed  = `outcome="failed",code="HTTP_503",caller_class="unauthenticated"`
+	readFailedLine    = "broker: read request failed"
+	proofCheckFailure = "broker: verify proof failed"
 )
 
-// requireFailedRead fails t unless the read ts answered was counted outcome="failed", not
-// cancelled, with a `broker: read request failed` line at ERROR in capture, as a stall of the store
-// in the proof check is logged and counted.
-func requireFailedRead(t *testing.T, ts *testServer, capture *logtest.Recorder, why string) {
+// requireFailed fails t unless ts counted one answer under failed and none under readCancelled, and
+// capture holds line at ERROR.
+func requireFailed(t *testing.T, ts *testServer, capture *logtest.Recorder, failed, line, why string) {
 	t.Helper()
-	if n := ts.countedSoon(t, readFailed); n != 1 {
-		t.Fatalf("broker_answers_total{%s} = %d, want 1: %s", readFailed, n, why)
+	if n := ts.countedSoon(t, failed); n != 1 {
+		t.Fatalf("broker_answers_total{%s} = %d, want 1: %s", failed, n, why)
 	}
 	if n := ts.answersCounted(t, readCancelled); n != 0 {
 		t.Errorf("broker_answers_total{%s} = %d, want 0: %s", readCancelled, n, why)
 	}
 	logged := false
 	for _, r := range capture.Records() {
-		logged = logged || (r.Level == slog.LevelError && r.Message == "broker: read request failed")
+		logged = logged || (r.Level == slog.LevelError && r.Message == line)
 	}
 	if !logged {
-		t.Errorf("no `broker: read request failed` line at ERROR; want one: %s", why)
+		t.Errorf("no `%s` line at ERROR; want one: %s", line, why)
 	}
+}
+
+// requireFailedRead fails t unless the read ts answered was counted outcome="failed", not
+// cancelled, with a `broker: read request failed` line at ERROR in capture, as a stall of the store
+// in the proof check is logged and counted.
+func requireFailedRead(t *testing.T, ts *testServer, capture *logtest.Recorder, why string) {
+	t.Helper()
+	requireFailed(t, ts, capture, readFailed, readFailedLine, why)
 }
 
 // TestReadRequestWaitEndedByItsCallerIsNoFailure: a held read whose caller goes away a second into
@@ -354,7 +381,7 @@ func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
-	locked := ts.lockTable(t, "requests", 200*time.Millisecond)
+	locked := ts.lockTable(t, "requests", 200*time.Millisecond, 0)
 	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=1", 3*time.Second)
 	if err := <-locked; err != nil {
 		t.Fatalf("lock the requests table: %v", err)
@@ -372,9 +399,7 @@ func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
-	if err := <-ts.lockTable(t, "requests", 0); err != nil {
-		t.Fatalf("lock the requests table: %v", err)
-	}
+	ts.lockNow(t, "requests", 0)
 	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "", 300*time.Millisecond)
 	requireFailedRead(t, ts, capture, "a read with no wait owed its answer at once")
 }
@@ -382,32 +407,15 @@ func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 // TestReadRequestWaitCountsFromItsArrival: a held read's wait counts from when the request reached
 // the broker, not from when its proof was checked. A ?wait=2 read whose proof check the store
 // stalls for a second, a lock on the enrollments table, answers pending 2 s after it was sent, as
-// it asked, and not 3 s: the hold and the time the broker owes its answer by run on one clock from
-// one moment.
+// it asked, and not 3 s.
 func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
-	ctx := context.Background()
 
-	tx, err := ts.Store.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = tx.Rollback(ctx) })
-	if err := lockInTx(ctx, tx, "enrollments"); err != nil {
-		t.Fatalf("lock the enrollments table: %v", err)
-	}
-	unlocked := make(chan error, 1)
-	go func() {
-		time.Sleep(time.Second)
-		unlocked <- tx.Rollback(ctx)
-	}()
+	ts.lockNow(t, "enrollments", time.Second)
 	start := time.Now()
 	status, body := ts.session(t, key, enrollmentID, http.MethodGet, "/v1/requests/"+asked.RequestID+"?wait=2", nil)
 	took := time.Since(start)
-	if err := <-unlocked; err != nil {
-		t.Fatalf("release the enrollments lock: %v", err)
-	}
 	if status != http.StatusOK || decode[wireRequestStatus](t, body).State != "pending" {
 		t.Fatalf("GET /v1/requests/{id}?wait=2 = %d %s, want 200 pending", status, body)
 	}
@@ -415,4 +423,42 @@ func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
 		t.Fatalf("GET /v1/requests/{id}?wait=2 with its proof check stalled a second answered after %s, want from 2 s to under 2.5 s: the wait counts from its arrival", took)
 	}
 	t.Logf("GET /v1/requests/{id}?wait=2 with its proof check stalled a second answered pending after %s", took)
+}
+
+// TestReadRequestOwedTimeCountsFromItsArrival: the time a held read owes its answer by counts from
+// the request's arrival too, on the clock its hold counts on. A ?wait=1 read whose proof check the
+// store stalls for a second (enrollments), and whose read the store then stalls (requests), owes
+// its answer 1.5 s after it arrived; its caller, giving up at 1.7 s, left a broker already late, so
+// the read is a store failure, logged and counted failed. Counted from after the proof check, the
+// window would run to 2.5 s and count it cancelled.
+func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServer(t)
+	enrollmentID, key, asked := ts.pendingRequest(t)
+
+	ts.lockNow(t, "requests", 0)
+	ts.lockNow(t, "enrollments", time.Second)
+	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=1", 1700*time.Millisecond)
+	requireFailedRead(t, ts, capture, "the caller gave up at 1.7 s, past the 1.5 s its read owed its answer by, counted from its arrival")
+}
+
+// TestReadRequestWaitEndedDuringItsProofCheckIsAFailure: the wait counts from arrival, so a caller
+// that goes away while the store stalls its proof check leaves inside its wait; but its request
+// never reaches the read, and the proof check it ended is a store failure: `broker: verify proof
+// failed` at ERROR, a 503 counted failed for an unauthenticated caller, and never cancelled.
+func TestReadRequestWaitEndedDuringItsProofCheckIsAFailure(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServer(t)
+	enrollmentID, key, asked := ts.pendingRequest(t)
+
+	ts.lockNow(t, "enrollments", 0)
+	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=5", time.Second)
+	requireFailed(t, ts, capture, proofCheckFailed, proofCheckFailure, "the caller left while its proof was being checked, inside its wait")
+	for _, r := range capture.Records() {
+		if r.Message == readFailedLine {
+			t.Errorf("logged %q; want the proof check's line alone: the request never reached the read", r.Message)
+		}
+	}
 }

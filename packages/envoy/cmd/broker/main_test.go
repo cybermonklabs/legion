@@ -119,8 +119,10 @@ func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 // TestTheWaitLimitEndsInsideTheRequestDeadline: a held read of the longest wait the broker takes
 // (GET /v1/requests/{id}?wait=) ends before requestDeadline ends its request. A deadline that fell
 // to the limit or under it would end every undecided held read as a 503 DATABASE_UNAVAILABLE,
-// logged at ERROR as `broker: read request failed` and counted failed, which agent-secrets answers
-// with its backoff, so R1's second would become up to ten.
+// logged at ERROR as `broker: read request failed` and counted failed. A deadline under the limit
+// would also cut such a read before the wait agent-secrets asked had passed, which it answers with
+// its backoff, so R1's second would become up to ten; at the limit exactly the 503 comes after that
+// wait, and agent-secrets reads again at once, but the ERROR line and the failed count remain.
 func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; limit >= requestDeadline {
 		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under requestDeadline (%s)", limit, requestDeadline)

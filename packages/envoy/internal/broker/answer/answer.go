@@ -253,11 +253,12 @@ func (rec *Recorder) ID() string {
 }
 
 // Arrived is when the request reached the broker's code, before its route authenticated its
-// caller: the moment a handler that promises an answer by a time counts that time from. It is the
-// zero time on a nil Recorder.
+// caller: the moment a handler that promises an answer by a time counts that time from. On a nil
+// Recorder, a request served outside Middleware, it is the moment it is asked, so such a request
+// counts from there.
 func (rec *Recorder) Arrived() time.Time {
 	if rec == nil {
-		return time.Time{}
+		return time.Now()
 	}
 	return rec.arrived
 }

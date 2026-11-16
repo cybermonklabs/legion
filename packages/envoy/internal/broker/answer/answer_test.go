@@ -317,8 +317,8 @@ func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
 	}
 }
 
-// Arrived is when Middleware first saw the request, before the handler ran, and the zero time on
-// a request no Recorder records.
+// Arrived is when Middleware first saw the request, before the handler ran, and, on a request no
+// Recorder records, the moment it is asked.
 func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
 	var arrived, handled time.Time
 	before := time.Now()
@@ -331,8 +331,10 @@ func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
 	if arrived.Before(before) || handled.Sub(arrived) < 50*time.Millisecond {
 		t.Errorf("Arrived() = %s, want at or after %s and at least 50 ms before the handler read it at %s", arrived, before, handled)
 	}
-	if got := answer.FromContext(context.Background()).Arrived(); !got.IsZero() {
-		t.Errorf("Arrived() on no Recorder = %s, want the zero time", got)
+	asked := time.Now()
+	got := answer.FromContext(context.Background()).Arrived()
+	if after := time.Now(); got.Before(asked) || got.After(after) {
+		t.Errorf("Arrived() on no Recorder = %s, want the moment it was asked, from %s to %s", got, asked, after)
 	}
 }
 
