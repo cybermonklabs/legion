@@ -126,36 +126,27 @@ func TestLintSplitsLinesAsPythonDoes(t *testing.T) {
 	}
 }
 
-// TestSentencesAreWhatLongSentenceCounts holds Sentences to the sentences, as words, that the
-// long-sentence rule counts: inline code is left out, a code fence line holds none, and a piece
-// with no word is no sentence.
-func TestSentencesAreWhatLongSentenceCounts(t *testing.T) {
+// TestWordsAreWhatSteLintLints holds Words to the text that ste-lint's line loop lints, as words:
+// inline code is left out, a code fence line holds none, a table's cells are pieces of their own,
+// and Python's white space splits the words. A stop ends no piece.
+func TestWordsAreWhatSteLintLints(t *testing.T) {
 	for _, test := range []struct {
 		text string
 		want [][]string
 	}{
-		{"Dispatch stores it. Dispatch shows it! Does it?", [][]string{{"Dispatch", "stores", "it."}, {"Dispatch", "shows", "it!"}, {"Does", "it?"}}},
-		{"Run `a. b` now. Then stop.", [][]string{{"Run", "now."}, {"Then", "stop."}}},
-		{"One.\u00a0Two.\x1fThree", [][]string{{"One."}, {"Two."}, {"Three"}}},
-		{"e.g.\u00a0here", [][]string{{"e.g."}, {"here"}}},
-		{"First line\nsecond. Third", [][]string{{"First", "line"}, {"second."}, {"Third"}}},
+		{"Dispatch stores it. Dispatch shows it! Does it?", [][]string{{"Dispatch", "stores", "it.", "Dispatch", "shows", "it!", "Does", "it?"}}},
+		{"Run `a. b` now. Then stop.", [][]string{{"Run", "now.", "Then", "stop."}}},
+		{"One.\u00a0Two.\x1fThree", [][]string{{"One.", "Two.", "Three"}}},
+		{"First line\nsecond. Third", [][]string{{"First", "line"}, {"second.", "Third"}}},
+		{"| A. b | C |\n| --- | --- |\n| d e | f |", [][]string{{"A.", "b"}, {"C"}, {"d", "e"}, {"f"}}},
 		{"```\nOne. Two.\n```", nil},
+		{"`only code`", nil},
 		{"", nil},
 		{"Done. ", [][]string{{"Done."}}},
 	} {
-		if got := Sentences(test.text); !reflect.DeepEqual(got, test.want) {
-			t.Errorf("Sentences(%q) = %q, want %q", test.text, got, test.want)
+		if got := Words(test.text); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("Words(%q) = %q, want %q", test.text, got, test.want)
 		}
-	}
-	text := strings.Repeat("word ", 26) + "end. " + strings.Repeat("word ", 3) + "end."
-	long := 0
-	for _, sentence := range Sentences(text) {
-		if len(sentence) > 25 {
-			long++
-		}
-	}
-	if found := Lint(text); long != 1 || len(found) != 1 || found[0].Rule != "long-sentence" {
-		t.Errorf("Sentences gives %d sentences over 25 words, Lint %v; want one each", long, found)
 	}
 }
 

@@ -1678,10 +1678,14 @@ an open issue holding `withdrawn` asks gets them restored, attributed to the act
 and a closed issue that holds open asks, or whose documents owe a settlement marked since the last pass (at boot, the last 10 minutes;
 on the first interval pass, any), gets the close's final sweep in the same write of each document, which writes block `state` attributes only, never an ask row or a record.
 The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
+A restore leaves an approval request `resolved` when its covered document breaks the form of The Spec, as a reopen does (`PATCH /api/v1/issues/{key}`, below).
+Its reason names the findings.
 A document whose stored history does not load is logged and left as it is, as the close leaves it.
 Each record is dated when the pass writes it.
+Both passes run on the dependencies that the routes run on (`routes.AppContext.APIDeps`).
+So a pass reads the roots of The Spec (`DISPATCH_SPEC_ROOTS`) as a reopen does.
 A pass logs `dispatch: repaired the asks of closed and reopened issues` with `withdrawn=<n> restored=<n>
-swept=<n>`; one that fails or runs out of time is logged, and the next pass repairs what it left:
+swept=<n> left_resolved=<n>`; one that fails or runs out of time is logged, and the next pass repairs what it left:
 each interval pass that listed its candidates moves the bound to one interval before its own start, and carries every issue it did not repair, failed or not reached, into the next pass.
 The bound and the carried issues live in the memory of the process that ran the pass, not in the database:
 when the lease moves to another process, that process's pass starts from its own bound and its own carried issues (on its first interval pass, no bound, so it sweeps every closed issue whose documents owe a settlement), and never sees the issues the other process carried.
@@ -4497,12 +4501,14 @@ Each item below names a path with its method and identity, then its purpose.
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
   It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
-  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
-  it is empty for a document that is not a spec.
+  Two parts of the route have items of their own:
 
-  It never names a missing plan task, since the plan comes after the approval;
-  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
-  A covered text that breaks the form is `409 SPEC_FORM` (The form of The Spec, below).
+  - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
+    it is empty for a document that is not a spec.
+    It never names a missing plan task, since the plan comes after the approval;
+    a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
+
+  - A covered text that breaks the form is `409 SPEC_FORM` (The form of The Spec, below).
 
 - `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
 
@@ -4670,19 +4676,79 @@ No other document of a root is covered, and an issue that is a root inside anoth
 `POST /api/v1/artifacts/{id}/approval-requests` judges each covered document at the version that the request hands the person.
 With no request open, these are the documents that the request names.
 With a request open, they are the documents that the open request names.
-These texts break the form: a statement of more than two sentences, a sentence of more than 25 words and a hard finding of ASD-STE100.
+These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
+A hard finding of ASD-STE100 also breaks it.
+
+- How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
+  A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
+  So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
+  A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
+  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word, and none of its stops ends a sentence, also the last one before a space.
+  Nothing in code font ends a sentence.
+  A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
+  Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+  A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+  An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
+  A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
+  So write the steps with words.
+  The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
+
 A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
+
+- How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
+  `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
+  A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+  The finding of each rule lists the forms that it reads.
+
 A definition of a term has one sentence, and a term has one definition.
+An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
+So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
+A term line is `- **<term>**: <definition>` under a heading `Terms`, at any level.
+Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
+Its finding names the line.
+A heading that reads as `Terms` in another form breaks the form too (rule `terms-heading`), and its lines are no part of the terms.
+Such a heading has the text `terms` in another case, with emphasis marks or with a last colon, such as `## TERMS`, `## **Terms**` or `## Terms:`.
+A line of the term-line form is a definition under each heading, under no heading and in a typed block, outside a code fence.
+Only a line under `Terms` adds a term to the list.
+Such a line in another place breaks the form (rule `term-second-definition`, kind `term_line`) when it names a term of the list.
+It also breaks the form when another line of that form in the document names the same term.
+So Dispatch also refuses a list item in prose that has the form of a term line and names a term of the list.
+Its finding tells the writer to change the form of the line when the line is no definition.
+A line of that form inside a decision block is a definition too, so an answer that writes one writes a definition.
+After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
+A name with another character breaks the form (rule `term-name`), and the finding names each such character with its code point.
+So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>` and `limit's wait`, and a full-width letter or a ligature folds to its plain letters.
 
 The list of terms of a root holds the term lines of each covered document under it, the root's `terms.md` among them.
 Dispatch reads the latest version of each that a person approved, and leaves out the documents that it judges.
+Dispatch compares the names of terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of spaces as one space.
+That form removes the characters that show nothing, such as a zero-width space or a soft hyphen.
+The list holds one definition of each term.
+The root's `terms.md` comes first, then each other document in the order in which it joined the list.
+A document joins the list at the later of its first approval and the move that last brought its issue under the root.
+Dispatch reads that move from the events of the issues, which each release of Dispatch writes for each move.
+So the release that made a move changes no order, and a rollback to an earlier release changes none.
+The setting decides which issues are roots at each move, also at a move from before the setting named that root.
+Dispatch orders these by its events.
+Two documents that joined at one move come in the order of their first approvals.
+So a move into the root or inside it changes no definition that the list holds.
+An approval from before the setting named the root changes none either.
+The read of the other document names the definition that the list holds as a finding.
+When the document that the list keeps a term from leaves the root, the list holds the definition that joined next.
+A move changes no text.
 A definition of a term of the list also breaks the form.
 So does a second definition of a term in the documents that one request names.
 The finding names the term and the document that defines it.
 To change a definition, change the document that defines it, and request approval of that document.
+A person's approval takes the lock of the root's list before it reads the list.
+A move into the root takes that lock before it writes its event.
+So two approvals under one root take turns, and the second one that defines a term of the first gets `409 SPEC_FORM`.
+While an earlier release serves beside this one, its move takes no lock.
+So its move and an approval at one time can join the list in either order.
 
 A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
 `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
 A person's approval of a covered document gets the same refusal through three routes.
 These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
 That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
@@ -4691,6 +4757,9 @@ When the document that a request names is covered, the answer carries `spec_form
 `texts` counts each kind of text that Dispatch read in the documents it judged.
 `terms` counts the terms of the root's list.
 A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+A carry of an approval to a new version passes the same gate.
+So Dispatch carries no approval to a version whose text breaks the form, and the person's own Approve then gets the refusal.
+An approval given outside a root was never judged, and it stays when its issue moves under the root.
 `GET /api/v1/artifacts/{id}/spec-form` shows the findings and the list of terms with no side effect.
 
 ## Dispatch topics

@@ -260,6 +260,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 // errNoEventLog is what a context built with no Store answers for the event log's head.
 var errNoEventLog = errors.New("this server holds no store, so no event log to read the head of")
 
+// APIDeps is the API's dependencies that BuildAppContext parsed and New registers the routes
+// with. A pass that does what a route does outside a request (api.RunIssueAskRepair, which
+// restores the approval requests a reopen restores) runs on these, so it holds every field the
+// routes hold, the roots of The Spec among them.
+func (ctx *AppContext) APIDeps() api.Deps {
+	return ctx.apiDeps
+}
+
 // Architecture is the shared architecture importer the HTTP routes use, so
 // the server's five-minute sync ticker, the Refresh route and the sync tool
 // drive one importer, and so share one flight per source instead of each

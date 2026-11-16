@@ -11,6 +11,8 @@ import {
   getAsk,
   listIssueAsks,
   patchIssue,
+  requestApproval,
+  withOpenedAsk,
 } from "./api";
 import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
 import { askControls, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
@@ -124,7 +126,39 @@ async function seedTree(home: string) {
   };
   await patchIssue(header.key, { parent: root.key });
   await patchIssue(card.key, { parent: root.key });
-  return { asks, card, header, reopened, requested };
+  return { asks, card, header, outside: outside.key, reopened, requested };
+}
+
+/** An issue whose spec holds `count` statements of three sentences, each a finding, and whose
+ *  request the agent opened outside the root before the issue moved under it, so the person's
+ *  approval of it is judged. */
+async function brokenRequestUnderRoot(outside: string, count: number): Promise<string> {
+  const blocks = Array.from(
+    { length: count },
+    (_, index) => `:::requirement{#s${index + 1}}\n${threeSentences}\n:::\n`
+  );
+  const issue = await createIssue({
+    force: true,
+    parent: outside,
+    project: "STE",
+    spec: `# Spec\n\n${blocks.join("\n")}`,
+    title: `${count} broken statements`,
+  });
+  const opened = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: "The statements." }, agent)
+  );
+  await patchIssue(issue.key, { parent: ROOT });
+  return opened.ask.id;
+}
+
+/** The height of the reason field and of the text it holds, and the height of the window. */
+function reasonFit(field: HTMLTextAreaElement) {
+  return {
+    held: field.scrollHeight,
+    shown: field.clientHeight,
+    tall: field.getBoundingClientRect().height,
+    window: window.innerHeight,
+  };
 }
 
 /** The definition of `session` that the person approves in the root's terms.md. */
@@ -268,17 +302,32 @@ test("the person's Approve on the header of a broken statement under the root sh
   await withHome(async (home) => {
     const tree = await seedTree(home);
     await page.goto(`/issues/${tree.header.key}`);
-    await page.getByRole("button", { exact: true, name: "Approve" }).click();
-    const refusal = page.getByRole("alert").filter({ hasText: "Dispatch refused this approval" });
+    const approve = page.getByRole("button", { exact: true, name: "Approve" });
+    await approve.click();
+    // The header's last line names Request changes. The Needs you card of the same request shows
+    // the refusal too, and its last line names Answer.
+    const refusal = page
+      .getByRole("alert")
+      .filter({ hasText: "To send these findings to the author, choose Request changes." });
     await expect(refusal).toContainText(findingLine);
     await expect(refusal).toContainText(
       "To send these findings to the author, choose Request changes."
     );
     await expect(page.getByRole("button", { name: /^Approved/ })).toHaveCount(0);
+    // The refusal is an answer, which the header shows: the press keeps the focus, and the
+    // shell's corner lists no Retry that Dispatch can only refuse again.
+    await expect(approve).toBeFocused();
+    await expect(page.getByTestId("pending-writes")).toHaveCount(0);
 
     await page.getByRole("button", { exact: true, name: "Request changes" }).click();
     const dialog = page.getByRole("dialog", { name: "Request changes" });
-    await expect(dialog.getByLabel("Reason")).toHaveValue(changesReason);
+    const reason = dialog.getByLabel("Reason");
+    await expect(reason).toHaveValue(changesReason);
+    // The field shows the whole reason it opens with, so the person reads what Request changes
+    // sends to the author without scrolling inside a two-line box.
+    await expect
+      .poll(() => reason.evaluate((field) => field.scrollHeight <= field.clientHeight))
+      .toBe(true);
     await expect(dialog.getByRole("alert")).toHaveCount(0);
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
     await expect(page.getByRole("button", { name: "Changes requested" })).toBeVisible();
@@ -310,6 +359,13 @@ test("the person's Approve on the Inbox card of a broken statement under the roo
       "Dispatch refused this approval, because 1 text breaks the form of The Spec."
     );
     await expect(card.getByRole("alert")).toContainText(findingLine);
+    // The card has picked Request changes itself, so its last line names the press left, and
+    // that press keeps the focus.
+    await expect(card.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(card.getByRole("alert")).not.toContainText("choose Request changes");
+    await expect(card.getByRole("button", { name: "Answer" })).toBeFocused();
     await expect(card.getByRole("radio", { name: /^Request changes / })).toBeChecked();
     await expect(card.getByLabel("Reason (required)")).toHaveValue(changesReason);
 
@@ -450,5 +506,198 @@ test("spec-form --terms lists only what the person approved: the agent's later v
     expect(opened.stdout).toContain(
       "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition against 1 term: no text breaks it."
     );
+  });
+});
+
+// The issue page's Needs you card is a second place where the person presses Approve. The
+// answer takes the request's row out of the Inbox read while it is out, and the refusal puts it
+// back, which draws the card again: the refusal, the pick and the focus survive that redraw, and
+// one more press sends the findings to the author.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the issue page and an answer written in it.
+test("the person's Approve on the Needs you card of the issue page shows Dispatch's refusal and picks Request changes with the findings", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${tree.card.key}`);
+    const card = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    // The compact card's disclosure, "Add a note or answer in your own words", also holds the word.
+    const answer = card.getByRole("button", { exact: true, name: "Answer" });
+    await answer.click();
+    await expect(card.getByRole("alert")).toContainText(
+      "Dispatch refused this approval, because 1 text breaks the form of The Spec."
+    );
+    await expect(card.getByRole("alert")).toContainText(findingLine);
+    await expect(card.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(card.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+    await expect(card.getByLabel("Reason (required)")).toHaveValue(changesReason);
+    await expect(answer).toBeFocused();
+
+    await answer.click();
+    await expect.poll(async () => (await getAsk(tree.asks.card)).ask.state).toBe("answered");
+    const ref = `dispatch://${tree.card.key}/ask/${tree.asks.card}`;
+    const read = await runDispatch(["read", "--ref", ref], home);
+    expect(read.code, printed(read)).toBe(0);
+    expect(read.stdout).toContain("- Selected: Request changes");
+    expect(read.stdout).toContain(`- Text: ${changesReason}`);
+  });
+});
+
+// The issue page's Conversation tab shows the request in a card of its own, beside the Needs you
+// card of the margin. The refusal belongs to the request, so both cards show it and pick Request
+// changes. The focus stays on Answer in the card that the person pressed: the margin's card takes
+// no focus, and the page does not move to it.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the issue page and an answer written in it.
+test("the person's refused Approve on the Conversation tab's card keeps the focus in that card, and the Needs you card beside it shows the refusal too", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${tree.card.key}`);
+    await page.getByRole("tab", { name: "Conversation" }).first().click();
+    const card = page.locator(`[data-turn] [data-testid="ask-${tree.asks.card}"]`);
+    const margin = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    const answer = card.getByRole("button", { exact: true, name: "Answer" });
+    await answer.click();
+
+    for (const each of [card, margin]) {
+      await expect(each.getByRole("alert")).toContainText(
+        "Dispatch refused this approval, because 1 text breaks the form of The Spec."
+      );
+      await expect(each.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+      await expect(each.getByLabel("Reason (required)")).toHaveValue(changesReason);
+    }
+    await expect(answer).toBeFocused();
+    // An absence window: the margin's card, drawn with the refusal, must not take the focus after.
+    await page.waitForTimeout(1000);
+    await expect(answer).toBeFocused();
+    expect(await margin.evaluate((element) => element.contains(document.activeElement))).toBe(
+      false
+    );
+  });
+});
+
+// One request has one refusal on the page. A refused Approve in the issue page's header shows in
+// the Needs you card of the same request, which picks Request changes with the reason, and a
+// refused Approve in that card shows in the header. The focus stays where the person pressed.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around two issue pages and two answers written in them.
+test("the person's refused Approve in the issue page's header shows in the Needs you card of the same request, and a refusal in that card shows in the header", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    const headerRefusal = page
+      .getByRole("alert")
+      .filter({ hasText: "To send these findings to the author, choose Request changes." });
+    const approve = page.getByRole("button", { exact: true, name: "Approve" });
+
+    await page.goto(`/issues/${tree.header.key}`);
+    const headerCard = page
+      .locator(`[data-margin-item="${tree.asks.header}"]`)
+      .getByTestId(`ask-${tree.asks.header}`);
+    await approve.click();
+    await expect(headerRefusal).toContainText(findingLine);
+    await expect(headerCard.getByRole("alert")).toContainText(
+      "To send these findings to the author, choose Answer."
+    );
+    await expect(headerCard.getByRole("radio", { name: /^Request changes / })).toBeChecked();
+    await expect(headerCard.getByLabel("Reason (required)")).toHaveValue(changesReason);
+    await expect(approve).toBeFocused();
+
+    await page.goto(`/issues/${tree.card.key}`);
+    const card = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    const answer = card.getByRole("button", { exact: true, name: "Answer" });
+    await answer.click();
+    await expect(card.getByRole("alert")).toContainText(findingLine);
+    await expect(headerRefusal).toContainText(findingLine);
+    await expect(answer).toBeFocused();
+  });
+});
+
+// Nothing that the person typed is lost: after a refused Approve the reason field holds Dispatch's
+// reason, then one empty line, then the person's note as it was. The draft belongs to the request,
+// so the Needs you card beside the pressed Conversation card shows the same text.
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the issue page and an answer written in it.
+test("the person's note survives a refused Approve: the field holds Dispatch's reason, an empty line and the note, in each card of the request", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/issues/${tree.card.key}`);
+    await page.getByRole("tab", { name: "Conversation" }).first().click();
+    const card = page.locator(`[data-turn] [data-testid="ask-${tree.asks.card}"]`);
+    const margin = page
+      .locator(`[data-margin-item="${tree.asks.card}"]`)
+      .getByTestId(`ask-${tree.asks.card}`);
+    const note = "I read each statement, and I approve it.";
+    await card.getByRole("radio", { name: /^Approve / }).check();
+    await card.getByRole("button", { name: "Add a note or answer in your own words" }).click();
+    await card.getByLabel("Reason", { exact: true }).fill(note);
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+
+    for (const each of [card, margin]) {
+      await expect(each.getByRole("alert")).toContainText("Dispatch refused this approval");
+      await expect(each.getByLabel("Reason (required)")).toHaveValue(`${changesReason}\n\n${note}`);
+    }
+  });
+});
+
+// The reason field of the Inbox card grows with the reason Dispatch wrote, up to half the height
+// of the window, and scrolls past that: a reason of three findings that is shorter than half the
+// window shows whole on a phone, and one of twenty-five stops at half the window, so Answer stays
+// on the screen. The refusal above the field lists each finding.
+// SLOW(>=2s): three cold `bun` starts of the real `dispatch` command around the Inbox and two refused answers.
+test("the Inbox card's reason field at 390 px shows a refusal of three findings whole, and stops a refusal of twenty-five at half the window", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const tree = await seedTree(home);
+    const three = await brokenRequestUnderRoot(tree.outside, 3);
+    const many = await brokenRequestUnderRoot(tree.outside, 25);
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto("/");
+    for (const [ask, whole] of [
+      [three, true],
+      [many, false],
+    ] as const) {
+      const card = page.getByTestId(`ask-${ask}`);
+      await card.getByRole("radio", { name: /^Approve / }).check();
+      await card.getByRole("button", { name: "Answer" }).click();
+      await expect(card.getByRole("alert")).toContainText("Dispatch refused this approval");
+      const field = card.getByLabel("Reason (required)");
+      await expect(field).toHaveValue(/^Dispatch refused my approval/);
+      // Each poll answers what it measured, so a failure names the heights it read.
+      const measured = async () => {
+        const fit = await field.evaluate(reasonFit);
+        const shape =
+          fit.held <= fit.shown
+            ? "whole"
+            : Math.abs(fit.tall - fit.window / 2) <= 1
+              ? "stops at half the window"
+              : "scrolls under half the window";
+        return `${shape}: ${fit.held} px of text, a field of ${fit.shown} px, a window of ${fit.window} px`;
+      };
+      await expect.poll(measured).toMatch(whole ? /^whole:/ : /^stops at half the window:/);
+    }
   });
 });

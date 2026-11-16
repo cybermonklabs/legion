@@ -1,8 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import {
-  type ApiError,
   api,
   type CreateArtifactReviewInput,
   isCapExceeded,
@@ -17,6 +16,7 @@ import {
   backdrop40,
   card,
   dangerText,
+  growingField,
   inputClasses,
   primaryButtonBg,
   primaryButtonDisabled,
@@ -34,6 +34,16 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  approvalRefusalKey,
+  type FormRefusalPress,
+  focusIsFreeFor,
+  pressOn,
+  setFormRefusal,
+  takeFormRefusalFocus,
+  useFormRefusal,
+  useRefusalSurface,
+} from "./form-refusals";
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
  *  latest. */
@@ -182,8 +192,11 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
+            {/* It grows with its text up to half the window (`growingField`). So the reason that
+                Dispatch wrote after a form refusal shows whole, not in two lines. `min-h-14!`
+                keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
             <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${inputClasses(false)}`}
+              className={`mt-1 block min-h-14! w-full rounded-lg border px-2 py-1 text-sm font-normal outline-none ${growingField} ${inputClasses(false)}`}
               disabled={saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
@@ -261,23 +274,36 @@ export function ApprovalChip({
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
   // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
-  // the actions, and the reason it wrote for the author is what Request changes opens with.
-  const [formRefusal, setFormRefusal] = useState<ApiError | undefined>(undefined);
+  // the actions, and the reason it wrote for the author is what Request changes opens with. It is
+  // kept for the request of this document (`form-refusals.ts`), which each card of the request
+  // reads too, so a refusal in the header shows in those cards and theirs shows here, for the
+  // version that Approve approved. It holds the press, so the focus goes back to the place where
+  // the person pressed.
+  const formRefusalKey = approvalRefusalKey(artifact.id);
+  const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
+  const refusalSurface = useRefusalSurface();
+  const press = useRef<FormRefusalPress | undefined>(undefined);
+  const chipRef = useRef<HTMLDivElement>(null);
+  const approveRef = useRef<HTMLButtonElement>(null);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
 
   const review = useKeyedWrite({
+    // A form refusal of Approve shows under the actions, and Dispatch refuses the same document
+    // again until its text changes, so the shell's corner offers no Retry for it. Every other
+    // refusal is the corner's, with Retry and Discard.
+    inline: (input, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
     label: (input: CreateArtifactReviewInput) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
     onSettled: () => submitGuard.release(),
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onError: (error, input) => {
-      if (input.state === "approved" && isSpecFormRefusal(error)) {
-        setFormRefusal(error);
+      if (input.state === "approved" && isSpecFormRefusal(error) && press.current !== undefined) {
+        setFormRefusal(formRefusalKey, { error, press: press.current });
       }
     },
     onSuccess: () => {
-      setFormRefusal(undefined);
+      setFormRefusal(formRefusalKey, undefined);
       setRequestChangesOpen(false);
       onReviewed?.();
       void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
@@ -298,6 +324,15 @@ export function ApprovalChip({
     },
   });
 
+  // The press a refusal answers keeps the focus on Approve while it is out (`aria-disabled`
+  // below), and a header that its host drew again while the press was out takes the focus it
+  // owes, unless the reader has put the focus elsewhere. Another header of the same document
+  // shows the refusal and takes no focus.
+  useEffect(() => {
+    if (formRefusal === undefined) return;
+    if (!takeFormRefusalFocus(formRefusalKey, refusalSurface, chipRef.current)) return;
+    if (focusIsFreeFor(chipRef.current)) approveRef.current?.focus();
+  }, [formRefusal, formRefusalKey, refusalSurface]);
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
@@ -308,6 +343,7 @@ export function ApprovalChip({
   return (
     <div
       className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
+      ref={chipRef}
     >
       <button
         aria-haspopup="dialog"
@@ -327,16 +363,21 @@ export function ApprovalChip({
           {approval.state === "approved" ? null : (
             // One filled button per surface: approving is the action the header wants, and
             // two outline buttons made a reader choose before reading either.
+            // `aria-disabled` while its write is out, not `disabled`: a browser takes the focus
+            // off a button disabled under it, and the reader would meet the refusal with the
+            // focus on the page. The submit guard drops a press while one is out.
             <button
+              aria-disabled={review.isPending || undefined}
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
-              disabled={review.isPending}
               onClick={() =>
                 submitGuard.guard(() => {
                   // Each press is answered on its own: the refusal of the last one goes with it.
-                  setFormRefusal(undefined);
+                  press.current = pressOn(refusalSurface, approval.latest_version);
+                  setFormRefusal(formRefusalKey, undefined);
                   review.mutate({ state: "approved" });
                 })
               }
+              ref={approveRef}
               type="button"
             >
               {approveLabel}
