@@ -665,7 +665,7 @@ type Issue struct {
 	// `settings.projects.<KEY>.experiments` names, in its order, then any experiment the file no
 	// longer names, in the order of their names (contract 141). Absent for an issue no experiment
 	// holds an answer for, so the wire never carries an empty list, and absent from every issue of
-	// the body the route serves a caller below 141 (stateFor, withoutAssignments).
+	// the body the route serves a caller below 141 (shapeIssue, withoutAssignments).
 	Assignments []AssignmentView `json:"assignments,omitempty"`
 }
 
