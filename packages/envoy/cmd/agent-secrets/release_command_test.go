@@ -120,7 +120,10 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 		}
 		writeJSON(w, answer)
 	})
-	b.srv = httptest.NewServer(mux)
+	// The handler reads b.srv.URL, so b.srv is assigned before the server serves: Start, which
+	// sets the URL, runs after the assignment and before the goroutine that serves.
+	b.srv = httptest.NewUnstartedServer(mux)
+	b.srv.Start()
 	t.Cleanup(b.srv.Close)
 	return b
 }

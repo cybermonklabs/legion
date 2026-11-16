@@ -244,7 +244,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
 	var publicURL string
 	var reached, verified atomic.Int32
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	broker := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/v1/requests/") {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -259,8 +259,11 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(approvedStatusJSON))
 	}))
+	// The handler reads publicURL, so it is set before the server serves, from the listener
+	// NewUnstartedServer has bound: the URL Start then sets.
+	publicURL = "http://" + broker.Listener.Addr().String()
+	broker.Start()
 	defer broker.Close()
-	publicURL = broker.URL
 	for _, id := range []string{"req%zz", "a b", "a/b", "req%25zz"} {
 		_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "status", id)
 		want := "agent-secrets status: " + strconv.Quote(id) + " is not a request id\n"

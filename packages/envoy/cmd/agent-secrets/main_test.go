@@ -368,11 +368,14 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.calls, 1)
 		mux.ServeHTTP(w, r)
 	}))
-	audience = srv.URL
+	// The handler reads audience, so it is set before the server serves, from the listener
+	// NewUnstartedServer has bound: the URL Start then sets.
+	audience = "http://" + srv.Listener.Addr().String()
+	srv.Start()
 	return srv, counters
 }
 
