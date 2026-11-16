@@ -53,10 +53,14 @@ store may be left holding and the command that clears or checks it. From their o
 machine
 that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
-login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
-forms to a process inside a registered session's process tree (`IN_SESSION`), so an agent's own
-commands cannot act as its operator. The check covers that tree only: a process a session sends
-out of it (`( cmd & )`, `setsid -f`, a tmux server it started) passes, and the same user can stop
+login; a service's login is revoked on Dispatch's machine-login page. The helper refuses `machine
+list|revoke` and `grant list` to a process inside a registered session's process tree
+(`IN_SESSION`), so an agent's own commands cannot act as its operator. `grant revoke` is the
+exception: a session ends a grant it was given with `agent-secrets grant revoke <grant_id>` from
+inside the session — it signs with its own session identity and the broker checks the grant is that
+session's, where a grant of another session, or the operator's, is still its holder's, its
+operator's or its approver's to end. The machine-command check covers that tree only: a process a
+session sends out of it (`( cmd & )`, `setsid -f`, a tmux server it started) passes, and the same user can stop
 the helper anyway. Such a process can list and revoke its operator's own machine logins, never a
 service's machine login, and its operator's grants, which include grants the operator approved on
 any session. `agent-secrets enroll --helper` is open to any process of the user, so such a process
@@ -336,6 +340,9 @@ agent-secrets-helper sessions
 
 `machine list` shows your machines' logins, `grant list` the live grants of your sessions and
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
+`grant revoke` ends a grant: from your own shell it is the operator's revoke of any of these
+grants, and from inside a session it ends a grant that session was given (a grant of another
+session is refused `is not this session's`).
 
 Owners manage the secrets themselves, with no helper, under the credential of the first source
 the command finds: on AWS, the AWS SDK's own order, in the broker's account (access keys in

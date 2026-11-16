@@ -229,6 +229,9 @@ never denies. Every other request waits for that person, as it does now.
   1 otherwise, and it asks the broker nothing. `agent-secrets identity --source` prints the source
   the client would take its broker identity from (`key-dir`, `sign-in`, `helper` or `machine`).
   `agent-secrets self` prints this session's live grants.
+- `agent-secrets grant revoke <grant_id>` ends a grant this session was given, from inside the
+  session, before its lifetime runs out. A grant of another session is refused `is not this
+  session's`.
 
 ## Where a name comes from, and how you may use it
 
