@@ -17,8 +17,8 @@ import (
 )
 
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
-// daemon's instructions win before the shared role instructions. The prompt paths are what the
-// tmux runtime gives OMP in one --append-system-prompt word, so their order is the contract. The
+// daemon's instructions win before the shared role instructions. The prompt paths are what every
+// launch concatenates into the one prompt file its agent reads, so their order is the contract. The
 // Go daemon's text is the role's own part, then the part every architect or every phase worker
 // shares.
 func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
@@ -95,10 +95,10 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 					t.Errorf("the snapshot's %s is not the embedded part", part)
 				}
 			}
-			// The runtimes join the parts byte for byte ($(cat …)), so the role's Go daemon part and
-			// the shared one must meet at one blank line, as the paragraphs within a part do. The
-			// phrases each role is held to are read from the whole composed prompt, shared parts and
-			// the Go daemon's alike.
+			// Every launch joins the parts byte for byte (runtime.ComposePrompt), so the role's Go
+			// daemon part and the shared one must meet at one blank line, as the paragraphs within a
+			// part do. The phrases each role is held to are read from the whole composed prompt,
+			// shared parts and the Go daemon's alike.
 			var text strings.Builder
 			for i, path := range parts.RolePromptPaths {
 				body, err := os.ReadFile(path)
@@ -750,14 +750,12 @@ func TestEveryComposedPromptCarriesThePodMemoryRule(t *testing.T) {
 // merge in its opening clause and limits nothing of its `fail` clause by it. A test that passes on
 // the revert it exists to catch measures the wrong unit, so a check widened from here keeps the
 // clause. That is read over the composed prompt of each role a look reaches, the tester's and the
-// implementer's, and over the three pages that state the rule outside a prompt, the repository's
-// AGENTS.md, the e2e proof's account of the bound's look and the concepts page, read from the
-// repository root. What keeps an edit to one of them alone running this test is this file's RULES
-// row in .github/scripts/ci_job_reads.py: check-ci-filters.sh reads it and fails when ci.yaml's
-// test filter, through its daemon_go_tests list, stops matching AGENTS.md or the concepts page;
-// it matches scripts/e2e/README.md through its own scripts/e2e/** too, whatever that list holds.
-// Each text must hold one such clause at least, so a matcher that stopped finding the rule fails
-// here rather than passing on nothing. In the two composed prompts, besides: a
+// implementer's. The three pages that state the rule outside a prompt - the repository's
+// AGENTS.md, the e2e proof's account of the bound's look and the concepts page - are read by
+// internal/textcheck's TestThePagesFailAnUnobservedRequirementOnlyWhereProductionCarriesTheMerge,
+// with the same clause rule, so an edit to one of them alone starts the text checks rather than
+// this package's whole lane. Each prompt must hold one such clause at least, so a matcher that
+// stopped finding the rule fails here rather than passing on nothing. Besides: a
 // clause naming `production_check_hours` counts it from the close, never from the merge; a clause
 // saying the session is handed the check task names the close before it; and no clause says the
 // merge closes the issue, since in these two prompts the close is the moment the check task is
@@ -773,20 +771,10 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 	const limit = "production carries the merge"
 	theClose := regexp.MustCompile(`\bclose\b`)
 	boundFromTheMerge := regexp.MustCompile("production_check_hours`? (after|from|since) the merge")
-	type text struct {
-		name, body string
-		composed   bool
-	}
+	type text struct{ name, body string }
 	var texts []text
 	for _, role := range []claim.Role{claim.RoleTester, claim.RoleImplementer} {
-		texts = append(texts, text{"the composed " + string(role) + " prompt", composedText(t, composer, role, false), true})
-	}
-	for _, page := range []string{"AGENTS.md", "scripts/e2e/README.md", "docs/site/src/content/docs/legion/concepts.md"} {
-		body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", filepath.FromSlash(page)))
-		if err != nil {
-			t.Fatalf("read %s: %v", page, err)
-		}
-		texts = append(texts, text{page, string(body), false})
+		texts = append(texts, text{"the composed " + string(role) + " prompt", composedText(t, composer, role, false)})
 	}
 	for _, tc := range texts {
 		t.Run(tc.name, func(t *testing.T) {
@@ -797,9 +785,6 @@ func TestTheProductionCheckFailsAnUnobservedRequirementOnlyWhereProductionCarrie
 					if !strings.Contains(clause, limit) {
 						t.Errorf("%s makes a requirement still unobserved at the last look a fail without saying %q, so it fails a merge production never carried: %q", tc.name, limit, clause)
 					}
-				}
-				if !tc.composed {
-					continue
 				}
 				if strings.Contains(clause, "`production_check_hours`") && (!theClose.MatchString(clause) || boundFromTheMerge.MatchString(clause)) {
 					t.Errorf("%s counts the check's bound from something other than the issue's close: %q", tc.name, clause)

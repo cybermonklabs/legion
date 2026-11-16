@@ -21,18 +21,20 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleTester}
-	architect, err := claim.NewToken("legion", "LEGION-208", claim.RoleArchitect)
+
+	kept, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	kept := AddressingFragment("legion", c, architect, ghrepo.Repository{}, "", api.RepositoriesView{})
 	if strings.Contains(kept, "no session store") {
 		t.Fatalf("a claim whose session is intact is told %q, want nothing of a lost session", kept)
 	}
 
 	c.SessionLost = true
-	lost := AddressingFragment("legion", c, architect, ghrepo.Repository{}, "", api.RepositoriesView{})
+	lost, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", api.RepositoriesView{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{"found in no session store", "only what you pushed and committed survives", "tell your architect"} {
 		if !strings.Contains(lost, want) {
 			t.Errorf("the fresh agent is told %q, want it to say %q", lost, want)

@@ -199,7 +199,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := AddressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.repositories())
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.repositories())
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -235,7 +235,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	return spec, nil
 }
 
-// ownerOf is the architect c's addressing names (AddressingFragment), read again at each launch:
+// ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:
 // for a claim on its tree's root, whatever its role, the tree's architect, which is the root's
 // own; for a claim on any other issue, the end of the owner walk over the claims the store
 // records now (owner), so a planner launched while its child's own architect holds its role is
@@ -448,20 +448,32 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	return parts.RolePromptPaths, nil
 }
 
-// AddressingFragment is the sentence that tells an agent where it and its peers are reached: its
+// AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
+// on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
+// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told,
+// and keeps the form those rigs call, since they run one program against each label's checkout
+// of this module, an older one among them.
+func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView) (string, error) {
+	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
+	if err != nil {
+		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
+	}
+	return addressingFragment(project, c, architect, repo, defaultBranch, repositories), nil
+}
+
+// addressingFragment is the sentence that tells an agent where it and its peers are reached: its
 // own role topic, the topic of architect, and the project controller's, spelled from the tokens so
 // the model never hand-encodes one; then, when repo is not the zero repository, the issue's own
 // repository and default branch and the project's repositories (RepositoriesClause) — left off
 // entirely for a daemon that runs no workflow, whose claims name no repository. The clause names
 // the project's mapping as it is now, which may hold none: a recorded issue keeps its repository
-// after a refresh unmaps or refuses it. It is exported for the rigs
-// under packages/pi-legion/scripts, which tell a worker what a pane is told.
+// after a refresh unmaps or refuses it.
 //
 // architect is the architect that owns c (specs.ownerOf): its tree's architect for a claim on the
 // tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
 // architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
 // above it, and the sentence names it that way.
-func AddressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView) string {
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"

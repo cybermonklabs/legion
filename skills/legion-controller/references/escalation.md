@@ -35,7 +35,9 @@ you release it. Read the record, then choose the release.
    `promptFailures`, and `prompt_retire_limit` bounds `promptRetires`. The count that reached its
    limit is the budget that ran out, and the cause word says what spent it. The architect reads
    the same `failure` in its own record and reads these limits nowhere, so name the limit when you
-   answer it.
+   answer it. A `launch_refused` with no count at its limit is a system prompt too large for its
+   pod's start frame, and its `detail` names the role, the size and the limit: only a shorter prompt
+   starts that role, so a release before the prompt is cut fails again at once.
 3. **The release.** The `held` wake gives each release its price. On a root whose tree does not
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review

@@ -13,8 +13,7 @@ import { type NearestAnswer, nearestCases, type RetrievalRoute } from "./retriev
  *
  * - `bare`: the documents, the issue key, title and project, and the question with its options.
  * - `distilled`: that, and one written distillation of the person's principles and repeated
- *   judgements, drawn from the training slice alone, which becomes a reference file of the
- *   shipped skill. The caller names the file; a caller naming none gets a refusal rather than a
+ *   judgements, drawn from the training slice alone. The caller names the file; a caller naming none gets a refusal rather than a
  *   quiet second copy of `bare`, because an arm that silently became another arm would be
  *   reported as a difference between recipes that is no difference at all.
  * - `many-shot`: that, and the eight nearest training cases by meaning, each as its question,
@@ -80,7 +79,7 @@ export class RecipeError extends CannotRunError {
 
 /** How `renderPrompt` is told where the distillation and the neighbours come from. */
 export interface PromptOptions {
-  /** The file holding the distillation, which a reference file of the skill will be. */
+  /** The file holding the distillation. */
   distillationPath?: string;
   /** A retrieval already run for this case, which the two many-shot arms share. */
   nearest?: NearestAnswer;

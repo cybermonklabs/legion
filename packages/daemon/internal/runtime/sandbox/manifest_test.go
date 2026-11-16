@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the manifest goldens this package pins")
@@ -1324,7 +1325,8 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 		"boot token secret":   {func(s *runtime.SpawnSpec) { s.Secrets[bootTokenKey] = "x" }, "is a variable the runtime sets itself"},
 		"provisioning secret": {func(s *runtime.SpawnSpec) { s.Secrets[provisionTokenKey] = "x" }, "a key the runtime writes itself"},
 		"dispatch secret":     {func(s *runtime.SpawnSpec) { s.Secrets[dispatchTokenKey] = "x" }, "DISPATCH_TOKEN_FILE is a variable the runtime sets itself"},
-		"prompt too large":    {func(s *runtime.SpawnSpec) { s.Prompt.Addressing = strings.Repeat("x", maxArgBytes) }, "the value of --append-system-prompt"},
+		"prompt past one start frame": {func(s *runtime.SpawnSpec) { s.Prompt.Addressing = strings.Repeat("x", shimwire.MaxFrameBytes) },
+			"the start frame that carries it to its pod's launcher would be"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			spec := workerSpec(t)
@@ -1831,8 +1833,8 @@ func operatorPod() Pod {
 // worker's, the daemon-launched controller's and the image probe's — exactly as configured: its
 // volumes beside Legion's, its variables and mounts in the agent's container alone, never in an
 // init container, and its account as the pod's. The controller's account being the issue pods'
-// is what makes it the Legion daemon service's own pod to the secrets broker, which binds one
-// account per service, so its slack_post is granted the service's LEGION_SLACK_BOT_TOKEN.
+// is what makes it the Legion daemon service's own pod to the secrets broker, so it is granted the
+// secrets that service owns.
 func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 	opts := testOptions()
 	opts.Pod = operatorPod()
@@ -2260,11 +2262,11 @@ func kubeExpand(input string, env map[string]string) string {
 	return out.String()
 }
 
-// Whatever text a launch carries reaches the process as written: the worker's argv and plain
-// environment travel in the launcher's start command, which no kubelet expands, so `$(NAME)` and
-// `$$` in the inlined system prompt, an operator's instructions, and a spec's env values mean
-// what they say in a pod as in a pane. The `roles` container's own command and env, which the kubelet
-// does expand, still survive it.
+// Whatever text a launch carries reaches the process as written: the worker's argv, plain
+// environment and system prompt file travel in the launcher's start command, which no kubelet
+// expands, so `$(NAME)` and `$$` in the system prompt, an operator's instructions, and a spec's
+// env values mean what they say in a pod as in a pane. The `roles` container's own command and
+// env, which the kubelet does expand, still survive it.
 func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -2304,8 +2306,8 @@ func TestTextSurvivesTheKubeletsExpansion(t *testing.T) {
 			t.Errorf("the launcher's argument %q reaches it as %q", arg, expanded)
 		}
 	}
-	if !strings.Contains(l.prompt, literal) {
-		t.Fatalf("the system prompt does not carry the instructions as written: %q", l.prompt)
+	if _, prompt := systemPromptOf(t, spec.Role, start); !strings.Contains(prompt, literal) {
+		t.Fatalf("the system prompt file does not carry the instructions as written: %q", prompt)
 	}
 }
 
@@ -2318,12 +2320,13 @@ var uuid = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a
 // volume (the image carries none, only the pin it is installed from), the image's claude-envoy
 // root, every permission granted, only the MCP document this generation's launcher writes into its
 // private directory, the claude-envoy plugin and the generated Legion plugin, a fresh session, and
-// the one system prompt word — the same text the Oh My Pi branch of the same launch inlines, since
-// a pod cannot read the daemon's prompt files whichever harness it runs. A launch with no recorded
-// session starts a session of its own, which is what the fresh uuid here says; one that resumes
-// names the transcript's id instead (TestAResumingClaudePodContinuesItsTranscriptByItsID). The
-// binary's path is the generation's own, so a later generation names its own install, never the
-// one its start script has just removed.
+// `--append-system-prompt-file` naming the system prompt file the same launcher writes beside the
+// MCP document, whose text is the Oh My Pi launch's, since a pod cannot read the daemon's prompt
+// files whichever harness it runs. A launch with no recorded session starts a session of its own,
+// which is what the fresh uuid here says; one that resumes names the transcript's id instead
+// (TestAResumingClaudePodContinuesItsTranscriptByItsID). The binary's path is the generation's
+// own, so a later generation names its own install, never the one its start script has just
+// removed.
 func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	opts := goldenOptions()
 	r, err := configure(opts)
@@ -2335,8 +2338,9 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 	spec.Backend = runtime.BackendClaude
 	l := launchOf(t, r, spec)
 	argv := l.agentArgv(r.agent)
-	if l.prompt != omp.prompt {
-		t.Fatalf("the Claude launch's system prompt is %q, want the Oh My Pi launch's %q", l.prompt, omp.prompt)
+	_, ompPrompt := systemPromptOf(t, spec.Role, launcherCommand(omp, r))
+	if _, claudePrompt := systemPromptOf(t, spec.Role, launcherCommand(l, r)); claudePrompt != ompPrompt {
+		t.Fatalf("the Claude launch's system prompt is %q, want the Oh My Pi launch's %q", claudePrompt, ompPrompt)
 	}
 	session := ""
 	if at := slices.Index(argv, "--session-id"); at < 0 || at+1 == len(argv) {
@@ -2358,7 +2362,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 		"--plugin-dir", "/opt/legion/claude-envoy",
 		"--plugin-dir", "/opt/legion/claude-envoy/legion",
 		"--session-id", session,
-		"--append-system-prompt", omp.prompt,
+		"--append-system-prompt-file", generationDir(spec.Generation) + "/system-prompt.md",
 	}
 	if !slices.Equal(argv, want) {
 		t.Errorf("the Claude pod's agent command is %q, want %q", argv, want)
@@ -2427,7 +2431,7 @@ func TestAResumingClaudePodContinuesItsTranscriptByItsID(t *testing.T) {
 	spec := claudeResumeSpec(t)
 	l := launchOf(t, r, spec)
 	argv := l.agentArgv(r.agent)
-	want := []string{"--resume", claudeTranscriptID, "--append-system-prompt", l.prompt}
+	want := []string{"--resume", claudeTranscriptID, "--append-system-prompt-file", systemPromptPath(spec.Generation)}
 	if got := argv[max(len(argv)-4, 0):]; !slices.Equal(got, want) {
 		t.Errorf("the resuming Claude command ends %q, want %q", got, want)
 	}
@@ -2510,10 +2514,10 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	}{
 		{"a launch that starts a session", fresh, append(slices.Clone(r.agent),
 			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
-			"--mode", "rpc", "--append-system-prompt", fresh.prompt)},
+			"--mode", "rpc", "--append-system-prompt", systemPromptPath(fresh.spec.Generation))},
 		{"a launch that resumes one", resumed, append(slices.Clone(r.agent),
 			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
-			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", resumed.prompt)},
+			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", systemPromptPath(resumed.spec.Generation))},
 	} {
 		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
 			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)

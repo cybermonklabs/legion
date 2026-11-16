@@ -1071,7 +1071,7 @@ func fillTable(t *builder) {
 	t.row(onRuleResume, "the claim runs: nothing to resume", nothingToDo, nil, live...)
 	t.row(onRuleResume, "a queued claim is spawned by its start, not resumed", nothingToDo, nil, StateQueued)
 	t.row(onRuleResume, "the previous launch's pane is still uncertain: the boot's reconciliation decides it", nothingToDo, nil, StateLaunchUncertain)
-	t.row(onRuleResume, "a failed claim spent its launch budget: only the workflow's retry relaunches it", nothingToDo, nil, StateFailed)
+	t.row(onRuleResume, "a failed claim spent its launch budget or was refused in a way no try changes: only the workflow's retry relaunches it", nothingToDo, nil, StateFailed)
 	t.row(onRuleResume, "the claim is retired", nothingToDo, nil, StateRetired)
 
 	stoppable := []ClaimState{StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered,

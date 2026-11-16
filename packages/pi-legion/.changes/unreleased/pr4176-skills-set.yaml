@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The Legion skills leave whole test suites to CI: a check names the suite's CI job, a job held
+  back from an ordinary pull request runs under `full-ci`, and a pod runs only named tests. Every
+  role with a session may work beside the role whose phase it is, a role uses a running build
+  before the review, and a retro that reports a defect holds its completion until the architect
+  answers. The worker skill adds a re-read before a result is recorded, the issue's
+  `open-items.md` as a worker's first read, `mergeStateStatus` as the first read for a missing
+  required check, and a `plan-tests.md` reference, which the plan reviewer agent now checks a plan
+  against. A pushed commit is never rewritten, the reviewer pushes nothing to the branch it
+  reviews, and a merge into a base other than the default branch keeps the next pull request of
+  a stack mergeable.

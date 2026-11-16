@@ -11,7 +11,7 @@
 // (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"); and the prompt of a
 // child's own architect, a sub-architect, whose role part is the sub-architect's
 // (packages/daemon/internal/prompts/roles/architect.md, `# Legion Sub-Architect`) and whose
-// addressing line names the architect above it (AddressingFragment, in specs.go).
+// addressing line names the architect above it (addressingFragment, in specs.go).
 // scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
 // and the PostgreSQL it runs against.
 //
@@ -21,20 +21,23 @@
 // packages/daemon/internal/prompts/roles_test.go), and the planner's rule in the planner's own
 // part alone (roles_test.go's TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst).
 // Neither file starts anything, so neither says that a role process was ever launched with that
-// text. This driver reads the text from the one place that says it: the Oh My Pi process's own
-// command line, /proc/<pid>/cmdline. The pid the claim's locator carries is the
+// text. This driver reads the text from what the process itself was started with: the Oh My Pi
+// process's own command line, /proc/<pid>/cmdline, and the file its one `--append-system-prompt`
+// word names. The pid the claim's locator carries is the
 // `legion worker-shim`'s (parseLocalIncarnation, over the incarnation localruntime_live_test.go's
 // launch mints), and the shim starts Oh My Pi as a child
 // rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
 // for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
 // shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this
 // proof claims. The argv is NUL-separated, and the word after `--append-system-prompt` is the
-// whole prompt the agent runs under.
+// path of the file that holds the whole prompt the agent runs under: Oh My Pi reads a value with
+// no newline as a path and appends the file's contents, and the launch writes that file before
+// the process starts and never while it runs (runtime.WriteSystemPrompt).
 //
 // It reads the prompt from nowhere else on purpose. The composer, the role prompt files below the
 // state directory and the SpawnSpec the runtime recorded each hold the text before a process ever
 // took it, so a proof that read any of the three would prove again what the unit tests prove.
-// Only the kernel's copy of the argv says what the agent was started with.
+// Only the kernel's copy of the argv says which file the agent was started with.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
@@ -144,7 +147,7 @@ var podRuleForArchitect = []string{
 // sub-architect's own part (packages/daemon/internal/prompts/roles/architect.md), which the
 // composer gives an architect whose issue is not its tree's root (prompts.Composer.Compose), where
 // a root architect's opens with the root's heading instead (roles/architect-root.md). The clause
-// is the one its addressing line names the architect above it with (AddressingFragment, in
+// is the one its addressing line names the architect above it with (addressingFragment, in
 // specs.go), which the proof reads followed by that architect's role topic.
 const (
 	subArchitectHeading  = "# Legion Sub-Architect"
@@ -169,7 +172,7 @@ const (
 var completionAfterWorkForPlanner = []string{
 	"`head` (the 40-character lower-case commit",
 	"to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds",
-	"record it with `dispatch handoff-write --issue <issue> --phase plan --body-file \"$TMPDIR/<issue>-plan.json\"`, then report completion",
+	"Record it with `dispatch handoff-write --issue <issue> --phase plan --body-file - <<'EOF'`, the JSON on the lines after it and `EOF` alone on the last line, then report completion",
 }
 
 // rolePromptRuleLive is one run of the proof: the booted daemon, the one tree it seeds, and the
@@ -189,7 +192,7 @@ type rolePromptRuleLive struct {
 	// overlays is each claim's PI_CONFIG_FILES, in order.
 	overlays map[claim.Token][]string
 	// launched is what step 1 read out of each claim's own Oh My Pi: its pid, the pid of the
-	// shim that started it, and the one `--append-system-prompt` word it was started with.
+	// shim that started it, and the prompt in the file its one `--append-system-prompt` word names.
 	launched map[claim.Token]launchedPrompt
 }
 
@@ -386,15 +389,15 @@ func (r *rolePromptRuleLive) seed() {
 // ---- the steps -----------------------------------------------------------------------------------
 
 // everyPaneIsReady waits for each claim's real pane to start Oh My Pi, register and report ready,
-// and then reads that Oh My Pi's own command line, which is what the later steps hold each rule
-// in.
+// and then reads the prompt file that Oh My Pi's own command line names, which is what the later
+// steps hold each rule in.
 func (r *rolePromptRuleLive) everyPaneIsReady() {
 	for _, seeded := range r.seededRoles() {
 		token := r.token(seeded.issue, seeded.role)
 		r.awaitReady(token)
 		read := r.launchedPromptOf(token)
 		r.launched[token] = read
-		r.note("%s runs Oh My Pi as pid %d, the child of its shim %d, whose own /proc/%d/cmdline carries one %s word of %d bytes",
+		r.note("%s runs Oh My Pi as pid %d, the child of its shim %d, whose own /proc/%d/cmdline carries one %s word, the path of a prompt file of %d bytes",
 			token, read.pid, read.shim, read.pid, promptWord, len(read.prompt))
 	}
 }
@@ -420,11 +423,12 @@ func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
 	r.carriesTheRule("planner", "completion-after-work rule", r.token(r.issue, claim.RolePlanner), completionAfterWorkForPlanner)
 }
 
-// subArchitectCarriesItsPrompt holds, in the child's architect's own command line, what a
-// sub-architect is launched with: the heading of its own part, and not the root's; the addressing
-// clause that names the root's architect, by its role topic, as the architect above it; and every
-// architect's six sentences of the pod memory rule. The root architect's own command line carries
-// the root's heading and not the sub-architect's, so the two architects were composed apart.
+// subArchitectCarriesItsPrompt holds, in the prompt the child's architect's own Oh My Pi was
+// launched with, what a sub-architect is launched with: the heading of its own part, and not the
+// root's; the addressing clause that names the root's architect, by its role topic, as the
+// architect above it; and every architect's six sentences of the pod memory rule. The root
+// architect's own prompt carries the root's heading and not the sub-architect's, so the two
+// architects were composed apart.
 func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {
 	t := r.t
 	t.Helper()
@@ -441,7 +445,7 @@ func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {
 				wrong.token, read.pid, wrong.heading, at)
 		}
 	}
-	r.note("the sub-architect's own Oh My Pi argv carries no %q, and the root architect's carries no %q",
+	r.note("the sub-architect's own Oh My Pi prompt carries no %q, and the root architect's carries no %q",
 		rootArchitectHeading, subArchitectHeading)
 	r.carriesTheRule("sub-architect", "pod memory rule", sub, podRuleForArchitect)
 }
@@ -451,11 +455,11 @@ func (r *rolePromptRuleLive) subArchitectCarriesItsPrompt() {
 // ends the proof naming the role, its pid and that part's own text, since that line is the whole
 // evidence of a negative control's run.
 //
-// The match is of the argv's own bytes, where the composed-prompt unit test folds whitespace
-// first (prompts_test.go's foldWhitespace). That is the stronger claim and the one this proof is
-// for: the text stands in the command line word for word. The cost is that a reflow of one of
-// those paragraphs across a line break would fail here while the unit test stayed green, and the
-// reader of that failure is told the text it could not find.
+// The match is of the prompt file's own bytes, where the composed-prompt unit test folds
+// whitespace first (prompts_test.go's foldWhitespace). That is the stronger claim and the one this
+// proof is for: the text stands in the launched prompt word for word. The cost is that a reflow of
+// one of those paragraphs across a line break would fail here while the unit test stayed green,
+// and the reader of that failure is told the text it could not find.
 func (r *rolePromptRuleLive) carriesTheRule(what, rule string, token claim.Token, parts []string) {
 	t := r.t
 	t.Helper()
@@ -469,7 +473,7 @@ func (r *rolePromptRuleLive) carriesTheRule(what, rule string, token claim.Token
 			t.Fatalf("the %s %s ran Oh My Pi as pid %d, launched with a prompt of %d bytes that does not carry part %d of %d of the %s: %q",
 				what, token, read.pid, len(read.prompt), i+1, len(parts), rule, part)
 		}
-		r.note("part %d of %d of the %s is at byte %d of the %s %s's own Oh My Pi argv: %q",
+		r.note("part %d of %d of the %s is at byte %d of the %s %s's own Oh My Pi prompt: %q",
 			i+1, len(parts), rule, at, what, token, part)
 	}
 	r.note("all %d parts of the %s are in the command line Oh My Pi pid %d was launched with",
@@ -478,18 +482,19 @@ func (r *rolePromptRuleLive) carriesTheRule(what, rule string, token claim.Token
 
 // ---- what a step reads --------------------------------------------------------------------------
 
-// launchedPromptOf is the `--append-system-prompt` word the claim's own Oh My Pi was launched
-// with, read from that process's /proc/<pid>/cmdline, the kernel's own copy of its argv, one word
-// per NUL-separated field.
+// launchedPromptOf is the prompt the claim's own Oh My Pi was launched with: the contents of the
+// file the `--append-system-prompt` word of that process's /proc/<pid>/cmdline names, the
+// kernel's own copy of its argv, one word per NUL-separated field.
 //
 // The pid the claim's locator carries is the shim's, not the agent's: localruntime_live_test.go
-// launches `legion worker-shim … -- omp --mode rpc --append-system-prompt <prompt>` and records
-// that process's pid, and the shim starts Oh My Pi as a child (internal/shim/shim.go's
+// launches `legion worker-shim … -- omp --mode rpc --append-system-prompt <prompt file>` and
+// records that process's pid, and the shim starts Oh My Pi as a child (internal/shim/shim.go's
 // exec.Command) rather than exec'ing into it. So this walks /proc for the shim's own child whose
 // argv[0] is the Oh My Pi this run launches, and reads that child. A shim that dropped or
 // rewrote the prompt fails here, where a read of the shim's own argv would pass it.
 //
-// A shim with no such child, a command line it cannot read, and an argv with no prompt word each
+// A shim with no such child, a command line it cannot read, an argv with no prompt word, and a
+// prompt file that cannot be read — which Oh My Pi would have taken as the prompt's text — each
 // end the proof naming what it found.
 func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt {
 	t := r.t
@@ -521,7 +526,13 @@ func (r *rolePromptRuleLive) launchedPromptOf(token claim.Token) launchedPrompt 
 			t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with %s as the last word of its argv, so it carries no prompt: %s",
 				token, pid, shim, promptWord, argvSummary(argv))
 		}
-		return launchedPrompt{pid: pid, shim: shim, prompt: argv[i+1]}
+		file := argv[i+1]
+		text, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with %s %s, which could not be read, so it ran under that path's own text: %v",
+				token, pid, shim, promptWord, file, err)
+		}
+		return launchedPrompt{pid: pid, shim: shim, prompt: string(text)}
 	}
 	t.Fatalf("%s's Oh My Pi (pid %d, under shim %d) was launched with no %s word at all; its argv is %s",
 		token, pid, shim, promptWord, argvSummary(argv))

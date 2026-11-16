@@ -11,19 +11,20 @@
 # which stands in planning, and the architect of a child of the root, which stands in planning too.
 #
 # Once every pane has registered and reported ready, the driver reads each pane's own Oh My Pi
-# command line from /proc/<pid>/cmdline and takes the word after `--append-system-prompt`. The pid
-# the claim's locator carries is the `legion worker-shim`'s, which starts Oh My Pi as a child, so
-# the driver walks /proc for that shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It
-# holds the phase worker's eight sentences of the pod memory rule and every architect's six in
-# that word; the planner's three parts of the completion-after-work rule — the `head` its
-# handoff body names, the clause that carries that head to the daemon, and the sentence that
-# records the `plan` handoff with `dispatch handoff-write` and then reports completion — in the
-# planner's; and, in the child's architect's, the sub-architect's heading (`# Legion
-# Sub-Architect`) and not the root's, and its addressing clause naming the root's architect as the
-# architect above it. It names the role, the pid and the text for any it cannot find. That
-# command line is the only place it reads: the composer, the role prompt files below the state
-# directory and the recorded launch specification all hold that text before a process took it,
-# and the unit tests already read it there (packages/daemon/internal/prompts/prompts_test.go and
+# command line from /proc/<pid>/cmdline, takes the word after `--append-system-prompt`, the path
+# of the prompt file, and reads that file. The pid the claim's locator carries is the
+# `legion worker-shim`'s, which starts Oh My Pi as a child, so the driver walks /proc for that
+# shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It finds the phase worker's eight
+# sentences of the pod memory rule and every architect's six in that prompt; the planner's three
+# parts of the completion-after-work rule — the `head` its handoff body names, the clause that
+# carries that head to the daemon, and the sentence that records the `plan` handoff with
+# `dispatch handoff-write` and then reports completion — in the planner's; and, in the child's
+# architect's, the sub-architect's heading (`# Legion Sub-Architect`) and not the root's, and its
+# addressing clause naming the root's architect as the architect above it. It names the role,
+# the pid and the text for any it cannot find. That command line and the file it names are the
+# only places it reads: the composer, the role prompt files below the state directory and the
+# recorded launch specification all hold that text before a process took it, and the unit tests
+# already read it there (packages/daemon/internal/prompts/prompts_test.go and
 # packages/daemon/internal/prompts/roles_test.go). The driver is
 # packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
 # `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that
