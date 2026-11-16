@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // uploadVersionHistory is how many versions the benchmark spec has before its timed uploads.
@@ -32,9 +33,7 @@ const uploadVersionComments = 25
 func BenchmarkUploadVersion(b *testing.B) {
 	// The access log's line for every request would split the benchmark's result line; warnings
 	// and errors still reach stderr.
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	b.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(b, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	handler, database, deps := newTestServer(b, testServerOptions{settle: time.Hour})
 	documents, ok := deps.Docs.(*docs.Service)
 	if !ok {
@@ -81,9 +80,7 @@ func BenchmarkUploadVersion(b *testing.B) {
 func BenchmarkHeavyDocumentWrite(b *testing.B) {
 	// The access log's line for every request would split the benchmark's result line; warnings
 	// and errors still reach stderr.
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	b.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(b, slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	handler, _, _ := newTestServer(b, testServerOptions{settle: time.Hour})
 	issueKey := newBenchmarkIssue(b, handler, "HEAVY", "Heavy bodies", "Heavy document writes")
 	for index, heavy := range heavyWrites() {
