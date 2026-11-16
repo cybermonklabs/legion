@@ -117,10 +117,10 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 // answers nothing for it, so every facet of driftedInPod reaches it through movedInPod's rule
 // for an uncovered pod (addresses.go), and its next launch replaces it, as it always has. A
 // served owner its gh volume projects no directory for is such a facet: the controller acts as
-// the review App for every owner of the project, and one its pod holds no directory for is one
-// its `gh` reaches as nobody. It has no issue workspace and nothing to push, so nothing is lost
-// by replacing the pod where it stands — and it is replaced at its next launch, with no second
-// registration anywhere.
+// the review App for every owner that App is installed on, and one its pod holds no directory
+// for is one its `gh` reaches as nobody. It has no issue workspace and nothing to push, so
+// nothing is lost by replacing the pod where it stands — and it is replaced at its next launch,
+// with no second registration anywhere.
 func TestAControllerPodWhoseGhVolumeLacksAServedOwnerIsReplacedByItsNextLaunch(t *testing.T) {
 	g := newRig(t, nil)
 	spec := controllerSpec(t)

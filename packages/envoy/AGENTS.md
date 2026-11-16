@@ -887,7 +887,9 @@ The replica is listed for its document's reads (`Service.replicas`), the documen
 the update observer, which the document holds, is the replica's one strong holder, so the replica is collected with an evicted document, in the same collection, and the listing goes once the document is collected (`keepReplica`, `TestAnEvictedRoomsReplicaGoesWithIt`).
 A reader holding an evicted instance of a room reaches that instance's replica or none, never its successor's.
 `TestReadsOfALiveDocumentRunBesideItsPeers` runs each of these reads while a websocket peer types, until 50 of its runs have overlapped one of the peer's updates, and CI runs the `docs` and `api` packages under `-race`, each in a race job of its own, which reports a walk of the live tree beside a write;
-the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else: `envoy-go`'s unit step leaves both out, and the only plain run it keeps of them is its step "Test what the race build cannot run at all or at full size", which runs the few tests the detector makes impossible or shrinks.
+the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else, since `envoy-go`'s unit step leaves both out.
+The tests of those two packages that the race build cannot run, or runs smaller, have one plain run each:
+the `docs` package's few in `envoy-go`'s step "Test what the race build cannot run at all or at full size", and the API's source guards, which carry `//go:build !race`, in the `text-checks` job's step "Test the Dispatch API's source guards (no database)".
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
 — `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
@@ -2596,9 +2598,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
   alone it pages `contracts.DefaultIssuePageLimit`, 50): `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
+
+- The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three time bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it; the window refusal judges the bounds as the caller wrote them.
+  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  the window refusal judges the bounds as the caller wrote them.
+
+- The listing's paging, which is `GET /api/v1/issues`' own.
   `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
@@ -3438,16 +3445,17 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - Role messages use core NATS, not JetStream:
   `notifications.role.>` is not a stream subject.
-  A role message no live holder can take is kept for the role's next holder (`cmd/listener/role_keep.go`, and Dispatch's outbox for a role-routed event: "Dispatch's outbox" below), on a stored subject of the listener's own, `notifications.envoy.kept.role.<role>`.
+  A role message no live holder can take is kept for one hour for the role's next live holder (`cmd/listener/role_keep.go`, and Dispatch's outbox for a role-routed event: "Dispatch's outbox" below), on a stored subject of the listener's own, `notifications.envoy.kept.role.<role>`.
   That subject is the listener's alone:
   no session may register it, no replay hands it out, and no consumer of the notification stream delivers it, since the stream's own subject list carries the prefix (`bus.StreamCarriedSubjects`) where the consumer list every filter takes does not (`bus.StreamSubjects`), so a kept copy never re-enters the delivery path it was taken out of.
   `POST /v1/messages/publish` delivers a role topic itself (`sendToRole`, `cmd/listener/confirmed.go`) and does not publish it on the role lane.
   Its first resolution of the holder reads the claim as `GET /v1/roles/<role>` does (`roles.ResolveHolder`, `internal/roles`, whose one rule is that the holder's own record reads `session.Live`), within `sendRequestBudget` (3.5 s) of the request's arrival, and gives that route's answers:
-  the 202 of a message it kept for a role nobody claims, the 404 `unclaimed` or `holder_lapsed` when nothing was kept, the bus-unavailable 503 with `Retry-After: 1` for a read that did not answer, the 500 for a claim record no read can decode.
+  the 202 of a message it kept for a role with no live holder, the 404 `unclaimed` or `holder_lapsed` when nothing was kept, the bus-unavailable 503 with `Retry-After: 1` for a read that did not answer, the 500 for a claim record no read can decode.
   Every later attempt resolves the holder again by that same rule, so a holder that relaunched under a new session between attempts gets the next one, and publishes the forward to that holder's agent subject, which the stream captures, waiting only for the stream's acknowledgement that it stored it (`bus.Client.StartRequestStoredTo`, `startRoleForward`) for two seconds or what is left of the send;
   after a forward the stream did not acknowledge it waits 100 ms (`publishRetryPause`) and tries again, until the stream stores one or 4 s from the request's arrival have passed (`publishDeliveryWindow`, which bounds every read, forward and pause of the send, and keeps the answer inside envoy-client's 5 s attempt and the Legion daemon's 10 s client).
   No holder answers a receipt: the stored copy is the delivery, which the holder's own session consumer relays.
-  A later attempt that finds the role unclaimed is answered 404 as the first resolution is, since the claim itself is gone, while one that finds the holder past the live window leaves that claim exactly where it is and fails that attempt alone, as a read that failed does, so a holder that comes back inside the window still gets the message.
+  A later attempt that finds the role unclaimed is answered as the first resolution answers an unclaimed role, since the claim itself is gone.
+  A later attempt that finds the holder past the live window leaves that claim exactly where it is and fails that attempt alone, as a read that failed does, so a holder that comes back inside the window still gets the message.
   Every attempt forwards the same envelope, one `event_id` under the dedupe key `envoy.role.forward.<key>`, so a holder that took two copies drops the second.
   `StartRequestStoredTo` refuses a forward with no `Nats-Msg-Id` (`bus.ErrNoForwardMsgID`, an `ErrRefused`), since the stored copy is the whole delivery and an unnamed one is stored again by every attempt:
   the route passes the forward's dedupe key and subject (`bus.ForwardMsgID`) on every attempt, so the stream, which captures agent subjects, keeps one copy per message and recipient however many attempts it makes, and the role lane passes the name `roleForward.msgID` chooses (below): the forward's dedupe key and subject when the original envelope's key names its event (`contracts.DedupeKeyNamesTheUpstreamEvent`, asked of the envelope as it arrived, before the forward is keyed), and its `event_id` and subject otherwise, since two distinct envelopes can share a key their sender chose and the stream must store each.
@@ -3455,9 +3463,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A role send has three answers, and its sender tells them apart by status.
   200 is a live holder that took the message, named by `holder`.
-  202 is the kept answer:
-  nobody holds the role at all, and the body is the envelope with `kept: true` and `kept_reason: "unclaimed"`, the one state a copy is kept for (`roleKeepable`).
-  A lapsed claim is never kept for, so no 202 names `holder_lapsed` and none carries a `holder`.
+  202 is the kept answer: no live session holds the role, and the listener kept the message on the role's kept lane for one hour (`roleKeepable`, `roleSend.kept`).
+  The body is the envelope with `kept: true`, `kept_reason` and `kept_until`, the end of that hour in Unix milliseconds, counted from the time the stream stored the copy.
+  `kept_reason` is `unclaimed` for a role no claim names, and `holder_lapsed` for a claim whose holder is `unresponsive` or `gone`.
+  A `holder_lapsed` answer also names the `holder`, its `holder_state` and its `last_seen`, as the 404 does, and the claim stands.
+  A repeat of a dedupe key whose copy is still on the lane inside its hour stores nothing new, and the answer names that first copy's `event_id` and `kept_until` (`storeKeptRoleCopy`).
+  A repeat after that copy ended is kept as a new copy, with an hour of its own.
   404 is today's refusal body (`reason` `unclaimed` or `holder_lapsed`), and it means nothing was kept and the sender's own fallback must run.
   A sender asks for the 404 with `keep: false` in the publish body, which is for a sender that keeps a queue of its own;
   the Legion daemon does.
@@ -3470,21 +3481,49 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One walk of the lane (`walkKeptRole`) hands the new holder at most `roleKeepDrainMax` (20) copies, each once and in the order they were kept, reads at most `roleKeepScanMax` (200) of them, lives `roleKeepDrainWindow` (60 s), and moves the role's cursor, `notifications.envoy.kept.cursor.<role>`, which holds the listener's own bookkeeping rather than an envelope and carries one walk's claim of the lane, so two listeners walking it never forward one copy twice.
   Before each copy it reads, a walk reads the role's claim record from the role bucket (`roleKeepDrainHolds`, `readRoleClaimHolder`) and goes on only while that record names the holder it forwards to:
   a record naming another session or none ends the walk as one whose holder moved, and a read that did not answer ends it as a failed walk, so no copy is forwarded on a claim no read answered.
-  The handover walks the lane again - for the role's holder as it resolves it at the top of every pass, after the pause the walk before it earned - until the lane is empty, the role has no live holder, or `roleKeepDrainIdleRounds` (3) walks running forward nothing and pass nothing over.
+  The handover walks the lane again - for the role's holder as it resolves it at the top of every pass, after the pause the walk before it earned - until the lane is empty, a walk with no live holder stops at a copy inside its hour, or `roleKeepDrainIdleRounds` (3) walks running forward nothing and end nothing.
+  A pass that finds no live holder walks the lane with no holder: that walk ends each copy whose hour ended and stops at the first copy inside its hour.
   A walk that failed is waited out on a widening cadence (`roleKeepDrainBackoff`, 1 s to 30 s), and the error of the handover's last walk is the handover's, reported at Error.
   A read of the lane or of the holder that did not answer, on any pass including the first, is waited out the same way while the role's claim record names a session, live or lapsed, and ends the handover at Debug otherwise, a record that could not be read included (`readRoleClaimHolder`, within `roleHolderReadTimeout`).
   Both wait inside `roleKeepHandoverWindow` (10 min), whose passing inside a read or a walk carries that failure out as any other does.
   A shutdown that cancels a read ends the handover with nothing above Debug, and so does one that cancels a walk that left no copy it forwarded unconfirmed, which the next walk forwards again;
   a shutdown that lands in a pause still reports the failure that pause was waiting out.
-  A handover this process loses - a restart, a rolling deploy - is picked up by `sweepKeptRoleLanes`, which runs at the listener's start and every five minutes beside the reapers and hands over every lane holding copies after its cursor whose role has a live holder (`bus.Client.KeptRoleLanes`, one `STREAM.INFO` with a `notifications.envoy.kept.role.>` filter), so no lane waits for a claim a live holder will not make.
-  The sweep reads each such role's claim record from the role bucket (`readRoleClaimHolder`), and a read that did not answer passes that lane over until the next pass.
+  A handover this process loses - a restart, a rolling deploy - is picked up by `sweepKeptRoleLanes`, which runs at the listener's start and every five minutes beside the reapers and hands over every lane holding copies after its cursor (`bus.Client.KeptRoleLanes`, one `STREAM.INFO` with a `notifications.envoy.kept.role.>` filter), whether the role has a live holder, a holder that is not live or no claim at all.
+  The sweep reads no claim record itself: each handover it starts resolves the role's holder, and a lane whose head read did not answer is passed over until the next pass.
   The walk, the handover and the sweep never read the registry's watched copy of `envoy_roles` for a holder, since that copy can lack a claim the bucket holds or keep one the bucket dropped.
-  Each forwarded copy carries `kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the message's age.
-  A copy older than `roleKeepWindow` (one hour) when the claim reads it is not forwarded:
-  it is dropped, logged and counted on `envoy_role_kept_expired_total`.
   Keeping added no NATS grant and no stream subject to the role lane itself, so the legacy purge and the migration off the stream stand as they were, and `GET /v1/roles/<role>` still answers 404 for an unheld or lapsed role.
   A forward the stream did not store keeps nothing and still answers 504:
   keeping is the answer of the two give-up branches alone, which find no live holder to forward to.
+
+- A kept copy ends at the end of its hour.
+  Each forwarded copy carries `kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the message's age.
+  No walk forwards a copy whose hour ended (`roleKeepWindow`, one hour from the time the stream stored it).
+  The first walk that reads such a copy drops it, whether or not any session holds the role (`judgeKeptRoleCopy`).
+  The walk counts the drop once on `envoy_role_kept_expired_total`, with the labels `kept_by` (`listener` or `dispatch_outbox`) and `stale`, and logs it once as `listener dropped a kept role message older than the keep window`.
+  When the listener kept the copy and its publish named a sender session, the walk sends that session a dead letter before it writes the cursor past the copy (`keptRoleDeadLetter`, `envoy_role_dead_letters_total`).
+  The walk also sends that session a dead letter for such a copy inside its hour whose live holder does not take the copy's delivery mode, and `envoy_role_dead_letters_total` counts both.
+  The dead letter is a stored envelope from source `envoy` on the sender's agent subject.
+  It names the role, the copy's event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it.
+  Its message id is `envoy.dead-letter.<role>.<copy's stream sequence>`, so the stream holds one dead letter for each copy, however many walks and listeners send it.
+  A copy whose hour ended more than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead letter (`roleKeepStaleAge`).
+  A copy that Dispatch's outbox kept, and a copy whose publish named no session, get no dead letter either.
+
+- A kept copy wakes its role again while there is time to take it.
+  While a lane holds a copy the listener kept with at least 20 minutes of its hour left, and no live session holds the role, each sweep raises the role's wake report again on `notifications.legion.wake` (`raiseKeptRoleWake`, `publishSweptRoleWake`).
+  The report's message id names the role and the five-minute interval, so the stream holds at most one such report for a role in each interval across every listener.
+  A copy of Dispatch's outbox raises no report.
+
+- A released Legion role gets the copies kept for it when it comes back.
+  The release ends the role's process and leaves its claim standing.
+  The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
+  A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
+  Either way it is kept and raises the role's wake report.
+  When the role comes back, its session registers again or claims the role, and either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that carries `kept_at` (`subscribeHandler`, `roleSetHandler`).
+  The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
+  `envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds only what that process received.
+  To check one message, read the session's transcript for the card with that event id and `kept_at`.
+  The listener's log holds the forward of that event id, `listener role forwarded` with `kept_at`, or the drop line `listener dropped a kept role message older than the keep window`.
+  The sender's session holds the dead letter that names that event id, when the publish named that session and the copy was not dropped as stale.
 
 - The role lane stays the transport for a role topic published straight onto NATS (a listener of an earlier release during a rollout, an operator's `nats pub`):
   each listener holds one core subscription to `notifications.role.>`, on a connection of its own (`bus.ConnectRoleLane`), in the queue group every listener shares, `envoy-roles` (`bus.RoleLaneQueue`), so NATS hands each role message to one listener of all of them.
@@ -3509,19 +3548,22 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One the stream did not acknowledge storing (`bus.ErrForwardNotStored`), and one not known to have left this process (the publish failed, the flush timed out or failed on a stalled connection, or the server denied it under the listener's grant, `bus.ErrPublishDenied`), are both `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
-  Of the lane's own two give-up branches, an unclaimed role keeps the message for the role's next holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`), and a lapsed holder keeps nothing and is `delivery_failed`, since its claim stands and no claim follows for a kept copy to wait for (`roleKeepable`).
+  Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeptReason`).
+  An unclaimed role keeps it under the reason `unclaimed`, and a holder that is not live keeps it under `holder_lapsed`, with that holder named on the kept line, and its claim stands.
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
-  A keep that failed leaves the unclaimed branch exactly as it was, `no_holder`.
+  A keep that failed leaves each branch exactly as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
   A claim read that did not answer keeps the message too, under the reason `claim_unread` (`roleClaimUnread`), and forwards nothing:
   a failed read is no evidence that the role has no holder, nor that it has the holder a copy of the bucket names, and the lane has no redelivery, so a kept copy is how the message waits for a read that answers.
   The handover that keep starts resolves the holder again once a read answers and forwards the copy only to a live holder, and the kept-role sweep starts a handover when that one could not.
-  A holder that resolves lapsed ends that handover, and the one the sweep starts, with no outcome (`handOverKeptRole`):
-  the copy is not forwarded, no delivery exception is published for it, and it waits on the kept lane until a handover - a claim's, a keep's or the sweep's - finds a live holder, the holder answering again or a successor that claimed the role.
-  That handover forwards the copy while it is inside the one-hour keep window (`roleKeepWindow`) and drops it with a WARN once it is older.
+  A handover that resolves no live holder forwards nothing (`handOverKeptRole`):
+  the copy waits on the kept lane, with no delivery exception published for it, until a handover finds a live holder, the holder answering again or a successor that claimed the role: a claim's, a keep's, the one a registration that makes the holder's session live again starts for each role whose claim record it read for that session, renewed or not, so a session a new process resumed under its old claim is handed its copies too (`subscribeHandler`), the one the claim route's refresh of a claimant it read not live starts for each role the session holds, whatever the claim's answer (`roleSetHandler`), or, as the fallback, the sweep's.
+  That handover forwards the copy while it is inside its hour (`roleKeepWindow`).
+  Once the copy is older, the first walk that reads it drops it with a WARN, whether or not a session holds the role, and sends the dead letter above when the copy names a sender session.
   A claim read whose keep failed is `delivery_failed`, as before.
   Every other reason emits an exception.
-  The lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
-  keeping is chosen on the publish route alone, and the senders that opt out of it - the Legion daemon's notice queue and a phase worker's stall reminder - publish through that route.
+
+- The role lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
+  keeping is chosen on the publish route alone, and the one sender that opts out of it, the Legion daemon's notice queue, publishes through that route.
   The lane's attempt cache holds an entry only while a forward is in flight and a failure rolls it back, while the dedupe cache, which the route shares, records a forward only once the stream stored it
   — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped.
   An agent delivery this listener cannot place clears its own attempt entry before each NAK (`clearAttempt`, `agentSubjectDelivery`), because the redelivery that NAK asks for would otherwise find the entry still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
@@ -3547,7 +3589,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   and a role an older client handed back comes free one live window plus up to one reap interval later — about ten minutes with the shipped defaults — while that client is still registering.
 
 - A holder that is `unresponsive` — past the live window, inside the gone horizon — keeps its claim and its `claimed_at` through any number of resolutions, and the paths that need a live holder report it instead:
-  the publish route's and the lookup's 404 `holder_lapsed`, which carries `holder_state`, `last_seen` and `claim_released: false`, and a `delivery_failed` exception on the role lane.
+  the lookup's 404 `holder_lapsed`, which carries `holder_state`, `last_seen` and `claim_released: false`, and the publish route's 202 with `kept_reason` `holder_lapsed`, which names the holder and its state, while the role lane keeps its message the same way.
+  A publish with `keep: false` still gets the 404 `holder_lapsed`.
   What still moves such a role is a successor's soft claim, which replaces the holder rather than releasing the claim (`roleSupersessionVerdict`; `/v1/roles/set` in the Listener API below).
   A claim restored at a listener restart gets one live window from that listener's own start before its reaper may release it (the grace `store.Registry.ReapRoleClaims` holds a restored claim for, which `main.go` passes as the registry's live window), so a holder that registers again in time keeps its role — unless the hand-back marked that claim, which takes no grace at all.
   The grace is there for a holder to register again, and no registration renews a marked claim (`store.Registry.releaseReadExpiredRoleClaim`), so over a marked claim it could do nothing but hold the role past the bound the reaper's own rule sets.
@@ -3679,7 +3722,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The same holds for a refusal whose resolution of the recipient failed, a session whose entry is gone (`session.ErrNoSessionRecord`) among them.
   The cost is that session's exception dedupe: a session on consumer delivery is sent one `delivery_failed` per stored copy of the event and per redelivery of each, up to the durable's `consumerMaxDeliver` (20), where a recorded refusal gives one per dedupe key per attempt window.
 
-- A role send through `/v1/messages/publish` answers its sender instead, with 202 for a role message it kept, with the unheld role's 404 when it kept nothing, and with 403 or 504 for a holder that did not take it (the Listener API);
+- A role send through `/v1/messages/publish` answers its sender instead, with 202 for a role message it kept for one hour, with the role's 404 when it kept nothing, and with 403 or 504 for a holder that did not take it (the Listener API);
   an ad-hoc topic raises none at all.
 
 - The one bus signal the route adds is the role send's own refusal: a 404 whose reason is a shared no-holder reason (`roleholder`: `unclaimed`, no recipient; or `holder_lapsed`, the lapsed holder as `recipient_session`) also raises one role-lane exception, in the delivery path's own envelope (`deliveryExceptionEnvelope`), over core NATS (`publishRefusalException`, `cmd/listener/role_lane_refusal.go`).
@@ -3773,8 +3816,10 @@ A send NATS denied (`bus.ErrPublishDenied`) is backed off with its attempt count
 no acknowledgement in time, no responders, no acknowledgement of a role forward's stored copy), unless a probe of that connection then fails, which releases it and gives the hold up.
 A `role:` route is not published to `notifications.role.<role>`:
 the outbox resolves the holder with `roles.ResolveHolder` (`internal/roles`), the one resolution the listener's role routes and its role lane read too, and forwards to the holder's `notifications.agent.<holder>` with a window Request under the role forward's dedupe key and a MsgId (`bus.ForwardMsgID`), counting it reached on the stream's acknowledgement of the one copy it stores, for every holder alike, since a holder is delivered that copy from its own session consumer by the listener's relay and answers the forward with nothing.
-A role no live holder can take is kept for the role's next holder instead (`forwardOf`, `internal/dispatch/outbox/role.go`): a role with no claim, and a claim whose holder is gone, whose claim the listener's role-claim reaper does release, so a next holder comes to be handed the copy.
-The listener's own route and lane keep for the first of those alone (`roleKeepable`) and refuse a lapsed claim of either state with nothing kept, so the gone holder's route is the one resolution the two keep differently.
+A role no live holder can take is kept on the role's kept lane for the role's next live holder instead (`forwardOf`, `internal/dispatch/outbox/role.go`): a role with no claim, and a claim whose holder is gone, whose claim the listener's role-claim reaper releases.
+The copy waits there for one hour, as the listener's own copies do: the listener's walk hands it to the role's next live holder inside that hour and drops it at the end of the hour.
+Nobody is sent a dead letter for an outbox copy, so the person or session that wrote the Dispatch event is not told, and an outbox copy raises no wake report.
+The listener's own route and lane keep for both of those and also for a holder that is only unresponsive (`roleKeepable`), so the unresponsive holder is the one resolution the two keep differently.
 The keep is one JetStream publish of the envelope on the role's kept lane, under the id every writer of that lane keeps the message under (`bus.KeptRoleSubject`, `bus.KeptMsgID`), so it is the copy `keepRoleMessage` writes.
 Acknowledged, the route is reached; anything else leaves the event pending for the outbox's own retry, which that MsgId makes idempotent at the stream.
 The acknowledgement also starts a handover: the batch reads the role's claim once more, and when it names a live holder and the copy just kept is the first on that role's lane past the drain cursor with no walk's claim outstanding, it forwards the event to that holder (`handOverKept`), because a role claimed between the batch's resolution of it and its keep leaves a copy on a lane whose claimant's own drain had already read it empty, which nothing walks again until the listener's sweep, up to five minutes later, while the issue's next event resolves that holder live and goes straight to its agent subject.
@@ -3788,8 +3833,10 @@ That handover goes under the id the drain's own forward of that copy would carry
 It carries the time of the keep as `kept_at`, as the drain's forward carries the stream's store time of the copy, since every holder is reached through the stream, which keeps whichever of the two arrives first, which is this one unless a drain that read the cursor before the handover reaches the agent subject ahead of it.
 A keep is keyed on its role topic, no holder being known when the batch planned its chains, so an event of the same owner that the same batch sends to that session on a key of its own - an author or follower route among them - races the handover as two keys of one owner always do, where before it that copy waited for the sweep and lost to every one of them.
 The copy stays on the lane for a holder that claims later, and a read or a forward of the handover that failed is logged at Warn and nothing else, a read the process's own stop cancelled excepted: the route was reached when the stream acknowledged the keep, so the failure is not counted among the destinations a publish did not reach and nothing retries the handover, and what it costs is that issue's order at the holder, the copy reaching it only at the role's next claim, keep or the listener's sweep, behind every event the holder takes meanwhile.
-A holder that is only unresponsive is not kept for and stays pending, as it was before the kept lane: it keeps its claim and writes no new one, so a copy kept for it would wait for a claim that never comes, and the stream holds the forward for the session itself (dispatch://INFRA-392).
-Neither is a role token no claim can name (`roles.Valid`), which the listener's keep refuses too, and the holder that is the event's own actor, which is the echo skip.
+A holder that is only unresponsive is not kept for and stays pending (dispatch://INFRA-392).
+The outbox sends a pending event again until the holder answers and the forward reaches it, or until the holder's record passes the gone horizon and the copy is kept as it is for a gone holder.
+A copy kept for the unresponsive holder would wait one hour at most, and the end of that hour would tell nobody, since an outbox copy gets no dead letter.
+A role token no claim can name (`roles.Valid`), which the listener's keep refuses too, is not kept for either, and neither is the holder that is the event's own actor, which is the echo skip.
 Each retry line (`dispatch outbox: publish event`) names the destination by label and target (`publish owner topic "<subject>"` for the event's own topic, `publish route "role:reviewer"` or `publish route "session:<id>"` for the issue's route, `publish author route to "<session>"`, `publish follower route to "<session>"`, `publish claim change to "<session>"`);
 a core denial, which only a `role:` route can be since of the outbox's destinations only the role lanes take core transport (`bus.Client.UsesCoreTransport`), adds the subject and the server's violation.
 The listener's own core publishes (a role message's forward, a fanout exception) count as published only once a flush has shown the server accepted them (`bus.confirmFlushed` and `bus.confirmPublished` hold how), and one the server denies (`bus.ErrPublishDenied`) answers the API publish 403 opening with `publishDeniedPrefix`;
@@ -4503,7 +4550,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   every host drops a repeat of a dispatch key, and Dispatch's outbox keys are sequential, so a chosen `dispatch-<next id>` would make hosts drop the real event;
   Dispatch's outbox publishes to the bus and its sends take the listener's key, so it never sets one here), and an empty string is absent; without either key the key is minted.
   An optional `keep` means something for a role topic alone, and it defaults to true:
-  a role message no live holder can take is then kept on the role's kept lane and answered `202`, and the role's next holder is handed it.
+  a role message no live holder can take is then kept on the role's kept lane for one hour and answered `202`, and the next session to hold the role live in that hour is handed it.
   A sender that keeps a queue of its own, as the Legion daemon does, sends `keep: false`:
   nothing is kept, and the role's `404` below is the answer.
   A role topic's first resolution of its holder reads it as `GET /v1/roles/<role>` does, within the same 3.5 s budget:
@@ -4514,13 +4561,16 @@ Each item below names an endpoint and its method, then its contract, and an item
   one naming no holder, or JSON that is not a claim) is `500 {"error":"envoy: the claim record of role <role> is unreadable: <reason>"}` with no `Retry-After` (`writeRoleClaimUnreadable`), because the bus answered and a retry reads the same record.
 
 - A role topic answers `200` with the envelope and `holder`, the session that took it, once the stream stored the forward for that holder, and also, forwarding nothing, when `source_session` holds the role or the route had already stored this dedupe key for the holder.
-  It answers `202` with the envelope, `kept: true` and `kept_reason` (`unclaimed`) when no session holds the role at all and the listener kept the message on the role's kept lane;
-  the role's next claim is handed each kept copy once, in the order the copies were kept, and drops one the listener kept more than an hour before (the "Role messages use core NATS" rule).
-  It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` with the `holder`, its `holder_state` (`unresponsive` inside the gone horizon, `gone` past it), `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (`session.LastSeenMemory`, 2 hours), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
-  A later attempt gives that `unclaimed` 404 too, the claim being gone, but never `holder_lapsed`:
-  a holder it finds past the live window keeps its claim and fails that attempt alone.
-  Three cases keep nothing and are answered that way: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed.
-  A lapsed claim keeps nothing either, since it stands (`roleKeepable`): its holder keeps the role and writes no new claim for a drain to follow.
+  It answers `202` with the envelope, `kept: true`, `kept_reason` and `kept_until` when no live session holds the role and the listener kept the message on the role's kept lane.
+  `kept_reason` is `unclaimed` when no claim names the role, and `holder_lapsed` when the claim's holder is not live, which also carries the `holder`, its `holder_state` and its `last_seen`.
+  `kept_until` is the end of the copy's hour, in Unix milliseconds.
+  The next session to hold the role live before then is handed each kept copy once, in the order the copies were kept (the "Role messages use core NATS" rule).
+  At the end of the hour the listener drops a copy that no session took, and sends a dead letter to the sender's session when the publish named one, unless no walk had claimed the copy and its hour ended more than an hour before the walk that drops it (`roleKeepStaleAge`).
+  A repeat of the dedupe key while its first copy is still on the lane inside its hour stores nothing new, and is answered with that copy's `event_id` and `kept_until`.
+  It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` for a lapsed claim nothing was kept for, with the `holder`, its `holder_state` (`unresponsive` inside the gone horizon, `gone` past it), `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (`session.LastSeenMemory`, 2 hours), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
+  A later attempt that finds the role unclaimed is answered as the first resolution answers an unclaimed role, the claim being gone.
+  A later attempt never answers `holder_lapsed`: a holder it finds past the live window keeps its claim and fails that attempt alone.
+  Three cases keep nothing and are answered 404: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed.
 
 - A role topic's refusals, each keeping nothing.
   It answers `403 {"error":…,"reason":"capability","holder":…}`, forwarding nothing, when the holder does not advertise the payload's delivery mode or the mode cannot be read unambiguously, as `/v1/messages/send` refuses it.
@@ -5701,7 +5751,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The destination stays in the event's list marked waiting (`destination.waiting`), sends nothing, and the event is marked `mentionPending`, so `settleEvent` blocks it for `mentionPendingDelay` and it is read again (`resolveRoleHolders`).
   Without the keep's wait a comment whose role route is published in the same instant it was written - the outbox reads the event within a millisecond of the commit - is kept before either mention has settled, so `settledKeys` is empty, the copy carries no `mention_dedupe_keys` at all, and the mentioned session that claims the role next is handed it under the prefixed stored key beside the mention its own host already took, which is the duplicate the map above closes (`TestACopyKeptForARoleWaitsForTheCommentsLiveMentions`).
   Without the forward's wait the copy reaches a holder the comment mentions under `contracts.RoleForwardDedupePrefix` and `dispatch-<event id>` - a key that host never claimed, the holder's own mention being in no settled map while its only attempt is live - and that mention lands after it, so the host shows the comment twice (`TestAForwardToALiveHolderWaitsForThatHoldersOwnMention`); nothing else protects that holder, the comment's `suppressed_route_session_id` naming whoever the route resolved to when it was written and not whoever holds the role now.
-  A holder with no live mention of its own is forwarded to at once, and no session waits on a kept copy, which waits for the role's next claim however soon it is stored.
+  A holder with no live mention of its own is forwarded to at once, and no session waits on a kept copy, which waits for the role's next live holder however soon it is stored, and for one hour at most: the listener's walk drops it at the end of that hour and tells nobody (`.dispatch/architecture/dispatch-outbox.md`).
   For every wait but that one the bound is the attempt's own lease and nothing longer (`model.DeliveryClaimLapse`): past it a pending attempt reads resumed (`model.MentionResumedSQL`) or abandoned rather than live, no mention of the comment is live any more, and the copy is kept or forwarded with whatever `settledKeys` holds then - a partial map, or an empty one, under the prefixed event key for a forward - the copy's wait being bounded by the attempt and never the attempt's by the copy.
   The one exception is the forward above that carries no key for an unpinned mention: past the lease a copy under the event's own key would be a copy no key drops at that host, so that forward waits on until the attempt settles, is abandoned (`model.MentionAbandonedSQL`), or reaches the bound the next item sets, which closes the double `TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease` holds shut.
   The fallback pass's own keep waits the same way (`decideFallbackCopy`, `mentionDeliveries.anyLive`), and its row does not already say so: that row was written because the attempt of its own key had lapsed past that attempt's lease, which is no reading of the comment's other mentions, and a mention of another session can be live still - a Retry of it opens a fresh attempt at any time - so a copy kept then names that session in no `mention_dedupe_keys` and shows it the comment a second time when it claims the role (`TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions`).
@@ -5711,7 +5761,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   At the bound the copy is held as a `comment_fallback_copies` row of the role's own topic keyed by the holder, rather than published under the event's own key, which would re-open that double (`holdsTheForwardAsARow`, `destination.heldAsARow`): the event settles, the holder's later events of the issue flow again, and the row is published by the fallback pass only once no send of that mention is owed and under the holder's own settled mention's key where it has one, so the holder is shown the comment once (`decideFallbackCopy`, `roleFallbackKey`).
   What the bound gives up is the owner's order to that one holder for that one comment: a later event of the issue can reach it before the row does (`TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents`).
 
-- A waiting copy holds its destination key against the owner's later events, where a mentioned session's own held-back copy is left out of the event's list entirely (`planChains`, `destinations.leftTo`): nothing else delivers a role copy, a keep waiting for the role's next claim and a forward being the holder's one copy, so a later event let past it would reach the role's holder first - the kept lane is drained in stream order (`walkKeptRole` in `cmd/listener/role_keep.go`) and a forward goes straight to the holder's agent subject - while a mentioned session's copy is overtaken by nothing, the mention itself delivering that comment to that very session (`TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions`).
+- A waiting copy holds its destination key against the owner's later events, where a mentioned session's own held-back copy is left out of the event's list entirely (`planChains`, `destinations.leftTo`): nothing else delivers a role copy, a keep waiting up to its hour for the role's next live holder and a forward being the holder's one copy, so a later event let past it would reach the role's holder first - the kept lane is drained in stream order (`walkKeptRole` in `cmd/listener/role_keep.go`) and a forward goes straight to the holder's agent subject - while a mentioned session's copy is overtaken by nothing, the mention itself delivering that comment to that very session (`TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions`).
   The copy of a session the owner's own work names carries that same mark while an attempt that names no session yet, and whose role the read could name no holder for, may yet be pinned to it (`destinations.addWorkingSession`): nothing says that mention delivers the comment to this session rather than another, so it stays in the list and holds its key, and `planChains` reads a hold for the owner's later events alone (`by.event != event`), the role route to that same session being due in the very pass that copy waits in (`TestAWaitingCopyHoldsNoCopyOfItsOwnEvent`).
   A copy held as a `comment_fallback_copies` row carries no such mark, because it is out of the event's list altogether (`destinations.leftTo`'s resending arm): it holds nothing of the owner's back, and the owner's later events reach that session while the row waits.
   So a session the comment's own thread names, whose copy was first read past the attempt's lease, is shown that comment after those later events when the resend pins another session and the pass publishes the row - the comment out of order at that host, by as long as the resend and the pass take.
@@ -7256,7 +7306,7 @@ That person carries both claim shapes Dispatch reads:
 a Google Workspace account of the email's domain, and a Cognito pool user federated from `DevIdP`, a member of `--sign-in-group <group>`'s group when that flag is given.
 Dispatch accepts `DISPATCH_SIGNIN_DOMAIN` only under Google's issuer, so a local Dispatch signs in through this issuer with `DISPATCH_SIGNIN_GROUP` set to that group.
 Each `dev-broker.sh` run creates and drops its own isolated database, on the shared `dispatch-pg` container, which it boots through `dev-postgres.sh` (so a `dispatch-pg` off that script's pinned image is refused before anything is created), or, with `DEV_BROKER_POSTGRES_URL` set, through `psql` on the server that URL names (no Docker), so concurrent instances never see each other's enrollments, requests or grants, and listens on the port its own `cmd/broker` binds and logs (`BROKER_LISTEN_ADDR=127.0.0.1:0`), so concurrent instances can never collide on a shared port either.
-`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go` job.
+`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go-checks` job.
 `scripts/github-narrowing-check.sh` drives that stack end to end, as `airlock-check.sh` and `judge-check.sh` drive theirs: it starts `dev-broker.sh`, enrols one pod session of the registered service, runs checks k1, k2 and k4 of `dispatch://INFRA-2687` and k1 of `dispatch://INFRA-3099` — the narrowing the broker refuses before it opens the approval request a person must decide, and, as that one's control, the same request for a repository the stand-in reaches, approved on the broker's page as the person does — against it, and prints one PASS or FAIL line for each property with `all <n> assertions passed` as its last line.
 `DEV_BROKER_POSTGRES_URL` is required there, where `dev-broker.sh` takes it as an option, and a run without it exits 2 and starts nothing:
 one property is about what the broker itself wrote, so the script reads the broker's own database, putting the database name `dev-broker.sh` logged in place of that URL's path, which keeps every password out of what it parses.

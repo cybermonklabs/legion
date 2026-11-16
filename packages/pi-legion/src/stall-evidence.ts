@@ -578,9 +578,10 @@ export interface StallTellerDeps {
  * **One message per stuck call.** The detector tells a call's owner once, before the first step,
  * and a sweep that finds the same call still open carries it a step further without telling
  * anyone again; this teller holds that answer by call id as well, so a second telling of the same
- * call publishes nothing whatever reaches it. A publish the listener refuses, and a session with
- * Envoy off, leave a line in the log and `ownerTold` false: the ladder goes on, because an owner
- * that cannot be reached is no reason to leave a worker stuck.
+ * call publishes nothing whatever reaches it. A publish the listener refuses, a publish it keeps
+ * for the owner's role while no live session holds it, and a session with Envoy off, leave a
+ * line in the log and `ownerTold` false: the ladder goes on, because an owner that cannot be
+ * reached is no reason to leave a worker stuck.
  *
  * **The ladder stopping short is a second thing, and it is told too.** `tellStopped` is the exit
  * cap, an unreadable counter file and unwritten evidence — the cases where the worker will not
@@ -655,11 +656,12 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         payload: input.payload,
         idempotencyKey: input.key,
         sourceSessionID: claim.sessionID,
-        // This notice is sent once and never again, so a listener that keeps a copy for a role
-        // nobody holds would have this worker record an owner as told that no owner was handed
-        // it. The reminder sends `keep: false` for the same reason.
-        keep: false,
       });
+      // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
+      // role: the listener kept the notice on the role's kept lane for the next session that holds
+      // it live within the hour. That has told no owner yet, and this notice is sent once and never
+      // again, so the worker records no owner as told. The phase reminder's notice reads a kept
+      // answer the same way.
       if (answer.kept === true) {
         deps.log.warn("legion: the listener kept the stall notice; no owner has taken it", {
           ...context,
