@@ -926,17 +926,22 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
-	// ClaimEnded is told of each claim that has just ended — retired, failed or suspended — once
-	// the store holds the ended state (tellEnded): the daemon queues the publication of the issue's
-	// role sessions, and the session of the ended claim leaves the set. An end whose write the
-	// store refused tells no one, since the store still holds the claim live. Nil tells no one. It
-	// is called inside the machine's decision, so it returns at once and queues elsewhere, and a
-	// queue that fails there is logged and nothing else: such an end reaches Dispatch at the
-	// daemon's next boot only when that boot comes within seven days of the end, or else at the
-	// next ready or end of a claim on the same issue. In that time the ended session keeps its
-	// role on Dispatch, and a process whose stop failed can still write with the pane's Dispatch
-	// bearer.
-	ClaimEnded func(c Claim)
+	// RoleHolderChanged is told of the claim each time a claim write lands that changes the
+	// session the row names as the holder of the claim's role (roleHolderOf): the agent registers
+	// and so holds its role, the claim leaves a state that holds it — retired, failed, suspended,
+	// or launching again — or the row's session changes while it holds it. The daemon queues the
+	// publication of the issue's role sessions, which reads the live set from the store, so the
+	// change is told only once the store holds it (landed). It is told wherever the write lands:
+	// the decision's own write, or the repair that makes an owed write at the claim's next
+	// decision (repair), so an end whose own write the store refused is told when that owed write
+	// lands, and not before, since until then the store holds the claim live. Nil tells no one.
+	// It is called inside the machine's decision, so it returns at once and queues elsewhere, and
+	// a queue that fails there is logged and nothing else: such a change reaches Dispatch at the
+	// daemon's next boot only when that boot comes within seven days of it, or else at the next
+	// ready, end or other change of a claim on the same issue. In that time an ended session keeps
+	// its role on Dispatch, and a process whose stop failed can still write with the pane's
+	// Dispatch bearer.
+	RoleHolderChanged func(c Claim)
 	// SessionGone is told the Envoy session a claim recorded, once a probe has judged the agent
 	// process behind it gone (died), or a suspension has landed over a process a report found
 	// gone that no such judgement reached (suspendOverADeadProcess): the daemon's clean stop of
@@ -1399,6 +1404,10 @@ type Machine struct {
 	// ended them, for the daemon to read across a decision (TurnsEnded). It is atomic so that read
 	// never waits on mu.
 	turnsEnded atomic.Uint64
+	// holder is the session the claim's row named as the holder of its role at the last claim
+	// write that landed (roleHolderOf, landed): the row the machine was built from at first, which
+	// is the row the spawn route just stored or the boot read back.
+	holder string
 }
 
 type sending struct {
@@ -1432,6 +1441,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps:   deps,
 		log:    deps.Log.With("claim", string(c.Token)),
 		claim:  copyClaim(c),
+		holder: roleHolderOf(c),
 		timers: map[TimerKind]armed{},
 		stale:  map[string]bool{},
 	}
@@ -2920,21 +2930,39 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 		"launchFailures", m.claim.Budgets.LaunchFailures,
 		"deaths", m.claim.Budgets.Deaths, "promptFailures", m.claim.Budgets.PromptFailures,
 		"promptRetires", m.claim.Budgets.PromptRetires)
-	if err := m.durableWrite(ctx, StateFailed, m.persist); err != nil {
-		return err
-	}
-	m.tellEnded()
-	return nil
+	return m.durableWrite(ctx, StateFailed, m.persist)
 }
 
-// tellEnded tells the daemon that the claim has just ended (Deps.ClaimEnded). Each of the three
-// writes that end a claim calls it after its own write landed: fail, retire and suspended. A
-// suspension can let go of a process whose stop the runtime refused (suspended), and a failure
-// fails the claim when its suspension fails (fail), so the process of an ended claim may still be
-// running: what ends here is the claim's hold on its role, once the daemon's publication lands.
-func (m *Machine) tellEnded() {
-	if m.deps.ClaimEnded != nil {
-		m.deps.ClaimEnded(m.current())
+// roleHolderOf is the session the row of c names as the holder of c's role on its issue: the
+// session of a claim whose state has a registered agent with a running process
+// (HoldsCapability), "" for every other state. It is the row's part of what a role-holder
+// publication sends (record.Postgres.LiveRoleHolders, whose state list a test holds to
+// HoldsCapability): a live state and a session that is not "".
+func roleHolderOf(c Claim) string {
+	if !HoldsCapability(c.State) {
+		return ""
+	}
+	return c.Session
+}
+
+// landed is told each claim row a write of this machine has just landed, c the claim it wrote,
+// whichever decision wrote it: putClaim, putClaimAndDelivery (and so putClaimAndPending), the
+// direct write of a provider error's note, retirePending's write with its delete, and the
+// admission's (revive). It is the one place that says the row has changed, so it is where the
+// daemon is told when the row's role holder changed (Deps.RoleHolderChanged): an end whose own
+// write was owed is told by the write that makes it good, whoever makes it, and a write that
+// changes no holder tells nothing. A claim may end with its process still running — a suspension
+// can let go of a process whose stop the runtime refused (suspended), and a failure fails the
+// claim when its suspension fails (fail) — so what changes here is the claim's hold on its role,
+// once the daemon's publication lands.
+func (m *Machine) landed(c Claim) {
+	holder := roleHolderOf(c)
+	if holder == m.holder {
+		return
+	}
+	m.holder = holder
+	if m.deps.RoleHolderChanged != nil {
+		m.deps.RoleHolderChanged(c)
 	}
 }
 
@@ -3013,7 +3041,6 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 	} else if err := m.persist(ctx); err != nil {
 		return err
 	}
-	m.tellEnded()
 	// Every drop of a delivery answers the question a restart armed for it; a retired claim is
 	// answered nothing there (answerAskFirstAfterDrop).
 	return m.answerAskFirstAfterDrop(ctx)
@@ -3323,7 +3350,8 @@ func (m *Machine) write(ctx context.Context, call func(context.Context) error) e
 //
 // A write that lands settles a write the machine owed (settleOwedWrite): it wrote the claim as
 // the machine holds it, which is exactly what the repair would have written, so this write is
-// the repair, whichever decision made it.
+// the repair, whichever decision made it. It also tells the daemon when the row's role holder
+// changed (landed).
 func (m *Machine) putClaim(ctx context.Context) error {
 	c := m.stored()
 	// Published here as well as when the decision ends: a launch writes the claim before it waits
@@ -3333,6 +3361,7 @@ func (m *Machine) putClaim(ctx context.Context) error {
 		return err
 	}
 	m.settleOwedWrite("PutClaim")
+	m.landed(c)
 	return nil
 }
 
@@ -3354,9 +3383,15 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // (moveTelling), so its saved mark is takeBackPending's own; interrupted, whose delivery is the
 // task taken back under the id it takes only once the store has taken it, beside a claim whose
 // telling a let-go took back (untellInFlight); and putClaimAndPending, which passes memory's own
-// claim with memory's own pending delivery and is the call that settles both.
+// claim with memory's own pending delivery and is the call that settles both. Whatever claim it
+// wrote is the row now, so a write that landed tells the daemon when the row's role holder
+// changed (landed).
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
-	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
+	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) }); err != nil {
+		return err
+	}
+	m.landed(c)
+	return nil
 }
 
 // putClaimAndPending writes the claim as the machine holds it together with the delivery it holds

@@ -112,7 +112,12 @@ func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
-	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
+	c := m.stored()
+	err := m.deps.Store.PutClaimAndDelivery(ctx, c, *p)
+	if err == nil {
+		m.landed(c)
+	}
+	if err := m.saved(err); err != nil {
 		return err
 	}
 	after := promptRetryDelay(p.ProviderErrorRetries)

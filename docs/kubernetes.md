@@ -1970,19 +1970,20 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so it writes the list last on any database.
 A `role_holders_publish` row publishes the session of each live role of one issue to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
-The daemon queues one at the boot ready of a claim, at each end of a claim and at each boot.
+The daemon queues one at the boot ready of a claim, at each boot, and at each claim write that lands and changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
 The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
 A Dispatch without the route answers `404 NOT_FOUND`, and the daemon retries the row until Dispatch has the route.
 The daemon also retries a `5xx`.
-A `400` from the route is final: the daemon ends the row and logs one ERROR line with the issue and Dispatch's code, and the next ready or end of a claim on that issue queues a fresh publication.
+A `400` from the route is final: the daemon ends the row and logs one ERROR line with the issue and Dispatch's code, and the next ready, end or other change of a claim on that issue queues a fresh publication.
 
 **The session of an ended claim keeps its role for a time.**
 It keeps its role until the daemon's publication of the end lands.
-The daemon queues that publication on a goroutine, and it only logs a queue that fails.
+An end whose own write the store did not take is published only when the daemon makes that write, at the claim's next decision, because until then the store still holds the claim live.
+The daemon queues the publication on a goroutine, and it only logs a queue that fails.
 Such an end reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end, because the boot reads only the claims that are live or that changed in the last seven days.
-Otherwise it reaches Dispatch at the next ready or end of a claim on the same issue, and until then the session stays listed.
+Otherwise it reaches Dispatch at the next ready, end or other change of a claim on the same issue, and until then the session stays listed.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
 
 **Who can write the set.**

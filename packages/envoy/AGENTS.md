@@ -366,8 +366,9 @@ Each item below names a task and where its code is, then notes on it.
   A write locks the issue row (`for no key update`), so two writes of one issue store one whole set, the set of the one that finishes last, and each answers the set that it stored.
   The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
   `heldRole` is the read that a later release of the results route makes in its own write transaction.
+  The daemon publishes at each claim write that lands and changes the session that holds a role (`supervise`'s `Deps.RoleHolderChanged`), so an end whose own write the store did not take is published when the daemon makes that write at the claim's next decision.
   The session of an ended claim keeps its role until the daemon's next publication lands.
-  An end whose queue failed reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end, and otherwise at the next ready or end on the same issue.
+  A change whose queue failed reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of it, and otherwise at the next ready, end or other change of a claim on the same issue.
   In that time, a process whose stop failed can still write with the pane's Dispatch bearer.
 
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`

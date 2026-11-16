@@ -4385,17 +4385,22 @@ Each item below names a path with its method and identity, then its purpose.
   The write takes a closed issue, appends no issue event and notifies nobody.
   The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, in workflow order.
 
-  A write holds a lock of the issue row that a second write of the same issue waits for, so the stored set is always one whole set.
-  When two writes of one issue run at the same time, the one that finishes last wins.
-  The daemon sends one write of an issue at a time: its outbox holds one `role_holders_publish` row for each issue, and a lane runs the rows of its issue one at a time (`packages/daemon/internal/daemon/outbox_lanes.go`).
+  - **Two writes of one issue.**
+    A write holds a lock of the issue row that a second write of the same issue waits for, so the stored set is always one whole set.
+    When two writes of one issue run at the same time, the one that finishes last wins.
+    The daemon sends one write of an issue at a time: its outbox holds one `role_holders_publish` row for each issue, and a lane runs the rows of its issue one at a time (`packages/daemon/internal/daemon/outbox_lanes.go`).
+    A claim change while the daemon's write of that issue is in flight leaves the older set stored until that row's lease of 30 s ends, and the row then runs again with the live set.
 
-  The daemon publishes the set when a claim readies, when a claim ends and at each boot.
-  The session of an ended claim keeps its role until the next publication lands.
-  The daemon queues the publication of an end on a goroutine, and it only logs a queue that fails.
-  Such an end reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end.
-  Otherwise it reaches Dispatch at the next ready or end of a claim on the same issue, and until then the session stays listed.
-  In that time, a process whose stop failed can still write with the pane's Dispatch bearer, and its session keeps its role.
-  The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready or end of a claim on the issue queues a fresh publication of the live set.
+  - **When the daemon publishes.**
+    The daemon publishes the set when a claim readies, at each boot, and at each claim write that lands and changes the session that holds a role: the agent registers, or the claim retires, fails, is suspended or launches again.
+    An end whose own write the store did not take is told when the daemon makes that write, at the claim's next decision, and not before: until then the store still holds the claim live.
+    The session of an ended claim keeps its role until the next publication lands.
+    The daemon queues the publication on a goroutine, and it only logs a queue that fails.
+    Such a change reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of it.
+    Otherwise it reaches Dispatch at the next ready, end or other change of a claim on the same issue, and until then the session stays listed.
+    In that time, a process whose stop failed can still write with the pane's Dispatch bearer, and its session keeps its role.
+    The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready, end or other change of a claim on the issue queues a fresh publication of the live set.
+    A live claim whose session this route refuses stops each publication of its issue in that way, with one ERROR line each time, until that claim ends.
 
 - `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
 

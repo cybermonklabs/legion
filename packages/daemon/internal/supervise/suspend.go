@@ -308,11 +308,7 @@ func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend) erro
 func (m *Machine) suspended(ctx context.Context, by SuspendSource) error {
 	m.letGo(ctx, endSuspended(by))
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
-	if err := m.persist(ctx); err != nil {
-		return err
-	}
-	m.tellEnded()
-	return nil
+	return m.persist(ctx)
 }
 
 // suspendHeld runs the held suspension's stop. One the runtime refuses stays held and is tried

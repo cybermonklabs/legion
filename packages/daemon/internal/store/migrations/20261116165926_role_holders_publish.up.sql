@@ -3,9 +3,10 @@
 --
 -- Dispatch holds, per issue, the session that holds each Legion role (issue_role_holders). A later
 -- release of Dispatch takes the role of a result from that record. The daemon is the one party
--- that gives a session a role, so it writes the record: at a claim's boot ready, at each end of a
--- claim and at each boot (internal/daemon's roleHoldersChanged, claimEnded and
--- queueRoleHoldersPublish). Each is a row of this kind on the issue's board lane.
+-- that gives a session a role, so it writes the record: at a claim's boot ready, at each claim
+-- write that changes the session holding a role, an end among them, and at each boot
+-- (internal/daemon's roleHoldersChanged, claimHolderChanged and queueRoleHoldersPublish). Each is
+-- a row of this kind on the issue's board lane.
 --
 -- The check is one list, so the migration that sets it names every kind, as 20261114031356 did:
 -- that migration's twenty-four kinds, which are the kinds the daemon writes, and this one. Its

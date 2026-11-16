@@ -30,12 +30,15 @@ import (
 // it was (retry, whose failure record and budgets go there).
 //
 // The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
-// process, so its launch lets none go and records nothing of one (noEnd).
+// process, so its launch lets none go and records nothing of one (noEnd). The admission writes the
+// claim's row, so it tells the daemon when that row's role holder changed (landed), as every
+// claim write that lands does.
 func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
 		return err
 	}
+	m.landed(bound)
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {
 		admitted()

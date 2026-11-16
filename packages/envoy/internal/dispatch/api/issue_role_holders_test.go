@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/legionagents"
 )
@@ -374,5 +376,37 @@ func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
 		if got := field.Tag.Get("enum"); got != want {
 			t.Errorf("%T.Role names the roles %q, want %q", shape, got, want)
 		}
+	}
+}
+
+// The table's own check on role is a second copy of the six roles
+// (20261116163813_issue_role_holders). The route refuses a role legionagents.Roles does not name
+// before the write, so a seventh role added to Roles without a migration would pass the route and
+// meet the check, a 500. This reads the check the migrated database holds and compares its roles,
+// in order, with Roles.
+func TestTheRoleHoldersTableChecksTheLegionRoles(t *testing.T) {
+	_, database, _ := newTestServer(t, testServerOptions{})
+	rows, err := database.Pool.Query(context.Background(), `
+		select pg_get_constraintdef(c.oid)
+		from pg_constraint c
+		join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey)
+		where c.conrelid = 'issue_role_holders'::regclass and c.contype = 'c' and a.attname = 'role'
+	`)
+	if err != nil {
+		t.Fatalf("read the check on issue_role_holders.role: %v", err)
+	}
+	defs, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the check on issue_role_holders.role: %v", err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("issue_role_holders.role carries %d checks %q, want the one that names the roles", len(defs), defs)
+	}
+	named := []string{}
+	for _, match := range regexp.MustCompile(`'([^']*)'::text`).FindAllStringSubmatch(defs[0], -1) {
+		named = append(named, match[1])
+	}
+	if !slices.Equal(named, legionagents.Roles) {
+		t.Fatalf("the check %q names the roles %q, want legionagents.Roles %q", defs[0], named, legionagents.Roles)
 	}
 }

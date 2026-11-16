@@ -183,20 +183,21 @@ func recordingWakes(store record.Store) (projectRecords, func() int) {
 	}
 }
 
-// An end of a claim queues the publication of its issue (Deps.ClaimEnded, the workflow's
-// claimEnded), on a goroutine of its own, and wakes the board lane once the row commits. A second
-// end of the same issue queues no second row: the one row is made due again. A claim with no issue
-// and the controller have no role to publish.
-func TestAnEndedClaimQueuesItsIssue(t *testing.T) {
+// A claim whose role holder changed — here its end — queues the publication of its issue
+// (Deps.RoleHolderChanged, the workflow's claimHolderChanged), on a goroutine of its own, and
+// wakes the board lane once the row commits. A second change of the same issue queues no second
+// row: the one row is made due again. A claim with no issue and the controller have no role to
+// publish.
+func TestAClaimWhoseRoleHolderChangedQueuesItsIssue(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records, wakes := recordingWakes(record.NewStore())
 	w := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject, log: quietLogger()}
 	tester := supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester}
 
-	w.claimEnded(supervise.Claim{Token: claim.ControllerToken("legion"), Project: "legion", Role: claim.RoleController})
-	w.claimEnded(tester)
+	w.claimHolderChanged(supervise.Claim{Token: claim.ControllerToken("legion"), Project: "legion", Role: claim.RoleController})
+	w.claimHolderChanged(tester)
 	testwait.Eventually(t, "the ended claim's publication to commit and wake its lane", func() bool { return wakes() == 1 })
-	w.claimEnded(tester)
+	w.claimHolderChanged(tester)
 	testwait.Eventually(t, "the second end's publication to commit and wake its lane", func() bool { return wakes() == 2 })
 
 	issues, rows := queuedRoleHolders(t, pool)
@@ -280,10 +281,10 @@ func (h warnings) logged() []string {
 	return slices.Clone(*h.messages)
 }
 
-// claimEnded only logs a queue that fails, since it runs beside the machine's decision and has no
-// caller to refuse. So the end of such a claim reaches Dispatch at the next boot alone, or at the
-// next ready or end on the same issue: the boot pass publishes it, because the claim changed less
-// than seven days ago.
+// claimHolderChanged only logs a queue that fails, since it runs beside the machine's decision and
+// has no caller to refuse. So the end of such a claim reaches Dispatch at the next boot alone, or
+// at the next ready, end or other change on the same issue: the boot pass publishes it, because
+// the claim changed less than seven days ago.
 func TestBootPublishesAnEndWhoseQueueFailed(t *testing.T) {
 	r := newRoleHoldersRig(t)
 	token := r.seedClaim("LEGION-4", claim.RoleTester, "ses-4", supervise.StateReady, time.Minute)
@@ -292,7 +293,7 @@ func TestBootPublishesAnEndWhoseQueueFailed(t *testing.T) {
 	w := &workflowRuntime{pool: r.pool, records: failing, dispatchProject: gatePublishProject, log: slog.New(warned)}
 	r.moveClaim(token, supervise.StateRetired)
 
-	w.claimEnded(supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-4", Issue: "LEGION-4", Role: claim.RoleTester})
+	w.claimHolderChanged(supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-4", Issue: "LEGION-4", Role: claim.RoleTester})
 	testwait.Eventually(t, "the refused queue to be logged", func() bool { return len(warned.logged()) == 1 })
 	if _, rows := queuedRoleHolders(t, r.pool); rows != 0 || wakes() != 0 {
 		t.Fatalf("a queue the store refused left %d rows and %d wakes, want none", rows, wakes())

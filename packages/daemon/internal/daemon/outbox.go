@@ -389,8 +389,9 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told, and the line is what says the row ended. Two refusals end it
 		// (permanentRefusal): an issue Dispatch does not know, a WARN, since nothing of this
 		// daemon is wrong; and a 400 that refuses the set, an ERROR, since this daemon read a set
-		// from its own claims that Dispatch will never take. The issue's next ready or end of a
-		// claim queues a fresh publication of the live set (roleHoldersChanged, claimEnded).
+		// from its own claims that Dispatch will never take. The issue's next ready, end or other
+		// change of a claim queues a fresh publication of the live set (roleHoldersChanged,
+		// claimHolderChanged).
 		// permanentRefusal ended the row only on a coded *dispatch.Error, so refusal is set.
 		var refusal *dispatch.Error
 		errors.As(cause, &refusal)
