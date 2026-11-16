@@ -4698,6 +4698,8 @@ A link to a record of Dispatch, and the name of an incident, a pull request or a
   The finding of each rule lists the forms that it reads.
 
 A definition of a term has one sentence, and a term has one definition.
+An abbreviation with a stop before a space, such as `vs.`, `approx.` or `etc.`, ends a sentence.
+So a definition that holds one has two sentences and breaks the form: write the word out, such as `against` for `vs.`.
 A term line is `- **<term>**: <definition>` under a heading `Terms`, at any level.
 Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
 Its finding names the line.
@@ -4709,6 +4711,7 @@ Such a line in another place breaks the form (rule `term-second-definition`, kin
 It also breaks the form when another line of that form in the document names the same term.
 So Dispatch also refuses a list item in prose that has the form of a term line and names a term of the list.
 Its finding tells the writer to change the form of the line when the line is no definition.
+A line of that form inside a decision block is a definition too, so an answer that writes one writes a definition.
 After NFKC_Casefold, the name of a term holds only the letters a to z, the digits 0 to 9, spaces and hyphens.
 A name with another character breaks the form (rule `term-name`), and the finding names each such character with its code point.
 So Dispatch refuses `İnbox`, a name with a Cyrillic `а`, `<statement>` and `limit's wait`, and a full-width letter or a ligature folds to its plain letters.
