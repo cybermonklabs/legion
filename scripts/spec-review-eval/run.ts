@@ -394,14 +394,21 @@ export function blockIds(markdown: string): string[] {
 /**
  * The term names of the `- **term**: definition` lines under a heading `Terms`, with `-`, `*` or
  * `+`, read as specform.ExtractDocument reads them: the section ends at the next heading of its
- * level or above, and no line of a code fence counts, a heading among them.
+ * level or above, and no line of a code fence counts, a heading among them. No line of a
+ * requirement or a check block counts either: it runs to a line of at least as many colons alone,
+ * and a term line in it adds no term. A line of another typed block counts as any other line.
  */
 export function termNames(markdown: string): string[] {
   const names: string[] = [];
   let level = 0;
   let fence = "";
+  let block = 0;
   for (const line of markdown.split("\n")) {
     const trimmed = line.trim();
+    if (block > 0) {
+      if (/^:+$/.test(trimmed) && trimmed.length >= block) block = 0;
+      continue;
+    }
     if (fence !== "") {
       if (trimmed.startsWith(fence) && /^([`~])\1*$/.test(trimmed)) fence = "";
       continue;
@@ -409,6 +416,11 @@ export function termNames(markdown: string): string[] {
     const opening = /^(`{3,}|~{3,})/.exec(trimmed);
     if (opening !== null) {
       fence = opening[1] ?? "";
+      continue;
+    }
+    const typed = /^(:{3,})(?:requirement|check)\{/.exec(trimmed);
+    if (typed !== null) {
+      block = (typed[1] ?? "").length;
       continue;
     }
     const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(trimmed);
