@@ -40,8 +40,15 @@ import {
   removalIsOffered,
 } from "./DocumentWayBack";
 
-export function artifactVersionUrl(artifactID: string, version: number): string {
-  return `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;
+export function artifactVersionUrl(
+  artifactID: string,
+  version: number,
+  // Links only: the server answers no-cache there, and a document as its Markdown file;
+  // pictures keep the year-long cache.
+  options: { download?: boolean } = {}
+): string {
+  const url = `/api/v1/artifacts/${encodeURIComponent(artifactID)}/versions/${version}`;
+  return options.download === true ? `${url}?download=true` : url;
 }
 
 export function formatArtifactBytes(bytes: number | undefined): string {
@@ -287,14 +294,13 @@ export function ArtifactBlobView({
     );
   }
 
-  const download = artifactVersionUrl(artifact.id, selected.number);
   return (
     <section aria-label={`${artifact.name} version ${selected.number}`} className="space-y-3">
       {artifact.kind === "image" ? (
         <img
           alt={`${artifact.name} version ${selected.number}`}
           className={`h-auto w-full rounded-lg border ${borderDefault}`}
-          src={download}
+          src={artifactVersionUrl(artifact.id, selected.number)}
         />
       ) : null}
       <dl className="grid grid-cols-2 gap-3 text-sm">
@@ -315,7 +321,7 @@ export function ArtifactBlobView({
       <a
         className={`inline-flex min-h-11 items-center font-medium underline ${linkText} ${linkHoverText}`}
         download=""
-        href={download}
+        href={artifactVersionUrl(artifact.id, selected.number, { download: true })}
       >
         Download version {selected.number}
       </a>

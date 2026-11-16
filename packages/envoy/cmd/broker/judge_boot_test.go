@@ -78,16 +78,9 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 			"BROKER_JUDGE_DISPATCH_URL=" + dispatch.URL,
 			"BROKER_JUDGE_DISPATCH_TOKEN_FILE=" + judgeTokenFile(t),
 		}})
-		log := broker.Await(t, "model judge")
-		for _, want := range []string{
-			"model judge state=on",
-			"model=" + testJudgeModel,
-			"protocol=anthropic-messages",
-			"dispatch=" + dispatch.URL,
-		} {
-			if !strings.Contains(log, want) {
-				t.Fatalf("the boot line does not carry %q:\n%s", want, log)
-			}
+		record := broker.AwaitRecord(t, "model judge", nil)
+		if want := (map[string]any{"state": "on", "model": testJudgeModel, "protocol": "anthropic-messages", "dispatch": dispatch.URL}); !carries(record, want) {
+			t.Fatalf("the boot line %v does not carry %v", record, want)
 		}
 		if calls := model.calls.Load() + dispatch.calls.Load(); calls != 0 {
 			t.Fatalf("booting the judge made %d calls to the model and Dispatch; want none until a request is judged", calls)
@@ -104,13 +97,14 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 			"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
 		}})
-		log := broker.Await(t, "model judge")
-		if !strings.Contains(log, "model judge state=off") {
-			t.Fatalf("the boot log does not report the judge off:\n%s", log)
+		record := broker.AwaitRecord(t, "model judge", nil)
+		if record["state"] != "off" {
+			t.Fatalf("the boot line %v does not report the judge off", record)
 		}
+		detail, _ := record["detail"].(string)
 		for _, setting := range config.JudgeSettings {
-			if !strings.Contains(log, setting) {
-				t.Fatalf("the off line does not name %s, one of the settings that turn the judge on:\n%s", setting, log)
+			if !strings.Contains(detail, setting) {
+				t.Fatalf("the off line's detail does not name %s, one of the settings that turn the judge on: %v", setting, record)
 			}
 		}
 	})

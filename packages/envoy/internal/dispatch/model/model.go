@@ -1245,6 +1245,15 @@ const (
 	CommitUnknown     = "unknown"
 )
 
+// CurrencyCurrent and CurrencyOlder are the two words of CheckResult.Currency, the
+// compatibility field the results read answers for `dispatch` clients older than pi-envoy
+// 17.1.0. Those clients print the field beside each result and read nothing of the comparison
+// (api/results_currency.go).
+const (
+	CurrencyCurrent = "current"
+	CurrencyOlder   = "older"
+)
+
 // PassStandsYes, PassStandsNo and PassStandsUnknown answer the gate's question for one check:
 // whether a pass of it stands at what the check compared its results with.
 const (
@@ -1337,6 +1346,11 @@ type CheckResult struct {
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
+	// Currency is a compatibility field, derived from the three above only on GET
+	// /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy
+	// 17.1.0. It is left out wherever neither word is true (api/results_currency.go), and
+	// removed once no client older than pi-envoy 17.1.0 is in use.
+	Currency string `json:"currency,omitempty" enum:"current,older" description:"A compatibility field answered only by GET /api/v1/issues/{key}/results with no ?at=, for dispatch clients older than pi-envoy 17.1.0, which print it beside each result and read none of commit_stands, check_words_moved and retracted; read those instead. current: commit_stands is at_basis, check_words_moved is false and no retraction stands. older: commit_stands is other_commit, or it is at_basis and check_words_moved is true. Left out otherwise (commit_stands unknown, a retracted result at its basis under the check's words now). It is removed once no client older than pi-envoy 17.1.0 is in use."`
 }
 
 // CheckResultRetraction is the record that says one stored result is wrong
@@ -1584,8 +1598,7 @@ type AnchorPosition struct {
 	AnchorBlock *BlockPath `json:"anchor_block,omitempty"`
 	// AnchorBlockError is why AnchorBlock is absent when the document could not be read: the code
 	// the API answers that error with elsewhere (DOC_SERVICE_UNAVAILABLE, DOC_SCHEMA,
-	// DOCUMENT_UNLOADABLE, INTERNAL);
-	// empty otherwise.
+	// DOC_NEWER_CONTENT, DOCUMENT_UNLOADABLE, INTERNAL); empty otherwise.
 	AnchorBlockError string `json:"anchor_block_error,omitempty"`
 }
 
@@ -1901,13 +1914,18 @@ type AskEditEventPayload struct {
 	ReferenceChangesPayload
 	Previous AskEditPrevious `json:"previous"`
 	EditedBy Actor           `json:"edited_by"`
-	// Quiet marks a version move of an approval request that an earlier version already moved
-	// since it was opened or last handed back (requested_version below the version it named): it
-	// changes only the version the request names, so like a human's unnamed artifact.version it
-	// wakes nobody (events.Broker.Notify) and reaches no follower (the outbox's follower routes),
-	// while the event log and the event feed carry it as they carry every event. The first move
-	// after an opening or a hand-back is not quiet, even when a thread reply left the request
-	// waiting on its agent.
+	// Quiet marks either of two version moves of an approval request: a move of a request
+	// that an earlier version already moved since it was opened or last handed back
+	// (requested_version below the version it named), which changes only the version the request
+	// names, and a settlement's move that keeps the request waiting on the human because the new
+	// version, which a settlement wrote, holds byte for byte the text of the version the request
+	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
+	// version a route writes moves the request to its agent whatever text it holds. Like a human's
+	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
+	// follower (the outbox's follower routes), while the event log and the event feed carry it as
+	// they carry every event. The first move after an opening or a hand-back is not quiet, even
+	// when a thread reply left the request waiting on its agent, unless it keeps the request
+	// waiting on the human.
 	Quiet bool `json:"quiet,omitempty"`
 }
 
@@ -2215,6 +2233,14 @@ type AskResolution struct {
 // (sessionanswers) - and api imports the other two, so neither can import api.
 const AskResolutionDeclined = "declined"
 
+// AskResolutionWithdrawn is the AskResolution kind an issue's close records on each open ask it
+// withdraws. Only the server writes it (the resolve route admits retracted and resolved alone), so
+// the kind alone tells a close's withdrawal: the issue's reopen restores every ask resolved so,
+// and a settlement of the closed issue's document treats none as decided, since the reopen undoes
+// it. It is a constant of this package because the close and the reopen (api) and that settlement
+// (docs) read it, and api imports docs, so docs cannot import api.
+const AskResolutionWithdrawn = "withdrawn"
+
 // DeclineDispatchWords is what Dispatch writes beside a person's note when they decline to
 // answer: the four sentences the asking agent reads to decide what to do next.
 const DeclineDispatchWords = "The person chose not to answer this question. " +
@@ -2261,6 +2287,35 @@ const DeliveryClaimLapse = time.Minute
 // DeliveryClaimLapseInterval is DeliveryClaimLapse as a Postgres interval literal in whole
 // seconds, for SQL that compares a delivery's claimed_at or created_at against now().
 var DeliveryClaimLapseInterval = fmt.Sprintf("interval '%d seconds'", int64(DeliveryClaimLapse/time.Second))
+
+// The four states a delivery attempt row and its receipt carry (migration 20261114081434),
+// which CommentDelivery.State and MessageDelivery.State document. `pending` is the row a claim
+// transaction commits before its send; `sent` and `queued` are both "the listener took it", and
+// `failed` is everything else. They differ in one thing: a sent message is with a running
+// session now, and a queued one waits in that session's own consumer until it runs again,
+// within the 72 hours the stream keeps it. Every reader that asks whether the listener took a
+// message counts the two alike - the outbox publishes no second copy of a comment
+// (outbox.mentionDeliveryQuery), a later attempt that took the comment supersedes an earlier one
+// (MentionAttemptDeliveredLaterSQL), the delivery sweep resumes neither and settles neither
+// failed, the session's answers list holds both (sessionanswers.query), and the session may
+// accept either as its own turn (api.acceptDelivery).
+const (
+	DeliveryStatePending = "pending"
+	DeliveryStateSent    = "sent"
+	DeliveryStateQueued  = "queued"
+	DeliveryStateFailed  = "failed"
+)
+
+// DeliveryTakenStatesSQL is the two states that mean the listener took the message, as the SQL
+// list an `in` test over a comment_deliveries or message_deliveries state column takes, so every
+// query that asks it reads one definition rather than each spelling the pair.
+const DeliveryTakenStatesSQL = "('" + DeliveryStateSent + "', '" + DeliveryStateQueued + "')"
+
+// DeliveryTaken reports whether state is one of the two that mean the listener took the message,
+// the Go reading of DeliveryTakenStatesSQL.
+func DeliveryTaken(state string) bool {
+	return state == DeliveryStateSent || state == DeliveryStateQueued
+}
 
 // MentionSweepWindow is how far back the delivery sweep resumes an owed mention attempt
 // (OwedMentionAttemptSQL): the window in which a repeat of a send is still recognised as a
@@ -2340,14 +2395,14 @@ func MentionAttemptStandsSQL(row string) string {
 	return `(not ` + mentionLaterAttemptSQL(row, `later.state <> 'failed'`) + `)`
 }
 
-// MentionAttemptDeliveredLaterSQL is true of the comment_deliveries row named row when a later
-// attempt of its (comment, target) was sent: that attempt handed the recipient the comment, so
-// this one is superseded and nothing may send it. Whichever of the two senders comes second
-// settles it (supersedeCommentDelivery in internal/dispatch/api), and the delivery sweep settles
-// every such attempt left pending and claim-free (settleSupersededMentions), so none stays
-// pending for good.
+// MentionAttemptDeliveredLaterSQL is true of the comment_deliveries row named row when the
+// listener took a later attempt of its (comment, target) - sent, or queued for a session that is
+// not running: that attempt handed the recipient the comment, so this one is superseded and
+// nothing may send it. Whichever of the two senders comes second settles it
+// (supersedeCommentDelivery in internal/dispatch/api), and the delivery sweep settles every such
+// attempt left pending and claim-free (settleSupersededMentions), so none stays pending for good.
 func MentionAttemptDeliveredLaterSQL(row string) string {
-	return mentionLaterAttemptSQL(row, `later.state = 'sent'`)
+	return mentionLaterAttemptSQL(row, `later.state in `+DeliveryTakenStatesSQL)
 }
 
 // MentionAttemptIsTheMentionsSQL is true of a pending attempt the delivery sweep owes, or will owe
@@ -2468,7 +2523,12 @@ type CommentDelivery struct {
 	// Duplicate reports that the stream already held this message when the attempt was sent: an
 	// earlier attempt landed, so this one is a repeat the recipient is not handed again
 	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil.
-	Duplicate    bool      `json:"duplicate"`
+	Duplicate bool `json:"duplicate"`
+	// State is "pending" before the send, then "sent" for a mention the listener handed to a
+	// running session, "queued" for one it stored for a session it knows that is not running
+	// and hands over when that session runs again, or "failed". A reader that asks whether the
+	// listener took the message counts "sent" and "queued" alike (api/envoy_resolve.go,
+	// deliveryOutcome).
 	State        string    `json:"state"`
 	Error        *string   `json:"error"`
 	ResolveError *string   `json:"resolve_error"`
@@ -2487,7 +2547,11 @@ type CommentDeliveryEventPayload struct {
 	Attempt   int     `json:"attempt"`
 	Delivery  string  `json:"delivery"`
 	SessionID *string `json:"session_id"`
-	State     string  `json:"state"`
+	// State is how the attempt settled, which the dashboard renders verbatim: "sent", "queued"
+	// or "failed" (CommentDelivery.State). A receipt carries no "pending": the sender that
+	// appends it settles the row in the statement that appends it (contracts'
+	// SettledDeliveryState, and deliveryOutcome, which never answers pending).
+	State string `json:"state"`
 	// Duplicate reports that the stream already held this message: an earlier attempt landed, so
 	// this one is a repeat the mentioned session is not handed again.
 	Duplicate bool    `json:"duplicate,omitempty"`
@@ -2809,7 +2873,12 @@ type MessageDelivery struct {
 	// earlier attempt landed, so this one is a repeat the recipient is not handed again
 	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil: the envelope
 	// this send minted is the one JetStream discarded.
-	Duplicate bool      `json:"duplicate"`
+	Duplicate bool `json:"duplicate"`
+	// State is "pending" before the send, then "sent" for a message the listener handed to a
+	// running session, "queued" for one it stored for a session it knows that is not running
+	// and hands over when that session runs again, or "failed". A reader that asks whether the
+	// listener took the message counts "sent" and "queued" alike (api/envoy_resolve.go,
+	// deliveryOutcome).
 	State     string    `json:"state"`
 	Error     *string   `json:"error"`
 	ReplyID   *string   `json:"reply_id"`
@@ -2823,6 +2892,25 @@ type MessageDelivery struct {
 	// session's own user turn. At most one attempt of a message is ever accepted.
 	AcceptedAt *time.Time `json:"accepted_at"`
 	AcceptedAs *string    `json:"accepted_as"`
+}
+
+// connectedOnlyMark is the one value message_deliveries.connected_only holds beside null
+// (migration 20261114081434): the attempt's sends ask the listener for a session that is
+// running now. Null is every other attempt, and every attempt a release older than the column
+// wrote.
+const connectedOnlyMark = "connected_only"
+
+// ConnectedOnlySQL reads message_deliveries.connected_only as a bool, for a select list or a
+// returning clause over that table.
+const ConnectedOnlySQL = "(connected_only is not null)"
+
+// ConnectedOnlyColumn is the message_deliveries.connected_only value a send that asked
+// connectedOnly stores: connectedOnlyMark, or null.
+func ConnectedOnlyColumn(connectedOnly bool) *string {
+	if !connectedOnly {
+		return nil
+	}
+	return new(connectedOnlyMark)
 }
 
 // MessageEventPayload wraps a Message with the reply target's body preview (first 160
@@ -2902,7 +2990,11 @@ type MessageDeliveryEventPayload struct {
 	SessionID string `json:"session_id"`
 	Target    string `json:"target"`
 	Title     string `json:"title"`
-	State     string `json:"state"`
+	// State is how the attempt settled, which the dashboard renders verbatim: "sent", "queued"
+	// or "failed" (MessageDelivery.State). A receipt carries no "pending": the sender that
+	// appends it settles the row in the statement that appends it (contracts'
+	// SettledDeliveryState, and deliveryOutcome, which never answers pending).
+	State string `json:"state"`
 	// Duplicate reports that the stream already held this message, so the recipient gained
 	// nothing from this attempt. Absent means false.
 	Duplicate bool   `json:"duplicate,omitempty"`
@@ -3075,10 +3167,13 @@ type GraphEdge struct {
 	SourceSeq *int64        `json:"source_seq"`
 }
 
-// GraphReferences is the read of one node's edges, newest first.
+// GraphReferences is the read of one node's edges, newest first. UnknownKinds lists the edge kinds
+// the read named that this build does not emit (a newer build's, during a release); it has no
+// edges of them.
 type GraphReferences struct {
-	Node  GraphNode   `json:"node"`
-	Edges []GraphEdge `json:"edges"`
+	Node         GraphNode   `json:"node"`
+	Edges        []GraphEdge `json:"edges"`
+	UnknownKinds []string    `json:"unknown_kinds,omitempty"`
 }
 
 // BlockLink is one link from a block of one document to a block of a document: its edge kind,

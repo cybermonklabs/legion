@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -712,6 +713,104 @@ func TestEverySessionReadAsksForTheUnresponsiveSessionsToo(t *testing.T) {
 	}
 	if holder.SessionID != "s1" || holder.State != StateUnresponsive || holder.LastSeen != 42 {
 		t.Fatalf("holder = %#v, want session s1 unresponsive with its last_seen", holder)
+	}
+}
+
+// Only the delivery's read asks for stopped sessions (INFRA-626). The registry route answers a
+// session it knows by its record alone 200 with state stopped when the include list names
+// stopped, and 404 otherwise; Session, Sessions and Role keep the list without it, so an issue
+// claim's holder, the route roster and role resolution never read a stopped session as one that
+// holds anything, while SessionIncludingStopped finds it, with what its record holds.
+func TestOnlyTheDeliveryReadAsksForStoppedSessions(t *testing.T) {
+	var mu sync.Mutex
+	queries := map[string][]string{}
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		queries[r.URL.Path] = append(queries[r.URL.Path], r.URL.RawQuery)
+		mu.Unlock()
+		switch {
+		case r.URL.Path == "/v1/sessions":
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/v1/registry/s1" && r.URL.Query().Get("include") == "unresponsive,stopped":
+			_, _ = w.Write([]byte(`{"session_id":"s1","state":"stopped","last_seen":42,"title":"planner","capabilities":["steer"],"topics":["t"]}`))
+		case r.URL.Path == "/v1/roles/legion-planner":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live holder for role legion-planner"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session s1","state":"gone"}`))
+		}
+	}))
+	defer listener.Close()
+	client := New(listener.URL)
+	ctx := context.Background()
+
+	if sessions, err := client.Sessions(ctx); err != nil || len(sessions) != 0 {
+		t.Fatalf("Sessions = %#v, %v; want none", sessions, err)
+	}
+	if _, err := client.Session(ctx, "s1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Session(s1) error = %v, want ErrNotFound: a stopped session is no registry entry", err)
+	}
+	if _, err := client.Role(ctx, "legion-planner"); err == nil {
+		t.Fatal("Role resolved a holder for a role nobody running holds")
+	}
+	stopped, err := client.SessionIncludingStopped(ctx, "s1")
+	if err != nil {
+		t.Fatalf("SessionIncludingStopped(s1): %v", err)
+	}
+	if stopped.SessionID != "s1" || stopped.State != StateStopped || stopped.LastSeen != 42 || stopped.Title != "planner" ||
+		!reflect.DeepEqual(stopped.Capabilities, []string{"steer"}) || stopped.Roles == nil || len(stopped.Roles) != 0 {
+		t.Fatalf("SessionIncludingStopped(s1) = %#v, want the record: stopped, last seen 42, planner, steer, no roles", stopped)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string][]string{
+		"/v1/sessions":             {"include=unresponsive"},
+		"/v1/registry/s1":          {"include=unresponsive", "include=unresponsive,stopped"},
+		"/v1/roles/legion-planner": {"include=unresponsive"},
+	}
+	if !reflect.DeepEqual(queries, want) {
+		t.Fatalf("queries = %#v, want %#v", queries, want)
+	}
+}
+
+// A send's answer says what the listener did with the message - handed to a connected session,
+// or stored for a stopped one - and a send asks connected_only only when its input sets it, so
+// every other send's body leaves the field out.
+func TestSendCarriesTheListenersStateAndAsksConnectedOnlyWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		connectedOnly bool
+		answer        string
+		wantState     string
+	}{
+		{name: "a send to a stopped session", answer: `{"event_id":"e1","recipient":"s1","recipient_state":"gone","state":"stopped","last_seen":42}`, wantState: SendStateStopped},
+		{name: "a switch to a connected session", connectedOnly: true, answer: `{"event_id":"e2","recipient":"s1","recipient_state":"live","state":"connected"}`, wantState: SendStateConnected},
+		{name: "a listener that predates the field", answer: `{"event_id":"e3","recipient":"s1"}`, wantState: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode the send: %v", err)
+				}
+				if asked, present := body["connected_only"]; present != tc.connectedOnly || (present && asked != true) {
+					t.Errorf("connected_only in the body = %v (present %v), want present only when set", asked, present)
+				}
+				_, _ = w.Write([]byte(tc.answer))
+			}))
+			defer listener.Close()
+			result, err := New(listener.URL).Send(context.Background(), SendInput{
+				TargetSession: "s1", Message: "body", IdempotencyKey: "k", ConnectedOnly: tc.connectedOnly,
+			})
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if result.State != tc.wantState {
+				t.Fatalf("state = %q, want %q", result.State, tc.wantState)
+			}
+		})
 	}
 }
 

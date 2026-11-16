@@ -37,12 +37,17 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	logs := &bytes.Buffer{}
+	// withRoleClaimDrain, because a registration that makes its session live again hands that
+	// session the kept lane of each role whose claim record it read for it (runKeptRoleDrain),
+	// and the first registration of every holder here is one: the rig's session cache has never
+	// seen it.
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)})
 	return &roleClaimRenewalRig{
 		t:         t,
 		registry:  registry,
 		roleKV:    registryRoleKV(t, registry),
 		logs:      logs,
-		subscribe: subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.NewWithWriter("test", logs)),
+		subscribe: subscribeHandler(deps, "test-machine", logging.NewWithWriter("test", logs)),
 	}
 }
 

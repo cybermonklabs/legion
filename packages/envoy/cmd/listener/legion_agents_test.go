@@ -383,7 +383,7 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 		"$JS.API.CONSUMER.*."+bucket, "$JS.API.CONSUMER.*."+bucket+".>",
 		"$JS.API.DIRECT.GET."+bucket+".>", "$KV."+bus.LegionAgentBucket+".>",
 	), []string{"-js"}, false)
-	uri = strings.Replace(uri, "nats://", "nats://listener:listener@", 1)
+	uri = asListenerUser(t, uri)
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "no-registry-grant")
 	listener.waitHealthy(t)
 

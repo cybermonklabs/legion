@@ -83,17 +83,19 @@ const NON_EVENT_PAYLOAD_TYPES = [
 /**
  * The payload field types that stay a closed list's own alias rather than `z.output` of a
  * schema: a schema spells such a field `z.enum(THE_LIST)`, and the type beside `THE_LIST` is
- * what the field produces. Seven are expected, and an eighth means a list grew a schema-derived
+ * what the field produces. Nine are expected, and a tenth means a list grew a schema-derived
  * type beside the alias, or a payload took a field whose values nobody closed.
  */
 const CONSTANT_LIST_TYPES = [
   "AskTurn",
   "AskUrgency",
+  "DeliveryAttemptState",
   "DeliveryCapability",
   "DispatchScope",
   "GatedStep",
   "IssueComponentsMode",
   "MessageDeliveryMode",
+  "SettledDeliveryState",
 ];
 
 /**

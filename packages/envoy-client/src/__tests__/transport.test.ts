@@ -536,6 +536,114 @@ describe("EnvoyClient", () => {
     });
   });
 
+  test("a send reads the target's state", async () => {
+    const envelope = {
+      event_id: "event-stopped",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-stopped",
+      source_session: "ses_sender",
+      topic: "notifications.agent.ses_target",
+      dedupe_key: "agent.ses_target.event-stopped",
+      issued_at: 1,
+      payload_summary: "hello",
+      trace_id: "trace-stopped",
+      recipient: "ses_target",
+    };
+    const recorded = recordFetch([
+      // A session with no entry but a record: `recipient_state` keeps the registry's three
+      // values, and `state` beside it says the target is stopped.
+      jsonResponse({
+        ...envelope,
+        recipient_state: "gone",
+        state: "stopped",
+        last_seen: 1_762_075_200_000,
+      }),
+      jsonResponse({ ...envelope, recipient_state: "live", state: "connected" }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const stopped = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hello",
+    });
+    const connected = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hello",
+    });
+
+    expect(stopped).toMatchObject({
+      recipientState: "gone",
+      state: "stopped",
+      lastSeen: 1_762_075_200_000,
+    });
+    expect(connected.recipientState).toBe("live");
+    expect(connected.state).toBe("connected");
+    expect(connected.lastSeen).toBeUndefined();
+  });
+
+  test("a send a listener of an earlier release answers no state for reads as connected", async () => {
+    const recorded = recordFetch([
+      jsonResponse({
+        event_id: "event-stateless",
+        source: "agent",
+        source_event_id: "agent.ses_sender.event-stateless",
+        source_session: "ses_sender",
+        topic: "notifications.agent.ses_target",
+        dedupe_key: "agent.ses_target.event-stateless",
+        issued_at: 1,
+        payload_summary: "hello",
+        trace_id: "trace-stateless",
+        recipient: "ses_target",
+      }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const result = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_target",
+      message: "hello",
+    });
+
+    expect(result.state).toBe("connected");
+    expect(result.lastSeen).toBeUndefined();
+  });
+
+  test("a publish carries the listener's recipient counts, a count of none included", async () => {
+    const envelope = {
+      event_id: "event-counted",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-counted",
+      source_session: "ses_sender",
+      topic: "notifications.team.deploy-squad.all",
+      dedupe_key: "agent.team.event-counted",
+      issued_at: 2,
+      payload_summary: "broadcast",
+      trace_id: "trace-counted",
+    };
+    const recorded = recordFetch([
+      jsonResponse({ ...envelope, recipients: 3, recipients_connected: 2 }),
+      jsonResponse({ ...envelope, recipients: 0, recipients_connected: 0 }),
+      jsonResponse(envelope),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const publish = () =>
+      client.publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.team.deploy-squad.all",
+        message: "broadcast",
+      });
+
+    expect(await publish()).toMatchObject({ recipients: 3, recipientsConnected: 2 });
+    // Zero is a count the listener sends, not an absence: it is the answer that says the message
+    // reached nobody.
+    expect(await publish()).toMatchObject({ recipients: 0, recipientsConnected: 0 });
+    const uncounted = await publish();
+    expect(uncounted.recipients).toBeUndefined();
+    expect(uncounted.recipientsConnected).toBeUndefined();
+  });
+
   test("sends a human direct message without a source session", async () => {
     const recorded = recordFetch([
       jsonResponse({
@@ -668,37 +776,61 @@ describe("EnvoyClient", () => {
   });
 
   test("reads a 202 kept answer as a published message the listener holds for the role's next holder", async () => {
-    // Nobody holds the role, so the listener kept the message on the role's kept lane and
-    // answered 202. That is a success, not a refusal: the message reaches whoever claims the
-    // role next, and `request`'s `response.ok` test lets the body through.
-    const kept = new Response(
-      JSON.stringify({
-        event_id: "event-kept",
-        source: "agent",
-        source_event_id: "agent.ses_sender.event-kept",
-        source_session: "ses_sender",
-        topic: "notifications.role.legion-architect",
-        dedupe_key: "agent.legion-architect.event-kept",
-        issued_at: 3,
-        payload_summary: "the worker is stalled",
-        trace_id: "trace-kept",
-        kept: true,
-        kept_reason: "unclaimed",
+    // No live session holds the role, so the listener kept the message on the role's kept lane
+    // for one hour and answered 202. That is a success, not a refusal: the message reaches the
+    // next session that holds the role live before kept_until, and `request`'s `response.ok`
+    // test lets the body through. A holder that is not live is named with its state and its last
+    // registration; a last registration of 0 is one the listener does not know.
+    const keptBody = (role: string, fields: Record<string, unknown>) =>
+      new Response(
+        JSON.stringify({
+          event_id: `event-${role}`,
+          source: "agent",
+          source_event_id: `agent.ses_sender.event-${role}`,
+          source_session: "ses_sender",
+          topic: `notifications.role.${role}`,
+          dedupe_key: `agent.${role}.event-kept`,
+          issued_at: 3,
+          payload_summary: "the worker is stalled",
+          trace_id: "trace-kept",
+          kept: true,
+          ...fields,
+        }),
+        { status: 202, headers: { "Content-Type": "application/json" } }
+      );
+    const recorded = recordFetch([
+      keptBody("legion-architect", { kept_reason: "unclaimed", kept_until: 1_793_003_600_000 }),
+      keptBody("reviewer", {
+        kept_reason: "holder_lapsed",
+        kept_until: 1_793_003_600_000,
+        holder: "ses_reviewer",
+        holder_state: "gone",
+        last_seen: 0,
       }),
-      { status: 202, headers: { "Content-Type": "application/json" } }
-    );
-    const recorded = recordFetch([kept]);
+    ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const publish = (role: string) =>
+      client.publish({
+        sourceSessionID: "ses_sender",
+        topic: `notifications.role.${role}`,
+        message: "the worker is stalled",
+      });
 
-    const result = await client.publish({
-      sourceSessionID: "ses_sender",
-      topic: "notifications.role.legion-architect",
-      message: "the worker is stalled",
-    });
-
+    const result = await publish("legion-architect");
     expect(result.kept).toBe(true);
     expect(result.keptReason).toBe("unclaimed");
-    expect(result.envelope.event_id).toBe("event-kept");
+    expect(result.keptUntil).toBe(1_793_003_600_000);
+    expect(result.envelope.event_id).toBe("event-legion-architect");
+
+    const lapsed = await publish("reviewer");
+    expect(lapsed).toMatchObject({
+      kept: true,
+      keptReason: "holder_lapsed",
+      keptUntil: 1_793_003_600_000,
+      holder: "ses_reviewer",
+      holderState: "gone",
+    });
+    expect(lapsed).not.toHaveProperty("lastSeen");
   });
 
   test("sends keep on the wire only when the caller asked for it, and still throws the listener's 404", async () => {
@@ -1723,6 +1855,51 @@ describe("EnvoyClient", () => {
         credential: unmintable,
       }).unregisterSession({ sessionID: "ses_closed" })
     ).rejects.toThrow("the secrets broker did not answer");
+  });
+
+  // A listener URL may carry a user and a password. The request goes to it as configured, and
+  // the error a refused or unauthorised call throws names it without them.
+  test("names the listener URL without its user and password in the errors it throws", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const baseUrl = `http://${user}:${secret}@listener`;
+    const unmintable: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => Promise.reject(new Error("the secrets broker did not answer")),
+      secret: () => "",
+    };
+    const refused = recordFetch([new Response("no such route", { status: 404 })]);
+    const closed = recordFetch([new Response(null, { status: 401 })]);
+    const failure = (call: Promise<unknown>) =>
+      call.then(
+        () => "",
+        (error: Error) => error.message
+      );
+
+    const messages = [
+      await failure(
+        createEnvoyClient({ baseUrl, fetch: refused.fetch, retry: false }).getInterest("ses_sender")
+      ),
+      await failure(
+        createEnvoyClient({
+          baseUrl,
+          fetch: closed.fetch,
+          credential: unmintable,
+          retry: false,
+        }).getInterest("ses_sender")
+      ),
+    ];
+
+    expect(refused.requests[0]?.url).toBe(`${baseUrl}/v1/interests/ses_sender`);
+    expect(messages).toEqual([
+      "GET http://listener/v1/interests/ses_sender failed with 404: no such route",
+      "GET http://listener/v1/interests/ses_sender answered 401, and this machine's Envoy " +
+        "credential could not be minted: the secrets broker did not answer",
+    ]);
+    for (const message of messages) {
+      expect(message).not.toContain(user);
+      expect(message).not.toContain(secret);
+    }
   });
 
   // The deadline is AbortSignal.timeout's, on the platform's clock, which no fake timer moves:

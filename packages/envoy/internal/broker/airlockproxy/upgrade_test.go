@@ -44,8 +44,16 @@ func upgradeStandIn(t *testing.T, r *rig) {
 }
 
 // upgradeThrough opens a connection to the bound host through the proxy, sends the upgrade
-// request on it, and answers the 101 and the connection the frames pass on.
+// request on it as a GET at upgradePath, and answers the 101 and the connection the frames pass
+// on.
 func upgradeThrough(t *testing.T, r *rig) (*http.Response, net.Conn, *bufio.Reader) {
+	t.Helper()
+	return upgradeThroughPath(t, r, http.MethodGet, upgradePath)
+}
+
+// upgradeThroughPath is upgradeThrough at the method and path given, for a row whose point is one
+// of the two: the ones a joined connection's line writes (refusal_record_test.go's clip table).
+func upgradeThroughPath(t *testing.T, r *rig, method, path string) (*http.Response, net.Conn, *bufio.Reader) {
 	t.Helper()
 	answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
 	if answer.StatusCode != http.StatusOK {
@@ -57,7 +65,7 @@ func upgradeThrough(t *testing.T, r *rig) (*http.Response, net.Conn, *bufio.Read
 		t.Fatalf("the TLS handshake with the proxy: %v", err)
 	}
 	t.Cleanup(func() { decrypted.Close() })
-	request := "GET " + upgradePath + " HTTP/1.1\r\n" +
+	request := method + " " + path + " HTTP/1.1\r\n" +
 		"Host: " + boundHost + "\r\n" +
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
@@ -158,6 +166,10 @@ const watchFast = 20 * time.Millisecond
 // back which frames reached that service, since the frame a closed connection did not carry is
 // what says it was closed.
 type frameStand struct {
+	// path is the path this stand answers 101 at; a request to any other path is the stand-in
+	// service's own line.
+	path string
+
 	mu     sync.Mutex
 	frames []string
 
@@ -185,10 +197,10 @@ func (f *frameStand) waitDone(t *testing.T) {
 	}
 }
 
-// Answer is airlocktest.Answer: 101 at upgradePath, and then one line back for each line in, as
-// airlocktest's own stand answers its one.
+// Answer is airlocktest.Answer: 101 at the stand's path, and then one line back for each line
+// in, as airlocktest's own stand answers its one.
 func (f *frameStand) Answer(w http.ResponseWriter, _ *http.Request, seen airlocktest.Request) bool {
-	if seen.Path != upgradePath {
+	if seen.Path != f.path {
 		return false
 	}
 	hijacker, ok := w.(http.Hijacker)
@@ -236,17 +248,25 @@ func (f *frameStand) read() []string {
 	return slices.Clone(f.frames)
 }
 
-// joinedThrough upgrades through the proxy to a frameStand of its own and answers that stand
-// and the joined connection, with the 101 already read.
+// joinedThrough upgrades through the proxy as a GET at upgradePath to a frameStand of its own and
+// answers that stand and the joined connection, with the 101 already read.
 func joinedThrough(t *testing.T, r *rig) (*frameStand, net.Conn, *bufio.Reader) {
 	t.Helper()
-	stand := &frameStand{done: make(chan struct{})}
+	stand, conn, reader, _ := joinedThroughPath(t, r, http.MethodGet, upgradePath)
+	return stand, conn, reader
+}
+
+// joinedThroughPath is joinedThrough at the method and path given, with the 101 itself, for a row
+// whose point is the method or the path the join's own line writes.
+func joinedThroughPath(t *testing.T, r *rig, method, path string) (*frameStand, net.Conn, *bufio.Reader, *http.Response) {
+	t.Helper()
+	stand := &frameStand{path: path, done: make(chan struct{})}
 	r.answerWith(stand.Answer)
-	upgraded, conn, reader := upgradeThrough(t, r)
+	upgraded, conn, reader := upgradeThroughPath(t, r, method, path)
 	if upgraded.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("the upgrade answered %d; want 101", upgraded.StatusCode)
 	}
-	return stand, conn, reader
+	return stand, conn, reader, upgraded
 }
 
 // frame writes one frame on a joined connection and reads the service's answer to it, which is

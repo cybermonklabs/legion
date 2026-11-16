@@ -87,24 +87,50 @@ func (c *Client) LastStoredMessage(ctx context.Context, subject string) (StoredM
 const KeptRoleClaimWindow = 60 * time.Second
 
 // KeptRoleCursor is the body of a role's drain cursor (KeptRoleCursorSubject): the two numbers
-// that say how far that role's kept lane has been drained. Kept is the stream sequence on the
-// role's kept subject the lane is finished with - every copy up to it was forwarded, dropped as
-// expired or passed over - and a walk starts at the copy after it. Claiming is a copy one walk
-// has claimed and not yet confirmed delivered, 0 when none is outstanding: a walk writes it
-// before it forwards that copy and clears it with the same write that moves Kept past the copy,
-// so a walk that ends between the two leaves Kept short of the copy and the next walk reads that
-// copy again. A claim is also the lane's lock while it is outstanding (ClaimOutstanding).
+// that say how far that role's kept lane has been drained, and what the claim one of them names
+// is for. Kept is the stream sequence on the role's kept subject the lane is finished with -
+// every copy up to it was forwarded, dropped as expired or passed over - and a walk starts at the
+// copy after it. Claiming is a copy one walk has claimed and not yet confirmed delivered, 0 when
+// none is outstanding: a walk writes it before it forwards that copy and clears it with the same
+// write that moves Kept past the copy, so a walk that ends between the two leaves Kept short of
+// the copy and the next walk reads that copy again. A claim is also the lane's lock while it is
+// outstanding (ClaimOutstanding).
 //
 // The listener's drain is its only writer, which writes it with Client.PublishCursorAt as this
 // small body rather than an envelope (cmd/listener/role_keep.go). It lives here because
 // Dispatch's outbox reads it as well, to tell whether the copy it has just kept is the one that
 // lane's drain would hand over next (internal/dispatch/outbox): a body each package spelled out
 // for itself would decode a drifted tag as zero, which reads as a lane drained to its start and
-// leads every handover astray. A writer of this body writes both numbers at once, since a reader
-// of either takes the pair as one answer.
+// leads every handover astray. A writer of this body writes every field at once, since a reader
+// of any takes the whole body as one answer.
 type KeptRoleCursor struct {
 	Kept     uint64 `json:"kept"`
 	Claiming uint64 `json:"claiming"`
+	// DeadLetter names why the claim is a walk's claim of a copy it is ending with a dead letter
+	// to that copy's sender, rather than a forward's. It is one of four values, a reason with or
+	// without one qualifier: "delivery_mode" for a copy the role's live holder does not take for
+	// its delivery mode, and "expired" for a copy whose hour ended; "delivery_mode_unconfirmed"
+	// and "expired_unconfirmed" for the same two drops of a copy that a walk had claimed to
+	// forward and whose forward no walk confirmed, so the copy may have reached the session that
+	// held the role then. The listener writes and reads them in one place each
+	// (cmd/listener/role_keep.go: keptRoleDrop.claimReason, keptCopyClaimOf). A walk that takes
+	// such a claim over once it is no longer outstanding sends that dead letter again under the
+	// same message id, for the reason and with the qualifier named here, whatever the copy's age
+	// and whoever holds the role, where it judges a forward's claimed copy as any copy and writes
+	// the qualifier into the claim of a dead letter that copy turns out to be owed. Both are
+	// written into the claim because nothing else the walk that takes it over reads can tell
+	// them: the copy's age is measured on that walk's own clock, the holder that refused the
+	// copy's mode may hold the role no longer, and the forward's claim that showed the copy may
+	// have reached the holder is replaced by the dead letter's. The two values of one reason
+	// send the dead letter whose own reason is that reason, "expired" or "delivery_mode"; only
+	// the claim tells the two apart.
+	//
+	// An empty value is a forward's claim where Claiming names a copy, and no claim at all where
+	// it is 0, and it is left out of the body then, so those bodies are written exactly as before
+	// the field existed. Dispatch's outbox decodes this same struct, so it compiles the field, but
+	// it reads only Kept and Claiming; an earlier listener's struct has no such field, and
+	// encoding/json drops it when that listener decodes the body.
+	DeadLetter string `json:"dead_letter,omitempty"`
 }
 
 // ClaimOutstanding reports whether the copy this cursor claims is still one walk's to forward: a
@@ -269,6 +295,62 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, nats.ErrNoResponders
 	}
 	return reply, nil
+}
+
+// RequestCore sends a core NATS request on subject carrying header and no body, and returns its
+// one reply. It is the request the listener's connection probe makes (cmd/listener): one on a
+// session's relay subject (DeliverSubject) carrying the Envoy-Probe header, whose answer says
+// whether a plugin of that session still subscribes the subject. Its publish is confirmed as
+// requestConfirmed's is (publishConfirmed), so a request the server refuses under the
+// connection's publish permissions returns ErrPublishDenied at once; one publishConfirmed cannot
+// confirm for another reason still waits for its reply, and returns that reason if ctx ends
+// first. A no-responders status reply is nats.ErrNoResponders, as requestConfirmed maps it, and a
+// ctx with no deadline waits storedMessageWait.
+//
+// The reply is taken over a channel subscription of this request's own, not conn.SubscribeSync
+// as requestConfirmed takes it: that call sizes its channel at nats.Options.SubChanLen, 65,536
+// slots by default, so each request would allocate and zero half a megabyte to hold the one reply
+// it waits for, and the send route probes once per send to a session with an entry. The channel
+// holds nats.RequestChanLen replies, as nats.go's own request does: a request has one reply, and
+// the slack is for a subject that draws a second (two processes of one session subscribed to its
+// relay subject), which a one-slot channel would drop as a slow consumer and record on the whole
+// connection, failing another goroutine's publish as unconfirmed.
+//
+// The one error this shape cannot give is the connection's own: nats.go closes a sync
+// subscription's channel when the connection closes and leaves a channel subscription's open, so
+// a request whose connection is closed or drained under it waits out ctx and returns ctx's error,
+// where requestConfirmed returns nats.ErrConnectionClosed at once. The probe counts both as
+// connected, and the case is a shutdown race.
+func (c *Client) RequestCore(ctx context.Context, subject string, header nats.Header) (*nats.Msg, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, storedMessageWait)
+		defer cancel()
+	}
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	conn := c.Connection()
+	inbox := conn.NewInbox()
+	replies := make(chan *nats.Msg, nats.RequestChanLen)
+	subscription, err := conn.ChanSubscribe(inbox, replies)
+	if err != nil {
+		return nil, err
+	}
+	defer subscription.Unsubscribe()
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
+	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
+		return nil, err
+	}
+	select {
+	case reply := <-replies:
+		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
+			return nil, nats.ErrNoResponders
+		}
+		return reply, nil
+	case <-ctx.Done():
+		return nil, cmp.Or(err, ctx.Err())
+	}
 }
 
 // CheckFilterSubject refuses a subject a stored-message read cannot filter on: one NATS does not

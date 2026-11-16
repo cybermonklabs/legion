@@ -7,6 +7,7 @@ import type {
   IssueComponentsMode,
   IssueDetails,
   IssuePriority,
+  Sleep,
 } from "@legion/contracts";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
@@ -14,6 +15,7 @@ import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
+import { withoutUserinfo } from "../errors";
 
 /**
  * Tool arguments as the model supplied them. The tool's Zod schema validates
@@ -63,6 +65,9 @@ export interface ExecuteDispatchToolInput {
   readonly fetchImpl?: typeof fetch;
   /** How each write asks Dispatch again under its key (`DISPATCH_WRITE_RETRY` unless set). */
   readonly writeRetry?: DispatchWriteRetry;
+  /** The wait before each new attempt of a request Dispatch answered with no route
+   *  (`DispatchClient`); a test passes one that returns at once. */
+  readonly sleep?: Sleep;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -224,12 +229,13 @@ export interface SessionContext {
   readonly ownerArguments: OwnerResolution;
   /** The pictures the call's `images` argument names, read from disk by the check. */
   readonly pictures: LocalPicture[];
-  /** The API's own address, which an unreachable server is named by. */
+  /** The API's own address, which an unreachable server is named by: the configured URL without
+   *  its user and password, which only the requests carry. */
   readonly configUrl: string;
   /**
    * Every link a command prints is to Dispatch's dashboard as people open it: the public URL when
    * the session has one (a pod reaches Dispatch at an in-cluster address nobody else can open),
-   * and the API's URL otherwise.
+   * and the API's URL otherwise, either without the user and password its URL may carry.
    */
   readonly linkBase: string;
   /** This host's own session id, trimmed; a command that needs one refuses an empty one itself. */
@@ -282,13 +288,15 @@ export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolR
 /**
  * The context every command starts from, built from the checked call. The fetch it hands the
  * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else.
+ * reads that message and nothing else. That message and every link name the server without the
+ * user and password its URL may carry; the client's requests go to the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
   checked: CheckedCall
 ): SessionContext {
-  const { url: configUrl, credential } = input.config;
+  const { url, credential } = input.config;
+  const configUrl = withoutUserinfo(url);
   const baseFetch = input.fetchImpl ?? fetch;
   const fetchImpl = Object.assign(
     async (...args: Parameters<typeof fetch>): Promise<Response> => {
@@ -311,9 +319,13 @@ export function sessionContext(
     ownerArguments: checked.owner,
     pictures: checked.pictures,
     configUrl,
-    linkBase: input.config.publicUrl ?? configUrl,
+    linkBase: withoutUserinfo(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
     newClient: () =>
-      new DispatchClient(configUrl, credential, fetchImpl, input.signal, input.writeRetry),
+      new DispatchClient(url, credential, fetchImpl, {
+        signal: input.signal,
+        writeRetry: input.writeRetry,
+        sleep: input.sleep,
+      }),
   };
 }

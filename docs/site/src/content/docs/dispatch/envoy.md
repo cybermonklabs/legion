@@ -13,8 +13,8 @@ Envoy carries events between GitHub, Slack, Dispatch, Legion, and agent sessions
   session's inbox for 72 hours, and team topics (`notifications.team.<name>`) with them. Role
   messages travel over core NATS and are not kept for a later subscriber, but the listener's
   forward of a role message to its current holder is kept on that holder's inbox, and a role
-  message no session holds the role for is kept for the session that claims the role next. Envoy
-  also keeps its own state in JetStream key-value buckets:
+  message no live session can take is kept for one hour for the next session that holds the
+  role. Envoy also keeps its own state in JetStream key-value buckets:
   which session is subscribed to what (`envoy_interests`), each session's registration and when it
   last registered (`envoy_sessions`), who holds each role (`envoy_roles`), and pull request check
   results (`envoy_ci_state`). The stream and every bucket are kept in at least as many copies as
@@ -106,9 +106,9 @@ no Slack token: the tool asks the [Secrets Broker](/legion/broker/) for the agen
 `LEGION_SLACK_BOT_TOKEN`, the app's bot token (`xoxb-…`), through the broker's own client
 (`agent-secrets LEGION_SLACK_BOT_TOKEN --reason … --wait 0s -- <poster>`), which puts it in the
 environment of the one process that calls Slack's `chat.postMessage`, never the session's. Store
-the token in the broker's store with owner `legion-daemon` and tier `agent`, so the broker grants it
-at once to the pods the Legion daemon enrolls under the accounts `BROKER_SERVICES` binds to
-`legion-daemon`, its controller's included, and to no one else; the app needs the
+the token in the broker's store with owner `shared` and tier `agent`, so the broker grants it at
+once to every session enrolled with it: the Legion daemon's pods, its controller's included, and
+every agent session on a machine logged in to the broker. The app needs the
 `chat:write` bot scope and must be added to each channel it answers in. A request still waiting
 for approval, or denied, posts nothing, and the tool says which; Slack's own refusal comes back as
 Slack's error code, such as `not_in_channel`. A reply is at most 4,000 characters, and the tool
@@ -168,7 +168,7 @@ published still gets it when it reconnects
 | Topic | What it is |
 | --- | --- |
 | `notifications.agent.<session_id>` | One session's inbox. Direct messages, ask follow-ups, replies in threads it wrote in, comments on documents it wrote, a person's answers, comments and messages on an issue it has claimed, comments on an issue with no route and no session claim whose spec it wrote, and claim changes arrive here. |
-| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. With no claim at all it keeps the message for the session that claims the role next, and answers that it kept it; a holder that stopped answering keeps its role but is sent nothing, and the publish is refused, so publish it again once that holder reads live. |
+| `notifications.role.<role>` | A role, held by one session at a time. You publish to it; the listener forwards each message to the current holder's inbox and answers once the stream stored that forward, which the holder reads from its own consumer. When no live session holds the role, because nobody claims it or its holder stopped answering, the listener keeps the message for one hour and answers that it kept it, and until when. The next session to hold the role live in that hour gets it, and a holder that stopped answering keeps its role. If no session takes the message in that hour, the listener drops it and, when the publish named your session, sends your session a message that names it, unless it dropped it more than an hour late. |
 | `notifications.dispatch.issue.<KEY>.>` | Every event of one Dispatch issue. |
 | `notifications.github.<owner>.<repo>.pr.<n>.>` | Every event of one pull request. |
 | `notifications.legion.<project>.controller` | A Legion project's controller. |
@@ -181,33 +181,65 @@ listener. A subscription to `<subject>.>` also covers `<subject>` itself, so sub
 request's `.>` gets its lifecycle events as well as its comments and checks.
 
 A publish to a role through the API resolves the role's holder, waits for the stream to store the
-forward to it, and answers `200` naming the holder and its `holder_state`. If no session holds
-the role at all, the listener keeps the message and answers `202` with `kept: true` and
-`kept_reason: "unclaimed"`. The next session that claims the role is handed each kept message
-once, in the order the messages were kept. A message kept more than an hour before is dropped
-instead. A sender that keeps a queue of its own sends `keep: false`, and an unclaimed role is
-then refused `404` with the reason `unclaimed`, as it is when the keep itself fails. If the
-claim's holder is not `live`, the message is refused `404` with the reason `holder_lapsed`, which
-names the holder, its `holder_state` ([The session list](#the-session-list)), its `last_seen` and
-`claim_released: false`: nothing was forwarded, nothing was released and nothing was kept, so a
-holder that is `unresponsive` keeps its role and the sender publishes the message again once that
-session answers. If the holder does not take the message's delivery mode, the refusal is `403`;
-and if the stream has not stored the forward to a live holder within four seconds, it is `504`
-naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
-message published straight onto NATS, not through the API, is kept the same way when no session
-claims the role, and also when the listener could not read the role's claim, in which case it is
-forwarded once a later read finds a `live` holder within the hour, with no exception meanwhile;
-otherwise it is forwarded once, and if the stream stores no forward for the holder the listener
-publishes an exception naming the reason: `no_holder` or `delivery_failed` (which a holder that is
-not `live` gives). Either way the forward to the live holder is stored on
+forward to it, and answers `200` naming the holder and its `holder_state`. If no live session
+holds the role, the listener keeps the message for one hour and answers `202` with
+`kept: true`, `kept_reason` and `kept_until`, the end of that hour in Unix milliseconds. The
+reason is `unclaimed` when nothing claims the role, and `holder_lapsed` when the claim's holder is
+not `live`, which also names the holder, its `holder_state`
+([The session list](#the-session-list)) and its `last_seen`. That claim stands: nothing is
+forwarded to the holder and nothing releases the claim, so a holder that is `unresponsive` keeps
+its role. The next session to hold the role live before `kept_until` is handed each kept message
+once, in the order the messages were kept, and that can be the same holder when it answers
+again. If no session takes a message by then, the listener drops it and sends the sender's
+session a dead letter, when the publish named that session, unless it drops the message more than
+an hour late. The dead letter is an Envoy message on the session's agent subject that names the
+role, the message's event id, its first line, why Envoy dropped it, and when Envoy kept it and
+dropped it. The listener also sends one when it drops a kept message inside its hour because the
+live holder does not take the message's delivery mode, and `envoy_role_dead_letters_total` counts
+both. A publish that repeats a dedupe key while its first copy is still kept stores nothing new,
+and is answered with that first copy.
+While a kept message has at least 20 minutes of its hour left and no live session holds the
+role, the listener raises the role's wake report again every five minutes, so a released Legion
+role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
+publish is then refused `404` with the reason `unclaimed` or `holder_lapsed`, as it is when the
+keep itself fails. If the holder does not take the message's delivery mode, the refusal is
+`403`; and if the stream has not stored the forward to a live holder within four seconds, it is
+`504` naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
+message published straight onto NATS, not through the API, is kept the same way when no live
+session holds the role, and also when the listener could not read the role's claim, in which
+case it is forwarded once a later read finds a `live` holder inside the message's hour, with no
+exception meanwhile; otherwise it is forwarded once, and if the stream stores no forward for the
+holder the listener publishes an exception naming the reason: `no_holder` or `delivery_failed`.
+Either way the forward to the live holder is stored on
 the holder's inbox, and it counts as delivered once the stream has stored it, so a holder that
 restarts or loses its connection gets the forward once when it is back. No session answers a
 receipt for one.
 A role send the API refuses `404` also raises one exception on
 `notifications.envoy.exceptions.notifications.role.<role>`, naming the reason it refused:
 `unclaimed` when nothing claims the role and nothing was kept, or `holder_lapsed` when the claim's
-holder is no longer live. That exception is only a bus signal: nothing re-sends a refused publish
-except the Legion daemon's own outbox notice, whose row retries by itself.
+holder is no longer live and nothing was kept. That exception is only a bus signal: nothing
+re-sends a refused publish except the Legion daemon's own outbox notice, whose row retries by
+itself.
+
+### What a restored session gets
+
+A released Legion role gets the messages kept for it when it comes back. The release ends the
+role's process and leaves its claim standing. The session's record is gone at most about five
+minutes after its last heartbeat, or at the stop once the daemon's clean stop runs. A message to
+the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases
+the claim at its next pass. Either way it is kept and wakes the role. When the role comes
+back, its session registers again or claims the role, and either one hands it each message kept
+for the role whose hour has not ended, as an Envoy card that carries `kept_at`, the time Envoy
+kept it. The card can arrive before the task the daemon gives the woken role. `envoy_inbox` lists
+it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds
+only what that process received. To check one message:
+
+- The session's transcript holds the card with that event id and `kept_at`.
+- The listener's log holds the forward of that event id, `listener role forwarded` with
+  `kept_at`, or the line that drops it,
+  `listener dropped a kept role message older than the keep window`.
+- The sender's session holds the dead letter that names that event id, when the publish named
+  that session and the listener did not drop the message more than an hour late.
 
 ## Messages a session missed
 
@@ -234,9 +266,12 @@ first. What outlives the consumer is the place in the stream the
 session had reached: before each delete the listener records that place on a lane of the stream
 only it reads, `notifications.envoy.resume.<session_id>`, which the stream keeps for its 72 hours,
 which no session may follow and which the publish route refuses. A session that comes back is
-given a new consumer starting where the old one stopped — at the resume point its own plugin
-kept, or at that record when the plugin has none, as after a `/clear` or a fresh install — so it
-is handed what was published while it was away, each message once.
+given a new consumer starting where the old one stopped: at the lower of the resume point its own
+plugin kept and that record, or at the record alone when the plugin has none, as after a `/clear`
+or a fresh install, and never past the stream's end. So it is handed what was published while it
+was away. Its plugin's delivery ledger drops a message it already wrote, so each message is
+written once, within the ledger's limits: 72 hours and 20,000 frames (`DELIVERY_LEDGER_TTL_MS`
+and `DELIVERY_LEDGER_LIMIT` in `packages/envoy-client/src/delivery-ledger.ts`).
 
 - **What comes this way:** the session's inbox, `notifications.agent.<session_id>` (direct
   messages, Dispatch deliveries, and the forwards of role messages to a role it holds), and the
