@@ -1,20 +1,13 @@
 import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
 import {
   temporaryDirectories,
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
+import { descendantsOf, notInRoot, procRootOf, unrealPid } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -48,7 +41,7 @@ const skip = skipWithout("tmux");
 // grew with the machine's processes, which no test owns: CI's runner has a few hundred, a devbox
 // tens of thousands, and with the row held to a ninth of one CPU on a devbox of about 20,000 the
 // fixed 30 s it had ran out inside stop_agent_daemons in 20 runs of 20. The row hands both a proc
-// root of its own processes instead (ownProc, below), so each walk reads those alone. Its bound is
+// root of its own processes instead (lib/proc-root.ts), so each walk reads those alone. Its bound is
 // then the code's own, with no term the host sets: stop_agent_daemons's wait for its TERM to land,
 // read from the function (50 polls 0.2 s apart, 10 s), and the row's own five waits on its
 // processes' events, each held to `until`'s 100 polls 0.1 s apart (10 s). The row's other steps (a
@@ -78,7 +71,7 @@ const started: number[] = [];
 // afterEach hooks in the order they were registered, a timed-out row's too, and all of them before
 // an afterAll, so the server is stopped through its socket before that directory or `dir` goes.
 const teardowns: (() => void)[] = [];
-// The row's proc root once it has made one (ownProc), which the teardown reads too.
+// The row's proc root once it has made one, which the teardown reads too.
 let procRoot: string | undefined;
 afterEach(() => {
   for (const teardown of teardowns.splice(0).reverse()) {
@@ -98,19 +91,15 @@ afterEach(() => {
 // most 107 bytes (docs/testing.md, "Unix sockets in Go tests"): under `dir` it came to TMPDIR's
 // length plus 68, so a TMPDIR over 39 bytes, such as a devbox's 45-byte one, had tmux refuse it
 // (`error connecting to … (Filename too long)`) before the pane existed. Its directory is made
-// under TMPDIR when the socket fits there and under /tmp otherwise, which says so, as the Go
-// modules' internal/testtmp does. The maker names a directory <prefix>-XXXXXX.
+// under TMPDIR when the socket fits there and under /tmp otherwise, which says so (`socketRoot`).
+// The maker names a directory <prefix>-XXXXXX.
 const tmuxPrefix = "parked-decision-teardown-tmux";
 const tmuxSocket = join(`tmux-${process.getuid?.() ?? 0}`, "teardown");
-const fitsSocket = (root: string) =>
-  Buffer.byteLength(join(root, `${tmuxPrefix}-XXXXXX`, tmuxSocket)) <= 107;
-const tmuxRoot = fitsSocket(tmpdir()) ? tmpdir() : "/tmp";
-if (tmuxRoot !== tmpdir()) {
-  console.error(
-    `parked-decision-teardown.test.ts: the tmux socket would pass 107 bytes under TMPDIR ${tmpdir()}, so its directory is under /tmp`
-  );
-}
-const tmuxDirectory = temporaryDirectories(tmuxPrefix, { root: tmuxRoot });
+const tmuxDirectory = temporaryDirectories(tmuxPrefix, {
+  root: socketRoot("parked-decision-teardown.test.ts's tmux socket", (root) =>
+    socketPathRefusal(join(root, `${tmuxPrefix}-XXXXXX`, tmuxSocket))
+  ),
+});
 
 const alive = (pid: number) => {
   try {
@@ -130,63 +119,16 @@ const sessionOf = (pid: number) =>
       .split(" ")[3]
   );
 // The broker LEADER and every live process it started that is still in its session, by the
-// kernel's children lists (/proc/<pid>/task/<pid>/children): the row's waits on the broker, which
-// a scan of every process on the host would hold to the host's size. The stand-in's members are its
-// own children.
-const familyOf = (leader: number) => {
-  const family: number[] = [];
-  const visit = (pid: number) => {
-    let children: string[];
+// kernel's children lists (descendantsOf): the row's waits on the broker, which a scan of every
+// process on the host would hold to the host's size. The stand-in's members are its own children.
+const familyOf = (leader: number) =>
+  [leader, ...descendantsOf(leader, true)].filter((pid) => {
     try {
-      if (sessionOf(pid) !== leader || !alive(pid)) return;
-      children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").split(" ");
+      return sessionOf(pid) === leader && alive(pid);
     } catch {
-      return;
+      return false;
     }
-    family.push(pid);
-    for (const child of children.filter(Boolean)) visit(Number(child));
-  };
-  visit(leader);
-  return family;
-};
-// ownProc ANCHORS makes the row's proc root in a fresh directory under `dir`: a link to the real
-// /proc/<pid> of each anchor and of every process the kernel lists under it (each thread's
-// /proc/<pid>/task/<tid>/children, to the bottom), so the code under test reads those processes' own
-// files and signals their real pids, and a process a stand-in started is in view with no scan of
-// the host. A process that has already ended is left out.
-const ownProc = (anchors: number[]) => {
-  const root = mkdtempSync(join(dir, "proc-"));
-  const seen = new Set<number>();
-  const visit = (pid: number) => {
-    if (seen.has(pid)) return;
-    seen.add(pid);
-    let tasks: string[];
-    try {
-      tasks = readdirSync(`/proc/${pid}/task`);
-    } catch {
-      return;
-    }
-    symlinkSync(`/proc/${pid}`, join(root, String(pid)));
-    for (const tid of tasks) {
-      let children: string[];
-      try {
-        children = readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8").split(/\s+/);
-      } catch {
-        continue; // A thread that ended since the listing has no children to list.
-      }
-      for (const child of children) if (child !== "") visit(Number(child));
-    }
-  };
-  for (const pid of anchors) visit(pid);
-  return root;
-};
-// notInRoot ROOT NAMED: the processes NAMED ([what, pid]) that ROOT holds no live entry for, each
-// as "<what> <pid>". The row reads the code's verdict on a process as a pass only with that
-// process in view, so a root without one fails the row, naming it.
-const notInRoot = (root: string, named: [string, number][]) =>
-  named
-    .filter(([, pid]) => !existsSync(join(root, String(pid), "stat")))
-    .map(([what, pid]) => `${what} ${pid}`);
+  });
 // membersOf SID: every live member of session SID the teardown can reach with no scan of the host:
 // the leader's family while the leader lives, and every process of the row's proc root once the row
 // has made it, which holds a member a dead broker left behind.
@@ -358,10 +300,18 @@ wait
     await until("the broker and its two members", () => familyOf(leader).length === 3);
     const members = familyOf(leader);
     // The row's proc root, which the code under test reads below: the tmux server and what runs
-    // under it, the broker and its members, the bystander and the stranger. Each process the code
-    // judges must be in it, or the code would pass the row by never seeing that process.
-    procRoot = ownProc([server, leader, bystander.pid, stranger.pid]);
-    const proc = procRoot;
+    // under it, the broker and its members, the bystander and the stranger, each with every
+    // process the kernel lists under it, to the bottom. A process that has already ended is left
+    // out. Each process the code judges must be in it, or the code would pass the row by never
+    // seeing that process.
+    const proc = procRootOf(
+      dir,
+      [server, leader, bystander.pid, stranger.pid].flatMap((pid) => [
+        pid,
+        ...descendantsOf(pid, true),
+      ])
+    );
+    procRoot = proc;
     expect(
       notInRoot(proc, [
         ["the tmux pane", panePid],
@@ -375,8 +325,7 @@ wait
     // stop_agent_daemons signals it only when it reads the root it is given, so a walk that went
     // back to the host's /proc fails the row rather than only slowing it. It has no cwd, so
     // run_processes, which reads one first, passes over it.
-    const unreal = String(Number(readFileSync("/proc/sys/kernel/pid_max", "utf8")) + 1);
-    mkdirSync(join(proc, unreal));
+    const unreal = unrealPid(proc);
     writeFileSync(join(proc, unreal, "stat"), `${unreal} (sleep) S 1 ${leader} ${leader} 0\n`);
     writeFileSync(join(proc, unreal, "environ"), `OMP_DAEMON_RUNTIME_DIR=${runtime}\0`);
 

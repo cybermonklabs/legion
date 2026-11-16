@@ -39,7 +39,8 @@ const alive = (pid: number) => {
 // on a count of polls; the 120 s on each row is the bound on a hang alone.
 //
 // own_proc INIT PID... makes that proc root for INIT in a fresh directory under the file's scratch
-// directory, and leaves its path in $root. The kernel's list of INIT's children
+// directory, and leaves its path in $root: lib/proc-root.ts's procRootOf and notInRoot in bash,
+// since each row's own shell makes its root. The kernel's list of INIT's children
 // (/proc/INIT/task/INIT/children) is read with a builtin, so no process of this shell's own is in
 // it. Each PID named must be one of those children: a row's refusal is read as a pass only with the
 // child it is about in view, so a root without it is status 2, naming the child, and the row's
