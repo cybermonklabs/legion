@@ -335,7 +335,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 	}
 	var agentSecrets *sandbox.AgentSecrets
 	if a := k.AgentSecrets; a != nil {
-		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second}
+		agentSecrets = &sandbox.AgentSecrets{URL: a.URL, Audience: a.Audience, TokenExpiry: time.Duration(a.TokenExpirySeconds) * time.Second, ExchangeAudience: a.ExchangeAudience}
 	}
 	cache, err := repositoryCache(k.RepositoryCache)
 	if err != nil {

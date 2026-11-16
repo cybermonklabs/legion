@@ -227,9 +227,10 @@ const resumeSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smok
 // the launcher's start command (launcherCommand), which
 // TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile holds, so a pod change made for Claude
 // Code alone shows in its golden and leaves worker's.
-// agentSecrets, set for root-enrolled alone, is the runtime's enrollment for that one case
-// (TestManifestGoldens, TestManifestMatchesTheSandboxCRD apply it to the shared runtime before
-// building that case's manifest, and restore nil after — every other case runs unenrolled).
+// agentSecrets, set for root-enrolled and root-exchange-identity alone, is the runtime's enrollment
+// for those two cases (TestManifestGoldens, TestManifestMatchesTheSandboxCRD apply it to the shared
+// runtime before building each one's manifest, and restore nil after — every other case runs
+// unenrolled).
 func manifestCases(t *testing.T) map[string]struct {
 	spec         runtime.SpawnSpec
 	agentSecrets *AgentSecrets
@@ -252,6 +253,10 @@ func manifestCases(t *testing.T) map[string]struct {
 		"root-enrolled": {rootSpec(t), &AgentSecrets{
 			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
 		}},
+		// root-exchange-identity is root-enrolled with agent_secrets.exchange_audience set: the
+		// one case whose pod carries an identity the broker's exchange trades
+		// (TestAnEnrolledPodCarriesAnIdentityItCanTrade).
+		"root-exchange-identity": {rootSpec(t), exchangeEnrolled()},
 	}
 }
 
@@ -1435,7 +1440,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	opts := testOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+	opts.AgentSecrets = exchangeEnrolled()
 	opts.TestPostgres = true
 	r, err := configure(opts)
 	if err != nil {
@@ -1767,8 +1772,9 @@ func TestATreeRolesShimIsToldToWarmTheWorkspacesCodegraphIndex(t *testing.T) {
 }
 
 // New refuses an agent-secrets configuration no pod could run: no broker URL, no token audience,
-// an expiry outside the API server's floor (10m) and the cluster's admission cap (1h), or the image's
-// agent-secrets binary missing.
+// an expiry outside the API server's floor (10m) and the cluster's admission cap (1h), an exchange
+// audience that is the enrollment's own (the cluster projects one volume per audience), or the
+// image's agent-secrets binary missing.
 func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 	for name, tc := range map[string]struct {
 		edit func(*Options)
@@ -1779,6 +1785,9 @@ func TestNewRefusesAnAgentSecretsOptionNoPodCouldRun(t *testing.T) {
 		"expiry too long": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: 2 * time.Hour}
 		}, "agent secrets: token expiry 2h0m0s is not between 10m0s and 1h0m0s"},
+		"the exchange audience is the enrollment's": {func(o *Options) {
+			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour, ExchangeAudience: "a"}
+		}, `agent secrets: the exchange audience is the enrollment's own, "a"`},
 		"no binary": {func(o *Options) {
 			o.AgentSecrets = &AgentSecrets{URL: "https://s", Audience: "a", TokenExpiry: time.Hour}
 			o.Tools.AgentSecrets = ""
@@ -2037,7 +2046,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	opts := goldenOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
 	opts.ProviderKeys = map[string]string{"ANTHROPIC_API_KEY": "anthropic"}
-	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
+	opts.AgentSecrets = exchangeEnrolled()
 	// With every optional piece configured: the pod's own test database is one (testPGVolume), and
 	// the skills marketplace is another (skillsVolume, skillsTempVolume and SkillsDir).
 	opts.TestPostgres = true

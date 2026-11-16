@@ -334,7 +334,7 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 		}
 	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,

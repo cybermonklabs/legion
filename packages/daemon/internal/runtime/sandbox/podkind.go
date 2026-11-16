@@ -270,13 +270,14 @@ func (issuePod) initVolumes(r *Runtime, l launch) []corev1.Volume {
 // (roleHomesVolume) at RoleHomesDir holds each role's home overlay, temporary directories and own
 // config home. The pod's shared mounts are mounted once: the issue's disk, the config home
 // workspace-init writes, the feed read-only (so no agent writes what workspace-fetch, the token's
-// holder, reads), the providers, the broker's token, and the operator's. Every one of them that
-// belongs at or under the image's home — the config home, an operator's mount there — is mounted
-// under launcher.HomeMountsDir at the same relative path instead (homeMountsView), so the home
-// carries no mount: each role's namespace overlays the home, which Linux refuses over a lower layer
-// with mounts under it, and then binds each of them back at its own path, but the shared config
-// home, whose place gets the role's own copy of it (launcher.ConfigHomeDir). The values the kubelet
-// resolves are the same for every role (the downward API's POD_UID), so they are set once.
+// holder, reads), the providers, the broker's token and the exchange's, and the operator's. Every
+// one of them that belongs at or under the image's home — the config home, an operator's mount
+// there — is mounted under launcher.HomeMountsDir at the same relative path instead
+// (homeMountsView), so the home carries no mount: each role's namespace overlays the home, which
+// Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
+// own path, but the shared config home, whose place gets the role's own copy of it
+// (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
+// downward API's POD_UID), so they are set once.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	command := []string{r.tools.Legion, "launcher", connectFlag, r.streamURL, "--sandbox", l.name, "--roles-dir", RolesDir}
 	mounts := []corev1.VolumeMount{
@@ -312,6 +313,7 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 	}
 	if r.agentSecrets != nil {
 		mounts = append(mounts, corev1.VolumeMount{Name: agentSecretsTokenVolume, MountPath: AgentSecretsTokenDir, ReadOnly: true})
+		mounts = append(mounts, exchangeTokenMounts(r.agentSecrets)...)
 	}
 	return corev1.Container{
 		Name:            k.container(),

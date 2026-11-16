@@ -3826,6 +3826,7 @@ So the runtime compares a role's addresses with what it hands now on every evalu
 - **The secrets broker's enrollment**, for a role that enrolls, is read from the pod spec at the same point:
   the `agent-secrets-token` volume's projection of the broker's token (its audience, expiry and path) and the role's own key directory, which a generation of the role started now runs against.
   Like the stream, both are fixed for the pod's life, so turning `runtime.kubernetes.agent_secrets` on, or changing its `audience` or `token_expiry_seconds`, leaves every running workflow role holding a pod that lacks them.
+  Where the block names an `exchange_audience`, the `agent-secrets-exchange` volume's projection of the exchange token (its audience, expiry and path) is read the same way, and a pod that lacks it, or projects another audience, has drifted for its update round as an enrollment that lacks its token has.
 
 - **The other five** are read from a record on the issue Sandbox (`addresses.go`).
   Before it sends a generation's start command, the daemon merge-patches the role's own annotation, `legion.dev/addresses-<role>`, with the generation and, for each of the five, its variable, its name and the sha256 of its whole value.
@@ -6183,6 +6184,15 @@ each issue's pod (every role of it alike) and the image probe's.
   So the enrollment can stay live until the pod is replaced, at the latest when its issue closes, plus one lease (`BROKER_LEASE_SECONDS`).
   To end it at once, anyone signed in to Dispatch revokes the daemon's login on Dispatch's machine-login page (`/credentials/machine`), the row `legion-daemon on <namespace>/<account>` whose **Approved by** reads `No one:` and the daemon's ServiceAccount, which ends every session it enrolled;
   the daemon logs in again with its token under a new credential, which enrolls the pods it launches next, and a pod already running stays without secrets until it is replaced (`docs/site/src/content/docs/broker/guides/revoke-a-session.md`, "End a machine's login").
+
+- **`runtime.kubernetes.agent_secrets.exchange_audience`** gives every enrolled pod an identity the broker's exchange trades for a broker token of a session's own (dispatch://INFRA-840).
+  Each pod then also carries a projected token of its ServiceAccount for that audience, an hour long, in a volume of its own (`agent-secrets-exchange`), mounted read-only at `/var/run/legion/agent-secrets-exchange/token` in the container its roles run in, and every role is told `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE` naming that file, beside the enrollment it already holds.
+  The pod's broker clients (`packages/broker-client`, `packages/envoy/internal/brokerclient`) read those two and trade the token at the broker's `BROKER_EXCHANGE_K8S_AUDIENCE`, which must be this same audience: production's is `legion-broker-exchange` (agent-infra `shared/broker.ExchangeAudience`).
+  The key lives in the block, so a file that sets it and names no broker is refused for the `url` it lacks;
+  it may not be empty, and it may not equal `audience`, since the cluster projects one volume per audience and the broker verifies the enrollment's token and the exchange's at different routes.
+  Unset, no pod carries the token and no role is told either variable, so a deployment that never sets it runs exactly as before the key existed.
+  The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
+  Turning the key off replaces no pod: the next generation of each role is told no identity, though its pod still mounts the token until it is replaced.
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.

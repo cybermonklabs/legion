@@ -338,6 +338,8 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: no token audience")
 		case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
+		case a.ExchangeAudience == a.Audience:
+			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
 		}
 	}
 	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
