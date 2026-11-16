@@ -13,6 +13,7 @@ import { SEND_DEADLINE_MS, SendStoppedError, stoppedWriteNote } from "../writes/
 import { writesOf } from "../writes/write-store";
 import {
   ArtifactDropZone,
+  type ArtifactUpload,
   ArtifactUploadRow,
   appendToDraft,
   DraftUploadStatus,
@@ -287,6 +288,73 @@ test("a stopped press holds the summary field at its own summary, and Upload sen
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
     const first = uploadArtifact.mock.calls[0];
     const again = uploadArtifact.mock.calls.at(-1);
+    expect(again?.[1].summary).toBe("First draft");
+    expect(again?.[2].key).toBe(first?.[2].key);
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+    realClock();
+  }
+});
+
+/** The upload row, with the upload it draws handed to the case on every render, so the case can
+ *  make two of the row's own calls in one task, where no click and keystroke can. */
+function HandedHarness({ hand }: { hand: (upload: ArtifactUpload) => void }): ReactNode {
+  const upload = useArtifactUpload({ issue: "CORE-1" });
+  hand(upload);
+  return (
+    <ArtifactDropZone upload={upload}>
+      <ArtifactUploadRow upload={upload} />
+    </ArtifactDropZone>
+  );
+}
+
+// The press made again sends the summary it carries, whatever the field says by the time its
+// write runs. Upload first puts the stopped press's words back in the field, so the one moment
+// the field can differ from the press is the task Upload makes the press again in: here the
+// field is set to other words in that task, before the press goes out, and the request still
+// carries the words the press was made with.
+test("pressing Upload again after a stopped press sends that press's summary, whatever the field says as it goes", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:chosen",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(unreachable);
+  let upload: ArtifactUpload | undefined;
+  const view = renderWith(
+    <HandedHarness
+      hand={(drawn) => {
+        upload = drawn;
+      }}
+    />
+  );
+
+  try {
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    await user.upload(screen.getByLabelText("Upload artifact"), [file]);
+    await tick(0);
+    await user.type(screen.getByLabelText("Summary (optional)"), "First draft");
+    await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
+    await stopTheLateWrite(view.queryClient);
+    const stopped = uploadArtifact.mock.calls.length;
+
+    uploadArtifact.mockResolvedValue(UPLOADED);
+    act(() => {
+      upload?.confirm();
+      upload?.setSummary("Second thoughts");
+    });
+    await untilAttempted(uploadArtifact, stopped + 1);
+    await tick(1_000);
+
+    expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
+    const first = uploadArtifact.mock.calls[0];
+    const again = uploadArtifact.mock.calls.at(-1);
+    expect(first?.[1].summary).toBe("First draft");
     expect(again?.[1].summary).toBe("First draft");
     expect(again?.[2].key).toBe(first?.[2].key);
   } finally {

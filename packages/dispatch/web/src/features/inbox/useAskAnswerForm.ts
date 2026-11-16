@@ -188,9 +188,15 @@ export function useAskAnswerForm({
   }, [ask.id, queryClient, refreshInitialThread, threadQuery.data]);
   const edits = threadQuery.data?.edits ?? [];
   const answers = threadQuery.data?.answers ?? [];
-  // Text a press addresses to its ask: this form's own while the form is drawn for that ask, and
-  // that ask's draft once a host has drawn the form for another (`setAnswerDraft`), so the text
-  // a landing clears, or an upload adds, is the press's ask's and never the one the card shows.
+  // What a press does to the card goes to the press's own ask. Its callbacks run with the newest
+  // render's values (`useKeyedWrite`), and a host may draw this form for one ask after another,
+  // so the state they set - the answer the card shows, the form it closes, the choice it clears -
+  // is set only while the form is drawn for the press's ask (`drawnFor`), and never on the ask
+  // the card shows by then; the reads they refresh are the press's ask's either way. Text a press
+  // addresses to its ask is this form's own while the form is drawn for that ask, and that ask's
+  // draft once a host has drawn the form for another (`setAnswerDraft`), so the text a landing
+  // clears, or an upload adds, is the press's ask's and never the one the card shows.
+  const drawnFor = (press: AskPress) => press.ask.id === ask.id;
   const setAnswerTextOf = (askId: string, next: SetStateAction<string>) => {
     if (askId === ask.id) setAnswerText(next);
     else setAnswerDraft(askId, next);
@@ -212,9 +218,11 @@ export function useAskAnswerForm({
     removesRow: (press) => !changesAnswer(press),
     onError: (error, press) => {
       if (error instanceof ApiError && error.code === "ASK_EDITED") {
-        setAskChanged(true);
-        setSelected([]);
-        setOtherSelected(false);
+        if (drawnFor(press)) {
+          setAskChanged(true);
+          setSelected([]);
+          setOtherSelected(false);
+        }
         void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       }
       if (
@@ -226,9 +234,11 @@ export function useAskAnswerForm({
         // Each refusal meets the same change again, so the form it was sent from closes and the
         // card shows the thread's current answer, not one this card recorded earlier.
         void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
-        replacing.current = undefined;
-        setJustAnswered(null);
-        setChanging(false);
+        if (drawnFor(press)) {
+          replacing.current = undefined;
+          setJustAnswered(null);
+          setChanging(false);
+        }
       }
     },
     onSettled: () => {
@@ -236,14 +246,16 @@ export function useAskAnswerForm({
     },
     onSuccess: (updatedAsk, press) => {
       const changed = changesAnswer(press);
-      replacing.current = undefined;
-      setChanging(false);
+      if (drawnFor(press)) {
+        replacing.current = undefined;
+        setChanging(false);
+        // Answered either way; with no answer to give, the card reads the ask afresh instead of
+        // showing the one Dispatch would have handed back.
+        setJustAnswered(updatedAsk);
+      }
       // The text is the recorded answer now, not an unsent draft: a later card for this ask
       // starts empty, and nothing offers to copy what the server already took.
       setAnswerTextOf(press.ask.id, "");
-      // Answered either way; with no answer to give, the card reads the ask afresh instead of
-      // showing the one Dispatch would have handed back.
-      setJustAnswered(updatedAsk);
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
@@ -284,7 +296,7 @@ export function useAskAnswerForm({
     },
     onSuccess: (_comment, press) => {
       setAnswerTextOf(press.ask.id, "");
-      setQuestionChoice(false);
+      if (drawnFor(press)) setQuestionChoice(false);
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
       // A clarification hands the turn to the asker: every surface that renders this ask from
       // its owner's list (a decision block reads `["asks", key]`) must see the new `waiting_on`,

@@ -7,7 +7,7 @@ import {
   type UseMutationResult,
   useMutation,
 } from "@tanstack/react-query";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   apiErrorMessage,
@@ -39,6 +39,8 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** `false` for a write that goes under no key whatever its method (`WriteSpec.keyed`). */
+  readonly keyed?: false;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
@@ -185,6 +187,33 @@ export function useRefusalOfSubject<TVariables>(
   return write.isError && !gone;
 }
 
+/** The variables of `write`'s newest press while that press is out or refused: the press the
+ *  surface still shows, with its `…ing` or its refusal and Retry; `undefined` once Dispatch has
+ *  decided it, or before any press. A host may draw one control for one subject after another,
+ *  so what a live write asks the list around it to hold is this press's subject, never the one
+ *  the control is drawn for by then (`useLiveRegistration`). */
+export function livePress<TVariables>(write: {
+  readonly isError: boolean;
+  readonly isPending: boolean;
+  readonly variables: TVariables | undefined;
+}): TVariables | undefined {
+  return write.isPending || write.isError ? write.variables : undefined;
+}
+
+/** Registers `subject` with `register` while a write of it is live: `true` once it is, and
+ *  `false` once the write is decided, the subject changes, or the surface goes. `subject` is the
+ *  live press's own (`livePress`), and `undefined` registers nothing. */
+export function useLiveRegistration(
+  subject: string | undefined,
+  register: (subject: string, live: boolean) => void
+): void {
+  useEffect(() => {
+    if (subject === undefined) return;
+    register(subject, true);
+    return () => register(subject, false);
+  }, [register, subject]);
+}
+
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made
  *  of it: each is handed that press's variables, as it would be from a `useMutation` of its own. */
 function pressCallbacks<TData, TVariables, TContext>(
@@ -244,6 +273,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
   file,
   inline,
+  keyed,
   label,
   method,
   onError,
@@ -281,6 +311,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         file: file?.(variables),
         inline: typeof inline === "function" ? inline(variables) : inline,
         key,
+        keyed,
         kind: plainWrite,
         label: label(variables),
         presentation: "indicator",

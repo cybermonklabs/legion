@@ -182,9 +182,9 @@ export type WriteMethod = (typeof WRITE_METHODS)[number];
  *  or a `PATCH`, each of which Dispatch would do a second time when a dropped answer has the page
  *  ask again. A `PUT` or a `DELETE` is the same change however often it is made, so it sends no
  *  key and Dispatch keeps nothing under one for it. The one place that rule is written: `send`
- *  reads it as it builds the headers, and `keySpent` reads it to decide whether a key's age
- *  stops a write, which is how both the retry loop (`writeUnderKey`) and a kept refusal
- *  (`refusalFrom`) reach it.
+ *  reads it as it builds the headers, the write store as it records each write (`Write.keyed`),
+ *  and `keySpent` reads it to decide whether a key's age stops a write, which is how both the
+ *  retry loop (`writeUnderKey`) and a kept refusal (`refusalFrom`) reach it.
  */
 export function goesUnderKey(method: WriteMethod): boolean {
   return method === "POST" || method === "PATCH";

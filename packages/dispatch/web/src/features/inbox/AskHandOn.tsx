@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useContext, useEffect, useState } from "react";
+import { type ReactNode, useContext, useState } from "react";
 
 import { usersQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
@@ -7,6 +7,7 @@ import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary, textMutedOnSurface } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
+import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
 import { useAskHandOn } from "./useAskHandOn";
@@ -55,12 +56,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const onLive = useContext(AskHandOnLiveContext);
   // The ask held is the one the live hand-on is of, which is the card's own unless a host has
   // drawn the card for another ask since that press (`useAskHandOn`).
-  const held = write.liveAskId;
-  useEffect(() => {
-    if (held === undefined) return;
-    onLive(held, true);
-    return () => onLive(held, false);
-  }, [held, onLive]);
+  useLiveRegistration(write.liveAskId, onLive);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The list is drawn only once the reader reaches for the control, as it is read: the query
   // keeps its people for the session, so a card that built its options from whatever another

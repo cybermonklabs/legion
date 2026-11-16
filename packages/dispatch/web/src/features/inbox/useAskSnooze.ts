@@ -5,7 +5,7 @@ import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { SendStoppedError } from "../writes/keyed-write";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
@@ -14,6 +14,9 @@ export interface AskSnoozeWrite {
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
+  /** The ask the newest save is of while that save is in flight or failed, which the list around
+   *  the row holds (`useLiveRegistration`); `undefined` while none is. */
+  liveAskId: string | undefined;
   pending: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
@@ -39,9 +42,10 @@ interface AskSnoozePress {
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
  *
  * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
- * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press, and the
- * Retry of a press the reader stopped is of that press's ask, whichever ask the hook is rendered
- * for by then.
+ * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. A host
+ * may draw the row's control for one ask after another, so the Retry of a press the reader
+ * stopped is of that press's ask, and so is the ask the save holds in the list while it is live
+ * (`liveAskId`), whichever ask the hook is rendered for by then.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
@@ -85,6 +89,7 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
         "saved"
       ) ?? mutation.error?.message,
     failed: mutation.isError,
+    liveAskId: livePress(mutation)?.askId,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables?.until : undefined,
     retry: mutation.retry,

@@ -644,6 +644,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     // lands, and its landing discards (`Writes.signedIn`).
     endsWithSession: true,
     inline: true,
+    keyed: false,
     label: (_signingOut: string) => "Sign out",
     // Refused or stopped, the sign-out discarded nothing: the person is still signed in, and every
     // other tab lets their writes go on, as this one's store does (`Writes.release`).
@@ -659,10 +660,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       writesOf(queryClient).clear();
       signIns.signedOut(signingOut);
     },
-    // A `POST`, though `/auth/logout` sits outside Dispatch's keyed layer and sends no key
-    // (`api.logout`): the store reads that from `endsWithSession`, so the write says it goes under
-    // none (`Write.keyed`), and a reload never takes it up again, since no request of it goes
-    // through `api.send` to be kept.
+    // A reload never takes the sign-out up again: no request of it goes through `api.send` to be
+    // kept.
     method: "POST",
     // Dispatch's own 401 (`NO_IDENTITY`) says the session the sign-out would end is already gone
     // - an earlier attempt ended it and its answer was lost, or a sign-out in another browser

@@ -10,7 +10,7 @@ import { api, NetworkError, type WriteBounds } from "../../api/client";
 import type { AnswerAskInput, Ask, AskRead, Comment } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
-import { answerDraft } from "./answer-drafts";
+import { answerDraft, setAnswerDraft } from "./answer-drafts";
 import {
   answeredAsk,
   firstAnswer,
@@ -298,6 +298,56 @@ test("a stopped answer's Retry after the card moves to another ask answers the a
     expect(again?.[0]).toBe("ask-1");
     expect(again?.[1]).toEqual({ expected_edited_at: null, selected: ["Ship"] });
     expect(again?.[2].key).toBe(stoppedKey);
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// What an answer's landing does to the card is its own ask's alone. A card the host has drawn
+// for the next ask by then keeps that ask's form and the draft the reader wrote for it, and the
+// host is told the first ask was answered. Set on the card it moved to, the landing would show
+// the first ask's answer over the next question and take away the box its draft is in.
+test("an answer that lands after the card moves to another ask leaves that ask's form and draft alone", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const next = nextQuestion();
+  const lands = answersOnTheClock<Ask>({ ...open, answer: firstAnswer, state: "answered" });
+  const answerAsk = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) => lands());
+  const onAnswered = mock((_id: string) => {});
+  const { rerender, view } = renderCard(
+    <AskCard
+      answerAsk={answerAsk}
+      ask={open}
+      initialThread={thread(open, [])}
+      onAnswered={onAnswered}
+    />
+  );
+  try {
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(await screen.findByRole("radio", { name: "Ship" }));
+    await user.click(screen.getByRole("button", { name: "Answer" }));
+
+    setAnswerDraft(next.id, "Hold until Friday");
+    rerender(
+      <AskCard
+        answerAsk={answerAsk}
+        ask={next}
+        initialThread={thread(next, [])}
+        onAnswered={onAnswered}
+      />
+    );
+    await tick(1_000);
+
+    expect(answerAsk).toHaveBeenCalledTimes(1);
+    expect(answerAsk.mock.calls[0]?.[0]).toBe("ask-1");
+    expect(onAnswered.mock.calls).toEqual([["ask-1"]]);
+    expect(screen.queryAllByText(open.question).length).toBe(0);
+    expect(screen.getByText(next.question)).toBeInTheDocument();
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Your answer").value).toBe(
+      "Hold until Friday"
+    );
+    expect(answerDraft(next.id)).toBe("Hold until Friday");
   } finally {
     realClock();
     view.unmount();

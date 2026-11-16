@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
@@ -13,7 +13,8 @@ export interface AskHandOnWrite {
   /** True after a hand-on failed until the next attempt starts. */
   failed: boolean;
   /** The ask the newest hand-on is of while that write is in flight or failed, which the list
-   *  around the card holds (`hand-on-live.ts`); `undefined` while none is. */
+   *  around the card holds (`hand-on-live.ts`, `useLiveRegistration`); `undefined` while none
+   *  is. */
   liveAskId: string | undefined;
   pending: boolean;
   /** Repeats the failed hand-on. */
@@ -40,7 +41,8 @@ export interface AskHandOnWrite {
  * Each press carries the ask it hands on: `retry()` runs the newest render's `write` and
  * callbacks with the press's own values (`useKeyedWrite`), and a host may draw one card for one
  * ask after another, so a Retry hands the stopped press's ask to the person picked for it, and
- * what it patches and reads again are that ask's, whichever ask the hook is rendered for by then.
+ * what it patches, reads again and holds in the list while it is live (`liveAskId`) are that
+ * ask's, whichever ask the hook is rendered for by then.
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
@@ -99,7 +101,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     // error's own words are a composer's, of a message.
     error: stoppedNote(mutation, "the hand-on of this question", "made") ?? mutation.error?.message,
     failed: mutation.isError,
-    liveAskId: mutation.isPending || mutation.isError ? mutation.variables?.ask.id : undefined,
+    liveAskId: livePress(mutation)?.ask.id,
     pending: mutation.isPending,
     retry: mutation.retry,
     submit: (askedOf) => mutation.mutate({ ask, askedOf }),

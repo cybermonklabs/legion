@@ -1,10 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
 
 import type { WriteBounds, WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
-import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  type KeyedWriteResult,
+  livePress,
+  useKeyedWrite,
+  useLiveRegistration,
+} from "../writes/useKeyedWrite";
 
 /**
  * The asks whose answer the reader has sent and the server has not decided, by ask id: the write
@@ -133,11 +137,6 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
     onSuccess,
   });
   // The ask held is the newest press's, the one whose answer is still out or refused.
-  const held = mutation.isPending || mutation.isError ? mutation.variables?.ask.id : undefined;
-  useEffect(() => {
-    if (held === undefined) return;
-    markAnswerOutstanding(held, true);
-    return () => markAnswerOutstanding(held, false);
-  }, [held]);
+  useLiveRegistration(livePress(mutation)?.ask.id, markAnswerOutstanding);
   return mutation;
 }

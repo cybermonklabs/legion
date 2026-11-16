@@ -2319,6 +2319,46 @@ test("a snooze's Retry is of the ask its press was of, whichever ask the control
   }
 });
 
+// The row a live snooze asks the Inbox to hold is its press's ask too: drawn for another ask
+// while the snooze of the first is out, the control keeps the first ask's row held, holds no row
+// for the ask it shows, and lets the first go once Dispatch answers.
+test("a snooze out when the control is drawn for another ask holds the row of the ask it was pressed on", async () => {
+  const user = userEvent.setup();
+  const landing = Promise.withResolvers<{ snoozed_until: string }>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(() => landing.promise);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const liveness: [string, boolean][] = [];
+  const onLive = (askId: string, live: boolean) => {
+    liveness.push([askId, live]);
+  };
+  const drawn = (askId: string) => (
+    <QueryClientProvider client={queryClient}>
+      <SnoozeControl askId={askId} label={askId} onLive={onLive} snoozedUntil={null} />
+    </QueryClientProvider>
+  );
+  const view = render(drawn("ask-a"));
+  try {
+    await user.selectOptions(screen.getByLabelText("Snooze ask-a"), "tomorrow");
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    expect(liveness).toEqual([["ask-a", true]]);
+
+    view.rerender(drawn("ask-b"));
+    expect(liveness).toEqual([["ask-a", true]]);
+
+    landing.resolve({ snoozed_until: "2026-11-17T09:00:00Z" });
+    await waitFor(() => expect(liveness.length).toBe(2));
+    expect(liveness).toEqual([
+      ["ask-a", true],
+      ["ask-a", false],
+    ]);
+  } finally {
+    view.unmount();
+    snoozeAsk.mockRestore();
+  }
+});
+
 // ----------------------------------------------------------------------------------------
 // The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px,
 // where the Inbox is the list of cards it has always been - the Inbox below 1280 px, which the

@@ -183,26 +183,9 @@ export const UPLOAD_BASE_UNREADABLE_REFUSAL =
 // sentences, not one - the document moved under the upload, the upload named no version where
 // Dispatch requires one, and the token could not be read at all - and a person told the wrong
 // one of those is told something untrue. An upload the reader stopped is no refusal: it may have
-// been stored, and `again` names the surface's control that makes that very press again, under
-// the method the hook read for it (`KeyedWriteResult.method`), or is undefined where uploading the
-// file again is a press of its own. A plain Retry the sentence need not name is `stoppedNote`'s,
-// which a surface reads before this (`DraftUploadStatus`).
-export function uploadErrorMessage(
-  upload: Pick<DraftUpload, "error" | "method">,
-  again: string | undefined
-): string {
-  const { error } = upload;
-  if (endedStopped(upload)) {
-    return stoppedWriteNote(
-      "the upload",
-      "stored",
-      again === undefined
-        ? {
-            anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
-          }
-        : { again, method: upload.method, stopped: upload.error }
-    );
-  }
+// been stored, and every surface says so, and what its control does with it, before it reads
+// this (`stoppedNote` in `DraftUploadStatus`, `stoppedWriteNote` in `ArtifactUploadStatus`).
+export function uploadErrorMessage(error: unknown): string {
   if (error instanceof UploadBaseUnreadableError) {
     const said = error.cause instanceof ApiError ? ` ${error.cause.message}` : "";
     return `${UPLOAD_BASE_UNREADABLE_REFUSAL}${said}`;
@@ -439,9 +422,7 @@ export function DraftUploadStatus<Draft>({ upload }: { upload: DraftUpload<Draft
       ) : null}
       {upload.isError ? (
         <QueryError
-          message={
-            stoppedNote(upload, "the upload", "stored") ?? uploadErrorMessage(upload, undefined)
-          }
+          message={stoppedNote(upload, "the upload", "stored") ?? uploadErrorMessage(upload.error)}
           onRetry={upload.retry}
           retrying={upload.isPending}
         />
@@ -743,9 +724,20 @@ export function ArtifactUploadStatus({ upload }: { upload: ArtifactUpload }): Re
   }
   if (upload.isError) {
     const staged = upload.pendingFile !== null && upload.pendingFile === upload.refusedFile;
+    const stopped = endedStopped(upload)
+      ? stoppedWriteNote(
+          "the upload",
+          "stored",
+          staged
+            ? { again: "Upload", method: upload.method, stopped: upload.error }
+            : {
+                anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
+              }
+        )
+      : undefined;
     return (
       <p className={`w-full text-sm ${dangerText}`} role="alert">
-        {uploadErrorMessage(upload, staged ? "Upload" : undefined)}
+        {stopped ?? uploadErrorMessage(upload.error)}
       </p>
     );
   }
