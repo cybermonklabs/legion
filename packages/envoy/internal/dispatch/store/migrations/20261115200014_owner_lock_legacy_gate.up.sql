@@ -23,24 +23,32 @@
 --
 --   - dashboard_builds.owner_lock_protocol, a constant default of 0 that rewrites no row: this
 --     build's publish names 1 (dashboard.Publish), an earlier build's names nothing and reads 0.
---     Nothing reads the column; it tells the trigger below which build wrote the row.
---   - owner_lock_legacy_mark, one row: when an earlier build was last seen arriving.
---   - owner_lock_legacy_arrival, a trigger on both tables for a row at protocol 0, BEFORE INSERT:
---     it takes the gate, a transaction advisory lock of its own (two keys, 0x4F574E47 "OWNG" and 0,
+--     Only the mark's insert below and the trigger read the column: it tells them which build
+--     wrote the row.
+--   - owner_lock_legacy_mark, one row: when an earlier build was last seen arriving. The migration
+--     stamps it at the newest earlier publish already in dashboard_builds, when that is within the
+--     hour, since a publish that came before the trigger made no arrival.
+--   - owner_lock_legacy_arrival on dashboard_builds and owner_lock_legacy_registration on
+--     server_processes, triggers for a row at protocol 0, BEFORE INSERT: each takes the gate, a
+--     transaction advisory lock of its own (two keys, 0x4F574E47 "OWNG" and 0,
 --     store.OwnerLockGateNamespace and store.OwnerLockGateKey), exclusively, and stamps the mark.
 --     So the earlier build's publish or registration waits for every transaction of this build
---     that holds the gate, and its own transaction holds the gate until it commits.
+--     that holds the gate, and its own transaction holds the gate until it commits. A publish waits
+--     as long as the earlier build's publish deadline lets it; a registration, which holds the
+--     registry's lock that every heartbeat takes, waits at most 5 seconds and is then refused.
 --   - owner_lock_fleet, the fleet read: an earlier build is in the fleet while a row at protocol 0
 --     has heartbeated within one window, store.OwnerLockLegacyWindow (processes.PruneAge, 10
 --     minutes), so until it is deregistered or pruned, or while the mark is younger than another,
 --     store.OwnerLockMarkWindow (an hour), which covers an earlier build's boot from its publish to
---     its registration; the caller passes both. When it finds none it takes the gate shared and
---     reads again, under a snapshot of its own, so a mark committed while it waited for the gate is
---     read.
+--     its registration; the caller passes both. When it finds none it tries the gate shared,
+--     without waiting: a try that fails, while an arrival holds the gate or waits for it, answers
+--     as an earlier build in the fleet, and one that succeeds reads again, under a snapshot of its
+--     own, so a mark committed before the try is read.
 --   - owner_lock, which every read-phase owner lock statement of this build calls: the fleet read,
---     and then the owners' advisory locks, exclusive, shared or tried, so the gate is always taken
---     before any owner lock of the transaction. A transaction in the legacy mode takes no gate,
---     and an earlier build's arrival never waits for one.
+--     and then the owners' advisory locks, exclusive, shared or tried, so the gate is tried before
+--     any owner lock of the transaction. A transaction in the legacy mode holds no gate, and no
+--     owner lock ever waits for the gate: an arrival waits only for the transactions that held it
+--     when it asked.
 --
 -- Every name is written with its schema, and every function it calls with pg_catalog: these
 -- functions run under the caller's search_path, and a login that can create objects in schema
@@ -53,9 +61,10 @@
 -- publishes and registrations take the gate and stamp the mark, which nothing of that release
 -- reads, and no transaction of that release holds the gate, so they never wait.
 --
--- Locks: the ALTER takes dashboard_builds ACCESS EXCLUSIVE for the catalog write, and each
--- CREATE TRIGGER its table SHARE ROW EXCLUSIVE, until the commit; both tables take a write only at
--- a process's boot and on its heartbeat, so a write waits for an instant and a read not at all.
+-- Locks: the ALTER takes dashboard_builds ACCESS EXCLUSIVE for the catalog write, which the mark's
+-- insert then reads under, and each CREATE TRIGGER its table SHARE ROW EXCLUSIVE, until the
+-- commit; both tables take a write only at a process's boot and on its heartbeat, so a write waits
+-- for an instant and a read not at all.
 alter table public.dashboard_builds
   add column owner_lock_protocol integer not null default 0;
 
@@ -64,9 +73,41 @@ create table public.owner_lock_legacy_mark (
   seen_at timestamptz not null
 );
 
+-- An earlier build whose dashboard publish committed before this migration ran made no arrival:
+-- its insert came before the trigger below. Every row of dashboard_builds reads 0 here, the column
+-- having just been added, so the newest last_started_at among them is when an earlier build last
+-- booted, and the mark starts there when that is within the mark's window
+-- (store.OwnerLockMarkWindow, an hour, spelled again here). A database no build has published to,
+-- as every test's is, starts with no mark.
+insert into public.owner_lock_legacy_mark (singleton, seen_at)
+select true, pg_catalog.max(last_started_at) from public.dashboard_builds
+where owner_lock_protocol = 0
+having pg_catalog.max(last_started_at) > pg_catalog.now() - interval '1 hour';
+
 -- The mark only moves forward: two arrivals take the gate one after the other, and the second's
 -- transaction may have started before the first's.
+--
+-- owner_lock_legacy_arrival, a publish's, waits for the gate as long as the publish lets it: every
+-- earlier build bounds its publish at 60 seconds and ends its boot when it fails.
+-- owner_lock_legacy_registration, a registration's, is the same with its wait for the gate bounded
+-- at 5 seconds (lock_timeout, restored as the function returns), after which the insert fails with
+-- 55P03 lock_not_available. A registration holds the registry's lock (processes.registryLock)
+-- while it waits, and every process's heartbeat takes that lock within a 2 second bound of its
+-- own, so a longer wait would stop every heartbeat of the fleet toward the 15 second live window.
+-- An earlier build's fresh registration that fails ends its process (its main exits 1), and the
+-- return of its lapsed row, bounded at 2 seconds by that heartbeat's own bound, is logged and
+-- tried again at its next heartbeat.
 create function public.owner_lock_legacy_arrival() returns trigger language plpgsql as $$
+begin
+  perform pg_catalog.pg_advisory_xact_lock(1331121735, 0);
+  insert into public.owner_lock_legacy_mark (singleton, seen_at) values (true, pg_catalog.now())
+  on conflict (singleton) do update
+    set seen_at = greatest(public.owner_lock_legacy_mark.seen_at, excluded.seen_at);
+  return new;
+end $$;
+
+create function public.owner_lock_legacy_registration() returns trigger language plpgsql
+set lock_timeout = '5s' as $$
 begin
   perform pg_catalog.pg_advisory_xact_lock(1331121735, 0);
   insert into public.owner_lock_legacy_mark (singleton, seen_at) values (true, pg_catalog.now())
@@ -79,11 +120,18 @@ create trigger dashboard_builds_owner_lock_legacy_arrival before insert on publi
   for each row when (new.owner_lock_protocol = 0) execute function public.owner_lock_legacy_arrival();
 
 create trigger server_processes_owner_lock_legacy_arrival before insert on public.server_processes
-  for each row when (new.owner_lock_protocol = 0) execute function public.owner_lock_legacy_arrival();
+  for each row when (new.owner_lock_protocol = 0) execute function public.owner_lock_legacy_registration();
 
 -- Volatile, as a plpgsql function is unless it says otherwise: under READ COMMITTED each of its
 -- statements reads under a snapshot taken when that statement starts, so the second read sees a
--- mark the arrival that held the gate committed while the shared lock waited.
+-- mark an arrival committed between the first read and the try.
+--
+-- The gate is only tried, never waited for. A try fails while an arrival holds the gate or waits
+-- for it: Postgres grants no conditional request that conflicts with a request already queued
+-- (lock.c, LockAcquireExtended, which checks the queue's wait mask before the granted locks). A
+-- failed try answers that an earlier build is in the fleet, so the transaction takes the owners'
+-- rows as it does beside one, and no writer queues behind an arrival: an arrival waits only for
+-- the transactions that held the gate when it asked for it.
 create function public.owner_lock_fleet(legacy_window_secs double precision, mark_window_secs double precision)
 returns boolean
 language plpgsql as $$
@@ -101,7 +149,9 @@ begin
   if legacy then
     return true;
   end if;
-  perform pg_catalog.pg_advisory_xact_lock_shared(1331121735, 0);
+  if not pg_catalog.pg_try_advisory_xact_lock_shared(1331121735, 0) then
+    return true;
+  end if;
   select exists (
       select from public.server_processes
       where owner_lock_protocol = 0

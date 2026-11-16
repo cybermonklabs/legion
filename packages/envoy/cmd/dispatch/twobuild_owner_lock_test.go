@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,6 +357,216 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 	if !slices.Contains(labels, "previous-build") || !slices.Contains(labels, "current-build") {
 		t.Errorf("the issue's labels are %v; want this build's and the %s's both: the label the %s added once it served was lost under this build's PATCH, which read the labels before it",
 			labels, builds.previousName(), builds.previousName())
+	}
+	if answer := <-(crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build-again"]}`}.send()); answer.status != http.StatusOK {
+		t.Fatalf("this build's second PATCH answered %s", answer)
+	}
+	current.WaitForOutput(t, "owner locks now take the owner's row too")
+}
+
+// ───── the previous build's registration beside a write of this build held past its bound ─────
+
+// registrationGateBound bounds an earlier build's registration's wait for the owner lock gate:
+// owner_lock_legacy_registration's lock_timeout (migration 20261115200014_owner_lock_legacy_gate),
+// spelled again here. registrationGateHold is how long the row below holds a write of this build
+// in flight once that registration waits: longer than the bound.
+const (
+	registrationGateBound = 5 * time.Second
+	registrationGateHold  = 8 * time.Second
+)
+
+// heartbeatWatch is what watchHeartbeat saw of one server process's row: each heartbeat_at it read,
+// in order, the oldest the row was at a read by the database's clock, whether a read found no row,
+// and the last read that failed.
+type heartbeatWatch struct {
+	beats  []time.Time
+	oldest time.Duration
+	gone   bool
+	err    error
+}
+
+// gaps is the time between each two heartbeats w saw.
+func (w heartbeatWatch) gaps() []time.Duration {
+	gaps := make([]time.Duration, 0, len(w.beats))
+	for i := 1; i < len(w.beats); i++ {
+		gaps = append(gaps, w.beats[i].Sub(w.beats[i-1]).Round(time.Millisecond))
+	}
+	return gaps
+}
+
+// watchHeartbeat reads the server_processes row of instance every 100 ms until the stop it returns
+// is called, which answers what it saw, or the test ends.
+func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop func() heartbeatWatch) {
+	done := make(chan struct{})
+	seen := make(chan heartbeatWatch, 1)
+	go func() {
+		var watch heartbeatWatch
+		for {
+			var beat time.Time
+			var age float64
+			err := database.Pool.QueryRow(context.Background(), `
+				select heartbeat_at, extract(epoch from clock_timestamp() - heartbeat_at)::float8
+				from server_processes where instance = $1::uuid`, instance).Scan(&beat, &age)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+				watch.gone = true
+			case err != nil:
+				watch.err = err
+			default:
+				if n := len(watch.beats); n == 0 || !watch.beats[n-1].Equal(beat) {
+					watch.beats = append(watch.beats, beat)
+				}
+				watch.oldest = max(watch.oldest, time.Duration(age*float64(time.Second)))
+			}
+			select {
+			case <-done:
+				seen <- watch
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}()
+	var once sync.Once
+	end := func() { once.Do(func() { close(done) }) }
+	t.Cleanup(end)
+	return func() heartbeatWatch {
+		end()
+		return <-seen
+	}
+}
+
+// The previous build boots with no web app (DISPATCH_WEB_DIST an empty directory), so it publishes
+// no dashboard and its registration is its arrival, while a write of this build is between its
+// owner lock and its write phase for longer than the registration's bound: a PATCH adding a label,
+// held as the boot row above holds it. The registration waits for the gate holding the registry's
+// lock, which every heartbeat takes too, and is refused with 55P03 once registrationGateBound has
+// passed; the previous build then exits, as its main does when its registration fails. This
+// build's process does not lapse meanwhile: its row is never older than the live window
+// (store.ProcessLiveWindow), its heartbeat gaps logged. Once the write has committed with its
+// label, the previous build, started again as its supervisor would, registers and serves, and the
+// label it adds is kept beside this build's. Without the bound the registration waits for the
+// write for as long as it is held, with every heartbeat of this build behind it.
+func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
+	builds := newTwoBuilds(t)
+	current := builds.startNamed(t, false, currentApplication)
+	project := uniqueProjectKey(t, "BND")
+	current.createProject(t, project, "Registration bound")
+	issue, _ := current.createIssueIn(t, project, "Labelled across a refused registration", "A spec.\n")
+	current.call(t, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", fmt.Sprintf(`{"project":%q}`, project), http.StatusOK)
+	ctx := context.Background()
+	var instance string
+	if err := builds.database.Pool.QueryRow(ctx, `select instance::text from server_processes where owner_lock_protocol = $1`,
+		store.OwnerLockProtocol).Scan(&instance); err != nil {
+		t.Fatalf("read this build's registration: %v", err)
+	}
+
+	pause, err := builds.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pause.Rollback(ctx)
+	if _, err := pause.Exec(ctx, `select 1 from repo_projects where repo = 'owner/repo' for update`); err != nil {
+		t.Fatalf("hold the repository mapping's row: %v", err)
+	}
+	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["current-build"],"repo":"owner/repo"}`}.send()
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, regexp.MustCompile(`repo_projects`), 20*time.Second)
+	t.Logf("this build's PATCH waits in %q", waitingOn)
+	stopWatch := watchHeartbeat(t, builds.database, instance)
+
+	noDashboard := t.TempDir()
+	startPrevious := func() *dispatchProcess {
+		options := builds.options(nil)
+		options.Binary, options.WebDist = builds.build.path("envoy-dispatch"), noDashboard
+		options.BindsItsPort = true
+		builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, options)
+		return builds.a
+	}
+	started := time.Now()
+	previous := startPrevious()
+	var gateQuery string
+	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		var gatePID uint32
+		if gatePID, gateQuery = gateWaiter(t, builds.database, patchPID); gatePID != 0 {
+			break
+		}
+		select {
+		case <-previous.Exited:
+			t.Fatalf("the %s exited before its registration waited for the owner lock gate:\n%s", builds.previousName(), previous.Output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the %s's registration did not wait for the owner lock gate within 60s:\n%s", builds.previousName(), previous.Output.String())
+		}
+	}
+	waiting := time.Now()
+	t.Logf("the %s waits for the owner lock gate %s after it started, in %q", builds.previousName(),
+		waiting.Sub(started).Round(time.Millisecond), gateQuery)
+	if !strings.Contains(gateQuery, "insert into server_processes") {
+		t.Errorf("the %s waits for the gate in %q, want its registration's insert: with no web app it publishes no dashboard", builds.previousName(), gateQuery)
+	}
+	refused := false
+	select {
+	case <-previous.Exited:
+		refused = true
+		took := time.Since(waiting)
+		t.Logf("the %s exited %s after its registration began to wait for the gate", builds.previousName(), took.Round(time.Millisecond))
+		if took > registrationGateBound+3*time.Second {
+			t.Errorf("the %s exited %s after its registration began to wait for the gate, want within its bound of %s and the exit", builds.previousName(), took.Round(time.Millisecond), registrationGateBound)
+		}
+		if output := previous.Output.String(); !strings.Contains(output, `msg="dispatch: register this server process"`) || !strings.Contains(output, "SQLSTATE 55P03") {
+			t.Errorf("the %s exited without logging its registration refused for the lock timeout (55P03):\n%s", builds.previousName(), output)
+		}
+	case <-time.After(registrationGateBound + 3*time.Second):
+		t.Errorf("the %s's registration still waited for the gate %s after it began, past its bound of %s",
+			builds.previousName(), time.Since(waiting).Round(time.Millisecond), registrationGateBound)
+	}
+	if rest := registrationGateHold - time.Since(waiting); rest > 0 {
+		time.Sleep(rest)
+	}
+	if err := pause.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case answer := <-patched:
+		if answer.status != http.StatusOK {
+			t.Fatalf("this build's PATCH answered %s", answer)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("this build's PATCH never answered within 60s of the mapping's row being let go")
+	}
+	watch := stopWatch()
+	t.Logf("this build's heartbeats from the PATCH's hold to its commit, %s after the %s's registration began to wait: %d read, gaps %v, the row at its oldest %s",
+		time.Since(waiting).Round(time.Millisecond), builds.previousName(), len(watch.beats), watch.gaps(), watch.oldest.Round(time.Millisecond))
+	if watch.err != nil {
+		t.Errorf("read this build's heartbeat: %v", watch.err)
+	}
+	if watch.gone || watch.oldest >= store.ProcessLiveWindow {
+		t.Errorf("this build's registration lapsed while the %s's registration waited: its row was %s old at its oldest (gone: %t), want under the live window %s",
+			builds.previousName(), watch.oldest.Round(time.Millisecond), watch.gone, store.ProcessLiveWindow)
+	}
+	if refused {
+		var earlier int
+		if err := builds.database.Pool.QueryRow(ctx, `select count(*) from server_processes where owner_lock_protocol = 0`).Scan(&earlier); err != nil {
+			t.Fatal(err)
+		}
+		if earlier != 0 {
+			t.Errorf("%d rows of an earlier build are registered after the %s's registration was refused, want none", earlier, builds.previousName())
+		}
+		previous = startPrevious()
+	}
+	previous.waitHealthy(t)
+	if answer := <-(crossBuildWrite{process: previous, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
+		body: `{"labels_add":["previous-build"]}`}.send()); answer.status != http.StatusOK {
+		t.Fatalf("the %s's PATCH answered %s", builds.previousName(), answer)
+	}
+	var labels []string
+	if err := builds.database.Pool.QueryRow(ctx, `select labels from issues where key = $1`, issue).Scan(&labels); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(labels, "previous-build") || !slices.Contains(labels, "current-build") {
+		t.Errorf("the issue's labels are %v; want this build's and the %s's both", labels, builds.previousName())
 	}
 	if answer := <-(crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
 		body: `{"labels_add":["current-build-again"]}`}.send()); answer.status != http.StatusOK {

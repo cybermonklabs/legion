@@ -28,10 +28,13 @@ const OwnerLockNamespace int32 = 0x4F574E52
 // OwnerLockGateNamespace and OwnerLockGateKey are the two keys of the owner lock gate ("OWNG", 0),
 // a transaction advisory lock that migration 20261115200014_owner_lock_legacy_gate's functions take
 // and nothing in Go does: every read-phase owner lock of a transaction that finds no earlier build
-// in the fleet takes it shared before its first owner lock (public.owner_lock_fleet), and the
-// arrival of an earlier build - its dashboard publish, or its registration - takes it exclusively
-// (public.owner_lock_legacy_arrival), so that arrival waits for every such transaction to end. Its
-// first key is a namespace of its own among the module's two-key locks (OwnerLockNamespace's
+// in the fleet tries it shared, without waiting, before its first owner lock
+// (public.owner_lock_fleet), and the arrival of an earlier build takes it exclusively - its
+// dashboard publish (public.owner_lock_legacy_arrival) for as long as that publish waits, its
+// registration (public.owner_lock_legacy_registration) for at most 5 seconds - so that arrival
+// waits for every transaction that holds it. A try that fails, because an arrival holds the gate
+// or waits for it, reads as an earlier build in the fleet, so no owner lock waits on an arrival.
+// Its first key is a namespace of its own among the module's two-key locks (OwnerLockNamespace's
 // list). They are exported, and spelled here as the migration spells them, so a test reads the
 // gate out of pg_locks.
 const (
@@ -65,7 +68,10 @@ const OwnerLockProtocol = 1
 // boot makes first, to its registration, which then keeps it in the fleet. Every step of that
 // boot is bounded at 30 to 60 seconds and its admission at 20, but SeedRepoProjects is not, so the
 // mark holds an hour; an earlier build whose boot takes longer than that from its publish to its
-// registration is not in the fleet from the hour's end until it registers.
+// registration is not in the fleet from the hour's end until it registers. The migration stamps
+// the mark too, at the newest dashboard_builds row an earlier build wrote when that is within the
+// hour (it spells the hour again), so an earlier boot whose publish came before the migration is
+// covered as one after it is.
 var (
 	OwnerLockLegacyWindow = 10 * time.Minute
 	OwnerLockMarkWindow   = time.Hour
@@ -154,20 +160,21 @@ type OwnerLocker interface {
 // the owners' lock keys, $3 OwnerLockLegacyWindow and $4 OwnerLockMarkWindow in seconds. It runs
 // the fleet read first (public.owner_lock_fleet): whether an earlier build is in the fleet, a
 // server_processes row at owner lock protocol 0 that heartbeated within the one window or the mark
-// an earlier build's arrival stamped within the other. When it
-// finds none it takes the owner lock gate shared (OwnerLockGateNamespace) and reads again under a
-// snapshot of its own, so an arrival that held the gate exclusively and committed while this one
-// waited is read. Then it takes the owners' locks: exclusive or shared, every key once in the
-// order of its hash, or tried, each key in the order given. Every row it answers carries the fleet
-// read as legacy_fleet; a try answers one row per owner it took, the others one row.
+// an earlier build's arrival stamped within the other. When it finds none it tries the owner lock
+// gate shared (OwnerLockGateNamespace), without waiting. A try that fails - an earlier build's
+// arrival holds the gate or waits for it, and Postgres grants no conditional request that
+// conflicts with a waiting one - answers as an earlier build in the fleet; one that succeeds reads
+// the fleet again under a snapshot of its own, so an arrival that committed after the first read
+// is read. Then it takes the owners' locks: exclusive or shared, every key once in the order of
+// its hash, or tried, each key in the order given. Every row it answers carries the fleet read as
+// legacy_fleet; a try answers one row per owner it took, the others one row.
 //
 // One function rather than one statement of several calls, because Postgres fixes no order among
-// the expressions of one statement, and the gate must come before every owner lock of the
-// transaction: a transaction that held an owner lock and then queued for the gate behind an
-// arrival, which itself waits for a holder of the gate that waits for that owner lock, waits in a
-// cycle that Postgres undoes only at its deadlock check, deadlock_timeout later, by moving the
-// shared request ahead of the arrival. The function is one statement and one round trip, as the
-// statement it replaced was.
+// the expressions of one statement: the function reads the fleet and tries the gate before it
+// takes the first owner lock, so the answer is the mode those locks were taken in, in one
+// statement and one round trip, as the statement it replaced was. The gate is only tried, so an
+// owner lock never queues behind an arrival, and an arrival waits only for the transactions that
+// held the gate when it asked for it.
 //
 // The write phase's statement (QueueLockOwner), which takes again a lock the transaction holds,
 // carries no fleet read and takes no gate: the transaction's read phase took both.
@@ -195,8 +202,8 @@ const (
 	// earlier build, which serialises on the owner row, is in the fleet.
 	OwnerLockAdvisory
 	// OwnerLockAdvisoryAndRow is the advisory lock and then the owner's row, before any read the
-	// lock guards, and no gate: an earlier build, which serialises on that row, is in the fleet
-	// (lockOwnerRows).
+	// lock guards, and no gate: an earlier build, which serialises on that row, is in the fleet,
+	// or its arrival holds the gate or waits for it (lockOwnerRows).
 	OwnerLockAdvisoryAndRow
 )
 
@@ -255,10 +262,12 @@ func noteOwnerLockMode(legacy bool) {
 // of this build in the advisory mode holds the lock and takes the row in its write phase
 // (events.lockEventOwner), so taking the row first would wait for it while it waits for the lock.
 //
-// While no earlier build is in the fleet, the statement takes the owner lock gate shared before
+// While no earlier build is in the fleet, the statement tries the owner lock gate shared before
 // the lock (OwnerLockGateNamespace) and holds it to the transaction's end, so an earlier build that
-// arrives meanwhile - its dashboard publish, or its registration - waits for this transaction to
-// end before it writes anything, and every owner lock after that arrival reads it in the fleet.
+// arrives meanwhile - its dashboard publish, or its registration for up to 5 seconds - waits for
+// this transaction to end before it writes anything, and every owner lock after that arrival reads
+// it in the fleet. A try that fails, while an arrival holds the gate or waits for it, takes the
+// owner's row as beside an earlier build, so no owner lock waits on an arrival.
 //
 // The lock and the read it guards must be separate statements. Under READ COMMITTED a statement's
 // snapshot is taken when it starts, before it waits, so a statement that both took this lock and
@@ -585,9 +594,9 @@ func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error
 // writer of that build holds it, or it has no row - is left out of the answer. Its advisory lock
 // stays held to the end of the transaction, as a transaction lock does: that holds off this
 // build's writers of that owner for the rest of the pass, and excludes nothing else. While the
-// fleet read answers that none is, the statement takes the owner lock gate shared before it tries
-// the first owner, as every read-phase owner lock does (LockOwner), and waits for it: only the
-// owners' locks are tried.
+// fleet read answers that none is, the statement holds the owner lock gate shared, which it tried
+// before the first owner as every read-phase owner lock does (LockOwner): only the owners' locks
+// are tried.
 func TryLockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) ([]Owner, error) {
 	if len(owners) == 0 {
 		return nil, nil

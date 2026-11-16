@@ -21,12 +21,13 @@ import (
 // an owner's writers on the owner's row, which it takes first and holds for its whole transaction,
 // and never takes the advisory lock; so while one is in the fleet, every read-phase owner lock of
 // this build takes the row too, right after the advisory lock and before the read it guards
-// (lockOwnerRows), and while none is, it takes the owner lock gate shared before its first owner
-// lock (OwnerLockGateNamespace), which an earlier build's arrival takes exclusively. These tests
-// write that earlier build's process as the row it leaves in server_processes, owner_lock_protocol
-// at its default 0, its boot's dashboard publish as the dashboard_builds row it leaves, the same,
-// and the earlier build's writer as the statements it runs: the owner's row `for no key update`
-// first, then the read, then the write.
+// (lockOwnerRows), and while none is, it tries the owner lock gate shared before its first owner
+// lock (OwnerLockGateNamespace), which an earlier build's arrival takes exclusively, and takes the
+// row as beside an earlier build when the try fails. These tests write that earlier build's
+// process as the row it leaves in server_processes, owner_lock_protocol at its default 0, its
+// boot's dashboard publish as the dashboard_builds row it leaves, the same, and the earlier build's
+// writer as the statements it runs: the owner's row `for no key update` first, then the read, then
+// the write.
 
 // fleetOwners is the owners these tests lock, one of each kind and a second issue, as rows of a
 // database of their own.
@@ -69,7 +70,7 @@ func openFleetStore(t *testing.T) (*Store, fleetOwners) {
 // registerFleetProcess writes a server_processes row as a process of the given owner lock
 // protocol leaves it, with a heartbeat age old, and returns its instance. A protocol of 0 is
 // written by leaving the column out, as a build before the column writes its row, so its insert
-// takes the owner lock gate and stamps the earlier build's mark (owner_lock_legacy_arrival).
+// takes the owner lock gate and stamps the earlier build's mark (owner_lock_legacy_registration).
 func registerFleetProcess(t *testing.T, s *Store, protocol int, age time.Duration) string {
 	t.Helper()
 	var instance string
@@ -698,10 +699,10 @@ func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key stri
 // An earlier build's arrival - its dashboard publish, the first thing its boot writes, or its
 // registration - waits while a transaction of this build that read no earlier build in the fleet
 // is between its owner lock and its write: that transaction holds the owner lock gate shared, and
-// the arrival's insert takes it exclusively (owner_lock_legacy_arrival). It goes on once that
-// transaction commits, and the next owner lock reads the earlier build in the fleet and takes the
-// owner's row, without the gate; a second arrival then waits for nothing, though that writer is
-// between its owner lock and its write too.
+// the arrival's insert takes it exclusively (owner_lock_legacy_arrival,
+// owner_lock_legacy_registration). It goes on once that transaction commits, and the next owner
+// lock reads the earlier build in the fleet and takes the owner's row, without the gate; a second
+// arrival then waits for nothing, though that writer is between its owner lock and its write too.
 func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
@@ -734,21 +735,7 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 			arrivalPID := conn.Conn().PgConn().PID()
 			arrived := make(chan error, 1)
 			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
-			deadline := time.Now().Add(10 * time.Second)
-			for {
-				if gate, granted := gateLock(t, s, arrivalPID); gate == "ExclusiveLock" && !granted {
-					break
-				}
-				select {
-				case err := <-arrived:
-					t.Fatalf("%s ended (%v) while the writer held the gate shared; want it to wait for the gate", arrival.name, err)
-				default:
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("%s did not wait for the gate within 10s", arrival.name)
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
 			select {
 			case err := <-arrived:
 				t.Fatalf("%s ended (%v) while the writer was between its owner lock and its write", arrival.name, err)
@@ -804,6 +791,395 @@ func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *tes
 	}
 }
 
+// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
+// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
+// named what, ends first (ended).
+func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
+			return
+		}
+		select {
+		case err := <-ended:
+			t.Fatalf("%s ended (%v) while a transaction held the gate shared; want it to wait for the gate", what, err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not wait for the gate within 10s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// writerGateBound is how long an owner lock of this build may take while an arrival waits for the
+// gate, once its statements are prepared on its connection: its statement and the owners' rows
+// after it, two round trips with no wait in them.
+const writerGateBound = 50 * time.Millisecond
+
+// A writer of this build that starts while an earlier build's arrival waits for the owner lock gate
+// never queues behind that arrival. The arrival waits for a transaction that read no earlier build
+// and holds the gate shared; the writer's owner lock tries the gate shared, which Postgres refuses
+// while the arrival's exclusive request waits, and so takes its owners' rows, as it does beside an
+// earlier build, at once. Each read-phase owner lock - LockOwner, LockOwnersShared, TryLockOwners -
+// answers in the mode beside an earlier build, holding its owner's row and no gate, and the arrival
+// is still waiting after them. Each runs twice on one connection: the first run prepares its
+// statements there, which is no cost of the gate, and the second answers within writerGateBound.
+// With the gate waited for rather than tried, the first of them queues behind the arrival until
+// the transaction it waits for ends.
+func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *testing.T) {
+	for _, arrival := range earlierBuildArrivals {
+		t.Run(arrival.name, func(t *testing.T) {
+			s, owners := openFleetStore(t)
+			ctx := context.Background()
+			holder, err := s.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer holder.Rollback(ctx)
+			if err := LockOwner(ctx, holder, owners.project); err != nil {
+				t.Fatal(err)
+			}
+			if gate, granted := gateLock(t, s, holder.Conn().PgConn().PID()); gate != "ShareLock" || !granted {
+				t.Fatalf("the transaction in flight holds the gate as %q (granted %t), want it held shared", gate, granted)
+			}
+			conn, err := s.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Release()
+			arrivalPID := conn.Conn().PgConn().PID()
+			arrived := make(chan error, 1)
+			go func() { arrived <- arriveOn(ctx, conn, arrival, uuid.NewString()) }()
+			awaitGateWait(t, s, arrivalPID, arrived, arrival.name)
+
+			writers := []struct {
+				name  string
+				owner Owner
+				lock  func(tx pgx.Tx) error
+			}{
+				{"LockOwner", owners.issueA, func(tx pgx.Tx) error { return LockOwner(ctx, tx, owners.issueA) }},
+				{"LockOwnersShared", owners.issueB, func(tx pgx.Tx) error { return LockOwnersShared(ctx, tx, owners.issueB) }},
+				{"TryLockOwners", owners.document, func(tx pgx.Tx) error {
+					taken, err := TryLockOwners(ctx, tx, owners.document)
+					if err == nil && len(taken) != 1 {
+						err = fmt.Errorf("took %v, want %s", lockKeys(taken), owners.document.LockKey())
+					}
+					return err
+				}},
+			}
+			writerConn, err := s.Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writerConn.Release()
+			for _, measured := range []bool{false, true} {
+				for _, writer := range writers {
+					tx, err := writerConn.Begin(ctx)
+					if err != nil {
+						t.Fatal(err)
+					}
+					locked := make(chan error, 1)
+					began := time.Now()
+					go func() { locked <- writer.lock(tx) }()
+					select {
+					case err := <-locked:
+						took := time.Since(began)
+						if err != nil {
+							t.Fatalf("%s: %v", writer.name, err)
+						}
+						if measured {
+							t.Logf("%s answered in %s while %s waited for the gate", writer.name, took, arrival.name)
+							if took > writerGateBound {
+								t.Errorf("%s took %s while %s waited for the gate, want at most %s: no wait on the gate", writer.name, took, arrival.name, writerGateBound)
+							}
+						}
+					case <-time.After(5 * time.Second):
+						t.Errorf("%s waited 5s while %s waited for the gate; want it to try the gate, not queue behind the arrival", writer.name, arrival.name)
+						_ = holder.Rollback(ctx)
+						<-locked
+						_ = tx.Rollback(ctx)
+						t.FailNow()
+					}
+					if mode := LastOwnerLockMode(); mode != OwnerLockAdvisoryAndRow {
+						t.Errorf("%s while %s waited for the gate took the %s mode, want %s", writer.name, arrival.name, mode, OwnerLockAdvisoryAndRow)
+					}
+					if !ownerRowHeld(t, s, writer.owner) {
+						t.Errorf("%s while %s waited for the gate holds no row of %s, want it held beside the advisory lock", writer.name, arrival.name, writer.owner.LockKey())
+					}
+					if gate, granted := gateLock(t, s, writerConn.Conn().PgConn().PID()); gate != "" {
+						t.Errorf("%s while %s waited for the gate holds it as %q (granted %t), want no gate", writer.name, arrival.name, gate, granted)
+					}
+					if err := tx.Rollback(ctx); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if gate, granted := gateLock(t, s, arrivalPID); gate != "ExclusiveLock" || granted {
+				t.Errorf("after the writers %s holds the gate as %q (granted %t), want it still waiting for the transaction in flight", arrival.name, gate, granted)
+			}
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-arrived:
+				if err != nil {
+					t.Fatalf("%s after the transaction in flight committed: %v", arrival.name, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s did not end within 10s of the commit of the transaction it waited for", arrival.name)
+			}
+		})
+	}
+}
+
+// registrationGateBound bounds an earlier build's registration's wait for the owner lock gate:
+// owner_lock_legacy_registration's lock_timeout, spelled again here.
+const registrationGateBound = 5 * time.Second
+
+// hasLegacyMark reports whether owner_lock_legacy_mark holds its row.
+func hasLegacyMark(t *testing.T, s *Store) bool {
+	t.Helper()
+	var marked bool
+	if err := s.Pool.QueryRow(context.Background(), `select exists (select from owner_lock_legacy_mark)`).Scan(&marked); err != nil {
+		t.Fatalf("read the earlier build's mark: %v", err)
+	}
+	return marked
+}
+
+// An earlier build's registration waits for the owner lock gate at most registrationGateBound. It
+// holds the registry's lock while it waits, and every process's heartbeat takes that lock too, so
+// behind a transaction of this build that holds the gate shared for longer, the registration
+// fails with 55P03 lock_not_available once the bound has passed, stamps no mark, and lets go of the
+// registry's lock: a heartbeat of this build queued on it goes through. A dashboard publish keeps
+// waiting past the bound, since the earlier build bounds its publish itself, and goes through once
+// that transaction commits. Without the bound the registration waits for that transaction as
+// long as the publish does, and the heartbeat with it.
+func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
+	s, owners := openFleetStore(t)
+	ctx := context.Background()
+	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)
+	holder, err := s.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if err := LockOwner(ctx, holder, owners.issueA); err != nil {
+		t.Fatal(err)
+	}
+	if gate, granted := gateLock(t, s, holder.Conn().PgConn().PID()); gate != "ShareLock" || !granted {
+		t.Fatalf("the transaction in flight holds the gate as %q (granted %t), want it held shared", gate, granted)
+	}
+
+	registration, publish := earlierBuildArrivals[1], earlierBuildArrivals[0]
+	registrationConn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registrationConn.Release()
+	registered := make(chan error, 1)
+	began := time.Now()
+	go func() { registered <- arriveOn(ctx, registrationConn, registration, uuid.NewString()) }()
+	awaitGateWait(t, s, registrationConn.Conn().PgConn().PID(), registered, registration.name)
+	beat := make(chan error, 1)
+	go func() { beat <- heartbeatAsThisBuild(ctx, s, mine) }()
+	select {
+	case err := <-registered:
+		took := time.Since(began)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+			t.Fatalf("%s behind a transaction holding the gate past the bound ended with %v after %s, want 55P03 lock_not_available", registration.name, err, took)
+		}
+		t.Logf("%s was refused after %s: %s", registration.name, took.Round(time.Millisecond), pgErr.Message)
+	case <-time.After(registrationGateBound + 3*time.Second):
+		t.Errorf("%s still waited for the gate %s after it started, past its bound of %s", registration.name, time.Since(began).Round(time.Millisecond), registrationGateBound)
+		_ = holder.Rollback(ctx)
+		<-registered
+		<-beat
+		t.FailNow()
+	}
+	select {
+	case err := <-beat:
+		if err != nil {
+			t.Fatalf("this build's heartbeat after %s was refused: %v", registration.name, err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("this build's heartbeat did not go through within 5s of %s's refusal", registration.name)
+	}
+	if hasLegacyMark(t, s) {
+		t.Errorf("%s was refused and the earlier build's mark is stamped, want none", registration.name)
+	}
+
+	publishConn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer publishConn.Release()
+	published := make(chan error, 1)
+	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
+	awaitGateWait(t, s, publishConn.Conn().PgConn().PID(), published, publish.name)
+	select {
+	case err := <-published:
+		t.Fatalf("%s ended (%v) within %s while the transaction it waits for was still under way; want it to wait as long as the earlier build's publish lets it",
+			publish.name, err, registrationGateBound+time.Second)
+	case <-time.After(registrationGateBound + time.Second):
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-published:
+		if err != nil {
+			t.Fatalf("%s after the transaction it waited for committed: %v", publish.name, err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s did not end within 10s of the commit of the transaction it waited for", publish.name)
+	}
+	if !hasLegacyMark(t, s) {
+		t.Errorf("%s went through and the earlier build's mark is not stamped", publish.name)
+	}
+}
+
+// ownerLockLegacyGateVersion is migration 20261115200014_owner_lock_legacy_gate's version.
+const ownerLockLegacyGateVersion = 20261115200014
+
+// The migration stamps the earlier build's mark at the newest dashboard publish of a build before
+// it, when that publish is within the mark's window. An earlier build whose publish committed just
+// before the migration ran made no arrival, since the trigger was not there yet, and it is not
+// registered yet: a write of this build that starts then reads the mark and takes the owner's row
+// beside its advisory lock, so while it is held between its owner lock and its write phase, the
+// earlier build's write of the same owner - the row first - waits for it, and lands after it: both
+// increments are kept. A publish older than the window, and no publish at all, which is what every
+// test database has, leave no mark, and the write takes the advisory lock alone. Without the
+// migration's insert the earlier build's write goes through while this build's is held, and is
+// lost under it.
+func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
+	cases := []struct {
+		name    string
+		publish bool
+		age     time.Duration
+		legacy  bool
+	}{
+		{name: "an earlier build's publish just before the migration", publish: true, legacy: true},
+		{name: "an earlier build's publish before the mark's window", publish: true, age: OwnerLockMarkWindow + time.Minute},
+		{name: "no publish before the migration"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := openEmptyTestStore(t)
+			if err := s.migrate(ctx, migrationsThrough(t, ownerLockLegacyGateVersion-1)); err != nil {
+				t.Fatalf("migrate through %d: %v", ownerLockLegacyGateVersion-1, err)
+			}
+			if _, err := s.Pool.Exec(ctx, `
+				insert into projects (key, name, default_assignee) values ('FLT', 'Fleet', 'alice@example.com');
+				insert into issues (key, number, project_key, rank, title, created_by) values ('FLT-1', 1, 'FLT', 'a', 'One', '{}')`); err != nil {
+				t.Fatalf("seed the owner: %v", err)
+			}
+			issue := IssueOwner("FLT-1")
+			if c.publish {
+				// The earlier build's publish as legion-envoy-v30.24.0's dashboard.Publish writes it.
+				if _, err := s.Pool.Exec(ctx, `
+					insert into dashboard_builds (build, entry, commit) values ('earlier', '/assets/index-earlier.js', 'earlier0build')
+					on conflict (build) do update set last_started_at = now()`); err != nil {
+					t.Fatalf("publish as an earlier build: %v", err)
+				}
+				if _, err := s.Pool.Exec(ctx, `update dashboard_builds set last_started_at = now() - make_interval(secs => $1)`, c.age.Seconds()); err != nil {
+					t.Fatalf("age the earlier build's publish: %v", err)
+				}
+			}
+			if err := s.migrate(ctx, migrationFiles); err != nil {
+				t.Fatalf("migrate from %d: %v", ownerLockLegacyGateVersion, err)
+			}
+			if marked := hasLegacyMark(t, s); marked != c.legacy {
+				t.Errorf("after the migration the earlier build's mark is stamped: %t, want %t", marked, c.legacy)
+			}
+
+			writer, err := s.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer writer.Rollback(ctx)
+			if err := LockOwner(ctx, writer, issue); err != nil {
+				t.Fatal(err)
+			}
+			want := OwnerLockAdvisory
+			if c.legacy {
+				want = OwnerLockAdvisoryAndRow
+			}
+			if mode := LastOwnerLockMode(); mode != want {
+				t.Errorf("this build's write after the migration took the %s mode, want %s", mode, want)
+			}
+			if !c.legacy {
+				return
+			}
+			var seq int
+			if err := writer.QueryRow(ctx, `select last_seq from issues where key = $1`, issue.Key).Scan(&seq); err != nil {
+				t.Fatal(err)
+			}
+			writerPID := writer.Conn().PgConn().PID()
+			wrote := make(chan error, 1)
+			go func() {
+				_, err := raceWriter(ctx, s, rowFirstWriter, []Owner{issue}, []Owner{issue})
+				wrote <- err
+			}()
+			ended := false
+			for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+				select {
+				case err := <-wrote:
+					if err != nil {
+						t.Fatalf("the earlier build's write: %v", err)
+					}
+					t.Errorf("the earlier build's write went through while this build's write was between its owner lock and its write phase; want it to wait for the owner's row")
+					ended = true
+				default:
+				}
+				if ended {
+					break
+				}
+				var queued bool
+				if err := s.Pool.QueryRow(ctx, `
+					select exists (select from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))`,
+					writerPID).Scan(&queued); err != nil {
+					t.Fatal(err)
+				}
+				if queued {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the earlier build's write neither went through nor queued behind this build's write within 10s")
+				}
+			}
+			if _, err := writer.Exec(ctx, ownerLock, OwnerLockNamespace, issue.LockKey()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := writer.Exec(ctx, `update issues set last_seq = $2 where key = $1`, issue.Key, seq+1); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if !ended {
+				select {
+				case err := <-wrote:
+					if err != nil {
+						t.Fatalf("the earlier build's write after this build's committed: %v", err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the earlier build's write did not end within 10s of this build's commit")
+				}
+			}
+			if got := ownerSeqs(t, s, []Owner{issue})[issue]; got != seq+2 {
+				t.Errorf("the issue's last_seq is %d after both writes from %d, want %d: the earlier build's write was lost under this build's", got, seq, seq+2)
+			}
+		})
+	}
+}
+
 // gateRace is what the race below sizes: how many times the earlier build arrives, writes and
 // leaves, how many row-first writes it makes each time on each of its two writers, and how many
 // writers of this build run all the while.
@@ -813,9 +1189,101 @@ const (
 	gateRaceWriters       = 4
 )
 
-// gateRaceTally is what one role of the race came to.
+// gateRaceTally is what one role of the races came to.
 type gateRaceTally struct {
 	commits, deadlocks, gateDeadlocks, failures int
+}
+
+// gateCycle is how a deadlock's detail names the owner lock gate, as one of the locks of its cycle.
+var gateCycle = fmt.Sprintf(",%d,%d,2]", OwnerLockGateNamespace, OwnerLockGateKey)
+
+// raceLedger is what the writers of a race committed: each role's tally, every increment they
+// committed by owner, and how many of this build's writers committed in each mode (true: beside an
+// earlier build). The race's goroutines share it.
+type raceLedger struct {
+	mu        sync.Mutex
+	committed map[Owner]int
+	tallies   map[string]*gateRaceTally
+	modes     map[bool]int
+}
+
+func newRaceLedger() *raceLedger {
+	return &raceLedger{committed: map[Owner]int{}, tallies: map[string]*gateRaceTally{}, modes: map[bool]int{}}
+}
+
+// record counts one transaction of role that touched touched: its commit, or its failure, a
+// deadlock (40P01) and whether its cycle ran through the gate, or any other, logged.
+func (l *raceLedger) record(t *testing.T, role string, err error, touched []Owner) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	tally := l.tallies[role]
+	if tally == nil {
+		tally = &gateRaceTally{}
+		l.tallies[role] = tally
+	}
+	var pgErr *pgconn.PgError
+	switch {
+	case err == nil:
+		tally.commits++
+		for _, owner := range touched {
+			l.committed[owner]++
+		}
+	case errors.As(err, &pgErr) && pgErr.Code == "40P01":
+		tally.deadlocks++
+		if strings.Contains(pgErr.Detail, gateCycle) {
+			tally.gateDeadlocks++
+		}
+		t.Logf("%s: deadlock: %s", role, pgErr.Detail)
+	default:
+		tally.failures++
+		t.Logf("%s: %v", role, err)
+	}
+}
+
+// write runs one writer of shape over a random subset of all and records it, and for this
+// build's writer as its fleet read answers, the mode it committed in.
+func (l *raceLedger) write(ctx context.Context, t *testing.T, s *Store, shape writerShape, all []Owner) {
+	subset, touch := randomOwners(all)
+	legacy, err := raceWriter(ctx, s, shape, subset, touch)
+	if err == nil && shape == fleetModeWriter {
+		l.mu.Lock()
+		l.modes[legacy]++
+		l.mu.Unlock()
+	}
+	l.record(t, string(shape), err, touch)
+}
+
+// settle logs each role's tally and answers the increments lost, every owner's last_seq read
+// against start and the increments committed, and the deadlocks and other failures of every role.
+// It is called once the race's goroutines have ended.
+func (l *raceLedger) settle(t *testing.T, s *Store, all []Owner, start map[Owner]int) (lost, deadlocks, failures int) {
+	t.Helper()
+	end := ownerSeqs(t, s, all)
+	for _, owner := range all {
+		lost += start[owner] + l.committed[owner] - end[owner]
+	}
+	for role, tally := range l.tallies {
+		t.Logf("%s: %d committed, %d deadlocks (40P01), %d of them through the gate, %d other failures",
+			role, tally.commits, tally.deadlocks, tally.gateDeadlocks, tally.failures)
+		deadlocks += tally.deadlocks
+		failures += tally.failures
+	}
+	return lost, deadlocks, failures
+}
+
+// ownerSeqs is every owner's last_seq.
+func ownerSeqs(t *testing.T, s *Store, owners []Owner) map[Owner]int {
+	t.Helper()
+	seq := map[Owner]int{}
+	for _, owner := range owners {
+		table, column := ownerRowTable(owner)
+		var value int
+		if err := s.Pool.QueryRow(context.Background(), `select last_seq from `+table+` where `+column+`::text = $1`, owner.Key).Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		seq[owner] = value
+	}
+	return seq
 }
 
 // randomOwners is a random subset of all, at least two, and the same owners in another random
@@ -855,60 +1323,18 @@ func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error 
 // repairs and passes do, registers while they run (every other time), and leaves once they end:
 // its row deregistered and its mark aged past the window, as that much time passing does. No
 // update is lost, nothing deadlocks and nothing else fails: a writer of this build that read no
-// earlier build holds the gate until it ends, so the arrival waits for it, and every writer after
-// the arrival takes the owners' rows. Writers run in both modes, and the arrivals that waited for
-// the gate, and how long, are logged. With the gate taken out of owner_lock_legacy_arrival, a
-// writer that read no earlier build writes beside that build's writers, and updates are lost.
+// earlier build holds the gate until it ends, so the arrival waits for it, and every writer that
+// starts while the arrival waits, or after it, takes the owners' rows. Writers run in both modes,
+// and the arrivals that waited for the gate, and how long, are logged. With the gate taken out of
+// the two arrival triggers, a writer that read no earlier build writes beside that build's
+// writers, and updates are lost.
 func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing.T) {
 	s, owners := openFleetStore(t)
 	ctx := context.Background()
 	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)
 	all := owners.all()
-	seqs := func() map[Owner]int {
-		seq := map[Owner]int{}
-		for _, owner := range all {
-			table, column := ownerRowTable(owner)
-			var value int
-			if err := s.Pool.QueryRow(ctx, `select last_seq from `+table+` where `+column+`::text = $1`, owner.Key).Scan(&value); err != nil {
-				t.Fatal(err)
-			}
-			seq[owner] = value
-		}
-		return seq
-	}
-	start := seqs()
-
-	var mu sync.Mutex
-	committed := map[Owner]int{}
-	tallies := map[string]*gateRaceTally{}
-	modes := map[bool]int{}
-	gateCycle := fmt.Sprintf(",%d,%d,2]", OwnerLockGateNamespace, OwnerLockGateKey)
-	record := func(role string, err error, touched []Owner) {
-		mu.Lock()
-		defer mu.Unlock()
-		tally := tallies[role]
-		if tally == nil {
-			tally = &gateRaceTally{}
-			tallies[role] = tally
-		}
-		var pgErr *pgconn.PgError
-		switch {
-		case err == nil:
-			tally.commits++
-			for _, owner := range touched {
-				committed[owner]++
-			}
-		case errors.As(err, &pgErr) && pgErr.Code == "40P01":
-			tally.deadlocks++
-			if strings.Contains(pgErr.Detail, gateCycle) {
-				tally.gateDeadlocks++
-			}
-			t.Logf("%s: deadlock: %s", role, pgErr.Detail)
-		default:
-			tally.failures++
-			t.Logf("%s: %v", role, err)
-		}
-	}
+	start := ownerSeqs(t, s, all)
+	ledger := newRaceLedger()
 
 	stop := make(chan struct{})
 	var thisBuild sync.WaitGroup
@@ -920,14 +1346,7 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 					return
 				default:
 				}
-				subset, touch := randomOwners(all)
-				legacy, err := raceWriter(ctx, s, fleetModeWriter, subset, touch)
-				if err == nil {
-					mu.Lock()
-					modes[legacy]++
-					mu.Unlock()
-				}
-				record(string(fleetModeWriter), err, touch)
+				ledger.write(ctx, t, s, fleetModeWriter, all)
 			}
 		})
 	}
@@ -938,7 +1357,7 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 				return
 			case <-time.After(5 * time.Millisecond):
 			}
-			record("this build's heartbeat", heartbeatAsThisBuild(ctx, s, mine), nil)
+			ledger.record(t, "this build's heartbeat", heartbeatAsThisBuild(ctx, s, mine), nil)
 		}
 	})
 
@@ -947,7 +1366,7 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 		began := time.Now()
 		err := arrive(ctx, s, arrival, key)
 		waits = append(waits, time.Since(began))
-		record("earlier build, "+arrival.name, err, nil)
+		ledger.record(t, "earlier build, "+arrival.name, err, nil)
 	}
 	for cycle := range gateRaceCycles {
 		timedArrival(earlierBuildArrivals[0], uuid.NewString())
@@ -955,9 +1374,7 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 		for range 2 {
 			earlier.Go(func() {
 				for range gateRaceEarlierWrites {
-					subset, touch := randomOwners(all)
-					_, err := raceWriter(ctx, s, rowFirstWriter, subset, touch)
-					record(string(rowFirstWriter), err, touch)
+					ledger.write(ctx, t, s, rowFirstWriter, all)
 				}
 			})
 		}
@@ -975,25 +1392,67 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 	close(stop)
 	thisBuild.Wait()
 
-	end := seqs()
-	lost := 0
-	for _, owner := range all {
-		lost += start[owner] + committed[owner] - end[owner]
-	}
+	lost, deadlocks, failures := ledger.settle(t, s, all, start)
 	slices.Sort(waits)
-	deadlocks, failures := 0, 0
-	for role, tally := range tallies {
-		t.Logf("%s: %d committed, %d deadlocks (40P01), %d of them through the gate, %d other failures",
-			role, tally.commits, tally.deadlocks, tally.gateDeadlocks, tally.failures)
-		deadlocks += tally.deadlocks
-		failures += tally.failures
-	}
 	t.Logf("%d cycles: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d arrivals took %s at the median, %s at the 90th percentile and %s at most; %d increments lost",
-		gateRaceCycles, modes[true], modes[false], len(waits), waits[len(waits)/2], waits[len(waits)*9/10], waits[len(waits)-1], lost)
+		gateRaceCycles, ledger.modes[true], ledger.modes[false], len(waits), waits[len(waits)/2], waits[len(waits)*9/10], waits[len(waits)-1], lost)
 	if lost != 0 || deadlocks != 0 || failures != 0 {
 		t.Errorf("%d increments lost, %d deadlocks, %d other failures; want none of each", lost, deadlocks, failures)
 	}
-	if modes[true] == 0 || modes[false] == 0 {
-		t.Errorf("this build's writers committed %d beside an earlier build and %d in the advisory mode; want both modes raced", modes[true], modes[false])
+	if ledger.modes[true] == 0 || ledger.modes[false] == 0 {
+		t.Errorf("this build's writers committed %d beside an earlier build and %d in the advisory mode; want both modes raced", ledger.modes[true], ledger.modes[false])
+	}
+}
+
+// markExpiryWindow is the earlier build's mark's window in the race below, short enough for the
+// mark to expire inside it.
+const markExpiryWindow = 2 * time.Second
+
+// The earlier build's mark expires while writers of this build are in flight in both modes:
+// those whose fleet read found the mark take the owners' rows beside their advisory locks, and
+// those that start once it has expired take the advisory locks alone, behind the gate, while
+// the first are still committing. The earlier build's own writers, the rows first, run only while
+// the mark is young, as an earlier build that has stopped writes nothing more: an earlier build
+// that still writes past the mark is in the fleet only by its registration (the two windows that
+// stay open, cmd/dispatch/README.md). No update is lost, nothing deadlocks and nothing else
+// fails, and this build's writers commit in both modes. The mark's window is shortened to
+// markExpiryWindow so that it expires inside the run.
+func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
+	s, owners := openFleetStore(t)
+	window := OwnerLockMarkWindow
+	OwnerLockMarkWindow = markExpiryWindow
+	t.Cleanup(func() { OwnerLockMarkWindow = window })
+	ctx := context.Background()
+	all := owners.all()
+	start := ownerSeqs(t, s, all)
+	ledger := newRaceLedger()
+	publishAsAnEarlierBuild(t, s)
+	stamped := time.Now()
+
+	var writers sync.WaitGroup
+	for range gateRaceWriters {
+		writers.Go(func() {
+			for time.Since(stamped) < 2*markExpiryWindow {
+				ledger.write(ctx, t, s, fleetModeWriter, all)
+			}
+		})
+	}
+	for range 2 {
+		writers.Go(func() {
+			for time.Since(stamped) < markExpiryWindow/2 {
+				ledger.write(ctx, t, s, rowFirstWriter, all)
+			}
+		})
+	}
+	writers.Wait()
+
+	lost, deadlocks, failures := ledger.settle(t, s, all, start)
+	t.Logf("the mark expired %s after its stamp: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",
+		markExpiryWindow, ledger.modes[true], ledger.modes[false], lost)
+	if lost != 0 || deadlocks != 0 || failures != 0 {
+		t.Errorf("%d increments lost, %d deadlocks, %d other failures; want none of each", lost, deadlocks, failures)
+	}
+	if ledger.modes[true] == 0 || ledger.modes[false] == 0 {
+		t.Errorf("this build's writers committed %d beside an earlier build and %d in the advisory mode; want both modes across the mark's expiry", ledger.modes[true], ledger.modes[false])
 	}
 }
