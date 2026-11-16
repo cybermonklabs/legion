@@ -58,11 +58,14 @@ func TestDispatchPodWithOutsideSignInRendersBothSettings(t *testing.T) {
 	require.Equal(t, "1", env["DISPATCH_SIGNIN_OUTSIDE"])
 	require.Equal(t, dispatchSharedOrigin, env["DISPATCH_SHARED_ORIGIN"])
 	names := appEnvNames(t, m)
-	for after, name := range map[string]string{"DISPATCH_SIGNIN_DOMAIN": "DISPATCH_SIGNIN_OUTSIDE", "DISPATCH_SERVER_URL": "DISPATCH_SHARED_ORIGIN"} {
-		at := slices.Index(names, after)
-		require.GreaterOrEqual(t, at, 0, "the app carries %s", after)
-		require.Less(t, at+1, len(names), "%s is not the last variable", after)
-		require.Equal(t, name, names[at+1], "%s comes right after %s", name, after)
+	for _, pair := range []struct{ after, name string }{
+		{"DISPATCH_SIGNIN_DOMAIN", "DISPATCH_SIGNIN_OUTSIDE"},
+		{"DISPATCH_SERVER_URL", "DISPATCH_SHARED_ORIGIN"},
+	} {
+		at := slices.Index(names, pair.after)
+		require.GreaterOrEqual(t, at, 0, "the app carries %s", pair.after)
+		require.Less(t, at+1, len(names), "%s is not the last variable", pair.after)
+		require.Equal(t, pair.name, names[at+1], "%s comes right after %s", pair.name, pair.after)
 	}
 
 	requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
@@ -71,47 +74,84 @@ func TestDispatchPodWithOutsideSignInRendersBothSettings(t *testing.T) {
 	require.Equal(t, readGolden(t, "dispatch-registrations.golden"), dispatchRegistrations(m))
 }
 
-// The two inputs are independent: each renders its own setting and never the other's, so a
-// deployment can serve the shared origin to its own people before it admits anyone from outside.
+// The two inputs are independent: each renders its own setting, right after the setting it
+// extends, and never the other's, so a deployment can serve the shared origin before it admits
+// anyone from outside, a tailnet Dispatch with no browser sign-in included. The origin is the
+// name the consumer gave, on its tailnet.
 func TestDispatchOutsideInputsEachRenderTheirOwnSetting(t *testing.T) {
+	const origin = "https://example-shared.example-tailnet.ts.net"
 	for _, row := range []struct {
-		name          string
-		set           func(*gcp.DispatchArgs)
-		present, gone string
-		value         string
+		name                 string
+		args                 func() *gcp.DispatchArgs
+		present, after, gone string
+		value                string
 	}{
-		{"signInOutside alone", func(a *gcp.DispatchArgs) { a.SignInOutside = true }, "DISPATCH_SIGNIN_OUTSIDE", "DISPATCH_SHARED_ORIGIN", "1"},
-		{"sharedHostname alone", func(a *gcp.DispatchArgs) { a.SharedHostname = dispatchSharedHostname }, "DISPATCH_SHARED_ORIGIN", "DISPATCH_SIGNIN_OUTSIDE", dispatchSharedOrigin},
+		{"signInOutside alone", func() *gcp.DispatchArgs {
+			a := dispatchArgs()
+			a.SignInOutside = true
+			return a
+		}, "DISPATCH_SIGNIN_OUTSIDE", "DISPATCH_SIGNIN_DOMAIN", "DISPATCH_SHARED_ORIGIN", "1"},
+		{"sharedHostname alone", func() *gcp.DispatchArgs {
+			a := dispatchArgs()
+			a.SharedHostname = "example-shared"
+			return a
+		}, "DISPATCH_SHARED_ORIGIN", "DISPATCH_SERVER_URL", "DISPATCH_SIGNIN_OUTSIDE", origin},
+		{"sharedHostname with no browser sign-in", func() *gcp.DispatchArgs {
+			a := dispatchTailnetWithoutSignInArgs()
+			a.SharedHostname = "example-shared"
+			return a
+		}, "DISPATCH_SHARED_ORIGIN", "DISPATCH_SERVER_URL", "DISPATCH_SIGNIN_OUTSIDE", origin},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			args := dispatchArgs()
-			row.set(args)
-			m, err := runDispatch(t, args, true)
+			m, err := runDispatch(t, row.args(), true)
 			require.NoError(t, err)
 			env := appEnv(t, m)
 			require.Equal(t, row.value, env[row.present])
 			require.NotContains(t, env, row.gone)
+			names := appEnvNames(t, m)
+			at := slices.Index(names, row.after)
+			require.GreaterOrEqual(t, at, 0, "the app carries %s", row.after)
+			require.Less(t, at+1, len(names), "%s is not the last variable", row.after)
+			require.Equal(t, row.present, names[at+1], "%s comes right after %s", row.present, row.after)
 		})
 	}
 }
 
-// dispatchPodGoldens is every committed golden of the app's pod rendered with the outside inputs
-// unset, with the fixture it was committed for.
-var dispatchPodGoldens = []struct {
-	golden string
-	args   func(*testing.T) *gcp.DispatchArgs
-}{
-	{"dispatch-pod.golden", func(*testing.T) *gcp.DispatchArgs { return dispatchArgs() }},
-	{"dispatch-pod-with-broker-and-app.golden", dispatchBrokerAndAppArgs},
-	{"dispatch-pod-with-azure-key.golden", dispatchArgsWith(setAzureKey)},
-	{"dispatch-pod-with-azure-federation.golden", dispatchArgsWith(setAzureFederation)},
-	{"dispatch-pod-with-azure-answerer.golden", dispatchArgsWith(setAzureChat)},
-	{"dispatch-pod-with-chat-endpoint.golden", dispatchArgsWith(setChatEndpoint)},
+// Every DNS label but an internationalized one is a name the shared node may take: one character,
+// a leading digit, 63 characters, a "--" inside. The refusals are in
+// TestDispatchRefusesOutsideInputsItCannotServe.
+func TestDispatchSharedHostnameTakesEveryPlainDNSLabel(t *testing.T) {
+	for _, name := range []string{"a", "1shared", strings.Repeat("a", 63), "ab--cd"} {
+		t.Run(name, func(t *testing.T) {
+			args := dispatchArgs()
+			args.SharedHostname = name
+			_, err := gcp.ResolveDispatch(args)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// With both inputs unset, a tailnet Dispatch with no browser sign-in and a sandbox render neither
+// setting, as the goldens of a deployment with sign-in on show for that mode
+// (TestDispatchPodWithoutOutsideInputsIsUnchanged).
+func TestDispatchOutsideSettingsAbsentInEveryModeWhenUnset(t *testing.T) {
+	for name, args := range map[string]func() *gcp.DispatchArgs{
+		"tailnet without sign-in": dispatchTailnetWithoutSignInArgs,
+		"sandbox":                 dispatchSandboxArgs,
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := runDispatch(t, args(), true)
+			require.NoError(t, err)
+			env := appEnv(t, m)
+			require.NotContains(t, env, "DISPATCH_SIGNIN_OUTSIDE")
+			require.NotContains(t, env, "DISPATCH_SHARED_ORIGIN")
+		})
+	}
 }
 
 // dispatchArgsWith is the default fixture with set applied to it.
-func dispatchArgsWith(set func(*gcp.DispatchArgs)) func(*testing.T) *gcp.DispatchArgs {
-	return func(*testing.T) *gcp.DispatchArgs {
+func dispatchArgsWith(set func(*gcp.DispatchArgs)) func() *gcp.DispatchArgs {
+	return func() *gcp.DispatchArgs {
 		args := dispatchArgs()
 		set(args)
 		return args
@@ -123,19 +163,32 @@ func dispatchArgsWith(set func(*gcp.DispatchArgs)) func(*testing.T) *gcp.Dispatc
 // table is held to the goldens on disk, so a pod golden added later without its fixture here
 // fails rather than escaping the check.
 func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
+	// Every committed golden of the app's pod rendered with the outside inputs unset, with the
+	// fixture it was committed for.
+	goldens := []struct {
+		golden string
+		args   func() *gcp.DispatchArgs
+	}{
+		{"dispatch-pod.golden", dispatchArgs},
+		{"dispatch-pod-with-broker-and-app.golden", func() *gcp.DispatchArgs { return dispatchBrokerAndAppArgs(t) }},
+		{"dispatch-pod-with-azure-key.golden", dispatchArgsWith(setAzureKey)},
+		{"dispatch-pod-with-azure-federation.golden", dispatchArgsWith(setAzureFederation)},
+		{"dispatch-pod-with-azure-answerer.golden", dispatchArgsWith(setAzureChat)},
+		{"dispatch-pod-with-chat-endpoint.golden", dispatchArgsWith(setChatEndpoint)},
+	}
 	committed, err := filepath.Glob("testdata/dispatch-pod*.golden")
 	require.NoError(t, err)
 	require.NotEmpty(t, committed, "the glob found the committed pod goldens")
 	covered := []string{"testdata/" + dispatchOutsideGolden}
-	for _, row := range dispatchPodGoldens {
+	for _, row := range goldens {
 		covered = append(covered, "testdata/"+row.golden)
 		t.Run(row.golden, func(t *testing.T) {
-			m, err := runDispatch(t, row.args(t), true)
+			m, err := runDispatch(t, row.args(), true)
 			require.NoError(t, err)
 			requirePodGolden(t, m, "example-dispatch", row.golden)
 		})
 	}
-	require.ElementsMatch(t, committed, covered, "every committed pod golden has its fixture in dispatchPodGoldens")
+	require.ElementsMatch(t, committed, covered, "every committed pod golden has its fixture in this test's table")
 }
 
 // Each outside input the component cannot serve is refused by its own name before anything
@@ -169,7 +222,7 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 				return args
 			},
 			want: "signInOutside configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, " +
-				"which no OAuth provider takes as a redirect origin, so no browser could sign in; unset the sign-in inputs, or set the tailnet inputs",
+				"which no OAuth provider takes as a redirect origin, so no browser could sign in; unset signInOutside, or set the tailnet inputs",
 		},
 		{
 			name: "sharedHostname without the tailnet inputs",
@@ -207,6 +260,45 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 				return args
 			},
 			want: `sharedHostname "` + strings.Repeat("a", 64) + `" must be a DNS label: it is the shared node's machine name on the tailnet`,
+		},
+		{
+			name: "sharedHostname with a leading hyphen",
+			args: func() *gcp.DispatchArgs {
+				args := dispatchArgs()
+				args.SharedHostname = "-shared"
+				return args
+			},
+			want: `sharedHostname "-shared" must be a DNS label: it is the shared node's machine name on the tailnet`,
+		},
+		{
+			name: "sharedHostname with a trailing hyphen",
+			args: func() *gcp.DispatchArgs {
+				args := dispatchArgs()
+				args.SharedHostname = "shared-"
+				return args
+			},
+			want: `sharedHostname "shared-" must be a DNS label: it is the shared node's machine name on the tailnet`,
+		},
+		{
+			// A browser refuses a malformed A-label as a host (https://xn--a.<tailnet> is no URL),
+			// and the component decodes no punycode, so it refuses every A-label, a well-formed one
+			// too: the operator names this node, and plain letters serve.
+			name: "sharedHostname a malformed internationalized label",
+			args: func() *gcp.DispatchArgs {
+				args := dispatchArgs()
+				args.SharedHostname = "xn--a"
+				return args
+			},
+			want: `sharedHostname "xn--a" is an internationalized (xn--) label, which this component does not check: name the shared node in plain letters, digits and hyphens`,
+		},
+		{
+			name: "sharedHostname a well-formed internationalized label",
+			args: func() *gcp.DispatchArgs {
+				args := dispatchArgs()
+				args.SharedHostname = "xn--bcher-kva"
+				return args
+			},
+			want: `sharedHostname "xn--bcher-kva" is an internationalized (xn--) label, which this component does not check: name the shared node in plain letters, digits and hyphens`,
 		},
 		{
 			name: "sharedHostname equal to hostname",

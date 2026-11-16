@@ -4,8 +4,9 @@ body: |-
   outside `signInDomain`. `sharedHostname` names a tailnet node the deployment builds and shares
   with such people, since Tailscale shares a device and never a Service, and renders
   `DISPATCH_SHARED_ORIGIN=https://<sharedHostname>.<tailnetDnsName>` on the app's container right
-  after `DISPATCH_SERVER_URL`; it needs the tailnet inputs, must be a DNS label and must not be
-  `hostname`. `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after
+  after `DISPATCH_SERVER_URL`; it needs the tailnet inputs, must be a DNS label that is not an
+  internationalized (`xn--`) one, and must not be `hostname`. `signInOutside: true` renders
+  `DISPATCH_SIGNIN_OUTSIDE=1` right after
   `DISPATCH_SIGNIN_DOMAIN`; it needs the sign-in inputs and is not one of their group, so a
   deployment that sets them without it is accepted as before. With both unset the component
   renders exactly what it rendered before. The Google client then needs

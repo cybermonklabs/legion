@@ -994,10 +994,13 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 // checks, so one sent to a sandbox is refused for being sent at all and not for the rest of its
 // group being missing.
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
-	for _, in := range slices.Concat(signInGroup, []dispatchInput{{"signInOutside", args.SignInOutside}}) {
+	for _, in := range signInGroup {
 		if in.set {
 			return fmt.Errorf("%s configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset the sign-in inputs, or set the tailnet inputs", in.input)
 		}
+	}
+	if args.SignInOutside {
+		return errors.New("signInOutside configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset signInOutside, or set the tailnet inputs")
 	}
 	if args.SharedHostname != "" {
 		return errors.New("sharedHostname names a node on the tailnet, which needs the tailnet inputs: without them Dispatch is on no tailnet, so no node of it can be shared; unset sharedHostname, or set the tailnet inputs")
@@ -1037,14 +1040,19 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 
 // refuseDispatchSharedHostname judges sharedHostname where the tailnet group is set, the one place
 // it may be set: unset passes, and a set one must be a DNS label, since it is the shared node's
-// machine name on the tailnet and the first label of its MagicDNS name, and must not be hostname,
-// whose name on the same tailnet the front door's Tailscale Service already holds.
+// machine name on the tailnet and the first label of its MagicDNS name; must not be an
+// internationalized (xn--) label, since a browser refuses a malformed one as a host and this
+// component decodes no punycode to tell the two apart; and must not be hostname, whose name on
+// the same tailnet the front door's Tailscale Service already holds.
 func refuseDispatchSharedHostname(args *DispatchArgs) error {
 	if args.SharedHostname == "" {
 		return nil
 	}
 	if !dnsLabel(args.SharedHostname) {
 		return fmt.Errorf("sharedHostname %q must be a DNS label: it is the shared node's machine name on the tailnet", args.SharedHostname)
+	}
+	if strings.HasPrefix(args.SharedHostname, "xn--") {
+		return fmt.Errorf("sharedHostname %q is an internationalized (xn--) label, which this component does not check: name the shared node in plain letters, digits and hyphens", args.SharedHostname)
 	}
 	if args.SharedHostname == args.Hostname {
 		return fmt.Errorf("sharedHostname %q is hostname: the front door's Tailscale Service holds %s, so the shared node needs a name of its own",

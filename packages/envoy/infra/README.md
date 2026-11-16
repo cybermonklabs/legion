@@ -730,9 +730,10 @@ start.
 `sharedHostname` and `signInOutside`, both unset by default, are the component's part of sign-in
 for people outside the tailnet and outside `signInDomain`. Neither is in a group, and with both
 unset the component renders exactly what it rendered before they existed. `sharedHostname` is the
-machine name, a DNS label other than `hostname`, of a tailnet node that proxies HTTPS to the app's
-Service and that is shared with each such person's tailnet: Tailscale shares a device and never a
-Service, so `svc:<hostname>` cannot be that way in. It renders
+machine name, a DNS label other than `hostname` and not an internationalized (`xn--`) one, of a
+tailnet node that proxies HTTPS to the app's Service and that is shared with each such person's
+tailnet: Tailscale shares a device and never a Service, so `svc:<hostname>` cannot be that way
+in. It renders
 `DISPATCH_SHARED_ORIGIN=https://<sharedHostname>.<tailnetDnsName>` on the app's container, right
 after `DISPATCH_SERVER_URL`, and nothing else. The component does not build that node: the
 deployment builds it, and names its namespace in `allowedNamespaces` so the app's NetworkPolicy
@@ -1156,8 +1157,9 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, a `sharedHostname` that is not a DNS label, is `hostname` or
-comes without the tailnet inputs, a `signInOutside` without the sign-in inputs, an
+`oidcIssuer` with no `oidcAudience`, a `sharedHostname` that is not a DNS label, is an
+internationalized (`xn--`) label, is `hostname` or comes without the tailnet inputs, a
+`signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
