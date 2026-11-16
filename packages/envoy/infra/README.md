@@ -933,14 +933,18 @@ projected volume `listener-account-token`, whose one source is a `serviceAccount
 `/var/run/secrets/envoy-listener`; `ENVOY_ACCOUNT_TOKEN_FILE` names
 `/var/run/secrets/envoy-listener/listener-account-token` in `ENVOY_TOKEN`'s place, and Dispatch
 reads it for its calls, never at boot (`packages/envoy/cmd/dispatch/README.md`). The listener
-verifies that token with the pair it carries in `ENVOY_API_TOKEN`'s place: `ENVOY_OIDC_ISSUER`,
-this component's cluster issuer (the `serviceAccountIssuer` output), and `ENVOY_OIDC_AUDIENCE`,
-`listenerAudience`. No bearer exists then: the Secret `<hostname>-listener` and the generated
-password `<hostname>-listener-token` are not registered, and neither pod template carries a
-`checksum/<hostname>-listener` annotation. The listener admits every token its issuer mints for
-that audience, so what keeps the cluster's other workloads out is the listener's NetworkPolicy,
-which admits the app's pods alone on port 9020: give no other workload a token for that audience.
-Pin `envoyImage` to a build whose Dispatch reads `ENVOY_ACCOUNT_TOKEN_FILE`; an older one sends no
+verifies that token with the setting it carries in `ENVOY_API_TOKEN`'s place: `ENVOY_OIDC_ISSUER`,
+this component's cluster issuer (the `serviceAccountIssuer` output), `ENVOY_OIDC_AUDIENCE`,
+`listenerAudience`, and `ENVOY_OIDC_ACCOUNTS`, the app's own subject
+(`system:serviceaccount:<namespace>:<hostname>`, the `serviceAccountSubject` output). No bearer
+exists then: the Secret `<hostname>-listener` and the generated password
+`<hostname>-listener-token` are not registered, and neither pod template carries a
+`checksum/<hostname>-listener` annotation. The cluster mints a token for that audience to any
+workload that asks for one, so the listener admits the app's account alone; a listener image that
+does not read `ENVOY_OIDC_ACCOUNTS` (one built before it) admits every token its issuer mints for
+that audience, and then only its NetworkPolicy, which admits the app's pods alone on port 9020,
+keeps the cluster's other workloads out. Pin `envoyImage` to a build whose Dispatch reads
+`ENVOY_ACCOUNT_TOKEN_FILE` and whose listener reads `ENVOY_OIDC_ACCOUNTS`; an older one sends no
 bearer, and the listener refuses every call. Setting or unsetting `listenerAudience` rolls both
 Deployments in one update, and until both have rolled, a call from an app pod to a listener pod
 holding the other credential is refused. Unset, the app and the listener share the generated

@@ -60,6 +60,10 @@
           {
             "name": "ENVOY_OIDC_AUDIENCE",
             "value": "example-listener-audience"
+          },
+          {
+            "name": "ENVOY_OIDC_ACCOUNTS",
+            "value": "system:serviceaccount:dispatch:example-dispatch"
           }
         ],
         "image": "example.invalid/envoy@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",

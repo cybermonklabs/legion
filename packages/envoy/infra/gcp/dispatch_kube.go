@@ -346,7 +346,11 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url, issuer string)
 	if s.listenerAudience == "" {
 		return append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN")), nil
 	}
-	return append(values, valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience)), nil
+	// The cluster mints a token for listenerAudience to any workload that asks for one, so the
+	// listener holds its projected-token branch to the app's own account (ENVOY_OIDC_ACCOUNTS,
+	// cmd/listener): another workload's token for the same audience is refused.
+	return append(values, valueEnv("ENVOY_OIDC_ISSUER", issuer), valueEnv("ENVOY_OIDC_AUDIENCE", s.listenerAudience),
+		valueEnv("ENVOY_OIDC_ACCOUNTS", s.appSubject())), nil
 }
 
 // envVars is env, core.ListenerConfig's NAME=value rendering, as a container's environment, in

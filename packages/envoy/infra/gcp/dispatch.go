@@ -577,6 +577,14 @@ func (s dispatchSettings) clusterURL() string {
 	return "http://" + clusterLocal(s.hostname, s.namespace) + ":8766"
 }
 
+// appSubject is the subject Kubernetes names in a token of the app's and the listener's pods:
+// they run as ServiceAccount <hostname> in the component's namespace, the account
+// newDispatchKubernetes registers. The front door's pods run as <hostname>-tailnet, which this
+// subject never names.
+func (s dispatchSettings) appSubject() string {
+	return "system:serviceaccount:" + s.namespace + ":" + s.hostname
+}
+
 // serverURL is the address Dispatch tells a reader it is at, the url output and the app's
 // DISPATCH_SERVER_URL: the tailnet name the front door hosts, or, in the sandbox, the app's own
 // Service inside the cluster, which is all there is to reach. It carries no trailing slash, it is
@@ -1709,9 +1717,6 @@ func NewDispatch(ctx *pulumi.Context, name string, args *DispatchArgs, opts ...p
 	comp.Principal = database.principal
 	comp.AgentToken = database.agentToken.Result
 	comp.Url = pulumi.String(s.serverURL()).ToStringOutput()
-	// The app's and the listener's pods run as ServiceAccount <hostname> in the component's
-	// namespace, the account newDispatchKubernetes registers, and Kubernetes names a token's subject
-	// after it. The front door's pods run as <hostname>-tailnet, which this subject never names.
-	comp.ServiceAccountSubject = pulumi.String("system:serviceaccount:" + s.namespace + ":" + s.hostname).ToStringOutput()
+	comp.ServiceAccountSubject = pulumi.String(s.appSubject()).ToStringOutput()
 	return comp, nil
 }
