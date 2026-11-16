@@ -325,7 +325,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   a pod's model route is the operator's (`runtime.kubernetes.pod` and `provider_keys`, docs/kubernetes.md "Operator configuration");
   the Sandbox runtime's three flags for a role's process, the daemon-launched controller's included, in a pod enrolled with the secrets broker (runtime.kubernetes.agent_secrets):
   the shim runs agent-secrets keygen there before its hello, sends the key's thumbprint and the projected token in hello2, answers the daemon's `agent-secrets-token` frame with the token as its mount holds it then (asked when the hello's token would expire before the daemon enrolls), keeps the enrollment id the daemon hands back, and runs agent-secrets renew;
-  the daemon-launched controller's process gets them as a workflow role's does, so its `slack_post` is granted the Legion daemon's `LEGION_SLACK_BOT_TOKEN`, and a tmux pane never gets them (daemon-spawned under either runtime, by a tmux pane's command or by a pod launcher's start command, never run by hand)
+  the daemon-launched controller's process gets them as a workflow role's does, so its `slack_post` is granted `LEGION_SLACK_BOT_TOKEN`, a shared agent secret the broker grants every session enrolled with it, and a tmux pane never gets them (daemon-spawned under either runtime, by a tmux pane's command or by a pod launcher's start command, never run by hand)
 
 - `legion claude-bridge -- <claude argv…>`
 
