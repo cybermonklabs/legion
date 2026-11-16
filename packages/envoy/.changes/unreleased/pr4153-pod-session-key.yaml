@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  A pod's session registration can be bound to the key its own role proves. `POST
+  /v1/oauth/exchange/pod-sessions` takes an optional `thumbprint`, the RFC 7638 thumbprint of that
+  key (43 base64url characters, else `400 THUMBPRINT_INVALID`), and answers the key the
+  registration is bound to. The exchange then admits a pod's trade for that session only with a
+  DPoP proof of that key, and refuses one proved with another `invalid_grant`, naming the
+  session, so a role of an issue pod holding the pod's exchange token cannot trade for a sibling
+  role's session. A write that names no key keeps the one a live registration names. A
+  registration that names none stays the pod's, as before. Migration 0032 adds the column
+  (`oauth_pod_sessions.jkt`).
+time: 2026-11-16T15:16:31Z
+custom:
+    Issue: pr4153
