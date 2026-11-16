@@ -281,15 +281,19 @@ agent-secrets-helper sessions
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
 
 Owners manage the secrets themselves, with no helper, under the credential of the first source
-the command finds: on AWS, `AWS_PROFILE`, else `AWS_DEFAULT_PROFILE`, else the SDK's default
-chain, in the broker's account; on Google Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS` names,
-else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT`
-names, else the well-known credentials file, else the active gcloud account, else the metadata
-server. A source that is present but broken stops the command; every form prints the source it
-used (`using …`) before its first store call, and a store refusal names it and how to choose
-another. The store's IAM decides what each may do. `--owner me` is the email of the person that
-credential names, and is refused where it names none (a machine's role, a service account, a
-token without an email scope); `--owner <email>` names the owning person outright:
+the command finds: on AWS, the AWS SDK's own order, in the broker's account (access keys in
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
+`AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain); on Google
+Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS`
+names, else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+`CLOUDSDK_CORE_ACCOUNT` names, else the well-known credentials file, else the active gcloud
+account, else the metadata server. A source that is present but broken stops the command, and so
+does a profile variable that names a profile the AWS config does not hold; every form prints the
+source it used (`using …`) before its first store call, and a store refusal names it and how to
+choose another from that source. The store's IAM decides what each may do. `--owner me` is the
+email of the person that credential names, and is refused where it names none (a machine's role,
+a service account, a token without an email scope); `--owner <email>` names the owning person
+outright:
 
 ```sh
 agent-secrets secret list

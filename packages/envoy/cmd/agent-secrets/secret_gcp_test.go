@@ -2,11 +2,11 @@
 //
 // The GCP secret forms run in-process here, against a fake Secret Manager gRPC server
 // (fakeSecretManager) standing in for the real API, with the credential seams
-// (gcpCredentialsFile, gcpMetadataCredentials) and gcpUserinfo replaced so no form makes a network
-// call for its identity, a stub gcloud alone on PATH (useGcloud) where a form can reach for a
-// gcloud login, and the shared fake broker (secretBroker, secret_test.go) answering
-// GET /v1/settings with the GCP store's shape and the reread. secret_gcp_order_test.go runs the
-// order of those sources through the real ones instead.
+// (gcpCredentialsFile, gcpMetadataToken, gcpMetadataPrincipal) and gcpUserinfo replaced so no
+// form makes a network call for its identity, a stub gcloud alone on PATH (useGcloud) where a
+// form can reach for a gcloud login, and the shared fake broker (secretBroker, secret_test.go)
+// answering GET /v1/settings with the GCP store's shape and the reread.
+// secret_gcp_order_test.go runs the order of those sources through the real ones instead.
 package main
 
 import (
@@ -17,6 +17,7 @@ import (
 	"maps"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -424,9 +425,10 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 
 // useGCPIdentity makes the credential sources answer kind/email for the rest of t, and
 // gcpUserinfo email, with no network call. kind "" is the metadata server's identity: it makes
-// gcpMetadataCredentials answer email, which signs in only where no source before the metadata
-// server is present (a test that also puts a stub gcloud holding a login on PATH runs under that
-// login). "authorized_user" is a person's own Application Default Credentials, where
+// gcpMetadataToken yield a token and gcpMetadataPrincipal answer email, which signs in only
+// where no source before the metadata server is present (a test that also puts a stub gcloud
+// holding a login on PATH runs under that login). "authorized_user" is a person's own
+// Application Default Credentials, where
 // `gcloud auth application-default login` writes them: the well-known credentials file. Any other
 // kind is a machine's credentials file GOOGLE_APPLICATION_CREDENTIALS names, of that "type"
 // ("service_account" for a key file, whose client_email is email, "external_account" for a
@@ -499,7 +501,7 @@ func useEmptyGcloudConfigDir(t *testing.T) {
 
 // useNoADC leaves the rest of t with none of the credentials Application Default Credentials
 // would find: no credentials file GOOGLE_APPLICATION_CREDENTIALS names, no well-known file (HOME
-// and CLOUDSDK_CONFIG an empty directory), and no metadata server (gcpMetadataCredentials answers
+// and CLOUDSDK_CONFIG an empty directory), and no metadata server (gcpMetadataToken answers
 // googleidentity.ErrNoMetadataServer, as it does off Google Cloud); and it clears
 // CLOUDSDK_AUTH_ACCESS_TOKEN.
 func useNoADC(t *testing.T) {
@@ -1281,6 +1283,93 @@ func TestGcloudTokenRefreshThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) 
 	}
 }
 
+// useGcloudThatAnswers puts a stub gcloud alone on PATH for the rest of t that holds one login,
+// account, answers `auth print-access-token` with stubTokenPrefix + account, and answers
+// `auth list` (account, active) and `config list` (no auth property) as authList and configList
+// say: "" answers, "fail" fails as gcloud does, naming the failure on its standard error, and
+// "hang" answers nothing for 30 s. It first clears every other source, as useNoADC does.
+func useGcloudThatAnswers(t *testing.T, account, authList, configList string) {
+	t.Helper()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	useNoADC(t)
+	behave := func(command, answer, mode string) string {
+		switch mode {
+		case "fail":
+			return `echo 'ERROR: (gcloud.` + command + `) the test fails it' >&2; exit 1`
+		case "hang":
+			return "exec " + shellWord(sleep) + " 30"
+		}
+		return "printf '%s\\n' " + shellWord(answer)
+	}
+	script := strings.Join([]string{
+		"#!/bin/sh",
+		`case "$1 $2" in`,
+		`"auth list") ` + behave("auth.list", `[{"account":"`+account+`","status":"ACTIVE"}]`, authList) + ` ;;`,
+		`"config list") ` + behave("config.list", `{"auth":{}}`, configList) + ` ;;`,
+		`"auth print-access-token") printf '%s\n' ` + shellWord(stubTokenPrefix+account) + ` ;;`,
+		`*) printf 'stub gcloud: unexpected command: %s\n' "$*" >&2; exit 2 ;;`,
+		"esac",
+		"",
+	}, "\n")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gcloud"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
+}
+
+// TestGCPSecretGcloudSettingsReadIsBestEffort: the gcloud source reads gcloud's auth settings only
+// to name whom its token acts as (R2), so a `gcloud config list` that fails, or that does not
+// answer within gcloudSettingsDeadline, never stops the command: the form runs under the login's
+// token, and the using line names the login with the principal unknown.
+func TestGCPSecretGcloudSettingsReadIsBestEffort(t *testing.T) {
+	for _, mode := range []string{"fail", "hang"} {
+		t.Run(mode, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			useGcloudThatAnswers(t, "ada@example.com", "", mode)
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			started := time.Now()
+			_, stderr, code := runSecret("list")
+			took := time.Since(started)
+			if code != 0 || took > 15*time.Second {
+				t.Fatalf("exit %d after %s, stderr %q; want 0 within 15s", code, took, stderr)
+			}
+			if want := "agent-secrets secret list: using the active gcloud account (gcloud configuration default): ada@example.com (principal unknown: gcloud's auth settings could not be read)\n"; !strings.Contains(stderr, want) {
+				t.Fatalf("stderr %q does not say %q", stderr, want)
+			}
+			if got, calls := fake.calledUnder(); got != "Bearer "+stubTokenPrefix+"ada@example.com" || calls == 0 {
+				t.Fatalf("Secret Manager calls ran under %q (%d calls), want only ada@example.com's gcloud token", got, calls)
+			}
+		})
+	}
+}
+
+// TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline: `gcloud auth list`, which
+// decides whether the gcloud source is present, runs under storeCallDeadline as the token's
+// refresh does, so a gcloud that never answers stops the command at the deadline, naming it,
+// before any Secret Manager call.
+func TestGCPSecretGcloudLoginListThatNeverAnswersEndsAtTheStoreDeadline(t *testing.T) {
+	useStoreCallDeadline(t, 300*time.Millisecond)
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useGcloudThatAnswers(t, "ada@example.com", "hang", "")
+	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	started := time.Now()
+	_, stderr, code := runSecret("list")
+	took := time.Since(started)
+	if code != 1 || took > 10*time.Second || !strings.Contains(stderr, "`gcloud auth list` did not answer within 300ms") {
+		t.Fatalf("exit %d after %s, stderr %q; want 1 within 10s naming the 300ms deadline", code, took, stderr)
+	}
+	if _, calls := fake.calledUnder(); calls != 0 {
+		t.Fatalf("Secret Manager saw %d calls, want none", calls)
+	}
+}
+
 // TestGCPSecretWithNoApplicationDefaultCredentialsUsesTheGcloudLogin: where there are no
 // Application Default Credentials and GOOGLE_APPLICATION_CREDENTIALS is unset, every form, a read
 // included, runs under the gcloud login.
@@ -1713,47 +1802,76 @@ func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 
 // TestGCPSecretRefusalNamesTheSourceAndTheChoice: a store refusal names the source the
 // credential came from and whom it acts as - or that the principal is unknown, with no userinfo
-// call to learn it - and how to choose another: the variables, and the gcloud configurations here.
+// call to learn it - and how to choose another, built from that source: a lent token outranks
+// every other source, so only unsetting it chooses another; a credentials file outranks the gcloud
+// variables, so they choose only once it is unset; under every later source the gcloud variables
+// and GOOGLE_APPLICATION_CREDENTIALS choose, with the gcloud configurations here. A create that
+// IAM lets make the secret but not add its value says the same.
 func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
-	const choice = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, theorem)"
+	const (
+		later = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, theorem)"
+		lent  = "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
+		file  = "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT (gcloud configurations here: box, theorem)"
+	)
 	for _, row := range []struct {
-		name, refused string
-		use           func(t *testing.T)
+		name, refused, choice string
+		use                   func(t *testing.T)
 	}{
-		{"metadata alone", "the metadata server: machine@example.iam.gserviceaccount.com", func(t *testing.T) { t.Setenv("PATH", t.TempDir()) }},
-		{"active gcloud", "the active gcloud account (gcloud configuration box): box@example.iam.gserviceaccount.com", func(*testing.T) {}},
-		{"lent token", "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN: principal unknown", func(t *testing.T) { t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-token") }},
+		{"metadata alone", "the metadata server: machine@example.iam.gserviceaccount.com", later, func(t *testing.T) { t.Setenv("PATH", t.TempDir()) }},
+		{"active gcloud", "the active gcloud account (gcloud configuration box): box@example.iam.gserviceaccount.com", later, func(*testing.T) {}},
+		{"chosen configuration", "the gcloud configuration theorem (CLOUDSDK_ACTIVE_CONFIG_NAME): grace@example.com", later, func(t *testing.T) { t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem") }},
+		{"lent token", "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN: principal unknown", lent, func(t *testing.T) { t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-token") }},
+		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", file, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "credentials.json")
+			writeServiceAccountFile(t, path, "gac@example.iam.gserviceaccount.com", startGoogleTokenServer(t))
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
+		}},
 	} {
-		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			fake.refuseMethods = map[string]codes.Code{"CreateSecret": codes.PermissionDenied}
-			startFakeSecretManager(t, fake)
-			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
-			useGcloudConfigurations(t, "box", orderConfigurations)
-			row.use(t)
-			restoreUserinfo := gcpUserinfo
-			var userinfoCalls int
-			gcpUserinfo = func(context.Context, *google.Credentials) (string, error) {
-				userinfoCalls++
-				return "", errors.New("the test answers no userinfo")
-			}
-			t.Cleanup(func() { gcpUserinfo = restoreUserinfo })
-			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-			useStdin(t, "")
-
-			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "shared", "--tier", "agent")
-			if code != 1 || !strings.Contains(stderr, "PermissionDenied") {
-				t.Fatalf("exit %d, stderr %q; want 1 with the store's PermissionDenied", code, stderr)
-			}
-			for _, said := range []string{"the store refused " + row.refused, choice} {
-				if !strings.Contains(stderr, said) {
-					t.Fatalf("stderr %q does not say %q", stderr, said)
+		for _, refusal := range []struct {
+			name, says string
+			setUp      func(fake *fakeSecretManager)
+		}{
+			{"the store refuses the create", "PermissionDenied", func(fake *fakeSecretManager) {
+				fake.refuseMethods = map[string]codes.Code{"CreateSecret": codes.PermissionDenied}
+			}},
+			{"IAM grants the create and not the add", "may create " + testGCPPrefix + "new-test but not add its value", func(fake *fakeSecretManager) {
+				fake.withheld = []string{addPermission}
+			}},
+		} {
+			t.Run(row.name+", "+refusal.name, func(t *testing.T) {
+				fake := newFakeSecretManager()
+				refusal.setUp(fake)
+				startFakeSecretManager(t, fake)
+				startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+				useGcloudConfigurations(t, "box", orderConfigurations)
+				row.use(t)
+				restoreUserinfo := gcpUserinfo
+				var userinfoCalls int
+				gcpUserinfo = func(context.Context, *google.Credentials) (string, error) {
+					userinfoCalls++
+					return "", errors.New("the test answers no userinfo")
 				}
-			}
-			if userinfoCalls != 0 {
-				t.Fatalf("the refusal made %d userinfo calls, want none", userinfoCalls)
-			}
-		})
+				t.Cleanup(func() { gcpUserinfo = restoreUserinfo })
+				startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+				useStdin(t, "")
+
+				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "shared", "--tier", "agent")
+				if code != 1 || !strings.Contains(stderr, refusal.says) {
+					t.Fatalf("exit %d, stderr %q; want 1 saying %q", code, stderr, refusal.says)
+				}
+				for _, said := range []string{row.refused, row.choice} {
+					if !strings.Contains(stderr, said) {
+						t.Fatalf("stderr %q does not say %q", stderr, said)
+					}
+				}
+				if row.choice != later && strings.Contains(stderr, later) {
+					t.Fatalf("stderr %q names variables that cannot choose another credential under %s", stderr, row.name)
+				}
+				if userinfoCalls != 0 {
+					t.Fatalf("the refusal made %d userinfo calls, want none", userinfoCalls)
+				}
+			})
+		}
 	}
 }
 

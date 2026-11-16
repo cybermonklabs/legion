@@ -20,6 +20,7 @@ import (
 	"encoding/xml"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -85,9 +86,12 @@ func motoUser(t *testing.T, endpoint string, root motoKeys, name, policy string)
 	return motoKeys{created.ID, created.Secret}
 }
 
-// TestTheBuiltCLIAgainstMoto: the binary takes its AWS sign-in from AWS_PROFILE, then
-// AWS_DEFAULT_PROFILE, then the SDK's default chain, says which it used on every form, and runs
-// profile's IAM user; a user no policy allows is named and refused.
+// TestTheBuiltCLIAgainstMoto: the binary takes its AWS sign-in where the AWS SDK itself does, in
+// its own order - access keys in the environment, then AWS_PROFILE, then AWS_DEFAULT_PROFILE, then
+// the rest of the default chain - says on every form which source signed in, and runs as that
+// source's IAM user; a user no policy allows is named and refused. A profile variable that names
+// a profile the AWS config does not hold stops the command, so no later source in the chain (here a
+// container credentials endpoint, as a machine's role would be) signs in in its place.
 func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 	endpoint := os.Getenv("AGENT_SECRETS_MOTO_URL")
 	if endpoint == "" {
@@ -156,6 +160,13 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 		return stderr.String(), code
 	}
 	const writerARN = "arn:aws:iam::111122223333:user/writer"
+	// lent is a container credentials endpoint (AWS_CONTAINER_CREDENTIALS_FULL_URI) that lends
+	// writer's keys, as a machine's role would: the last of the SDK's sources these rows reach.
+	lent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"AccessKeyId":"` + writer.id + `","SecretAccessKey":"` + writer.secret + `","Token":"","Expiration":"2099-01-01T00:00:00Z"}`))
+	}))
+	t.Cleanup(lent.Close)
 
 	t.Run("1 AWS_PROFILE=writer on every form", func(t *testing.T) {
 		using := "using the AWS profile writer (AWS_PROFILE): " + writerARN
@@ -184,15 +195,15 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 			t.Fatalf("moto holds a value of %d bytes for %s, want set's %d", len(aws.ToString(value.SecretString)), policytest.ID("MOTO_TEST"), len("second-value"))
 		}
 	})
-	t.Run("2 AWS_PROFILE=writer", func(t *testing.T) {
-		stderr, code := run(t, []string{"AWS_PROFILE=writer"}, "", "show", "MOTO_TEST")
-		if want := "using the AWS profile writer (AWS_PROFILE): " + writerARN; code != 0 || !strings.Contains(stderr, want) {
+	t.Run("2 access keys in the environment outrank AWS_PROFILE", func(t *testing.T) {
+		stderr, code := run(t, []string{"AWS_ACCESS_KEY_ID=" + writer.id, "AWS_SECRET_ACCESS_KEY=" + writer.secret, "AWS_PROFILE=nobody"}, "", "show", "MOTO_TEST")
+		if want := "using the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE: " + writerARN + "\n"; code != 0 || !strings.Contains(stderr, want) {
 			t.Fatalf("exit %d, stderr %q; want 0 and %q", code, stderr, want)
 		}
 	})
 	t.Run("3 the default chain", func(t *testing.T) {
-		stderr, code := run(t, []string{"AWS_ACCESS_KEY_ID=" + writer.id, "AWS_SECRET_ACCESS_KEY=" + writer.secret, "AWS_REGION=us-east-1"}, "", "show", "MOTO_TEST")
-		if want := "using the AWS SDK's default credential chain: " + writerARN; code != 0 || !strings.Contains(stderr, want) {
+		stderr, code := run(t, []string{"AWS_CONTAINER_CREDENTIALS_FULL_URI=" + lent.URL}, "", "show", "MOTO_TEST")
+		if want := "using the AWS SDK's default credential chain: " + writerARN + "\n"; code != 0 || !strings.Contains(stderr, want) {
 			t.Fatalf("exit %d, stderr %q; want 0 and %q", code, stderr, want)
 		}
 	})
@@ -200,6 +211,21 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 		stderr, code := run(t, []string{"AWS_PROFILE=nobody"}, "", "list")
 		if want := "using the AWS profile nobody (AWS_PROFILE): arn:aws:iam::111122223333:user/nobody"; code != 1 || !strings.Contains(stderr, want) {
 			t.Fatalf("exit %d, stderr %q; want 1 and %q", code, stderr, want)
+		}
+	})
+	t.Run("5 AWS_DEFAULT_PROFILE=writer", func(t *testing.T) {
+		stderr, code := run(t, []string{"AWS_DEFAULT_PROFILE=writer"}, "", "show", "MOTO_TEST")
+		if want := "using the AWS profile writer (AWS_DEFAULT_PROFILE): " + writerARN + "\n"; code != 0 || !strings.Contains(stderr, want) {
+			t.Fatalf("exit %d, stderr %q; want 0 and %q", code, stderr, want)
+		}
+	})
+	t.Run("6 a profile variable the config does not hold stops the command", func(t *testing.T) {
+		// The SDK ignores a missing AWS_DEFAULT_PROFILE and would reach lent.
+		for _, variable := range []string{"AWS_DEFAULT_PROFILE", "AWS_PROFILE"} {
+			stderr, code := run(t, []string{variable + "=missing", "AWS_CONTAINER_CREDENTIALS_FULL_URI=" + lent.URL}, "", "show", "MOTO_TEST")
+			if want := "load your AWS sign-in: failed to get shared config profile, missing"; code != 1 || !strings.Contains(stderr, want) || strings.Contains(stderr, ": using ") {
+				t.Fatalf("%s=missing: exit %d, stderr %q; want 1, %q and no using line", variable, code, stderr, want)
+			}
 		}
 	})
 }

@@ -232,3 +232,49 @@ func TestAccessTokenSourceReadsTheMetadataToken(t *testing.T) {
 		t.Fatalf("the metadata server was asked %d times; want once, at %s, with Metadata-Flavor: Google", len(*asked), tokenPath)
 	}
 }
+
+// TestAccessTokenSourceRefusesAServerWithoutTheGoogleFlavor: a token answer that does not carry
+// the Metadata-Flavor: Google header is not Google's metadata server, as a resolver that sends
+// every name to one web server would bring it, so the token source answers ErrNoMetadataServer,
+// saying so, and never a token it cannot vouch for.
+func TestAccessTokenSourceRefusesAServerWithoutTheGoogleFlavor(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				w.Write([]byte(`{"access_token":"elsewhere-not-a-secret","expires_in":600,"token_type":"Bearer"}`))
+			})
+			token, err := AccessTokenSource().Token()
+			if !errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), "not a Google metadata server") {
+				t.Fatalf("Token = %v, %v; want ErrNoMetadataServer saying the server is not Google's", token, err)
+			}
+		})
+	}
+}
+
+// TestAccessTokenSourceNamesAGoogleFaultAsAFault: a Google metadata server that answers the token
+// read with an error is present and broken, so its error is not ErrNoMetadataServer.
+func TestAccessTokenSourceNamesAGoogleFaultAsAFault(t *testing.T) {
+	stubMetadata(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Metadata-Flavor", "Google")
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	})
+	token, err := AccessTokenSource().Token()
+	if err == nil || errors.Is(err, ErrNoMetadataServer) || !strings.Contains(err.Error(), "answered HTTP 503") {
+		t.Fatalf("Token = %v, %v; want a fault naming HTTP 503 that is not ErrNoMetadataServer", token, err)
+	}
+}
+
+// TestAccessTokenSourceSaysNoMetadataServerWhenNoConnectionComesWithinTheProbeTimeout: a host no
+// connection reaches - here 192.0.2.1, an address no network routes (RFC 5737), as a laptop's
+// resolver or captive network can leave the metadata server's name - is no metadata server within
+// ProbeTimeout plus a margin, not after the token read's whole 10 s.
+func TestAccessTokenSourceSaysNoMetadataServerWhenNoConnectionComesWithinTheProbeTimeout(t *testing.T) {
+	t.Setenv(MetadataHostVar, "192.0.2.1")
+	started := time.Now()
+	token, err := AccessTokenSource().Token()
+	took := time.Since(started)
+	if !errors.Is(err, ErrNoMetadataServer) || took > ProbeTimeout+2*time.Second {
+		t.Fatalf("Token = %v, %v after %s; want ErrNoMetadataServer within %s", token, err, took, ProbeTimeout+2*time.Second)
+	}
+}

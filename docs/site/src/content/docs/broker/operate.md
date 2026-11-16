@@ -730,8 +730,9 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 The broker writes no secret. A person or an agent creates, changes and deletes agent secrets with
 `agent-secrets secret` ([manage a secret](/legion/broker/guides/manage-a-secret/)), which calls
 the store itself under the credential of the first source its environment gives it - AWS, the
-sign-in `AWS_PROFILE`, `AWS_DEFAULT_PROFILE` or the SDK's default chain names; GCP, an access
-token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file
+AWS SDK's own order: access keys in the environment, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
+the profile `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` names, then the rest of the SDK's default
+chain; GCP, an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file
 `GOOGLE_APPLICATION_CREDENTIALS` names, else the gcloud configuration or login
 `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT` names, else the well-known credentials
 file, else the active gcloud account, else the metadata server; a source present but broken stops

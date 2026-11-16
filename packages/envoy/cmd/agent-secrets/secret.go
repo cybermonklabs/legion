@@ -106,12 +106,13 @@ func cmdSecret(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	// --profile was a flag on both backends until INFRA-3844; the tool now reads the store
-	// credential from the environment, as the cloud's own tools do, so a form given --profile is a
-	// usage error naming the variables to use instead (dispatch://INFRA-3844).
+	// --profile was a flag of the AWS backend (cybermonklabs/legion#1833) until #4130; the
+	// tool now reads the store credential from the environment, as the cloud's own tools do, so a
+	// form given --profile is a usage error naming the variables to use instead, and those that
+	// outrank them.
 	for _, a := range args[1:] {
 		if a == "--profile" || strings.HasPrefix(a, "--profile=") {
-			fmt.Fprintln(stderr, "agent-secrets secret: --profile is not a flag: agent-secrets reads the store credential from the environment, as the cloud's own tools do. On Google Cloud set CLOUDSDK_ACTIVE_CONFIG_NAME (a gcloud configuration) or CLOUDSDK_CORE_ACCOUNT (a gcloud account), or CLOUDSDK_AUTH_ACCESS_TOKEN or GOOGLE_APPLICATION_CREDENTIALS; on AWS set AWS_PROFILE.")
+			fmt.Fprintln(stderr, "agent-secrets secret: --profile is not a flag: agent-secrets reads the store credential from the environment, as the cloud's own tools do. On Google Cloud set CLOUDSDK_ACTIVE_CONFIG_NAME (a gcloud configuration) or CLOUDSDK_CORE_ACCOUNT (a gcloud account), which CLOUDSDK_AUTH_ACCESS_TOKEN and GOOGLE_APPLICATION_CREDENTIALS outrank when set; on AWS set AWS_PROFILE, which access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and AWS_WEB_IDENTITY_TOKEN_FILE, outrank when set, as in the AWS CLI.")
 			return exitUsageError
 		}
 	}
@@ -622,14 +623,18 @@ type secretBackend interface {
 	// email - or that the principal is unknown.
 	identity() string
 	// chooseAnother is how a refusal of the store's tells the caller to sign in with another
-	// credential: the variable that chooses one, and on Google Cloud the gcloud configurations
+	// credential, as one clause that starts "choose another": built from the source that signed
+	// in, it names the variables that can choose another from there - never one that source
+	// outranks without saying so - and on Google Cloud the gcloud configurations
 	// CLOUDSDK_ACTIVE_CONFIG_NAME can name.
 	chooseAnother() string
 	// signInPrefix is the shell assignments a command line the form prints for running again
 	// (pipeCommand) needs to sign in as this one did when the sign-in came from a variable that
 	// may have been set for this command alone: GCP's GOOGLE_APPLICATION_CREDENTIALS when that
 	// chose the source, and CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT when they chose
-	// the gcloud login; else "". It ends in a space when it is not empty.
+	// the gcloud login; AWS's AWS_PROFILE or AWS_DEFAULT_PROFILE when that profile signed in, and
+	// AWS_WEB_IDENTITY_TOKEN_FILE and AWS_ROLE_ARN for a web identity; else "", and never a key or
+	// a token. It ends in a space when it is not empty.
 	signInPrefix() string
 
 	list(ctx context.Context) ([]secretView, error)
@@ -718,7 +723,7 @@ func (s *secretSession) refusedAs(err error) error {
 	if !s.backend.isAccessDenied(err) {
 		return err
 	}
-	return fmt.Errorf("%w; the store refused %s; choose another with %s", err, s.backend.identity(), s.backend.chooseAnother())
+	return fmt.Errorf("%w; the store refused %s; %s", err, s.backend.identity(), s.backend.chooseAnother())
 }
 
 // ownerTag is the owner tag --owner names, as checkOwnerTier answered it: shared, a person's
@@ -796,7 +801,7 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st, source: awsProfileSource()}, nil
+		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf()}, nil
 	case secrets.StoreGCP:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err

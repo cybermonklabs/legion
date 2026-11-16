@@ -55,15 +55,34 @@ var (
 	_ stsAPI     = (*sts.Client)(nil)
 )
 
-// awsClients loads the AWS sign-in this command's environment gives it (AWS_PROFILE, else
-// AWS_DEFAULT_PROFILE, else the default chain) pinned to the broker's region. The SDK reads the
-// profile from the environment itself, so this takes none. Tests replace it.
+// awsClients loads the AWS sign-in this command's environment gives it, pinned to the broker's
+// region: the SDK reads every source from the environment itself, in its own order (awsSourceOf),
+// so this takes none. A profile AWS_PROFILE or AWS_DEFAULT_PROFILE names that the shared config
+// and credentials files do not hold is refused, as R1 refuses a source that is present but fails:
+// the SDK refuses such an AWS_PROFILE itself, and ignores such an AWS_DEFAULT_PROFILE
+// (config.loadSharedConfigIgnoreNotExist), which would sign in under the rest of its chain - an
+// instance role among them - while the profile was the caller's choice. Tests replace it.
 var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, error) {
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
 	}
+	if named := os.Getenv("AWS_DEFAULT_PROFILE"); named != "" && os.Getenv("AWS_PROFILE") == "" && !loadedProfile(cfg) {
+		return nil, nil, fmt.Errorf("load your AWS sign-in: %w (AWS_DEFAULT_PROFILE names it)", config.SharedConfigProfileNotExistError{Profile: named})
+	}
 	return secretsmanager.NewFromConfig(cfg), sts.NewFromConfig(cfg), nil
+}
+
+// loadedProfile reports whether the SDK found the profile it looked for in the shared config and
+// credentials files: the config.SharedConfig among cfg's sources names it, and is empty where the
+// SDK ignored a profile it did not find.
+func loadedProfile(cfg aws.Config) bool {
+	for _, source := range cfg.ConfigSources {
+		if shared, ok := source.(config.SharedConfig); ok && shared.Profile != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ssoRole matches an IAM Identity Center sign-in and captures its session name. The deployment
@@ -72,17 +91,18 @@ var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, e
 var ssoRole = regexp.MustCompile(`^arn:aws[a-z-]*:sts::[0-9]{12}:assumed-role/AWSReservedSSO_[^/]+/(.+)$`)
 
 // requireAccount refuses, before any read or write, a sign-in in an account other than the
-// broker's, naming both accounts: a read there would list another account's secrets as if they
-// were the agent secrets. It answers the sign-in's ARN.
-func requireAccount(ctx context.Context, st stsAPI, settings Settings) (arn string, err error) {
+// broker's, naming both accounts and how to choose another sign-in (another, awsSource.another): a
+// read there would list another account's secrets as if they were the agent secrets. It answers
+// the sign-in's ARN.
+func requireAccount(ctx context.Context, st stsAPI, settings Settings, another string) (arn string, err error) {
 	id, err := st.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		return "", fmt.Errorf("read your AWS sign-in: %w", err)
 	}
 	arn, account := aws.ToString(id.Arn), aws.ToString(id.Account)
 	if account != settings.AWSAccountID {
-		return "", fmt.Errorf("your AWS sign-in %s is in account %s, but the agent secrets are in account %s: sign in to account %s (AWS_PROFILE names the sign-in)",
-			arn, account, settings.AWSAccountID, settings.AWSAccountID)
+		return "", fmt.Errorf("your AWS sign-in %s is in account %s, but the agent secrets are in account %s: sign in to account %s; %s",
+			arn, account, settings.AWSAccountID, settings.AWSAccountID, another)
 	}
 	return arn, nil
 }
@@ -119,28 +139,93 @@ type awsBackend struct {
 	settings Settings
 	sm       secretsAPI
 	st       stsAPI
-	// source names where the SDK took the sign-in from (awsProfileSource).
-	source string
+	// source is where the SDK took the sign-in from (awsSourceOf).
+	source awsSource
 	// arn is the sign-in requireAccount read, which every form reads first.
 	arn string
 }
 
 // agentSecrets is an agent-secrets command line for printing. Its sign-in prefix (signInPrefix)
-// carries the AWS_PROFILE the SDK read, so it reads the store as the identity that wrote to it.
+// carries the variables that chose the sign-in, so it reads the store as the identity that wrote
+// to it.
 func (b *awsBackend) agentSecrets(words ...string) string {
 	return pipeCommand(b.signInPrefix(), words...)
 }
 
-// awsProfileSource names where the AWS SDK takes the sign-in awsClients loads from, in the SDK's
-// own order: the profile AWS_PROFILE or AWS_DEFAULT_PROFILE names, else its default credential
-// chain (the environment's keys, web identity, the default profile, the instance's role).
-func awsProfileSource() string {
-	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
-		if named := os.Getenv(variable); named != "" {
-			return "the AWS profile " + named + " (" + variable + ")"
+// awsSource is a source the AWS SDK takes the sign-in from (awsSourceOf): phrase names it in the
+// using line and in a refusal, another says how to choose another (chooseAnother), and prefix is
+// the shell assignments a printed command carries to sign in as this one did (signInPrefix).
+type awsSource struct {
+	phrase, another, prefix string
+}
+
+// firstSet is the first of names the environment sets to a value that is not empty, and that
+// value, as the SDK reads a variable and its older name (config.setStringFromEnvVal); "", "" where
+// none is set.
+func firstSet(names ...string) (name, value string) {
+	for _, name := range names {
+		if value := os.Getenv(name); value != "" {
+			return name, value
 		}
 	}
-	return "the AWS SDK's default credential chain"
+	return "", ""
+}
+
+// awsSourceOf is the source the AWS SDK takes the sign-in awsClients loads from, in the SDK's own
+// order (aws-sdk-go-v2/config, resolveCredentialChain), as this command's environment sets it:
+//
+//  1. access keys in the environment, both an access key id (AWS_ACCESS_KEY_ID, else
+//     AWS_ACCESS_KEY) and a secret access key (AWS_SECRET_ACCESS_KEY, else AWS_SECRET_KEY);
+//  2. a web identity token file, AWS_WEB_IDENTITY_TOKEN_FILE, with the role in AWS_ROLE_ARN;
+//  3. the profile AWS_PROFILE, else AWS_DEFAULT_PROFILE, names;
+//  4. the rest of the SDK's default chain: the default profile, a container's credentials, the
+//     instance's role.
+//
+// Only a profile set in code outranks 1 and 2, and this command sets none, as the AWS CLI does not
+// for AWS_PROFILE: so where keys or a token file are set, a profile variable chooses nothing, and
+// the phrase says so. The phrase names no key and no token, only the variables and the file's
+// path.
+func awsSourceOf() awsSource {
+	profileVar, profile := firstSet("AWS_PROFILE", "AWS_DEFAULT_PROFILE")
+	outranks := func(verb string) string {
+		if profileVar == "" {
+			return ""
+		}
+		return ", which " + verb + " " + profileVar
+	}
+	idVar, _ := firstSet("AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY")
+	secretVar, _ := firstSet("AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY")
+	switch {
+	case idVar != "" && secretVar != "":
+		keys := idVar + " and " + secretVar
+		return awsSource{
+			phrase:  "the access keys in " + keys + outranks("outrank"),
+			another: "choose another by unsetting " + keys + ", which outrank AWS_PROFILE, or by exporting other keys",
+		}
+	case os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") != "":
+		prefix := ""
+		for _, name := range []string{"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"} {
+			if value := os.Getenv(name); value != "" {
+				prefix += name + "=" + shellWord(value) + " "
+			}
+		}
+		return awsSource{
+			phrase:  "the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") + ")" + outranks("outranks"),
+			another: "choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
+			prefix:  prefix,
+		}
+	case profileVar != "":
+		source := awsSource{
+			phrase:  "the AWS profile " + profile + " (" + profileVar + ")",
+			another: "choose another with AWS_PROFILE",
+			prefix:  profileVar + "=" + shellWord(profile) + " ",
+		}
+		if profileVar == "AWS_DEFAULT_PROFILE" {
+			source.another += ", which outranks AWS_DEFAULT_PROFILE"
+		}
+		return source
+	}
+	return awsSource{phrase: "the AWS SDK's default credential chain", another: "choose another with AWS_PROFILE"}
 }
 
 func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + slug }
@@ -148,7 +233,7 @@ func (b *awsBackend) id(slug string) string { return b.settings.SecretsPrefix + 
 func (b *awsBackend) displayName(id string) string { return displayName(b.settings.SecretsPrefix, id) }
 
 func (b *awsBackend) requireAccount(ctx context.Context) error {
-	arn, err := requireAccount(ctx, b.st, b.settings)
+	arn, err := requireAccount(ctx, b.st, b.settings, b.source.another)
 	b.arn = arn
 	return err
 }
@@ -166,21 +251,17 @@ func (b *awsBackend) personEmail(context.Context) (string, error) {
 }
 
 // identity is where the sign-in came from and its ARN, as requireAccount read it.
-func (b *awsBackend) identity() string { return b.source + ": " + b.arn }
+func (b *awsBackend) identity() string { return b.source.phrase + ": " + b.arn }
 
-// chooseAnother is how a refusal of the store's says to sign in with another AWS credential.
-func (*awsBackend) chooseAnother() string { return "AWS_PROFILE" }
+// chooseAnother is how a refusal of the store's says to sign in with another AWS credential, by
+// the source that signed in (awsSource.another): the variable that outranks it.
+func (b *awsBackend) chooseAnother() string { return b.source.another }
 
-// signInPrefix is the AWS_PROFILE a printed command carries so it signs in as this one did, or ""
-// when the SDK's default chain, not a named profile, chose the sign-in.
-func (b *awsBackend) signInPrefix() string {
-	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
-		if named := os.Getenv(variable); named != "" {
-			return variable + "=" + shellWord(named) + " "
-		}
-	}
-	return ""
-}
+// signInPrefix is the shell assignments a printed command carries so it signs in as this one did
+// (awsSource.prefix): the profile variable that chose the profile, or the web identity token file
+// and role; "" for access keys, which a printed command never carries, and for the rest of the
+// SDK's chain.
+func (b *awsBackend) signInPrefix() string { return b.source.prefix }
 
 func (b *awsBackend) list(ctx context.Context) ([]secretView, error) {
 	views := []secretView{}

@@ -149,14 +149,15 @@ func (m *metadataServer) tokenRequests() int {
 // that chooses a Google credential, and puts a stub gcloud alone on PATH that holds a login for
 // each configuration's account. The stub answers `auth list` (every login, the effective account
 // marked ACTIVE), `config list` (core.account) and `auth print-access-token … ACCOUNT`
-// (gcloud-not-a-secret-for-ACCOUNT), where the configuration is the --configuration= its command line
-// names, else CLOUDSDK_ACTIVE_CONFIG_NAME, else active_config, and CLOUDSDK_CORE_ACCOUNT, where
-// set, replaces that configuration's account; any other command fails. Where the configuration
-// names no account, the effective account is the active configuration's, as real gcloud on a
-// Compute Engine VM answers one with the metadata server's service account (its core/account
-// callback): measured on sami-devbox on 2026-11-15, `gcloud config list --configuration=theorem`
-// for a configuration whose file is `[core]` alone named the VM's account. It answers the
-// configuration directory.
+// (gcloud-not-a-secret-for-ACCOUNT, or a refresh failure while STUB_GCLOUD_REFUSE_TOKEN is set),
+// where the configuration is the --configuration= its command line names, else
+// CLOUDSDK_ACTIVE_CONFIG_NAME, else active_config, and CLOUDSDK_CORE_ACCOUNT, where set, replaces
+// that configuration's account; any other command fails. Where the configuration names no
+// account, the effective account is the active configuration's, as real gcloud on a Compute
+// Engine VM answers one with the metadata server's service account (its core/account callback):
+// measured on a developer's Compute Engine VM on 2026-11-15, `gcloud config list
+// --configuration=theorem` for a configuration whose file is `[core]` alone named the VM's
+// account. It answers the configuration directory.
 func useGcloudConfigurations(t *testing.T, active string, configs map[string]string) string {
 	t.Helper()
 	home := t.TempDir()
@@ -197,7 +198,7 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		`case "$1 $2" in`,
 		`"auth list") printf '['; sep=; for held in ` + strings.Join(accounts, " ") + `; do status=; [ "$held" = "$account" ] && status=ACTIVE; printf '%s{"account":"%s","status":"%s"}' "$sep" "$held" "$status"; sep=,; done; printf ']\n' ;;`,
 		`"config list") printf '{"core":{"account":"%s"}}\n' "$account" ;;`,
-		`"auth print-access-token") last=; for word; do case "$word" in --*) ;; *) last=$word ;; esac; done; printf 'gcloud-not-a-secret-for-%s\n' "$last" ;;`,
+		`"auth print-access-token") [ -z "$STUB_GCLOUD_REFUSE_TOKEN" ] || { echo 'ERROR: (gcloud.auth.print-access-token) Reauthentication failed.' >&2; exit 1; }; last=; for word; do case "$word" in --*) ;; *) last=$word ;; esac; done; printf 'gcloud-not-a-secret-for-%s\n' "$last" ;;`,
 		`*) printf 'stub gcloud: unexpected command: %s\n' "$*" >&2; exit 2 ;;`,
 		"esac",
 		"",
@@ -214,8 +215,8 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 	return dir
 }
 
-// orderConfigurations are the two gcloud configurations of a Google VM a person also works on,
-// as sami-devbox holds them: the machine's own, box, active, and the person's, theorem.
+// orderConfigurations are the two gcloud configurations of a Google VM a person also works on:
+// the machine's own, box, active, and the person's, theorem.
 var orderConfigurations = map[string]string{"box": "box@example.iam.gserviceaccount.com", "theorem": "grace@example.com"}
 
 // orderSetup is one source of R1 made present, on top of the rows before it (useOrderSources).
@@ -303,7 +304,7 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // TestGCPSecretNoSourceListsEverySource: with no source present - no gcloud on PATH, no
 // credentials file, no variable, and nothing answering at the metadata server's address - the
 // command stops within 2 s, before any Secret Manager call, with one refusal that names each of
-// the seven sources.
+// the six sources (the third by both its variables).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
@@ -395,6 +396,20 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			},
 			code: 1, says: []string{"the gcloud configuration theorem", "names no account"},
 		},
+		{
+			name: "missing configuration",
+			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "missing")
+			},
+			code: 1, says: []string{"the gcloud configuration missing (CLOUDSDK_ACTIVE_CONFIG_NAME): read the gcloud configuration missing"},
+		},
+		{
+			name: "active gcloud refresh fails",
+			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+				t.Setenv("STUB_GCLOUD_REFUSE_TOKEN", "1")
+			},
+			code: 1, says: []string{"the active gcloud account (gcloud configuration box)", "`gcloud auth print-access-token` failed for box@example.iam.gserviceaccount.com", "Reauthentication failed"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -422,6 +437,122 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			}
 			if n := metadata.tokenRequests(); n != 0 {
 				t.Fatalf("the metadata server was asked for %d access tokens, want none", n)
+			}
+		})
+	}
+}
+
+// metadataAnswer is how startPartialMetadataServer answers one path.
+type metadataAnswer int
+
+const (
+	// answerHeld holds the request open until the test ends.
+	answerHeld metadataAnswer = iota
+	// answerGoogle is the real server's answer, with Metadata-Flavor: Google.
+	answerGoogle
+	// answerGoogleFault is HTTP 500 with Metadata-Flavor: Google: a Google server that is present
+	// and fails.
+	answerGoogleFault
+	// answerNotGoogle is the real server's answer without Metadata-Flavor: Google, as a resolver
+	// that sends every name to one web server would bring it.
+	answerNotGoogle
+)
+
+// startPartialMetadataServer serves, at the address GCE_METADATA_HOST names for the rest of t, a
+// metadata server that answers the default service account's access token path (with
+// metadata-not-a-secret) as token says and its email path (with
+// machine@example.iam.gserviceaccount.com) as email says, and holds every other request open
+// until the test ends.
+func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *metadataServer {
+	t.Helper()
+	m := &metadataServer{requests: map[string]int{}}
+	held := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		m.requests[r.URL.Path]++
+		m.mu.Unlock()
+		answer, body := answerHeld, ""
+		switch r.URL.Path {
+		case metadataTokenPath:
+			answer, body = token, `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`
+		case "/computeMetadata/v1/instance/service-accounts/default/email":
+			answer, body = email, "machine@example.iam.gserviceaccount.com"
+		}
+		switch answer {
+		case answerHeld:
+			select {
+			case <-held:
+			case <-r.Context().Done():
+			}
+			return
+		case answerGoogle, answerGoogleFault:
+			w.Header().Set("Metadata-Flavor", "Google")
+		}
+		if answer == answerGoogleFault {
+			http.Error(w, "the test fails it", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(held) })
+	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(server.URL, "http://"))
+	return m
+}
+
+// TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken: with no other source, the metadata
+// server is present exactly when it yields a token (R2), through the real token and email reads:
+// a token with no answer to the email read signs in, naming the machine's identity generically; a
+// server that answers neither, and an answer that is not Google's, are no metadata server, so the
+// command lists every source; a Google server that answers the token read with an error is
+// present and broken, so that error stops the command.
+func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
+	for _, row := range []struct {
+		name         string
+		token, email metadataAnswer
+		code         int
+		within       time.Duration
+		says         []string
+		saysNot      string
+		onlyCall     string
+	}{
+		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, 5 * time.Second,
+			[]string{"using the metadata server: this machine's or this pod's identity\n"}, "", "Bearer metadata-not-a-secret"},
+		{"answers neither", answerHeld, answerHeld, 1, 15 * time.Second,
+			[]string{"found no Google credential", "the metadata server: no metadata server"}, "ask the metadata server for this machine's access token", ""},
+		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, 1, 5 * time.Second,
+			[]string{"found no Google credential", "not a Google metadata server"}, "ask the metadata server for this machine's access token", ""},
+		{"answers the token read with an error", answerGoogleFault, answerGoogle, 1, 5 * time.Second,
+			[]string{"ask the metadata server for this machine's access token", "answered HTTP 500"}, "found no Google credential", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			startFakeSecretManager(t, fake)
+			holdScratchTest(fake)
+			useGcloudConfigurations(t, "", nil)
+			t.Setenv("PATH", t.TempDir())
+			startPartialMetadataServer(t, row.token, row.email)
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			started := time.Now()
+			_, stderr, code := runSecret("show", "SCRATCH_TEST")
+			took := time.Since(started)
+			if code != row.code || took > row.within {
+				t.Fatalf("exit %d after %s, stderr %q; want %d within %s", code, took, stderr, row.code, row.within)
+			}
+			for _, said := range row.says {
+				if !strings.Contains(stderr, said) {
+					t.Fatalf("stderr %q does not say %q", stderr, said)
+				}
+			}
+			if row.saysNot != "" && strings.Contains(stderr, row.saysNot) {
+				t.Fatalf("stderr %q says %q", stderr, row.saysNot)
+			}
+			got, calls := fake.calledUnder()
+			switch {
+			case row.onlyCall == "" && calls != 0:
+				t.Fatalf("Secret Manager saw %d calls under %q, want none", calls, got)
+			case row.onlyCall != "" && (got != row.onlyCall || calls == 0):
+				t.Fatalf("Secret Manager calls ran under %q (%d calls), want only %s", got, calls, row.onlyCall)
 			}
 		})
 	}

@@ -89,7 +89,7 @@ func (n *gcpNewSecret) begin(ctx context.Context) (discardOutcome, error) {
 		return outcome, fmt.Errorf("%w; %s", err, left)
 	}
 	if b.mayNotAdd(ctx, n.name) {
-		refusal := fmt.Errorf("%s may create %s but not add its value: IAM grants it no %s on the secret, so no value was asked for", b.identity(), n.name, addPermission)
+		refusal := fmt.Errorf("%s may create %s but not add its value: IAM grants it no %s on the secret, so no value was asked for; %s", b.identity(), n.name, addPermission, b.chooseAnother())
 		outcome, left := n.discard(ctx)
 		if left != nil {
 			return outcome, fmt.Errorf("%w; %w", refusal, left)

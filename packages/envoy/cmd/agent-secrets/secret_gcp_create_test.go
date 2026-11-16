@@ -709,43 +709,42 @@ func TestGCPSecretCreatesLabelTheirSecretsDifferently(t *testing.T) {
 // TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid: every command a create prints for
 // settling what it left - `agent-secrets secret show` and `set`, and the gcloud command that
 // clears an empty secret - signs in as the create did: the agent-secrets lines carry its sign-in
-// prefix or its --profile (a key file GOOGLE_APPLICATION_CREDENTIALS names, the gcloud login
-// CLOUDSDK_CORE_ACCOUNT names, the gcloud configuration --profile names), and the gcloud line pins
-// the same identity for gcloud (the key file as CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, the login
-// as CLOUDSDK_CORE_ACCOUNT, the configuration as CLOUDSDK_ACTIVE_CONFIG_NAME) and names it.
+// prefix (a key file GOOGLE_APPLICATION_CREDENTIALS names, the gcloud login CLOUDSDK_CORE_ACCOUNT
+// names, the gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names), and the gcloud line pins the
+// same identity for gcloud (the key file as CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, the login as
+// CLOUDSDK_CORE_ACCOUNT, the configuration as CLOUDSDK_ACTIVE_CONFIG_NAME) and names it.
 func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 	for _, mode := range []struct {
 		name   string
-		args   []string
 		signIn func(t *testing.T)
-		// pins is the sign-in prefix of the agent-secrets lines, the --profile that follows their
-		// words, and the pin of the gcloud line, read once signIn has run.
-		pins func() (agentPrefix, agentSuffix, gcloudPin string)
+		// pins is the sign-in prefix of the agent-secrets lines and the pin of the gcloud line,
+		// read once signIn has run.
+		pins func() (agentPrefix, gcloudPin string)
 	}{
-		{"a key file", nil, func(t *testing.T) {
+		{"a key file", func(t *testing.T) {
 			useGCPIdentity(t, "service_account", "robot@acme.iam.gserviceaccount.com")
-		}, func() (string, string, string) {
+		}, func() (string, string) {
 			path := shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-			return "GOOGLE_APPLICATION_CREDENTIALS=" + path + " ", "", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + path + " "
+			return "GOOGLE_APPLICATION_CREDENTIALS=" + path + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + path + " "
 		}},
-		{"a named gcloud login", nil, func(t *testing.T) {
+		{"a named gcloud login", func(t *testing.T) {
 			useNoADC(t)
 			useGcloud(t, "ada@example.com", "grace@example.com")
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
-		}, func() (string, string, string) {
-			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
+		}, func() (string, string) {
+			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
 		}},
-		{"a gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names", nil, func(t *testing.T) {
+		{"a gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names", func(t *testing.T) {
 			useGcloudConfigurations(t, "box", orderConfigurations)
 			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
-		}, func() (string, string, string) {
-			return "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem ", "", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
+		}, func() (string, string) {
+			return "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem ", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
 		}},
 	} {
 		for _, scenario := range []struct {
 			name  string
 			setUp func(fake *fakeSecretManager)
-			want  func(agentPrefix, agentSuffix, gcloudPin string) []string
+			want  func(agentPrefix, gcloudPin string) []string
 		}{
 			{"another writer's version kept", func(fake *fakeSecretManager) {
 				fake.beforeCall = func(method string) {
@@ -755,12 +754,12 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 						}
 					}
 				}
-			}, func(agentPrefix, agentSuffix, _ string) []string {
-				return []string{"`" + agentPrefix + "agent-secrets secret show NEW_TEST" + agentSuffix + "`", "`" + agentPrefix + "agent-secrets secret set NEW_TEST" + agentSuffix + "`"}
+			}, func(agentPrefix, _ string) []string {
+				return []string{"`" + agentPrefix + "agent-secrets secret show NEW_TEST`", "`" + agentPrefix + "agent-secrets secret set NEW_TEST`"}
 			}},
 			{"the empty secret's delete refused", func(fake *fakeSecretManager) {
 				fake.refuseMethods = map[string]codes.Code{"DeleteSecret": codes.PermissionDenied}
-			}, func(_, _, gcloudPin string) []string { return []string{"`" + gcloudPin + clearEmptySecret + "`"} }},
+			}, func(_, gcloudPin string) []string { return []string{"`" + gcloudPin + clearEmptySecret + "`"} }},
 		} {
 			t.Run(mode.name+", "+scenario.name, func(t *testing.T) {
 				fake := newFakeSecretManager()
@@ -770,12 +769,12 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 				startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 				useStdin(t, "")
 
-				_, stderr, code := runSecret(append([]string{"create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent"}, mode.args...)...)
+				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
 				if code != 1 {
 					t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 				}
-				agentPrefix, agentSuffix, gcloudPin := mode.pins()
-				for _, want := range scenario.want(agentPrefix, agentSuffix, gcloudPin) {
+				agentPrefix, gcloudPin := mode.pins()
+				for _, want := range scenario.want(agentPrefix, gcloudPin) {
 					if !strings.Contains(stderr, want) {
 						t.Fatalf("stderr %q; want it to name %s", stderr, want)
 					}

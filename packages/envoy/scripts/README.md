@@ -322,23 +322,28 @@ so a store or use change cannot pass on one backend alone.
 BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/backend-count.sh TEST...
 ```
 
-It runs `go test -json -count=1 ./cmd/agent-secrets/ ./internal/broker/...` once and
-prints `TEST aws=N gcp=M` for each named test, then `database_skips=K` (tests that
-skipped saying `BROKER_TEST_DATABASE_URL`) and `go_test_exit=E`. It exits 1 when no test
-is named, when a named test has no passing run on either backend, when a database suite
-skipped, or when go test failed. It counts only the tests it names, so the `aws` and
-`gcp` subtests of other tests cannot stand in for a new test's. `GO_TEST_SKIP` is go
-test's `-skip` pattern: the negative control
+It runs only the named tests, `go test -json -count=1 -timeout 5m -run '^(TEST|…)$'
+./cmd/agent-secrets/`, and prints `TEST aws=N gcp=M` for each, then
+`broker_test_database_url=set` or `unset` and `go_test_exit=E`. It exits 1 when no test is
+named, when a name is not a Go test name, when a named test has no passing run on either
+backend, when `BROKER_TEST_DATABASE_URL` is unset (every database broker suite skips without
+it, and the job's unit step runs them), or when go test failed. It counts only the tests it
+names, so the `aws` and `gcp` subtests of other tests cannot stand in for a new test's.
+`GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
-`ci.yaml`'s `envoy-go` job runs it as "Count the store-form rows on each backend".
+`GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
+in its time budget; the job runs it as "Count the store-form rows on each backend".
 
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:
 `cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
 `moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
-turns moto's IAM checks on, and runs every secret form under `--profile`, `AWS_PROFILE`
-and the SDK's default chain, reading each form's `using` line.
+turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
+own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
+`AWS_DEFAULT_PROFILE`; and the rest of the default chain (a container credentials
+endpoint the test serves), reading each form's `using` line. A profile variable that names
+a profile the AWS config does not hold stops the command before that endpoint signs in.
 
 ```bash
 packages/envoy/scripts/aws-moto-check.sh [BINARY]

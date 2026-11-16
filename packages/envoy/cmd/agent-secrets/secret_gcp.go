@@ -99,10 +99,11 @@ const metadataGenericPrincipal = "this machine's or this pod's identity"
 
 // gcpMetadataToken answers the machine's own credentials, whose access tokens come from the
 // metadata server (googleidentity.AccessTokenSource), reading the first token at once so the
-// source is available exactly when the server yields one. googleidentity.ErrNoMetadataServer -
-// no server answered - is the absence newGCPBackend skips; any other error is a server that is
-// present but could not mint a token, which stops the command. It never reads the email: that is
-// gcpMetadataPrincipal's separate, best-effort job. Tests replace it.
+// source is available exactly when the server yields one. googleidentity.ErrNoMetadataServer - no
+// connection within googleidentity.ProbeTimeout, no answer within the token read's bound, or an
+// answer that is not Google's - is the absence newGCPBackend skips; any other error is a Google
+// server that is present but could not mint a token, which stops the command. It never reads the
+// email: that is gcpMetadataPrincipal's separate, best-effort job. Tests replace it.
 var gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
 	source := googleidentity.AccessTokenSource()
 	first, err := source.Token()
@@ -183,9 +184,16 @@ func findGcloud() (gcloudCommand, error) {
 
 // gcloudLogins is every login `gcloud auth list` names, and the one it marks active (its
 // core/account property, under gcloud's configuration): the first of a gcloud source's three
-// calls. A list gcloud cannot make is an error.
+// calls, which decides whether the source is present. It runs under storeCallDeadline, as the
+// token's refresh does (gcloudToken.Token), so a gcloud that never answers stops the command at
+// that deadline rather than holding it. A list gcloud cannot make is an error.
 func gcloudLogins(ctx context.Context, gcloud gcloudCommand) (accounts []string, active string, err error) {
+	ctx, cancel := withStoreDeadline(ctx)
+	defer cancel()
 	out, err := runGcloud(ctx, gcloud, "auth", "list", "--format=json")
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, "", fmt.Errorf("`gcloud auth list` did not answer within %s", storeCallDeadlineText())
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("`gcloud auth list` failed: %w", err)
 	}
@@ -208,9 +216,10 @@ func gcloudLogins(ctx context.Context, gcloud gcloudCommand) (accounts []string,
 // gcloudSettings are the auth properties of gcloud's effective configuration that change whose
 // token `gcloud auth print-access-token` prints - impersonation, an access token file and a
 // credential file override - as `gcloud config list --format=json` shows them, environment
-// overrides included: the second of a gcloud source's three calls. The account a chosen
-// configuration names is read from the configuration itself (gcloudConfigurationAccount), never
-// from here, where gcloud on a Compute Engine VM fills a missing one in with the machine's.
+// overrides included: the second of a gcloud source's three calls. gcloud applies them itself, so
+// they only name whom the token acts as (principal). The account a chosen configuration names is
+// read from the configuration itself (gcloudConfigurationAccount), never from here, where gcloud
+// on a Compute Engine VM fills a missing one in with the machine's.
 type gcloudSettings struct {
 	Auth struct {
 		ImpersonateServiceAccount string `json:"impersonate_service_account"`
@@ -219,8 +228,18 @@ type gcloudSettings struct {
 	} `json:"auth"`
 }
 
+// gcloudSettingsDeadline bounds readGcloudSettings. The read only names whom a login's token acts
+// as, which R2 makes best effort, so a gcloud that has not answered by then leaves the principal
+// unknown (unreadPrincipal) and the command goes on; each gcloud run starts a Python interpreter,
+// which on a loaded machine takes seconds, so the bound leaves room for that.
+const gcloudSettingsDeadline = 5 * time.Second
+
+// readGcloudSettings runs `gcloud config list` under gcloudSettingsDeadline. Its error is never
+// the command's (signInWithGcloud).
 func readGcloudSettings(ctx context.Context, gcloud gcloudCommand) (gcloudSettings, error) {
 	var settings gcloudSettings
+	ctx, cancel := context.WithTimeout(ctx, gcloudSettingsDeadline)
+	defer cancel()
 	out, err := runGcloud(ctx, gcloud, "config", "list", "--format=json")
 	if err != nil {
 		return settings, fmt.Errorf("`gcloud config list` failed: %w", err)
@@ -248,6 +267,13 @@ func (settings gcloudSettings) principal(account string) string {
 		return account + " impersonating " + settings.Auth.ImpersonateServiceAccount
 	}
 	return account
+}
+
+// unreadPrincipal is who account's gcloud token acts as where readGcloudSettings failed or did not
+// answer in time: the login is named, and whether gcloud's settings make its token act as another
+// principal is unknown.
+func unreadPrincipal(account string) string {
+	return account + " (" + principalUnknown + ": gcloud's auth settings could not be read)"
 }
 
 // personAccount reports whether email, as Google's userinfo endpoint names an account, is a
@@ -400,15 +426,18 @@ func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byt
 //     name;
 //  4. the well-known credentials file (wellKnownCredentialsFile);
 //  5. the active gcloud account, where gcloud is on PATH and holds a login;
-//  6. the metadata server, where one answers (googleidentity.Probe).
+//  6. the metadata server, where it yields a token (gcpMetadataToken).
 //
 // A source that is absent is skipped. One that is present but fails - a file it cannot parse, a
 // refresh that fails, an account gcloud does not hold - stops the command with its error, and no
 // later source is tried; with none present the error names each and why it had nothing. A
 // gcloud source runs gcloud with gcloud's own settings for its configuration and account
 // (gcloudEnv). It refuses no credential for the identity it is: Secret Manager's IAM decides what
-// each may read and write, and a refusal of the store's names the credential (identity). It makes
-// no userinfo or tokeninfo call: only --owner me needs an email (personEmail).
+// each may read and write, and a refusal of the store's names the credential (identity). The
+// read of whom a credential acts as is best effort (R2): it makes no userinfo or tokeninfo call,
+// since only --owner me needs an email (personEmail), and a read of the metadata server's email or
+// of gcloud's auth settings that fails or is slow names the principal less exactly and never
+// stops the command.
 func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) {
 	b := &gcpBackend{settings: settings}
 	if err := b.signIn(ctx); err != nil {
@@ -516,6 +545,8 @@ type gcloudLoginList struct {
 // gcloud cannot lend is refused here, before any call is made under it; gcloudToken then runs
 // `gcloud auth print-access-token` again as each token nears its end, gcloud refreshing the login
 // as it does for itself, through the interface gcloud offers for that, never its credential files.
+// The settings only name whom the token acts as, so a read of them that fails or does not answer
+// in time names the login with the principal unknown (unreadPrincipal) and stops nothing.
 func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phrase string, gcloud gcloudCommand, chosen string, listed *gcloudLoginList) error {
 	if listed == nil {
 		accounts, active, err := gcloudLogins(ctx, gcloud)
@@ -531,10 +562,7 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 			return fmt.Errorf("%s: %w", phrase, err)
 		}
 	}
-	settings, err := readGcloudSettings(ctx, gcloud)
-	if err != nil {
-		return fmt.Errorf("%s: %w", phrase, err)
-	}
+	settings, settingsErr := readGcloudSettings(ctx, gcloud)
 	account, err := chooseGcloudAccount(chosen, listed.accounts, listed.active, configured)
 	if err != nil {
 		return fmt.Errorf("%s: %w", phrase, err)
@@ -544,7 +572,11 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 	if err != nil {
 		return fmt.Errorf("%s: %w", phrase, err)
 	}
-	b.source, b.sourcePhrase, b.principal, b.gcloudAccount = source, phrase, settings.principal(account), account
+	principal := settings.principal(account)
+	if settingsErr != nil {
+		principal = unreadPrincipal(account)
+	}
+	b.source, b.sourcePhrase, b.principal, b.gcloudAccount = source, phrase, principal, account
 	b.creds = &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, tokens)}
 	return nil
 }
@@ -636,10 +668,19 @@ func (b *gcpBackend) personEmail(ctx context.Context) (string, error) {
 // source newGCPBackend took it from, and who it acts as, or that the principal is unknown.
 func (b *gcpBackend) identity() string { return b.sourcePhrase + ": " + b.principal }
 
-// chooseAnother is how a refusal of the store's says to sign in with another credential: the
-// flag, and the gcloud configurations it can name.
+// chooseAnother is how a refusal of the store's says to sign in with another credential, built
+// from the source that signed in: a lent token outranks every other source, so only unsetting it
+// or lending another chooses another; a credentials file outranks the gcloud variables, so they
+// choose only once it is unset; under every later source the gcloud variables and a credentials
+// file choose. Where a gcloud variable can choose, it lists the gcloud configurations here.
 func (b *gcpBackend) chooseAnother() string {
-	return "a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: " + gcloudConfigurationList() + ")"
+	switch b.source {
+	case sourceLentToken:
+		return "choose another by unsetting CLOUDSDK_AUTH_ACCESS_TOKEN, which outranks every other source, or by lending another token in it"
+	case sourceCredentialsFile:
+		return "choose another by naming another credentials file in GOOGLE_APPLICATION_CREDENTIALS, or by unsetting it, which outranks every gcloud source, to choose a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME or an account in CLOUDSDK_CORE_ACCOUNT (gcloud configurations here: " + gcloudConfigurationList() + ")"
+	}
+	return "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: " + gcloudConfigurationList() + ")"
 }
 
 // signInPrefix is the shell assignments a command line a form prints for running again

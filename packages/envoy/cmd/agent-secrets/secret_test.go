@@ -235,11 +235,16 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 }
 
 // useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, for the
-// rest of t.
+// rest of t, and clears every variable that chooses where the AWS SDK takes the sign-in from, so a
+// developer's own shell names no other source.
 func useAWS(t *testing.T, sm secretsAPI, account, arn string) {
 	t.Helper()
-	t.Setenv("AWS_PROFILE", "")
-	t.Setenv("AWS_DEFAULT_PROFILE", "")
+	for _, name := range []string{
+		"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY",
+		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
+	} {
+		t.Setenv(name, "")
+	}
 	restore := awsClients
 	awsClients = func(context.Context, string) (secretsAPI, stsAPI, error) {
 		return sm, fakeSTS{account: account, arn: arn}, nil
@@ -336,39 +341,82 @@ func (refusingCreates) CreateSecret(context.Context, *secretsmanager.CreateSecre
 	return nil, &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform: secretsmanager:CreateSecret"}
 }
 
-// TestAWSRefusalNamesTheSourceAndTheChoice: a store refusal on AWS names where the sign-in came
-// from - AWS_PROFILE, AWS_DEFAULT_PROFILE, or the SDK's default credential chain - its ARN, and how
-// choose another.
+// TestAWSRefusalNamesTheSourceAndTheChoice: the using line and a store refusal on AWS name the
+// source the AWS SDK takes the sign-in from, in its own order (keys in the environment, then a web
+// identity token file, then AWS_PROFILE, then AWS_DEFAULT_PROFILE, then the rest of its chain),
+// its ARN, and the variable that chooses another: one that a source higher in that order outranks
+// is never named as the one that chose. A command it prints for running again carries the profile
+// variable only where that profile signed in.
 func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
+	const tokenFile = "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
 	for _, row := range []struct {
-		name, envProfile, envDefault, refused string
+		name            string
+		env             map[string]string
+		source, another string
+		prefix          string
 	}{
-		{"AWS_PROFILE", "work", "", "the AWS profile work (AWS_PROFILE): " + adaSignIn},
-		{"AWS_DEFAULT_PROFILE", "", "work", "the AWS profile work (AWS_DEFAULT_PROFILE): " + adaSignIn},
-		{"neither", "", "", "the AWS SDK's default credential chain: " + adaSignIn},
+		{"AWS_PROFILE", map[string]string{"AWS_PROFILE": "work"},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"AWS_DEFAULT_PROFILE", map[string]string{"AWS_DEFAULT_PROFILE": "work"},
+			"the AWS profile work (AWS_DEFAULT_PROFILE)", "choose another with AWS_PROFILE, which outranks AWS_DEFAULT_PROFILE", "AWS_DEFAULT_PROFILE=work "},
+		{"AWS_PROFILE over AWS_DEFAULT_PROFILE", map[string]string{"AWS_PROFILE": "work", "AWS_DEFAULT_PROFILE": "other"},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"neither", nil,
+			"the AWS SDK's default credential chain", "choose another with AWS_PROFILE", ""},
+		{"keys outrank AWS_PROFILE", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_PROFILE": "admin"},
+			"the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE",
+			"choose another by unsetting AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
+		{"keys alone, by their older names", map[string]string{"AWS_ACCESS_KEY": "AKIAEXAMPLE", "AWS_SECRET_KEY": "not-a-secret"},
+			"the access keys in AWS_ACCESS_KEY and AWS_SECRET_KEY",
+			"choose another by unsetting AWS_ACCESS_KEY and AWS_SECRET_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
+		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"},
+			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
+		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"},
+			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + tokenFile + "), which outranks AWS_PROFILE",
+			"choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
+			"AWS_WEB_IDENTITY_TOKEN_FILE=" + tokenFile + " AWS_ROLE_ARN=arn:aws:iam::111122223333:role/agent "},
+		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile},
+			"the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
+			"choose another by unsetting AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, which outrank AWS_PROFILE, or by exporting other keys", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal()
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, refusingCreates{local}, testAccount, adaSignIn)
-			t.Setenv("AWS_PROFILE", row.envProfile)
-			t.Setenv("AWS_DEFAULT_PROFILE", row.envDefault)
+			for name, value := range row.env {
+				t.Setenv(name, value)
+			}
 			useStdin(t, "value")
 			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "shared", "--tier", "agent")
 			if code != 1 || !strings.Contains(stderr, "AccessDeniedException") {
 				t.Fatalf("exit %d, stderr %q; want 1 with the store's AccessDeniedException", code, stderr)
 			}
-			for _, said := range []string{"the store refused " + row.refused, "choose another with AWS_PROFILE"} {
+			for _, said := range []string{
+				"agent-secrets secret create: using " + row.source + ": " + adaSignIn + "\n",
+				"the store refused " + row.source + ": " + adaSignIn + "; " + row.another,
+			} {
 				if !strings.Contains(stderr, said) {
 					t.Fatalf("stderr %q does not say %q", stderr, said)
 				}
+			}
+			if strings.Contains(stderr, "not-a-secret") {
+				t.Fatalf("stderr %q quotes a secret access key", stderr)
+			}
+
+			// The pipe command a prompt that cannot run names signs in as this one did.
+			useTerminal(t)
+			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errNoValuePrompt }
+			_, stderr, code = runSecret("set", "HELD_KEY")
+			if want := "pipe the value in: " + row.prefix + "agent-secrets secret set HELD_KEY < FILE"; code != exitUsageError || !strings.Contains(stderr, want) {
+				t.Fatalf("set: exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, want)
 			}
 		})
 	}
 }
 
 // TestEverySecretFormNamesTheSourceItUses: every secret form, on each store, prints exactly one
-// line naming the credential it signs in to the store with before it calls the store.
+// line naming the credential it signs in to the store with, and prints it before its first call of
+// the store.
 func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
@@ -386,23 +434,53 @@ func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
 		} {
 			t.Run(form.args[0], func(t *testing.T) {
 				useStdin(t, form.stdin)
-				_, stderr, code := runSecret(form.args...)
-				if code != 0 {
-					t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
-				}
 				prefix := "agent-secrets secret " + form.args[0] + ": using "
+				stderr := &usingWatch{prefix: prefix, calls: store.calls, callsBefore: -1}
+				started := store.calls()
+				if code := cmdSecret(form.args, io.Discard, stderr); code != 0 {
+					t.Fatalf("exit %d, stderr %q; want 0", code, stderr.String())
+				}
 				var using int
-				for _, line := range strings.Split(stderr, "\n") {
+				for _, line := range strings.Split(stderr.String(), "\n") {
 					if strings.HasPrefix(line, prefix) {
 						using++
 					}
 				}
 				if using != 1 {
-					t.Fatalf("stderr %q holds %d lines starting %q, want exactly one", stderr, using, prefix)
+					t.Fatalf("stderr %q holds %d lines starting %q, want exactly one", stderr.String(), using, prefix)
+				}
+				if made := store.calls() - started; stderr.callsBefore != started || made == 0 {
+					t.Fatalf("the form made %d store calls before the line naming its credential and %d in all; want none before it, and at least one", stderr.callsBefore-started, made)
 				}
 			})
 		}
 	})
+}
+
+// usingWatch is a form's standard error: it keeps what the form writes and, when the form writes
+// the line that starts with prefix, how many store calls (calls) had been made by then, in
+// callsBefore, which is -1 until then.
+type usingWatch struct {
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	prefix      string
+	calls       func() int
+	callsBefore int
+}
+
+func (w *usingWatch) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.callsBefore < 0 && bytes.Contains(p, []byte(w.prefix)) {
+		w.callsBefore = w.calls()
+	}
+	return w.buf.Write(p)
+}
+
+func (w *usingWatch) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
 }
 
 // The secret forms refuse settings whose aws_account_id or aws_region disagrees with the account and

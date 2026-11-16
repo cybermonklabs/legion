@@ -1,9 +1,10 @@
 // packages/envoy/cmd/agent-secrets/gcp_source.go
 //
 // The sources a store command on Google Cloud takes its credential from, in the order it tries
-// them (newGCPBackend): a choice made on the command line, then a choice made in the environment,
-// then a file the person set up, then the machine's own identity. A source that is absent is
-// skipped; one that is present but fails stops the command.
+// them (newGCPBackend): a token or a credentials file the environment names, then a gcloud
+// configuration or login it chooses, then a file the person set up, then the active gcloud login,
+// then the machine's own identity. A source that is absent is skipped; one that is present but
+// fails stops the command.
 package main
 
 import (
@@ -123,9 +124,10 @@ func gcloudConfigurationList() string {
 // (`key = value` or `key: value`, `#` and `;` comments); "" where it names none. It is read from
 // the file, not from `gcloud config list`, which on a Compute Engine VM answers a configuration
 // that names no account with the metadata server's service account (gcloud's core/account
-// callback), so a person's empty configuration would read as the machine's: measured on
-// sami-devbox on 2026-11-15, where `config list --configuration=theorem` named the VM's account
-// and `config configurations describe theorem` named none. A file it cannot read is an error.
+// callback), so a person's empty configuration would read as the machine's: measured on a
+// developer's Compute Engine VM on 2026-11-15, where `config list --configuration=theorem` named
+// the VM's account and `config configurations describe theorem` named none. A file it cannot read
+// is an error.
 func gcloudConfigurationAccount(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))
 	if err != nil {

@@ -33,8 +33,12 @@ You need three things:
   the first source that is present, a person's or a machine's, for every form, and refuses none
   for what kind of identity it is: the store's IAM decides what each may read and write. It is not
   opinionated about where the credential comes from; it reads it from the environment, as the AWS
-  CLI, boto3 and gcloud do. AWS: `AWS_PROFILE`, else `AWS_DEFAULT_PROFILE`, else the AWS SDK's
-  default credential chain, in the broker's account. GCP: the six sources below.
+  CLI, boto3 and gcloud do. AWS: the AWS SDK's own order, in the broker's account: access keys in
+  `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then
+  `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain. So with
+  keys exported, `AWS_PROFILE` chooses nothing until you unset them, as in the AWS CLI, and a
+  profile variable that names a profile your AWS config does not hold stops the command. GCP: the
+  six sources below.
 
 ```sh
 export AGENT_SECRETS_URL=https://secrets.internal.example
@@ -107,11 +111,17 @@ On GCP the source is one of `the access token in CLOUDSDK_AUTH_ACCESS_TOKEN`,
 follows, with ` impersonating SA` where gcloud impersonates one, or `principal unknown` where the
 credential does not say whose it is: a lent token, an `authorized_user` file, and a gcloud login
 whose token comes from an access token file or a credential file override. The CLI asks for no
-email scope to learn it. The metadata server's account is read best effort; when that read is slow
-or fails, the line names it `the metadata server: this machine's or this pod's identity` and still
-signs in under its token. On AWS the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
-`using the AWS profile NAME (AWS_DEFAULT_PROFILE): ARN`, or
-`using the AWS SDK's default credential chain: ARN`.
+email scope to learn it. Whom a credential acts as is read best effort, and a read that is slow or
+fails never stops the command: the line then names the metadata server's credential
+`this machine's or this pod's identity`, and a gcloud login whose settings `gcloud config list`
+did not read in 5 s `ACCOUNT (principal unknown: gcloud's auth settings could not be read)`. The
+metadata server counts only when it yields a token in an answer that says it is Google's. On AWS
+the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
+`using the AWS profile NAME (AWS_DEFAULT_PROFILE): ARN`,
+`using the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY: ARN`,
+`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (PATH): ARN`, or
+`using the AWS SDK's default credential chain: ARN`; where keys or a token file are set beside a
+profile variable, the line adds that they outrank it.
 
 When you have made your writes, remove a sign-in you made for them from the machine, so nothing
 else that runs as your user there can use it:
@@ -442,7 +452,7 @@ refused, and the refusal names both accounts:
 
 ```console
 $ agent-secrets secret list
-agent-secrets secret list: your AWS sign-in arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com is in account 999999999999, but the agent secrets are in account 111122223333: sign in to account 111122223333 (AWS_PROFILE names the sign-in)
+agent-secrets secret list: your AWS sign-in arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com is in account 999999999999, but the agent secrets are in account 111122223333: sign in to account 111122223333; choose another with AWS_PROFILE
 ```
 
 That account check is the one check the CLI makes of a sign-in. A write (`create`, `set`, `retag`,
@@ -450,9 +460,14 @@ That account check is the one check the CLI makes of a sign-in. A write (`create
 a machine's role, an assumed service role, an IAM user - and on GCP under any credential the CLI
 found ([Before you start](#before-you-start)), since the store's IAM, not this CLI, decides what a
 sign-in may change. Where IAM refuses one, the refusal names the credential it refused as the
-`using` line does - its source and whom it acts as - and how to choose another: a gcloud
-configuration in `CLOUDSDK_ACTIVE_CONFIG_NAME`, an account in `CLOUDSDK_CORE_ACCOUNT`, or a
-credentials file in `GOOGLE_APPLICATION_CREDENTIALS` on GCP; `AWS_PROFILE` on AWS.
+`using` line does - its source and whom it acts as - and how to choose another from that source.
+On GCP, under every source after `GOOGLE_APPLICATION_CREDENTIALS`: a gcloud configuration in
+`CLOUDSDK_ACTIVE_CONFIG_NAME`, an account in `CLOUDSDK_CORE_ACCOUNT`, or a credentials file in
+`GOOGLE_APPLICATION_CREDENTIALS`; under a credentials file, another file, or unsetting the
+variable to reach the gcloud variables; under a lent token, unsetting `CLOUDSDK_AUTH_ACCESS_TOKEN`,
+which outranks every other source. On AWS, `AWS_PROFILE`, or unsetting the access keys or the web
+identity token file that outrank it. A create that IAM lets make the secret but not add its value
+says the same.
 
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human

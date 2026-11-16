@@ -38,8 +38,8 @@ jobs:
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
     # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
     # packages than the 35 minutes it measured before the race lane's left it and so cannot
-    # exceed that, natslive's default 10 and the bus matrix's own 5 are 53, and the integration
-    # step's 5 is less.
+    # exceed that, the store-form count's own 5 is 43, and after it natslive's default 10 and the
+    # bus matrix's own 5 are 58, and the integration step's 5 is less.
     timeout-minutes: 60
     services:
       postgres:
@@ -144,9 +144,11 @@ jobs:
           go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/cmd/architecture-check$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs every store form once against the GCP fake and once against the
-      # in-process AWS store, as its `aws` and `gcp` subtests (onEachStore); this step counts the
-      # passes of each, so a test whose AWS half was skipped or removed reads aws=0 and fails, and
-      # it fails as well when a database suite skipped for want of BROKER_TEST_DATABASE_URL
+      # in-process AWS store, as its `aws` and `gcp` subtests (onEachStore); this step runs only
+      # those tests (-run, under backend-count.sh's own 5-minute -timeout, which the budget above
+      # counts) and counts the passes of each, so a test whose AWS half was skipped or removed
+      # reads aws=0 and fails. It fails as well when BROKER_TEST_DATABASE_URL is unset, for which
+      # the database broker suites the unit step ran would have skipped
       # (dispatch://INFRA-3801/artifact/verification-md, c8).
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential

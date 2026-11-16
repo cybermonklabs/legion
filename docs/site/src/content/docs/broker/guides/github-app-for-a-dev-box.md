@@ -105,10 +105,19 @@ sign-in that you leave there. Thus, on the box, delete the key files and delete 
 you complete the step.
 
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
-box. `agent-secrets` writes with the credential of the first source it finds, and a choice you
-make comes before the box's own identity: first `CLOUDSDK_ACTIVE_CONFIG_NAME`, the gcloud configuration that holds
-your login, then an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the credentials of the
-box. Thus, on the box, name the configuration your `gcloud auth login` signed in to, as the `set`
+box. `agent-secrets` writes with the credential of the first source it finds, in this order: an
+access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then a credentials file that
+`GOOGLE_APPLICATION_CREDENTIALS` names, then the gcloud configuration that
+`CLOUDSDK_ACTIVE_CONFIG_NAME` names (or the login `CLOUDSDK_CORE_ACCOUNT` names), then the
+well-known credentials file, then the active gcloud account, and last the credentials of the box.
+Thus, before the `set`, unset the two variables that come first, so that your own login signs in
+and not a token you exported for an earlier step:
+
+```sh
+unset CLOUDSDK_AUTH_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS
+```
+
+Then, on the box, name the configuration your `gcloud auth login` signed in to, as the `set`
 command below does; the command's first line names the credential it used. For more
 information, refer to [Before you start](/legion/broker/guides/manage-a-secret/#before-you-start)
 in "Manage a secret". Then build the file and set the secret.
