@@ -368,11 +368,14 @@ func readSecretValue(name, pipeTo, shape string, deadline time.Time, stderr io.W
 			}
 			fmt.Fprintf(stderr, "Value for %s: ", name)
 		}, func(reason error) {
-			why := "Nothing was stored"
 			if errors.Is(reason, errValueTimedOut) {
-				why = fmt.Sprintf("No value came in time, within %s of the create, so nothing is stored", valueWindowText())
+				// Only a create's read has a deadline, and only where it made the secret first
+				// (GCP): the prompt reads on until this entry ends, and the create deletes that
+				// empty secret only then, or at once on a signal (pendingCreate.interrupted).
+				fmt.Fprintf(stderr, "\nThe value deadline passed with an entry under way: no value came within %s of the create, so none is stored. The empty secret %s stays in the store until you press Enter to end this entry, and the create deletes it then; Ctrl-C deletes it now. Then run %s again and type the whole value.\n", valueWindowText(), name, pipeTo)
+				return
 			}
-			fmt.Fprintf(stderr, "\n%s. Press Enter to finish discarding this entry, then run %s again and type the whole value.\n", why, pipeTo)
+			fmt.Fprintf(stderr, "\nNothing was stored. Press Enter to finish discarding this entry, then run %s again and type the whole value.\n", pipeTo)
 		})
 		if prompted {
 			// Echo is off, so the line ending the person typed never reached the screen.

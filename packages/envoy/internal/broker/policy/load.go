@@ -37,9 +37,11 @@ const PendingMessage = "agent secret policy waiting for a value"
 
 // PendingValueWindow is how long after its creation a secret `agent-secrets secret create` made
 // before its value (secrets.Listing.Unfilled) is waiting for one (ReasonPendingValue) rather than
-// refused (ReasonNoCurrentValue). It is also how long that create reads the value before it ends the
-// read and discards the secret, so the two lifetimes match: no secret is pending that its create
-// has given up on, and none waits past the create that made it.
+// refused (ReasonNoCurrentValue). It is also the create's value deadline: a create with nothing of
+// the entry typed by then ends its read and discards the secret, so no secret is pending that its
+// create has given up on. A create whose entry is under way at the deadline reads on until the
+// entry ends (Enter, Ctrl-C or a hang-up) and discards the secret only then, so the broker may
+// refuse it no-current-value before the create deletes it.
 const PendingValueWindow = 10 * time.Minute
 
 // pendingAt is the one statement of the window: whether a secret the store created at created,
@@ -475,9 +477,11 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	}
 	if !ls.HasCurrentValue {
 		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
-		// no version) is a create waiting for that value, until the create's own prompt ends, at
-		// PendingValueWindow, when the create discards it (pendingAt). Any other secret without a
-		// value, and one whose creation time the store did not name, is refused at once.
+		// no version) is a create waiting for that value for PendingValueWindow (pendingAt). The
+		// create deletes it when its prompt ends: at the window, or, where an entry is under way
+		// then, when that entry ends (Enter, Ctrl-C or a hang-up), until which it is refused here
+		// no-current-value. Any other secret without a value, and one whose creation time the store
+		// did not name, is refused at once.
 		if ls.Unfilled && pendingAt(ls.Created, now) {
 			return Secret{}, ReasonPendingValue, nil
 		}

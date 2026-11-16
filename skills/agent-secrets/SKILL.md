@@ -215,8 +215,9 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
 - `PENDING_VALUE` is not final: the secret exists, and its owner is storing its value with
   `agent-secrets secret create` now. No request was made and no approver asked. Ask again in a few
   minutes. After ten minutes the broker stops calling it pending and refuses the name
-  `UNKNOWN_SECRET`: the create that made it deletes it when its own ten minutes run out, but a
-  create that was killed deletes nothing, and the secret stays in the store with no value. Tell its
+  `UNKNOWN_SECRET`: the create that made it deletes it when its prompt ends, at ten minutes or,
+  where its owner was still typing then, when that entry ends; a create that was killed deletes
+  nothing, and the secret stays in the store with no value. Tell its
   owner, who sees it as `versions: none` in `agent-secrets secret show NAME`. The owner frees the
   name with `gcloud secrets delete <id> --project <project number>` (`<id>` is the part after
   `secrets/` of the `secret_name` that `show` prints), or stores the value with

@@ -934,3 +934,35 @@ func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) 
 		})
 	}
 }
+
+// TestGCPSecretCreateDeadlineNoticeSaysTheEmptySecretStaysUntilEnter: where the value deadline
+// passes with an entry under way, the prompt reads on until the entry ends, and the create deletes
+// its empty secret only then. So the notice the prompt prints at the deadline says that the empty
+// secret, named, stays in the store until Enter ends the entry, and that Ctrl-C deletes it now. The
+// prompt is stubbed to give that notice, then end as the entry's Enter does.
+func TestGCPSecretCreateDeadlineNoticeSaysTheEmptySecretStaysUntilEnter(t *testing.T) {
+	fake := newFakeSecretManager()
+	startFakeSecretManager(t, fake)
+	useGCPIdentity(t, "authorized_user", "ada@example.com")
+	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+	useTerminal(t)
+	readHidden = func(_ int, deadline time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
+		if deadline.IsZero() {
+			t.Fatal("a GCP create read its value with no deadline")
+		}
+		prompt()
+		onDiscard(errValueTimedOut)
+		return nil, errValueTimedOut
+	}
+
+	_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
+	if code != 1 {
+		t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+	}
+	for _, want := range []string{"The value deadline passed with an entry under way", "The empty secret NEW_TEST stays in the store until you press Enter to end this entry", "Ctrl-C deletes it now"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr %q; want the notice to say %q", stderr, want)
+		}
+	}
+	requireNothingLeft(t, fake, broker, "NEW_TEST")
+}

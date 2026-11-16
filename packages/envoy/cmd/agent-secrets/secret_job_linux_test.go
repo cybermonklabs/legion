@@ -487,8 +487,9 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 	}
 	s.send("\recho PASTE_$((2+3))\r\x1b[201~")
 	s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-	// The prompt said at the deadline that the entry is refused, so the person knows to stop.
-	if !strings.Contains(s.out.String(), "No value came in time, within 2s of the create, so nothing is stored. Press Enter to finish discarding this entry") {
+	// The prompt said at the deadline that the entry is refused, and that the empty secret stays
+	// until Enter ends the entry, so the person knows to stop.
+	if !strings.Contains(s.out.String(), "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until you press Enter") {
 		t.Fatalf("the prompt never said the entry was refused at its deadline: %q", s.out.String())
 	}
 	// Clear the shell's line, where a leaked paste mark would leave text that breaks the history

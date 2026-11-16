@@ -246,17 +246,20 @@ While the secret waits for its value, for ten minutes from its making, the broke
 nobody, logs that it waits, and refuses a request for it `PENDING_VALUE`, which says the secret
 waits for its first value and to ask again once its owner stores it. On GCP the CLI reads the value
 for the same ten minutes, at the prompt or from a pipe, and the prompt names the time the value must
-come by. When no whole value has come by then, it ends the read, deletes the empty secret, asks the
-broker to reread the name, and exits 1, saying to run the command again. Where the ten minutes run
-out while you type or paste, the prompt says so at once and keeps reading until you press Enter,
-and a paste until its end, so no part of the value is echoed or reaches your shell; a value that
-ends only after the ten minutes is not stored. A prompt left waiting in the background for `fg`
-gives up at the same time. On AWS, where the create makes nothing before it has the value, the read
-has no such limit. After the ten minutes the broker refuses a secret still without a value
-`no-current-value`, and nothing deletes it: the create that made it deletes it when its own ten
-minutes run out, and a create that was killed or crashed deletes nothing, so the secret stays in
-the store with no value. Its owner sees it as `versions: none` in `agent-secrets secret show NAME`,
-and frees the name with `gcloud secrets delete <id> --project <project number>`, `<id>` being the
+come by. When nothing has been typed or pasted by then, it ends the read, deletes the empty secret,
+asks the broker to reread the name, and exits 1, saying to run the command again. Where the ten
+minutes run out while you type or paste, the prompt says so at once and keeps reading until you
+press Enter, and a paste until its end, so no part of the value is echoed or reaches your shell; a
+value that ends only after the ten minutes is not stored. The notice says that the empty secret
+stays in the store until you press Enter, and that Ctrl-C deletes it now: the create deletes it
+when the entry ends, by Enter, Ctrl-C or a hang-up. A prompt left waiting in the background for
+`fg` gives up at the ten minutes. On AWS, where the create makes nothing before it has the value,
+the read has no such limit. After the ten minutes the broker refuses a secret still without a value
+`no-current-value`, and the broker deletes nothing: the create that made it deletes it when its
+prompt ends, at the ten minutes or, with an entry under way then, when that entry ends. A create
+that was killed or crashed deletes nothing, so the secret stays in the store with no value. Its
+owner sees it as `versions: none` in `agent-secrets secret show NAME`, and frees the name with
+`gcloud secrets delete <id> --project <project number>`, `<id>` being the
 part after `secrets/` of the `secret_name` that `show` prints, or gives it its value with
 `agent-secrets secret set NAME`. `agent-secrets secret delete NAME` only schedules the deletion
 30 days out (see [delete and restore](#delete-and-restore)), and until then the name stays taken, so
