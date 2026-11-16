@@ -6,7 +6,9 @@ body: |-
   thumbprint the role's shim hello names, and the broker refuses a trade for that session proved
   with any other key. No registration is sent before the role's hello names its thumbprint: an Oh
   My Pi role's is made when its agent registers, a Claude Code role's at its shim's hello, and a
-  relaunched role's for the session it resumes, at its new hello. It writes each live registration
+  relaunched role's for the session it resumes, at its new hello. A registration keeps the key its
+  process's first hello names: a later hello of the same process naming another key is logged and
+  changes nothing. It writes each live registration
   again every 6 hours and retries a failed write at 15 seconds doubling to 5 minutes,
   `403 POD_REGISTRAR_NOT_LISTED` included. When a role's process ends, the daemon waits for that
   registration's write in flight, up to the RPC timeout, before the next process writes its own.

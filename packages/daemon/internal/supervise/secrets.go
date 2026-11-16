@@ -73,11 +73,32 @@ type PodSession struct {
 	Bound                       time.Duration
 }
 
-// podRegistration is the registration a machine keeps written: the process incarnation, the
-// session and the key it is for, and the stop that ends its renewal.
+// podRegistration is the registration a machine keeps written: the process incarnation and the
+// session it is for, and the stop that ends its renewal. Its key is the incarnation's pinned one
+// (helloKey), so an incarnation and a session name it whole.
 type podRegistration struct {
-	incarnation, session, thumbprint string
-	stop                             func()
+	incarnation, session string
+	stop                 func()
+}
+
+// helloKey is the thumbprint the first hello of one incarnation named.
+type helloKey struct {
+	incarnation, thumbprint string
+}
+
+// pinHelloKey pins the thumbprint a hello of incarnation names, if it is the first of that
+// incarnation to name one, and logs a later one naming another key, which then changes nothing.
+// An honest shim caches its thumbprint, so the same process never names two keys; only the
+// holder of the claim's boot token can send a hello at all.
+func (m *Machine) pinHelloKey(incarnation, thumbprint string) {
+	switch {
+	case thumbprint == "":
+	case m.helloKey.incarnation != incarnation || m.helloKey.thumbprint == "":
+		m.helloKey = helloKey{incarnation: incarnation, thumbprint: thumbprint}
+	case thumbprint != m.helloKey.thumbprint:
+		m.log.Warn("supervise: agent-secrets: a later hello of the same process names another key; its session's registration keeps the key the first hello named",
+			"incarnation", incarnation, "first", m.helloKey.thumbprint, "named", thumbprint)
+	}
 }
 
 const (
@@ -196,10 +217,13 @@ func (m *Machine) ensureRegistered() {
 	if m.deps.Registrar == nil || loc == nil || loc.Runtime != runtime.RuntimeSandbox || loc.Sandbox == nil {
 		return
 	}
-	if m.identity == nil || m.identity.incarnation != loc.Incarnation || m.identity.Thumbprint == "" {
+	if m.identity == nil || m.identity.incarnation != loc.Incarnation {
 		return
 	}
-	thumbprint := m.identity.Thumbprint
+	if m.helloKey.incarnation != loc.Incarnation || m.helloKey.thumbprint == "" {
+		return
+	}
+	thumbprint := m.helloKey.thumbprint
 	session := m.claim.Session
 	if session == "" {
 		if namer, ok := m.deps.Runtime.(runtime.LaunchSessionNamer); ok {
@@ -209,7 +233,7 @@ func (m *Machine) ensureRegistered() {
 	if session == "" {
 		return
 	}
-	if r := m.registration; r != nil && r.incarnation == loc.Incarnation && r.session == session && r.thumbprint == thumbprint {
+	if r := m.registration; r != nil && r.incarnation == loc.Incarnation && r.session == session {
 		return
 	}
 	m.stopRegistration()
@@ -221,7 +245,7 @@ func (m *Machine) ensureRegistered() {
 		Token: m.podToken(m.identity.PodToken),
 		After: func(d time.Duration, f func()) func() bool { return m.deps.Clock.AfterFunc(d, f).Stop },
 	})
-	m.registration = &podRegistration{incarnation: loc.Incarnation, session: session, thumbprint: thumbprint, stop: stop}
+	m.registration = &podRegistration{incarnation: loc.Incarnation, session: session, stop: stop}
 }
 
 // stopRegistration ends the renewal of the registration the machine keeps, if any, and returns
