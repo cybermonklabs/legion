@@ -1942,8 +1942,9 @@ package api
 // times the daemon sent that entry's task again; a task whose turn ended with the claim's process,
 // at a death or at a replacement the daemon made, counts only while the claim is ready, working or
 // idle, and from the relaunched agent's ready where that is later; and a task the root's own
-// record has superseded, one of a run before its generation or of an entry the row has moved past,
-// raises the arm not at all), `claim-unreachable` (the claim is failed or
+// record has superseded, one that carries an entry, of a run before its generation or of an entry
+// the row has moved past, raises the arm not at all, nor does a task of no entry, such as a
+// wake's), `claim-unreachable` (the claim is failed or
 // retired and no start of the root's run is the daemon's next move for it: a start the outbox is
 // running is, and so is a start queued in the last ten minutes unless it has already run against
 // the claim and left it failed or retired, after which the outbox only runs it again on its

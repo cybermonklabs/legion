@@ -1625,12 +1625,14 @@ func (c Claim) ReleasedLaunch() bool {
 // The one held task it does not send is one the start's own task supersedes (task, the request
 // the start delivers once the claim is brought back, nil for a start that carries none;
 // supersedes): a tree's root architect's task of an earlier run, or of a lower entry of the same
-// run, that nothing of is in the agent's hands. Sent here, it would be the re-admitted architect's
-// first prompt — a task saying what was true of a run that is over (dispatch://INFRA-2614 R3) —
-// and the start's own task, the one the transition that raised the newer entry wrote (R4), would
-// wait behind its turn. The start's delivery retires it unsent instead (queue), which releases
-// the decisions it names for the catch-up that follows to tell. A start of no entry supersedes
-// nothing, so a held task is sent at it as before.
+// run, that carries an entry of its own and that nothing of is in the agent's hands. Sent here,
+// it would be the re-admitted architect's first prompt — a task saying what was true of a run
+// that is over (dispatch://INFRA-2614 R3) — and the start's own task, the one the transition that
+// raised the newer entry wrote (R4), would wait behind its turn. The start's delivery retires it
+// unsent instead (queue), which releases the decisions it names for the catch-up that follows to
+// tell. A start of no entry supersedes nothing, and a held task of no entry, a wake's
+// (workflow's wakeRow) among them, is superseded by nothing, so either way a held task is sent
+// at the start as before.
 func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()

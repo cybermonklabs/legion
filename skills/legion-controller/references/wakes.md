@@ -178,7 +178,8 @@ A root whose own architect is not taking the work the daemon states it is owed.
   A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
   Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than that first queueing, so the relaunch of an architect that was working its task raises no wake.
   The daemon writes no second start of that entry while its task stands, so this wake is the one thing left.
-  A task the root's own record has superseded — one of a run before its generation, or of an entry the row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.
+  A task the root's own record has superseded — one that carries an entry, of a run before its generation or of an entry the row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.
+  A task that carries no entry, such as the one a wake of the architect's released pod gives, raises it not at all either, and no start takes its place: the daemon sends it first, and sends the entry's task once a turn has taken it.
 
 - "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run is the daemon's next move for it, or the root has no architect claim at all, no start of one was queued in the last ten minutes, and the work of its entry has stood that same bound.
   A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -15,6 +16,26 @@ import (
 func startTask(token claim.Token, row int64, generation uint64, entry int64) RequestDeliver {
 	return RequestDeliver{Claim: token, ID: fmt.Sprintf("outbox:%d", row), Row: row,
 		Task: fmt.Sprintf("the work of generation %d, entry %d", generation, entry), Generation: generation, Entry: entry}
+}
+
+// wakeTask is the task a wake's start row gives the root architect's claim (the workflow's
+// wakeRow): of the root's run at generation, naming no phase and no entry, carrying the sentence
+// that says why the pod came back.
+func wakeTask(row int64, generation uint64) RequestDeliver {
+	return RequestDeliver{Claim: rootToken, ID: fmt.Sprintf("outbox:%d", row), Row: row,
+		Task: "Your pod was released and has come back: a message was published to your role.", Generation: generation}
+}
+
+// takeTurn is the agent working the task it was sent, delivery: the turn its prompt starts and
+// that turn's end, behind which the prompt's own result arrives (handle), after which the claim
+// holds no delivery.
+func takeTurn(h *harness, delivery string) {
+	h.t.Helper()
+	h.must(StreamTurnStart{Claim: h.token, DeliveryID: delivery})
+	h.must(StreamTurnEnd{Claim: h.token})
+	if p := h.claim().Pending; p != nil {
+		h.t.Fatalf("the claim holds %+v after the turn of %s, want that task retired", p, delivery)
+	}
 }
 
 // holding is one way a claim comes to hold a task it has not confirmed, with no send of it in
@@ -154,13 +175,16 @@ func TestARootArchitectsTaskAPromptOfWhichAwaitsItsResultIsNotSuperseded(t *test
 	h.wantPrompts(sent)
 }
 
-// The rule is a tree's root architect's, and only for a request that carries an entry it raised:
-// in every other case an unconfirmed pending task refuses a newer one, as it did before. A phase
-// worker's claim holding a task of the run before is refused, which this test is the one to pin:
-// the daemon's TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask starts with no entry, so it
-// never reaches the role test. So is a root architect's request of no entry, which hands the
-// architect no newer entry's work. In each the older task is the one the agent is sent once it
-// comes up.
+// The rule is a tree's root architect's, and only for a request that carries an entry it raised
+// and a held task that carries an entry of its own: in every other case an unconfirmed pending
+// task refuses a newer one, as it did before. A phase worker's claim holding a task of the run
+// before is refused, which this test is the one to pin: the daemon's
+// TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask starts with no entry, so it never
+// reaches the role test. So is a root architect's request of no entry, which hands the architect
+// no newer entry's work, and a root architect's request of a newer entry behind a wake's task,
+// which carries no entry (the workflow's wakeRow): it is the sentence that says why the pod came
+// back, which no entry's task says, so no entry's task takes its place (Delivery.SupersededBy).
+// In each the older task is the one the agent is sent once it comes up.
 func TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne(t *testing.T) {
 	for _, held := range holdings {
 		for _, c := range []struct {
@@ -170,6 +194,7 @@ func TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne(t *testing.T)
 		}{
 			{"a phase worker's claim", queuedClaim(), startTask(testToken, 3, 1, 1), startTask(testToken, 15, 2, 2)},
 			{"a request of no entry", rootClaim(), startTask(rootToken, 3, 1, 1), startTask(rootToken, 15, 2, 0)},
+			{"a root architect's wake task, of no entry", rootClaim(), wakeTask(3, 2), startTask(rootToken, 15, 2, 2)},
 		} {
 			t.Run(held.name+"/"+c.name, func(t *testing.T) {
 				h := newHarnessOf(t, c.claim)
@@ -200,6 +225,27 @@ func TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne(t *testing.T)
 	}
 }
 
+// unheardRootTask is a tree root architect's claim that is ready and holds task unsent, because
+// its root had no architect to hear it (Deps.RootHears), and whose root hears from here on: the
+// claim a start of the root's run reaches (StartedBy).
+func unheardRootTask(t *testing.T, task RequestDeliver) *harness {
+	t.Helper()
+	h := newBareHarness(t)
+	h.token = rootToken
+	hears := false
+	h.deps.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return hears, nil }
+	if err := h.store.PutClaim(h.ctx, rootClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(rootClaim())
+	h.reach(StateReady)
+	h.must(task)
+	h.wantPrompts(0)
+	heldUnconfirmed(h, task)
+	hears = true
+	return h
+}
+
 // A start of the root's next run releases a task held while the root had no architect to hear it
 // (StartedBy), except one the start's own task supersedes: sent there, the held task would be the
 // architect's first prompt and the start's own task would wait behind its turn. The start's
@@ -219,20 +265,7 @@ func TestAStartReleasesTheHeldTaskUnlessItsOwnTaskSupersedesIt(t *testing.T) {
 		{"a start of no entry", &noEntry, held.ID},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			h := newBareHarness(t)
-			h.token = rootToken
-			hears := false
-			h.deps.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return hears, nil }
-			if err := h.store.PutClaim(h.ctx, rootClaim()); err != nil {
-				t.Fatal(err)
-			}
-			h.start(rootClaim())
-			h.reach(StateReady)
-			h.must(held)
-			h.wantPrompts(0)
-			heldUnconfirmed(h, held)
-
-			hears = true
+			h := unheardRootTask(t, held)
 			if err := h.m.StartedBy(h.ctx, 15, c.task); err != nil {
 				t.Fatalf("record the start: %v", err)
 			}
@@ -256,6 +289,77 @@ func TestAStartReleasesTheHeldTaskUnlessItsOwnTaskSupersedesIt(t *testing.T) {
 				if lines := h.logs.lines("the start's own task supersedes the held task", "held="+held.ID); len(lines) != 1 {
 					t.Fatalf("logged %v, want one line naming the held task the start does not send", lines)
 				}
+			}
+		})
+	}
+}
+
+// An entry's task refused behind a root architect's wake task (the table above) is not lost: its
+// row is retried, and once the turn that takes the wake's task has ended, the entry's task is
+// delivered and is the next prompt after the wake's. Retired in the wake's place instead, the
+// wake's sentence was never taken by a turn.
+func TestAnEntrysTaskRefusedBehindAWakesTaskIsSentOnceTheWakesTurnEnds(t *testing.T) {
+	for _, held := range holdings {
+		t.Run(held.name, func(t *testing.T) {
+			h := newHarnessOf(t, rootClaim())
+			wake, entry := wakeTask(3, 2), startTask(rootToken, 15, 2, 2)
+			held.hold(h, wake)
+			sent := len(h.prompts())
+			if err := h.handle(entry); err != nil && !errors.Is(err, ErrDeliveryPending) {
+				t.Fatalf("deliver the entry's task: %v", err)
+			}
+			bringUp(h)
+			if prompts := h.prompts()[sent:]; len(prompts) != 1 || prompts[0].DeliveryID != wake.ID ||
+				!strings.Contains(prompts[0].Message, wake.Task) {
+				t.Fatalf("prompts once the agent came up = %+v, want the wake's task alone", prompts)
+			}
+
+			takeTurn(h, wake.ID)
+			h.must(entry)
+
+			prompts := h.prompts()[sent:]
+			if len(prompts) != 2 || prompts[1].DeliveryID != entry.ID || prompts[1].Message != entry.Task {
+				t.Fatalf("prompts once the wake's turn ended and the entry's row was retried = %+v, want the entry's task after the wake's", prompts)
+			}
+		})
+	}
+}
+
+// A start run against a tree root architect's claim sends the task the claim held while its root
+// had no architect to hear it (StartedBy), and a held wake's task is one no start's own task
+// supersedes, whatever entry and run that task carries: the wake's task is the first prompt, the
+// start's own task is refused behind it and its row retried, and it is delivered once the wake's
+// turn is over.
+func TestAStartSendsAHeldWakeTaskBeforeItsOwnTask(t *testing.T) {
+	wake := wakeTask(3, 2)
+	for _, c := range []struct {
+		name string
+		task RequestDeliver
+	}{
+		{"a start of an entry of the wake's run", startTask(rootToken, 15, 2, 2)},
+		{"a start of the run after the wake's", startTask(rootToken, 15, 3, 1)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := unheardRootTask(t, wake)
+			if err := h.m.StartedBy(h.ctx, c.task.Row, &c.task); err != nil {
+				t.Fatalf("record the start: %v", err)
+			}
+			h.m.Wait()
+			if prompts := h.prompts(); len(prompts) != 1 || prompts[0].DeliveryID != wake.ID {
+				t.Fatalf("prompts after the start = %+v, want the held wake's task alone", prompts)
+			}
+			if lines := h.logs.lines("the start's own task supersedes the held task"); len(lines) != 0 {
+				t.Fatalf("logged %v, want no held task passed over for a wake's", lines)
+			}
+			if err := h.handle(c.task); !errors.Is(err, ErrDeliveryPending) {
+				t.Fatalf("the start's own task was answered %v, want the pending-delivery refusal behind the wake's task", err)
+			}
+
+			takeTurn(h, wake.ID)
+			h.must(c.task)
+			prompts := h.prompts()
+			if len(prompts) != 2 || prompts[1].DeliveryID != c.task.ID {
+				t.Fatalf("prompts once the wake's turn ended and the start's row was retried = %+v, want the start's task after the wake's", prompts)
 			}
 		})
 	}

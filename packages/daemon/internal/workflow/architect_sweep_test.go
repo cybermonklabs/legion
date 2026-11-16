@@ -153,9 +153,10 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 // one read narrower: a tree with no architect claim at all is the tree the sweep writes the start
 // for, so "has no claim yet" is not a reason to hold the row back, while a start still queued for
 // that same tree is; and a task the claim holds unconfirmed holds the row back only while the
-// root's own record has not superseded it (supervise's Delivery.SupersededBy). The root of every
-// case stands at generation 2, and its architect's row names entry 3 (rowEntry) where the case
-// does not say it names none.
+// root's own record has not superseded it (supervise's Delivery.SupersededBy), which it never has
+// for a task of no run or of no entry, a wake's among them. The root of every case stands at
+// generation 2, and its architect's row names entry 3 (rowEntry) where the case does not say it
+// names none.
 func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.T) {
 	const rowEntry = 3
 	queued := []record.QueuedSupervise{{ID: 7, Request: record.SuperviseRequest{Op: "start", Role: claim.RoleArchitect}}}
@@ -168,7 +169,9 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 		run     record.RoleRun
 		entry   int64
 		pending bool
-		why     string
+		// reason is the reason a case that names one must be held back for, which is owed's.
+		reason string
+		why    string
 	}{
 		{
 			name: "no claim and no queued start", run: record.RoleRun{}, entry: rowEntry,
@@ -191,6 +194,20 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 			name: "a claim that has not confirmed a task of no run", entry: rowEntry,
 			run:     record.RoleRun{Claim: holding(supervise.StateReady, supervise.Delivery{Task: "look at the failing check"})},
 			pending: true, why: "a task of no run, an operator's own, is one no start of the root's run takes the place of",
+		},
+		{
+			name: "a claim that has not confirmed a wake's task of the root's run", entry: rowEntry,
+			run: record.RoleRun{Claim: holding(supervise.StateReady,
+				supervise.Delivery{Task: "Your pod was released and has come back.", Generation: 2})},
+			pending: true, reason: "has not taken its task yet",
+			why: "a wake's task carries no entry (wakeRow), so no start of an entry takes its place: the claim sends it first",
+		},
+		{
+			name: "a claim that has not confirmed a wake's task of the run before", entry: rowEntry,
+			run: record.RoleRun{Claim: holding(supervise.StateIdle,
+				supervise.Delivery{Task: "Your pod was released and has come back.", Generation: 1})},
+			pending: true, reason: "has not taken its task yet",
+			why: "a task of no entry is superseded by nothing, whatever run it is of",
 		},
 		{
 			name: "the row names no entry, and the claim has not confirmed a task of the root's run", entry: 0,
@@ -241,6 +258,9 @@ func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.
 			}
 			if pending && reason == "" {
 				t.Fatalf("ArchitectStartPending holds the row back with no reason: the log line names it")
+			}
+			if tc.reason != "" && reason != tc.reason {
+				t.Fatalf("ArchitectStartPending holds the row back as %q, want %q: %s", reason, tc.reason, tc.why)
 			}
 			if tc.run.Claim != nil && tc.run.Claim.Pending != task {
 				t.Fatalf("ArchitectStartPending changed the task of the claim it was handed: the caller reads that claim again for the stall arms")

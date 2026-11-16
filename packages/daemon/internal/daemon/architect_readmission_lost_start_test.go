@@ -46,12 +46,7 @@ func TestALostReadmissionStartIsWrittenAgainPastTheTaskOfTheRunBefore(t *testing
 	for range 3 {
 		r.admitPass()
 	}
-	var starts []entryStartRow
-	for _, start := range entryStartRows(t, r.pool, mainPathRoot) {
-		if start.request.Role == claim.RoleArchitect {
-			starts = append(starts, start)
-		}
-	}
+	starts := roleStartRows(t, r.pool, mainPathRoot, claim.RoleArchitect)
 	if len(starts) != 1 {
 		t.Fatalf("three admission passes wrote %d architect start rows of %s, want the one start of entry 2: a task of the run "+
 			"re-admission ended is no start on its way", len(starts), mainPathRoot)

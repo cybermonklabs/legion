@@ -188,17 +188,19 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 //
 // The task is read as the delivery of the entry the row names, of the root's generation, which is
 // R7's "its entry's task" (dispatch://INFRA-2614), and no other. A task of an earlier run, or of
-// an entry the row has moved past, is one the row has superseded: the sweep's send passes over it
-// and writes the start of the row's entry, whose task takes its place in the claim's hands
-// (workflow.ArchitectStartPending), so it is no work the architect failed to take. The arms are
-// read after the pass's sends, from the reading made before them, so an arm that read such a
-// task — the task of the entry the claim was given, say, with the row above it — would tell the
-// controller that the daemon writes no second start in the very pass that writes it. A task of
-// the row's own entry is one the claim was given that entry with (supervise's queue), so the sweep
-// writes nothing for it (workflow.OwedEntry) and the wake is the one thing left. The claim's
-// handshake of that entry (supervise.Claim.Handshake) holds the two times the state shows beside
-// the two numbers (api.Issue.EntryQueuedAt), and its queued time is the first queueing this arm
-// counts from.
+// an entry the row has moved past, that carries an entry is one the row has superseded: the
+// sweep's send passes over it and writes the start of the row's entry, whose task takes its place
+// in the claim's hands (workflow.ArchitectStartPending), so it is no work the architect failed to
+// take. The arms are read after the pass's sends, from the reading made before them, so an arm
+// that read such a task — the task of the entry the claim was given, say, with the row above it —
+// would tell the controller that the daemon writes no second start in the very pass that writes
+// it. A task of no entry, an operator's own or a wake's, is no entry's task either, so this arm
+// reads nothing of it, while the sweep holds the start back behind it until a turn takes it. A
+// task of the row's own entry is one the claim was given that entry with (supervise's queue), so
+// the sweep writes nothing for it (workflow.OwedEntry) and the wake is the one thing left. The
+// claim's handshake of that entry (supervise.Claim.Handshake) holds the two times the state shows
+// beside the two numbers (api.Issue.EntryQueuedAt), and its queued time is the first queueing
+// this arm counts from.
 //
 // The root must also be one the sweep serves (architectServed): no root outside the reach is
 // sent an architect's task at all, so none can have failed to take one, and a root that cannot

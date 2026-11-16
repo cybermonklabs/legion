@@ -210,16 +210,23 @@ func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState
 }
 
 // SupersededBy is whether a task of the run generation at entry takes d's place in a tree root
-// architect's hands: d is a task of an earlier run, or of the same run at a lower entry. A task of
-// no run (generation 0), an operator's own and the daemon's delivery of a relaunch's record among
-// them, is superseded by nothing. It is the one statement of that comparison, and two readers
-// make it: the claim's machine, before it puts a newer task in the place of the one the claim
-// holds unconfirmed (Machine.supersedes), and the admission sweep, which writes the start of the
-// entry a root architect's phases row names unless the claim holds a task that start would not
-// replace (workflow.ArchitectStartPending). So the sweep and the machine agree on which held task
-// a start of the root's run at that entry replaces.
+// architect's hands: d is a task of an earlier run, or of the same run at a lower entry, and d
+// carries a run and an entry of its own. A task of no run (generation 0), an operator's own and
+// the daemon's delivery of a relaunch's record among them, is superseded by nothing, and so is a
+// task of no entry: a wake's task (workflow's wakeRow), which is the sentence that says why the
+// pod came back and is no entry's work, and every task a daemon delivered before it numbered
+// entries. A newer task is refused behind such a task while it is untaken, as behind any untaken
+// task, and it is sent first (queue). The exception is the two tasks a newer task replaces
+// whatever they carry (replaceable): the task a provider error took back while the ladder's wait
+// stands for it, and the daemon's own delivery of a relaunch's record while no prompt of it waits
+// on a result. It is the one statement of that comparison, and two readers make it: the claim's
+// machine, before it puts a newer task in the place of the one the claim holds unconfirmed
+// (Machine.supersedes), and the admission sweep, which writes the start of the entry a root
+// architect's phases row names unless the claim holds a task that start would not replace
+// (workflow.ArchitectStartPending). So the sweep and the machine agree on which held task a start
+// of the root's run at that entry replaces.
 func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
-	if d.Generation == 0 {
+	if d.Generation == 0 || d.Entry <= 0 {
 		return false
 	}
 	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
@@ -371,11 +378,13 @@ func pendingID(p *Delivery) string {
 // its task.
 //
 // A request a pending task refuses sends that task first (sendPending), so a task held back
-// because its root had no architect to hear it never wedges the claim. A start of the root's next
-// run that carries a newer entry's task supersedes the held task (supersedes), which is retired
-// unsent; a start of no entry, or a resend of the held task's own entry, is refused, retries on its
-// backoff and sends the held task first, and that refusal is over once the architect's turn on the
-// held task has ended and the delivery retired.
+// because its root had no architect to hear it never wedges the claim. A start that carries a
+// newer entry's task supersedes a held task that carries an entry of its own, of an earlier run
+// or of a lower entry of the same run (supersedes), which is retired unsent. Every other start
+// behind an untaken held task is refused, retries on its backoff and sends the held task first: a
+// start of no entry, a resend of the held task's own entry, and any start behind a held task of
+// no entry, a wake's among them (workflow's wakeRow). That refusal is over once the architect's
+// turn on the held task has ended and the delivery retired.
 //
 // A pending delivery whose task the worker has already taken refuses nothing: the turn took it
 // (confirm writes ConfirmedAt), so there is no task left to give and the delivery is only the
@@ -403,20 +412,21 @@ func pendingID(p *Delivery) string {
 // behind any untaken task.
 //
 // The third is a tree's root architect's task of a run that a task of a newer entry supersedes
-// (supersedes): the pending task is of an earlier run, or of the same run at a lower entry, and
-// the request carries a run and an entry of its own. Each task the architect is given says what is
-// true of its root (dispatch://INFRA-2614 R3), and the transition that raised the newer entry
-// wrote that entry's task (R4), so the older text is no longer what the daemon owes. In the case
-// that was measured, the older task told a re-admitted architect that its tree was open at the
-// generation the re-admission ended, that every child was still to be filed and that no message
-// was coming, while the tree's children ran. A refusal leaves the older task to be sent at the
-// next ready, so the architect's first turn goes to a run that is over. So the newer task takes
-// its place, and only while nothing of the older task is in the agent's hands: no send of it in
-// flight and no prompt of it waiting on a result, the condition replaceable reads for the
-// relaunch's record. Once a prompt of it is outstanding, its turn is the session's next, and the
-// newer task waits for that turn to end as behind any untaken task. The start that carries the
-// newer task does not send the older one first either (StartedBy): a task held while its root had
-// no architect to hear it would otherwise go at the very start whose own task supersedes it.
+// (supersedes): the pending task carries a run and an entry and is of an earlier run, or of the
+// same run at a lower entry, and the request carries a run and an entry of its own. Each task the
+// architect is given says what is true of its root (dispatch://INFRA-2614 R3), and the transition
+// that raised the newer entry wrote that entry's task (R4), so the older text is no longer what
+// the daemon owes. In the case that was measured, the older task told a re-admitted architect
+// that its tree was open at the generation the re-admission ended, that every child was still to
+// be filed and that no message was coming, while the tree's children ran. A refusal leaves the
+// older task to be sent at the next ready, so the architect's first turn goes to a run that is
+// over. So the newer task takes its place, and only while nothing of the older task is in the
+// agent's hands: no send of it in flight and no prompt of it waiting on a result, the condition
+// replaceable reads for the relaunch's record. Once a prompt of it is outstanding, its turn is the
+// session's next, and the newer task waits for that turn to end as behind any untaken task. The
+// start that carries the newer task does not send the older one first either (StartedBy): a task
+// held while its root had no architect to hear it would otherwise go at the very start whose own
+// task supersedes it.
 //
 // That rule is the root architect's alone. A phase worker that holds a task of another run is
 // still refused and its start retried, which supervise's
@@ -424,7 +434,13 @@ func pendingID(p *Delivery) string {
 // the daemon's TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask (its case "another run")
 // starts with no entry, so supersedes answers false before it reads the role and that test pins
 // nothing of the scope. Which of a phase worker's two tasks goes first is that worker's model of
-// its phase entries, and dispatch://INFRA-2614 changes the architect's rule, not that model.
+// its phase entries, and dispatch://INFRA-2614 changes the architect's rule, not that model. Nor
+// does the rule reach a root architect's task of no entry. A wake's task (workflow's wakeRow) is
+// one: it says why the architect's pod came back, which no entry's task says, so a newer entry's
+// task is refused behind it and the wake's task is sent first, as it was before
+// dispatch://INFRA-2614 (TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne), and the
+// entry's task is sent once the wake's turn has ended
+// (TestAnEntrysTaskRefusedBehindAWakesTaskIsSentOnceTheWakesTurnEnds).
 //
 // What the older task named of a person's decisions is not lost with it: its retirement releases
 // them (the claim store's releaseKeptDecisions), so they are the tree's again, and the catch-up of
@@ -548,10 +564,12 @@ func (m *Machine) given(request RequestDeliver) bool {
 // claim was given already (given, which queues nothing and so takes nobody's place), and p is a
 // task of a run that is either earlier than request's or the same run at a lower entry
 // (Delivery.SupersededBy). A task of no run, an operator's own and the daemon's delivery of a
-// relaunch's record among them, is never superseded, and a request of no entry supersedes nothing.
-// Two places read it, so the rule is decided once: queue, which retires p and queues request in
-// its place, and StartedBy, which does not send p first when the start's own task is such a
-// request.
+// relaunch's record among them, is never superseded, and neither is a task of no entry, a wake's
+// task (workflow's wakeRow) among them: queue refuses request behind it, unless it is one a newer
+// task replaces whatever it carries (replaceable, asked before this), and StartedBy sends it. A
+// request of no entry supersedes nothing. Two places read it, so the rule is decided once: queue,
+// which retires p and queues request in its place, and StartedBy, which does not send p first
+// when the start's own task is such a request.
 //
 // It answers false while anything of p is in the agent's hands: a send of it in flight
 // (Machine.send), or a prompt of it Oh My Pi acknowledged that still waits on its result

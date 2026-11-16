@@ -3036,11 +3036,12 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 // owed a start, which is the architect's half of owedEntryRoles' rule. Three things stop it. A
 // start already on its way is not owed twice (workflow.ArchitectStartPending): a row still queued,
 // a claim still starting, or a task the claim has not confirmed that the row's entry has not
-// superseded, one of the root's run at that entry or above it, or of no run. A task of an earlier
-// run, or of an entry below the row's, is passed over: the start this writes takes its place in
-// the claim's hands. While such a row waits, every later pass reads it and names nothing, and
-// that reading is pure, so it is asked first. A root outside the reach is owed nothing, and
-// neither is an architect that cannot hear what a start would send (architectServed).
+// superseded, one of the root's run at that entry or above it, or of no run or no entry, an
+// operator's own and a wake's among them. A task of an earlier run, or of an entry below the
+// row's, that carries an entry is passed over: the start this writes takes its place in the
+// claim's hands. While such a row waits, every later pass reads it and names nothing, and that
+// reading is pure, so it is asked first. A root outside the reach is owed nothing, and neither is
+// an architect that cannot hear what a start would send (architectServed).
 //
 // The same three hold for an architect whose phases row names no entry at all, which the pass
 // hands an entry rather than resumes (raiseArchitectEntry, workflow.Engine.StartArchitect).
