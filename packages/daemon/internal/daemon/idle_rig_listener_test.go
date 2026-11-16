@@ -34,8 +34,8 @@ type idleRigListener struct {
 	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
-	// socket is the test's copy of the listening socket, which each start hands over and port is
-	// the port of.
+	// socket is the test's copy of the listening socket on port, handed to each start as
+	// ENVOY_LISTEN_FD.
 	socket *os.File
 	port   int
 	stop   func()

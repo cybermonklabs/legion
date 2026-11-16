@@ -23,13 +23,6 @@ import (
 // call as "broker <method> <path>: …".
 const loginRoute = "/v1/launcher-credentials/token"
 
-// deadAddress is an address nothing answers at: a port the test holds and nothing listens on
-// (testport.Refused), so every dial to it is refused.
-func deadAddress(t *testing.T) string {
-	t.Helper()
-	return testport.Refused(t)
-}
-
 // listening accepts every connection and hands it to serve, which decides what a peer that took
 // the connection then does with it. It answers its address.
 func listening(t *testing.T, serve func(net.Conn)) string {
@@ -284,7 +277,7 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 			class:    "broker-unavailable",
 			schedule: "short",
 			rig: func(t *testing.T) (string, *http.Client, func() string) {
-				address := deadAddress(t)
+				address := testport.Refused(t)
 				brokerURL := "http://" + address
 				return brokerURL, &http.Client{}, fixed(failedCall(brokerURL,
 					"dial tcp "+address+": connect: connection refused"))

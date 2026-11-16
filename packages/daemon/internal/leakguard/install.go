@@ -212,12 +212,8 @@ type ServedInstall struct {
 	Body []byte
 	// Log receives the install's one line where it replaced what Dir held. Nil logs nothing.
 	Log func(format string, args ...any)
-	// Start starts the verification's one run of the check (verifyServed) and answers what to call
-	// once that run's own wait has read its exit. The pod's launcher is its container's PID 1,
-	// whose reaper reaps every exited child the launcher does not hold, and a run whose exit the
-	// reaper took first fails its wait with `waitid: no child processes`: the launcher passes its
-	// guard's starter (internal/launcher's pidGuard), which holds the run out of every pass of the
-	// reaper until that wait. Nil is cmd.Start, for a caller no reaper runs beside.
+	// Start starts the verification's one run of the check (verifyServed), as a workspace.Starter
+	// starts its command, which says why the launcher passes one of its own; nil is cmd.Start.
 	Start func(cmd *exec.Cmd) (done func(), err error)
 }
 

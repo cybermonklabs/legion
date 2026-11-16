@@ -3,9 +3,10 @@
 // of a server or listener it closed: a freed port is any process's to take, and on a machine that
 // runs other tests beside this one another process took it and answered HTTP (dispatch://INFRA-3904).
 //
-// The envoy module keeps the same file at packages/envoy/internal/testport/testport.go. The two
-// are copies, not one package imported twice, for the reason packages/daemon/internal/testtmp gives:
-// Go's internal rule keeps each module from importing the other's. Change one and change the other.
+// The envoy module keeps the same file at packages/envoy/internal/testport/testport.go, which pull
+// request #4185 adds. The two are copies, not one package imported twice, for the reason
+// packages/daemon/internal/testtmp gives: Go's internal rule keeps each module from importing the
+// other's. Change one and change the other.
 package testport
 
 import (

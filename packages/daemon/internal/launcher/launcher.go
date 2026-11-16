@@ -178,12 +178,14 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// role's start waiting on that one restore. Its jj and git start through the guard: they are
 	// this process's children, and the reaper would otherwise take an exit before the restore's
 	// own wait read it, which then fails with `waitid: no child processes` and puts nothing back.
-	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
+	start := guard.starter()
+	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: start}
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed. Its verification runs the served check
-	// once, a child of this process, so it starts through the guard too, for the restore's reason.
-	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, guard.starter())
+	// once, a child of this process, so it starts through the same starter, for the restore's
+	// reason.
+	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir, start)
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),

@@ -248,7 +248,7 @@ func realGHCandidates() (candidates []string, named bool) {
 		return []string{path}, true
 	}
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		// exec.LookPath answers no relative path either.
+		// A relative PATH entry is skipped, as exec.LookPath("gh") refuses one (exec.ErrDot).
 		if !filepath.IsAbs(dir) {
 			continue
 		}
