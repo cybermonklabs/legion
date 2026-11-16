@@ -3843,6 +3843,53 @@ func TestAVolumeThatOnlyOscillatesRaisesNoNewEpisodeOnEveryCycle(t *testing.T) {
 	}
 }
 
+// One transient reading does not silence a volume that then keeps filling. The volume sweeps from
+// 86% and frees nothing, and one reading in the middle of the first pause reads 97%: a role's
+// build or extraction that wrote two and a half gigabytes and removed them within the minute.
+// From the next sweep on, the volume climbs a tenth of a point an interval, from 86% to full.
+// The fill is a deterioration of fourteen points from where the volume stood, and "one that keeps
+// filling is reported at each step of its deterioration" (the spec's R4 bound): at least one
+// step of it, a rise read once the volume stands five points above the 86% it swept from and
+// before it reaches 96%, must open an episode of its own. A trimmer that anchored the episode the
+// spike raised at the 97% that raised it waits for 102%, which no reading reaches, so after the
+// spike episode's three notices, spent within the first half hour because a rise-raised report
+// skips the pod's hour, the architect hears nothing while the volume climbs from 88% to full.
+func TestOneTransientReadingDoesNotSilenceAVolumeThatThenKeepsFilling(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	cycle := 1 + volumeQuietIntervals
+	f.useVolume(func(call int) volumeUsage {
+		if call == 6 { // the middle of the first pause
+			return usageAt(97)
+		}
+		percent := 86.0
+		if call > cycle {
+			percent = min(100, 86+0.1*float64(call-cycle))
+		}
+		return usageAt(percent)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 20)
+
+	first := map[int]float64{} // each episode's first report, by the reading that report carries
+	raisedBy := map[int]string{}
+	var seen []string
+	for _, report := range f.reports() {
+		used := 100 * float64(report.UsedBytes) / float64(report.UsedBytes+report.FreeBytes)
+		seen = append(seen, fmt.Sprintf("episode %d (%s) at %.1f%%", report.Episode, report.RaisedBy, used))
+		if _, ok := first[report.Episode]; !ok {
+			first[report.Episode], raisedBy[report.Episode] = used, report.RaisedBy
+		}
+	}
+	for episode, used := range first {
+		if raisedBy[episode] == shimwire.VolumeEpisodeRise && used >= 90 && used < 96 {
+			return
+		}
+	}
+	t.Errorf("no rise opened an episode while the volume filled from 90%% to 96%%: one reading of 97%% in a pause silenced the fill that followed it; the reports were %q", seen)
+}
+
 // An episode a rise raised is anchored at the reading that raised it, and a reported sweep of
 // that episode, which starts lower, leaves the anchor there. The volume reads 90% at every
 // sweep's start, so every sweep frees nothing, reports and pauses, and one reading in the middle
