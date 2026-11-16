@@ -313,6 +313,15 @@ export function isDeliveryNotConfigured(error: unknown): boolean {
   );
 }
 
+// A read of the whole deployment - the pending credential requests among them - answers this 403
+// to a viewer that is not open: a restricted member, or a credential that lists its projects. It
+// is definitive like the 404s above: the viewer is what it is, and retrying changes nothing.
+export function isDeploymentReadRefused(error: unknown): boolean {
+  return (
+    error instanceof ApiError && error.status === 403 && error.code === "DEPLOYMENT_READ_REFUSED"
+  );
+}
+
 // A stored document outside the Proof schema is a repairable state, not a transient failure:
 // retrying the read cannot repair it, while opening its live editor could let the browser rewrite it.
 export function isDocumentSchemaError(error: unknown): boolean {
@@ -380,16 +389,18 @@ export function isAgentListRefilling(error: unknown): boolean {
 }
 
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
-// source, an unconfigured credential broker or delivery timeline, a stored document outside
-// Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
-// holding content this build cannot read yet) is worth a couple of automatic attempts before
-// surfacing a Retry affordance to the user.
+// source, an unconfigured credential broker or delivery timeline, a read of the whole deployment
+// refused to a viewer that is not open, a stored document outside Proof's schema, or a stored
+// history that cannot load is definitive and retrying it changes nothing; any other failure
+// (dropped connection, a read past its deadline, 5xx, a document holding content this build
+// cannot read yet) is worth a couple of automatic attempts before surfacing a Retry affordance to
+// the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
     !isSourceNotFound(error) &&
     !isCredentialFeatureOff(error) &&
+    !isDeploymentReadRefused(error) &&
     !isDeliveryNotConfigured(error) &&
     !isDocumentSchemaError(error) &&
     !isDocumentUnloadable(error)

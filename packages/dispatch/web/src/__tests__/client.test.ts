@@ -9,6 +9,7 @@ import {
   type FetchImplementation,
   isCredentialFeatureOff,
   isDeliveryNotConfigured,
+  isDeploymentReadRefused,
   isDocumentNewerContent,
   isDocumentSchemaError,
   isRetryableQueryError,
@@ -1031,6 +1032,25 @@ test(
     expect(isRetryableQueryError(deliveryUnsetError)).toBe(false);
   }
 );
+
+test("a read of the whole deployment refused to a restricted member is definitive and not retried", async () => {
+  const refused = await createApiClient(
+    stubFetch(() =>
+      Response.json(
+        { code: "DEPLOYMENT_READ_REFUSED", error: "this caller is a restricted member" },
+        { status: 403 }
+      )
+    ).fetch
+  )
+    .getCredentialPending()
+    .catch((error: unknown) => error);
+  const forbidden = new ApiError(403, { code: "FORBIDDEN", error: "forbidden" });
+
+  expect(isDeploymentReadRefused(refused)).toBe(true);
+  expect(isRetryableQueryError(refused)).toBe(false);
+  // Only that code: another 403 is not the deployment's refusal.
+  expect(isDeploymentReadRefused(forbidden)).toBe(false);
+});
 
 test("a refusal keeps the server's Retry-After in delta-seconds, and no delay for a date or junk", async () => {
   const refusal = (headers: Record<string, string>) =>
