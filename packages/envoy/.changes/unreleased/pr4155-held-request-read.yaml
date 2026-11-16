@@ -3,9 +3,12 @@ body: |-
   `agent-secrets NAME -- <command>` runs its command within about half a second of its request's
   decision, where it read the request after 2 s, 4 s and 8 s and then every 10 s, so a grant at
   3 s ran the command at 6 s. `GET /v1/requests/{id}` takes an optional `?wait=N`, N whole
-  seconds from 1 to 20: while the request is pending the broker reads it again every 500 ms and
-  answers the first state that is not pending, or `pending` once N seconds pass, whichever broker
-  process decided it. Any other wait is refused `400 REQUEST_WAIT_INPUT`; an absent one answers
-  at once, as before. The exec form asks each read to hold for what is left of `--wait`, at most
-  20 s; against a broker from before this change, which answers every read at once, it sleeps
-  its old backoff between reads. `agent-secrets status` sends no wait.
+  seconds from 1 to 20: while the request is pending the broker reads its state again every
+  500 ms and answers the first state that is not pending, or `pending` once N seconds pass,
+  whichever broker process decided it. Any other wait is refused `400 REQUEST_WAIT_INPUT`; an
+  absent one answers at once, as before. A read of a request that moved to another session while
+  it was held is `403 NOT_YOURS`, and a store that fails is `503 DATABASE_UNAVAILABLE` (it was
+  `500 INTERNAL`), which `agent-secrets` waits through. The exec form asks each read to hold for
+  what is left of `--wait`, at most 20 s; against a broker from before this change, which answers
+  every read at once, it sleeps its old backoff between reads. `agent-secrets status` sends no
+  wait.

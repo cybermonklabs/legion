@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
 // waitRequestID is the one request waitBroker serves, and waitValue the value its grant releases
@@ -24,8 +23,8 @@ const (
 // grantAfter after POST /v1/requests made it. With honoursWait it answers a status read as the
 // broker does a GET /v1/requests/{id}?wait=N: held until the request is granted or N seconds
 // pass, whichever is first; without it, it answers at once, as a broker from before the
-// parameter does. It verifies every proof as the broker does, with the htu rebuilt from the
-// path alone, so a client that signed its query would be refused.
+// parameter does. It checks every proof as the broker does (proofKey.verify), so a client that
+// signed its query would be refused.
 type waitBroker struct {
 	*httptest.Server
 	mu        sync.Mutex
@@ -38,10 +37,9 @@ type waitBroker struct {
 func newWaitBroker(t *testing.T, key *proofKey, honoursWait bool, grantAfter time.Duration) *waitBroker {
 	t.Helper()
 	b := &waitBroker{}
-	verifier := key.verifier()
 	var publicURL string
 	verified := func(w http.ResponseWriter, r *http.Request) bool {
-		if _, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, publicURL+r.URL.Path, time.Now()); err != nil {
+		if err := key.verify(r, publicURL); err != nil {
 			b.mu.Lock()
 			b.badProofs++
 			b.mu.Unlock()
@@ -81,7 +79,7 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait bool, grantAfter tim
 		b.waits = append(b.waits, wait)
 		grantAt := b.created.Add(grantAfter)
 		b.mu.Unlock()
-		if seconds, err := strconv.Atoi(wait); honoursWait && err == nil && seconds >= 1 && seconds <= 20 {
+		if seconds, err := strconv.Atoi(wait); honoursWait && err == nil && seconds >= 1 && seconds <= record.MaxRequestWaitSeconds {
 			until := min(time.Until(grantAt), time.Duration(seconds)*time.Second)
 			select {
 			case <-time.After(until):
@@ -109,34 +107,6 @@ func newWaitBroker(t *testing.T, key *proofKey, honoursWait bool, grantAfter tim
 	return b
 }
 
-// proofKey is a session key with the enrollment id it signs as, and the key dir that holds both.
-type proofKey struct {
-	thumbprint string
-	keyDir     string
-}
-
-func newProofKey(t *testing.T) *proofKey {
-	t.Helper()
-	key, err := proof.NewKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &proofKey{thumbprint: thumbprint, keyDir: writeKeyDir(t, key, testEnrollmentID)}
-}
-
-// verifier checks a proof as the broker's proof.Verifier does, for this key's enrollment alone.
-func (k *proofKey) verifier() *proof.Verifier {
-	return &proof.Verifier{Skew: time.Minute,
-		Lookup: func(_ context.Context, id string) (string, bool, error) {
-			return k.thumbprint, id == testEnrollmentID, nil
-		},
-		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
-}
-
 // runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …` against b, failing t unless the
 // child ran with the granted value.
 func runWaiting(t *testing.T, b *waitBroker, key *proofKey) {
@@ -156,23 +126,27 @@ func runWaiting(t *testing.T, b *waitBroker, key *proofKey) {
 
 // TestExecLearnsOfTheGrantWithinASecond: against a broker that holds each `wait` read, a request
 // granted 3 s after it was made has its value released, the last broker call before the child
-// runs, by 3.5 s, in at most 2 status reads, each asking a wait of 1 to 20 seconds. The loop
-// before this change read at 2 s and 6 s, so it released at 6 s.
+// runs, less than a second after the grant (R1), in at most 2 status reads, each asking a wait of
+// 1 to record.MaxRequestWaitSeconds seconds. The loop before this change read at 2 s and 6 s, so
+// it released 3 s after the grant.
 func TestExecLearnsOfTheGrantWithinASecond(t *testing.T) {
+	const grantAfter = 3 * time.Second
 	key := newProofKey(t)
-	b := newWaitBroker(t, key, true, 3*time.Second)
+	b := newWaitBroker(t, key, true, grantAfter)
 	runWaiting(t, b, key)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if took := b.released.Sub(b.created); took > 3500*time.Millisecond {
-		t.Errorf("the grant was released %s after the request was made, want by 3.5 s: the decision came at 3 s", took)
+	lag := b.released.Sub(b.created.Add(grantAfter))
+	if lag >= time.Second {
+		t.Errorf("the grant was released %s after the request was granted, want under 1 s", lag)
 	}
+	t.Logf("the grant was released %s after the request was granted, after %d status reads (waits %q)", lag, len(b.waits), b.waits)
 	if len(b.waits) > 2 {
 		t.Errorf("the broker served %d status reads (waits %q), want at most 2", len(b.waits), b.waits)
 	}
 	for _, wait := range b.waits {
-		if seconds, err := strconv.Atoi(wait); err != nil || seconds < 1 || seconds > 20 {
-			t.Errorf("a status read asked wait=%q, want a whole number of seconds from 1 to 20 (waits %q)", wait, b.waits)
+		if seconds, err := strconv.Atoi(wait); err != nil || seconds < 1 || seconds > record.MaxRequestWaitSeconds {
+			t.Errorf("a status read asked wait=%q, want a whole number of seconds from 1 to %d (waits %q)", wait, record.MaxRequestWaitSeconds, b.waits)
 		}
 	}
 }

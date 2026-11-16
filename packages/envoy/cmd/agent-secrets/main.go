@@ -731,13 +731,6 @@ func writeVerbatim(w io.Writer, raw []byte) {
 	w.Write(raw)
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
 // to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
 // wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
@@ -1213,10 +1206,12 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				break
 			}
 			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
-			// rounded up so the last read covers the deadline, at most requestWaitMax: the
-			// broker answers within a step of a decision (its requestWaitStep, 500 ms), so the
-			// command learns of it at once rather than at its next poll.
-			asked := min(requestWaitMax, (remaining + time.Second - 1).Truncate(time.Second))
+			// rounded up so the last read covers the deadline, at most
+			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision (its
+			// requestWaitStep, 500 ms), so the command learns of it at once rather than at its
+			// next poll. It is computed here alone, and the check below compares with what was
+			// sent.
+			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
 			sent := time.Now()
 			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
 			switch {
@@ -1233,8 +1228,8 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			if state == "pending" && time.Since(sent) < asked {
-				time.Sleep(minDuration(backoff, time.Until(deadline)))
+			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
+				time.Sleep(min(backoff, time.Until(deadline)))
 				backoff = nextBackoff(backoff)
 			}
 		}

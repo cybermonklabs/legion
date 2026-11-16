@@ -391,23 +391,21 @@ type airlockName struct {
 	Hosts []string `json:"hosts"`
 }
 
-// requestWaitMax is the longest wait GET /v1/requests/{id}?wait= takes, in seconds. A held read
-// ends well inside the broker's own request deadline (45 s, cmd/broker's requestDeadline) and the
-// agent-secrets client's whole-call timeout (30 s, leasetime.RenewClientTimeout), so neither cuts
-// it short; a client that waits longer asks again.
-const requestWaitMax = 20
-
 // requestWaitStep is how often a held read reads its request again.
 const requestWaitStep = 500 * time.Millisecond
 
 // readRequest answers one of the calling session's requests. With ?wait=N, N a whole number of
-// seconds from 1 to requestWaitMax, it holds the read while the request is pending: after the
-// owner check it reads the request again every requestWaitStep (Machine.Get), and answers the
-// first state that is not pending, or pending once N seconds have passed or the request's context
-// ended. The state it reads is the database's, so a decision made on either broker process — the
+// seconds from 1 to record.MaxRequestWaitSeconds, it holds the read while the request is pending
+// (readHeld) and answers the first state that is not pending, or pending once N seconds have
+// passed. The state it reads is the database's, so a decision made on either broker process — the
 // approval page's, the model judge's, the sweeper's expiry, the session's own cancel — is seen
 // within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
 // absent or empty one answers at once, as before the parameter.
+//
+// A store that fails is 503 DATABASE_UNAVAILABLE, and a request that ended while the read was
+// held (the caller went away, or the request deadline came) is 503 REQUEST_ENDED: agent-secrets
+// reads both as a failed read and keeps waiting (retryable), where a 500 would end its wait with
+// nothing run while the request stays pending.
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
@@ -418,30 +416,20 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	if !ok {
 		return
 	}
-	owner, err := s.deps.Machine.OwnerOf(ctx, id)
+	req, err := s.readHeld(ctx, id, enrollmentID, wait)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such request")
 		return
-	case err != nil:
-		writeInternal(w, "read request owner", err)
-		return
-	}
-	if owner != enrollmentID {
+	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
 		return
-	}
-
-	req, err := s.deps.Machine.Get(ctx, id)
-	if err != nil {
-		writeInternal(w, "read request", err)
+	case err != nil && ctx.Err() != nil:
+		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
 		return
-	}
-	if req.State == "pending" && wait > 0 {
-		if req, err = s.awaitDecision(ctx, id, req, wait); err != nil {
-			writeInternal(w, "read request", err)
-			return
-		}
+	case err != nil:
+		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read request", err)
+		return
 	}
 	resp := requestStatusResponse{
 		State: req.State, GrantID: req.GrantID, RecordID: req.RecordID, Approver: req.Approver, LifetimeSeconds: req.LifetimeSeconds,
@@ -454,46 +442,45 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 }
 
 // requestWait reads GET /v1/requests/{id}'s ?wait: 0 for none, else the wait it names, refusing
-// anything but a whole number of seconds from 1 to requestWaitMax.
+// anything but a whole number of seconds from 1 to record.MaxRequestWaitSeconds.
 func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	if raw == "" {
 		return 0, true
 	}
 	seconds, err := strconv.Atoi(raw)
-	if err != nil || seconds < 1 || seconds > requestWaitMax {
+	if err != nil || seconds < 1 || seconds > record.MaxRequestWaitSeconds {
 		writeError(w, http.StatusBadRequest, "REQUEST_WAIT_INPUT", "wait is a whole number of seconds from 1 to 20")
 		return 0, false
 	}
 	return time.Duration(seconds) * time.Second, true
 }
 
-// awaitDecision reads request id again every requestWaitStep, the last time at wait after the
-// call, and answers the first read that is no longer pending, else the last one; req is the read
-// the handler already made, answered as it is when ctx ends first (the caller has gone, or the
-// request deadline came), since a read that ctx cut short says nothing new about the request.
-func (s *server) awaitDecision(ctx context.Context, id string, req requests.Request, wait time.Duration) (requests.Request, error) {
+// readHeld reads request id for enrollmentID. It reads the request's owner and state
+// (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when the owner is another
+// enrollment; while the state is pending and wait has time left, it reads them again every
+// requestWaitStep; then it reads the whole request (Machine.Get) once. A wait of 0 is the one
+// read. The owner is checked at every step, so a request that moves to another enrollment while
+// the read is held (adopt moves a predecessor's requests to its successor) is refused at the next
+// step, as a new read of it is. Any other error is the store's, or ctx's when ctx ended first.
+func (s *server) readHeld(ctx context.Context, id, enrollmentID string, wait time.Duration) (requests.Request, error) {
 	deadline := time.Now().Add(wait)
-	step := time.NewTimer(min(requestWaitStep, wait))
-	defer step.Stop()
 	for {
-		select {
-		case <-ctx.Done():
-			return req, nil
-		case <-step.C:
-		}
-		next, err := s.deps.Machine.Get(ctx, id)
+		owner, state, err := s.deps.Machine.OwnerAndState(ctx, id)
 		if err != nil {
-			if ctx.Err() != nil {
-				return req, nil
-			}
 			return requests.Request{}, err
 		}
-		req = next
-		left := time.Until(deadline)
-		if req.State != "pending" || left <= 0 {
-			return req, nil
+		if owner != enrollmentID {
+			return requests.Request{}, requests.ErrNotYours
 		}
-		step.Reset(min(requestWaitStep, left))
+		left := time.Until(deadline)
+		if state != "pending" || left <= 0 {
+			return s.deps.Machine.Get(ctx, id)
+		}
+		select {
+		case <-ctx.Done():
+			return requests.Request{}, ctx.Err()
+		case <-time.After(min(requestWaitStep, left)):
+		}
 	}
 }
 

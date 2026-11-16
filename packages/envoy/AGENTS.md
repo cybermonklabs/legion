@@ -7075,12 +7075,15 @@ No row written after the deploy matches, so the bridge ends on its own a day aft
 `POST /v1/requests` and `GET /v1/requests/{id}` echo `lifetime_seconds` (null for none), which the CLI checks against its `--ttl`, revoking the grant or cancelling the pending request this call made when a broker or helper from before the claim dropped it, and never touching a reused approved grant or a pending request it joined (`coalesced`);
 when every name is decided (`granted`/`denied`) with nothing pending, the request and, if granted, its grant are written with no record.
 `Create` and `Get` answer that record's approver (`approver` on `POST /v1/requests` and `GET /v1/requests/{id}`, read from `credential_requests.approver`, the column `PendingForApprover` lists by, never re-evaluated from the current policy), so the asking session names whose list holds it; a request with no record answers null.
-`GET /v1/requests/{id}?wait=N`, N whole seconds from 1 to 20 (`requestWaitMax`), holds the read while the request is pending (`awaitDecision`):
-after the owner check it reads `Machine.Get` again every 500 ms (`requestWaitStep`) and answers the first state that is not pending, or `pending` once N seconds have passed or the request's context ended.
-Any other wait is `400 REQUEST_WAIT_INPUT` before any read, and an absent or empty one answers at once.
+`GET /v1/requests/{id}?wait=N`, N whole seconds from 1 to 20 (`record.MaxRequestWaitSeconds`, the one limit the broker and the CLI both read), holds the read while the request is pending (`readHeld`):
+it reads the request's owner and state (`Machine.OwnerAndState`, one statement on `requests`) every 500 ms (`requestWaitStep`), and reads the whole request (`Machine.Get`) once, when the state is no longer pending or N seconds have passed.
+The owner is checked at every step, so a request that moves to another enrollment while the read is held (`adopt`) is `403 NOT_YOURS` at the next step, as a new read of it is.
+Any other wait is `400 REQUEST_WAIT_INPUT` before any read, and an absent or empty one is the one read, at once.
+A store that fails is `503 DATABASE_UNAVAILABLE`, and a read whose request ended while it was held (the caller went away, or the request deadline came) is `503 REQUEST_ENDED`: the CLI reads both as a failed read and keeps waiting, where a 500 would end its wait with nothing run and the request still pending.
 The state it reads is the database's, so a decision either broker process makes (the approval page's, the judge's, the sweeper's expiry, the session's cancel) reaches a held read within one step of its commit, with nothing sent between the processes.
+A held read of N seconds costs about 2N statements, and no bucket limits held reads per session (`authProof` spends none), as none limits a session's instant reads.
 Twenty seconds ends well inside the broker's 45-second request deadline and the CLI's 30-second whole-call timeout (`leasetime.RenewClientTimeout`).
-The exec form's wait asks each read to hold for what is left of `--wait`, rounded up to whole seconds and at most 20, with no sleep before it, so the command runs its child within about one step of the decision.
+The exec form's wait asks each read to hold for what is left of `--wait`, rounded up to whole seconds and at most 20, computed once in `cmdExec` and sent as it is by `GetRequest`, with no sleep before it, so the command runs its child within about one step of the decision.
 A broker from before the parameter ignores it and answers at once:
 a read that comes back undecided sooner than the wait it asked (such a broker's `pending`, or a failed read) makes the loop sleep its old backoff (`nextBackoff`, 2 s doubling to 10 s) before the next, so it never asks as fast as such a broker answers.
 `agent-secrets status` sends no wait.

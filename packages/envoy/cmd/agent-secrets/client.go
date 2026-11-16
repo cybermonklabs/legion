@@ -525,22 +525,18 @@ func pathID(kind, id string) error {
 	return nil
 }
 
-// requestWaitMax is the longest wait GET /v1/requests/{id}?wait= takes; the broker refuses a
-// longer one REQUEST_WAIT_INPUT (internal/broker/api's requestWaitMax, 20 seconds). A wait the
-// exec form needs beyond it is several reads.
-const requestWaitMax = 20 * time.Second
-
-// GetRequest reads request id. A wait of a whole second or more asks the broker to hold the read
-// while the request is pending, up to that many seconds (GET /v1/requests/{id}?wait=, whole
-// seconds, at most requestWaitMax); 0 sends no wait, and the broker answers at once. A broker
-// from before the parameter ignores it and answers at once either way.
-func (c *client) GetRequest(ctx context.Context, signer Signer, id string, wait time.Duration) (RequestStatus, []byte, error) {
+// GetRequest reads request id. waitSeconds above 0 asks the broker to hold the read while the
+// request is pending, up to that many seconds (GET /v1/requests/{id}?wait=), sent as it is: the
+// caller keeps it from 1 to record.MaxRequestWaitSeconds, which the broker refuses past. 0 sends
+// no wait, and the broker answers at once. A broker from before the parameter ignores it and
+// answers at once either way.
+func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitSeconds int) (RequestStatus, []byte, error) {
 	if err := pathID("a request id", id); err != nil {
 		return RequestStatus{}, nil, err
 	}
 	path := "/v1/requests/" + id
-	if seconds := min(wait, requestWaitMax) / time.Second; seconds > 0 {
-		path += "?wait=" + strconv.FormatInt(int64(seconds), 10)
+	if waitSeconds > 0 {
+		path += "?wait=" + strconv.Itoa(waitSeconds)
 	}
 	raw, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
 	if err != nil {
