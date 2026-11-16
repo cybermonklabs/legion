@@ -47,10 +47,10 @@ import {
  * given no skill at all, over the same cases of the report slice, in one run.
  *
  * This is check C6 of the plan (dispatch://INFRA-2897): the skills carry the answer, and another
- * agent reproduces the number. The skill records what the round measured over the 250 approval
- * cases of the report slice - `many-shot-opus-5-5` 0.772 against `bare-opus-5-5` 0.656, a gain of
- * 0.116 for the retrieval recipe - and this asks whether an agent handed the skill, and nothing
- * else, beats an agent handed nothing.
+ * agent reproduces the number. The round measured, over the 250 approval cases of the report
+ * slice, `many-shot-opus-5-5` 0.772 against `bare-opus-5-5` 0.656, a gain of 0.116 for the
+ * retrieval recipe, and this asks whether an agent handed the skill, and nothing else, beats an
+ * agent handed nothing.
  *
  * **The two arms differ in the skill and in nothing else.** Each arm is the same binary, the same
  * model, the same flags and the same one message. What differs is the profile the agent starts
@@ -75,8 +75,8 @@ import {
  * **Neither shape alone answers the question, which is why both are kept.** With the file, the
  * control reads it unprompted, so the comparison measures the skill's text on top of a recipe
  * both arms run. Without it, the skill arm can read the skill but cannot run the retrieval the
- * skill records, so the comparison measures the skill's text alone against nothing. The gain
- * the skill records is retrieval over nothing, and no shape reachable from here separates that:
+ * skill describes, so the comparison measures the skill's text alone against nothing. The gain
+ * the round measured is retrieval over nothing, and no shape reachable from here separates that:
  * `fresh-agent.json` holds both shapes so a reader sees the pair and not one number.
  *
  * **One judgement per case and arm.** The round took five and read the mode; this takes one, so
@@ -88,7 +88,7 @@ import {
  * control's number is reported whatever it is.
  */
 
-/** The model both arms run on, which is the model the numbers the skill records were measured on. */
+/** The model both arms run on, which is the model the round's numbers were measured on. */
 const MODEL = "claude-opus-5-5";
 
 /** The profile name both arms use, each under its own home, so neither sees the other's state. */

@@ -25,8 +25,7 @@ For each open issue of the project, read the related items of its title and spec
 no-write related route, leaving the issue, its ancestors and its descendants out, and judge
 whether each pair the two issues' own records do not already settle is the same work.
 
-The project holds hundreds of open issues and one related read takes about a second, so a serial
-pass is ten minutes of HTTP before any judging. Shard the open list and dispatch one full agent per
+A serial pass makes one related read for each open issue before any judging. Shard the open list and dispatch one full agent per
 shard of at most 50 issues, `task(agent="deep-worker")`, which can run commands and read Dispatch,
 GitHub and the workspace, and whose model a pod configures (the `task` agent's it does not), then
 `wait` for them: each returns the pairs it found with the records it read for each, and you check
@@ -92,8 +91,8 @@ brings it back at a later start until it carries a reply. Then take its steps 2 
 the open issue that already tracks the cause, else hand it to the running tree whose code it is,
 else file one issue for it, and reply under the evidence comment. The filed issue names each issue
 of the group and the shared evidence, and carries the `Filed for` line of `finding-asks.md` for
-the person who asked for this pass: `Filed for <them> at their request:
-dispatch://INFRA-460/comment/67cf2b86-5c76-41a9-a53a-7bf2dce03602`. It takes the `legion` label
+a clear defect: `Filed for Legion from controller on <REPORT KEY>: <the evidence comment's reference>`.
+It takes the `legion` label
 only when the fix needs no choice a person must make (that procedure's step 1); otherwise it waits
 in triage for a person, and the reply is still `Filed dispatch://<KEY>`. Then comment on each
 issue of the group the cause's issue, or the root of the tree it went to. Close no issue of the

@@ -34,7 +34,7 @@ any issue with more than ten the `issue.created` line is not printed at all.
 
 Keep the issues created inside the window, read each one's `issue.created` line, and count by
 filer. The line names its writer as `session <id> (<the session's title>)`, and the filer is that
-title cut at its last middle dot (`·`), so `Legion implementer · INFRA-1160` counts as
+title cut at its last middle dot (`·`), so `Legion implementer · ACME-3` counts as
 `Legion implementer`, with every person counted together as one filer. A session that carries no
 title prints its id alone and is counted by that id. Report, per filer, how many creates forced
 past a refusal and which issues each named, then the no-answer creates as their own line.
@@ -62,8 +62,7 @@ Count each tree's descendants at any depth, and report the trees in five buckets
 or `icebox`. Name the recount commands beside the numbers, since a reader checks them against
 Dispatch's own parent links.
 
-The report and, when you lead a stream that keeps a scoreboard, the stream's scoreboard artifact
-both carry the two measures, under the keys `forced_creates_by_filer` and `tree_sizes`.
+The report carries the two measures, under the keys `forced_creates_by_filer` and `tree_sizes`.
 
 ## 3. The nudges
 
@@ -107,4 +106,4 @@ List every nudge you sent in the day's report.
 The consolidation pass runs it every six hours
 (`skill://legion-controller/references/consolidation.md`). The week's report sums the three counts
 over the week's sections of the report issue's `consolidation.md` artifact (`dispatch doc-read
---issue <REPORT KEY> --artifact consolidation.md`). It serves R8 of dispatch://INFRA-1160.
+--issue <REPORT KEY> --artifact consolidation.md`).

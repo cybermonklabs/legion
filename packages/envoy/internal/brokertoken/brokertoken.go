@@ -27,6 +27,7 @@ import (
 	"authelia.com/provider/oauth2/token/jose"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -59,17 +60,17 @@ var (
 	// ErrNotASession is a live token that is not a session's credential: the broker's answer
 	// names no session, or names neither a person nor a service, or the token was issued to a
 	// client other than the exchange every Dispatch access token comes from (ExchangeClientID),
-	// or its project scope is a word this package does not know. A machine login's own access
-	// token is exactly that — the credential a dev box holds to ask the broker for other
-	// credentials, DPoP-bound and perfectly live, for which no exchange ever decided a session,
-	// a person or a project scope — and so is any other token the broker issued for something
-	// other than acting as a session. Whoever mounts this check acts as the session a token
-	// names, so a token that names none is refused here rather than admitted for a request body
-	// to name one in its place.
+	// or its project scope is a word this package does not know, or its list of projects is one
+	// no exchange mints. A machine login's own access token is exactly that — the credential a dev
+	// box holds to ask the broker for other credentials, DPoP-bound and perfectly live, for which
+	// no exchange ever decided a session, a person or a project scope — and so is any other token
+	// the broker issued for something other than acting as a session. Whoever mounts this check
+	// acts as the session a token names, so a token that names none is refused here rather than
+	// admitted for a request body to name one in its place.
 	//
-	// The scope is refused for the same reason it is read at all: it says what Project means, so
-	// a word this package does not know is a token it cannot read rather than one that names no
-	// project. Reading an unknown scope as unscoped would hand its caller every project the
+	// The scope is refused for the same reason it is read at all: it says what Projects means,
+	// so a word this package does not know is a token it cannot read rather than one that names
+	// no project. Reading an unknown scope as unscoped would hand its caller every project the
 	// moment the broker learns a third word, which is the one mistake a check deciding what a
 	// credential covers must not make.
 	ErrNotASession = errors.New("brokertoken: the access token is not a session's credential")
@@ -165,10 +166,11 @@ type Caller struct {
 	// check decides what such a caller may do; what this package promises is that one of the two
 	// is set.
 	Service string
-	// Project is the one project key this caller may write, and is empty for a caller that is
-	// held to no single project. callerOf applies the broker's named-scope rule, so a reader
-	// takes this field as it stands rather than reading the scope beside it.
-	Project string
+	// Projects is the token's list of projects, the caller's own copy: a ProjectScopeNamed
+	// token's one project, or none for an account entry naming none (the shared public-session
+	// account's), and the projects a ProjectScopePerson token's trade asked for, each one its
+	// person could see then, nil for none. Sorted, each once.
+	Projects []string
 	// ProjectScope is the broker's own `project_scope` claim, carried whole rather than read
 	// down to a flag: a reader deciding what a token may do has to tell "the broker scoped this
 	// to its person" from every other answer, and an absent or misspelt scope must not read as
@@ -367,13 +369,19 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	// issued for acting as a session, and one that names neither is no session's credential
 	// whatever else it carries.
 	//
-	// The last two clauses are the scope the Project beside it is read under: a word this package
-	// does not know is a token it cannot read, and is refused here rather than taken as a token
-	// that names no project at all (ErrNotASession). A named scope with no project beside it is
-	// the same case: it is refused rather than read as a caller no project check covers.
+	// The rest is the scope and the list the Projects beside it are read under: a word this
+	// package does not know is a token it cannot read, and is refused here rather than taken as
+	// a token that names no project at all (ErrNotASession). A named token is an operator's
+	// entry's, which names one project, or none for an account entry that names none, and always
+	// a person: a named answer naming two or more projects, which a reader holding a write to one
+	// project would take as no limit at all, or naming none and no person, is the same case. A
+	// list no exchange mints (oauthwire.ValidProjects) and a service's token naming a project,
+	// which the exchange refuses to mint, are refused for the same reason.
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		(answer.ProjectScope != ProjectScopeNamed && answer.ProjectScope != ProjectScopePerson) ||
-		(answer.ProjectScope == ProjectScopeNamed && answer.Project == "") {
+		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
+		(answer.Person == "" && len(answer.Projects) > 0) ||
+		oauthwire.ValidProjects(answer.Projects) != nil {
 		return "", Introspection{}, ErrNotASession
 	}
 	return token, answer, nil
