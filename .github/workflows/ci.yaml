@@ -1159,6 +1159,9 @@ jobs:
               # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
+              # tests/packed-skills.test.ts:5 imports the reader of the skill names in the shared
+              # Dispatch text, which reads contracts' tool specs and envoy-client's commands.
+              - 'packages/pi-shared/test/shared-dispatch-text.ts'
               # tests/ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # tests/envoy-channel-server.test.ts holds the marketplace entry to this package's

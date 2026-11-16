@@ -94,6 +94,13 @@ function noVersionLine(name: string): string {
 }
 
 /**
+ * The last line of an answer about a document that an approval request is judged on: a program
+ * decides the form, and skill://spec-statement-review tells a reviewer what no program decides.
+ */
+const REVIEWER_LINE =
+  "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.";
+
+/**
  * The list of terms of the root that holds `form`'s document, as `--terms` prints it: one line per
  * term with its definition and the document, the version and the issue that define it, in the
  * server's order (sorted by term). A document that no root holds has no list.
@@ -168,6 +175,7 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
       ? [noVersionLine(artifact.name)]
       : [`${form.name} version ${form.version}:`, ...documentLines(form)]
   );
+  if (read.some(({ form }) => form?.in_scope === true)) lines.push(REVIEWER_LINE);
   return {
     text:
       read.length === 0
@@ -323,7 +331,7 @@ export async function specFormCommand(context: CommandContext): Promise<Dispatch
     };
   }
   return {
-    text: documentLines(form).join("\n"),
+    text: [...documentLines(form), ...(form.in_scope ? [REVIEWER_LINE] : [])].join("\n"),
     details: {
       ...documentOwnerDetails,
       artifact: form.artifact_id,

@@ -2,6 +2,7 @@ import { beforeAll, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
+import { sharedDispatchSkillNames } from "./shared-dispatch-text";
 import { REPO_ROOT, stageSkills } from "./skills-guard";
 
 // scripts/pi-plugin-prepack.sh holds the two lists that say which of the repository's skills each
@@ -81,6 +82,17 @@ test("every skill:// name a shipped skill or a daemon prompt uses is a shipped s
       })
   );
   expect(missing).toEqual([]);
+});
+
+// The Dispatch tool text and the `dispatch` command's own output reach an Oh My Pi session through
+// @sjawhar/pi-envoy, so each skill that text names is in its partition, or a session that the text
+// sends to the skill loads nothing. claude-envoy's tests/packed-skills.test.ts holds the same names
+// to the skills that plugin links. A read that finds no name fails, so a scan that read nothing
+// never passes.
+test("every skill:// name the shared Dispatch text uses is in the Envoy plugin's partition", () => {
+  const named = sharedDispatchSkillNames();
+  expect(named.length).toBeGreaterThan(0);
+  expect(named.filter((name) => !envoySkills.includes(name))).toEqual([]);
 });
 
 // .github/workflows/release.yaml names each plugin's skills twice more, in its version arguments in

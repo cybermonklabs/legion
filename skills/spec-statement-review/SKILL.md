@@ -14,16 +14,19 @@ You judge what no program decides, and nothing else, so that one rule never gets
 
 ## Steps
 
-1. Run `dispatch spec-form --issue <KEY> --artifact <document> --terms`.
-   It prints the findings of the form check, then the list of terms, one line for each term: `<term>: <definition> (<document> version <n>)`.
+1. Run `dispatch spec-form --issue <KEY> --artifact <document>`.
+   It prints the findings of the form check, one line for each: `- <kind> <node>: <detail>.`
    Dispatch decided each finding already, so do not report it again.
+   Then run the same command with `--terms`, which prints the list of terms in place of the findings.
+   The list has one line for each term: `<term>: <definition> (<document> version <n> of <KEY>)`.
 
 2. Read the change request with `dispatch doc-read --issue <KEY> --artifact <document>`.
    A statement is a `:::requirement{#<id>}` block, and that id is its node.
    A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names the statements that it serves.
    The terms of the request are the `- **<term>**: <definition>` lines under its `## Terms` heading.
    Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
-   When the list holds `verification.md`, the issue keeps the checks of the request there, so run both commands for that document too.
+   When those documents include `verification.md`, the issue keeps the checks of the request there.
+   Then run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.
 
    When a command fails, print `NOT REVIEWED: <the command> failed: <the first line of its error>` and stop.
    A review without the list of terms cannot find an undefined noun, and `NO FINDING` would then tell the author a false thing.
