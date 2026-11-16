@@ -525,18 +525,25 @@ export async function gitBinary(dir: string, proc = "/proc"): Promise<string> {
 
 /**
  * Runs `binary`, a test's jj or git (`jjBinary`, `gitBinary`), with `args` in `cwd` and `env` as
- * its whole environment, and answers its stdout, trimmed. A non-zero exit throws naming the
- * program, the arguments, the status, the signal when one ended it (a spawn killed under the
- * runner exits non-zero with nothing on stderr, which alone reads as the tool refusing the command:
- * LEGION-243) and its stderr.
+ * its whole environment, and answers its stdout, trimmed. With `env` undefined the child gets what
+ * `Bun.spawn` gives one with no `env`: the environment this process started with, not
+ * `process.env` as a test has since changed it. A non-zero exit throws naming the program, the
+ * arguments, the status, the signal when one ended it (a spawn killed under the runner exits
+ * non-zero with nothing on stderr, which alone reads as the tool refusing the command: LEGION-243)
+ * and its stderr.
  */
 export async function runTool(
   binary: string,
   cwd: string,
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined> | undefined,
   args: readonly string[]
 ): Promise<string> {
-  const child = Bun.spawn([binary, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([binary, ...args], {
+    cwd,
+    ...(env === undefined ? {} : { env }),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
