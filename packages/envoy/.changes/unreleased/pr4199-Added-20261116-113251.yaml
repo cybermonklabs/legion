@@ -10,7 +10,8 @@ body: |-
   host: its sign-in comes back to `<origin>/auth/callback`, which the Google client must list, a
   browser write from it must carry that Origin, `GET /auth/whoami` names both origins as
   `origins`, and a dashboard link of either origin is a reference the dashboard opens on the
-  origin the reader is on. A deployment that sets neither answers as before.
+  origin the reader is on. A refused outside sign-in's "Sign in with a different account" asks
+  Google for its account chooser. A deployment that sets neither answers as before.
 time: 2026-11-16T11:32:51.593887956Z
 custom:
     Issue: pr4199

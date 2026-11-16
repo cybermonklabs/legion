@@ -145,3 +145,48 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 		t.Errorf("whoami with no outside origin = %d %s, want today's three keys and no origins", status, body)
 	}
 }
+
+// A refused outside sign-in offers a link that asks Google for its account chooser, so a browser
+// holding one Google session is not sent straight back with the account just refused; the
+// sign-in a person starts any other way asks for consent alone, and a refusal under the domain
+// rule alone keeps today's plain link.
+func TestOutsideSignInRefusalOffersGooglesAccountChooser(t *testing.T) {
+	unlisted := identity.OutsideRule{
+		Domain: identity.DomainRule{Domain: rigDomain},
+		People: identity.ListerFunc(func(context.Context, string) (bool, error) { return false, nil }),
+	}
+	outsider := map[string]any{"sub": "outside-subject", "email": "stranger@other.example", "email_verified": true}
+	refusalLink := func(rig *signInRig) string {
+		t.Helper()
+		page := rig.signIn(t, outsider)
+		if page.Code != http.StatusForbidden {
+			t.Fatalf("the sign-in of an account no list names answered %d %s, want the refusal page", page.Code, page.Body.String())
+		}
+		_, after, found := strings.Cut(page.Body.String(), `<a href="`)
+		link, _, closed := strings.Cut(after, `"`)
+		if !found || !closed {
+			t.Fatalf("the refusal page holds no link: %s", page.Body.String())
+		}
+		return link
+	}
+	prompt := func(rig *signInRig, target string) string {
+		t.Helper()
+		location, _ := rig.start(t, target)
+		return location.Query().Get("prompt")
+	}
+
+	rig := newOriginRig(t, unlisted, outsideOrigin)
+	link := refusalLink(rig)
+	if link != "/auth/start?prompt=select_account" {
+		t.Fatalf("the refused outside sign-in's link is %q, want /auth/start?prompt=select_account", link)
+	}
+	if got := prompt(rig, "http://outside.test"+link); got != "select_account consent" {
+		t.Errorf("GET %s: the issuer is asked prompt=%q, want the chooser beside the consent a refresh token needs", link, got)
+	}
+	if got := prompt(rig, "http://outside.test/auth/start"); got != "consent" {
+		t.Errorf("GET /auth/start: the issuer is asked prompt=%q, want consent alone", got)
+	}
+	if domainOnly := refusalLink(newOriginRig(t, identity.DomainRule{Domain: rigDomain}, "")); domainOnly != "/auth/start" {
+		t.Errorf("a refusal under the domain rule alone links to %q, want today's /auth/start", domainOnly)
+	}
+}

@@ -200,6 +200,40 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 	}
 }
 
+// TestNoVariantOfAServerRouteIsTheDashboard: a path the mux does not route but that names one of
+// the process's own routes another way - with a trailing slash (`/metrics/`) or in another case
+// (`/API/V1`) - is answered by the server as a JSON refusal or a JSON 404, with no credential,
+// and never by the dashboard's page, whose 200 a scraper or a client would read as an answer of
+// the route it meant. Every walked route but the static web app is tried both ways.
+func TestNoVariantOfAServerRouteIsTheDashboard(t *testing.T) {
+	walk := newProcessWalk(t)
+	tried := 0
+	for _, route := range walk.routes {
+		if route == "/" {
+			continue
+		}
+		method, pattern, named := strings.Cut(route, " ")
+		if !named {
+			method, pattern = http.MethodGet, route
+		}
+		var variants []string
+		if !strings.HasSuffix(pattern, "/") {
+			variants = append(variants, method+" "+pattern+"/")
+		}
+		variants = append(variants, method+" "+strings.ToUpper(pattern))
+		for _, variant := range variants {
+			tried++
+			response := walk.send(t, variant, nil)
+			if strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") || response.Code == http.StatusOK {
+				t.Errorf("%s (a variant of %s) answers %d %s %s, want a JSON refusal or 404, not the dashboard", variant, route, response.Code, response.Header().Get("Content-Type"), firstLine(response.Body.String()))
+			}
+		}
+	}
+	if tried < len(walk.routes) {
+		t.Fatalf("tried %d variants of %d routes: the walk tried too few", tried, len(walk.routes))
+	}
+}
+
 // refusedForNoCredential reports whether response is the server turning away a caller for the
 // credential it does not carry: 401 NO_IDENTITY or UNAUTHORIZED, the document socket's plain 401
 // "unauthorized", or one of the three 403s by which a route that takes an agent's bearer alone

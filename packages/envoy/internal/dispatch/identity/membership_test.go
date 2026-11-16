@@ -77,7 +77,7 @@ func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, cla
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
 	flow := oidc.NewCodeFlow(issuer.URL(), "dispatch-client", "dispatch-secret", hostedDomain)
 	issuer.SignInAs(claims)
-	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce", true)
+	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce", oidc.AuthOptions{DomainHint: true})
 	if err != nil {
 		t.Fatalf("AuthURL: %v", err)
 	}

@@ -384,11 +384,13 @@ func mount(ctx *AppContext) (*router, *http.ServeMux, api.Background) {
 
 // authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
 // the request came to (callbackURL), with the Workspace domain named as hd only where the rule
-// asks for it (SignInRule.DomainHint). The sign-in in flight (its state, nonce, the page it returns
-// to and when it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key
-// derived from the current signing key (signOAuthState), and no process keeps it: whichever
-// process holding that key the issuer's redirect reaches completes the sign-in. An issuer not yet
-// discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// asks for it (SignInRule.DomainHint), and Google's account chooser asked for only where the
+// request carries prompt=select_account (selectAccountPrompt), which the link of a refused
+// outside sign-in does. The sign-in in flight (its state, nonce, the page it returns to and when
+// it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key derived from
+// the current signing key (signOAuthState), and no process keeps it: whichever process holding
+// that key the issuer's redirect reaches completes the sign-in. An issuer not yet discovered is
+// answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -404,7 +406,10 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce, r.ctx.SignInRule.DomainHint())
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce, oidc.AuthOptions{
+		DomainHint:    r.ctx.SignInRule.DomainHint(),
+		SelectAccount: req.URL.Query().Get("prompt") == selectAccountPrompt,
+	})
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -484,7 +489,8 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	}
 	if err != nil {
 		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
-		writeSignInRefusedPage(w, person.Email, err)
+		_, outside := r.ctx.SignInRule.(identity.OutsideRule)
+		writeSignInRefusedPage(w, person.Email, err, outside)
 		return
 	}
 	email := person.Email
@@ -679,8 +685,11 @@ func signInUnconfigured(w http.ResponseWriter) {
 // serverRoots are the path roots the server itself answers: an unmatched path under one of them
 // is a real JSON 404, decided before any dashboard lookup, never the SPA shell. "/v1" is
 // reserved because it is the API path typed without its "/api" prefix — an API client's mistake
-// that must be answered as one.
-var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz"}
+// that must be answered as one. "/metrics" and "/livez" are the roots of a route each, so a path
+// below one ("/metrics/") is no dashboard page either. A root matches whatever its case
+// ("/API/V1"), since a path under one that the mux, which compares case, did not route is a
+// client's mistake about a server route and never a dashboard page (TestNoVariantOfAServerRouteIsTheDashboard).
+var serverRoots = []string{"/api", "/v1", "/auth", "/ws", "/healthz", "/livez", "/metrics"}
 
 // unmatchedRoute is the access-log route of a request under serverRoots that no route answers.
 const unmatchedRoute = "unmatched"
@@ -702,7 +711,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 	requestedPath := req.URL.Path
 	// A rooted clean holds no `..`, so every path joined under the dist directory below stays in it.
 	normalized := filepath.Clean("/" + requestedPath)
-	if isReservedPath(normalized, serverRoots) {
+	if isReservedPath(strings.ToLower(normalized), serverRoots) {
 		// An unknown API path writes its access-log line too, so a client calling a route that
 		// does not exist is visible beside the callers of the routes that do.
 		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
@@ -1107,12 +1116,19 @@ func writeCodeError(w http.ResponseWriter, status int, message, code string) {
 	api.WriteJSON(w, status, map[string]string{"error": message, "code": code})
 }
 
+// selectAccountPrompt is the value of /auth/start's prompt query that asks Google for its account
+// chooser (oidc.AuthOptions.SelectAccount): the one the link of a refused outside sign-in carries.
+const selectAccountPrompt = "select_account"
+
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from
 // the issuer where JSON would be unreadable, for a person the issuer vouched for but Dispatch does
 // not admit, with the reason: one outside the group or the domain, an account outside the domain
 // that no project's access list names, or one whose email Google has not verified, each named by
-// email; a Google sign-in that carries no email; or a sign-in that names nobody by email.
-func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
+// email; a Google sign-in that carries no email; or a sign-in that names nobody by email. Under
+// outside sign-in (chooser) its link to sign in with a different account asks Google for its
+// account chooser, since a browser holding one Google session would otherwise be sent straight
+// back with the account just refused; under every other rule the link is as it always was.
+func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error, chooser bool) {
 	message := "This sign-in does not name a person by email. Sign in again, or with a different account."
 	switch {
 	case errors.Is(reason, identity.ErrNotMember):
@@ -1129,14 +1145,18 @@ func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusForbidden)
+	start := "/auth/start"
+	if chooser {
+		start += "?prompt=" + selectAccountPrompt
+	}
 	fmt.Fprintf(w, `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Dispatch: sign-in refused</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem">
 <h1>Sign-in refused</h1>
 <p>%s</p>
-<p><a href="/auth/start">Sign in with a different account</a></p>
+<p><a href="%s">Sign in with a different account</a></p>
 </body></html>
-`, message)
+`, message, start)
 }
 
 func randomToken() (string, error) {

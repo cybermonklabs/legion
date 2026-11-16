@@ -3738,7 +3738,7 @@ the docs site's HTTP API reference is generated from it.
 `--out <path>` writes it to a file and `--check` compares the committed `packages/contracts/schemas/dispatch-openapi.json` with a fresh render, printing a unified diff and exiting 1 when the two differ.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
 The list below is a summary.
-An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
+An unknown path under `/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez` or `/metrics`, in any case (`/API/V1`, `/metrics/`), is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
 /v1/issues","hint":"GET /api/v1, with a credential, lists every route"}`, never the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
 it never reads `index.html` or a non-asset path from there.
@@ -3767,6 +3767,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Start Google sign-in at the sign-in issuer:
   the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and, unless `DISPATCH_SIGNIN_OUTSIDE=1`, the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
+  With `?prompt=select_account`, the link a refused outside sign-in offers, it asks Google for its account chooser too (`prompt=select_account consent`), so a browser holding one Google session can pick another account rather than be sent back with the one just refused.
   The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
