@@ -223,7 +223,9 @@ const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4
  * is disabled for anyone else, with the reason as its title and on the page above them; whether
  * the reader is the owner is `/auth/whoami`'s `login` against the answer's `owner`, read from the
  * identity the shell already holds. A deployment that cannot make a project private refuses the
- * switch (409 PRIVATE_PROJECTS_OFF or PRIVATE_PROJECTS_UNAVAILABLE), and the switch says why.
+ * switch with a 409 (PRIVATE_PROJECTS_OFF, PRIVATE_PROJECT_NOT_PROVISIONED,
+ * PRIVATE_PROJECTS_INCOMPLETE or PRIVATE_PROJECTS_UNAVAILABLE), and the switch shows Dispatch's
+ * own reason beside it.
  */
 export function ProjectAccessPanel({ project }: { project: string }): ReactNode {
   const ids = useId();

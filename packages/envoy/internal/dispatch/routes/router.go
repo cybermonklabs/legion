@@ -156,7 +156,12 @@ type AppContextOptions struct {
 	// the DPoP scheme; nil where no broker is configured. cmd/dispatch builds it
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *brokertoken.Verifier
-	AgentStream  agentstream.Source
+	// PrivateProjects are the keys of the projects the deployment has provisioned as private
+	// (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS), and BusProjects the writer of the private-projects
+	// record. See api.DepsInput.
+	PrivateProjects []string
+	BusProjects     api.BusProjects
+	AgentStream     agentstream.Source
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -248,6 +253,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDCAccounts:           opts.OIDCAccounts,
 		AccessAccounts:         opts.AccessAccounts,
 		BrokerTokens:           opts.BrokerTokens,
+		PrivateProjects:        opts.PrivateProjects,
+		BusProjects:            opts.BusProjects,
 		AgentStream:            opts.AgentStream,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,

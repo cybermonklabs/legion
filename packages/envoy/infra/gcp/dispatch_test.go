@@ -2723,18 +2723,19 @@ func TestDispatchRendersTheProjectOwnerFallbackOnlyWhenSet(t *testing.T) {
 	}
 }
 
-// privateProjects renders DISPATCH_PRIVATE_PROJECTS=1 when it is true, and nothing at all when it
-// is false or unset, so a stack that never sets it, or sets it false, renders the pod it always
-// had.
-func TestDispatchRendersPrivateProjectsOnlyWhenTrue(t *testing.T) {
+// privateProjects is the keys of the projects whose private namespace, stores and grants the
+// deployment has provisioned. It renders DISPATCH_PRIVATE_PROJECTS sorted and each key once, and
+// nothing at all when it is empty or unset, so a stack that never sets it renders the pod it always
+// had. A key that is not a project key is an input error naming it, caught at preview.
+func TestDispatchRendersItsPrivateProjects(t *testing.T) {
 	for _, row := range []struct {
 		name  string
-		value *bool
+		value []string
 		want  string
 	}{
 		{name: "unset"},
-		{name: "false", value: pulumi.BoolRef(false)},
-		{name: "true", value: pulumi.BoolRef(true), want: "1"},
+		{name: "empty", value: []string{}},
+		{name: "a list", value: []string{"PRIV", "ALPHA", "PRIV"}, want: "ALPHA,PRIV"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			args := dispatchArgs()
@@ -2743,6 +2744,14 @@ func TestDispatchRendersPrivateProjectsOnlyWhenTrue(t *testing.T) {
 			require.NoError(t, err)
 			env := containerEnv(t, podContainer(t, deploymentPodTemplate(t, m, "example-dispatch"), "envoy-dispatch"))
 			requireOptionalEnv(t, env, "DISPATCH_PRIVATE_PROJECTS", row.want)
+		})
+	}
+	for _, key := range []string{"1", "priv"} {
+		t.Run("refuses "+key, func(t *testing.T) {
+			args := dispatchArgs()
+			args.PrivateProjects = []string{"ALPHA", key}
+			_, err := runDispatch(t, args, true)
+			require.ErrorContains(t, err, fmt.Sprintf("privateProjects[1] %q", key))
 		})
 	}
 }

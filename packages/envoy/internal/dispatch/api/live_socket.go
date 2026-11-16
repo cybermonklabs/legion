@@ -15,6 +15,7 @@ import (
 	gws "github.com/gorilla/websocket"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -357,7 +358,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	// a count taken after the upgrade could come after that wait began.
 	defer s.liveSockets.serve()()
 	upgrader := gws.Upgrader{EnableCompression: true, ReadBufferSize: liveSocketReadBuffer}
-	conn, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, access.UpgradeHeader(w))
 	if err != nil {
 		return // the upgrader has answered the request
 	}

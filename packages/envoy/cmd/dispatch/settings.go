@@ -43,7 +43,7 @@ type setting struct {
 // server generates text with, the dashboard, and local and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
-		Description: "Postgres connection string. The server migrates the database before serving; `census`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-session-projects`, `scrub-access-events`, `backfill-files`, `rebuild-refs`, `stored-order` and `project-owner` read it too. A `pool_max_conns` parameter is refused."},
+		Description: "Postgres connection string. The server migrates the database before serving; `census`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-session-projects`, `scrub-access-events`, `backfill-files`, `rebuild-refs`, `stored-order`, `project-owner` and `project-visibility` read it too. A `pool_max_conns` parameter is refused."},
 	{Name: "DISPATCH_FILE_STORE_BUCKET", Required: "no",
 		Description: "Bucket uploaded files (images, attachments) are stored in, keyed by their SHA-256. `gs://<bucket>` is a Google Cloud Storage bucket, reached with Application Default Credentials (on GKE the pod's Workload Identity principal), which needs `storage.objects.create` and `storage.objects.get` on it and nothing more; any other value is an S3 bucket's name, and the AWS SDK finds its region and credentials itself (`AWS_*`, the shared config files, the task role). `backfill-files` reads it too and opens the same store. Unset, every upload's bytes stay in Postgres, as before the bucket existed."},
 	{Name: "DISPATCH_AGENT_TOKEN", Required: "yes",
@@ -140,6 +140,8 @@ var settings = []setting{
 		Description: "Comma-separated Kubernetes service-account subjects, each `system:serviceaccount:<namespace>:<name>`, whose projected tokens Dispatch admits: a verified token of any other account is refused `401 SERVICE_ACCOUNT_NOT_ADMITTED` before anything is read or written. It narrows the verifier `DISPATCH_OIDC_AUDIENCE` turns on, so it is refused without that; an entry that is empty or not such a subject refuses startup."},
 	{Name: "DISPATCH_ACCESS_ACCOUNTS", Default: "no account reads the membership answer", Required: "no",
 		Description: "Comma-separated service-account subjects, in the form `DISPATCH_OIDC_ACCOUNTS` takes, that may read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's in production; every other caller is refused `403 ACCESS_ACCOUNT_REQUIRED` there. Refused without `DISPATCH_OIDC_AUDIENCE`, and an account that a set `DISPATCH_OIDC_ACCOUNTS` does not list refuses startup."},
+	{Name: "DISPATCH_PRIVATE_PROJECTS", Default: "no project can be made private", Required: "no",
+		Description: "Comma-separated keys of the projects this deployment has provisioned as private: their namespaces, stores and grants exist (agent-infra's legion.PrivateProjects). Only these projects can be made private. A project the database holds private that this list does not name stays private, refuses every change of its visibility but its owner's switch to public, and is reported in the log and in /healthz. Unset or empty: no project can be made private. An entry that is not a project key, the old value `1` included, refuses startup."},
 	{Name: "DISPATCH_AGENT_SECRETS_URL", Required: "no",
 		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",

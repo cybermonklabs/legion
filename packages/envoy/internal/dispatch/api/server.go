@@ -134,6 +134,16 @@ type Deps struct {
 	// /api/v1/access/projects/{key} and GET /api/v1/access/person; cmd/dispatch:
 	// DISPATCH_ACCESS_ACCOUNTS). Every other caller is 403 ACCESS_ACCOUNT_REQUIRED there.
 	AccessAccounts []string
+	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
+	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made
+	// private (privateProjectProvisioned). Empty refuses every switch to private 409
+	// PRIVATE_PROJECTS_OFF before anything is read, as every deployment before the setting did.
+	PrivateProjects []string
+	// BusProjects writes the private-projects record the listeners hold a private project's
+	// messages back by (K7): whatever busprojects.New answers, a nil *busprojects.Writer included,
+	// which answers busprojects.ErrNoBus. A nil interface, a server built with no writer at all,
+	// answers as ErrNoBus does: a project cannot be made private (409 PRIVATE_PROJECTS_UNAVAILABLE).
+	BusProjects BusProjects
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -248,6 +258,9 @@ type DepsInput struct {
 	// has checked each subject's form and that every access account is also admitted.
 	OIDCAccounts   []string
 	AccessAccounts []string
+	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
+	PrivateProjects []string
+	BusProjects     BusProjects
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *brokertoken.Verifier
@@ -361,6 +374,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDC:                   input.OIDC,
 		OIDCAccounts:           input.OIDCAccounts,
 		AccessAccounts:         input.AccessAccounts,
+		PrivateProjects:        input.PrivateProjects,
+		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentSecrets:           agentSecretsClient,

@@ -242,9 +242,16 @@ func socketRoom(r *http.Request) string {
 // alone - another transport, or another handler that reaches a room name by a path of its own,
 // opens a room under whatever name it passes, and no code here can stop that.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var line []byte
 	if s.hostname != "" {
 		w.Header().Set(ProcessHeader, s.hostname)
-		w = &processHeaderWriter{ResponseWriter: w, line: []byte(ProcessHeader + ": " + s.hostname + "\r\n")}
+		line = []byte(ProcessHeader + ": " + s.hostname + "\r\n")
+	}
+	for _, value := range w.Header().Values(access.PrivateProjectsHeader) {
+		line = append(line, access.PrivateProjectsHeader+": "+value+"\r\n"...)
+	}
+	if line != nil {
+		w = &processHeaderWriter{ResponseWriter: w, line: line}
 	}
 	room := socketRoom(r)
 	actor, err := s.requestActor(r)
@@ -358,12 +365,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // opens sockets through a load balancer can record which process each one reached (plan D10).
 const ProcessHeader = "X-Dispatch-Process"
 
-// processHeaderWriter puts its line, ProcessHeader's, on a websocket upgrade made through it. The
-// upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes the
-// connection and writes its 101 answer on it in one write, reading no header of the writer's, and
-// ygo passes it none of its own; so the connection this Hijack hands out adds the line to that
-// first write, right after its status line. Every other answer carries the header the ordinary
-// way (ServeHTTP sets it).
+// processHeaderWriter puts its line - ProcessHeader's, and the Dispatch-Private-Projects value the
+// process's middleware set (access.PrivateProjectsHeader) - on a websocket upgrade made through it.
+// The upgrader (gorilla/websocket, which ygo's ServeHTTP and refuseOutsideSchema both use) takes
+// the connection and writes its 101 answer on it in one write, reading no header of the writer's,
+// and ygo passes it none of its own; so the connection this Hijack hands out adds the line to that
+// first write, right after its status line. Every other answer carries the headers the ordinary
+// way (ServeHTTP and the middleware set them).
 type processHeaderWriter struct {
 	http.ResponseWriter
 	line []byte

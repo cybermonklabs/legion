@@ -60,7 +60,7 @@ func TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners(t *testing.T) {
 		leases := sweepLeases(t, &store.Store{Pool: pool})
 		recorders = append(recorders, recorder)
 		runners = append(runners, func(ctx context.Context) {
-			RunMaintenanceSweep(ctx, pool, maintenanceTestInterval, leases, resume)
+			RunMaintenanceSweep(ctx, pool, maintenanceTestInterval, leases, resume, nil)
 		})
 	}
 

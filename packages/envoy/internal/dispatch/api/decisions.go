@@ -87,18 +87,9 @@ func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	// reader is nil for a caller that did not ask, and every call on it then does nothing.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	answer := issueDecisions{OpenQuestions: []issueAskRow{}, Decisions: []model.Decision{}}
-	// An issue who does not see holds no decision, as a key no issue carries holds none: the
-	// view is a read, so both answer the empty view rather than a refusal.
-	seen, err := s.issueSeen(r.Context(), who, key)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if !seen {
-		reader.resolve()
-		WriteJSON(w, http.StatusOK, answer)
-		return
-	}
+	// An issue who does not see holds no decision, as a key no issue carries holds none: both
+	// document loaders below bind who's project clause, so a hidden issue's spec and decisions
+	// document read as missing and the view is the empty one, a read rather than a refusal.
 	spec, specFound, err := s.issueSpecDocument(r.Context(), who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)

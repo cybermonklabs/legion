@@ -507,14 +507,24 @@ test("the owner makes the project private with the switch, and the switch reads 
   }
 });
 
-// A deployment that cannot make a project private refuses the switch: with the setting off (409
-// PRIVATE_PROJECTS_OFF), or with the hub refusing the private-projects record (409
-// PRIVATE_PROJECTS_UNAVAILABLE). The switch shows Dispatch's own reason beside it, and stays
-// public.
+// A deployment that cannot make a project private refuses the switch: with no project provisioned
+// (409 PRIVATE_PROJECTS_OFF), with this project not among those it provisioned (409
+// PRIVATE_PROJECT_NOT_PROVISIONED), with a store that cannot hold it private yet (409
+// PRIVATE_PROJECTS_INCOMPLETE, naming the repair command), or with the hub refusing the
+// private-projects record (409 PRIVATE_PROJECTS_UNAVAILABLE). The switch shows Dispatch's own
+// reason beside it, and stays public.
 for (const [code, reason] of [
   [
     "PRIVATE_PROJECTS_OFF",
     "this deployment cannot make a project private yet: nothing was changed",
+  ],
+  [
+    "PRIVATE_PROJECT_NOT_PROVISIONED",
+    "CORE is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (agent-infra's legion.PrivateProjects)",
+  ],
+  [
+    "PRIVATE_PROJECTS_INCOMPLETE",
+    "the project stays public until the store can hold it private: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events",
   ],
   [
     "PRIVATE_PROJECTS_UNAVAILABLE",

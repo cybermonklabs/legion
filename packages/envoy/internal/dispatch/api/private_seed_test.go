@@ -83,11 +83,16 @@ func seedPrivateProject(t *testing.T) privateSeed {
 
 // seedPrivateProjectWith is seedPrivateProject on a test server built from options. The server
 // takes broker-issued tokens from a stub broker, so a seed's session can act under a credential
-// that proves it (asSession).
+// that proves it (asSession), and, unless options names one, writes the private-projects record
+// through acceptingBus, as a deployment that holds a private project has a hub that takes it: a
+// mapping into PRIV writes that record before it commits.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
 	broker := brokertokentest.NewStubBroker(t)
 	options.brokerTokens = stubBrokerTokens(t, broker)
+	if options.busProjects == nil {
+		options.busProjects = acceptingBus{}
+	}
 	handler, database, deps, served := newRegisteredTestServer(t, options)
 	seed := privateSeed{
 		handler: handler, database: database, deps: deps, server: served,
@@ -133,6 +138,11 @@ func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed
 	seed.makePrivate(t, seedPrivate)
 	return seed
 }
+
+// acceptingBus is a writer of the private-projects record that takes every write.
+type acceptingBus struct{}
+
+func (acceptingBus) EnsurePrivate(context.Context, access.Querier, string) error { return nil }
 
 // makePrivate makes project key private as its owner carol, through the write the visibility
 // route makes.

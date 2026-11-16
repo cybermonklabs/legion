@@ -15,14 +15,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// TestNoWriteReachesAHiddenObject walks every write row whose pattern names an object ({key}, {id}
-// or {session_id}), whatever its write class, on verification v16's seed (seedPrivateProject). Each
-// row is called twice as one caller: once naming PRIV's object of each kind its Probe names, and
-// once naming an object nobody holds. The two answers must be the same status and the same bytes
-// (the second's ids written as the first's), and neither call may change a row of any table: the
-// event log, the graph's tuples and the object itself among them. The call naming nothing must be
-// answered as the row answers a missing object, so a body the row refuses before its read cannot
-// pass the row.
+// TestNoWriteReachesAHiddenObject walks every write row whose pattern names an object ({key}, {id},
+// {session_id}, or a mapping's {repo}), whatever its write class, on verification v16's seed
+// (seedPrivateProject). Each row is called twice as one caller: once naming PRIV's object of each
+// kind its Probe names, and once naming an object nobody holds. The two answers must be the same
+// status and the same bytes (the second's ids written as the first's), and neither call may change
+// a row of any table: the event log, the graph's tuples and the object itself among them. The call
+// naming nothing must be answered as the row answers a missing object, so a body the row refuses
+// before its read cannot pass the row.
 //
 // Four callers walk it. alice, at a browser, is an open viewer who sees PUB and no object of PRIV,
 // and every session. alice's token that lists PRIV sees no project at all, since alice does not see
@@ -75,6 +75,23 @@ func TestNoWriteReachesAHiddenObject(t *testing.T) {
 			t.Errorf("carol: DELETE %s = %d %s, want 204: the walk's listener does not hold s1 subscribed to PRIV, so its subscriber rows prove nothing",
 				path, removed.Code, strings.TrimSpace(removed.Body.String()))
 		}
+	}
+
+	// The {owner}/{repo} rows, as alice, with PRIV mapping acme/p_x: a mapping of a project she
+	// cannot see is neither removed, moved nor named, and a target project she cannot see is
+	// answered as a key no project holds. Each pair answers alike and writes nothing.
+	const mappings = "/api/v1/settings/repo-projects/"
+	for _, pair := range []struct {
+		name, method, hiddenPath, missingPath string
+		hiddenBody, missingBody               any
+	}{
+		{"DELETE a mapping of PRIV's", http.MethodDelete, mappings + "acme/p_x", mappings + "acme/nobody", nil, nil},
+		{"PUT over a mapping of PRIV's", http.MethodPut, mappings + "acme/p_x", mappings + "acme/p.x",
+			map[string]string{"project": seedPublic}, map[string]string{"project": seedPublic}},
+		{"PUT into PRIV", http.MethodPut, mappings + "acme/new", mappings + "acme/new",
+			map[string]string{"project": seedPrivate}, map[string]string{"project": "NOPE"}},
+	} {
+		walk.callPair(t, callerAlice, pair.name, pair.method, pair.hiddenPath, pair.missingPath, pair.hiddenBody, pair.missingBody, nil, false)
 	}
 }
 
@@ -331,6 +348,10 @@ var missingAnswers = map[string]struct {
 		"un-snoozing an ask the caller never snoozed leaves the state asked for, whatever the id names (idRoutes: notFoundNone)"},
 	"PUT /api/v1/me/threads/{id}/read": {http.StatusNoContent, "",
 		"the caller's own read mark, kept under any thread id and reading no message (idRoutes)"},
+	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {http.StatusConflict, codeRepositoryLaneShared,
+		"a PUT over a mapping of a project the caller cannot see answers as a PUT of a neighbour on its GitHub subject lane, the lane refusal's hidden form (refuseHiddenMapping)"},
+	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {http.StatusNoContent, "",
+		"removing a mapping of a project the caller cannot see answers as removing one no repository has, writing nothing (refuseHiddenMapping)"},
 	"POST /api/v1/issues/{key}/results": {http.StatusBadRequest, "UNKNOWN_CHECK",
 		"a result names a check of its issue's Verification document, and an issue the caller cannot read holds none"},
 }
@@ -348,7 +369,8 @@ var refusedAtABrowser = map[string]string{
 func objectWriteRows() []string {
 	var rows []string
 	for name := range writeClasses {
-		if strings.Contains(name, "{key}") || strings.Contains(name, "{id}") || strings.Contains(name, "{session_id}") {
+		if strings.Contains(name, "{key}") || strings.Contains(name, "{id}") || strings.Contains(name, "{session_id}") ||
+			strings.Contains(name, "{repo}") {
 			rows = append(rows, name)
 		}
 	}
@@ -411,15 +433,16 @@ func writeProbeProblems(rows []string) []string {
 }
 
 // hiddenFrom reports whether the walk names a hidden object of kind in place of one nobody holds,
-// for an open caller or not: an object of a project is hidden from every caller of the walk, a
-// personal token is someone else's, and a row of the deployment and a session that acted in PUB
-// alone are hidden from a caller that is not open. Every other kind is part of an object the path
-// already names - a document's slug, a version, a block, an attempt, a phase, a person or group on
-// a list, a repository, a pause point - and is PRIV's own in both calls.
+// for an open caller or not: an object of a project, a repository's mapping among them, is hidden
+// from every caller of the walk, a personal token is someone else's, and a row of the deployment
+// and a session that acted in PUB alone are hidden from a caller that is not open. Every other
+// kind is part of an object the path already names - a document's slug, a version, a block, an
+// attempt, a phase, a person or group on a list, a project's repository, a pause point - and is
+// PRIV's own in both calls.
 func hiddenFrom(object probeObject, open bool) bool {
 	switch object {
 	case probeProject, probeIssue, probeDocument, probeAsk, probeComment, probeMessage, probeThread,
-		probeResult, probeAgentToken:
+		probeResult, probeAgentToken, probeMappedRepository:
 		return true
 	case probeSession, probePriority, probeSessionGroup, probeCredentialRequest, probeCredentialGrant,
 		probeMachineLogin, probeSignin:
@@ -561,6 +584,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
 		"name": "PRIV's sessions", "sessions": []string{"s1"},
 	}))
+	// A repository PRIV maps, which a mapping write's {repo} names.
+	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate})
 	// s-pub acts in PUB alone, through the shared token, which sees PUB: a session hidden from
 	// every caller that sees PRIV alone.
 	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
@@ -606,6 +631,8 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		probeCredentialGrant:   nobody(uuid.NewString()),
 		probeMachineLogin:      nobody(uuid.NewString()),
 		probeSignin:            nobody(uuid.NewString()),
+		// acme/p.x is on acme/p_x's GitHub subject lane, and no mapping holds it.
+		probeMappedRepository: {hidden: "p_x", missing: "p.x"},
 	}}
 	rows, err := seed.database.Pool.Query(context.Background(), `
 		select format('%I.%I', schemaname, tablename) from pg_tables
@@ -749,22 +776,23 @@ func (w hiddenWriteSeed) callPair(t *testing.T, caller privateCaller, name, meth
 }
 
 // answersMissing reports whether a call naming no object was answered as the row answers a missing
-// one: 404, the row's own answer (missingAnswers), the refusal of a person at a browser that comes
-// before any read (refusedAtABrowser), or the deployment's refusal of a caller that is not open.
+// one: the deployment's refusal of a caller that is not open, which comes before the row's
+// handler; else 404, the row's own answer (missingAnswers), or the refusal of a person at a
+// browser that comes before any read (refusedAtABrowser).
 func answersMissing(name string, open bool, answer *httptest.ResponseRecorder) bool {
 	var refusal refusalAnswer
 	_ = json.Unmarshal(answer.Body.Bytes(), &refusal)
+	if !open && writeClasses[name] == scopeDeployment {
+		return answer.Code == http.StatusForbidden && refusal.Code == codeProjectScopeDeployment
+	}
 	if declared, ok := missingAnswers[name]; ok {
 		return answer.Code == declared.status && refusal.Code == declared.code
 	}
 	switch {
 	case answer.Code == http.StatusNotFound:
 		return true
-	case answer.Code != http.StatusForbidden:
-		return false
-	case open:
+	case answer.Code == http.StatusForbidden && open:
 		return refusedAtABrowser[name] != "" && refusal.Code == refusedAtABrowser[name]
-	default:
-		return writeClasses[name] == scopeDeployment && refusal.Code == codeProjectScopeDeployment
 	}
+	return false
 }

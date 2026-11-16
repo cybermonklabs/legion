@@ -12,6 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -20,8 +22,11 @@ import (
 // owner, its public or private setting, and the people and groups its access list names. Every
 // route below needs the person scope, because each names or acts as a person; each write is the
 // owner's alone, checked against projects.owner read in the write's own transaction, and appends
-// project.access_changed, which the route publishes once the transaction commits. A project
-// cannot be made private in this release (409 PRIVATE_PROJECTS_OFF).
+// project.access_changed, which the route publishes once the transaction commits. A project is
+// made private only where the deployment names it among the projects it has provisioned as
+// private (Deps.PrivateProjects: else 409 PRIVATE_PROJECTS_OFF for a deployment that names none,
+// and 409 PRIVATE_PROJECT_NOT_PROVISIONED for one that names others) and the hub takes its
+// private-projects record (K7, Deps.BusProjects, else 409 PRIVATE_PROJECTS_UNAVAILABLE).
 
 // projectAccessInput is the body of PATCH /api/v1/projects/{key}/access.
 type projectAccessInput struct {
@@ -32,6 +37,69 @@ type projectAccessInput struct {
 	// SlackChannels replaces the Slack channel ids the project's credentials may post to, at
 	// most 16, each `C…` or `G…`; [] names none.
 	SlackChannels *[]string `json:"slack_channels,omitempty"`
+}
+
+// BusProjects is K7's writer of the private-projects record (busprojects.Writer): one key per
+// private project in the hub's envoy_private_projects bucket, which every listener reads to hold
+// that project's messages back from a token that does not list it.
+type BusProjects interface {
+	// EnsurePrivate puts project's key, reading what it needs through q, the visibility write's
+	// own transaction, since the pool refuses that write's request a second connection
+	// (store.ErrNestedAcquire). The write calls it last before its commit, and any error refuses
+	// the write.
+	EnsurePrivate(ctx context.Context, q access.Querier, project string) error
+}
+
+// privateProjectsBucket is the hub's key-value bucket the private-projects record is kept in, the
+// one a refusal to make a project private names.
+const privateProjectsBucket = "envoy_private_projects"
+
+// errPrivateProjectsUnavailable is a write that would make a project private while its
+// private-projects record cannot be written: 409 PRIVATE_PROJECTS_UNAVAILABLE.
+var errPrivateProjectsUnavailable = errors.New("the project stays public: every listener holds a private project's messages back by its key in the hub's " +
+	privateProjectsBucket + " bucket, and that key could not be written")
+
+// errPrivateProjectNotProvisioned is a switch to private of a project the deployment does not name
+// among those it has provisioned as private: 409 PRIVATE_PROJECT_NOT_PROVISIONED, wrapped after the
+// project's key.
+var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (agent-infra's legion.PrivateProjects)")
+
+// errPrivateProjectsIncomplete is a switch to private while the store cannot hold the project
+// private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and the command that repairs it.
+var errPrivateProjectsIncomplete = errors.New("the project stays public until the store can hold it private")
+
+// privateProjectIncomplete answers, read in the switch's own transaction q, why project key cannot
+// be made private yet, as errPrivateProjectsIncomplete: a row of key's whose node does not name it
+// (graphcensus.ProjectCompleteFor), which its reads would answer wrongly, the sessions' projects
+// not yet filled (session_projects_filled), or the access events not yet scrubbed
+// (access_events_scrubbed), whose older payloads may still carry a project's access list. It
+// answers nil when none holds.
+func privateProjectIncomplete(ctx context.Context, q graphstore.Queryer, key string) error {
+	incomplete, err := graphcensus.ProjectCompleteFor(ctx, q, key)
+	if err != nil {
+		return err
+	}
+	if len(incomplete) > 0 {
+		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(incomplete, "of "+key))
+	}
+	if err := sessionProjectsFilled(ctx, q); err != nil {
+		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, err)
+	}
+	var scrubbed bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from access_events_scrubbed)`).Scan(&scrubbed); err != nil {
+		return err
+	}
+	if !scrubbed {
+		return fmt.Errorf("%w: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events", errPrivateProjectsIncomplete)
+	}
+	return nil
+}
+
+// privateProjectProvisioned reports whether the deployment names project key among the projects it
+// has provisioned as private, the only ones a switch to private may name.
+func (s *server) privateProjectProvisioned(key string) bool {
+	_, found := slices.BinarySearch(s.deps.PrivateProjects, key)
+	return found
 }
 
 // getProjectAccess answers who may see project key and who changes that, as the caller reads it:
@@ -59,7 +127,16 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 
 // patchProjectAccess gives the project to another full member, at any time, sets its visibility,
 // and names its Slack channels. Only its owner calls it; any of the three fields may be left out,
-// and a body naming none is refused.
+// and a body naming none is refused. A switch to private is refused before anything is read where the
+// deployment names no private project, with the bytes it always answered; once the owner is
+// known and before anything is written, for a project the deployment does not name (a private one
+// whose key left the list included), and for one whose rows or sessions the store has not filled;
+// and, once the project reads private in the write and before any bus call, while one of its
+// repositories shares a GitHub subject lane with another project's (refuseSharedLane).
+// Otherwise its private-projects record is written through the transaction as its last step, so a
+// refused record leaves the project as it was. A switch to public is refused by none of them. The
+// route makes no other bus call: the writer's own pass deletes the key of a project made public,
+// or of one whose commit failed after its record was written (busprojects.Writer.Run).
 func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 	var input projectAccessInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -70,16 +147,28 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "PROJECT_ACCESS_INPUT", http.StatusBadRequest, "name the owner, the visibility, the Slack channels or several of them")
 		return
 	}
-	if input.Visibility != nil && *input.Visibility == model.ProjectPrivate {
+	visibility := ""
+	if input.Visibility != nil {
+		visibility = *input.Visibility
+	}
+	if visibility == model.ProjectPrivate && len(s.deps.PrivateProjects) == 0 {
 		writeError(w, "PRIVATE_PROJECTS_OFF", http.StatusConflict,
 			"this deployment cannot make a project private yet: nothing was changed")
 		return
 	}
-	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		var appended []model.Event
 		var answer model.ProjectAccess
+		if visibility == model.ProjectPrivate {
+			if !s.privateProjectProvisioned(key) {
+				return model.ProjectAccess{}, nil, fmt.Errorf("%s %w", key, errPrivateProjectNotProvisioned)
+			}
+			if err := privateProjectIncomplete(ctx, tx, key); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+		}
 		if input.Visibility != nil {
-			written, event, err := access.SetVisibility(ctx, tx, s.deps.Events, key, *input.Visibility, by)
+			written, event, err := access.SetVisibility(ctx, tx, s.deps.Events, key, visibility, by)
 			if err != nil {
 				return model.ProjectAccess{}, nil, err
 			}
@@ -108,8 +197,31 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 			}
 			answer, appended = written, append(appended, event)
 		}
+		if visibility == model.ProjectPrivate {
+			if err := refuseSharedLane(ctx, tx, viewer, func(mapping repoProjectRow) bool { return mapping.project == key }); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+			if err := ensurePrivate(ctx, tx, s.deps.BusProjects, key); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+		}
 		return answer, appended, nil
 	})
+}
+
+// ensurePrivate writes project key's private-projects record through bus and the write's
+// transaction tx, the write's last step before its commit. It answers
+// errPrivateProjectsUnavailable where it cannot: a deployment with no bus, as busprojects.ErrNoBus
+// answers it, or a hub that refused the write, as a hub without its auth service refuses every
+// one.
+func ensurePrivate(ctx context.Context, tx pgx.Tx, bus BusProjects, key string) error {
+	if bus == nil {
+		return fmt.Errorf("%w: this deployment has no bus to write it to", errPrivateProjectsUnavailable)
+	}
+	if err := bus.EnsurePrivate(ctx, tx, key); err != nil {
+		return fmt.Errorf("%w: %w", errPrivateProjectsUnavailable, err)
+	}
+	return nil
 }
 
 // principalWrite is one of access.AddPrincipal and access.RemovePrincipal.
@@ -142,7 +254,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 	if kind == access.PrincipalGroup {
 		group = strings.TrimSpace(principal)
 	}
-	s.ownerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error) {
+	s.ownerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
 		answer, event, err := write(ctx, tx, s.deps.Events, key, kind, principal, by)
 		if err != nil {
 			return model.ProjectAccess{}, nil, err
@@ -156,7 +268,9 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // locks access.LockForAccessWrite takes in the one order every access write takes them (group,
 // the group the write names, or "" for none), so an owner change committed meanwhile is read
 // rather than raced and a delete of the group is ordered against the write. It publishes what the
-// write appended once it commits, and answers the project's access as the write left it.
+// write appended once it commits, and answers the project's access as the write left it. The
+// write is handed the owner's viewer, which a refusal it makes reads to name only what the owner
+// sees.
 //
 // The caller's viewer is read first: a project the caller does not see answers 404
 // PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
@@ -164,7 +278,7 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
 // to anyone who guessed its key.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
-	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error)) {
+	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
@@ -194,7 +308,7 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 			"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
 		return
 	}
-	answer, appended, err := write(r.Context(), tx, key, actor)
+	answer, appended, err := write(r.Context(), tx, key, actor, who.Viewer)
 	if err != nil {
 		s.writeAccessError(w, err)
 		return
@@ -228,6 +342,9 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrGroupMemberRestricted, "GROUP_MEMBER_RESTRICTED", http.StatusBadRequest},
 		{access.ErrPrincipalInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{access.ErrVisibilityInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
+		{errPrivateProjectsUnavailable, "PRIVATE_PROJECTS_UNAVAILABLE", http.StatusConflict},
+		{errPrivateProjectNotProvisioned, "PRIVATE_PROJECT_NOT_PROVISIONED", http.StatusConflict},
+		{errPrivateProjectsIncomplete, "PRIVATE_PROJECTS_INCOMPLETE", http.StatusConflict},
 		{access.ErrListFull, "ACCESS_LIST_FULL", http.StatusConflict},
 		{access.ErrGroupFull, "GROUP_FULL", http.StatusConflict},
 		{access.ErrSlackChannelInput, "INVALID_SLACK_CHANNEL", http.StatusBadRequest},

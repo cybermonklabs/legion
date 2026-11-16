@@ -101,6 +101,20 @@ func Patterns(mux *http.ServeMux) []string {
 	return patterns
 }
 
+// AllPatterns answers every pattern Handle mounted on any mux of this process, each once, sorted:
+// the router's own routes, both sockets, and the process's probes alike, which a walk over every
+// route the process serves requests.
+func AllPatterns() []string {
+	mountedMu.Lock()
+	var patterns []string
+	for _, mux := range mounted {
+		patterns = append(patterns, mux...)
+	}
+	mountedMu.Unlock()
+	slices.Sort(patterns)
+	return slices.Compact(patterns)
+}
+
 // recordedMuxes is how many muxes the record holds patterns of.
 func recordedMuxes() int {
 	mountedMu.Lock()

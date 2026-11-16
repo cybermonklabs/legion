@@ -172,10 +172,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// session's token, whose person may write wherever they may, and the token of a machine
 	// naming a service and no person, which its fleet entry holds to no project either. The one
 	// project is the credential's list, which the one rule of what a caller sees reads
-	// (internal/dispatch/access); Actor.Project carries it beside the list, deprecated, until
-	// every reader of it reads the list.
+	// (internal/dispatch/access).
 	if caller.Project != "" {
-		actor.Project = &caller.Project
 		actor.Credential.Projects = []string{caller.Project}
 	}
 	// The writer the line names: the person, or the service for a token that names none, under

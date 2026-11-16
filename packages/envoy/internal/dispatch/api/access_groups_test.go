@@ -10,7 +10,8 @@ import (
 )
 
 // TestAGroupOnlyItsOwnerEdits: the first write of a group makes it and its writer owns it; after
-// that only the owner writes it, gives it to another full member, or deletes it.
+// that only the owner writes it, gives it to another full member, or deletes it. A restricted
+// member makes none: 403 RESTRICTED_MEMBER, the refusal of a deployment write (withinProjectScope).
 func TestAGroupOnlyItsOwnerEdits(t *testing.T) {
 	handler, database := newAccessServer(t)
 	made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice")

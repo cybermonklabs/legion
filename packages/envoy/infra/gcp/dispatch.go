@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
@@ -238,10 +239,11 @@ type DispatchArgs struct {
 	// member, whom Dispatch makes, at boot, the owner of every project the migration left without
 	// one. Unset renders nothing.
 	ProjectOwnerFallback string `pulumi:"projectOwnerFallback,optional"`
-	// PrivateProjects true renders DISPATCH_PRIVATE_PROJECTS=1; false or unset renders nothing.
-	// No envoy-dispatch reads the setting yet, so true makes no project private, while the stack
-	// would say it had: leave it unset.
-	PrivateProjects *bool `pulumi:"privateProjects,optional"`
+	// PrivateProjects are the keys of the projects whose private namespace, stores and grants the
+	// deployment has provisioned (agent-infra passes legion.PrivateProjects); only these can be
+	// made private. It renders DISPATCH_PRIVATE_PROJECTS, sorted and each key once; empty or unset
+	// renders nothing. A key that is not a project key is an input error naming it.
+	PrivateProjects []string `pulumi:"privateProjects,optional"`
 
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
@@ -575,7 +577,7 @@ type Dispatch struct {
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here. oidcAccounts and accessAccounts are set only beside oidcAudience, and
-// projectOwnerFallback "" and privateProjects false render nothing.
+// projectOwnerFallback "" and an empty privateProjects render nothing.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -591,7 +593,7 @@ type dispatchSettings struct {
 	oidcAudience, oidcIssuer                    string
 	oidcAccounts, accessAccounts                []string
 	projectOwnerFallback                        string
-	privateProjects                             bool
+	privateProjects                             []string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -906,7 +908,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"oidcAccounts", len(args.OidcAccounts) > 0},
 		{"accessAccounts", len(args.AccessAccounts) > 0},
 		{"projectOwnerFallback", args.ProjectOwnerFallback != ""},
-		{"privateProjects", args.PrivateProjects != nil},
+		{"privateProjects", len(args.PrivateProjects) > 0},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1323,7 +1325,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.oidcAccounts = args.OidcAccounts
 	s.accessAccounts = args.AccessAccounts
 	s.projectOwnerFallback = args.ProjectOwnerFallback
-	s.privateProjects = args.PrivateProjects != nil && *args.PrivateProjects
+	if s.privateProjects, err = dispatchPrivateProjects(args.PrivateProjects); err != nil {
+		return dispatchSettings{}, err
+	}
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName
@@ -1407,6 +1411,21 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		}
 	}
 	return s, nil
+}
+
+// projectKeyRule is a project key as Dispatch spells one (contracts.ProjectKeyPattern).
+var projectKeyRule = regexp.MustCompile(contracts.ProjectKeyPattern)
+
+// dispatchPrivateProjects is privateProjects as DISPATCH_PRIVATE_PROJECTS renders it: sorted and
+// each key once. A key that is not a project key is an input error naming it, raised at preview,
+// since Dispatch refuses to start on it.
+func dispatchPrivateProjects(keys []string) ([]string, error) {
+	for i, key := range keys {
+		if !projectKeyRule.MatchString(key) {
+			return nil, core.InputErrorf("privateProjects", "privateProjects[%d] %q is not a project key: %s", i, key, contracts.ProjectKeyRule)
+		}
+	}
+	return slices.Compact(slices.Sorted(slices.Values(keys))), nil
 }
 
 // dnsLabel reports whether value is a DNS-1123 label: namespaceRule's shape, at most 63 characters.

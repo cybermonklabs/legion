@@ -1118,10 +1118,13 @@ account reads the answer. It is refused without `oidcAudience`, as `oidcIssuer` 
 full member, whom Dispatch makes, at boot, the owner of every project the migration left without
 one. Unset, nothing renders.
 
-`privateProjects`, `false` by default, renders `DISPATCH_PRIVATE_PROJECTS=1` when it is `true`;
-`false` or unset renders nothing, so the pod is the one it always was. No `envoy-dispatch` reads
-the setting yet, so setting it `true` makes no project private, while the stack would say it had:
-leave it unset.
+`privateProjects` (a list of project keys) is the keys of the projects whose private namespace,
+stores and grants the deployment has provisioned (agent-infra passes `legion.PrivateProjects`);
+only these can be made private. It renders `DISPATCH_PRIVATE_PROJECTS=<KEY>,<KEY>`, sorted and each
+key once; empty or unset renders nothing, so the pod is the one it always was. A key that is not a
+project key is an input error naming it, raised at `pulumi preview`, since Dispatch refuses to
+start on it. Set it only with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
+does not know the setting ignores it, and no project of that deployment can be made private.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the

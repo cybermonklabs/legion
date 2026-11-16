@@ -2373,7 +2373,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT; private is 409 PRIVATE_PROJECTS_OFF while this deployment cannot make a project private. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope. */
+    /** @description Give a project to another owner, set its visibility or name its Slack channels {owner?, visibility?, slack_channels?}, at any time: owner is the email of a full member who has signed in, and visibility public or private. slack_channels names the Slack channel ids the project's credentials may post to, at most 16, set only by the owner; it replaces the whole list, which is stored sorted with each id once, and an id that is no Slack channel id is 400 INVALID_SLACK_CHANNEL naming it while more than 16 is 400 CAP_EXCEEDED. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); an owner who is not a full member is 400 OWNER_NOT_ALLOWED; a body naming none of the three, or a visibility that is neither, is 400 PROJECT_ACCESS_INPUT. private is 409 PRIVATE_PROJECTS_OFF when the deployment names no private project, 409 PRIVATE_PROJECT_NOT_PROVISIONED when DISPATCH_PRIVATE_PROJECTS does not name this one, and 409 PRIVATE_PROJECTS_INCOMPLETE until the store's backfills have run; public is never refused by them. private is 409 REPOSITORY_LANE_SHARED when one of the project's repositories shares a GitHub subject lane with another project's. private is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. Appends project.access_changed and answers the project's access as GET answers it. Needs the person scope. */
     patch: operations["patchApiV1ProjectsByKeyAccess"];
     trace?: never;
   };
@@ -2969,10 +2969,10 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. */
+    /** @description Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. A mapping whose GitHub subject lane, for its name or its renamed_to, compared without case, is also a lane of another project's mapping, where either project is private, is 409 REPOSITORY_LANE_SHARED. A target project the caller cannot see is answered as an unknown project. A repository mapped to a project the caller cannot see is neither moved nor named. A mapping into a private project is 409 PRIVATE_PROJECTS_UNAVAILABLE, with nothing changed, while the hub does not take the project's key in its envoy_private_projects bucket. */
     put: operations["putApiV1SettingsRepoProjectsByOwnerByRepo"];
     post?: never;
-    /** @description Remove a repository mapping no issue names as its repo. */
+    /** @description Remove a repository mapping no issue names as its repo. A mapping of a project the caller cannot see answers 204 as no mapping does, and is not removed. */
     delete: operations["deleteApiV1SettingsRepoProjectsByOwnerByRepo"];
     options?: never;
     head?: never;
@@ -3164,7 +3164,6 @@ export interface components {
       kind: string;
       origin?: components["schemas"]["ActorOrigin"];
       owner?: string;
-      project?: string;
       service?: string;
     };
     ActorAct: {

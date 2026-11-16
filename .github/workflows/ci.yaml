@@ -3122,6 +3122,9 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              # The api package reads graphcensus when a project is made private (project_access.go,
+              # ProjectCompleteFor), and the listener's tests build that package.
+              - 'packages/envoy/internal/dispatch/graphcensus/*'
               - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'

@@ -206,6 +206,11 @@ type bootConfig struct {
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
 	OIDCAudience string
+	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
+	// provisioned as private, sorted and each once (privateProjectsSetting). Only these can be made
+	// private; the boot and the maintenance sweep report a private project it does not name, and
+	// /healthz names it (reportPrivateProjects, privateProjectsState).
+	PrivateProjects []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -437,6 +442,20 @@ func main() {
 		slog.Error("dispatch: give every project an owner", "error", err)
 		os.Exit(1)
 	}
+	// Whether any project is private, read once here, after the database's open and migrate and
+	// before the first loop and the repository seed, then every 30 s (privateProjectsState): every
+	// response says it (Dispatch-Private-Projects). This first read does not fail open: a failure
+	// ends the boot, as a database that will not open does.
+	privateState, err := startPrivateProjectsState(ctx, database.Pool, boot.PrivateProjects)
+	if err != nil {
+		slog.Error("dispatch: read the private projects", "error", err)
+		os.Exit(1)
+	}
+	// What the provisioned list and the store say of private projects, reported and never
+	// refused: Dispatch runs as one process, so an exit here would stop every project, and the
+	// owner's repair through the API with it. Each condition fails closed for its own projects
+	// (reportPrivateProjects).
+	reportPrivateProjects(ctx, database, privateState)
 
 	webDistDir, err := defaultWebDistDir(boot.WebDist)
 	if err != nil {
@@ -511,8 +530,11 @@ func main() {
 	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
-	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction.
-	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, boot.RepoProjects); err != nil {
+	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction. Its writer of
+	// the private-projects record is the router's (routes.AppContextOptions.BusProjects), which this
+	// build leaves nil: a seeded mapping into a private project is left out and logged, as a
+	// deployment with no bus answers it (api.SeedRepoProjects).
+	if err := api.SeedRepoProjects(store.WithTransactionTracking(ctx), database, broker, nil, boot.RepoProjects); err != nil {
 		slog.Error("dispatch: seed repository projects", "error", err)
 		os.Exit(1)
 	}
@@ -1077,10 +1099,12 @@ func main() {
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
 	// The process's two probes stand above the router (routes.Process); /metrics is a row of the
-	// API's route table, which needs a credential (api.Deps.Metrics).
-	handler := routes.Process(routesHandler, healthzHandler(database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}))
+	// API's route table, which needs a credential (api.Deps.Metrics). Every response says whether
+	// any project is private, from the state read at boot.
+	handler := serveHandler(routes.Process(routesHandler, healthzHandler(database, natsClient, outboxPublisher, fileStore, buildCommit, announcer,
+		issuers{signIn: signIn, serviceTokens: serviceTokens}, privateState)), privateState)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1361,6 +1385,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.PrivateProjects, err = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS")); err != nil {
 		return bootConfig{}, err
 	}
 	for _, setting := range []struct {
@@ -1857,6 +1884,7 @@ func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.A
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
+	built.PrivateProjects = boot.PrivateProjects
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
 	built.GitHubAPIBase = boot.GitHubAPIBase
@@ -2057,7 +2085,13 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // api/request_keys.go): the agents' client reads it before it retries a write under its key, since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.HandlerFunc {
+//
+// `private_projects_unprovisioned` names, sorted, each project the database holds private that
+// DISPATCH_PRIVATE_PROJECTS does not name (unprovisioned, a read cached 30 s), and is absent when
+// there is none, so a deployment with none answers the body it always did. It never decides ok:
+// such a project stays private, and a probe that failed for it would take every project out of
+// service.
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2113,24 +2147,33 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		if !ok {
 			status = http.StatusServiceUnavailable
 		}
+		// Named, never counted against ok: an unprovisioned private project stays private, and a
+		// probe that failed for it would take every project out of service. The names are the
+		// state's last read, so a probe adds no read.
+		var unprovisionedKeys []string
+		if databaseOK {
+			unprovisionedKeys = privateState.Unprovisioned()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(struct {
-			OK              bool    `json:"ok"`
-			DB              bool    `json:"db"`
-			NATS            *bool   `json:"nats"`
-			Files           *bool   `json:"files"`
-			SignIn          *bool   `json:"signin"`
-			ServiceTokens   *bool   `json:"service_tokens"`
-			Commit          *string `json:"commit"`
-			FleetCommit     *string `json:"fleet_commit"`
-			SchemaVersion   *int    `json:"schema_version"`
-			OutboxPublisher bool    `json:"outbox_publisher"`
-			IdempotencyKeys bool    `json:"idempotency_keys"`
+			OK                           bool     `json:"ok"`
+			DB                           bool     `json:"db"`
+			NATS                         *bool    `json:"nats"`
+			Files                        *bool    `json:"files"`
+			SignIn                       *bool    `json:"signin"`
+			ServiceTokens                *bool    `json:"service_tokens"`
+			Commit                       *string  `json:"commit"`
+			FleetCommit                  *string  `json:"fleet_commit"`
+			SchemaVersion                *int     `json:"schema_version"`
+			OutboxPublisher              bool     `json:"outbox_publisher"`
+			IdempotencyKeys              bool     `json:"idempotency_keys"`
+			PrivateProjectsUnprovisioned []string `json:"private_projects_unprovisioned,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			PrivateProjectsUnprovisioned: unprovisionedKeys,
 		})
 	}
 }

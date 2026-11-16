@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -492,7 +493,7 @@ func TestResolveBootConfigRequiresBothOIDCVariables(t *testing.T) {
 }
 
 func TestProcessReportsDisabledNATS(t *testing.T) {
-	handler := routes.Process(http.NewServeMux(), healthzHandler(nil, nil, nil, nil, "", nil, issuers{}))
+	handler := routes.Process(http.NewServeMux(), healthzHandler(nil, nil, nil, nil, "", nil, issuers{}, nil))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -510,7 +511,7 @@ func TestProcessReportsDisabledNATS(t *testing.T) {
 // failed with the bus would take every server process out of service at once.
 func TestProcessReportsDisconnectedNATS(t *testing.T) {
 	database := storetest.Open(t)
-	handler := routes.Process(http.NewServeMux(), healthzHandler(database, &bus.Client{}, nil, nil, "", nil, issuers{}))
+	handler := routes.Process(http.NewServeMux(), healthzHandler(database, &bus.Client{}, nil, nil, "", nil, issuers{}, nil))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
@@ -538,7 +539,7 @@ func TestProcessLivezAnswersWithoutDependencies(t *testing.T) {
 		t.Errorf("the router served %s %s", r.Method, r.URL.Path)
 	})
 	response := httptest.NewRecorder()
-	routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("GET /livez status = %d, want %d", response.Code, http.StatusNoContent)
 	}
@@ -557,7 +558,7 @@ func TestProcessServesMetricsToACredential(t *testing.T) {
 	failures.Inc([2]string{"reason", "denied"})
 	boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": "agent-token"})
 	router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t), Metrics: registry.Handler()})
-	process := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}))
+	process := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil))
 	scrape := func(credential string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		if credential != "" {
@@ -592,7 +593,7 @@ func TestProcessReportsTheFileStore(t *testing.T) {
 	probe := func(store files.Store) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, store, "", nil, issuers{})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, store, "", nil, issuers{}, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -622,7 +623,7 @@ func TestProcessReportsEachIssuersDiscovery(t *testing.T) {
 	probe := func(configured issuers) (int, map[string]any) {
 		t.Helper()
 		response := httptest.NewRecorder()
-		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, configured)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, configured, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		var health map[string]any
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health response: %v", err)
@@ -661,7 +662,7 @@ func TestProcessReportsEachIssuersDiscovery(t *testing.T) {
 func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 	database := storetest.Open(t)
 	const commit = "0123456789abcdef0123456789abcdef01234567"
-	handler := routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, commit, nil, issuers{}))
+	handler := routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, commit, nil, issuers{}, nil))
 	probe := func() map[string]any {
 		t.Helper()
 		response := httptest.NewRecorder()
@@ -699,7 +700,7 @@ func TestHealthzReportsTheBuildCommitAndTheAppliedSchemaVersion(t *testing.T) {
 // nothing - and idempotency_keys true, the binary's own fact.
 func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	response := httptest.NewRecorder()
-	routes.Process(http.NewServeMux(), healthzHandler(nil, nil, nil, nil, "", nil, issuers{})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	routes.Process(http.NewServeMux(), healthzHandler(nil, nil, nil, nil, "", nil, issuers{}, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	var health map[string]any
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatalf("decode health response: %v", err)
@@ -716,6 +717,49 @@ func TestHealthzReportsAnUnstampedCommitAsNull(t *testing.T) {
 	}
 	if len(health) != len(want) {
 		t.Fatalf("healthz = %#v, want exactly the fields %v", health, want)
+	}
+}
+
+// /healthz names, under private_projects_unprovisioned, each project the database holds private
+// that DISPATCH_PRIVATE_PROJECTS does not name, and still answers 200 with ok true, so no probe
+// takes the process out of service for it. With none, the body is byte for byte the one a process
+// with no such read answers (R9).
+func TestHealthzNamesUnprovisionedPrivateProjects(t *testing.T) {
+	database := storetest.Open(t)
+	probe := func(state *privateProjectsState) (int, string) {
+		t.Helper()
+		response := httptest.NewRecorder()
+		routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, state)).
+			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		return response.Code, response.Body.String()
+	}
+	// read is the state as the boot leaves it: read once, before the listener serves.
+	read := func() *privateProjectsState {
+		t.Helper()
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+		if err != nil {
+			t.Fatalf("the first read of the private projects: %v", err)
+		}
+		return state
+	}
+	_, without := probe(nil)
+	if code, body := probe(read()); code != http.StatusOK || body != without {
+		t.Fatalf("/healthz with no private project = %d %s, want 200 and the body without the read, %s", code, body, without)
+	}
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee, visibility) values ('PRIV', 'Private', 'alice@example.com', 'private')`); err != nil {
+		t.Fatalf("seed the private project PRIV: %v", err)
+	}
+	code, body := probe(read())
+	var health struct {
+		OK            bool     `json:"ok"`
+		Unprovisioned []string `json:"private_projects_unprovisioned"`
+	}
+	if err := json.Unmarshal([]byte(body), &health); err != nil {
+		t.Fatalf("decode /healthz %s: %v", body, err)
+	}
+	if code != http.StatusOK || !health.OK || !slices.Equal(health.Unprovisioned, []string{"PRIV"}) {
+		t.Fatalf("/healthz with PRIV private off an empty list = %d %s, want 200, ok, and private_projects_unprovisioned [PRIV]", code, body)
 	}
 }
 
@@ -749,7 +793,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 		go func() { publisher.Run(ctx); close(done) }()
 		stop := func() { cancel(); <-done }
 		t.Cleanup(stop)
-		return &process{outbox: publisher, handler: routes.Process(http.NewServeMux(), healthzHandler(database, client, publisher, nil, "", nil, issuers{})), stop: stop}
+		return &process{outbox: publisher, handler: routes.Process(http.NewServeMux(), healthzHandler(database, client, publisher, nil, "", nil, issuers{}, nil)), stop: stop}
 	}
 	probe := func(p *process) bool {
 		t.Helper()
@@ -813,7 +857,7 @@ func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 		"no database":       {nil, http.StatusServiceUnavailable},
 	} {
 		response := httptest.NewRecorder()
-		routes.Process(http.NewServeMux(), healthzHandler(probe.database, nil, nil, nil, "", nil, issuers{})).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		routes.Process(http.NewServeMux(), healthzHandler(probe.database, nil, nil, nil, "", nil, issuers{}, nil)).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 		if response.Code != probe.status {
 			t.Errorf("healthz with %s: status %d, want %d", name, response.Code, probe.status)
 		}
@@ -874,7 +918,7 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 		defer connection.Release()
 	}
 
-	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{})))
+	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, nil)))
 	defer server.Close()
 	client := &http.Client{Timeout: 3 * time.Second}
 	started := time.Now()
@@ -925,7 +969,7 @@ func TestHealthzAnswersWhilePostgresStopsAnswering(t *testing.T) {
 		database.Pool.Close()
 	})
 
-	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{})))
+	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, nil, "", nil, issuers{}, nil)))
 	defer server.Close()
 	// The shared pool's own round trip is the control: the link works right up to the outage.
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -985,7 +1029,7 @@ func TestHealthzAnswersWhilePostgresAndTheBucketBothStopAnswering(t *testing.T) 
 		database.Pool.Close()
 	})
 	bucket := unansweringBucket{filestest.NewMemory()}
-	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, bucket, "", nil, issuers{})))
+	server := httptest.NewServer(routes.Process(http.NewServeMux(), healthzHandler(database, nil, nil, bucket, "", nil, issuers{}, nil)))
 	defer server.Close()
 
 	client := &http.Client{Timeout: 3 * time.Second}

@@ -230,9 +230,8 @@ func newWhoamiUser(actor model.Actor, memberKind string, scopes []string) whoami
 }
 
 // newWhoamiAgent is whoami's answer to a credential that is not a person's browser session. Its
-// project is the one key of a one-key list and null for a longer list; a credential with no list
-// keeps the project its actor names, which is a broker token's one project until the broker's
-// claim carries the list (PlanD's t-d-2), so no answer of today loses its project.
+// project, deprecated, is the one key of a one-key list and null for any other list, none
+// included.
 func newWhoamiAgent(actor model.Actor, memberKind string, scopes []string) whoamiAgent {
 	var owner *string
 	if actor.Owner != nil {
@@ -243,12 +242,9 @@ func newWhoamiAgent(actor model.Actor, memberKind string, scopes []string) whoam
 		session = &actor.ID
 	}
 	projects := whoamiProjects(actor.Credential)
-	project := actor.Project
-	switch {
-	case len(projects) == 1:
+	var project *string
+	if len(projects) == 1 {
 		project = &projects[0]
-	case len(projects) > 1:
-		project = nil
 	}
 	return whoamiAgent{
 		Kind:       "agent",

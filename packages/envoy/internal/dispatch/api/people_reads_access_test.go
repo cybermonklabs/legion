@@ -567,8 +567,8 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 // whenever the credential lists projects, a person's own dsp_ token included, in the person shape
 // as in the agent shape; and project, deprecated, as the one key of a one-key list and null for
 // any other list. The control is byte for byte: a credential that lists nothing answers exactly
-// what it answered before the list existed, and the broker token of this stack, which names its
-// one project in Actor.Project and no list yet, still answers that project.
+// what it answered before the list existed, and a broker token scoped to one project, whose
+// credential lists that project (brokerTokenActor), answers it in both fields.
 func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	carol := seedCarol
 	project := seedPublic
@@ -588,9 +588,9 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 			`{"kind":"agent","owner":"carol@example.com","projects":["PRIV"],"project":"PRIV","scopes":[],"service":null,"session":null}`},
 		{"a token that lists none", newWhoamiAgent(token(), "", []string{}),
 			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":[],"service":null,"session":null}`},
-		{"a broker token naming one project and no list",
-			newWhoamiAgent(model.Actor{Kind: "session", ID: "ses_x", Project: &project, Credential: &model.Credential{Session: "ses_x"}}, "", []string{}),
-			`{"kind":"agent","owner":null,"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token scoped to one project",
+			newWhoamiAgent(model.Actor{Kind: "session", ID: "ses_x", Credential: &model.Credential{Session: "ses_x", Projects: []string{project}}}, "", []string{}),
+			`{"kind":"agent","owner":null,"projects":["PUB"],"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
 		{"a person whose credential lists two projects",
 			newWhoamiUser(model.Actor{Kind: "user", ID: carol, Credential: &model.Credential{Projects: both}}, "", []string{}),
 			`{"kind":"user","login":"carol@example.com","projects":["PRIV","PUB"],"scopes":[]}`},

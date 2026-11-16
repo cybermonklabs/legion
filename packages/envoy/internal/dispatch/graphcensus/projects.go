@@ -198,13 +198,26 @@ func writeProjectCensus(w io.Writer, kinds []ProjectKindReport) {
 // `<kind> <id>: <class>` (missing, unscoped or differs), in one read: the rows a read limited by a
 // node's project would answer wrongly. An empty answer is every row of every kind complete.
 func ProjectComplete(ctx context.Context, q graphstore.Queryer) ([]string, error) {
+	return incompleteRows(ctx, q, "true")
+}
+
+// ProjectCompleteFor is ProjectComplete restricted to the rows of project key: the rows whose node
+// the store does not hold, or whose node names no project or another than the row's. A switch of
+// key to private reads it in its own transaction, since a private project's reads would answer
+// such a row wrongly.
+func ProjectCompleteFor(ctx context.Context, q graphstore.Queryer, key string) ([]string, error) {
+	return incompleteRows(ctx, q, "scoped.project = $1", key)
+}
+
+// incompleteRows is the read of ProjectComplete over the rows of scoped that restriction admits.
+func incompleteRows(ctx context.Context, q graphstore.Queryer, restriction string, args ...any) ([]string, error) {
 	rows, err := q.Query(ctx, scopedRowsSQL+`
 		select scoped.kind || ' ' || scoped.id || ': ' || `+rowClass+`
 		from scoped
 		left join graph_nodes n on n.kind = scoped.kind and n.id = scoped.id
-		where `+rowClass+` is not null
+		where `+rowClass+` is not null and `+restriction+`
 		order by scoped.kind, scoped.id
-	`)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the rows whose node names no project: %w", err)
 	}
