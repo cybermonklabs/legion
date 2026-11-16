@@ -4,8 +4,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -92,74 +95,111 @@ func TestTheResumeLaunchesAnOperatorsSpawnThePauseStoppedOwingALaunch(t *testing
 // task untaken is stopped owing a launch and launched once after the resume, and one the pause
 // found ready with nothing held is stopped owing nothing and stays stopped (R4 of
 // dispatch://INFRA-3759: each other stopped session stays stopped until its next wake).
+//
+// The same holds where the database the daemon shares with another project's daemon holds that
+// daemon's record of the issue (the issues table holds every project's issues, under its
+// project). That record is not this daemon's (projectPause.pauseIssue): a start row built from it
+// would be keyed by an issue whose rows the other project's daemon runs, so the stop queues none,
+// and the resume finds the spawn as one with no record of its own and launches it.
 func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld(t *testing.T) {
-	r := newPauseDaemonRig(t, nil)
-	r.boot()
-	const task = "Summarize the incident for the operator."
-	owed := r.d.spawn(api.SpawnRequest{Tree: "OTHERPROJECT-7", Issue: "OTHERPROJECT-7", Role: claim.RoleArchitect,
-		Prompt: "Reply ready and wait.", Task: task})
-	idle := r.d.spawn(api.SpawnRequest{Tree: "OTHERPROJECT-8", Issue: "OTHERPROJECT-8", Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
-	testwait.Eventually(t, "the idle spawn to launch", func() bool { return len(r.rt.launchesOf(idle)) == 1 })
-	up := func(token claim.Token, session string) {
-		t.Helper()
-		launched := r.claim(token)
-		r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
-		r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
-			SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
-		r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
-	}
-	up(idle, "ses-other-idle")
-	testwait.Eventually(t, "the idle spawn's agent to be ready", func() bool {
-		state := r.claim(idle).State
-		return state == supervise.StateReady || state == supervise.StateIdle
-	})
-
-	// The pause stops the ready spawn at once, and holds the stop of the launching one until its
-	// agent is ready, before its task is sent.
-	pause := r.pauseProject()
-	r.awaitState(idle, supervise.StateSuspended, "the pause stops the ready spawn of another project's issue")
-	testwait.Eventually(t, "the pause's stop of the launching spawn to be held until its agent is ready", func() bool {
-		return r.claim(owed).SuspensionHeld
-	})
-	up(owed, "ses-other-owed")
-	r.awaitState(owed, supervise.StateSuspended, "the held stop runs at the agent's ready")
-	for token, launchOwed := range map[claim.Token]bool{owed: true, idle: false} {
-		if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and claim = $2 and ended_as = 'stopped' and launch_owed = $3`,
-			pause.ID, string(token), launchOwed); got != 1 {
-			t.Fatalf("the stops of %s recorded stopped owing a launch %t = %d, want 1", token, launchOwed, got)
-		}
-	}
-
-	owedBefore, idleBefore := len(r.rt.launchesOf(owed)), len(r.rt.launchesOf(idle))
-	r.resumeProject()
-	if !testwait.Holds(testwait.Bounded(t, 20*time.Second, time.Second), testwait.Poll, func() bool {
-		if len(r.rt.launchesOf(owed)) > owedBefore {
-			return true
-		}
-		for _, wake := range r.state().WakesWaiting {
-			if wake.Claim == owed {
-				r.clock.advanceTo(wake.DueAt)
+	for _, tc := range []struct {
+		name string
+		// recorded seeds another project's record of each spawned issue.
+		recorded bool
+	}{
+		{name: "no record of the issues"},
+		{name: "another project's daemon records the issues", recorded: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newPauseDaemonRig(t, nil)
+			r.boot()
+			const owedIssue, idleIssue = "OTHERPROJECT-7", "OTHERPROJECT-8"
+			if tc.recorded {
+				for _, key := range []string{owedIssue, idleIssue} {
+					recorded := r.root(key, phase.Planning)
+					recorded.Project = "OTHERPROJECT"
+					if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+						t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", key, err)
+					}
+				}
 			}
-		}
-		return false
-	}) {
-		c := r.claim(owed)
-		t.Fatalf("after the resume the spawn owed a launch is %s by %s; want it launched once through the pacing", c.State, c.SuspendedBy)
-	}
-	if lines := r.linesOf(supervise.WakeRanMessage, owed); len(lines) == 0 || lines[len(lines)-1]["paced"] != true {
-		t.Fatalf("the owed spawn's launch after the resume wrote %v, want a wake line that says paced", lines)
-	}
-	time.Sleep(time.Second)
-	if got := len(r.rt.launchesOf(owed)) - owedBefore; got != 1 {
-		t.Fatalf("the spawn owed a launch was launched %d times after the resume, want once", got)
-	}
-	if c := r.claim(idle); c.State != supervise.StateSuspended || len(r.rt.launchesOf(idle)) != idleBefore {
-		t.Fatalf("after the resume the spawn owed nothing is %s, launched %d times since its stop; want it stopped and not launched",
-			c.State, len(r.rt.launchesOf(idle))-idleBefore)
-	}
-	for _, wake := range r.state().WakesWaiting {
-		if wake.Claim == idle {
-			t.Fatalf("the spawn owed nothing waits in the pacing for %+v, want no launch of it", wake)
-		}
+			startsOf := func(issue string) int {
+				t.Helper()
+				return r.count(`select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, issue)
+			}
+			const task = "Summarize the incident for the operator."
+			owed := r.d.spawn(api.SpawnRequest{Tree: owedIssue, Issue: owedIssue, Role: claim.RoleArchitect,
+				Prompt: "Reply ready and wait.", Task: task})
+			idle := r.d.spawn(api.SpawnRequest{Tree: idleIssue, Issue: idleIssue, Role: claim.RoleArchitect, Prompt: "Reply ready and wait."})
+			testwait.Eventually(t, "the idle spawn to launch", func() bool { return len(r.rt.launchesOf(idle)) == 1 })
+			up := func(token claim.Token, session string) {
+				t.Helper()
+				launched := r.claim(token)
+				r.handle(token, supervise.StreamHello{Claim: token, Generation: launched.Generation})
+				r.handle(token, supervise.RequestRegister{Claim: token, Generation: launched.Generation, Session: session,
+					SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion})
+				r.handle(token, supervise.RequestReady{Claim: token, Generation: launched.Generation, Session: session})
+			}
+			up(idle, "ses-other-idle")
+			testwait.Eventually(t, "the idle spawn's agent to be ready", func() bool {
+				state := r.claim(idle).State
+				return state == supervise.StateReady || state == supervise.StateIdle
+			})
+
+			// The pause stops the ready spawn at once, and holds the stop of the launching one until its
+			// agent is ready, before its task is sent.
+			pause := r.pauseProject()
+			r.awaitState(idle, supervise.StateSuspended, "the pause stops the ready spawn of another project's issue")
+			testwait.Eventually(t, "the pause's stop of the launching spawn to be held until its agent is ready", func() bool {
+				return r.claim(owed).SuspensionHeld
+			})
+			up(owed, "ses-other-owed")
+			r.awaitState(owed, supervise.StateSuspended, "the held stop runs at the agent's ready")
+			for token, launchOwed := range map[claim.Token]bool{owed: true, idle: false} {
+				if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and claim = $2 and ended_as = 'stopped' and launch_owed = $3`,
+					pause.ID, string(token), launchOwed); got != 1 {
+					t.Fatalf("the stops of %s recorded stopped owing a launch %t = %d, want 1", token, launchOwed, got)
+				}
+			}
+			if got := startsOf(owedIssue); got != 0 {
+				t.Errorf("start rows keyed %s after the stop = %d, want none: this daemon's outbox runs no row of another project's issue", owedIssue, got)
+			}
+
+			owedBefore, idleBefore := len(r.rt.launchesOf(owed)), len(r.rt.launchesOf(idle))
+			r.resumeProject()
+			if !testwait.Holds(testwait.Bounded(t, 20*time.Second, time.Second), testwait.Poll, func() bool {
+				if len(r.rt.launchesOf(owed)) > owedBefore {
+					return true
+				}
+				for _, wake := range r.state().WakesWaiting {
+					if wake.Claim == owed {
+						r.clock.advanceTo(wake.DueAt)
+					}
+				}
+				return false
+			}) {
+				c := r.claim(owed)
+				t.Fatalf("after the resume the spawn owed a launch is %s by %s; want it launched once through the pacing", c.State, c.SuspendedBy)
+			}
+			if lines := r.linesOf(supervise.WakeRanMessage, owed); len(lines) == 0 || lines[len(lines)-1]["paced"] != true {
+				t.Fatalf("the owed spawn's launch after the resume wrote %v, want a wake line that says paced", lines)
+			}
+			time.Sleep(time.Second)
+			if got := len(r.rt.launchesOf(owed)) - owedBefore; got != 1 {
+				t.Fatalf("the spawn owed a launch was launched %d times after the resume, want once", got)
+			}
+			if c := r.claim(idle); c.State != supervise.StateSuspended || len(r.rt.launchesOf(idle)) != idleBefore {
+				t.Fatalf("after the resume the spawn owed nothing is %s, launched %d times since its stop; want it stopped and not launched",
+					c.State, len(r.rt.launchesOf(idle))-idleBefore)
+			}
+			for _, wake := range r.state().WakesWaiting {
+				if wake.Claim == idle {
+					t.Fatalf("the spawn owed nothing waits in the pacing for %+v, want no launch of it", wake)
+				}
+			}
+			if got := startsOf(owedIssue); got != 0 {
+				t.Fatalf("start rows keyed %s after the resume = %d, want none", owedIssue, got)
+			}
+		})
 	}
 }

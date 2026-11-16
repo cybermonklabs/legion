@@ -778,18 +778,21 @@ func OpenPauseStopsTx(ctx context.Context, tx pgx.Tx, pause int64) ([]PauseStop,
 
 // OwedLaunchesWithNoIssueRecord is every claim of held's project whose stop was recorded `stopped`
 // with a launch owed while held stood — a stop of held itself, or one that ended at or after
-// held began — whose issue the daemon keeps no record of (no row in issues) and which still
-// stands suspended by the release's source, as the pause's stop left it, in token order. Such a
-// claim is an operator's own spawn: no start row can carry its launch, since the outbox's start
-// reads the issue's record, so held's resume launches it by rule (projectPause.Resumed in
-// internal/daemon). A claim another source has suspended since, or that runs again, is not the
-// resume's to launch. held's project is its Dispatch key, as the stops hold it.
+// held began — whose issue the daemon keeps no record of (no row in issues under held's project)
+// and which still stands suspended by the release's source, as the pause's stop left it, in token
+// order. Such a claim is an operator's own spawn: no start row can carry its launch, since the
+// outbox's start reads the issue's record, so held's resume launches it by rule
+// (projectPause.Resumed in internal/daemon). A record another project's daemon keeps of the same
+// key on a shared database is not this daemon's, and the stop transaction reads it as no record
+// too (internal/daemon's projectPause.pauseIssue). A claim another source has suspended since, or
+// that runs again, is not the resume's to launch. held's project is its Dispatch key, as the stops
+// and the issues table hold it.
 func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) ([]claim.Token, error) {
 	rows, err := s.pool.Query(ctx, `select distinct s.claim from project_pause_stops s
 		join claims c on c.token = s.claim
 		where s.project = $1 and (s.pause_id = $2 or s.ended_at >= $3) and s.ended_as = $4 and s.launch_owed
 			and c.state = $5 and c.suspended_by = $6
-			and not exists (select 1 from issues i where i.key = s.issue)
+			and not exists (select 1 from issues i where i.key = s.issue and i.project = s.project)
 		order by s.claim`, held.Project, held.ID, held.Since, string(PauseStopStopped),
 		string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
 	if err != nil {

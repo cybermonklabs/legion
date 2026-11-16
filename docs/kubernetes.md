@@ -2393,6 +2393,7 @@ The daemon reads the three arms on every admission pass, and its sweep of each m
 While no controller is registered for the project, the daemon marks no arm told and queues no wake, and its sweep does not run for an arm alone, so the first pass after a controller registers tells it.
 Each tree root of `GET /legion/v1/state` carries `architectStalls`, the arms that hold for its architect at that read (`took-nothing`, `claim-unreachable`, `slow-before-gate`), whether or not the controller was told of them.
 The daemon reads them by the same rules as the wake, and the plain `legion state` prints them, with each arm's words, on its line of the roots a wake names, which names a root for nothing else, whatever its two numbers say.
+While the project is paused the daemon reads no arm, and after a pause each arm counts its time from no earlier than the end of the latest pause ([Pausing a project](#pausing-a-project)).
 
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, so the upgrade sends no running architect a first task.
@@ -5500,7 +5501,8 @@ It writes the claim and the stop's record, and with them:
 
 - for a role that is owed a launch, a held `start` row, which the resume launches through the wake pacing.
   A role is owed a launch when it holds a task that no turn has taken, or when the stop met a launch of it: a wake parked in the pacing, a start that the stop cancelled, a launch held until its agent was ready, a relaunch waiting for its retry, or a launch that the gate held.
-  An operator's spawn, whose issue the daemon keeps no record of, gets no `start` row, and the resume launches it itself (below);
+  An operator's spawn, whose issue the daemon keeps no record of, gets no `start` row, and the resume launches it itself (below).
+  A record of the issue that another project's daemon keeps on the same database is no record of this daemon's, because its project is another (`pauseIssue`, `internal/daemon/pause.go`);
 
 - for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
 
@@ -5569,6 +5571,7 @@ The admission pass promotes issues again, and each launch that it causes takes t
 A long queue at the resume is not reported as stuck.
 A woken role's stuck clock (`pod_resumes.clock_at`) starts when the pacing lets its launch out, and the resume starts it again for each wake that the pause held.
 The stuck warning and the stranded-claim report read that clock, and both pass over a project that is paused.
+The architect-stalled wake reads none of its arms while the project is paused, and after a pause each arm counts its time from no earlier than the end of the latest pause, so the resume tells the controller of no stall that the pause made (`stallFloor`, `internal/admit/architect_stall.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
 `read_release_records` counts such a wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
 A held wake names no release.

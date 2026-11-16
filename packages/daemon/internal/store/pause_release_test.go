@@ -306,7 +306,10 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 // Decision 13 of dispatch://INFRA-3759: a tree's cleanup deletes every pod of the tree, so the
 // transaction that confirms it ends the pause's hold of each, as deleted. An operator's tree of
 // another project's issue, whose claim the daemon runs and whose issue it keeps no record of, is
-// cleaned up the same way: its pod's hold is found through the tree's claims.
+// cleaned up the same way: its pod's hold is found through the tree's claims. A record that
+// another project's daemon keeps on the same database, filing an issue under that tree, files no
+// pod of this project's there: the hold of this daemon's own spawn of that issue, in a tree of its
+// own, stands.
 func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -340,6 +343,18 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	if _, err := holdPod(st, pause, other, pausedAt); err != nil {
 		t.Fatalf("hold the pod of %s: %v", other, err)
 	}
+	const recorded = "OTHER-9"
+	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $2, 'OTHER', 'child', 'planning', 1, 'in_progress', 'A', 1)`, recorded, other); err != nil {
+		t.Fatalf("record %s as OTHER's issue under the tree %s: %v", recorded, other, err)
+	}
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-other-9-architect", Project: "legion", Tree: recorded, Issue: recorded,
+		Role: claim.RoleArchitect, Generation: 1, State: supervise.StateRetired}); err != nil {
+		t.Fatalf("seed the retired architect of %s: %v", recorded, err)
+	}
+	if _, err := holdPod(st, pause, recorded, pausedAt); err != nil {
+		t.Fatalf("hold the pod of %s: %v", recorded, err)
+	}
 	operatorTree, reserved, err := st.ReserveOperatorTreeCleanup(ctx, "legion", other)
 	if err != nil || !reserved {
 		t.Fatalf("reserve the cleanup of %s = %+v, %t, %v", other, operatorTree, reserved, err)
@@ -349,6 +364,10 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	}
 	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", other); err != nil || held {
 		t.Fatalf("after the cleanup of %s its hold stands = %t, %v; want it ended", other, held, err)
+	}
+	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", recorded); err != nil || !held {
+		t.Fatalf("after the cleanup of %s the hold of %s = %t, %v; want it standing: OTHER's record of %s files no pod of this project under %s",
+			other, recorded, held, err, recorded, other)
 	}
 }
 

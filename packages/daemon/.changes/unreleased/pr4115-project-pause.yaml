@@ -15,7 +15,8 @@ body: |-
   `PAUSE_UNAVAILABLE`, and `legion start --check-config` prints `pause unavailable: <setting>`.
   While paused, the operations that would start a turn of another session answer `PROJECT_PAUSED`.
   A claim of another project's issue, which `legion claims spawn` makes under the daemon's own
-  project, is paused like any other claim.
+  project, is paused like any other claim. The architect-stalled wake reads no arm while the
+  project is paused, and counts no time that a pause held the project.
   Three changes apply in every project, also when no pause is ever made. The stuck clock of a
   resume starts when the wake pacing lets the launch out, not when the wake arrived, so a launch
   that waited its turn in a long queue is not warned stuck for that wait. A `suspend` row that

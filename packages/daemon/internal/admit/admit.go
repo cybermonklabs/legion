@@ -2706,7 +2706,15 @@ const (
 // (wakeStalledArchitects), so the gate answers no for a stall alone then: a gate that answered
 // yes would apply a fact a minute for as long as no controller runs, each one a processed event
 // that nothing prunes.
+//
+// A paused project owes nothing here (decision 11 of dispatch://INFRA-3759): the pass promotes
+// nothing while the pause stands (promoteHolds), so a fact the gate let through would do nothing,
+// one a minute for as long as the pause lasts. The resume applies a pass of its own, and the sweep
+// after it asks again.
 func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) {
+	if paused, err := a.paused(ctx, tx); err != nil || paused {
+		return false, err
+	}
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
 		return false, err

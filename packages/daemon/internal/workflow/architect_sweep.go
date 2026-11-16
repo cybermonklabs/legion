@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -205,13 +206,19 @@ const (
 // move. A next move wins over a failing start, so RelaunchFailing means that no start is the next
 // move.
 //
+// A start's age is counted as at most maxAge, which admit's stall reading passes as the time since
+// the end of the project's latest pause (its stallFloor): a pause holds every start (record's
+// pauseHolds), so a start queued before the pause ended has been the outbox's to run only since
+// then, as the stuck clocks restart at the resume (decision 14 and departure 2 of
+// dispatch://INFRA-3759). A project no pause has ended passes the largest duration.
+//
 // Stranded reads the same claim through StartFor, which counts every start above the acting stop
 // whatever its age, its lease and its attempts, and the two readings answer different questions.
 // Stranded asks whether nothing will start the claim again, and a failing start will, since the
 // outbox runs it again on its backoff, so Stranded leaves such a claim out. The arm asks whether a
 // start can still cure the claim, and a start that has run against it and left it as it was cannot
 // (the architect's reading of R7 at dispatch://INFRA-2614).
-func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunch {
+func ArchitectRelaunchOf(run record.RoleRun, root record.Issue, maxAge time.Duration) ArchitectRelaunch {
 	stop := actingStop(run, root)
 	lastStart := lastStartRow(run)
 	relaunch := RelaunchNone
@@ -226,7 +233,7 @@ func ArchitectRelaunchOf(run record.RoleRun, root record.Issue) ArchitectRelaunc
 			relaunch = RelaunchFailing
 			continue
 		}
-		if queued.Age <= StrandedReleaseWake {
+		if min(queued.Age, maxAge) <= StrandedReleaseWake {
 			return RelaunchNext
 		}
 	}

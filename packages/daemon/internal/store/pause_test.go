@@ -578,16 +578,18 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 // claim of an issue with no record whose stop of the pause, or a stop that ended while the pause
 // stood, is `stopped` with a launch owed and still holds it suspended by the release's source; a
 // spawn of another project's issue, whose stop the pause records under its own project, among
-// them. Not a stop owed nothing, not a claim of a recorded issue, not a claim that runs again or
-// that the operator has suspended since, and not a stop of an earlier pause that ended before
-// this one began.
+// them, and so is such a spawn whose issue another project's daemon records on the same
+// database: that record is of another project, so it is no record of this one's. Not a stop owed
+// nothing, not a claim of a recorded issue, not a claim that runs again or that the operator has
+// suspended since, and not a stop of an earlier pause that ended before this one began.
 func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	operator := PauseActor{Kind: PauseByOperator}
 	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
-		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
-		t.Fatalf("record LEGION-208: %v", err)
+		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1),
+			('OTHER-6', 'OTHER-6', 'OTHER', 'root', 'planning', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatalf("record LEGION-208 and OTHER's OTHER-6: %v", err)
 	}
 	stopOf := func(issue string, state supervise.ClaimState, by supervise.SuspendSource) PauseStopClaim {
 		t.Helper()
@@ -624,9 +626,12 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 	stopped(pause, stopOf("LEGION-208", suspended, released), pausedAt.Add(time.Minute), true)
 	stopped(pause, stopOf("LEGION-79", supervise.StateIdle, ""), pausedAt.Add(time.Minute), true)
 	stopped(pause, stopOf("LEGION-80", suspended, supervise.SuspendedByOperator), pausedAt.Add(time.Minute), true)
-	// A spawn of another project's issue, stopped under this project's pause.
+	// A spawn of another project's issue, stopped under this project's pause, and one whose issue
+	// the OTHER project's daemon records.
 	foreign := stopOf("OTHER-5", suspended, released)
 	stopped(pause, foreign, pausedAt.Add(time.Minute), true)
+	recordedForeign := stopOf("OTHER-6", suspended, released)
+	stopped(pause, recordedForeign, pausedAt.Add(time.Minute), true)
 	late := stopOf("LEGION-82", suspended, released)
 	stopped(earlier, late, pausedAt.Add(10*time.Minute), true)
 	ended, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: pausedAt.Add(time.Hour)})
@@ -638,7 +643,7 @@ func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.
 	if err != nil {
 		t.Fatalf("read the spawns the pause owes a launch: %v", err)
 	}
-	if want := []claim.Token{spawn.Claim, late.Claim, foreign.Claim}; !slices.Equal(owed, want) {
+	if want := []claim.Token{spawn.Claim, late.Claim, foreign.Claim, recordedForeign.Claim}; !slices.Equal(owed, want) {
 		t.Fatalf("the spawns pause %d owes a launch = %v, want %v", ended.Pause.ID, owed, want)
 	}
 }

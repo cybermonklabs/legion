@@ -235,14 +235,15 @@ func (s *Store) EndLivePausePodHold(ctx context.Context, project, issue string, 
 // endTreePausePodHoldsTx ends, at at, the hold that stands on the pod of each issue of tree: the
 // tree's cleanup has deleted every Sandbox of the tree (CleanupReservedTree), so a hold of one of
 // its pods holds nothing (PausePodHoldDeleted, decision 13 of dispatch://INFRA-3759). An issue of
-// the tree is one the issues table files under it, or one a claim of project's names under it: a
-// claim of the operator's spawn has no issue record, of this project's issue or of another's. Each
-// hold ends under its issue's lock, in key order. project is the project token, as the claims
-// table holds it.
+// the tree is one the issues table files under it under the hold's project, or one a claim of
+// project's names under it: a claim of the operator's spawn has no issue record, of this project's
+// issue or of another's, and a record another project's daemon keeps of the same key on a shared
+// database is not this project's (internal/daemon's projectPause.pauseIssue). Each hold ends under
+// its issue's lock, in key order. project is the project token, as the claims table holds it.
 func endTreePausePodHoldsTx(ctx context.Context, tx pgx.Tx, project, tree string, at time.Time) error {
 	rows, err := tx.Query(ctx, `select h.project, h.issue from project_pause_pod_holds h
 		where lower(h.project) = $1 and h.ended_at is null
-		and (exists (select 1 from issues i where i.key = h.issue and i.tree = $2)
+		and (exists (select 1 from issues i where i.key = h.issue and i.project = h.project and i.tree = $2)
 			or exists (select 1 from claims c where c.project = $1 and c.issue = h.issue and c.tree = $2))
 		order by h.issue`, project, tree)
 	if err != nil {

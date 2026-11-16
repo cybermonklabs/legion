@@ -3,6 +3,7 @@ package admit
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -60,9 +62,19 @@ func stallMarks(stalls []architectStall) []record.ArchitectStall {
 // pass would send nothing (OwesEntryWork) and the state reads what the passes before it
 // committed (ArchitectStallArms). Each root's arms are read at that root's own reading of the
 // clock.
+//
+// It reads the project's pause once (readStallFloor). While the project is paused it reads no arm:
+// the pause has stopped every architect an arm would name and holds every start and task the
+// daemon would send one, and the passes that tell the controller do not run then (promoteHolds,
+// convergeEntries). After a pause, each arm whose bound is a stretch of time counts it from no
+// earlier than the end of the latest pause (stallFloor).
 func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotReading, facts record.LineFacts,
 	sent map[string]bool,
 ) ([]architectStall, error) {
+	floor, paused, err := a.readStallFloor(ctx, tx)
+	if err != nil || paused {
+		return nil, err
+	}
 	var stalls []architectStall
 	for _, held := range read.holders {
 		if held.role != claim.RoleArchitect {
@@ -71,7 +83,7 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		root, run := held.issue, read.runs[held.token]
 		row := read.entries[record.PhaseRole{Issue: root.Key, Role: claim.RoleArchitect}]
 		now := a.now()
-		took, err := a.architectTookNothing(ctx, tx, root, row, run, now)
+		took, err := a.architectTookNothing(ctx, tx, root, row, run, floor, now)
 		if err != nil {
 			return nil, err
 		}
@@ -80,8 +92,8 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 			why string
 		}{
 			{record.ArchitectTookNothing, took},
-			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], now)},
-			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, now)},
+			{record.ArchitectClaimUnreachable, architectClaimUnreachable(root, row, run, sent[root.Key], floor, now)},
+			{record.ArchitectSlowBeforeGate, architectSlowBeforeGate(root, facts.Gates[root.Tree], held.admittedAt, row, floor, now)},
 		} {
 			if arm.why != "" {
 				stalls = append(stalls, architectStall{root: root, arm: arm.arm, why: arm.why, at: now})
@@ -89,6 +101,60 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 		}
 	}
 	return stalls, nil
+}
+
+// stallFloor is the moment no arm of the stall reading counts time from before: the end of the
+// project's latest pause, and the zero value for a project no pause has ended. A pause stops the
+// project's architects and holds every start and every task the daemon would send them (record's
+// pauseHolds, supervise's sendPending), so while it stood an architect could register no step of
+// its gate, take no task and be relaunched by no start. That time is no time the architect failed
+// to use. So each arm whose bound is a stretch of time counts it from the later of the moment it
+// names and this one, as the stuck clocks restart at the resume (decision 14 and departure 2 of
+// dispatch://INFRA-3759, store.SetProjectResumeClocksTx). Without it, the resume's own pass
+// (internal/daemon's applyResumePass) would tell the controller of each stall the pause made, and
+// spend the arm's one mark for the run on it (record.Store.TellArchitectsStalled).
+type stallFloor struct {
+	pause int64
+	at    time.Time
+}
+
+// readStallFloor is the floor of the project's stall reading, read once per reading through tx
+// (store.OpenOrLastPauseTx, the project's open pause or else its newest ended one), and whether
+// the project stands paused, in which case there is no floor.
+func (a *Admission) readStallFloor(ctx context.Context, tx pgx.Tx) (stallFloor, bool, error) {
+	p, found, err := store.OpenOrLastPauseTx(ctx, tx, a.project)
+	if err != nil {
+		return stallFloor{}, false, fmt.Errorf("read the last pause of %s for the architect-stalled arms: %w", a.project, err)
+	}
+	if !found {
+		return stallFloor{}, false, nil
+	}
+	if !p.Ended() {
+		return stallFloor{}, true, nil
+	}
+	return stallFloor{pause: p.ID, at: p.EndedAt}, false, nil
+}
+
+// count is the moment an arm counts its bound from, given the moment the arm names (since): since,
+// or the floor where the floor is later. said is what the arm's reason adds where the floor is
+// later, and "" where it is not, so the reason keeps naming the moment the arm names and says
+// where the count began.
+func (f stallFloor) count(since time.Time) (from time.Time, said string) {
+	if !f.at.After(since) {
+		return since, ""
+	}
+	return f.at, fmt.Sprintf(" That time is counted from the end of pause %d at %s, which held the project.",
+		f.pause, f.at.UTC().Format(time.RFC3339))
+}
+
+// maxStartAge is the most age a queued start of the root's run counts with at now
+// (workflow.ArchitectRelaunchOf): the time since the floor, since a pause holds every start, and
+// the largest duration where no pause has ended.
+func (f stallFloor) maxStartAge(now time.Time) time.Duration {
+	if f.at.IsZero() {
+		return math.MaxInt64
+	}
+	return now.Sub(f.at)
 }
 
 // ArchitectStallArms is, by root key, every arm of the stall reading that holds for that root's
@@ -104,6 +170,13 @@ func (a *Admission) architectStalls(ctx context.Context, tx pgx.Tx, read slotRea
 // It reads the record as the passes before it committed it, which is what the next pass reads
 // before its sends: a start an earlier pass wrote is a queued start here, and the second arm reads
 // it so (workflow.ArchitectRelaunchOf).
+//
+// While the project is paused it answers no arm, because architectStalls reads none then. The
+// pause has stopped every architect an arm would name, and holds every start and task the daemon
+// would send one, so no arm says anything of the architect, and `legion state` lists no stall the
+// pause made. After the resume it reads the arms as the pass does, from no earlier than the
+// pause's end (stallFloor), as the stuck clocks restart then (decision 14 and departure 2 of
+// dispatch://INFRA-3759).
 func (a *Admission) ArchitectStallArms(ctx context.Context, tx pgx.Tx) (map[string][]record.ArchitectStallArm, error) {
 	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
@@ -183,8 +256,11 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // phases row names (row), of the root's run, no turn of the claim has confirmed it, and it has
 // stood so more than workflow.StrandedReleaseWake since the moment the arm counts it from
 // (tookNothingSince): when a task of that entry was first queued to the claim, or, for a task a
-// let-go took back from a turn, the later of that moment and the relaunched agent's ready. It
-// answers what the record says, and "" for a root it does not read.
+// let-go took back from a turn, the later of that moment and the relaunched agent's ready; and in
+// either case no earlier than the end of the project's latest pause (floor). The pause keeps such
+// a task unsent (supervise's sendPending), and stops at its ready an architect launched before
+// the task went, so the task stands pending, unconfirmed and not taken back, through the whole
+// pause. It answers what the record says, and "" for a root it does not read.
 //
 // The task is read as the delivery of the entry the row names, of the root's generation, which is
 // R7's "its entry's task" (dispatch://INFRA-2614), and no other. A task of an earlier run, or of
@@ -210,7 +286,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 // it, so the arm reads the roots the rule of R5 reaches and no others, as R7 says. Those
 // readings are asked last, so a root whose claim holds no such task costs no read.
 func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root record.Issue, row record.PhaseEntry,
-	run record.RoleRun, now time.Time,
+	run record.RoleRun, floor stallFloor, now time.Time,
 ) (string, error) {
 	held := run.Claim
 	if held == nil || held.Pending == nil {
@@ -222,7 +298,11 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		return "", nil
 	}
 	since, counted := tookNothingSince(*held)
-	if !counted || now.Sub(since) <= workflow.StrandedReleaseWake {
+	if !counted {
+		return "", nil
+	}
+	from, floored := floor.count(since)
+	if now.Sub(from) <= workflow.StrandedReleaseWake {
 		return "", nil
 	}
 	served, err := a.architectServed(ctx, tx, root, row, run)
@@ -234,8 +314,8 @@ func (a *Admission) architectTookNothing(ctx context.Context, tx pgx.Tx, root re
 		unconfirmed = fmt.Sprintf("A let-go of the claim's process took it back from a turn of it, and no turn has confirmed it since %s, "+
 			"the later of its first queueing and the moment the claim's relaunched agent was ready.", since.UTC().Format(time.RFC3339))
 	}
-	return fmt.Sprintf("the task of phase entry %d was first queued to the architect's claim of %s at %s. %s The root stands at %s. The daemon writes no second start while that task stands.",
-		task.Entry, root.Key, firstQueued(*held).UTC().Format(time.RFC3339), unconfirmed, root.Phase), nil
+	return fmt.Sprintf("the task of phase entry %d was first queued to the architect's claim of %s at %s. %s%s The root stands at %s. The daemon writes no second start while that task stands.",
+		task.Entry, root.Key, firstQueued(*held).UTC().Format(time.RFC3339), unconfirmed, floored, root.Phase), nil
 }
 
 // tookNothingSince is the moment the first arm counts the pending task of held from, and false
@@ -302,7 +382,10 @@ func firstQueued(held record.RoleClaim) time.Time {
 // the daemon's next move for its architect (workflow.ArchitectRelaunchOf), and either its
 // architect's claim is failed or retired, or the root holds no architect claim at all while the
 // work of its entry has stood more than workflow.StrandedReleaseWake. It answers what the record
-// says, and "" for a root it does not read.
+// says, and "" for a root it does not read. Both stretches of time it reads, a queued start's age
+// and the time the work of the entry has stood, are counted from no earlier than the end of the
+// project's latest pause (floor): the pause held every start, so none of them could run while it
+// stood.
 //
 // workflow.ArchitectRelaunchOf decides which start of the run is the daemon's next move, and the
 // pass's own start (sent) is one too. The arm waits while such a start stands because the
@@ -342,7 +425,7 @@ func firstQueued(held record.RoleClaim) time.Time {
 // a root with no claim (sent) the wake still stands — a root with no claim that long is stalled
 // whatever this pass writes — and its reason says the start was written, rather than that none
 // waits.
-func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, sent bool, now time.Time) string {
+func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run record.RoleRun, sent bool, floor stallFloor, now time.Time) string {
 	if !record.InWorkflow(root) {
 		return ""
 	}
@@ -350,7 +433,7 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 	if held != nil && held.State != supervise.StateFailed && held.State != supervise.StateRetired {
 		return ""
 	}
-	relaunch := workflow.ArchitectRelaunchOf(run, root)
+	relaunch := workflow.ArchitectRelaunchOf(run, root, floor.maxStartAge(now))
 	if relaunch == workflow.RelaunchNext {
 		return ""
 	}
@@ -369,21 +452,27 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 		return fmt.Sprintf("the architect claim of %s is %s, no start of its run queued in the last %s waits to relaunch it, and the root stands at %s in the workflow.%s",
 			root.Key, held.State, workflow.StrandedReleaseWake, root.Phase, waits)
 	}
-	if row.Entry == 0 || row.RaisedAt.IsZero() || now.Sub(row.RaisedAt) <= workflow.StrandedReleaseWake {
+	if row.Entry == 0 || row.RaisedAt.IsZero() {
+		return ""
+	}
+	from, floored := floor.count(row.RaisedAt)
+	if now.Sub(from) <= workflow.StrandedReleaseWake {
 		return ""
 	}
 	queue := "no start of one queued in the last " + workflow.StrandedReleaseWake.String() + " waits to create it"
 	if sent {
 		queue = "the daemon wrote the start of its architect again in the same transaction as this wake"
 	}
-	return fmt.Sprintf("%s holds no architect claim at all, and %s. The work of phase entry %d has stood since %s.%s",
-		root.Key, queue, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339), waits)
+	return fmt.Sprintf("%s holds no architect claim at all, and %s. The work of phase entry %d has stood since %s.%s%s",
+		root.Key, queue, row.Entry, row.RaisedAt.UTC().Format(time.RFC3339), floored, waits)
 }
 
 // architectSlowBeforeGate is the third arm: the root stands at phase.Admitted with no step of
 // its design gate registered, more than workflow.ArchitectGateWake after the later of its
-// admission and the moment its architect's entry was last raised. It answers what the record
-// says, and "" for a root it does not read.
+// admission and the moment its architect's entry was last raised, counted from no earlier than
+// the end of the project's latest pause (floor): the pause stopped the architect, which could
+// register no step while it stood. It answers what the record says, and "" for a root it does not
+// read.
 //
 // The later of the two moments is the issue's own decision. A root a person answered after a six
 // hour wait comes back to admitted holding the admission row it has held all along, so its
@@ -395,7 +484,9 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // It reads a root standing at admitted and no other. A root a hand-over carried in stands in a
 // phase of the run that carried it, where its tree's work is already running under a phase
 // worker, and a gate it has not registered holds nothing up yet.
-func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, now time.Time) string {
+func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt time.Time, row record.PhaseEntry, floor stallFloor,
+	now time.Time,
+) string {
 	if root.Phase != phase.Admitted || len(gate.Rows) > 0 {
 		return ""
 	}
@@ -403,9 +494,13 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 	if row.RaisedAt.After(since) {
 		since = row.RaisedAt
 	}
-	if since.IsZero() || now.Sub(since) <= workflow.ArchitectGateWake {
+	if since.IsZero() {
 		return ""
 	}
-	return fmt.Sprintf("%s has stood at admitted since %s with no step of its design gate registered, which is more than %s.",
-		root.Key, since.UTC().Format(time.RFC3339), workflow.ArchitectGateWake)
+	from, floored := floor.count(since)
+	if now.Sub(from) <= workflow.ArchitectGateWake {
+		return ""
+	}
+	return fmt.Sprintf("%s has stood at admitted since %s with no step of its design gate registered, which is more than %s.%s",
+		root.Key, since.UTC().Format(time.RFC3339), workflow.ArchitectGateWake, floored)
 }
