@@ -165,6 +165,14 @@ Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callba
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
 
+`DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, the one people from outside reach it at, whatever path the deployment gives them.
+A request whose `Host` is its host, compared without regard to case, is answered as that origin:
+its sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the sign-in client must list too, and a browser write carrying a session cookie passes the origin check only with that `Origin`, so a page on one origin cannot write as a person signed in on the other.
+Every other request is answered as `DISPATCH_SERVER_URL`'s.
+Its spelling is judged by the rule `envoy-infra:gcp:Dispatch` judges its `outsideOrigin` input by (`internal/weborigin`), and it must be `https` (`http` only with `DISPATCH_TEST_HOOKS=1`) on a host other than `DISPATCH_SERVER_URL`'s, which must be set;
+a value that breaks any of these refuses startup.
+A dashboard URL of either origin is read as a reference, by the server and by `rebuild-refs`, so a link written on one origin opens on the other.
+
 `DISPATCH_ALLOWED_LOGINS`, `DISPATCH_APP_CLIENT_SECRET` and `DISPATCH_ASSET_STORE_BUCKET` are removed:
 a boot that still sets any of them is refused, naming what replaced it.
 
@@ -499,8 +507,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 `DISPATCH_IDENTITY` controls how browser requests identify a person, always by lowercase email:
 
 - `cookie` (the default) accepts signed `dsession` cookies, which a sign-in issues (OpenID Connect authorization code), through one of two issuers.
-  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set;
-  both, some without the others, a domain under any issuer but `https://accounts.google.com`, a group under that one, or a domain that is not a lowercase DNS name refuse the boot, each naming what is wrong (`checkSignInSettings`).
+  Beside `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`, exactly one of `DISPATCH_SIGNIN_GROUP` and `DISPATCH_SIGNIN_DOMAIN` is set, and `DISPATCH_SIGNIN_OUTSIDE=1` only beside the domain;
+  `DISPATCH_SIGNIN_OUTSIDE` without the domain, both, some without the others, a domain under any issuer but `https://accounts.google.com` (except under the test hooks' `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1`, for the browser suite's dev issuer), a group under that one, or a domain that is not a lowercase DNS name refuse the boot, each naming what is wrong (`checkSignInSettings`).
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
   it issues no `dsession` cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
@@ -528,6 +536,14 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   The code flow reads those claims from the verified token in domain mode alone;
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
+
+  With `DISPATCH_SIGNIN_OUTSIDE=1` beside the domain, a verified Google account outside it signs in too, as a restricted member (`people.member_kind`), while some project's owner is that email or some project's access list names it directly (`access.Listed`; a group on a list never admits such an account).
+  An address of the domain or a subdomain of it that is not the Workspace's (a personal Google account) is refused as not in the domain, else it would read every project that lists the employee.
+  An account outside the domain that no list names gets a 403 page saying so and naming it.
+  The hourly confirmation (below) runs the same rule, so an account no list names any more is signed out at its next request past the hour, and one the setting no longer admits too;
+  a list that cannot be read is no refusal: the callback answers `500 IDENTITY_ERROR` with no cookie, and a confirmation keeps the sign-in and fails only the request, as an issuer that cannot be reached does.
+  The authorization request then names no `hd` on any origin, since `hd` narrows Google's account chooser to the domain and would hide an outside account; it never decides who signs in.
+  The Google client's OAuth consent screen's audience must be External, which with the scopes Dispatch asks for (`openid`, `email`, `profile`) needs no test-user list and keeps refresh tokens past seven days in Testing status; the client lists `<DISPATCH_SERVER_URL>/auth/callback` and, with an outside origin, `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`.
 
   Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
@@ -3749,7 +3765,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/auth/start` (GET; none)
 
   Start Google sign-in at the sign-in issuer:
-  the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
+  the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and, unless `DISPATCH_SIGNIN_OUTSIDE=1`, the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
+  The issuer sends the browser back to the callback of the origin the request came to: `DISPATCH_OUTSIDE_ORIGIN`'s when the request's `Host` is its host, else `DISPATCH_SERVER_URL`'s.
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
 
@@ -3757,10 +3774,12 @@ Each item below names a path with its method and identity, then its purpose.
 
   Exchange the issuer's code and sign in the person `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` admits:
   under a group, named by the email in their pool username, anyone outside the group refused with a 403 page naming them;
-  under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason.
-  Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
+  under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason;
+  with `DISPATCH_SIGNIN_OUTSIDE=1`, also, as a restricted member, a verified Google account outside the domain that a project's owner is or a project's access list names directly, anyone else outside the domain refused with a 403 page saying no access list names them.
+  Record the person, their member kind and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
+  `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document;
   `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie.
 
@@ -3770,7 +3789,8 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/whoami` (GET; cookie or trusted header)
 
-  Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
+  Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered;
+  `member_kind: "restricted"` only for a restricted member, and `origins`, the canonical origin then `DISPATCH_OUTSIDE_ORIGIN`, only where that is set, so a full member's answer from a server at one origin carries those three keys alone.
   The page starts its events subscription from that id.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.

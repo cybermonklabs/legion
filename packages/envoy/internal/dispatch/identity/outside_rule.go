@@ -96,6 +96,12 @@ func (r OutsideRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in with Google for a Workspace domain, and the accounts outside it that a project names", "issuer", issuer, "client_id", clientID, "domain", r.Domain.Domain, "outside", true)
 }
 
+// DomainHint is false: an account outside the domain signs in too, and a chooser narrowed to the
+// domain would hide it.
+func (r OutsideRule) DomainHint() bool {
+	return false
+}
+
 // CanRefresh is DomainRule.CanRefresh: only a row that records a Google account can be confirmed.
 func (r OutsideRule) CanRefresh(stored string) bool {
 	return r.Domain.CanRefresh(stored)

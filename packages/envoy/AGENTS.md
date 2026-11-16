@@ -3791,12 +3791,14 @@ The deployed server's `DISPATCH_SERVER_URL` is separate:
 it overrides the merged `dispatch.serverUrl`, must be an absolute `http` or `https` URL with no path, and is the exact sign-in callback origin (Dispatch's client at the sign-in issuer, the sign-in pool's app client or the Google web client, must list `<DISPATCH_SERVER_URL>/auth/callback`).
 `NATS_URLS` likewise overrides the user file's `envoy.natsUrls` for the server.
 People sign in (`DISPATCH_SIGNIN_*`), through a Cognito sign-in pool for `DISPATCH_SIGNIN_GROUP` or with Google directly for `DISPATCH_SIGNIN_DOMAIN`, never both.
+With the domain, `DISPATCH_SIGNIN_OUTSIDE=1` also signs in, as a restricted member, a verified Google account outside it while a project's owner is that email or a project's access list names it directly (never through a group);
+the Google client's consent screen is then External rather than Internal, and `DISPATCH_OUTSIDE_ORIGIN` is the second origin such a person reaches Dispatch at, answered by the request's `Host`.
 A sign-in's state rides the browser's signed `dispatch_oauth_state` cookie rather than a process's memory, so any server process completes a sign-in another started, given one `DISPATCH_SERVER_URL` on every process;
 the issuer's discovery document is read in the background from boot, and until it is read `/auth/start` and the callback answer `503 SIGNIN_UNAVAILABLE`.
 Through the pool a person is named by the email their pool username carries (`<provider>_<email>`, the provider one the ID token's `identities` names), never by the `email` claim, which a person can write;
 with Google, by the verified `email` of an account whose `hd`, the token's Workspace domain and never the email's own domain, is `DISPATCH_SIGNIN_DOMAIN`, claims the code flow reads from the verified token in domain mode alone (the verifier pods' tokens and the listener share reads none of them), under Google's issuer alone, the only one whose tokens carry `hd`.
 A sign-in the issuer vouches for but Dispatch does not admit
-— a person outside `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN`, an email Google has not verified, or a sign-in that names nobody by email
+— a person outside `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN`, an account outside the domain that no access list names, an email Google has not verified, or a sign-in that names nobody by email
 — is logged (`dispatch: sign-in refused username=<username> reason=<reason>`, or `email=<email> hd=<hd>` in place of the username under a domain) and answered with a 403 HTML page naming the email and the reason and linking back to `/auth/start`, so an administrator can find who to add.
 Dispatch keeps the issuer's refresh token server-side, sealed under a key derived from the current key of `DISPATCH_SIGNING_KEY` and opened under any key of the set (`people.refresh_token`;
 the format is in `cmd/dispatch/README.md`, Identity); a stored value that does not open counts as none and the person signs in again.

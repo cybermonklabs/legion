@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
@@ -120,7 +121,18 @@ type bootConfig struct {
 	SignInClientSecret string
 	SignInGroup        string
 	SignInDomain       string
-	NATSDisabled       bool
+	// SignInOutside is DISPATCH_SIGNIN_OUTSIDE=1: under SignInDomain, a verified Google account
+	// outside the domain signs in too, as a restricted member, while a project names it directly
+	// (identity.OutsideRule).
+	SignInOutside bool
+	// TestSignInDomainIssuer is DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1, under the test hooks alone:
+	// SignInDomain runs under an issuer other than Google's, the dev OIDC issuer a browser suite
+	// signs people in through.
+	TestSignInDomainIssuer bool
+	// OutsideOrigin is DISPATCH_OUTSIDE_ORIGIN, the second origin the server answers at, as
+	// weborigin.Parse returns it; empty for none (parseOutsideOrigin, checkOutsideOrigin).
+	OutsideOrigin string
+	NATSDisabled  bool
 	// NATSReplicas is ENVOY_NATS_REPLICAS, the deployment's replica count for the stream and the
 	// webhook redelivery bucket, and StreamMaxBytes is ENVOY_STREAM_MAX_BYTES, the stream's byte
 	// limit or 0 for none set (bus.ParseNATSReplicas, bus.ParseStreamMaxBytes).
@@ -278,6 +290,13 @@ func main() {
 	serverURL := ""
 	if envoyConfig.Dispatch != nil {
 		serverURL = envoyConfig.Dispatch.ServerURL
+	}
+	// The outside origin is the second of two: its own spelling was judged with the rest of the
+	// settings (parseOutsideOrigin), and its host against the canonical origin's only now that the
+	// canonical origin is read.
+	if err := checkOutsideOrigin(boot.OutsideOrigin, serverURL); err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
 	}
 	// The App credentials are read before anything connects, so the dev sign-in fence refuses a
 	// key it will not sign with before NATS or Postgres is dialled.
@@ -447,13 +466,20 @@ func main() {
 		slog.Info("dispatch: storing uploaded files in a bucket", "bucket", boot.FileStoreBucket)
 	}
 
+	// The rule of who signs in is built once, here, over the database's access lists, and is the one
+	// value the sign-in, the hourly confirmation and the boot log consult.
+	rule, err := signInRule(boot, accessLister(database))
+	if err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
+	}
 	// INFRA-555: neither issuer is read at boot. The sign-in issuer's code flow and the
 	// service-account token verifier each discover their issuer in the background from here, and
 	// until then what needs one answers 503 (SIGNIN_UNAVAILABLE, OIDC_ISSUER_UNAVAILABLE) while
 	// everything else serves; /healthz reports each as `signin` and `service_tokens`.
 	signIn := signInFlow(boot)
 	if signIn != nil {
-		signInRule(boot).BootLog(boot.SignInIssuer, boot.SignInClientID)
+		rule.BootLog(boot.SignInIssuer, boot.SignInClientID)
 		go signIn.Run(ctx)
 	}
 
@@ -468,7 +494,7 @@ func main() {
 	if boot.IdentityHeader != "" {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
-	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
+	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, docs.Deps{
@@ -563,7 +589,7 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, built))
+	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
 
 	if err != nil {
 		slog.Error("dispatch: build app context", "error", err)
@@ -1342,10 +1368,17 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER", &boot.TestSignInDomainIssuer},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.SignInOutside, err = parseSignInOutside(env.get("DISPATCH_SIGNIN_OUTSIDE")); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.OutsideOrigin, err = parseOutsideOrigin(env.get("DISPATCH_OUTSIDE_ORIGIN"), boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
@@ -1690,6 +1723,7 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
+	built.OutsideOrigin = boot.OutsideOrigin
 	return built
 }
 
@@ -1807,10 +1841,12 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
-// configuration, with every setting the router takes from boot filled in. The settings tests build
-// the router through it, so dropping any hand-off here fails a case.
-func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.AppContextOptions {
-	built.SignInRule = signInRule(boot)
+// configuration, with rule, boot's sign-in rule (signInRule), and every setting the router takes
+// from boot filled in. The settings tests build the router through it, so dropping any hand-off
+// here fails a case.
+func appContextOptions(boot bootConfig, rule identity.SignInRule, built routes.AppContextOptions) routes.AppContextOptions {
+	built.SignInRule = rule
+	built.OutsideOrigin = boot.OutsideOrigin
 	built.AgentTokens = boot.AgentTokens
 	built.DefaultProject = boot.DefaultProject
 	built.OIDCAccounts = boot.OIDCAccounts

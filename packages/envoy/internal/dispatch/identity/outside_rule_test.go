@@ -43,6 +43,21 @@ func outsideAccount() oidc.Claims {
 	return oidc.Claims{Subject: "g-1", Email: "Outsider@Other.example", EmailVerified: true}
 }
 
+// Only a sign-in of the domain's people alone names the domain to Google as hd: the outside rule
+// admits accounts of no Workspace, which a chooser narrowed to the domain would hide, and a
+// Cognito group has no domain to name.
+func TestOutsideSignInRuleAsksGoogleForNoDomainHint(t *testing.T) {
+	for rule, want := range map[SignInRule]bool{
+		outsideRule(&stubLister{}): false,
+		workspace:                  true,
+		GroupRule{Group: "people"}: false,
+	} {
+		if got := rule.DomainHint(); got != want {
+			t.Errorf("%T.DomainHint() = %t, want %t", rule, got, want)
+		}
+	}
+}
+
 // A verified account outside the domain that an access list names signs in as a restricted
 // member, and the list is asked about its lowercased email.
 func TestOutsideSignInRuleAdmitsAListedVerifiedAccountAsRestricted(t *testing.T) {

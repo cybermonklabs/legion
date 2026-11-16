@@ -37,8 +37,8 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
-| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
-| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
+| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain. [Signing people in](#signing-people-in) covers all of it. |
+| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. `DISPATCH_OUTSIDE_ORIGIN` is a second address, for people from outside ([People from outside the domain](#people-from-outside-the-domain)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
 | An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. |
@@ -102,7 +102,8 @@ start, naming what is wrong.
 The Google client to create, in the Google Cloud console of the organization whose Workspace it
 is, is a **web application** OAuth client with `<DISPATCH_SERVER_URL>/auth/callback` as an
 authorized redirect URI. Set its OAuth consent screen's user type to **Internal**, so that only the
-organization's own accounts can complete the sign-in at Google. Google accepts an `https` redirect
+organization's own accounts can complete the sign-in at Google, unless people from outside sign in
+too (below). Google accepts an `https` redirect
 whose host ends in a public suffix, or plain `http` to a loopback address such as
 `http://127.0.0.1:8766/auth/callback` for a server on your own machine. Its client ID and secret
 are `DISPATCH_SIGNIN_CLIENT_ID` and `DISPATCH_SIGNIN_CLIENT_SECRET`. Dispatch asks Google for
@@ -159,6 +160,31 @@ return to domain mode unprotected: the same Google account signing in again find
 `sub` still on the row, so nothing ends sessions a pool-era cookie still held. Everyone then signs
 in again under the new issuer; a refresh token left from the old one would be refused at the
 first hourly confirmation, and is still redeemable at the old issuer until it is revoked there.
+
+### People from outside the domain
+
+With Google directly, `DISPATCH_SIGNIN_OUTSIDE=1` also signs in a person whose Google account is
+outside the domain, as a **restricted member**, while a project they are to work on names them:
+the project's owner is that email, or its owner put the email on the project's access list. A
+group on an access list never admits such a person; only the email itself does. Their Google
+account's email must be verified, and an address at the domain that is not one of the
+organization's own accounts is refused, as not in the domain. Someone outside the domain whom no
+list names reaches a page saying that no project's access list names them. Dispatch checks again
+at least hourly, as for everyone, and signs the person out once no list names them, or once the
+setting is off.
+
+For this the Google client's consent screen's audience is **External**. Dispatch asks for
+`openid`, `email` and `profile` alone, so the app can stay in Testing status with no list of test
+users, and its sign-ins do not lapse after seven days. Dispatch then names no domain to Google's
+chooser, so a person from outside sees their own accounts; your own people see every account in
+their browser and pick their organization's one.
+
+People from outside reach Dispatch however the deployment lets them, at its second address,
+`DISPATCH_OUTSIDE_ORIGIN`, such as `https://dispatch-outside.example`: an `https` address with no
+path, on another host than `DISPATCH_SERVER_URL`. A request to that host is answered as that
+address: the sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the Google
+client lists as a second redirect URI, and a write from a page there must come from that address.
+A link to a Dispatch page written on either address opens on the address the reader is on.
 
 ## Changing the session key
 

@@ -49,6 +49,11 @@ func (r GroupRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in through the sign-in pool", "issuer", issuer, "client_id", clientID, "group", r.Group)
 }
 
+// DomainHint is false: a sign-in pool's group has no Workspace domain to name.
+func (r GroupRule) DomainHint() bool {
+	return false
+}
+
 // CanRefresh is always true: a group's row always has something to refresh.
 func (r GroupRule) CanRefresh(stored string) bool {
 	return true

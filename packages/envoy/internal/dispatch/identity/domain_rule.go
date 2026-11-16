@@ -65,6 +65,12 @@ func (r DomainRule) BootLog(issuer, clientID string) {
 	slog.Info("dispatch: signing people in with Google for a Workspace domain", "issuer", issuer, "client_id", clientID, "domain", r.Domain)
 }
 
+// DomainHint is true: the domain's people alone sign in, so Google's account chooser is narrowed
+// to the domain.
+func (r DomainRule) DomainHint() bool {
+	return true
+}
+
 // CanRefresh is true only while stored, the account the address's row recorded, is set: a row
 // that records none (a sign-in under a group, from before the column, or any other way) has
 // nothing to check a refresh against, so the caller ends without asking Google.

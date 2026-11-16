@@ -191,18 +191,23 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 // testSigningKey is the one-key set appContextFor gives the router.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
-// appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store
-// and the request identity main builds for boot (requestIdentityFor) filled in, so a request
-// carrying signedIn's cookie is that person's. built.People is a store with no database unless the
-// case's requests record people (dev sign-in, a pool sign-in, header identity).
+// appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store,
+// the sign-in rule (signInRule, its lister over built.Store as main's is over the database) and the
+// request identity main builds for boot (requestIdentityFor) filled in, so a request carrying
+// signedIn's cookie is that person's. built.People is a store with no database unless the case's
+// requests record people (dev sign-in, a pool sign-in, header identity).
 func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
 	}
 	built.Sessions = currentSessions{}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn)
-	return routes.BuildAppContext(appContextOptions(boot, built))
+	rule, err := signInRule(boot, accessLister(built.Store))
+	if err != nil {
+		return nil, err
+	}
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	return routes.BuildAppContext(appContextOptions(boot, rule, built))
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -628,6 +633,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					t.Errorf("an account that left example.com, past the hour: whoami answered %d %s, want 401", response.Code, response.Body.String())
 				}
 			})
+		},
+		"DISPATCH_SIGNIN_OUTSIDE": func(t *testing.T) {
+			s := newOutsideSignIn(t, nil)
+			if !s.boot.SignInOutside {
+				t.Error("DISPATCH_SIGNIN_OUTSIDE=1: SignInOutside false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com"}); boot.SignInOutside {
+				t.Error("unset: SignInOutside true")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_SIGNIN_OUTSIDE": "true"}, "DISPATCH_SIGNIN_OUTSIDE")
+			// The router's sign-in asks Google for no hd, and admits the account a list names.
+			location, err := url.Parse(startSignIn(t, s.handler).Header().Get("Location"))
+			if err != nil || location.Query().Has("hd") || location.Query().Get("access_type") != "offline" {
+				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /auth/start redirected to %v (%v), want offline access and no hd", location, err)
+			}
+			if response := s.signInAs(t, s.handler, outsiderEmail); !signedInResponse(response) {
+				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: %s, whom PRIV lists, was answered %d, want a signed-in redirect", outsiderEmail, response.StatusCode)
+			}
+		},
+		"DISPATCH_OUTSIDE_ORIGIN": outsideOriginReachesItsReaders,
+		"DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER": func(t *testing.T) {
+			domain := map[string]string{"DISPATCH_SIGNIN_ISSUER": "http://127.0.0.1:9", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com", "DISPATCH_TEST_HOOKS": "1"}
+			refusedWith(t, domain, "DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER https://accounts.google.com")
+			domain["DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER"] = "1"
+			if boot := resolveWith(t, domain); !boot.TestSignInDomainIssuer || boot.SignInDomain != "example.com" {
+				t.Errorf("DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1: TestSignInDomainIssuer %t, SignInDomain %q", boot.TestSignInDomainIssuer, boot.SignInDomain)
+			}
+			delete(domain, "DISPATCH_TEST_HOOKS")
+			refusedWith(t, domain, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER")
 		},
 		"DISPATCH_IDENTITY_HEADER_TRUSTED": func(t *testing.T) {
 			for _, value := range []string{"", "true"} {
@@ -1459,7 +1493,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			// Its reader is the API's membership answer (Deps.AccessAccounts), which the router
 			// takes through appContextOptions: an account the list names reads it, and another
 			// account the deployment admits is refused before anything is read.
-			if got := appContextOptions(boot, routes.AppContextOptions{}).AccessAccounts; !slices.Equal(got, []string{broker}) {
+			if got := appContextOptions(boot, nil, routes.AppContextOptions{}).AccessAccounts; !slices.Equal(got, []string{broker}) {
 				t.Errorf("appContextOptions hands the router AccessAccounts %q, want %q", got, []string{broker})
 			}
 			issuer := oidctest.New(t)
@@ -1919,7 +1953,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.RouteRosterTTL != longTTL {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL: RouteRosterTTL = %v, want %v", boot.RouteRosterTTL, longTTL)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.RouteRosterTTL != longTTL {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.RouteRosterTTL != longTTL {
 				t.Errorf("DISPATCH_TEST_ROUTE_ROSTER_TTL: the router is handed RouteRosterTTL = %v, want %v", options.RouteRosterTTL, longTTL)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -1940,7 +1974,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.ListenerTakeoverWindow != shortWindow {
 				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: ListenerTakeoverWindow = %v, want %v", boot.ListenerTakeoverWindow, shortWindow)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.ListenerTakeoverWindow != shortWindow {
 				t.Errorf("DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW: the router is handed ListenerTakeoverWindow = %v, want %v", options.ListenerTakeoverWindow, shortWindow)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -1961,7 +1995,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.HorizonStallAfter != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: HorizonStallAfter = %v, want %v", boot.HorizonStallAfter, quick)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.HorizonStallAfter != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_STALL_AFTER: the router is handed HorizonStallAfter = %v, want %v", options.HorizonStallAfter, quick)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
@@ -1982,7 +2016,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot.HorizonWarnEvery != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: HorizonWarnEvery = %v, want %v", boot.HorizonWarnEvery, quick)
 			}
-			if options := appContextOptions(boot, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
+			if options := appContextOptions(boot, nil, routes.AppContextOptions{}); options.HorizonWarnEvery != quick {
 				t.Errorf("DISPATCH_TEST_HORIZON_WARN_EVERY: the router is handed HorizonWarnEvery = %v, want %v", options.HorizonWarnEvery, quick)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {

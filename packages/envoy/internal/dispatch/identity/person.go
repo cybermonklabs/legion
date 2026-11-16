@@ -62,6 +62,10 @@ type SignInRule interface {
 	Subject(claims oidc.Claims) string
 	// BootLog logs that boot is signing people in under this rule through issuer as clientID.
 	BootLog(issuer, clientID string)
+	// DomainHint says whether a sign-in's start names the rule's Workspace domain to the issuer
+	// as hd (oidc.CodeFlow.AuthURL), which narrows Google's account chooser to the domain and
+	// decides nothing: Person reads the token's own claims.
+	DomainHint() bool
 	// CanRefresh says whether stored, the subject a membership's row records
 	// (auth.PersonMembership.Subject, empty when it records none), lets this rule confirm it
 	// without asking the issuer first.

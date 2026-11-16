@@ -67,10 +67,14 @@ type AppContext struct {
 	Store          *store.Store
 	DefaultProject string
 	ServerURL      string
+	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
+	// none): a request whose Host is its host is answered as that origin (publicOrigin), and
+	// /auth/whoami names it after ServerURL's.
+	OutsideOrigin string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
-	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
-	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
-	// answer 503.
+	// members of a Cognito pool's group, the people of a Google Workspace domain, or those people
+	// and the accounts outside the domain that a project names. A nil SignIn is a test/local
+	// header-identity or dev sign-in server, whose /auth/start and /auth/callback answer 503.
 	SignIn     *oidc.CodeFlow
 	SignInRule identity.SignInRule
 	// InsecureCookie drops the Secure attribute from every cookie the router sets, for browsers
@@ -83,6 +87,10 @@ type AppContext struct {
 	// and empty otherwise. Only BuildAppContext sets it, from DevSignInOrigin, so no caller can
 	// turn the route on without the origin check.
 	devSignInHost string
+	// origins is what GET /auth/whoami answers as origins: the canonical origin and OutsideOrigin,
+	// in that order, where the server answers at both, and nil where it answers at one. Only
+	// BuildAppContext sets it.
+	origins []string
 	// eventHead reads the event_head GET /auth/whoami answers: nil for a context with a Store, whose
 	// router reads it through the API server it registers (api.Background's EventHead, an id at or
 	// below which every event is final), and, for a context with no Store, nothing, since it has no
@@ -118,8 +126,11 @@ type AppContextOptions struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	InsecureCookie  bool
-	EnvoyURL        string
+	// OutsideOrigin is the second origin the server answers at (cmd/dispatch:
+	// DISPATCH_OUTSIDE_ORIGIN), written as weborigin.Parse returns it; empty for none.
+	OutsideOrigin  string
+	InsecureCookie bool
+	EnvoyURL       string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -202,6 +213,17 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		}
 		devSignInHost = host
 	}
+	// A second origin is the second of two: whoami names the canonical one first, and a request
+	// whose Host is neither's is answered as the canonical one.
+	var origins []string
+	outsideOrigin := strings.TrimSuffix(opts.OutsideOrigin, "/")
+	if outsideOrigin != "" {
+		canonical, err := url.Parse(opts.ServerURL)
+		if err != nil || canonical.Scheme == "" || canonical.Host == "" {
+			return nil, fmt.Errorf("BuildAppContext: OutsideOrigin needs a ServerURL, the canonical origin it is the second of")
+		}
+		origins = []string{canonical.Scheme + "://" + canonical.Host, outsideOrigin}
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -210,6 +232,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
+		OutsideOrigin:          outsideOrigin,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		Docs:                   opts.Docs,
@@ -254,10 +277,12 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Store:          opts.Store,
 		DefaultProject: opts.DefaultProject,
 		ServerURL:      strings.TrimSuffix(opts.ServerURL, "/"),
+		OutsideOrigin:  outsideOrigin,
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,
 		InsecureCookie: opts.InsecureCookie,
 		devSignInHost:  devSignInHost,
+		origins:        origins,
 		apiDeps:        apiDeps,
 		eventHead:      eventHead,
 		lifetime:       opts.Lifetime,
@@ -346,11 +371,13 @@ func mount(ctx *AppContext) (*router, *http.ServeMux, api.Background) {
 
 // ───── auth ─────────────────────────────────────────────────────────────────
 
-// authStart sends the browser to the issuer to sign in. The sign-in in flight (its state, nonce,
-// the page it returns to and when it lapses) travels in the browser's dispatch_oauth_state cookie,
-// signed under a key derived from the current signing key (signOAuthState), and no process keeps
-// it: whichever process holding that key the issuer's redirect reaches completes the sign-in. An
-// issuer not yet discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
+// authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
+// the request came to (callbackURL), with the Workspace domain named as hd only where the rule
+// asks for it (SignInRule.DomainHint). The sign-in in flight (its state, nonce, the page it returns
+// to and when it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key
+// derived from the current signing key (signOAuthState), and no process keeps it: whichever
+// process holding that key the issuer's redirect reaches completes the sign-in. An issuer not yet
+// discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
 func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -366,7 +393,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, req), state, nonce, true)
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce, r.ctx.SignInRule.DomainHint())
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -391,8 +418,11 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // person's ID token and signs in only a person SignInRule admits (SignInRule.Person), keeping the
 // issuer's refresh token to confirm that hourly. Under a group the person is named by the email
 // their pool username carries; under a domain, by the email of a Google account of the domain,
-// and the account's subject is recorded with the sign-in, which ends the address's sessions when
-// another account held it (auth.PeopleStore.SignInSubject).
+// and, under outside sign-in, also by that of a verified Google account outside the domain that a
+// project names, as a restricted member; the account's subject is recorded with the sign-in, which
+// ends the address's sessions when another account held it (auth.PeopleStore.SignInSubject). The
+// callback URL the exchange names is the one of the origin the request came to (callbackURL), the
+// one authStart sent the issuer from that origin.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -400,7 +430,8 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // else, the issuer's authorization code is single-use, and Exchange accepts only an ID token
 // carrying the nonce the cookie bound the sign-in to. An exchange that meets an issuer this
 // process has not discovered (another process started the sign-in) is answered 503
-// SIGNIN_UNAVAILABLE; any other failed exchange 502.
+// SIGNIN_UNAVAILABLE; any other failed exchange 502. Access lists the rule cannot read
+// (identity.ErrMembershipUnreadable) are no refusal: 500 IDENTITY_ERROR, and no cookie.
 func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 	if r.ctx.SignIn == nil {
 		signInUnconfigured(w)
@@ -422,7 +453,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
 		return
 	}
-	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
+	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is not discovered", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
@@ -434,6 +465,12 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	person, err := r.ctx.SignInRule.Person(req.Context(), session.Claims)
+	if errors.Is(err, identity.ErrMembershipUnreadable) {
+		// The rule could not decide (the access lists did not answer): no refusal, and no cookie.
+		slog.Error("dispatch: sign-in failed: the access lists could not be read", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "error", err)...)
+		identity.WriteError(w, err)
+		return
+	}
 	if err != nil {
 		slog.Warn("dispatch: sign-in refused", append(r.ctx.SignInRule.RefusalLogFields(session.Claims), "reason", err)...)
 		writeSignInRefusedPage(w, person.Email, err)
@@ -513,13 +550,15 @@ func (r *router) authLogout(w http.ResponseWriter, req *http.Request) {
 // whoamiAnswer is what GET /auth/whoami answers a signed-in person, the Go mirror of
 // packages/contracts' AuthenticatedUser. Its fields are in their keys' order, which is the order the
 // answer's JSON has always carried them in. MemberKind is "restricted" for a restricted member and
-// absent for everyone else, so a full member's answer is byte for byte what it was before member
-// kinds existed.
+// absent for everyone else, and Origins names the server's two origins, the canonical one first,
+// only where it answers at a second (DISPATCH_OUTSIDE_ORIGIN): so a full member's answer from a
+// server at one origin is byte for byte what it was before either existed.
 type whoamiAnswer struct {
-	EventHead  string `json:"event_head"`
-	Kind       string `json:"kind"`
-	Login      string `json:"login"`
-	MemberKind string `json:"member_kind,omitempty"`
+	EventHead  string   `json:"event_head"`
+	Kind       string   `json:"kind"`
+	Login      string   `json:"login"`
+	MemberKind string   `json:"member_kind,omitempty"`
+	Origins    []string `json:"origins,omitempty"`
 }
 
 // authWhoami answers the signed-in person and event_head, the decimal id at or below which every
@@ -555,7 +594,7 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 		writeCodeError(w, http.StatusServiceUnavailable, "the event log's head could not be read", "EVENT_HEAD_READ_FAILED")
 		return
 	}
-	answer := whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email}
+	answer := whoamiAnswer{EventHead: strconv.FormatInt(head, 10), Kind: "user", Login: email, Origins: r.ctx.origins}
 	if r.ctx.Store != nil {
 		kind, err := access.MemberKind(req.Context(), r.ctx.Store.Pool, email)
 		if err != nil {
@@ -962,14 +1001,22 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL uses Dispatch's configured canonical public origin whenever it
-// is available. A backend request's Host and TLS state are used only for
-// unconfigured local deployments; forwarded headers are deliberately ignored.
-func callbackURL(serverURL string, req *http.Request) string {
-	return publicOrigin(serverURL, req) + "/auth/callback"
+// callbackURL is the sign-in callback of the origin the request came to (publicOrigin).
+func callbackURL(serverURL, outsideOrigin string, req *http.Request) string {
+	return publicOrigin(serverURL, outsideOrigin, req) + "/auth/callback"
 }
 
-func publicOrigin(serverURL string, req *http.Request) string {
+// publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's
+// Host is its host, compared without regard to case as DevSignInOrigin's host is; otherwise
+// Dispatch's configured canonical origin, serverURL, whenever it is set. A backend request's Host
+// and TLS state make the origin only for unconfigured local deployments; forwarded headers are
+// deliberately ignored.
+func publicOrigin(serverURL, outsideOrigin string, req *http.Request) string {
+	// outsideOrigin is written as weborigin.Parse returns it, scheme://host[:port] and nothing
+	// more, so what follows the scheme is its Host.
+	if _, host, ok := strings.Cut(outsideOrigin, "://"); ok && strings.EqualFold(req.Host, host) {
+		return outsideOrigin
+	}
 	if parsed, err := url.Parse(serverURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
 		return fmt.Sprintf("%s://%s", parsed.Scheme, parsed.Host)
 	}
@@ -980,13 +1027,17 @@ func publicOrigin(serverURL string, req *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, req.Host)
 }
 
+// enforceCookieOrigin refuses a browser write that carries a session cookie unless its Origin is
+// the origin of the request's own Host (publicOrigin), or it carries none and the browser says the
+// write is same-origin: so a page on one of the server's origins cannot write as a person signed in
+// on the other.
 func (r *router) enforceCookieOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if !unsafeMethod(req.Method) || strings.TrimSpace(req.Header.Get("Authorization")) != "" || !auth.HasSessionCookie(req) {
 			next.ServeHTTP(w, req)
 			return
 		}
-		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, req) {
+		if origin := req.Header.Get("Origin"); origin != "" && origin == publicOrigin(r.ctx.ServerURL, r.ctx.OutsideOrigin, req) {
 			next.ServeHTTP(w, req)
 			return
 		}
@@ -1047,14 +1098,16 @@ func writeCodeError(w http.ResponseWriter, status int, message, code string) {
 
 // writeSignInRefusedPage answers the sign-in callback, a top-level browser navigation back from
 // the issuer where JSON would be unreadable, for a person the issuer vouched for but Dispatch does
-// not admit, with the reason: one outside the group or the domain, or whose email Google has not
-// verified, each named by email; a Google sign-in that carries no email; or a sign-in that names
-// nobody by email.
+// not admit, with the reason: one outside the group or the domain, an account outside the domain
+// that no project's access list names, or one whose email Google has not verified, each named by
+// email; a Google sign-in that carries no email; or a sign-in that names nobody by email.
 func writeSignInRefusedPage(w http.ResponseWriter, email string, reason error) {
 	message := "This sign-in does not name a person by email. Sign in again, or with a different account."
 	switch {
 	case errors.Is(reason, identity.ErrNotMember):
 		message = html.EscapeString(email) + " is not in the group that may use Dispatch. Ask an administrator to add you, then sign in again."
+	case errors.Is(reason, identity.ErrNotListed):
+		message = html.EscapeString(email) + " is not on the access list of any Dispatch project. Ask a project's owner to add this address, then sign in again."
 	case errors.Is(reason, identity.ErrNotInDomain):
 		message = html.EscapeString(email) + " is not in the domain that may use Dispatch. Sign in with your Google Workspace account."
 	case errors.Is(reason, identity.ErrEmailNotVerified):
