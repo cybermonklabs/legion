@@ -50,8 +50,8 @@ func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFix
 }
 
 // newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
-// so the repair's xid window can be measured on it (route_xid_window_test.go); a nil tracer
-// leaves the pool untraced.
+// so the repair's xid window can be measured on it (issue_ask_repair_xid_window_test.go); a nil
+// tracer leaves the pool untraced.
 func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
 	t.Helper()
 	database := storetest.Open(t)

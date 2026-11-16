@@ -231,6 +231,67 @@ func runRigTransactionDoing(t *testing.T, database *store.Store, between func())
 // transaction (settleRoomWithin).
 func TestXidWindowSettlementVersionWrite(t *testing.T) {
 	service, database, tracer := xidService(t)
+	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
+	artifactID, before, generation := settlementFixture(t, service, database, alice)
+
+	report := tracer.Measure(t, database.Pool, func() {
+		service.settleRoomWithin(storetest.MarkXid(context.Background()), artifactID, generation, false)
+	})
+	if after := latestVersionNumber(t, service, artifactID); after != before+1 {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): settlement left the document at version %d, want %d", after, before+1)
+	}
+	storetest.AssertXidWindows(t, report, storetest.XidBatchedWindow)
+}
+
+// A closed issue's settlement versions what a person's browser stored before the close, and its
+// write phase holds the closed path's own writes beside the version and its anchors
+// (settlement.commitVersion): the delete of the pending row keeping the editor it credits as the
+// document's closed edit source (clearSettlementPending), and the delete of the document's edit
+// notice (dropEditNotice), here the held notice a person's version opened before the close. The
+// issue closes in the database alone once alice's edit is durable, as a close this process has not
+// heard of yet: the room stays resident, and the settlement reads the close off the issue row
+// under the owner's lock (lockArtifactOwner).
+func TestXidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
+	service, database, tracer := xidService(t)
+	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
+	artifactID, before, generation := settlementFixture(t, service, database, alice)
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_edit_notices (artifact_id, from_version, to_version, editors, last_editor, due_at)
+		values ($1, $2::integer - 1, $2, '["alice@example.com"]', null, null)
+	`, artifactID, before); err != nil {
+		t.Fatalf("hold the edit notice alice's version opened: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
+		t.Fatalf("close the issue: %v", err)
+	}
+
+	report := tracer.Measure(t, database.Pool, func() {
+		service.settleRoomWithin(storetest.MarkXid(ctx), artifactID, generation, false)
+	})
+	if after := latestVersionNumber(t, service, artifactID); after != before+1 {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): settlement left the document at version %d, want %d", after, before+1)
+	}
+	if kept := keptClosedEditSource(t, service, artifactID); kept == nil || !kept.SameAs(alice) {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the settlement kept %+v as the document's closed edit source, want %s: it did not settle the closed issue's document", kept, alice.ID)
+	}
+	var notices int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_edit_notices where artifact_id = $1`, artifactID).Scan(&notices); err != nil {
+		t.Fatalf("count the document's edit notices: %v", err)
+	}
+	if notices != 0 {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): the closed issue's settlement left the document's edit notice")
+	}
+	storetest.AssertXidWindows(t, report, storetest.XidWindowOf(2,
+		"the write phase's one batch - the pending row's delete keeping the closed edit source, the version and its anchors, the edit notice's delete and the version's event - and its COMMIT"))
+}
+
+// settlementFixture is the document the settlement window tests settle: one of the load harness's
+// large specs on issue DOC-1 with 20 open anchored asks, live in its room, where editor's browser
+// has bumped the revision token and the room has stored that update durably. It answers the
+// document, its latest version and the room generation a settlement of it runs at.
+func settlementFixture(t *testing.T, service *Service, database *store.Store, editor model.Actor) (string, int, uint64) {
+	t.Helper()
 	spec, quotes := storetest.XidSpec("DOC", 1)
 	artifactID := createDocument(t, database, "# First")
 	seedServiceText(t, service, artifactID, spec)
@@ -238,8 +299,7 @@ func TestXidWindowSettlementVersionWrite(t *testing.T) {
 	for i := range 20 {
 		seedAnchoredAsk(t, service, artifactID, fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), quotes[i*step], quotes[i*step])
 	}
-	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("Revision token r0", "Revision token r1"))
+	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
 	before := latestVersionNumber(t, service, artifactID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -255,14 +315,7 @@ func TestXidWindowSettlementVersionWrite(t *testing.T) {
 	generation := state.roomGeneration
 	state.mu.Unlock()
 	t.Logf("xid fixture: document of %d bytes with 20 open anchored asks", len(spec))
-
-	report := tracer.Measure(t, database.Pool, func() {
-		service.settleRoomWithin(storetest.MarkXid(context.Background()), artifactID, generation, false)
-	})
-	if after := latestVersionNumber(t, service, artifactID); after != before+1 {
-		t.Fatalf("XID RIG PROBLEM (not a finding about the code): settlement left the document at version %d, want %d", after, before+1)
-	}
-	storetest.AssertXidWindows(t, report, storetest.XidBatchedWindow)
+	return artifactID, before, generation
 }
 
 // The edit-notice sweep claims a due notice, then reads both versions it names, parses them to

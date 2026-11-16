@@ -33,7 +33,8 @@ import (
 // hour, so no settlement races the measured request, except where a route needs settlement to
 // have run first (the block ask). The fixture itself is xid_fixture_test.go's.
 //
-// This file, route_xid_window_test.go and delivery's xid_window_test.go build without the race
+// This file, the route window table's (route_xid_window_test.go and the files of its rows),
+// issue_ask_repair_xid_window_test.go and delivery's xid_window_test.go build without the race
 // detector (`//go:build !race`). Under it the rig judges no gap (storetest.XidJudgesGaps) and the
 // shape is the same rule in either build, so a race run of these tests proved nothing the plain
 // run does not, at about four times the plain run's cost: envoy-go's step "Test what the race
