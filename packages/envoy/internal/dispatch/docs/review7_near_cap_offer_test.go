@@ -60,7 +60,7 @@ func TestR7ADecodeCapRefusalIsOfferedARebuildTheRouteRefuses(t *testing.T) {
 func TestR7AStalledBacklogRefusalIsOfferedARebuildTheRouteRefuses(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
-	fillToStructs(t, service, room, maxUpdateItems-300_000)
+	fillToStructs(t, service, room, maxUpdateItems-440_000)
 	const parkedN = 110_000
 	f := newV1Frame(1).group(parkedN, 8_100_001, 1)
 	for range parkedN {

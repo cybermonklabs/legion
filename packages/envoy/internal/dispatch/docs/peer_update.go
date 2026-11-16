@@ -138,7 +138,8 @@ import (
 // filled the gap stands, deliberately: the parked content is another sender's and the sender
 // that filled the gap can neither see it nor send less of it. So a room can hold a backlog no
 // update will drain, and no error says so; what answers it is the room's own reading of its
-// queue (refusedStuckBacklog).
+// queue, which closes every browser for a rebuild where the room stands near a cap, and leaves
+// the room taking updates where the route would refuse that rebuild (refusedStuckBacklog).
 
 // maxPeerInsertAtTheBound is the most new content one update may carry into a document already at
 // or over the bound: enough for the editor's own derived writes - heading ids, list labels, anchor
@@ -227,19 +228,32 @@ const (
 )
 
 // refusal is the close a browser is given for an update this rule refused: the document's own
-// permanent close for the rules a rebuild cannot clear, the rebuild offer for the two caps only a
-// rebuild clears - the state cap and the decode cap - and the busy close for the pressure, which
-// passes by itself.
+// permanent close for the rules a rebuild cannot clear, the busy close for the pressure, which
+// passes by itself, and for the two caps a rebuild can clear - the state cap and the decode cap -
+// the rebuild offer where the rebuild route takes the room as it stands (rebuildTaken,
+// nearACapUnencoded) and the document's own close where it does not.
 //
-// The decode cap offers the rebuild because nothing else helps: a room at it refuses every update
+// The decode cap offers the rebuild where nothing else helps: a room at it refuses every update
 // that adds a struct, so the person's next edit is refused too, and the route accepts exactly
 // such a document (nearACap reads the struct count first). Closing it DOC_TOO_LARGE told the
 // person their document "is larger than a Dispatch document may be" and offered no remedy where
 // the one remedy was a click away (dispatch://INFRA-179, review 5820480859's finding 6).
-func (r peerRule) refusal() *websocket.PeerClose {
+//
+// Neither cap offers it where the route would refuse it. Each refuses an update for what that
+// update would add, so a room far from both refuses a frame larger than its share as readily as
+// a room at them: a frame of 60,000 structs into a room 100,000 short of the decode cap, and a
+// paste of 200 KiB into a room 100 KiB short of the state cap, were each closed DOC_NEEDS_REBUILD,
+// and the route answered the rebuild the editor then offered 409 DOCUMENT_LIVE (the
+// TestR7A...RefusalIsOfferedARebuildTheRouteRefuses rows, dispatch://INFRA-179, review 7). There
+// the edit is what is too large and a smaller one lands, which is what DOC_TOO_LARGE tells the
+// person.
+func (r peerRule) refusal(rebuildTaken bool) *websocket.PeerClose {
 	switch r {
 	case ruleStateCap, ruleDecodeCap:
-		return documentNeedsRebuild()
+		if rebuildTaken {
+			return documentNeedsRebuild()
+		}
+		return documentTooLarge()
 	case rulePressure:
 		return &websocket.PeerClose{Code: contracts.DocumentBusyCloseCode, Reason: contracts.DocumentBusyCloseReason}
 	default:
@@ -1058,8 +1072,9 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 //
 // The second is no judgement of the update at all but of the room it arrives in: a room whose
 // pending queue has stopped falling and whose decode cap leaves less than the drain that would
-// clear it can need is a room no update will make converge, and the browser is closed
-// DOC_NEEDS_REBUILD (refusedStuckBacklog).
+// clear it can need is a room no update will make converge, and where it stands near a cap the
+// browser is closed DOC_NEEDS_REBUILD (refusedStuckBacklog); a room far from every cap is left to
+// take the update, since the route would refuse the rebuild that close offers.
 //
 // Everything else is the apply's. The hook builds the allowance this update applies under
 // (peerApplyAllowance) and the roots it may name (peerAllowedRoots), hands both to the room's
@@ -1193,7 +1208,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		weighing.applies().noteParked(parked, info.Doc.PendingStats(), content)
 		return nil
 	}
-	return s.refusedByApply(info, allowance, scanning, err)
+	return s.refusedByApply(info, weighing, allowance, scanning, err)
 }
 
 // underPressure is whether room's next update is weighed under the budget's pressure: the budget
@@ -1265,7 +1280,8 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 }
 
 // refusedStuckBacklog is the second refusal the hook makes without applying: a browser's update
-// into a room whose pending queue has stopped falling and which the room can no longer drain.
+// into a room whose pending queue has stopped falling, which the room can no longer drain, and
+// which stands near a cap.
 //
 // ygo parks a struct that arrives before the struct it is written against and drains the queue
 // inside the next apply that fills the gap. From sjawhar/ygo v1.55.1-sami.8 the splits that drain
@@ -1295,9 +1311,42 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 // that little and whose queue is waiting on a browser that will yet send - is a room whose next
 // insert is refused with the same close for the cap alone (peerRule.refusal).
 //
+// So the refusal is made only where that remedy is one the route takes: where the room stands
+// near a cap by the route's own tests (nearACapUnencoded), as a room whose content has used the
+// decode cap's headroom up does. Elsewhere the room is left alone and takes every update its
+// allowance admits, because there a refusal could only lock every person out. A room far from
+// every cap whose queue passes the splits' share is one whose queue alone is more than a fifth of
+// what the decode cap leaves above its store: in a room whose store holds S structs, a queue of
+// delete ranges passes the share only past (maxUpdateItems-S)/5 of them, and a queue of structs
+// only past (maxUpdateItems-S)/4, which no honest sender parks; and the rebuild its close would
+// offer, the route answers DOCUMENT_LIVE wherever its own tests read the room far. Measured on the
+// reviewer's fixture, one browser's frame of 262,142 delete ranges over a client a 10-struct room
+// had never seen parked them all, and the room then refused every person's keystroke with drain
+// splits of 524,284 against a share of 393,211, offering a rebuild the route refused
+// (TestR7OneFrameOfParkedDeleteRangesLocksEveryEditorOutOfASmallDocument, dispatch://INFRA-179,
+// review 7). The frame itself cannot be refused for it: ygo bounds what an apply parks of delete
+// ranges by no field of its allowance (crdt.ApplyBudget.Bytes, "bounded by Decoded instead"), and
+// the hook reads no update's delete set before its apply.
+//
+// What bounds such a room's queue while it takes updates is what bounds every room's. ygo refuses
+// an update that would park past MaxPendingItems structs, or separately past MaxPendingItems
+// delete ranges, which New sets to maxUpdateItems, 1,048,576 (Service.maxPendingItems,
+// Server.MaxPendingItems; crdt.ErrPendingCap, refusedByApply). The room's stored state carries
+// the queue and its ceiling counts it (storedCeiling), so what the queue takes of the decode cap
+// comes off every later apply's allowance, and the room comes near the cap - where this refuses -
+// by its queue as by its content. And the room budget charges it, from the next commit the room's
+// update observer hands over: the parked structs in its struct total and the parked ranges in its
+// tracked state bytes, both as each apply's report gives them (crdt.ApplyReport.Structs and
+// .StateBytes, renderedReplica.chargeAdded, roomWeight). Measured on 2026-11-16 on the reviewer's
+// fixture, the frame of 262,142 ranges took the room's tracked state from 264 bytes to 1,040,583,
+// and two more frames of 300,000 took it to 3,424,133 with 862,142 ranges parked, where the next
+// frame of 300,000 was refused crdt.ErrPendingCap, and the keystrokes typed after the first frame
+// and after the refused one were all admitted.
+//
 // A room no load listed keeps no floor and is read for nothing, as it is bounded by nothing else
 // here. parked is the reading of the queue the hook already took for the room's ceiling
-// (weighPeerUpdate), so this makes none of its own.
+// (weighPeerUpdate), so this makes none of its own; the route's reading is taken only once the
+// first three tests hold, which a room whose queue is draining or empty never reaches.
 func (s *Service) refusedStuckBacklog(info websocket.PeerUpdateInfo, weighing *roomWeighing, parked crdt.PendingStats, ceiling uint64) error {
 	applies := weighing.applies()
 	if applies == nil {
@@ -1308,7 +1357,7 @@ func (s *Service) refusedStuckBacklog(info websocket.PeerUpdateInfo, weighing *r
 	}
 	splits := parked.Items + 2*parked.DeleteRanges
 	_, left := capShares(ceiling)
-	if splits <= left {
+	if splits <= left || !nearACapUnencoded(info.Doc, weighing.roomStateBytes()) {
 		return nil
 	}
 	refusal := documentNeedsRebuild()
@@ -1376,24 +1425,26 @@ func fillsAParkedGap(update []byte, missing []crdt.ClientID) bool {
 // An apply the allowance refused (crdt.ErrApplyBudget) reports what it reached of each of the
 // three counts, and the first of them at or past its own field names the rule that set that
 // field, which names the close: the decode count is every origin's and is DOC_TOO_LARGE, and the
-// structs and the bytes carry whichever rule set them (peerRule). One ygo refused for a root the
-// browser may not name (crdt.ErrRootNotAllowed) is DOC_UPDATE_REFUSED: the editor never sends
-// one. One whose merge would scan past its allowance (crdt.ErrIntegrateScanBudget) is
-// DOC_TOO_TANGLED, or DOC_NEEDS_REBUILD where the room's scan total was used up. One the room's
-// pending cap refused (crdt.ErrPendingCap) is returned as it is, the one error the hook answers
-// that is no *websocket.PeerClose, so ygo answers that browser SyncStatus(0) and leaves it
-// connected, exactly as a room without this hook does: the update parks past the cap only
-// because the structs it depends on have not arrived, and the browser that sends it again once
-// its gap fills is right to stay. Any other refusal of the bytes themselves
-// (crdt.ErrInvalidUpdate) is DOC_UPDATE_REFUSED: ygo will not read them, and the client that
-// sent them sends them again on every reconnect.
-func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAllowance, scanning *scanAllowance, err error) error {
+// structs and the bytes carry whichever rule set them (peerRule). A cap's close offers the
+// rebuild only where the route takes the room as the refusal leaves it, which a refused apply
+// leaves as it was (nearACapUnencoded, read only here, once the apply has failed). One ygo
+// refused for a root the browser may not name (crdt.ErrRootNotAllowed) is DOC_UPDATE_REFUSED:
+// the editor never sends one. One whose merge would scan past its allowance
+// (crdt.ErrIntegrateScanBudget) is DOC_TOO_TANGLED, or DOC_NEEDS_REBUILD where the room's scan
+// total was used up. One the room's pending cap refused (crdt.ErrPendingCap) is returned as it
+// is, the one error the hook answers that is no *websocket.PeerClose, so ygo answers that browser
+// SyncStatus(0) and leaves it connected, exactly as a room without this hook does: the update
+// parks past the cap only because the structs it depends on have not arrived, and the browser
+// that sends it again once its gap fills is right to stay. Any other refusal of the bytes
+// themselves (crdt.ErrInvalidUpdate) is DOC_UPDATE_REFUSED: ygo will not read them, and the
+// client that sent them sends them again on every reconnect.
+func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, weighing *roomWeighing, allowance peerAllowance, scanning *scanAllowance, err error) error {
 	var refused *crdt.RefusedUpdateError
 	errors.As(err, &refused)
 	switch {
 	case errors.Is(err, crdt.ErrApplyBudget):
 		rule := allowance.rule(refused)
-		refusal := rule.refusal()
+		refusal := rule.refusal(nearACapUnencoded(info.Doc, weighing.roomStateBytes()))
 		logRefusal(info, refusal, "dispatch: refused a browser's update its apply may not take", "rule", rule.why(),
 			"decoded", refused.Decoded, "decode_limit", allowance.budget.Decoded,
 			"structs", refused.Structs, "structs_limit", allowance.budget.Structs, "struct_rule_limit", allowance.structsLimit,
@@ -1414,7 +1465,6 @@ func (s *Service) refusedByApply(info websocket.PeerUpdateInfo, allowance peerAl
 		// The honest long session's updates scan 12 items at most, so a refusal is worth a line,
 		// with the budget's figures and the room's scan total as the refusal leaves them.
 		used, limit := s.budget.figures()
-		weighing := s.roomWeighingOf(info.Doc)
 		scanned, left := weighing.roomScans().figures()
 		slog.Warn("dispatch: refused a browser's update its room could not merge within its scan allowance",
 			"room", info.Room, "update_bytes", len(info.Update), "charged", used, "limit", limit,
@@ -1495,9 +1545,11 @@ func documentTooTangled() *websocket.PeerClose {
 }
 
 // documentNeedsRebuild is the refusal of an update the document cannot take until it is rebuilt -
-// one its room's used-up scan total refuses, and one that would take its state past
-// maxRoomStateBytes - permanent as documentTooLarge is and under the same code, with a reason of
-// its own: the editor offers the rebuild that would take the edit.
+// one its room's used-up scan total refuses, one that would take its state past maxRoomStateBytes
+// or its structs past maxUpdateItems in a room the rebuild route takes (peerRule.refusal), and one
+// into a room near a cap holding a backlog no update will drain (refusedStuckBacklog) - permanent
+// as documentTooLarge is and under the same code, with a reason of its own: the editor offers the
+// rebuild that would take the edit.
 func documentNeedsRebuild() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,

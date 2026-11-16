@@ -278,13 +278,16 @@ func elementInsert(t *testing.T, state []byte, elements int) []byte {
 // room's encoded state reached 22,119,318 bytes against the 16,777,216 one room may hold
 // (dispatch://INFRA-179, found by the byte half of the anchor). One parked frame is refused at the
 // cap and always was, which is why the review's one-frame test passed: the run is the shape that
-// finds it, so the run is the test.
+// finds it, so the run is the test. The close is the one the state cap gives the room it refuses
+// in: the document's own DOC_TOO_LARGE while more than nearTheStateCap is left, since a smaller
+// frame still lands, and the rebuild offer within it (peerRule.refusal, nearACapUnencoded).
 func TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
 	text := strings.Repeat("m", 900<<10)
 	admitted, refusedAt := 0, -1
 	for i := range 40 {
+		tracked := service.roomStateBytes(room)
 		err, applied := weighInto(service, room, marginRecord(uint64(6_100_001+i), 5, "k", text))
 		encoded := len(crdt.EncodeStateAsUpdateV1(room, nil))
 		if encoded > maxRoomStateBytes {
@@ -295,9 +298,13 @@ func TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive(t *testing.T)
 			admitted++
 			continue
 		}
+		want := contracts.DocumentTooLargeCloseReason
+		if int64(tracked)+nearTheStateCap > maxRoomStateBytes {
+			want = contracts.DocumentNeedsRebuildCloseReason
+		}
 		var closed *websocket.PeerClose
-		if !errors.As(err, &closed) || closed.Reason != contracts.DocumentNeedsRebuildCloseReason {
-			t.Fatalf("parked frame %d was answered %v, want it admitted or refused at the state cap", i, err)
+		if !errors.As(err, &closed) || closed.Reason != want {
+			t.Fatalf("parked frame %d was answered %v, want it admitted or refused at the state cap %q", i, err, want)
 		}
 		if refusedAt < 0 {
 			refusedAt = i

@@ -1148,11 +1148,24 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			},
 		},
 		{
-			// The decode cap offers the rebuild rather than the document's own close: a room at
-			// the cap refuses every update that adds a struct, so the person's next edit is
-			// refused too and a rebuild is the one thing that takes it, which the rebuild route
-			// accepts exactly such a document for (peerRule.refusal, nearACap).
+			// The decode cap offers the rebuild rather than the document's own close where the
+			// route takes the room: a room at the cap refuses every update that adds a struct, so
+			// the person's next edit is refused too and a rebuild is the one thing that takes
+			// it, which the rebuild route accepts exactly such a document for (peerRule.refusal,
+			// nearACapUnencoded, nearACap).
 			name: "an update past the decode cap", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentNeedsRebuildCloseReason, applies: true,
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				service, room, replica := peerUpdateRoom(t, ordinary, 0)
+				fillToStructs(t, service, room, maxUpdateItems-smallestReplacementAdds+1)
+				return service, room, gcFrameFrom(7, 1), replica
+			},
+		},
+		{
+			// The same rule in a room far from the cap refuses the frame for its own size, and
+			// the route would refuse the rebuild, so the close is the document's own: a smaller
+			// frame lands (peerRule.refusal,
+			// TestR7ADecodeCapRefusalIsOfferedARebuildTheRouteRefuses).
+			name: "a frame past the decode cap into a room far from it", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooLargeCloseReason, applies: true,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := peerUpdateRoom(t, ordinary, 0)
 				return service, room, gcFrameFrom(7, maxUpdateItems-room.StructCount()+1), replica
@@ -1327,6 +1340,22 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 			},
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica := peerUpdateRoom(t, ordinary, 0)
+				fillToStructs(t, service, room, maxUpdateItems-smallestReplacementAdds+1)
+				return service, room, gcFrameFrom(7, 1), replica
+			},
+		},
+		{
+			// The same rule's line in a room far from the cap, whose close is the document's own
+			// (peerRule.refusal): the line still names the decode cap.
+			name: "a frame past the decode cap into a room far from it",
+			code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooLargeCloseReason,
+			message: "dispatch: refused a browser's update its apply may not take",
+			figures: []string{
+				`rule="its apply would take the document past the items ygo decodes in one update"`,
+				"structs=", "structs_limit=", fmt.Sprintf("struct_rule_limit=%d", maxUpdateItems),
+			},
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				service, room, replica := peerUpdateRoom(t, ordinary, 0)
 				return service, room, gcFrameFrom(7, maxUpdateItems-room.StructCount()+1), replica
 			},
 		},
@@ -1402,12 +1431,16 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 // within the structs' share is admitted. A delete-only frame that cuts no item the room holds
 // integrates nothing and splits nothing, and is admitted at the cap.
 //
-// The close is 4413 DOC_NEEDS_REBUILD and not the document's own DOC_TOO_LARGE: a room at the
-// cap refuses every update that adds a struct, so the person's next edit is refused as well and
-// a rebuild is the only thing that will take it. Told their document "is larger than a Dispatch
-// document may be", the person was offered no remedy where the one remedy was a click away, and
-// the rebuild route accepts exactly such a document (peerRule.refusal, nearACap,
-// dispatch://INFRA-179, review 5820480859's finding 6).
+// The close is the document's own DOC_TOO_LARGE here, and DOC_NEEDS_REBUILD only in a room the
+// rebuild route takes. This room stands nearTheCap structs short of the cap, where a write's
+// smallest replacement and a write of its whole text still fit, so the route reads it far and
+// would answer a rebuild 409 DOCUMENT_LIVE: what each refused row's frame passes is its own
+// share, and a smaller frame lands (peerRule.refusal, nearACapUnencoded,
+// TestR7ADecodeCapRefusalIsOfferedARebuildTheRouteRefuses, dispatch://INFRA-179, review 7). A
+// room at the cap, which refuses every update that adds a struct, is closed DOC_NEEDS_REBUILD,
+// since a rebuild is then the only thing that takes the person's next edit and the route accepts
+// exactly such a document (TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason's row for it,
+// review 5820480859's finding 6).
 func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -1461,7 +1494,7 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 				if !called {
 					t.Fatal("the hook refused the frame before the apply, want the allowance's refusal inside it")
 				}
-				requireRefusedNeedsRebuild(t, err, room, before)
+				requireRefusedTooLarge(t, err, room, before)
 				return
 			}
 			if err != nil || !called {
@@ -1481,9 +1514,12 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 // browser of the document then reconnects against. Each is now admitted while the room's tracked
 // state, which each apply's report raises by what that apply added to the room's encoded state
 // (roomApplies.noteApply), has room for it under maxRoomStateBytes; the first that would pass it
-// is refused with DOC_NEEDS_REBUILD - the editor offers the rebuild that would take the edit - and
-// leaves the room as it was, and so is every one after it. A delete, which integrates nothing, is
-// admitted at the cap, so a document that has reached it can still be trimmed.
+// is refused and leaves the room as it was, and so is every one after it. The close is the
+// document's own DOC_TOO_LARGE while the room has more than nearTheStateCap left, since a smaller
+// update still lands and the route would refuse the rebuild, and DOC_NEEDS_REBUILD - the editor
+// offers the rebuild that would take the edit - within it (peerRule.refusal, nearACapUnencoded).
+// A delete, which integrates nothing, is admitted at the cap, so a document that has reached it
+// can still be trimmed.
 func TestBrowserUpdatesOfMarginBytesStopAtTheRoomsStateCap(t *testing.T) {
 	const updates, size = 20, 1_000_000
 	service, room, replica, _ := drainedPeerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n")
@@ -1504,10 +1540,14 @@ func TestBrowserUpdatesOfMarginBytesStopAtTheRoomsStateCap(t *testing.T) {
 			admitted++
 			continue
 		}
+		want := contracts.DocumentTooLargeCloseReason
+		if tracked+nearTheStateCap > maxRoomStateBytes {
+			want = contracts.DocumentNeedsRebuildCloseReason
+		}
 		var refusal *websocket.PeerClose
-		if !errors.As(err, &refusal) || refusal.Code != contracts.DocumentTooLargeCloseCode || refusal.Reason != contracts.DocumentNeedsRebuildCloseReason {
+		if !errors.As(err, &refusal) || refusal.Code != contracts.DocumentTooLargeCloseCode || refusal.Reason != want {
 			t.Fatalf("update %d, with the room tracked at %d bytes of state, was answered %v, want %d %q",
-				i, tracked, err, contracts.DocumentTooLargeCloseCode, contracts.DocumentNeedsRebuildCloseReason)
+				i, tracked, err, contracts.DocumentTooLargeCloseCode, want)
 		}
 		if !bytes.Equal(crdt.EncodeStateAsUpdateV1(room, nil), before) {
 			t.Fatalf("update %d changed the room though it was refused", i)
@@ -2224,9 +2264,10 @@ func peerDeletingInPieces(t *testing.T, room *crdt.Doc, cuts int) []byte {
 // Both sides of the tie are pinned, for the two caps a browser's update meets. Through the hook:
 // an update that lands a room exactly on the decode cap's allowance of structs, and one that
 // lands it exactly on what the state cap leaves above its tracked state, are admitted, while one
-// struct and one byte past them are refused with that cap's own close and that cap's own rule in
-// the line. Over the reading itself: a tie in each field, where the field at its figure names
-// nothing and the field past it names the rule that set it.
+// struct and one byte past them are refused with the close that cap gives the room - the
+// rebuild offer where the route takes the room, the document's own close where it would not -
+// and that cap's own rule in the line. Over the reading itself: a tie in each field, where the
+// field at its figure names nothing and the field past it names the rule that set it.
 func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.T) {
 	ordinary := "# Title\n\nOne paragraph of ordinary prose.\n"
 	const (
@@ -2247,8 +2288,14 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 		// added to what that cap allows, and what holds the room's replica while the hook reads
 		// it (the service lists it weakly).
 		at func(t *testing.T, past int) (*Service, *crdt.Doc, []byte, any)
+		// refusedWith requires the close the cap gives the room at's one past it: the rebuild
+		// offer where the route takes the room, the document's own close where it would refuse
+		// it (peerRule.refusal, nearACapUnencoded).
+		refusedWith func(t *testing.T, err error, room *crdt.Doc, before []byte)
 	}{
 		{
+			// nearTheCap structs short, where a write's smallest replacement and the whole
+			// text still fit, so the route reads the room far and the close is the document's.
 			name: "the decode cap",
 			rule: "its apply would take the document past the items ygo decodes in one update",
 			at: func(t *testing.T, past int) (*Service, *crdt.Doc, []byte, any) {
@@ -2257,8 +2304,10 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 				structs := peerApplyAllowance(0, 0, 0, structCeiling(room), false, peerPressure{}).budget.Structs
 				return service, room, gcFrameFrom(7, structs+past), replica
 			},
+			refusedWith: requireRefusedTooLarge,
 		},
 		{
+			// stateCapHeadroom of state left, within nearTheStateCap, where the route takes it.
 			name: "the state cap",
 			rule: "its apply would take the document's state past what one room may hold",
 			at: func(t *testing.T, past int) (*Service, *crdt.Doc, []byte, any) {
@@ -2267,6 +2316,7 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 				text := strings.Repeat("m", stateCapHeadroom-marginRecordBytes+past)
 				return service, room, marginRecord(7, 0, "k", text), replica
 			},
+			refusedWith: requireRefusedNeedsRebuild,
 		},
 	} {
 		for _, side := range []struct {
@@ -2292,7 +2342,7 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 					}
 					return
 				}
-				requireRefusedNeedsRebuild(t, err, room, before)
+				bound.refusedWith(t, err, room, before)
 				line := logs.Lines("dispatch: refused a browser's update its apply may not take")
 				if !strings.Contains(line, fmt.Sprintf("rule=%q", bound.rule)) {
 					t.Fatalf("the refusal logged\n%swant the line to name %q", line, bound.rule)
@@ -2303,8 +2353,10 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 	}
 
 	// The reading itself. Each row is an allowance, the counts a refused apply reported against
-	// it with a tie in one field, the rule the hook must name and the close that rule carries;
-	// the first two rows are the review's own figures.
+	// it with a tie in one field, the rule the hook must name and the close that rule carries in
+	// a room the rebuild route takes; the first two rows are the review's own figures. In a room
+	// the route would refuse, no rule's close offers the rebuild (peerRule.refusal,
+	// nearACapUnencoded).
 	for _, row := range []struct {
 		name      string
 		allowance peerAllowance
@@ -2379,9 +2431,13 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 				t.Fatalf("a refusal of %+v against %+v was named %q, want %q",
 					refused, row.allowance.budget, got.why(), row.rule.why())
 			}
-			if refusal := row.rule.refusal(); refusal.Reason != row.reason {
+			if refusal := row.rule.refusal(true); refusal.Reason != row.reason {
 				t.Fatalf("the rule closes the browser %d %q, want the reason %q",
 					refusal.Code, refusal.Reason, row.reason)
+			}
+			if refusal := row.rule.refusal(false); refusal.Reason == contracts.DocumentNeedsRebuildCloseReason {
+				t.Fatalf("the rule closes a browser in a room the route would not rebuild %d %q, offering the rebuild the route refuses",
+					refusal.Code, refusal.Reason)
 			}
 		})
 	}

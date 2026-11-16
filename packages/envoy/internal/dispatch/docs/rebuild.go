@@ -51,8 +51,11 @@ const smallestReplacementAdds = 3
 // The figure is the room's own: 64 KiB is what a browser may add past the document bound, so a
 // room with less than that above its state is one whose person meets the refusal for an ordinary
 // edit, and a room with more than that is one whose refusals are of pastes larger than any
-// allowance a full document has - those are the document bound's business, and a rebuild would
-// not help them.
+// allowance a full document has. Those are refused for the edit's own size, which a smaller edit
+// gets past, so the hook closes them DOC_TOO_LARGE and offers no rebuild (nearACapUnencoded): a
+// paste of 200 KiB into a room with 100 KiB of headroom was closed DOC_NEEDS_REBUILD, and the
+// rebuild it offered was answered 409 DOCUMENT_LIVE
+// (TestR7AStateCapRefusalOfAPastePastTheMarginIsOfferedARebuildTheRouteRefuses, review 7).
 const nearTheStateCap = maxPeerByteCreep
 
 // wholeTextWriteCeiling is more structs than the near-cap measure (wholeTextWriteAdds) counts for
@@ -284,6 +287,41 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 			scans, honestHandoffScans, roomScanTotal), true, nil
 	}
 	return "", false, nil
+}
+
+// nearACapUnencoded reports whether doc, a room resident in this server, stands near a cap by the
+// two of nearACap's tests that read neither its state nor its tree: its struct total as a load
+// decodes it (structCeiling) against the decode cap with a write's smallest replacement, its
+// whole text counted as nothing (nearTheDecodeCap), and tracked, the bytes of state the room is
+// tracked at (roomApplies.stateBytes), against the state cap's margin (nearTheStateCap). nearACap
+// makes both tests of the same room on the same figures, and each of its own readings can only
+// come out nearer - its encode is read beside tracked and the larger decides, and its whole-text
+// count adds to the smallest replacement - so where this answers near, the route takes the room
+// (RebuildDocument).
+//
+// It is the peer update hook's reading, which may encode nothing, decode nothing, read no tree
+// and make the replica's weak pointer strong for none of it (roomWeighing): the struct total is
+// a walk of the store's client slices and a read of its pending queue, and tracked is a field.
+// A refusal of a browser's update offers the rebuild only where this answers near
+// (peerRule.refusal, refusedStuckBacklog), so no close offers a rebuild the route answers 409
+// DOCUMENT_LIVE: a state-cap refusal of a paste past the margin, a decode-cap refusal of a frame
+// past the structs' share and a stalled backlog all closed DOC_NEEDS_REBUILD in rooms this route
+// refused (the TestR7A...RefusalIsOfferedARebuildTheRouteRefuses tests and
+// TestR7OneFrameOfParkedDeleteRangesLocksEveryEditorOutOfASmallDocument, dispatch://INFRA-179,
+// review 7).
+//
+// It answers far where the route may still take the room by its whole text or its scan total. A
+// refusal there is of the edit's own size, and its remedy is a smaller edit, which a room this
+// answers far still takes: at least smallestReplacementAdds items of decode headroom, of which
+// the structs' share admits a one-struct keystroke and the splits' share the item it cuts
+// (capShares), and nearTheStateCap bytes of state. The page offers such a room the rebuild on its
+// own reading of the decode cap (NearDecodeCap), which counts the room's blocks as well.
+func nearACapUnencoded(doc *crdt.Doc, tracked int64) bool {
+	if tracked+nearTheStateCap > maxRoomStateBytes {
+		return true
+	}
+	_, near := nearTheDecodeCap(structCeiling(doc), func() (uint64, bool) { return 0, false })
+	return near
 }
 
 // RebuildDocument replaces a history no write can change with one fresh update, inside the
