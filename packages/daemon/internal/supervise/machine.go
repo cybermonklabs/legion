@@ -1450,9 +1450,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // launch — minutes under Kubernetes, and 120 seconds was not enough for an operator's
 // `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
-// process to stop (holdSuspendUntilReady).
+// process to stop (holdSuspendUntilReady). A project pause's stop whose pause has ended cancels
+// nothing, since it stops nothing (pauseStopEnded, ErrPauseEnded): the start it would cut short
+// may be the very launch the resume let out.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
-	if _, suspending := ev.(RequestSuspend); suspending {
+	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()

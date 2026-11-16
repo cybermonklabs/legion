@@ -13,12 +13,14 @@
 -- database as well as by the pause's own transaction (store's Pause, which takes
 -- treelifecycle.Serialize first).
 --
--- project_pause_stops holds one row for each role a pause asks to stop: the pause, the claim, its
--- issue and role, when the pause asked, and when and how the stop ended. A stop ends `stopped`
--- (the role stopped, with launch_owed saying whether a launch was owed when it stopped),
--- `taken_over` (a park, a close, a linger, an operator, an earlier pause's late stop or an idle
--- release stopped the role first), `failed` (the claim failed or retired) or `cancelled` (the
--- resume ended the pause first). A pause has at most one open stop per claim. The open stops are
+-- project_pause_stops holds one row for each role a pause asks to stop: the pause, its project,
+-- the claim, its issue and role, when the pause asked, and when and how the stop ended. A stop
+-- ends `stopped` (the role stopped, with launch_owed saying whether a launch was owed when it
+-- stopped), `taken_over` (a park, a close, a linger, an operator, an earlier pause's late stop or
+-- an idle release stopped the role first), `failed` (the claim failed or retired) or `cancelled`
+-- (the resume ended the pause first). A pause has at most one open stop per claim. The stop names
+-- its pause by (pause_id, project), as a pod's hold does, so a stop of one project can never name
+-- another project's pause, and its issue must be an issue of that project. The open stops are
 -- what the state names as the roles the pause still waits on. The second index serves the reads
 -- by claim (the newest stop of a claim, whatever its pause) as well as by pause and claim.
 --
@@ -89,7 +91,8 @@ create unique index project_pauses_one_open on project_pauses (project) where en
 
 create table project_pause_stops (
   id bigserial primary key,
-  pause_id bigint not null references project_pauses (id),
+  pause_id bigint not null,
+  project text not null,
   claim text not null check (claim <> ''),
   issue text not null check (issue ~ '^[A-Z][A-Z0-9]*-[0-9]+$'),
   role text not null check (role <> ''),
@@ -97,6 +100,8 @@ create table project_pause_stops (
   ended_at timestamptz,
   ended_as text check (ended_as in ('stopped', 'taken_over', 'failed', 'cancelled')),
   launch_owed boolean not null default false,
+  foreign key (pause_id, project) references project_pauses (id, project),
+  constraint project_pause_stops_issue_of_project check (split_part(issue, '-', 1) = project),
   constraint project_pause_stops_end_has_its_kind check ((ended_at is null) = (ended_as is null)),
   constraint project_pause_stops_owed_only_when_stopped check (not launch_owed or ended_as = 'stopped')
 );

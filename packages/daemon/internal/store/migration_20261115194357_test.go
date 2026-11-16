@@ -102,7 +102,7 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("an end by someone else", "23514",
 		`update project_pauses set ended_at = $2, ended_by_kind = 'reviewer', ended_by_session = '' where id = $1`, paused, at)
 
-	stopRow := `insert into project_pause_stops (pause_id, claim, issue, role, asked_at) values ($1, $2, 'LEGION-208', 'implementer', $3)`
+	stopRow := `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at) values ($1, 'LEGION', $2, 'LEGION-208', 'implementer', $3)`
 	if err := exec(stopRow, paused, "legion-legion-legion-208-implementer", at); err != nil {
 		t.Fatalf("open the stop of the implementer: %v", err)
 	}
@@ -111,10 +111,13 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("a cancelled stop that owed a launch", "23514",
 		`update project_pause_stops set ended_at = $2, ended_as = 'cancelled', launch_owed = true where pause_id = $1`, paused, at)
 	refused("a stop of a pause no row holds", "23503", stopRow, paused+100, "legion-legion-legion-208-tester", at)
-	stopOf := `insert into project_pause_stops (pause_id, claim, issue, role, asked_at) values ($1, $2, $3, $4, $5)`
-	refused("a stop naming no claim", "23514", stopOf, paused, "", "LEGION-208", "tester", at)
-	refused("a stop naming no role", "23514", stopOf, paused, "legion-legion-legion-208-tester", "LEGION-208", "", at)
-	refused("a stop of something that is not an issue key", "23514", stopOf, paused, "legion-legion-legion-208-tester", "legion-208", "tester", at)
+	stopOf := `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at) values ($1, $2, $3, $4, $5, $6)`
+	refused("a stop naming no claim", "23514", stopOf, paused, "LEGION", "", "LEGION-208", "tester", at)
+	refused("a stop naming no role", "23514", stopOf, paused, "LEGION", "legion-legion-legion-208-tester", "LEGION-208", "", at)
+	refused("a stop of something that is not an issue key", "23514", stopOf, paused, "LEGION", "legion-legion-legion-208-tester", "legion-208", "tester", at)
+	refused("a stop of another project's issue", "23514", stopOf, paused, "LEGION", "legion-infra-infra-208-tester", "INFRA-208", "tester", at)
+	refused("a stop naming its pause under another project", "23503", stopOf, paused, "INFRA", "legion-infra-infra-208-tester", "INFRA-208", "tester", at)
+	refused("a stop naming no project", "23502", stopOf, paused, nil, "legion-legion-legion-208-tester", "LEGION-208", "tester", at)
 	refused("an end of a stop that says no way it ended", "23514", `update project_pause_stops set ended_at = $2 where pause_id = $1`, paused, at)
 	refused("a way a stop ended with no end", "23514", `update project_pause_stops set ended_as = 'stopped' where pause_id = $1`, paused)
 

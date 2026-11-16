@@ -697,8 +697,8 @@ func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
 				t.Fatalf("record the release: %v", err)
 			}
 			pause := seedWakePause(t, rig.pool, wakeAt.Add(-time.Hour))
-			if _, err := rig.pool.Exec(ctx, `insert into project_pause_stops (pause_id, claim, issue, role, asked_at, ended_at, ended_as)
-				values ($1, $2, 'LEGION-208', 'implementer', $3, $3, 'stopped')`,
+			if _, err := rig.pool.Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
+				values ($1, 'LEGION', $2, 'LEGION-208', 'implementer', $3, $3, 'stopped')`,
 				pause, string(wakeToken(t, claim.RoleImplementer)), wakeAt.Add(-30*time.Minute)); err != nil {
 				t.Fatalf("record the pause's stop: %v", err)
 			}

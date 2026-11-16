@@ -124,15 +124,31 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // pods.WakePause, which cancels the role's own backstop) with its start row
 // (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open phase serving its
 // generation, its backstop (store.ArmPodBackstopTx). A start owed once the pause has ended, with
-// no pause open after it, is logged as a released held row (decision 23); a later open pause
-// holds it, and that pause's resume logs it.
+// no pause open after it, is logged as a released held row (decision 23), and the outbox runs it
+// at once through the pacing; a later open pause holds it, and that pause's resume logs it.
+//
+// A stop that commits after its pause has ended, with no later pause open, owes the role a launch
+// whatever the stop met (afterResume): the machine decided it while the resume's transaction was
+// in flight, with the flag still set, and this transaction waited on the pause's row until the
+// resume committed. The role was live when the resume ended the pause, so the resume's promise
+// (R4 of dispatch://INFRA-3759) is that it runs again. Such a stop is recorded owing its launch.
+// A stop under a later open pause keeps the launch it was owed: that pause holds the role.
+//
+// A claim of an issue the daemon keeps no record of — an operator's own spawn — gets no start row,
+// since the outbox's start reads the issue's record, and no backstop, since no workflow serves
+// it. The launch it is owed is the resume's instead: one owed while its pause stood is launched by
+// that pause's resume (Resumed, resumeOwedSpawns), and one owed once its pause has ended, with no
+// pause open after it, is launched by rule as soon as this transaction commits (made.resume),
+// through the wake pacing as every resume of the rule is. A later open pause's resume launches one
+// owed under it.
 //
 // It is safe to make again: the machine owes a stop whose commit's answer was lost and makes it
 // again with its next claim write. RecordPauseStoppedTx answers false for a stop already recorded,
 // and then nothing of the first run is written twice: no second hold, no second backstop, and the
 // role's open resume — the first run's held wake — is left open, so the held wake taken again
-// conflicts with it (one open resume per role) and queues no second start. It writes no log line
-// of the stop itself: the machine writes supervise.PauseRoleStoppedMessage once it lands.
+// conflicts with it (one open resume per role) and queues no second start. A second resume by
+// rule of a claim the first already launched finds it running and does nothing. It writes no log
+// line of the stop itself: the machine writes supervise.PauseRoleStoppedMessage once it lands.
 func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supervise.PauseStop) error {
 	at := p.now().UTC()
 	var made pauseStopMade
@@ -150,16 +166,22 @@ func (p *projectPause) stopped(ctx context.Context, c supervise.Claim, stop supe
 		p.log.Info(pause.HeldRowReleasedMessage, "pause", stop.Pause, "row", made.released, "kind", string(record.OutboxKindSupervise),
 			"issue", c.Issue, "claim", string(c.Token))
 	}
+	if made.resume {
+		p.resumeOwedSpawn(c.Token, stop.Pause)
+	}
 	return nil
 }
 
 // pauseStopMade is what one stop transaction wrote that its caller acts on once it commits: a
-// start row queued (started), the start row's id where it is a released held row (released), and
-// how many of the claim's `pause_stop` rows it made due (expedited).
+// start row queued (started), the start row's id where it is a released held row (released), how
+// many of the claim's `pause_stop` rows it made due (expedited), and whether the claim is an
+// operator's spawn owed a launch now that its pause has ended, which no start row can carry
+// (resume).
 type pauseStopMade struct {
 	started   bool
 	released  int64
 	expedited int64
+	resume    bool
 }
 
 // stopTx is stopped's transaction.
@@ -186,7 +208,9 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if err != nil {
 		return made, err
 	}
-	first, err := store.RecordPauseStoppedTx(ctx, tx, held.ID, pauseStopClaimOf(c), at, stop.LaunchOwed)
+	afterResume := c.Released() && held.Ended() && !later
+	owed := stop.LaunchOwed || afterResume
+	first, err := store.RecordPauseStoppedTx(ctx, tx, held.ID, pauseStopClaimOf(c), at, owed)
 	if err != nil {
 		return made, err
 	}
@@ -215,12 +239,14 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 		}
 	}
 	issue, err := p.records.Issue(ctx, tx, c.Issue)
-	if err != nil || issue == nil {
-		// A claim of an issue the daemon keeps no record of — an operator's own spawn — has no
-		// workflow to queue a start or arm a backstop in.
+	if err != nil {
 		return made, err
 	}
-	if stop.LaunchOwed {
+	if issue == nil {
+		made.resume = afterResume
+		return made, nil
+	}
+	if owed {
 		taken, err := p.pods.TakeHeldPodWake(ctx, tx, c.Issue, c.Role, pods.WakePause, at, held.ID)
 		if err != nil || !taken {
 			return made, err
@@ -310,21 +336,55 @@ func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []sto
 // Resumed is what follows a resume's commit once the flag is cleared (pause.Effects, decision 22),
 // in its order: every machine of the project is posted the end of the pause
 // (supervise.ResumePause), which drops a hold of that pause, lets a launch its gate held into the
-// wake pacing and sends the task the claim holds where it may now go; the hold of each pod with a
+// wake pacing and sends the task the claim holds where it may now go; each operator's spawn the
+// pause stopped owing a launch is resumed by rule (resumeOwedSpawns); the hold of each pod with a
 // live role ends (endLiveHolds); every outbox lane of the project with a row is woken, so the rows
 // the pause held run now (outbox.wakeUnfinished); and one admission pass is applied
-// (applyResumePass). The resume launches no role itself: each held row launches its role through
-// the pacing when it runs.
+// (applyResumePass). Every launch goes through the pacing: each held row launches its role when
+// it runs, and an operator's spawn, whose launch no row can carry, is launched by the rule's
+// resume, which the pacing paces as it paces every resume of the rule.
 func (p *projectPause) Resumed(ctx context.Context, ended store.Pause) {
 	for _, m := range p.supervisor.supervised() {
 		token := m.View().Claim.Token
 		p.supervisor.post(token, supervise.ResumePause{Claim: token, Pause: ended.ID})
 	}
+	p.resumeOwedSpawns(ctx, ended)
 	p.endLiveHolds(ctx, ended)
 	if r := p.workflow.outboxWake.Load(); r != nil {
 		r.wakeUnfinished(ctx)
 	}
 	p.applyResumePass(ctx, ended)
+}
+
+// resumeOwedSpawns resumes by rule each operator's spawn whose stop ended `stopped` owing a launch
+// while ended stood, and which that stop still holds suspended
+// (store.Store.OwedLaunchesWithNoIssueRecord): a claim of an issue the daemon keeps no record of,
+// so no start row could carry its launch (the outbox's start reads the issue's record) and no wake
+// reaches it. Without this the claim would stay suspended, holding what the pause held for it,
+// until an operator resumed it. A failed read is logged, and those claims stay suspended until an
+// operator resumes them.
+func (p *projectPause) resumeOwedSpawns(ctx context.Context, ended store.Pause) {
+	owed, err := p.store.OwedLaunchesWithNoIssueRecord(ctx, ended)
+	if err != nil {
+		p.log.Error("pause: the resume could not read the operator's spawns the pause stopped owing a launch; each stays suspended until the operator resumes it",
+			"pause", ended.ID, "error", err)
+		return
+	}
+	for _, token := range owed {
+		p.resumeOwedSpawn(token, ended.ID)
+	}
+}
+
+// resumeOwedSpawn posts the rule's resume (supervise.RequestRuleResume) of token, an operator's
+// spawn that pause stopped owing a launch, which no start row can carry: the resume of the
+// pause's own (resumeOwedSpawns) or a stop that committed once that pause had ended (stopped).
+// The machine paces it (supervise's exemptWake exempts no rule's resume), finds a claim that
+// already runs nothing to do, and never resumes a claim the operator suspended. The post only
+// queues the event (supervisor.post), so a stop transaction, which runs inside its machine's own
+// decision, may make it.
+func (p *projectPause) resumeOwedSpawn(token claim.Token, pause int64) {
+	p.supervisor.post(token, supervise.RequestRuleResume{Claim: token,
+		Reason: fmt.Sprintf("the project's resume: pause %d stopped it with a launch owed, and its issue has no record a start row could carry", pause)})
 }
 
 // applyResumePass applies the resume's one admission pass as a fact of its own
@@ -431,6 +491,9 @@ func pauseStopClaimOf(c supervise.Claim) store.PauseStopClaim {
 //   - suspended: the claim is stopped. A stop the pause's suspension made has ended its stop row
 //     already, through the stop transaction (projectPause.stopped); a stop row still open is ended
 //     `taken_over`, since something else stopped the claim first (pauseStopAnswered);
+//   - the pause has ended (supervise.ErrPauseEnded): the resume committed after this row read its
+//     pause open and before the machine decided the stop, so nothing was stopped, and the row
+//     finishes without acting, as a row that reads its pause ended does;
 //   - held for the agent's turn or its launch (supervise.ErrSuspendHeld): the row asks again after
 //     pauseStopWait, or as soon as the stop transaction records the claim stopped and makes the
 //     row due;
@@ -449,8 +512,7 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 		return err
 	}
 	if held.Ended() {
-		r.log.Info("outbox pause stop finished without acting: its pause has ended", "row", row.ID, "issue", row.Issue,
-			"role", payload.Role, "pause", held.ID)
+		r.pauseStopEnded(row, payload.Role, held.ID)
 		return nil
 	}
 	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
@@ -470,6 +532,9 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 	switch {
 	case err == nil:
 		return r.pauseStopAnswered(ctx, row, held, machine.Claim())
+	case errors.Is(err, supervise.ErrPauseEnded):
+		r.pauseStopEnded(row, payload.Role, held.ID)
+		return nil
 	case errors.Is(err, supervise.ErrSuspendHeld):
 		return wait.Until(r.now().UTC().Add(pauseStopWait),
 			fmt.Sprintf("pause %d's stop of %s is held for the claim's turn or its launch", held.ID, token))
@@ -482,6 +547,13 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 	default:
 		return fmt.Errorf("stop claim %s for pause %d: %w", token, held.ID, err)
 	}
+}
+
+// pauseStopEnded logs a `pause_stop` row that finishes without acting because its pause has ended:
+// read ended by the row, or found ended by the machine that decided the stop.
+func (r *outbox) pauseStopEnded(row record.OutboxRow, role claim.Role, pause int64) {
+	r.log.Info("outbox pause stop finished without acting: its pause has ended", "row", row.ID, "issue", row.Issue,
+		"role", role, "pause", pause)
 }
 
 // pauseStopAnswered ends the pause's stop row of a claim that answered its stop with nil, by what

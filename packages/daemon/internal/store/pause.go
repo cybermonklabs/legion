@@ -600,15 +600,17 @@ func scanPauseStops(rows pgx.Rows) ([]PauseStop, error) {
 // OpenPauseStopTx opens pause's stop of one claim at at, unless that pause already has an open
 // stop of the claim (project_pause_stops_one_open), and answers whether it opened one. The pause's
 // own transaction opens one per live claim; the boot and the catch-up after a pause open one for
-// a claim the pause meets later, in the transaction that queues its `pause_stop` row.
+// a claim the pause meets later, in the transaction that queues its `pause_stop` row. The stop
+// names its issue's project, which the table holds to the pause's own (its foreign key on
+// (pause_id, project)), so a pause of one project cannot stop a role of another's issue.
 func OpenPauseStopTx(ctx context.Context, tx pgx.Tx, pause int64, stop PauseStopClaim, at time.Time) (bool, error) {
 	if err := validPauseStopClaim(stop); err != nil {
 		return false, err
 	}
 	var id int64
-	err := tx.QueryRow(ctx, `insert into project_pause_stops (pause_id, claim, issue, role, asked_at)
-		values ($1, $2, $3, $4, $5) on conflict do nothing returning id`,
-		pause, string(stop.Claim), stop.Issue, string(stop.Role), at).Scan(&id)
+	err := tx.QueryRow(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at)
+		values ($1, $2, $3, $4, $5, $6) on conflict do nothing returning id`,
+		pause, issueProject(stop.Issue), string(stop.Claim), stop.Issue, string(stop.Role), at).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -668,7 +670,7 @@ func (s *Store) RecordPauseStopped(ctx context.Context, pause int64, stop PauseS
 //     answers false, which tells the caller its other records stand too;
 //   - ended otherwise, or none: one stop already ended is written, as for the gate's own stop of
 //     a launch (decision 7), so the role's newest stop is always on record, and the call answers
-//     true.
+//     true. It names its issue's project, as OpenPauseStopTx's does.
 //
 // The stop transaction calls it under the issue's lock (LockIssueForPause), so two stops of one
 // claim never write it side by side.
@@ -692,9 +694,9 @@ func RecordPauseStoppedTx(ctx context.Context, tx pgx.Tx, pause int64, stop Paus
 			newest, at, launchOwed, string(PauseStopStopped))
 	default:
 		_, err = tx.Exec(ctx, `insert into project_pause_stops
-			(pause_id, claim, issue, role, asked_at, ended_at, ended_as, launch_owed)
-			values ($1, $2, $3, $4, $5, $5, $7, $6)`,
-			pause, string(stop.Claim), stop.Issue, string(stop.Role), at, launchOwed, string(PauseStopStopped))
+			(pause_id, project, claim, issue, role, asked_at, ended_at, ended_as, launch_owed)
+			values ($1, $2, $3, $4, $5, $6, $6, $8, $7)`,
+			pause, issueProject(stop.Issue), string(stop.Claim), stop.Issue, string(stop.Role), at, launchOwed, string(PauseStopStopped))
 	}
 	if err != nil {
 		return false, fmt.Errorf("record pause %d's stop of %s: %w", pause, stop.Claim, err)
@@ -724,6 +726,36 @@ func readOpenPauseStops(ctx context.Context, db rowsQuerier, pause int64) ([]Pau
 		return nil, fmt.Errorf("read the open stops of pause %d: %w", pause, err)
 	}
 	return stops, nil
+}
+
+// OwedLaunchesWithNoIssueRecord is every claim of held's project whose stop was recorded `stopped`
+// with a launch owed while held stood — a stop of held itself, or one that ended at or after
+// held began — whose issue the daemon keeps no record of (no row in issues) and which still
+// stands suspended by the release's source, as the pause's stop left it, in token order. Such a
+// claim is an operator's own spawn: no start row can carry its launch, since the outbox's start
+// reads the issue's record, so held's resume launches it by rule (projectPause.Resumed in
+// internal/daemon). A claim another source has suspended since, or that runs again, is not the
+// resume's to launch. held's project is its Dispatch key, as the stops hold it.
+func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) ([]claim.Token, error) {
+	rows, err := s.pool.Query(ctx, `select distinct s.claim from project_pause_stops s
+		join claims c on c.token = s.claim
+		where s.project = $1 and (s.pause_id = $2 or s.ended_at >= $3) and s.ended_as = $4 and s.launch_owed
+			and c.state = $5 and c.suspended_by = $6
+			and not exists (select 1 from issues i where i.key = s.issue)
+		order by s.claim`, held.Project, held.ID, held.Since, string(PauseStopStopped),
+		string(supervise.StateSuspended), string(supervise.SuspendedByReleased))
+	if err != nil {
+		return nil, fmt.Errorf("read the launches pause %d owes claims of no issue record: %w", held.ID, err)
+	}
+	tokens, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the launches pause %d owes claims of no issue record: %w", held.ID, err)
+	}
+	owed := make([]claim.Token, len(tokens))
+	for i, token := range tokens {
+		owed[i] = claim.Token(token)
+	}
+	return owed, nil
 }
 
 // LockIssueForPause takes the transaction-scoped advisory lock every writer of issue's pod hold

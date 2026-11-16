@@ -5365,7 +5365,8 @@ It writes the claim and the stop's record, and with them:
 - the hold of the role's pod (below);
 
 - for a role that is owed a launch, a held `start` row, which the resume launches through the wake pacing.
-  A role is owed a launch when it holds a task that no turn has taken, or when the stop met a launch of it: a wake parked in the pacing, a start that the stop cancelled, a launch held until its agent was ready, a relaunch waiting for its retry, or a launch that the gate held;
+  A role is owed a launch when it holds a task that no turn has taken, or when the stop met a launch of it: a wake parked in the pacing, a start that the stop cancelled, a launch held until its agent was ready, a relaunch waiting for its retry, or a launch that the gate held.
+  An operator's spawn, whose issue the daemon keeps no record of, gets no `start` row, and the resume launches it itself (below);
 
 - for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
 
@@ -5418,11 +5419,13 @@ Its wake is not: the role still launches at the resume, and its task names the r
 A resume is one transaction and then the daemon's own steps (`store.Resume`, and `projectPause.Resumed` in `internal/daemon/pause.go`).
 The transaction ends the pause, deletes its `pause_stop` rows that have not run, and cancels each stop that still waits for a turn to end, so that role runs on.
 Then the daemon clears its flag and tells each claim that the pause has ended, which lets a launch that the gate held into the wake pacing and sends a task that the claim held.
-It ends the hold of each pod in which a role is live, wakes every outbox lane of the project, and applies one admission pass.
-A stop that is already running when the resume commits still ends: the role stops, and where it is owed a launch its `start` row runs at once, through the pacing.
-The resume launches no role itself.
+It resumes each operator's spawn that the pause stopped with a launch owed, ends the hold of each pod in which a role is live, wakes every outbox lane of the project, and applies one admission pass.
+A `pause_stop` row that read its pause open before the resume, and whose stop the claim decides after the flag is cleared, stops nothing and finishes.
+A stop that the claim decided before the flag was cleared, and that ends after the resume commits, still ends: the role stops, and since the role was live when the resume ended the pause, it is owed a launch whatever it held, and its `start` row runs at once, through the pacing.
 Each held row runs, and the first row to run for a role launches it with a token from the wake pacing (`worker_wakes_per_minute`, 8 by default, and `worker_wake_burst`, 1 by default).
 The role's other held rows find it launching or live and are delivered to it.
+An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
+The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.
 `wakesWaiting` on `GET /legion/v1/state` lists the launches that still wait in the pacing.
 `legion state` prints them as its `wakes waiting:` line, and the summary of the controller's `read_state` counts them in its `wakes waiting <n>` line, with the moment the next one is due.

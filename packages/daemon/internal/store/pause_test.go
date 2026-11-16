@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -517,5 +518,68 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 	})
 	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, pausedAt.Add(2*time.Hour)); err != nil || set {
 		t.Fatalf("set the clock of a closed resume = %t, %v; want no open resume found", set, err)
+	}
+}
+
+// The resume launches by rule each operator's spawn its pause stopped owing a launch, since no
+// start row can carry it (projectPause.Resumed in internal/daemon), and the store names them: a
+// claim of an issue with no record whose stop of the pause, or a stop that ended while the pause
+// stood, is `stopped` with a launch owed and still holds it suspended by the release's source.
+// Not a stop owed nothing, not a claim of a recorded issue, not a claim that runs again or that
+// the operator has suspended since, and not a stop of an earlier pause that ended before this one
+// began.
+func TestTheResumeNamesTheOperatorsSpawnsItsPauseStoppedOwingALaunch(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	operator := PauseActor{Kind: PauseByOperator}
+	if _, err := st.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1)`); err != nil {
+		t.Fatalf("record LEGION-208: %v", err)
+	}
+	stopOf := func(issue string, state supervise.ClaimState, by supervise.SuspendSource) PauseStopClaim {
+		t.Helper()
+		token, err := claim.NewToken("legion", issue, claim.RoleArchitect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: issue, Issue: issue, Role: claim.RoleArchitect,
+			Generation: 1, State: state, SuspendedBy: by}); err != nil {
+			t.Fatalf("seed the claim of %s: %v", issue, err)
+		}
+		return PauseStopClaim{Claim: token, Tree: issue, Issue: issue, Role: claim.RoleArchitect, Generation: 1}
+	}
+	suspended, released := supervise.StateSuspended, supervise.SuspendedByReleased
+	stopped := func(pause int64, stop PauseStopClaim, at time.Time, owed bool) {
+		t.Helper()
+		if err := st.RecordPauseStopped(ctx, pause, stop, at, owed); err != nil {
+			t.Fatalf("record the stop of %s: %v", stop.Claim, err)
+		}
+	}
+
+	earlier, _ := pauseLegion(t, st, pausedAt.Add(-2*time.Hour))
+	stopped(earlier.ID, stopOf("LEGION-81", suspended, released), pausedAt.Add(-90*time.Minute), true)
+	if _, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: pausedAt.Add(-time.Hour)}); err != nil {
+		t.Fatalf("resume the earlier pause: %v", err)
+	}
+	pause, _ := pauseLegion(t, st, pausedAt)
+	spawn := stopOf("LEGION-77", suspended, released)
+	stopped(pause.ID, spawn, pausedAt.Add(time.Minute), true)
+	stopped(pause.ID, stopOf("LEGION-78", suspended, released), pausedAt.Add(time.Minute), false)
+	stopped(pause.ID, stopOf("LEGION-208", suspended, released), pausedAt.Add(time.Minute), true)
+	stopped(pause.ID, stopOf("LEGION-79", supervise.StateIdle, ""), pausedAt.Add(time.Minute), true)
+	stopped(pause.ID, stopOf("LEGION-80", suspended, supervise.SuspendedByOperator), pausedAt.Add(time.Minute), true)
+	late := stopOf("LEGION-82", suspended, released)
+	stopped(earlier.ID, late, pausedAt.Add(10*time.Minute), true)
+	ended, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: operator, At: pausedAt.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("resume LEGION: %v", err)
+	}
+
+	owed, err := st.OwedLaunchesWithNoIssueRecord(ctx, ended.Pause)
+	if err != nil {
+		t.Fatalf("read the spawns the pause owes a launch: %v", err)
+	}
+	if want := []claim.Token{spawn.Claim, late.Claim}; !slices.Equal(owed, want) {
+		t.Fatalf("the spawns pause %d owes a launch = %v, want %v", ended.Pause.ID, owed, want)
 	}
 }

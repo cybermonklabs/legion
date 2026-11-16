@@ -18,22 +18,34 @@ import (
 )
 
 // pauseFlag is the daemon's pause flag as a test drives it (Deps.Paused): the open pause's id, 0
-// while the project runs.
+// while the project runs. clearAfterNextRead has it read the pause once more and none after, as a
+// resume that clears the flag between two reads of one decision leaves it.
 type pauseFlag struct {
-	mu sync.Mutex
-	id int64
+	mu    sync.Mutex
+	id    int64
+	clear bool
 }
 
 func (f *pauseFlag) Paused() (int64, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.id, f.id != 0
+	id := f.id
+	if f.clear {
+		f.id, f.clear = 0, false
+	}
+	return id, id != 0
 }
 
 func (f *pauseFlag) set(id int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.id = id
+}
+
+func (f *pauseFlag) clearAfterNextRead() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clear = true
 }
 
 // stopCall is one call of the stop transaction: the claim and the stop it was handed, and whether
@@ -581,16 +593,118 @@ func TestAPauseStopNamesTheReleasesSourceAndAPausesID(t *testing.T) {
 		{By: SuspendedByOperator, Pause: 7},
 		{By: SuspendedByReleased, Pause: -1},
 	} {
-		h, _, stops := pauseHarness(t, queuedClaim())
+		h, flag, stops := pauseHarness(t, queuedClaim())
 		h.reach(StateIdle)
+		flag.set(7)
 		request.Claim = h.token
-		if err := h.handle(request); err == nil {
-			t.Fatalf("the suspension %+v was taken, want it refused", request)
+		if err := h.handle(request); err == nil || errors.Is(err, ErrPauseEnded) {
+			t.Fatalf("the suspension %+v answered %v, want it refused for its source or its id", request, err)
 		}
 		h.wantState(StateIdle)
 		h.wantCalls("Suspend", 0)
 		stops.wantStops(t)
 	}
+}
+
+// A pause's stop that reaches its claim once its pause is no longer the open one stops nothing,
+// whatever row it meets: the resume ended the pause between the `pause_stop` executor's read of
+// it and the machine's decision, or a later pause followed. An idle claim (suspend), a claim in a
+// turn (holdSuspension), a launch waiting for its agent (holdSuspendUntilReady), a claim already
+// suspended (suspendedAgain) and a claim the operator's held suspension holds each answer
+// ErrPauseEnded and are left as they stood: no process is stopped, no stop transaction is made,
+// and no hold of the ended pause is taken. Stopped instead, a role that holds nothing a wake would
+// bring back stays stopped after the resume until its next wake (R4 of dispatch://INFRA-3759).
+func TestAPauseStopWhosePauseHasEndedStopsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reach func(*harness)
+		state ClaimState
+		// open is the pause the project stands under when the stop arrives, 0 for none.
+		open int64
+		// heldBy is the source of the suspension the claim holds before the stop and after it.
+		heldBy SuspendSource
+	}{
+		{name: "an idle claim", reach: func(h *harness) { h.reach(StateIdle) }, state: StateIdle},
+		{name: "an idle claim under a later pause", reach: func(h *harness) { h.reach(StateIdle) }, state: StateIdle, open: 8},
+		{name: "a claim in a turn", reach: func(h *harness) { h.reach(StateWorking) }, state: StateWorking},
+		{name: "a launch waiting for its agent", reach: func(h *harness) { h.launch() }, state: StateLaunching},
+		{name: "a claim already suspended", reach: func(h *harness) { suspendedBy(h, SuspendedByReleased) }, state: StateSuspended},
+		{name: "a claim the operator's held suspension holds", reach: func(h *harness) {
+			h.reach(StateWorking)
+			if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator drains the daemon"}); !errors.Is(err, ErrSuspendHeld) {
+				h.t.Fatalf("the operator's suspension of a turn = %v, want it held", err)
+			}
+		}, state: StateWorking, heldBy: SuspendedByOperator},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, flag, stops := pauseHarness(t, queuedClaim())
+			tc.reach(h)
+			suspended := len(h.calls("Suspend"))
+			flag.set(tc.open)
+
+			if err := h.handle(pauseStop(h.token, 7)); !errors.Is(err, ErrPauseEnded) {
+				t.Fatalf("the stop of pause 7, which has ended, = %v, want ErrPauseEnded", err)
+			}
+
+			h.wantState(tc.state)
+			h.wantCalls("Suspend", suspended)
+			stops.wantStops(t)
+			if got := h.claim().SuspensionHeldBy; got != tc.heldBy {
+				t.Fatalf("the claim's held suspension is %q's after the stop, want %q's", got, tc.heldBy)
+			}
+			if pause, held := h.heldPause(); held && pause != 0 {
+				t.Fatalf("the claim holds a suspension of pause %d, want none of a pause", pause)
+			}
+		})
+	}
+}
+
+// cutShortSpawn holds Spawn until its context ends, and calls ended then, before the launch
+// returns: a moment between a suspension's cut of the start (Handle, stopStart) and its decision,
+// which runs once the cut launch lets the machine go.
+type cutShortSpawn struct {
+	*fake.Runtime
+	entered chan struct{}
+	ended   func()
+}
+
+func (g *cutShortSpawn) Spawn(ctx context.Context, _ runtime.SpawnSpec) (runtime.Locator, error) {
+	g.entered <- struct{}{}
+	<-ctx.Done()
+	g.ended()
+	return runtime.Locator{}, ctx.Err()
+}
+
+// A pause's stop that cut its claim's start short while its pause stood is decided as asked though
+// the resume ends the pause before the decision: the cut start left the claim launching with
+// nothing running, which only this stop's own row ends (holdSuspendUntilReady). Answered
+// ErrPauseEnded instead, the claim would stand launching over no process until the next boot. It
+// is suspended through the stop transaction owing the launch the stop cut, which the stop
+// transaction launches, since its pause has ended (projectPause.stopTx in internal/daemon).
+func TestAPauseStopThatCutAStartShortIsDecidedThoughItsPauseEnded(t *testing.T) {
+	spawn := &cutShortSpawn{entered: make(chan struct{}, 1)}
+	h, flag, stops := pauseHarness(t, queuedClaim(), func(d *Deps) {
+		spawn.Runtime = d.Runtime.(*fake.Runtime)
+		d.Runtime = spawn
+	})
+	spawn.ended = func() { flag.set(0) }
+	launched := make(chan error, 1)
+	go func() { launched <- h.m.Handle(h.ctx, RequestSpawn{Claim: h.token}) }()
+	select {
+	case <-spawn.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the launch never reached the runtime")
+	}
+	flag.set(7)
+
+	if err := h.handle(pauseStop(h.token, 7)); err != nil {
+		t.Fatalf("the stop that cut the start short, decided once its pause had ended, = %v; want the claim suspended", err)
+	}
+	if err := <-launched; !errors.Is(err, context.Canceled) {
+		t.Fatalf("the cut launch returned %v, want its context's cancellation", err)
+	}
+	h.wantState(StateSuspended)
+	stops.wantStops(t, stopCall{stop: PauseStop{Pause: 7, LaunchOwed: true}, landed: true})
 }
 
 // A stop transaction the store did not take is owed (decision 6): every claim write that lands
@@ -883,6 +997,21 @@ func TestALaunchThePauseGateHeldIsLetOutIntoThePacingOnceItsPauseEnds(t *testing
 		h, flag, stops, taken, _ := gate(t)
 		flag.set(0)
 
+		h.advance(0)
+
+		h.wantState(StateLaunching)
+		h.wantStarts(h.token, 1)
+		if n := taken(); n != 1 {
+			t.Fatalf("the let-out took %d tokens, want one reservation", n)
+		}
+		stops.wantStops(t)
+	})
+
+	t.Run("by the gate's own stop the resume overtakes between its reads", func(t *testing.T) {
+		h, flag, stops, taken, _ := gate(t)
+		flag.clearAfterNextRead()
+
+		h.advance(0)
 		h.advance(0)
 
 		h.wantState(StateLaunching)

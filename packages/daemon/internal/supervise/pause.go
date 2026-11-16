@@ -42,7 +42,10 @@ type PauseStop struct {
 	// LaunchOwed is whether the role is owed a launch at the resume (decision 6): it holds a task
 	// no turn has taken (holdsTask), or the stop met a launch — a wake parked in the pacing, a
 	// start the stop cancelled, a launch held until its agent is ready, a relaunch waiting its
-	// retry, or a launch the pause's gate held (suspendedFor, launchMet).
+	// retry, or a launch the pause's gate held (suspendedFor, launchMet). The stop transaction
+	// owes one besides to every stopped role whose stop commits after its pause has ended with no
+	// later pause open: the role was live when the resume ended the pause, so the resume's promise
+	// is that it runs again (projectPause.stopTx in internal/daemon).
 	LaunchOwed bool
 }
 
@@ -65,6 +68,27 @@ func (m *Machine) pauseOpen(pause int64) bool {
 	}
 	open, paused := m.deps.Paused()
 	return paused && open == pause
+}
+
+// pauseStopEnded is whether request is a project pause's stop (RequestSuspend.Pause) whose pause is
+// not the open one now (pauseOpen): the resume ended it after the stop was asked — between the
+// `pause_stop` executor's read of the pause and this decision, say — or a later pause followed
+// it, which asks a stop of its own. Such a stop stops nothing (suspendRequest, ErrPauseEnded), and
+// Handle cuts no start short for it. The gate's own stop names the pause it read open a moment
+// before, in the same decision, and is posted again where a resume came between (pauseStopDue).
+func (m *Machine) pauseStopEnded(request RequestSuspend) bool {
+	return request.Pause != 0 && !m.pauseOpen(request.Pause)
+}
+
+// startCutShort is whether the suspension being decided cut its claim's start short (Handle,
+// stopStart) and left it launching with nothing running, read without taking it, since that
+// suspension's own row takes it (holdSuspendUntilReady, stoppedAStart): a pause's stop that did
+// so while its pause still stood is decided as asked even if the pause ended meanwhile, since
+// nothing else would end that launch (suspendRequest).
+func (m *Machine) startCutShort() bool {
+	m.startMu.Lock()
+	defer m.startMu.Unlock()
+	return m.startStopped && m.launchRecordsNoProcess()
 }
 
 // holding is whether a suspension is held over the claim and still stands, read where a held
@@ -150,7 +174,10 @@ func (m *Machine) pauseGate(ctx context.Context, waiting *wake, pause int64) err
 // The pause it stops for is the open one when it runs. A launch held for a pause that has ended
 // by then, with no pause open, goes to the wake pacing rather than stopping the claim
 // (letOutHeldLaunch); one held for a pause that a later pause has followed is stopped for the
-// later one.
+// later one. The flag is read again where the stop is decided (suspendRequest), so a resume that
+// clears it between the two reads leaves a stop that stops nothing (ErrPauseEnded): the stop is
+// posted again at once, and that decision lets the launch out, unless the resume's event has
+// already (resumePause).
 func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 	waiting := m.wake
 	if waiting == nil || waiting.pause == 0 {
@@ -175,6 +202,10 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		err = suspend(m, ctx, request)
 	}
 	if err == nil || errors.Is(err, ErrSuspendHeld) {
+		return nil
+	}
+	if errors.Is(err, ErrPauseEnded) {
+		m.arm(TimerPause, 0, "")
 		return nil
 	}
 	if m.wake == waiting {

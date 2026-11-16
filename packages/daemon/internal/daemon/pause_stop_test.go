@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -86,7 +87,8 @@ func (r *pauseRig) claim(role claim.Role, state supervise.ClaimState) supervise.
 }
 
 // pauseLegion pauses LEGION through the store's own transaction with the pause service's stop
-// rows, as the service's Pause does, and answers the pause.
+// rows, as the service's Pause does, sets the service's flag from it as the outbox's sweep does
+// (pause.Service.Refresh), and answers the pause.
 func (r *pauseRig) pauseLegion() store.Pause {
 	r.t.Helper()
 	held, _, err := r.st.Pause(r.ctx, store.PauseRequest{Project: "LEGION", By: pauseOperator, Reason: "the model provider is down",
@@ -94,7 +96,20 @@ func (r *pauseRig) pauseLegion() store.Pause {
 	if err != nil {
 		r.t.Fatalf("pause LEGION: %v", err)
 	}
+	if err := r.pauses.service.Refresh(r.ctx); err != nil {
+		r.t.Fatalf("set the pause's flag: %v", err)
+	}
 	return held
+}
+
+// supervisor is an outbox's supervisor whose machines read the rig's pause flag
+// (supervise.Deps.Paused), as the daemon's own read the pause service's: a `pause_stop` row's stop
+// is decided against the pause that stands when the machine decides it.
+func (r *pauseRig) supervisor() (*supervisor, *fake.Runtime) {
+	r.t.Helper()
+	sup, rt := newOutboxSupervisor(r.t, "legion", r.t.TempDir())
+	sup.deps.Paused = r.pauses.service.Paused
+	return sup, rt
 }
 
 // resume ends LEGION's pause through the pause service, which logs each row the pause held.
@@ -586,7 +601,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 		t.Fatalf("rows the later pause holds = %+v, want the earlier pause's start", heldRows)
 	}
 
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup, _ := r.supervisor()
 	releasedClaim(t, sup, claim.RoleImplementer)
 	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, trees: r.st, project: "legion",
 		dispatchProject: "LEGION", log: quietLogger(), now: time.Now}
@@ -602,6 +617,72 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 	r.wantReleasedOnce(starts[0].id, later.ID)
 }
 
+// A stop that commits after its pause has ended, with no later pause open, owes the role a launch
+// even where it met none and holds no task: the machine decided the suspension while the resume's
+// transaction was in flight, with the flag still set, and its stop transaction then waited on the
+// pause's row and committed after the resume. The role was live when the resume ended the pause,
+// so the resume's promise is that it runs again (R4 of dispatch://INFRA-3759). An idle architect,
+// which is not its issue's open phase's worker and so is armed no backstop, is the sharpest case:
+// its stop is recorded owing a launch, it takes a held wake of the pause, and its start row is
+// queued and logged as a released held row, which the outbox runs at once through the pacing.
+func TestAStopThatCommitsAfterItsPauseEndedOwesTheRoleALaunch(t *testing.T) {
+	r := newPauseRig(t, claim.RoleArchitect)
+	held := r.pauseLegion()
+	r.resume()
+
+	r.mustStop(r.claim(claim.RoleArchitect, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
+
+	if got := r.stops(held.ID, claim.RoleArchitect); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
+		t.Fatalf("the architect's stops = %+v, want its cancelled stop recorded stopped and owing a launch", got)
+	}
+	starts := r.starts(claim.RoleArchitect)
+	if len(starts) != 1 || starts[0].wake != pods.WakePause || starts[0].pause != held.ID {
+		t.Fatalf("the architect's starts = %+v, want one wake start of pause %d for the launch it is owed", starts, held.ID)
+	}
+	if all, open := r.heldWakes(held.ID, claim.RoleArchitect); all != 1 || open != 1 {
+		t.Fatalf("the architect's held wakes = %d, %d open; want the one its stop took, open", all, open)
+	}
+	r.wantReleasedOnce(starts[0].id, held.ID)
+}
+
+// An operator's spawn — a claim of an issue the daemon keeps no record of — whose stop commits
+// after its pause has ended, with no later pause open, is owed its launch as every such stop is,
+// and no start row can carry it: the outbox's start reads the issue's record. So once the stop's
+// transaction commits it is resumed by rule (supervise.RequestRuleResume), which the wake pacing
+// paces as it paces every resume of the rule, and the claim runs again.
+func TestAStopOfAnOperatorsSpawnAfterItsPauseEndedResumesItByRule(t *testing.T) {
+	r := newPauseRig(t)
+	sup, rt := r.supervisor()
+	r.pauses.supervisor = sup
+	const spawned = "LEGION-77"
+	stopped := supervise.Claim{Token: mustClaimToken(t, spawned, claim.RoleArchitect), Project: "legion", Tree: spawned, Issue: spawned,
+		Role: claim.RoleArchitect, Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByReleased, Session: "ses-operator", SessionFile: t.TempDir() + "/session.jsonl"}
+	machine, _, err := sup.Create(r.ctx, stopped, "")
+	if err != nil {
+		t.Fatalf("create the operator's spawn: %v", err)
+	}
+	held := r.pauseLegion()
+	r.resume()
+
+	r.mustStop(stopped, supervise.PauseStop{Pause: held.ID})
+
+	if !testwait.Holds(testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll, func() bool {
+		return len(resumesOf(rt, stopped.Token)) == 1
+	}) {
+		c := machine.Claim()
+		t.Fatalf("the operator's spawn is %s by %s after its stop committed once its pause had ended, resumed %d times; want it resumed by rule once",
+			c.State, c.SuspendedBy, len(resumesOf(rt, stopped.Token)))
+	}
+	if got := r.count(`select count(*) from project_pause_stops where pause_id = $1 and claim = $2 and ended_as = 'stopped' and launch_owed`,
+		held.ID, string(stopped.Token)); got != 1 {
+		t.Fatalf("the spawn's stops recorded stopped owing a launch = %d, want 1", got)
+	}
+	if got := r.count(`select count(*) from outbox where issue = $1`, spawned); got != 0 {
+		t.Fatalf("outbox rows of %s = %d, want none: no start row can carry the launch of an issue with no record", spawned, got)
+	}
+}
+
 // The `pause_stop` executor ends the pause's stop row by what the claim answers: a row whose
 // pause has ended finishes and asks nothing; a role with no machine ends `failed`; a queued claim,
 // which runs nothing and launches nothing while the pause holds its start, ends `stopped` with no
@@ -611,7 +692,7 @@ func TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers(t *testing.T) {
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger}
 	r := newPauseRig(t, roles...)
 	held := r.pauseLegion()
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup, _ := r.supervisor()
 	for role, state := range map[claim.Role]supervise.ClaimState{claim.RoleImplementer: supervise.StateQueued,
 		claim.RoleReviewer: supervise.StateSuspended, claim.RoleMerger: supervise.StateLaunchUncertain} {
 		c := r.claim(role, state)
@@ -657,6 +738,64 @@ func TestAPauseStopEndsItsStopRowByWhatTheClaimAnswers(t *testing.T) {
 	m, _ := sup.Machine(mustClaimToken(t, pauseIssue, claim.RoleMerger))
 	if state := m.Claim().State; state != supervise.StateLaunchUncertain {
 		t.Fatalf("the merger is %s after its ended pause's stop, want it untouched", state)
+	}
+}
+
+// pauseReadThenResumed is the store as the `pause_stop` executor meets it when the resume commits
+// right after the executor has read its pause open (PauseByID): resumed runs there, before the
+// executor asks the claim's machine to stop.
+type pauseReadThenResumed struct {
+	outboxTrees
+	resumed func()
+}
+
+func (s pauseReadThenResumed) PauseByID(ctx context.Context, id int64) (store.Pause, error) {
+	held, err := s.outboxTrees.PauseByID(ctx, id)
+	s.resumed()
+	return held, err
+}
+
+// The resume can commit between the `pause_stop` executor's read of its pause, which finds it
+// open, and the machine's decision of the stop: a row under a live lease outlives the resume's
+// delete, the flag is cleared, and the resume's event reaches the machine first. The stop is then
+// decided for a pause that has ended and stops nothing (supervise.ErrPauseEnded). A ready
+// architect, which holds nothing a wake would bring back, is the sharpest case: stopped there, it
+// would stay stopped after the resume until its next wake. No process is stopped, no stop
+// transaction records it stopped, its stop row stays the one the resume cancelled, and the row
+// finishes without acting, saying so as a row that reads its pause ended does.
+func TestAPauseStopTheResumeOvertakesStopsNothing(t *testing.T) {
+	r := newPauseRig(t, claim.RoleArchitect)
+	sup, rt := r.supervisor()
+	sup.deps.PauseStopped = r.pauses.stopped
+	architect := launchedClaim(t, sup, pauseIssue, pauseIssue, claim.RoleArchitect)
+	machine, _ := sup.Machine(architect)
+	held := r.pauseLegion()
+	logs := &testlog.Buffer{}
+	runner := &outbox{pool: r.pool, records: record.NewStore(), supervisor: sup, project: "legion", dispatchProject: "LEGION",
+		log: slog.New(slog.NewJSONHandler(logs, nil)), now: time.Now,
+		trees: pauseReadThenResumed{outboxTrees: r.st, resumed: func() {
+			ended := r.resume()
+			if err := machine.Handle(r.ctx, supervise.ResumePause{Claim: architect, Pause: ended.ID}); err != nil {
+				t.Errorf("the resume's event: %v", err)
+			}
+		}}}
+
+	if err := runner.execute(r.ctx, mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "pause_stop", Tree: pauseIssue,
+		Role: claim.RoleArchitect, Generation: 1, Pause: held.ID, Reason: "project LEGION is paused"}, time.Now())); err != nil {
+		t.Fatalf("the stop the resume overtook = %v, want it finished without acting", err)
+	}
+
+	if c := machine.Claim(); c.State != supervise.StateReady {
+		t.Fatalf("the architect is %s by %s after the stop the resume overtook, want it still ready", c.State, c.SuspendedBy)
+	}
+	if got := len(rt.CallsOf("Suspend")); got != 0 {
+		t.Fatalf("the runtime was asked to stop %d processes, want none", got)
+	}
+	if got := r.stops(held.ID, claim.RoleArchitect); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopCancelled}) {
+		t.Fatalf("the architect's stops = %+v, want the one the resume cancelled, and none recorded stopped", got)
+	}
+	if got := strings.Count(logs.String(), `"msg":"outbox pause stop finished without acting: its pause has ended"`); got != 1 {
+		t.Fatalf("the row's lines that it finished without acting = %d, want 1; log:\n%s", got, logs.String())
 	}
 }
 

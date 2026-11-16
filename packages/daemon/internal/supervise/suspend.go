@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/sjawhar/legion/daemon/internal/wait"
@@ -11,6 +12,14 @@ import (
 // machine holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller
 // that keeps the request durably asks again, and the claim answers nil once it is suspended.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
+
+// ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
+// that pause is no longer the open one (Deps.Paused): the pause the stop names has ended, so
+// nothing was stopped. The resume ended it between the stop's ask and the machine's decision —
+// the `pause_stop` executor read the pause open, and the resume committed before its Handle was
+// decided — or a later pause followed it, which asks its own stop. It is not a refusal: the
+// stop's asker is answered that its pause no longer asks anything (suspendRequest).
+var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing was stopped")
 
 // suspend stops the process and keeps the session. The daemon's own suspension ends the claim's
 // phase (the workflow suspends a worker only when its issue closes or its run is over), so a task
@@ -309,6 +318,14 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 // claim and what becomes of the phase's task. So is a project pause's id on any source but the
 // release's, or an id that is no pause's (RequestSuspend.Pause). Each is refused before anything
 // is stopped, rather than a panic, a journal line with no reason, or a claim suspended by nobody.
+//
+// A project pause's stop whose pause is no longer the open one is answered ErrPauseEnded before
+// anything reads the held suspension, in every row, so it stops nothing and takes no hold over: the
+// resume ended the pause after the stop was asked (pauseStopEnded). The one such stop decided
+// here is the one that already cut its claim's start short while its pause still stood (Handle,
+// stopStart): that start leaves the claim launching with nothing running, which only this stop's
+// own row completes (holdSuspendUntilReady), and the stop transaction then owes the role its
+// launch, since its pause has ended (projectPause.stopTx in internal/daemon).
 func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	request, ok := ev.(RequestSuspend)
 	if !ok {
@@ -323,6 +340,9 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 	if request.Pause != 0 && request.By != SuspendedByReleased {
 		return RequestSuspend{}, fmt.Errorf("suspend %s: the suspension names pause %d with source %q; a pause's stop names its pause's id with source %q",
 			m.claim.Token, request.Pause, request.By, SuspendedByReleased)
+	}
+	if m.pauseStopEnded(request) && !m.startCutShort() {
+		return RequestSuspend{}, fmt.Errorf("suspend %s for pause %d: %w", m.claim.Token, request.Pause, ErrPauseEnded)
 	}
 	// An operator's held suspension wins everywhere — launching, registered, ready while its
 	// stop retries, and working — until it completes. A later daemon linger/leave request must
