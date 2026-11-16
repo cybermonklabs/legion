@@ -447,8 +447,10 @@ func (d *scratchDispatch) start() {
 			t.Fatalf("scratch Dispatch exited before it was ready (%v):\n%s", err, output.String())
 		default:
 		}
-		// Only this process's own line says it serves the socket: the kernel queues a connection
-		// on it before Dispatch accepts any, and an answer is this Dispatch's only once it has.
+		// The wait names this start's process by its own output, a buffer each start makes anew:
+		// its line that it serves the port, then its 200. The port is the socket's alone (ownPort),
+		// the test never accepts on its copy, and stop waited the last Dispatch out, so this process
+		// is the only one that can answer there anyway; the line makes that explicit.
 		if !strings.Contains(output.String(), listening) {
 			return false
 		}
