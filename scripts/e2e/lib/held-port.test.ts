@@ -358,7 +358,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     expect(closeOnExec(pid, holders[0] as number)).toBe(true);
   }, 60_000);
 
-  test("a command that cannot run exits non-zero, and leaves nothing holding its port", async () => {
+  test("a command that cannot run exits non-zero, and leaves nothing holding its socket", async () => {
     const portFile = join(work, "missing.port");
     const missing = join(work, "no-such-command");
     const running = exec("exec of a missing command", portFile, [missing]);
@@ -366,10 +366,39 @@ describe.skipIf(skip)("held-port.py exec", () => {
     expect(code, describeRun(running)).toBe(127);
     expect(running.output()).toContain(`held-port: execute ${missing}`);
     expect(await readPort(portFile, running)).toBeGreaterThan(0);
-    // The socket closes with the last process holding it, and every process the helper could have
-    // handed it to is in the helper's session: none of them is left. A bind of the port would not
-    // say so, since any other process on the machine may bind a port the helper freed.
+    // Every process the helper could have handed its socket to is in the helper's session: none
+    // of them is left. A bind of the port would not say the socket is gone, since any other
+    // process on the machine may bind a port the helper freed.
     expect(sessionMembers(running.process.pid)).toEqual([]);
+
+    // The socket itself, by its identity, which a copy the helper handed to a process outside its
+    // session would keep listening. The helper's own socket is gone the moment it exits, before
+    // its inode can be read, so this run's is a keeper's, read while it listens and handed over:
+    // once the keeper is gone too, a copy anything else still held would still listen.
+    const socket = join(work, "missing-keeper.sock");
+    const keptFile = join(work, "missing-kept.port");
+    const keeper = start("the keeper", [
+      "python3",
+      helper,
+      "keep",
+      "--port-file",
+      keptFile,
+      "--socket",
+      socket,
+    ]);
+    const kept = listeningInode(await readPort(keptFile, keeper));
+    if (!kept) throw new Error(`the keeper's port does not listen: ${describeRun(keeper)}`);
+    const handed = exec(
+      "exec of a missing command from the keeper",
+      join(work, "missing-handed.port"),
+      [missing],
+      socket
+    );
+    expect(await handed.process.exited, describeRun(handed)).toBe(127);
+    expect(sessionMembers(handed.process.pid)).toEqual([]);
+    keeper.process.kill("SIGTERM");
+    expect(await keeper.process.exited, describeRun(keeper)).toBe(0);
+    expect(listens(kept)).toBe(false);
   }, 60_000);
 });
 
