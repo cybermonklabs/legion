@@ -987,13 +987,24 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // decide because a refusal raised through the library's store hook arrives as invalid_request,
 // and this one is invalid_grant: the subject token is sound and it is the broker's state that
 // refuses it, exactly as a session name another principal holds is.
+//
+// A registration that names a key (the thumbprint the registrar sent, which the Legion daemon
+// sends for each role's own agent-secrets key) admits only an exchange whose DPoP proof is of that
+// key, and refuses one proved with another invalid_grant, naming the session. The roles of one
+// issue pod read one exchange token and are registered for one pod uid, so this is what keeps a
+// role holding the pod's token and a key of its own from trading for a sibling role's session. A
+// registration that names none is the pod's, as a session watch registers a session pod's one
+// session.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
 	}
 	name, _ := session.Extra[ClaimSession].(string)
-	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name)
-	if err != nil {
+	registered, err := p.store.PodSessionRegistered(ctx, session.Instance, name, session.GetDPoPJWKThumbprint())
+	switch {
+	case errors.Is(err, oauthstore.ErrPodSessionBoundToAnotherKey):
+		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", name)
+	case err != nil:
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	if !registered {

@@ -276,41 +276,65 @@ func (s *Store) ReserveSessions(ctx context.Context, reserved map[string]string)
 	return left, nil
 }
 
+// ErrPodSessionBoundToAnotherKey is PodSessionRegistered's answer for a live registration of the
+// pod and session that is bound to a key other than the one the exchange's proof presented.
+var ErrPodSessionBoundToAnotherKey = errors.New("the pod's registration for this session is bound to another key")
+
 // RegisterPodSession records that the pod podUID may exchange under the session name session,
-// until PodSessionRetention from now, and answers when that registration runs out. A pod uid
-// already registered for the name has its registration extended rather than duplicated, so a
-// registrar that writes the same row each time a pod starts, or renews it while the pod runs,
-// keeps the pod writing and never shortens what another write left.
+// until PodSessionRetention from now, and answers when that registration runs out and the key it
+// is bound to as it now stands. A pod uid already registered for the name has its registration
+// extended rather than duplicated, so a registrar that writes the same row each time a pod
+// starts, or renews it while the pod runs, keeps the pod writing and never shortens what another
+// write left.
 //
 // It is what separates two pods of one listed account, which the exchange reads as one principal:
 // the name belongs to the account, so nothing in the claim on the name can tell them apart, and
 // without this row either pod could mint a token naming the other's session. A registration says
 // only that this deployment started this pod under this name; who the name belongs to stays the
 // claim's answer (BindSession).
-func (s *Store) RegisterPodSession(ctx context.Context, podUID, session string) (time.Time, error) {
+//
+// jkt, when set, binds the registration to the key the session's own role proves, which is what
+// separates the roles of one pod: they read one exchange token and are registered for one pod
+// uid, so only the key tells a role's trade from a sibling's (PodSessionRegistered). A write that
+// names a key replaces the one the row names, and one that names none keeps it, so a write
+// without a thumbprint never removes a binding while the row lives; once the row lapses and the
+// sweep deletes it, a later write stores what it names. Empty is a registration bound to the pod
+// alone, as a session watch registers a session pod's one session, which runs no sibling role.
+func (s *Store) RegisterPodSession(ctx context.Context, podUID, session, jkt string) (time.Time, string, error) {
 	var expires time.Time
-	err := s.db(ctx).QueryRow(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at)
-		values ($1, $2, $3)
-		on conflict (pod_uid, session) do update set expires_at = greatest(oauth_pod_sessions.expires_at, excluded.expires_at)
-		returning expires_at`, podUID, session, time.Now().Add(PodSessionRetention)).Scan(&expires)
+	var bound string
+	err := s.db(ctx).QueryRow(ctx, `insert into oauth_pod_sessions (pod_uid, session, expires_at, jkt)
+		values ($1, $2, $3, nullif($4, ''))
+		on conflict (pod_uid, session) do update set
+			expires_at = greatest(oauth_pod_sessions.expires_at, excluded.expires_at),
+			jkt = coalesce(nullif(excluded.jkt, ''), oauth_pod_sessions.jkt)
+		returning expires_at, coalesce(jkt, '')`, podUID, session, time.Now().Add(PodSessionRetention), jkt).Scan(&expires, &bound)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("register the pod's session name: %w", err)
+		return time.Time{}, "", fmt.Errorf("register the pod's session name: %w", err)
 	}
-	return expires, nil
+	return expires, bound, nil
 }
 
 // PodSessionRegistered reports whether a registration still says the pod podUID may exchange
-// under session. It reads through s.db(ctx), so the exchange's own transaction asks it, and it
-// asks the cluster nothing: a pod that no longer runs goes on being registered until its row
-// runs out, exactly as its own token goes on verifying until its expiry.
-func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session string) (bool, error) {
-	var registered bool
-	err := s.db(ctx).QueryRow(ctx, `select exists (select 1 from oauth_pod_sessions
-		where pod_uid = $1 and session = $2 and expires_at > now())`, podUID, session).Scan(&registered)
-	if err != nil {
+// under session with a DPoP proof of the key whose thumbprint is jkt: true when a live row names
+// no key or names this one, false when no live row exists, and false with
+// ErrPodSessionBoundToAnotherKey when the live row names another key. It reads through s.db(ctx),
+// so the exchange's own transaction asks it, and it asks the cluster nothing: a pod that no
+// longer runs goes on being registered until its row runs out, exactly as its own token goes on
+// verifying until its expiry.
+func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt string) (bool, error) {
+	var bound string
+	err := s.db(ctx).QueryRow(ctx, `select coalesce(jkt, '') from oauth_pod_sessions
+		where pod_uid = $1 and session = $2 and expires_at > now()`, podUID, session).Scan(&bound)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
 		return false, fmt.Errorf("read the pod's session registration: %w", err)
+	case bound != "" && bound != jkt:
+		return false, ErrPodSessionBoundToAnotherKey
 	}
-	return registered, nil
+	return true, nil
 }
 
 // SetTokenExchangeCustomJWT remembers a subject token's jti until exp plus jtiRetentionMargin and
