@@ -12,11 +12,7 @@ import (
 // TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore (R9): a registrar that sends what
 // every registrar sent before the binding existed — a pod token and a session, no thumbprint and
 // no generation, as the session watch and dev-broker.sh write it — is answered the fields the merge
-// base answered, and no others: pod_uid, session and expires_at. The thumbprint is already absent
-// for such a write (omitempty); the generation is answered 0 instead of absent.
-//
-// Control: at the merge base, 7e91f437ca, this test passes; at eecd6d6480 it fails naming
-// "generation".
+// base answered, and no others: pod_uid, session and expires_at.
 func TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore(t *testing.T) {
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)

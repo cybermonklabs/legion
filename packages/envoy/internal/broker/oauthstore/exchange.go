@@ -324,7 +324,7 @@ func (s *Store) RegisterPodSession(ctx context.Context, podUID, session, jkt str
 		values ($1, $2, $3, nullif($4, ''), $5)
 		on conflict (pod_uid, session) do update set
 			expires_at = greatest(oauth_pod_sessions.expires_at, excluded.expires_at),
-			jkt = coalesce(nullif(excluded.jkt, ''), oauth_pod_sessions.jkt),
+			jkt = coalesce(excluded.jkt, oauth_pod_sessions.jkt),
 			generation = excluded.generation
 		where excluded.generation >= oauth_pod_sessions.generation
 		returning expires_at, coalesce(jkt, ''), generation`,

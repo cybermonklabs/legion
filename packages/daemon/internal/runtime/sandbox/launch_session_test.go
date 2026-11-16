@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"maps"
 	"testing"
 	"time"
 
@@ -22,11 +23,7 @@ func exchangeKeyed() rigOption {
 func launchSessions(r *Runtime) map[claim.Token]launchedSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	named := make(map[claim.Token]launchedSession, len(r.sessions))
-	for token, s := range r.sessions {
-		named[token] = s
-	}
-	return named
+	return maps.Clone(r.sessions)
 }
 
 // TestAClaudeLaunchNamesItsSessionToTheDaemon: under a deployment with exchange_audience set, the

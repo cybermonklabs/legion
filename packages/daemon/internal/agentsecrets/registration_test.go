@@ -407,23 +407,18 @@ func TestARegistrationAnsweredForAnotherPodIsNotRenewed(t *testing.T) {
 	var logged lockedLog
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
 
-	_, err := c.RegisterPodSession(context.Background(), mine, testPodToken, session, testThumbprint, 1)
-	var mismatch *AnswerMismatchError
-	if !errors.As(err, &mismatch) || mismatch.Field != "pod_uid" || mismatch.Pod != mine || mismatch.Session != session || mismatch.Sent != mine || mismatch.Answered != other || !IsPermanent(err) {
-		t.Fatalf("a registration the broker answered for pod %s, where the daemon registered %s for %s = %v, want a permanent *AnswerMismatchError naming both", other, mine, session, err)
-	}
-
 	timers := &manualTimers{}
 	stop, err := c.KeepPodSession(context.Background(), PodSessionRenewal{
 		PodUID: mine, Session: session, Thumbprint: testThumbprint, Bound: time.Second, After: timers.after,
 		Token: func(context.Context) (string, error) { return testPodToken, nil },
 	})
 	defer stop()
-	if !errors.As(err, &mismatch) || !IsPermanent(err) {
-		t.Fatalf("the renewal of %s for pod %s, answered for pod %s = %v, want the permanent mismatch", session, mine, other, err)
+	var mismatch *AnswerMismatchError
+	if !errors.As(err, &mismatch) || mismatch.Field != "pod_uid" || mismatch.Pod != mine || mismatch.Session != session || mismatch.Sent != mine || mismatch.Answered != other || !IsPermanent(err) {
+		t.Fatalf("the renewal of %s for pod %s, answered for pod %s = %v, want a permanent *AnswerMismatchError naming both", session, mine, other, err)
 	}
-	if timers.armed() != 0 || len(broker.received()) != 2 {
-		t.Fatalf("after the mismatch %d writes were made and %d are scheduled, want 2 and none", len(broker.received()), timers.armed())
+	if timers.armed() != 0 || len(broker.received()) != 1 {
+		t.Fatalf("after the mismatch %d writes were made and %d are scheduled, want 1 and none", len(broker.received()), timers.armed())
 	}
 	text := logged.String()
 	for _, want := range []string{"session=" + session, mine, other} {

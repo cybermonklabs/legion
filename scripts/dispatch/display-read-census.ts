@@ -366,7 +366,7 @@ class HttpError extends Error {
 
 /** What one unit spends. Each unit counts its own requests: one counter shared by the eight
  * units in flight would attribute to each of them every request the others made while it ran. */
-export interface Spend {
+interface Spend {
   requests: number;
 }
 

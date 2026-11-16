@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
 // The pod both roles run in, and the two roles' sessions.
@@ -33,16 +32,6 @@ func (f *exchangeFixture) registersBound(t *testing.T, of, uid, session, jkt str
 	}
 }
 
-// keyThumbprint is key's RFC 7638 thumbprint, what a registration names.
-func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
-	t.Helper()
-	jkt, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return jkt
-}
-
 // podTrade is the issue pod's trade for session, presenting a fresh projected token.
 func (f *exchangeFixture) podTrade(t *testing.T, session string) url.Values {
 	t.Helper()
@@ -55,8 +44,8 @@ func (f *exchangeFixture) podTrade(t *testing.T, session string) url.Values {
 func TestASiblingRoleCannotTradeForAnotherRolesSession(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	kA, kB := newKey(t), newKey(t)
-	f.registersBound(t, account, issuePod, roleA, keyThumbprint(t, kA))
-	f.registersBound(t, account, issuePod, roleB, keyThumbprint(t, kB))
+	f.registersBound(t, account, issuePod, roleA, thumbprint(t, kA))
+	f.registersBound(t, account, issuePod, roleB, thumbprint(t, kB))
 
 	status, body := f.exchange(t, f.podTrade(t, roleB), kA)
 	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
