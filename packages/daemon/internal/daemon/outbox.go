@@ -246,9 +246,10 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 		if errors.Is(err, wait.ErrWaiting) {
 			// A wait is not a failure (wait.ErrWaiting): a held notice, a suspension or start held
 			// for a turn, a task behind the claim's pending delivery, a tree's cleanup reservation,
-			// a close waiting for its stops, or a claim release Dispatch has yet to allow. The row
-			// runs again on its backoff, logged when it first waits and as a warning once it has
-			// waited long, unless the wait ends on its own.
+			// a close waiting for its stops, a claim release Dispatch has yet to allow, or a child's
+			// architect's first start waiting for its tree to run again. The row runs again on its
+			// backoff, logged when it first waits and as a warning once it has waited long, unless
+			// the wait ends on its own.
 			level := slog.LevelDebug
 			switch {
 			case row.Attempts == 0:
@@ -614,13 +615,27 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 	}
 }
 
-// routineWait is a wait nobody has to act on for Legion, which ends on its own: a Dispatch claim
-// release waiting on the claim's holder or on a contended answer (claimWait), which the hour
-// claimReleaseWait caps rather than an operator.
+// routineWait is a wait nobody has to act on for Legion (routineWaiting): a Dispatch claim release
+// waiting on the claim's holder or on a contended answer (claimHeldWait, claimContendedWait),
+// which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
+// start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
+// tree or of the child ends rather than an operator.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
 }
+
+// routineWaiting is a wait that is routine (routineWait), so every attempt of its row stays at
+// debug after the first rather than turning into a warning from the seventh (waitWarnAttempts),
+// however long the wait lasts. err is the wait itself (wait.Errorf), which it unwraps to, so
+// settle still reads the row as waiting (wait.ErrWaiting) and retries it on its backoff.
+type routineWaiting struct{ err error }
+
+func (w routineWaiting) Error() string { return w.err.Error() }
+
+func (w routineWaiting) Unwrap() error { return w.err }
+
+func (routineWaiting) Routine() bool { return true }
 
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 	payload, err := record.DecodeOutboxPayload(row)
@@ -1768,9 +1783,21 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// check start is the one start a lingering tree runs: a look of a closed issue's
 			// production check, which resumes the role that check records
 			// (record.ProductionCheck.Role) the linger suspended.
-			root, err := r.root(ctx, issue)
+			//
+			// One start waits on its backoff rather than finishing: the first start of a child's own
+			// architect that finds no claim (childArchitectFirstStart), for as long as its tree
+			// lingers or its root waits in the line for the tree to be opened again
+			// (record.QueuedRoot). Re-admission brings back a member's own architect only where it
+			// holds a claim, so that start finished here is one nothing queues again, and the child
+			// would run to its close with no architect of its own.
+			first := !found && childArchitectFirstStart(issue, payload)
+			root, queued, err := r.startRoot(ctx, issue, first)
 			if err != nil {
 				return err
+			}
+			if first && root != nil && (root.Lingers() || queued) {
+				return routineWaiting{err: wait.Errorf("the first start of the own architect of %s waits for the tree of %s to run again",
+					issue.Key, root.Key)}
 			}
 			if root != nil && root.Lingers() {
 				r.log.Info("outbox start of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
@@ -2120,6 +2147,44 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 	return pending != nil && payload.Phase != "" && pending.StillWorked(payload.Generation, payload.Phase, held.State)
 }
 
+// childArchitectFirstStart says whether payload is the plain start of issue's own architect that a
+// child's first phase start queues (workflow's childArchitectStart, from gateOpened): the
+// architect's role, on an issue that is not its tree's root, naming no phase and carrying no task.
+// Other rows of that shape — a failed architect's revive (workflow's reviveArchitect), a released
+// one's resume (releaseResume) — start a claim that exists, so supervise asks this only of a start
+// that found none, which is the one that creates the claim.
+//
+// Such a start waits on the row's backoff, where every other start of a member of a tree that
+// lingers finishes without acting, for as long as the tree lingers (record.Issue.Lingers) or its
+// root waits in the line for the tree to be opened again (record.QueuedRoot). Finishing it would
+// leave the child with no architect of its own for the rest of its run, because nothing queues the
+// start again: a re-admission brings back a member's own architect only where it holds a claim
+// (admit's startMidPhaseMembers), and the child's later phase starts revive only a claim that
+// failed (workflow's reviveArchitect). The child's notices would go to the architect above it
+// (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps only for a child
+// started before that change (plan D9), and this child's first phase start did queue the start.
+//
+// The linger is read as Lingers reads it, a deadline armed, and not as one still running at the
+// moment (record.Lingering), since a tree can run again after its deadline: a root past it is
+// re-admitted all the same (record.Issue.Readmittable reads Lingers), even before the expiry
+// applies, which itself waits for any open production check of the tree (workflow's
+// lingerExpired); and a parked root whose expiry closed the tree hands over only its merging
+// members, so its later re-admission resumes every other member where it stood. The root waiting
+// in the line is read beside it because a re-admission clears the linger at once (admit's
+// readmit) while the tree is opened only by the promotion that gives the root its slot.
+//
+// So the row ends in one of three ways: the tree runs again, and the start creates and spawns the
+// claim as every first start of a child's architect does; the child is handed over, adopted into
+// a live tree or taken as a root of its own, each of which moves it to a later generation, and
+// supervise's generation fence finishes the start; or the child leaves the workflow, and the fence
+// on its own status finishes it. Its one cost is a parked tree that is never re-admitted: the row
+// retries at the backoff's 64-second cap for as long as it stands, two reads each try (the child
+// and its root), and only a child whose tree left the workflow between its first phase start and
+// that start's run ever has such a row.
+func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
+	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == ""
+}
+
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
 // runs a process in a tree other than the issue's, and is a wait (wait.ErrWaiting) until none
 // does. A claim in a turn holds the suspension for the turn's end and a launching one until its
@@ -2229,6 +2294,32 @@ func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, e
 		return nil, fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
 	}
 	return root, nil
+}
+
+// startRoot is root for a start, and with it, when queued asks, whether that root waits in the
+// line for its tree to be opened (record.QueuedRoot, under the design-gate steps the project
+// gates): read in one transaction with its design gate, so the rule judges one state of the two.
+// Only the first start of a child's own architect that found no claim asks it
+// (childArchitectFirstStart), once per try, and the gate is not read of a root that lingers, which
+// that start waits for whatever the gate says.
+func (r *outbox) startRoot(ctx context.Context, issue record.Issue, queued bool) (*record.Issue, bool, error) {
+	var root *record.Issue
+	waits := false
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !queued || root.Lingers() {
+			return err
+		}
+		rows, err := r.records.GatesOf(ctx, tx, root.Key)
+		if err != nil {
+			return err
+		}
+		waits = record.QueuedRoot(*root, record.TreeGate{Steps: r.gatedSteps, Rows: rows})
+		return nil
+	}); err != nil {
+		return nil, false, fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
+	}
+	return root, waits, nil
 }
 
 // stopWithoutMachine is a stop row — a suspend or an issue close — that finds no machine for its

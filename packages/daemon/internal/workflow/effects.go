@@ -122,7 +122,8 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 
 // queuedStartActs is whether a queued start for current with an id above stop, the newest stop
 // that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
-// it, so they answer that term alike.
+// it, so they answer that term alike, and reviveArchitect reads it with a stop of 0, which every
+// row's id is above (the outbox's ids start at one), so any queued start for current counts.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
@@ -496,11 +497,13 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // decisions. The read is stable: a failed claim stays failed until something starts it, and a
 // start already queued with no phase or with the phase issue now stands in is that start — the
 // one the child's first phase start queues whatever the claim's state (gateOpened), or an earlier
-// phase start's the outbox has not run yet — so no second start is queued beside it. A queued
-// start of another phase does not count: re-admission brings a mid-phase child's failed architect
-// back with a start that names the phase the child stood in (admit's startMidPhaseMembers), and
-// the outbox finishes, without acting, a start of a phase the issue has left. An issue whose key
-// makes no claim token has no claim to revive.
+// phase start's the outbox has not run yet — so no second start is queued beside it. The read is
+// queuedStartActs, the one StartFor and SilentPhaseWorker make of a queued start, with no stop
+// weighed against it (a stop of 0): every queued start of no phase or of the issue's phase counts,
+// whatever stop is queued beside it. A queued start of another phase does not count: re-admission
+// brings a mid-phase child's failed architect back with a start that names the phase the child
+// stood in (admit's startMidPhaseMembers), and the outbox finishes, without acting, a start of a
+// phase the issue has left. An issue whose key makes no claim token has no claim to revive.
 func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	if claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return nil
@@ -520,10 +523,8 @@ func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 	if run.Claim == nil || run.Claim.State != supervise.StateFailed {
 		return nil
 	}
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && (queued.Request.Phase == "" || queued.Request.Phase == issue.Phase) {
-			return nil
-		}
+	if queuedStartActs(run, 0, "") || queuedStartActs(run, 0, issue.Phase) {
+		return nil
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
 		return err
