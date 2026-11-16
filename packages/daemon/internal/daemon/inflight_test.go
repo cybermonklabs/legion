@@ -505,9 +505,9 @@ func drainListener(t *testing.T, cfg *config.Config) *listenerRecorder {
 	return envoy
 }
 
-// stoppedSessionOf requires the clean stop of token's session to have deleted its registration
-// from envoy by the time run returned, since the daemon's stop waits for a stop in flight
-// (supervision.stop).
+// stoppedSessionOf checks that, by the time run returned, envoy had answered a delete of token's
+// session and that the delete removed its registration: the daemon's stop waits for the clean
+// stops sessionStopsInFlight counts.
 func stoppedSessionOf(t *testing.T, envoy *listenerRecorder, token claim.Token, stopLog string) {
 	t.Helper()
 	select {
@@ -702,13 +702,10 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 // role stored with no wake raised (sessionStop.send).
 func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) {
 	cfg := testConfig(t)
-	envoy := &listenerRecorder{
-		held:     storedRegistration{clientInstanceID: "inst_suspended", lastSeen: time.Now().Add(-time.Second)},
-		heldRead: make(chan struct{}),
-		arrived:  make(chan struct{}),
-		settled:  make(chan struct{}),
-	}
-	cfg.EnvoyURL = envoy.server(t).URL
+	envoy := drainListener(t, &cfg)
+	// The listener holds the stop's registry read until the test closes heldRead, after the halt.
+	// Both are set before the daemon boots, so before any request reaches the listener.
+	envoy.heldRead, envoy.arrived = make(chan struct{}), make(chan struct{})
 	rt := fake.NewRuntime()
 	o := fakeRuntime(rt, &built{})
 	// The runtime is built on the machines' context (openSupervision), which is how the test sees
@@ -769,17 +766,12 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 		}
 	}
 	stopLog := logs.String()[mark:]
-	select {
-	case <-envoy.settled:
-	case <-time.After(cleanSessionStopBudget):
-		t.Fatalf("no DELETE reached the listener: the clean stop of %s's session was cut short at the halt, leaving its registration standing; the stop logged:\n%s",
+	if returnedEarly {
+		t.Fatalf("run returned while the listener still held the read of %s's clean stop: the stop was cut short at the halt or not waited for; the stop logged:\n%s",
 			token, stopLog)
 	}
-	if returnedEarly {
-		t.Fatalf("run returned while the clean stop of %s's session still waited on the listener's read; the stop logged:\n%s", token, stopLog)
-	}
-	if want := "/v1/sessions/ses_" + string(token); envoy.delete.path != want || envoy.delete.requests != 1 {
-		t.Fatalf("the listener was asked %d deletes of %s, want one of %s", envoy.delete.requests, envoy.delete.path, want)
+	if envoy.delete.requests != 1 {
+		t.Fatalf("the listener was asked %d deletes of %s's session, want one; the stop logged:\n%s", envoy.delete.requests, token, stopLog)
 	}
 	conditions := envoy.deleteConditions(t)
 	if got := conditions.Get("client_instance_id"); got != "inst_suspended" {
@@ -790,9 +782,7 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 		t.Errorf("the delete named the moment %q, want the moment the suspension's stop returned, between %d and %d",
 			conditions.Get("if_not_registered_after"), asked.UnixMilli(), suspended.UnixMilli())
 	}
-	if !envoy.entryRemoved {
-		t.Errorf("the listener kept the suspended process's registration, want it deleted")
-	}
+	stoppedSessionOf(t, envoy, token, stopLog)
 }
 
 // runShim runs the real `legion worker-shim` for a launch whose boot token is bootToken against the
