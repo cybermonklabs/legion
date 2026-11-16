@@ -271,6 +271,68 @@ func TestCheckFindsACopiedAnswer(t *testing.T) {
 	}
 }
 
+const bodyReaderFixture = `package fixture
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+
+	"fixture/wire"
+)
+
+type refusal struct {
+	Error string ` + "`json:\"error\"`" + `
+}
+
+func Send(ctx context.Context, url string, body []byte) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	answer, err := io.ReadAll(response.Body)
+	if err != nil {
+		return err
+	}
+	return readRefusal(answer)
+}
+
+// readRefusal decodes the answer bytes a party call hands it.
+func readRefusal(answer []byte) error {
+	var body refusal
+	if err := json.Unmarshal(answer, &body); err != nil {
+		return err
+	}
+	var failure wire.Failure
+	return json.NewDecoder(bytes.NewReader(answer)).Decode(&failure)
+}
+
+// parseConfig decodes bytes nothing of the other party's handed it.
+func parseConfig(data []byte) (refusal, error) {
+	var config refusal
+	err := json.Unmarshal(data, &config)
+	return config, err
+}
+
+func Load(path string) (refusal, error) {
+	return parseConfig([]byte(path))
+}
+`
+
+// A function that decodes the bytes of an answer a party call read and handed it is read as part
+// of that call, so moving a decode into a helper does not hide it; the same decode reached from
+// no party call is none of the check's business.
+func TestCheckReadsABodyAPartyCallHandsAHelper(t *testing.T) {
+	want(t, check(t, bodyReaderFixture), "encoding/json.Unmarshal", "fixture.refusal")
+}
+
 const noPartyFixture = `package fixture
 
 import "encoding/json"

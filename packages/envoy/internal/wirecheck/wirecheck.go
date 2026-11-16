@@ -67,10 +67,12 @@ var requestBuilders = map[string]bool{
 // request to the other party or reads its answer: one that calls net/http.NewRequest or
 // NewRequestWithContext, one of transport (each the go/types full name of a function of pkgs,
 // such as "(*github.com/sjawhar/envoy/cmd/cipher.client).do"), or any function whose results
-// include a *net/http.Response, or one that takes a *net/http.Request or *net/http.Response. In a
-// party call, each value given to encoding/json's Marshal, Unmarshal, (*Decoder).Decode or
-// (*Encoder).Encode is judged, but a Marshal whose result is used only converted to a string is
-// not: that is a payload carried inside a body, not a body.
+// include a *net/http.Response; one that takes a *net/http.Request or *net/http.Response; and a
+// body reader that a party call calls: a function that hands one of its own parameters, or a
+// value made from one, to json.Unmarshal's data or json.NewDecoder, such as a helper that decodes
+// the answer bytes it was handed. In a party call, each value given to encoding/json's Marshal,
+// Unmarshal, (*Decoder).Decode or (*Encoder).Encode is judged, but a Marshal whose result is used
+// only converted to a string is not: that is a payload carried inside a body, not a body.
 //
 // A transport helper is a function of pkgs that hands one of its own parameters of type any to one
 // of those JSON calls, directly or through another transport helper. The argument a caller gives
@@ -204,6 +206,8 @@ type function struct {
 	name string
 	// party is whether it sends a request to the other party or reads its answer.
 	party bool
+	// bodyReader is whether it decodes bytes or a reader one of its own parameters carries.
+	bodyReader bool
 	// parents maps each node of the body to the node holding it.
 	parents map[ast.Node]ast.Node
 	// params are its parameters of type any, by index.
@@ -289,17 +293,35 @@ type analysis struct {
 }
 
 // collect reads every function: whether it is a party call, its judged JSON calls and its calls,
-// then the transport helpers, to a fixed point.
+// then the body readers party calls call and the transport helpers, each to a fixed point.
 func (a *analysis) collect() {
 	a.declared = map[string]bool{}
+	byName := map[string]*function{}
 	for _, p := range a.packages {
 		for _, f := range p.funcs {
 			a.declared[f.name] = true
+			byName[f.name] = f
 		}
 	}
 	for _, p := range a.packages {
 		for _, f := range p.funcs {
 			a.read(f)
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, p := range a.packages {
+			for _, f := range p.funcs {
+				if !f.party {
+					continue
+				}
+				for _, c := range f.calls {
+					if callee := byName[c.callee]; callee != nil && callee.bodyReader && !callee.party {
+						callee.party = true
+						changed = true
+					}
+				}
+			}
 		}
 	}
 	for changed := true; changed; {
@@ -326,8 +348,10 @@ func (a *analysis) read(f *function) {
 	info := f.pkg.info
 	f.params = map[*types.Var]int{}
 	signature := info.Defs[f.decl.Name].(*types.Func).Type().(*types.Signature)
+	all := map[*types.Var]bool{}
 	for i := range signature.Params().Len() {
 		param := signature.Params().At(i)
+		all[param] = true
 		if isHTTP(param.Type(), "Request") || isHTTP(param.Type(), "Response") {
 			f.party = true
 		}
@@ -356,6 +380,9 @@ func (a *analysis) read(f *function) {
 			if name != "encoding/json.Marshal" || !f.carriedAsString(expr) {
 				f.codec = append(f.codec, jsonUse{call: name, value: expr.Args[index]})
 			}
+		}
+		if (name == "encoding/json.Unmarshal" || name == "encoding/json.NewDecoder") && len(expr.Args) > 0 && mentions(info, expr.Args[0], all) {
+			f.bodyReader = true
 		}
 		if a.declared[name] {
 			f.calls = append(f.calls, call{callee: name, args: expr.Args})
@@ -540,6 +567,21 @@ func parentsOf(root ast.Node) map[ast.Node]ast.Node {
 		return true
 	})
 	return parents
+}
+
+// mentions reports whether expr names one of params anywhere in it, as bytes.NewReader(body) and
+// body[1:] name body.
+func mentions(info *types.Info, expr ast.Expr, params map[*types.Var]bool) bool {
+	found := false
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if ident, ok := node.(*ast.Ident); ok {
+			if variable, ok := info.Uses[ident].(*types.Var); ok && params[variable] {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 func returnsResponse(signature *types.Signature) bool {
