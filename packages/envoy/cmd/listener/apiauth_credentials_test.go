@@ -493,6 +493,15 @@ func TestResolveListenerOIDCAccounts(t *testing.T) {
 	}{
 		{name: "unset admits every subject the verifier verifies", issuer: issuer},
 		{name: "unset with no verifier", issuer: ""},
+		// An empty value is how a deployment writes the setting unset, so it admits as unset does;
+		// a value of only blanks or commas is a list emptied by mistake, which must not admit
+		// every pod of the cluster.
+		{name: "an empty value is unset", value: "", issuer: issuer},
+		{name: "a value of only spaces", value: "   ", issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
+		{name: "a value of only white space", value: " \n\t ", issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
+		{name: "a value of only commas", value: ", ,,", issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
+		{name: "a value of only a no-break space", value: "\u00a0", issuer: issuer, wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
+		{name: "a value of only spaces with no verifier", value: "  ", wantError: "ENVOY_OIDC_ACCOUNTS is set but names no account"},
 		{name: "whitespace-separated subjects", value: " " + listenerListedSubject + "\n\t" + listenerUnlistedSubject + " ", issuer: issuer, want: []string{listenerListedSubject, listenerUnlistedSubject}},
 		{name: "a list with no verifier to hold to it", value: listenerListedSubject, wantError: "ENVOY_OIDC_ACCOUNTS needs ENVOY_OIDC_ISSUER"},
 		{name: "an entry that is not a ServiceAccount subject", value: listenerListedSubject + " dispatch:envoy-broker", issuer: issuer, wantError: `"dispatch:envoy-broker"`},

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/config"
@@ -423,15 +424,21 @@ const serviceAccountSubjectPrefix = "system:serviceaccount:"
 
 // resolveListenerOIDCAccounts reads ENVOY_OIDC_ACCOUNTS, the whitespace-separated subjects the
 // projected-token branch admits, each system:serviceaccount:<namespace>:<name> named exactly.
-// Unset, it answers none, which admits every subject the verifier verifies. A list beside no
+// Unset or empty, it answers none, which admits every subject the verifier verifies. A value that
+// names no account — only blanks or commas — is a refusal naming the setting: it is a list emptied
+// by mistake, and read as unset it would admit every pod of the cluster. A list beside no
 // ENVOY_OIDC_ISSUER is a refusal, since it would hold nothing to anything, and so is an entry of
 // any other shape, which no token could ever carry, so a misspelt list is refused at the start
 // rather than refusing its callers one by one.
 func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]string, error) {
-	accounts := strings.Fields(getenv("ENVOY_OIDC_ACCOUNTS"))
-	if len(accounts) == 0 {
+	value := getenv("ENVOY_OIDC_ACCOUNTS")
+	if value == "" {
 		return nil, nil
 	}
+	if len(strings.FieldsFunc(value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })) == 0 {
+		return nil, errors.New("ENVOY_OIDC_ACCOUNTS is set but names no account; list the system:serviceaccount:<namespace>:<name> subjects to admit, or leave it unset to admit every subject the ENVOY_OIDC_ISSUER/ENVOY_OIDC_AUDIENCE pair verifies")
+	}
+	accounts := strings.Fields(value)
 	if issuer == "" {
 		return nil, errors.New("ENVOY_OIDC_ACCOUNTS needs ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE: it names the projected-token callers that pair's verifier admits")
 	}
