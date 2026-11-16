@@ -90,8 +90,8 @@ if [ -n "$own_port" ] && [ -n "${DISPATCH_E2E_LISTEN_FROM:-}" ]; then
   echo "run-server.sh: set $own_port_variable or DISPATCH_E2E_LISTEN_FROM, not both" >&2
   exit 2
 fi
-# The dashboard origin, DISPATCH_SERVER_URL, also kept as server_origin, whose port the sign-in
-# below gives the second origin under google.
+# The dashboard origin, DISPATCH_SERVER_URL, also kept as server_origin, whose scheme and port
+# the sign-in below gives the second origin under google.
 if [ -n "$own_port" ]; then
   listen=()
   server_origin="${dashboard_origin:-http://127.0.0.1:$own_port}"
@@ -138,39 +138,37 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
       signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
     fi
     ;;
-  oidc)
-    : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=oidc signs in at}"
+  oidc | google)
+    : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=$DISPATCH_E2E_SIGNIN signs in at}"
     : "${DISPATCH_E2E_SIGNIN_CLIENT_ID:?DISPATCH_E2E_SIGNIN_CLIENT_ID must name the Dispatch client at the dev OIDC issuer}"
     : "${DISPATCH_E2E_SIGNIN_CLIENT_SECRET:?DISPATCH_E2E_SIGNIN_CLIENT_SECRET must give the secret of that client}"
-    : "${DISPATCH_E2E_SIGNIN_GROUP:?DISPATCH_E2E_SIGNIN_GROUP must name the sign-in pool group the server admits}"
-    : "${DISPATCH_E2E_SIGNING_KEY:?DISPATCH_E2E_SIGNING_KEY must give every process of DISPATCH_E2E_SIGNIN=oidc one cookie key}"
     signin_env=(
       DISPATCH_SIGNIN_ISSUER="http://127.0.0.1:$DISPATCH_E2E_SIGNIN_ISSUER_PORT"
       DISPATCH_SIGNIN_CLIENT_ID="$DISPATCH_E2E_SIGNIN_CLIENT_ID"
       DISPATCH_SIGNIN_CLIENT_SECRET="$DISPATCH_E2E_SIGNIN_CLIENT_SECRET"
-      DISPATCH_SIGNIN_GROUP="$DISPATCH_E2E_SIGNIN_GROUP"
-      DISPATCH_SIGNING_KEY="$DISPATCH_E2E_SIGNING_KEY"
     )
-    ;;
-  google)
-    : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=google signs in at}"
-    : "${DISPATCH_E2E_SIGNIN_CLIENT_ID:?DISPATCH_E2E_SIGNIN_CLIENT_ID must name the Dispatch client at the dev OIDC issuer}"
-    : "${DISPATCH_E2E_SIGNIN_CLIENT_SECRET:?DISPATCH_E2E_SIGNIN_CLIENT_SECRET must give the secret of that client}"
-    : "${DISPATCH_E2E_SIGNIN_DOMAIN:?DISPATCH_E2E_SIGNIN_DOMAIN must name the Google Workspace domain the server admits}"
-    : "${DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:?DISPATCH_E2E_SIGNIN_OUTSIDE_HOST must name the host of the second origin the server answers at}"
-    : "${DISPATCH_E2E_SIGNING_KEY:?DISPATCH_E2E_SIGNING_KEY must give every process of DISPATCH_E2E_SIGNIN=google one cookie key}"
-    # The second origin is on the dashboard origin's port: the round-robin proxy's in two-process
-    # mode, or `{port}` on a held one, which held-port.py writes in.
-    signin_env=(
-      DISPATCH_SIGNIN_ISSUER="http://127.0.0.1:$DISPATCH_E2E_SIGNIN_ISSUER_PORT"
-      DISPATCH_SIGNIN_CLIENT_ID="$DISPATCH_E2E_SIGNIN_CLIENT_ID"
-      DISPATCH_SIGNIN_CLIENT_SECRET="$DISPATCH_E2E_SIGNIN_CLIENT_SECRET"
-      DISPATCH_SIGNIN_DOMAIN="$DISPATCH_E2E_SIGNIN_DOMAIN"
-      DISPATCH_SIGNIN_OUTSIDE=1
-      DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1
-      DISPATCH_OUTSIDE_ORIGIN="http://$DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:${server_origin##*:}"
-      DISPATCH_SIGNING_KEY="$DISPATCH_E2E_SIGNING_KEY"
-    )
+    case "$DISPATCH_E2E_SIGNIN" in
+      oidc)
+        : "${DISPATCH_E2E_SIGNIN_GROUP:?DISPATCH_E2E_SIGNIN_GROUP must name the sign-in pool group the server admits}"
+        signin_env+=(DISPATCH_SIGNIN_GROUP="$DISPATCH_E2E_SIGNIN_GROUP")
+        ;;
+      google)
+        : "${DISPATCH_E2E_SIGNIN_DOMAIN:?DISPATCH_E2E_SIGNIN_DOMAIN must name the Google Workspace domain the server admits}"
+        : "${DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:?DISPATCH_E2E_SIGNIN_OUTSIDE_HOST must name the host of the second origin the server answers at}"
+        # The second origin has the dashboard origin's scheme and port: the round-robin proxy's
+        # port in two-process mode, or `{port}` on a held one, which held-port.py writes in.
+        signin_env+=(
+          DISPATCH_SIGNIN_DOMAIN="$DISPATCH_E2E_SIGNIN_DOMAIN"
+          DISPATCH_SIGNIN_OUTSIDE=1
+          DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1
+          DISPATCH_OUTSIDE_ORIGIN="${server_origin%%://*}://$DISPATCH_E2E_SIGNIN_OUTSIDE_HOST:${server_origin##*:}"
+        )
+        ;;
+    esac
+    # Asked for after each mode's own inputs, so a run that also lacks one of those is refused
+    # naming that one.
+    : "${DISPATCH_E2E_SIGNING_KEY:?DISPATCH_E2E_SIGNING_KEY must give every process of DISPATCH_E2E_SIGNIN=$DISPATCH_E2E_SIGNIN one cookie key}"
+    signin_env+=(DISPATCH_SIGNING_KEY="$DISPATCH_E2E_SIGNING_KEY")
     ;;
   *)
     echo "DISPATCH_E2E_SIGNIN must be oidc, google or unset, not '$DISPATCH_E2E_SIGNIN'" >&2
