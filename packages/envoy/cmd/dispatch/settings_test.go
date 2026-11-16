@@ -648,8 +648,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if err != nil || location.Query().Has("hd") || location.Query().Get("access_type") != "offline" {
 				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: GET /auth/start redirected to %v (%v), want offline access and no hd", location, err)
 			}
-			if response := s.signInAs(t, s.handler, outsiderEmail); !signedInResponse(response) {
-				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: %s, whom PRIV lists, was answered %d, want a signed-in redirect", outsiderEmail, response.StatusCode)
+			if response := s.signInAs(t, s.handler, outsiderEmail); response.Code != http.StatusFound || !sessionCookieSet(response) {
+				t.Errorf("DISPATCH_SIGNIN_OUTSIDE=1: %s, whom PRIV lists, was answered %d, want a signed-in redirect", outsiderEmail, response.Code)
 			}
 		},
 		"DISPATCH_OUTSIDE_ORIGIN": outsideOriginReachesItsReaders,
