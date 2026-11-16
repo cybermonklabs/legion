@@ -755,7 +755,7 @@ Each item below names a task and where its code is, then notes on it.
   a phase worker composes `core/<role>.md`, `mechanics/headless.md` and its role's residue, the merger the headless fragment and its residue;
   the root architect, controller and sub-architect prompts are single files;
   `roles_test.go` holds their structural rules) and its own parts (`internal/prompts/go/`), and snapshots both below its state directory before any pane or controller starts.
-  A pane's one `--append-system-prompt` value is those parts, then its addressing fragment, then the deployment's `instructions` when `legion.yaml` sets them.
+  A role's system prompt is those parts, then its addressing fragment, then the deployment's `instructions` when `legion.yaml` sets them, composed in the daemon (`runtime.ComposePrompt`) and written to a file, whose path is the agent's one `--append-system-prompt` value (`--append-system-prompt-file` for Claude Code), since Linux refuses any single argument over 131,072 bytes.
 
 - Secrets broker — `packages/envoy/cmd/broker`, `packages/envoy/internal/broker`
 

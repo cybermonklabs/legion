@@ -91,8 +91,9 @@ key. To change a secret without a kind to `github-app`, do these steps in this s
    github-app)`, or it exits 1 with `reason=value-malformed`, because the old value is not an App
    key. If the retag exits 1 and tells you that the broker still sees the old tags, do the retag
    again. Do not set the private key until the broker uses the new tags. If the secret has no
-   value, the retag exits 1 with `reason=no-current-value`. The broker gives that reason for a
-   secret with no value, with the old tags and with the new tags, so the retag cannot show which
+   value, the retag exits 1 with `reason=no-current-value`, or `reason=pending-value` in the ten
+   minutes after the secret was created. The broker gives that reason for a secret with no value,
+   with the old tags and with the new tags, so the retag cannot show which
    tags the broker uses. Then set the private key (step 3): `secret set` checks it as an App key
    before it writes it, and shows `broker: serving NAME (kind github-app)` when the broker uses the
    new tags.

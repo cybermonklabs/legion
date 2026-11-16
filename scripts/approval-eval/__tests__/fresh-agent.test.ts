@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readRound } from "../analyze";
 import type { CaseRow, CaseVerdict } from "../build-corpus";
 import {
   type AgentAnswer,
@@ -18,11 +19,13 @@ import {
   promptOf,
   readingOf,
   reportLines,
+  roundNumbersOf,
   runFresh,
   verdictLineOf,
 } from "../fresh-agent";
 import { LeakError } from "../render";
 import type { ReplayedDocument } from "../replay";
+import { type JudgementRow, rowOf } from "../round-io";
 import { mcnemarExact } from "../stats";
 
 /**
@@ -166,8 +169,14 @@ interface Fake extends FreshDeps {
   lines: string[];
 }
 
-/** A run's world, with the answer the caller chooses for each arm and case. */
-function fake(textOf: (request: AgentRequest) => string): Fake {
+/** The model the command asks the agent for, which a fake agent reports by default. */
+const ASKED = "claude-opus-5-5";
+
+/** A run's world, with the answer and the reported model the caller chooses for each case. */
+function fake(
+  textOf: (request: AgentRequest) => string,
+  modelOf: (request: AgentRequest) => string | null = () => ASKED
+): Fake {
   const deps: Fake = {
     asked: [],
     lines: [],
@@ -175,7 +184,7 @@ function fake(textOf: (request: AgentRequest) => string): Fake {
       deps.asked.push(request);
       return Promise.resolve({
         text: textOf(request),
-        model: "fake-opus",
+        model: modelOf(request),
         latencyMs: 7,
         failure: null,
       });
@@ -373,6 +382,106 @@ describe("an answer in no readable shape", () => {
   });
 });
 
+describe("an answer from another model than the one asked", () => {
+  test("is the model fault and never an agreement, whatever label it gave", async () => {
+    const cases = ["case-0", "case-1", "case-2", "case-3"].map((id) => freshCase(id));
+    // Every answer agrees with the person. On the skill arm, case-0 ran on the asked model,
+    // case-1 on the model a fallback ladder steps down to, case-2 on a dated id the agent was not
+    // started with, and case-3 reported no model.
+    const served: Record<string, string | null> = {
+      "case-0": ASKED,
+      "case-1": "claude-fable-5-2",
+      "case-2": `${ASKED}-20261015`,
+      "case-3": null,
+    };
+    const deps = fake(
+      () => APPROVE,
+      (request) => (request.arm === "with-skill" ? (served[request.caseId] ?? null) : ASKED)
+    );
+    const out = await scratch();
+    const report = await runFresh(
+      {
+        neighbours: "with",
+        cases,
+        out,
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "refuse",
+        round: null,
+        concurrency: 1,
+      },
+      deps
+    );
+    const skill = report.arms[0];
+    expect(skill?.faults).toBe(3);
+    expect(skill?.agreed).toBe(1);
+    expect(skill?.agreement).toBeCloseTo(1 / 4, 10);
+    expect(report.arms[1]?.agreed).toBe(4);
+    const written = (await readFile(answersPath(out, "with"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as AnswerRow)
+      .filter((row) => row.arm === "with-skill");
+    const byCase = new Map(written.map((row) => [row.caseId, row]));
+    expect(byCase.get("case-0")?.fault).toBeNull();
+    expect(byCase.get("case-1")).toMatchObject({
+      fault: "model",
+      agreed: false,
+      chosen: [APPROVE],
+      faultDetail: `asked ${ASKED}, and the answer came from claude-fable-5-2`,
+    });
+    expect(byCase.get("case-2")?.fault).toBe("model");
+    expect(byCase.get("case-3")).toMatchObject({
+      fault: "model",
+      faultDetail: `asked ${ASKED}, and the answer names no model`,
+    });
+  });
+
+  test("a kept row is read as the model fault where it is on another model or was never checked", async () => {
+    const out = await scratch();
+    const kept = (arm: ArmName, caseId: string, model: string, checked: boolean): AnswerRow => ({
+      arm,
+      caseId,
+      model,
+      ...(checked ? { modelChecked: true as const } : {}),
+      chosen: [APPROVE],
+      agreed: true,
+      fault: null,
+      faultDetail: null,
+      latencyMs: 7,
+      at: "2026-11-12T09:00:00.000Z",
+    });
+    // case-0: the skill arm's row on a fallback model. case-1: its row as a run before the check
+    // wrote it, whose model may be another message's. The no-skill arm's rows are checked.
+    const lines = [
+      kept("with-skill", "case-0", "claude-fable-5-2", true),
+      kept("no-skill", "case-0", ASKED, true),
+      kept("with-skill", "case-1", ASKED, false),
+      kept("no-skill", "case-1", ASKED, true),
+    ];
+    await writeFile(
+      answersPath(out, "with"),
+      `${lines.map((row) => JSON.stringify(row)).join("\n")}\n`
+    );
+    const deps = fake(() => CHANGES);
+    const report = await runFresh(
+      {
+        neighbours: "with",
+        cases: [freshCase("case-0"), freshCase("case-1")],
+        out,
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "resume",
+        round: null,
+        concurrency: 1,
+      },
+      deps
+    );
+    const asked = deps.asked.map((request) => `${request.arm} ${request.caseId}`).sort();
+    expect(asked).toEqual(["with-skill case-0", "with-skill case-1"]);
+    expect(report.arms[0]?.agreed).toBe(0);
+    expect(report.arms[1]?.agreed).toBe(2);
+  });
+});
+
 describe("the agent's own stream", () => {
   test("the last text it printed is the answer, with the model it says it ran on", () => {
     const stream = [
@@ -397,6 +506,23 @@ describe("the agent's own stream", () => {
 
   test("a stream the agent printed no answer into reads as no text", () => {
     expect(answerOf('{"type":"agent_start"}\n')).toEqual({ text: "", model: null });
+  });
+
+  test("the model is the one of the message the answer came in, and not of a later empty one", () => {
+    const event = (type: string, model: string, text: string | null) =>
+      JSON.stringify({
+        type,
+        message: {
+          role: "assistant",
+          model,
+          content: text === null ? [] : [{ type: "text", text }],
+        },
+      });
+    const stream = [
+      event("message_end", "claude-fable-5-2", APPROVE),
+      event("message_start", "claude-opus-5-5", null),
+    ].join("\n");
+    expect(answerOf(stream)).toEqual({ text: APPROVE, model: "claude-fable-5-2" });
   });
 });
 
@@ -608,5 +734,101 @@ describe("a run's record says how much of it this run measured", () => {
     const text = await readFile(join(out, "fresh-agent.json"), "utf8");
     const saved = JSON.parse(text) as Record<string, Record<string, unknown>>;
     expect(saved.without?.asked).toBe(0);
+  });
+});
+
+describe("the round's own numbers", () => {
+  // The round's many-shot and bare arms on the measured model over two cases the person
+  // approved, three judgements each: the many-shot arm agrees on both, the bare arm on one.
+  const caseIds = ["case-0", "case-1"];
+  const corpus = new Map(caseIds.map((caseId) => [caseId, caseRow(caseId)]));
+  const agrees = { many: [true, true], bare: [true, false] };
+  // The pair's rows as a round writes them, read back by the one reader of rows.jsonl: written
+  // before rows recorded their served model where `served` is undefined.
+  const rowsOf = (served: string | undefined) =>
+    (["many", "bare"] as const).flatMap((arm) =>
+      caseIds.flatMap((caseId, at) =>
+        [0, 1, 2].map(
+          (judgement) =>
+            rowOf(
+              JSON.stringify({
+                arm,
+                recipe: arm === "many" ? "many-shot" : "bare",
+                caseId,
+                slice: "report",
+                kind: "approval",
+                judgement,
+                verdict: [agrees[arm][at] ? APPROVE : CHANGES],
+                endpoint: "claude",
+                model: "anthropic/claude-opus-5-5",
+                servedModel: served,
+                stateCut: false,
+                fault: null,
+              })
+            ) as JudgementRow
+        )
+      )
+    );
+  const numbersOver = (rows: JudgementRow[]) =>
+    roundNumbersOf(readRound(rows, corpus).arms, caseIds);
+
+  test("are read from the pair's rows where each names the arm's model", () => {
+    const read = numbersOver(rowsOf("anthropic/claude-opus-5-5"));
+    expect(read.modelFaults).toBe(0);
+    expect(read.numbers).toMatchObject({ skillAgreement: 1, controlAgreement: 0.5, gain: 0.5 });
+  });
+
+  test("are not read over a round written before rows recorded their served model", () => {
+    expect(numbersOver(rowsOf(undefined))).toEqual({ numbers: null, modelFaults: 12 });
+  });
+
+  test("are read again once a resume has answered each judgement an old row faulted", () => {
+    const resumed = [...rowsOf(undefined), ...rowsOf("anthropic/claude-opus-5-5")];
+    expect(numbersOver(resumed).numbers?.gain).toBe(0.5);
+    // And the other way about: a judgement whose last row is the fault is still not read.
+    const refaulted = [...rowsOf("anthropic/claude-opus-5-5"), ...rowsOf(undefined)];
+    expect(numbersOver(refaulted)).toEqual({ numbers: null, modelFaults: 12 });
+  });
+});
+
+describe("a run holding an answer of the model fault", () => {
+  // Of 60 cases the skill arm alone agrees on 6 and the control alone on 1, which fails: the
+  // interval's lower end is -0.0048 (`mcnemarExact`). On case-30 both agree, unless the control's
+  // answer reports no model: counted as a miss, that is a seventh win for the skill arm alone,
+  // and 7 against 1 passes (lower end +0.0078).
+  const cases = Array.from({ length: 60 }, (_, at) => freshCase(`case-${at}`));
+  const runWith = async (controlModelOnCase30: string | null) =>
+    runFresh(
+      {
+        neighbours: "with",
+        cases,
+        out: await scratch(),
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "refuse",
+        round: null,
+        concurrency: 4,
+      },
+      fake(
+        (request) => {
+          const at = Number(request.caseId.slice("case-".length));
+          if (at < 6) return request.arm === "with-skill" ? APPROVE : CHANGES;
+          if (at === 6) return request.arm === "no-skill" ? APPROVE : CHANGES;
+          return APPROVE;
+        },
+        (request) =>
+          request.arm === "no-skill" && request.caseId === "case-30" ? controlModelOnCase30 : ASKED
+      )
+    );
+
+  test("reads no verdict, where counting the fault as a miss would pass the check", async () => {
+    const asked = await runWith(ASKED);
+    expect(asked.modelFaults).toBe(0);
+    expect(asked.verdict.passes).toBe(false);
+    const faulted = await runWith(null);
+    expect(faulted.paired.interval.lower).toBeGreaterThan(0);
+    expect(faulted.modelFaults).toBe(1);
+    expect(faulted.verdict.passes).toBe(false);
+    expect(faulted.verdict.line).toStartWith("no verdict: 1 answer of the model fault");
+    expect(faulted.verdict.line).toContain("on a copy of --out");
   });
 });

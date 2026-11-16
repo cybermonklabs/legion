@@ -11,11 +11,11 @@ var testPaths = Paths{Legion: "/opt/legion/bin/legion", Claude: "/usr/local/bin/
 // the bridge around `claude -p` in stream-json both ways (--verbose, which stream-json output
 // requires) re-emitting each user message it takes (--replay-user-messages), its thinking
 // summarized so the pane and the Agents page are shown it (--thinking-display summarized), every
-// permission granted, only the configured MCP server, both plugin directories and the session. It
-// stops before --append-system-prompt, which each runtime adds its own way.
+// permission granted, only the configured MCP server, both plugin directories, the session, and
+// the system prompt as the path of the file the runtime wrote it to, never its text.
 func TestArgv(t *testing.T) {
 	session := "11111111-2222-4333-8444-555555555555"
-	got := Argv(testPaths, "/state/claude-mcp.json", session, false)
+	got := Argv(testPaths, "/state/claude-mcp.json", session, false, "/state/system-prompt.md")
 	want := []string{
 		"/opt/legion/bin/legion", "claude-bridge", "--", "/usr/local/bin/claude",
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
@@ -26,13 +26,14 @@ func TestArgv(t *testing.T) {
 		"--plugin-dir", "/opt/legion/claude-envoy",
 		"--plugin-dir", "/opt/legion/claude-envoy/legion",
 		"--session-id", session,
+		"--append-system-prompt-file", "/state/system-prompt.md",
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("fresh:\n%q\nwant\n%q", got, want)
 	}
-	resumed := Argv(testPaths, "/state/claude-mcp.json", session, true)
-	if last := resumed[len(resumed)-2:]; last[0] != "--resume" || last[1] != session {
-		t.Errorf("resumed ends %q", last)
+	resumed := Argv(testPaths, "/state/claude-mcp.json", session, true, "/state/system-prompt.md")
+	if resume := resumed[len(resumed)-4 : len(resumed)-2]; resume[0] != "--resume" || resume[1] != session {
+		t.Errorf("resumed carries %q before its prompt file, want --resume %s", resume, session)
 	}
 }
 

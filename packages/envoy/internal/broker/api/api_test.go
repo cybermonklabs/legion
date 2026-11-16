@@ -969,6 +969,27 @@ func TestCreateRequestWithUnknownSecretNameIs400UnknownSecret(t *testing.T) {
 	}
 }
 
+// TestCreateRequestForASecretWaitingForItsValueIs400PendingValue pins, over real HTTP, that a
+// request naming a secret `agent-secrets secret create` made and has not yet filled is refused 400
+// PENDING_VALUE, whose message names the secret and says to ask again once its owner stores the
+// value, never UNKNOWN_SECRET, which an agent reads as final.
+func TestCreateRequestForASecretWaitingForItsValueIs400PendingValue(t *testing.T) {
+	ts := newTestServer(t)
+	waiting := policytest.Secret("TYPED_KEY", testApprover, policy.TierAgent, "")
+	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	created := time.Now()
+	waiting.CreatedAt = &created
+	ts.Secrets.Put(waiting)
+	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "need it", "TYPED_KEY")
+	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": compact, "session_id": nil})
+	werr := decode[wireError](t, body)
+	if status != http.StatusBadRequest || werr.Code != "PENDING_VALUE" || !strings.Contains(werr.Error, "TYPED_KEY") || !strings.Contains(werr.Error, "ask again") {
+		t.Fatalf("POST /v1/requests (a secret waiting for its value) = %d %s; want 400 PENDING_VALUE naming TYPED_KEY and saying to ask again", status, body)
+	}
+}
+
 func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	ts := newTestServer(t)
 	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
