@@ -544,12 +544,15 @@ func (l bundleLayout) mintOwner(name string) string {
 //
 // A name ghconfig holds to be no owner's directory (ghconfig.IsOwner) is left out of the layout
 // and kept in refused, for the bundle to say once it stands (mintBundle), as an owner whose
-// mint GitHub answers definitively is. Discovery takes any login GitHub lists, and ghrepo
-// admits an underscore in an owner where ghconfig admits none, so one such account would
-// otherwise cost every role of the App every other owner. No directory is written from such a
-// name, and no lease is minted for it. The one name that cannot be left out is the default's:
-// a bundle with no directory for its issue's own repository is no bundle to launch a role on,
-// so that name is an error, as a controller's asked-for owner is (ControllerCredential).
+// mint GitHub answers definitively is. ghconfig's grammar is ghrepo's owner grammar lowercased,
+// a managed user's underscore included, so every owner a parsed repository or a configured
+// rename names is a directory; what refused is for is a name that is still no directory of a
+// bundle — one past GitHub's 39 characters, or a path — which discovery would hand on, since it
+// takes any login GitHub lists, and which would otherwise fail the bundle and cost every role of
+// the App every other owner. No directory is written from such a name, and no lease is minted
+// for it. The one name that cannot be left out is the default's: a bundle with no directory for
+// its issue's own repository is no bundle to launch a role on, so that name is an error, as a
+// controller's asked-for owner is (ControllerCredential).
 func bundleDirs(installed []string, repos func() []ghrepo.Repository, renames ghrepo.Renames, repo ghrepo.Repository) (bundleLayout, error) {
 	serves := repos()
 	// The rename rule is read per repository: a pair resolves exactly when the project serves

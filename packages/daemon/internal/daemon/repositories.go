@@ -73,22 +73,28 @@ type repositories struct {
 	// that issue's own name, and the issue would stand unread for ever while GitHub answered
 	// every read it was asked.
 	//
-	// An entry is never dropped, so a repository a role App is uninstalled from after its first
-	// preparation still reads as installed here (lookup) until the process starts again and
-	// builds the map from the preparations that follow it. That is kept rather than fixed:
-	// check 8e6ff750 asks that the reads for one repository be made once and not once per issue,
-	// and a set that expired its entries would read GitHub again for every issue of a busy
-	// repository. What a stale entry decides is admission alone and never what a token reaches.
-	// Every build of a role's gh bundle reads from GitHub again the owners its App is installed
-	// on and fails closed on a read that fails (internal/appauth/credential.go, "installations
-	// is read at every bundle, GitHub asked each time … failing closed is this rule's whole
-	// point"); the bundle's directories are built from that answer and from the mapping
-	// (Accepted), and the repository caches and the repositories block of legion state from the
-	// mapping and the live records (workflowRuntime.cacheRepositories, served), neither from
-	// this set. So a stale entry costs an issue admitted whose roles GitHub then answers 404
-	// for, and whose App the next bundle build reads GitHub for again, naming the App where the
-	// installation has left the owner altogether (runtime.ErrNoGitHubOwner). No token reaches a
-	// repository because of it.
+	// An entry is never dropped, and the reason is the spec's own rule rather than any cost a
+	// sweep would carry: the facts that record an issue are kept once the issue is recorded, and
+	// a refusal is kept not at all (dispatch://INFRA-2543/spec, "Reading a fact at the moment of
+	// acting on it"). This set holds the first of those two, the name and the default branch a
+	// preparation read, so the entries it holds are the recordings themselves; no refusal and no
+	// installation answer is kept beside them, which is why a repository a role App is not
+	// installed on is read again at every preparation.
+	//
+	// What that costs is one case, and it is written here rather than left to a reader to find:
+	// after a role App is uninstalled from a repository this set already holds, an issue on that
+	// repository is still admitted — until the process starts again and builds the map from the
+	// preparations that follow it — and its roles then meet GitHub's 404. A stale entry decides
+	// admission alone and never what a token reaches. Every build of a role's gh bundle reads
+	// from GitHub again the owners its App is installed on and fails closed on a read that fails
+	// (internal/appauth/credential.go, "installations is read at every bundle, GitHub asked each
+	// time … failing closed is this rule's whole point"); the bundle's directories are built from
+	// that answer and from the mapping (Accepted), and the repository caches and the
+	// repositories block of legion state from the mapping and the live records
+	// (workflowRuntime.cacheRepositories, served), neither from this set. So the cost is that
+	// admission, whose roles' next bundle build reads GitHub for the App again and names it
+	// where the installation has left the owner altogether (runtime.ErrNoGitHubOwner). No token
+	// reaches a repository because of it.
 	recorded map[string]ghbranch.Repository
 	// live is each repository a live issue record of the project names, by its lowercased
 	// <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo): the

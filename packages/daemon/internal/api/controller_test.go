@@ -486,7 +486,9 @@ func TestCredentialAndWorkflowRoutesRefuseAMissingFieldWithACode(t *testing.T) {
 // the default, or the owner the request names (the one the controller's GH_CONFIG_DIR already
 // names), and the owner accounts the App is installed on, for the current controller capability
 // alone: a wrong secret, or one a later legion controller start superseded, is refused the same
-// way, and a default that is no GitHub login, or one the App is not installed on, is refused.
+// way, and a default that is no GitHub login, or one the App is not installed on, is refused. A
+// managed user's login, which ends in `_<shortcode>`, is a GitHub login: asked for in any case,
+// such an owner the App is installed on is the default, lowercased, and served.
 func TestControllerGitHubCredential(t *testing.T) {
 	h := newControllerCredentialHarness(t, handoffTokens{}, false)
 	secret := h.mintedSecret()
@@ -525,6 +527,18 @@ func TestControllerGitHubCredential(t *testing.T) {
 	superseded := secret
 	h.mintedSecret()
 	wantFailure(t, h.controllerGitHubCredential(superseded), http.StatusForbidden, "INVALID_CONTROLLER_CAPABILITY")
+
+	managed := newControllerCredentialHarness(t, installedTokens{installed: []string{"acme", "mona-cat_octo", "sjawhar"}}, false)
+	recorder := managed.request(http.MethodPost, "/legion/v1/controller/github-credential",
+		ControllerCredentialRequest{Secret: managed.mintedSecret(), Default: "Mona-Cat_Octo"}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("controller github credential asking Mona-Cat_Octo = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	var answer ControllerCredentialResponse
+	decodeInto(t, recorder, &answer)
+	if got, want := answer.Owners["mona-cat_octo"], (ControllerOwnerCredential{Hosts: ghconfig.Hosts("review-token-for-mona-cat_octo-read"), Config: ghconfig.Config}); answer.Default != "mona-cat_octo" || got != want {
+		t.Errorf("controller github credential asking Mona-Cat_Octo = default %q with mona-cat_octo's files %+v, want default mona-cat_octo holding %+v", answer.Default, got, want)
+	}
 }
 
 // installedTokens is refusingTokens over a review App installed on owners of its own, where

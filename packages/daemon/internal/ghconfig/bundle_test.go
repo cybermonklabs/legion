@@ -151,14 +151,26 @@ func TestWriteBundlePrunesTheRepositoryDirectoriesAnOlderRunLeft(t *testing.T) {
 
 // IsOwner takes a lowercased GitHub login and nothing else: a bundle's every directory, its
 // Default among them, is one owner's whole lease, so an `<owner>/<repo>` name is no directory.
+// Its grammar is ghrepo's owner grammar lowercased, so a managed user's login, which ends in
+// `_<shortcode>`, is one, and a name past GitHub's 39 characters is not; and every spelling of
+// an owner is a directory here, lowercased, exactly where ghrepo parses a repository of it, so
+// no issue the daemon admits on a parsed repository lacks a directory for its owner.
 func TestIsOwnerTakesALowercasedLoginAndNothingNarrower(t *testing.T) {
 	for name, want := range map[string]bool{
-		"acme": true, "acme-labs": true, "a1": true,
-		"": false, "Acme": false, "acme_labs": false, "-acme": false, "acme/widgets": false, "acme/": false,
-		"/widgets": false, "../x": false, PairsFile: false,
+		"acme": true, "acme-labs": true, "a1": true, "mona-cat_octo": true, strings.Repeat("a", 39): true,
+		"": false, "Acme": false, "-acme": false, "_acme": false, strings.Repeat("a", 40): false,
+		"acme/widgets": false, "acme/": false, "/widgets": false, "../x": false, PairsFile: false,
 	} {
 		if got := IsOwner(name); got != want {
 			t.Errorf("IsOwner(%q) = %t, want %t", name, got, want)
+		}
+	}
+	for _, owner := range []string{
+		"Mona-Cat_Octo", "ArtOfCode-", "hello--world", strings.Repeat("A", 39), strings.Repeat("A", 40), "_acme", "-acme",
+	} {
+		_, err := ghrepo.Parse("repo", owner+"/widgets")
+		if parsed, got := err == nil, IsOwner(strings.ToLower(owner)); got != parsed {
+			t.Errorf("IsOwner(%q) = %t where ghrepo parses %s/widgets %t: the two grammars must be one", strings.ToLower(owner), got, owner, parsed)
 		}
 	}
 }

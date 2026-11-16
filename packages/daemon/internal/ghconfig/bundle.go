@@ -46,9 +46,14 @@ type Bundle struct {
 	Pairs   []ghrepo.Rename
 }
 
-// ownerLogin is a lowercased GitHub login: letters, digits and hyphens, never starting with a
-// hyphen. A login is a path segment under a bundle's root, so nothing else is one.
-var ownerLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+// ownerLogin is a lowercased GitHub login, ghrepo's ownerName lowercased: a letter or digit and
+// then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
+// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and a repository of such an
+// account is one ghrepo parses and the daemon admits an issue on: a rule here narrower than
+// ghrepo's left that issue with no directory for its own repository, so no role of it launched.
+// The 39 characters are GitHub's own bound, which no login exceeds. A login is a path segment
+// under a bundle's root, so nothing else is one.
+var ownerLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,38}$`)
 
 // IsOwner says whether owner is a lowercased GitHub login, and so a directory a bundle may hold.
 // It is the rule for every directory of a bundle, its Default among them, and for the owner a

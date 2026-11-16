@@ -49,7 +49,8 @@ func runGitCredentialHere(t *testing.T, stdin string, args ...string) (code int,
 }
 
 // `legion git-credential get` answers git's credential protocol from the hosts.yml of the
-// owner the path git asks about names (credential.useHttpPath), lowercased: from that owner's
+// owner the path git asks about names (credential.useHttpPath), lowercased — a managed user's
+// login, which ends in `_<shortcode>`, among them: from that owner's
 // directory of LEGION_GH_OWNERS_DIR, whatever the path's second segment is — a repository of
 // that owner, and a segment no repository could be named for alike, since the owner's lease
 // reaches every repository its installation holds, and since no configured rename of this
@@ -67,6 +68,12 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "empty", ghconfig.HostsFile), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A managed user's directory is written on its own (ghconfig.Write) rather than through
+	// WriteBundle, so the row reading it reads this command's own check of the path's owner and
+	// not the bundle's.
+	if _, err := ghconfig.Write(ghconfig.Dir(root, "mona-cat_octo"), ghconfig.Render("ghs_mona_cat_octo_write", "implement", time.Now().Add(time.Hour))); err != nil {
 		t.Fatal(err)
 	}
 	both := map[string]string{"GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root}
@@ -113,6 +120,13 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			args:   []string{"get"},
 			stdin:  "protocol=https\nhost=github.com\npath=theorem-labs/agent-infra.git\n\n",
 			stdout: strings.Replace(answer, "%s", "ghs_theorem_labs_write", 1),
+		},
+		{
+			name:   "a managed user's repository",
+			env:    both,
+			args:   []string{"get"},
+			stdin:  "protocol=https\nhost=github.com\npath=mona-cat_octo/widgets.git\n\n",
+			stdout: strings.Replace(answer, "%s", "ghs_mona_cat_octo_write", 1),
 		},
 		{
 			name:   "the issue owner's directory",

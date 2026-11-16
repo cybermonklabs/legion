@@ -573,6 +573,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"search", "issues", "--owner", "acme", "bug"}, owner: "acme"},
 		{argv: []string{"issue", "transfer", "3", "sjawhar/legion", "-R", "sjawhar/other"}, owner: "sjawhar"},
 		{argv: []string{"secret", "set", "TOKEN", "--org", "acme"}, owner: "acme"},
+		// A managed user's login ends in `_<shortcode>`, which is a GitHub login, and is keyed
+		// lowercased as every owner is.
+		{argv: []string{"pr", "view", "1", "-R", "Mona-Cat_Octo/widgets"}, owner: "mona-cat_octo"},
 		// Refusals.
 		{argv: []string{"pr", "view", "1", "--bogus"}, err: `"--bogus" is no option`},
 		{argv: []string{"pr", "view", "1", "-Z"}, err: "names -Z"},

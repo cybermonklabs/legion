@@ -331,9 +331,9 @@ func TestABundleFailsWhenTheAppsInstallationsCannotBeRead(t *testing.T) {
 }
 
 // An owner whose name is no directory's (ghconfig.IsOwner) is left out of the bundle and costs
-// no other owner its directory, as an owner GitHub answers definitively about is. An underscore
-// makes one such name, which ghrepo admits in an owner and ghconfig refuses in a directory, and
-// discovery takes any login GitHub lists; a name that is a path is another. No lease is asked
+// no other owner its directory, as an owner GitHub answers definitively about is. A name past
+// GitHub's 39 characters makes one such name, and a name that is a path is another; discovery
+// takes any login GitHub lists, so the rule must hold of whatever it lists. No lease is asked
 // for either, no directory is written from its name, and each is said once on the log, naming
 // the owner, the App and the reason, however many bundles are built. The drift check names the
 // directories the bundle holds (GitHubDirs), and the controller's bundle leaves the same owners
@@ -343,7 +343,8 @@ func TestAnOwnerThatIsNoDirectoryNameIsLeftOutOfTheBundle(t *testing.T) {
 	log, said := bundleLog()
 	repos := projectRepos("acme/widgets")
 	installed := NewInstalled()
-	apps := sourceOf(countingTokens{minted: &minted}, installedOnOwners("acme", "under_score", "../escape"))
+	tooLong := strings.Repeat("x", 40)
+	apps := sourceOf(countingTokens{minted: &minted}, installedOnOwners("acme", tooLong, "../escape"))
 	credential := GitHubCredential(apps, repos, ghrepo.Renames{}, installed, NewLeftOut(), log)
 	issue := ghrepo.MustParse("acme/widgets")
 
@@ -362,7 +363,7 @@ func TestAnOwnerThatIsNoDirectoryNameIsLeftOutOfTheBundle(t *testing.T) {
 	if want := []string{"acme", "acme"}; !slices.Equal(minted, want) {
 		t.Errorf("minted %q, want %q: no lease is asked for an owner that is left out", minted, want)
 	}
-	for _, owner := range []string{"under_score", "../escape"} {
+	for _, owner := range []string{tooLong, "../escape"} {
 		lines := leftOutLines(said, owner)
 		if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "app=implement") ||
 			!strings.Contains(lines[0], `reason="no directory name"`) {
@@ -379,29 +380,63 @@ func TestAnOwnerThatIsNoDirectoryNameIsLeftOutOfTheBundle(t *testing.T) {
 	}
 }
 
-// The one owner that cannot be left out for its name is the bundle's default: a bundle with no
-// directory for its issue's own repository is no bundle to launch a role on, so it fails,
-// naming the owner, and nothing is minted, said or left out. The drift check answers no set for
-// it, which leaves every pod where it is. A controller asked for such an owner is refused in
-// the same way, and not as an owner its App is not installed on, which it is.
-func TestABundleFailsOnADefaultOwnerThatIsNoDirectoryName(t *testing.T) {
+// A managed user's login ends in `_<shortcode>`, and a repository of that account is one
+// ghrepo parses and the daemon admits an issue on whenever both Apps are installed there,
+// mapped or not (INFRA-2543 R4). Its owner is a directory like any other: the bundle of such an
+// issue builds, holding that owner's directory with its own lease minted, routes the issue's
+// repository to it as the bundle's default, the directory GH_CONFIG_DIR names, and the drift
+// check names it among the directories a pod must hold. A controller asked for that owner, in
+// any case, is served from it. Nothing is left out and nothing is said.
+func TestABundleWhoseDefaultOwnerHoldsAnUnderscoreBuilds(t *testing.T) {
 	var minted []string
 	log, said := bundleLog()
 	repos := projectRepos("acme/widgets")
 	installed := NewInstalled()
-	apps := sourceOf(countingTokens{minted: &minted}, installedOnOwners("acme", "own_labs"))
-	issue := ghrepo.MustParse("own_labs/widgets")
+	apps := sourceOf(countingTokens{minted: &minted}, installedOnOwners("acme", "mona-cat_octo"))
+	issue := ghrepo.MustParse("Mona-Cat_Octo/widgets")
 
 	bundle, err := GitHubCredential(apps, repos, ghrepo.Renames{}, installed, NewLeftOut(), log)(context.Background(), claim.RoleImplementer, issue)
-	if err == nil || !strings.Contains(err.Error(), `"own_labs"`) || len(bundle.Dirs) != 0 {
-		t.Fatalf("a bundle whose default owner is no directory name = %+v, %v; want no bundle and a refusal naming it", bundle, err)
+	if err != nil {
+		t.Fatalf("the bundle of an issue on a managed user's repository: %v", err)
 	}
-	if dirs := GitHubDirs(repos, ghrepo.Renames{}, installed, nil, []AppRole{Implement}, issue); dirs != nil {
-		t.Errorf("GitHubDirs = %q, want none: a bundle no launch could write is no set to compare a pod against", dirs)
+	if want := []string{"acme", "mona-cat_octo"}; !slices.Equal(bundle.DirNames(), want) || bundle.Default != "mona-cat_octo" {
+		t.Fatalf("the bundle holds %q with default %q, want %q served from mona-cat_octo", bundle.DirNames(), bundle.Default, want)
+	}
+	if err := bundle.Validate(); err != nil {
+		t.Errorf("the bundle does not validate: %v", err)
+	}
+	if token, err := ghconfig.TokenFromHosts([]byte(bundle.Dirs["mona-cat_octo"].Hosts)); err != nil || token != "implement-token-for-mona-cat_octo" {
+		t.Errorf("mona-cat_octo's directory holds %q (%v), want the implement App's lease of that owner", token, err)
+	}
+	if want := []string{"acme", "mona-cat_octo"}; !slices.Equal(minted, want) {
+		t.Errorf("minted %q, want %q: each owner's own lease, the managed user's among them", minted, want)
+	}
+	if dirs := GitHubDirs(repos, ghrepo.Renames{}, installed, nil, []AppRole{Implement}, issue); !slices.Equal(dirs, bundle.DirNames()) {
+		t.Errorf("GitHubDirs = %q, want what the bundle holds %q", dirs, bundle.DirNames())
 	}
 
-	_, err = ControllerCredential(apps, repos, ghrepo.Renames{}, nil, nil, log)(context.Background(), "Own_Labs")
-	if err == nil || !strings.Contains(err.Error(), `"own_labs"`) || errors.Is(err, ErrDefaultOwnerNotInstalled) {
+	controller, err := ControllerCredential(apps, repos, ghrepo.Renames{}, nil, nil, log)(context.Background(), "Mona-Cat_Octo")
+	if err != nil || controller.Default != "mona-cat_octo" || !slices.Equal(controller.DirNames(), []string{"acme", "mona-cat_octo"}) {
+		t.Errorf("the controller asking for Mona-Cat_Octo = %q (default %q), %v; want both directories, served from mona-cat_octo", controller.DirNames(), controller.Default, err)
+	}
+	if said.Len() != 0 {
+		t.Errorf("said %q, want nothing: no owner of this bundle is left out", said.String())
+	}
+}
+
+// The one caller whose asked-for owner can still be no directory's name is the controller's: a
+// role's default is a parsed repository's owner, which ghconfig's grammar always admits, while a
+// controller is asked for a name its caller holds. Such a name the App is installed on is
+// refused naming it, and not as an owner its App is not installed on, which it is; nothing is
+// minted, said or left out.
+func TestAControllerAskedForAnOwnerThatIsNoDirectoryNameIsRefused(t *testing.T) {
+	var minted []string
+	log, said := bundleLog()
+	tooLong := strings.Repeat("x", 40)
+	apps := sourceOf(countingTokens{minted: &minted}, installedOnOwners("acme", tooLong))
+
+	_, err := ControllerCredential(apps, projectRepos("acme/widgets"), ghrepo.Renames{}, nil, nil, log)(context.Background(), strings.ToUpper(tooLong))
+	if err == nil || !strings.Contains(err.Error(), `"`+tooLong+`"`) || errors.Is(err, ErrDefaultOwnerNotInstalled) {
 		t.Errorf("the controller asking for an owner that is no directory name = %v; want a refusal naming it, and not ErrDefaultOwnerNotInstalled", err)
 	}
 	if len(minted) != 0 || said.Len() != 0 {
