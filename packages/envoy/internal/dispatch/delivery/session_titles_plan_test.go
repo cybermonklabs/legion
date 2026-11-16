@@ -79,8 +79,7 @@ const sessionTitlePlanStoppedRows = titledPlanNewerEvents + 1 + untitledPlanEven
 // newSessionTitlesPlanFixture writes the events both statements are read over: a session whose
 // only title is on an older event, a session whose every event carries none, a user actor
 // sharing the titled session's id (the partial index holds no such row, and neither statement
-// may answer from it), and a session nobody asked about. seedTitlesIssue clears the issue's
-// events first, so a run against the database an earlier run left reads only these.
+// may answer from it), and a session nobody asked about.
 func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	pool, ctx := deliveryTestPool(t)
