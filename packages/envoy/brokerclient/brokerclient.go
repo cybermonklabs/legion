@@ -12,6 +12,7 @@
 package brokerclient
 
 import (
+	"crypto/ecdsa"
 	"net/http"
 
 	internal "github.com/sjawhar/envoy/internal/brokerclient"
@@ -58,3 +59,11 @@ func TradeSession(getenv func(string) string, own string) string {
 
 // HTTPClient forwards to internal/brokerclient.HTTPClient.
 func HTTPClient() *http.Client { return internal.HTTPClient() }
+
+// NewDPoPTransport forwards to internal/brokerclient.NewDPoPTransport: a RoundTripper that signs
+// a DPoP proof of key for each request it sends through base, carrying ath beside an
+// `Authorization: DPoP` token, which is how a caller presents a Client's token to Dispatch or the
+// listener.
+func NewDPoPTransport(key *ecdsa.PrivateKey, base http.RoundTripper) http.RoundTripper {
+	return internal.NewDPoPTransport(key, base)
+}

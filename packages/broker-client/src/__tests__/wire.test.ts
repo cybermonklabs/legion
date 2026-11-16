@@ -317,6 +317,10 @@ function tokenAsCorpus(token: BrokerToken): Record<string, unknown> {
 test("the wire corpus holds this client", async () => {
   for (const exchange of corpus.exchanges) {
     const broker = stubBroker(exchange.answer.status, exchange.answer.body);
+    // The caller stops waiting at the first wait the client asks for: a refusal the client trades
+    // again on (an unregistered pod session) is then answered as it came, after the one trade
+    // this entry describes.
+    const caller = new AbortController();
     const client = new BrokerTokenClient({
       brokerUrl: broker.url,
       key: await newDpopKey(),
@@ -328,11 +332,13 @@ test("the wire corpus holds this client", async () => {
       // one place the corpus states it is the form it asserts.
       launcherCredential:
         exchange.form[FORM_LAUNCHER_CREDENTIAL] !== FORM_LAUNCHER_CREDENTIAL_DECLINED,
+      sleep: async () => caller.abort(),
+      log: () => {},
     });
     let token: BrokerToken | undefined;
     let refusal: unknown;
     try {
-      token = await client.token();
+      token = await client.token(caller.signal);
     } catch (error) {
       refusal = error;
     }

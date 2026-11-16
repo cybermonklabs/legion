@@ -1,0 +1,168 @@
+// packages/broker-client/src/__tests__/registration.test.ts
+//
+// A pod's trade can reach the broker before the registration that lets that pod write under its
+// session name does: its daemon registers at the claim, a session's watch at the pod's creation,
+// and either registrar can be down for minutes. The broker refuses that trade `invalid_grant` with
+// an `error_description` beginning `pod_session_not_registered:`, and that one refusal is never
+// final: `token()` trades again, 15 s doubling to 5 minutes, for as long as its caller waits, and
+// says so once, naming the session, and again every 30 minutes while it lasts. Every other refusal
+// stays as final as it was. The Go half is `registration_test.go` in
+// `packages/envoy/internal/brokerclient`.
+
+import { expect, test } from "bun:test";
+import { newDpopKey } from "../dpop";
+import type { SubjectToken, TokenSource } from "../source";
+import {
+  BrokerRefusedError,
+  type BrokerToken,
+  BrokerTokenClient,
+  isFinalRefusal,
+} from "../token-client";
+import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
+import { accepted, type StubAnswer, type StubTrade, stubBroker } from "./stub";
+
+/** The session name a pod of these tests trades under. */
+const SESSION = "implementer-g1";
+
+/** The broker's refusal of a pod whose session no registration names yet, in the broker's own
+ *  words (`registeredPodSession`, packages/envoy/internal/broker/oauth/exchange.go). */
+const UNREGISTERED = `pod_session_not_registered: No registration says this pod may write under the session name '${SESSION}'. A pod writes under a session name its deployment registered for it.`;
+
+function unregistered(): StubAnswer {
+  return { status: 400, body: { error: "invalid_grant", error_description: UNREGISTERED } };
+}
+
+/** A pod's projected token, read afresh at each trade. */
+const POD: TokenSource = {
+  read: async (): Promise<SubjectToken> => ({
+    token: "projected.service.account.token",
+    tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES,
+  }),
+  describe: () => "a pod's projected service-account token",
+};
+
+/** What one pod's wait for its registration did: the trades the broker saw, the waits between
+ *  them, the lines the client logged with the clock at each, and how `token()` ended. */
+interface Waited {
+  readonly trades: StubTrade[];
+  readonly waits: number[];
+  readonly logged: { readonly at: number; readonly line: string }[];
+  readonly token: BrokerToken | undefined;
+  readonly refusal: unknown;
+}
+
+/**
+ * A pod's client against a broker that refuses its session `refusals` times as unregistered and
+ * then answers it. Every wait the client asks for passes at once and moves the clock by its
+ * length, so a wait of hours runs at the test's speed; `stopAfter` waits, the caller stops
+ * waiting (its signal aborts).
+ */
+async function waitForRegistration(refusals: number, stopAfter = Infinity): Promise<Waited> {
+  const broker = stubBroker((_trade, count) =>
+    count <= refusals ? unregistered() : { body: accepted("token-once-registered", 600) }
+  );
+  const clock = { now: Date.now() };
+  const waits: number[] = [];
+  const logged: { at: number; line: string }[] = [];
+  const caller = new AbortController();
+  const client = new BrokerTokenClient({
+    brokerUrl: broker.url,
+    key: await newDpopKey(),
+    subject: POD,
+    session: SESSION,
+    now: () => clock.now,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+      clock.now += ms;
+      if (waits.length >= stopAfter) caller.abort();
+    },
+    log: (line: string) => logged.push({ at: clock.now, line }),
+  });
+  try {
+    let token: BrokerToken | undefined;
+    let refusal: unknown;
+    try {
+      token = await client.token(caller.signal);
+    } catch (error) {
+      refusal = error;
+    }
+    return { trades: broker.trades, waits, logged, token, refusal };
+  } finally {
+    broker.stop();
+  }
+}
+
+test("a pod trade waits for its registration however long it takes", async () => {
+  const refusals = 7;
+  const { trades, waits, logged, token, refusal } = await waitForRegistration(refusals);
+  expect(refusal, `the pod's session ${SESSION} was refused for good: ${refusal}`).toBeUndefined();
+  expect(token?.accessToken).toBe("token-once-registered");
+  // Each refusal, and the trade that landed, each under the pod's session and naming no
+  // projects: a pod's entry decides its project.
+  expect(trades.length).toBe(refusals + 1);
+  for (const trade of trades) {
+    expect(trade.form.get("session")).toBe(SESSION);
+    expect(trade.form.has("projects")).toBe(false);
+  }
+  // 15 s doubling to a cap of 5 minutes, across more than the 5 minutes a client that gave up
+  // then would have lost.
+  expect(waits).toEqual([15_000, 30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
+  expect(waits.reduce((sum, wait) => sum + wait, 0)).toBeGreaterThan(5 * 60_000);
+  // Said once, naming the session, within the half hour.
+  expect(logged.length).toBe(1);
+  expect(logged[0]?.line).toContain(SESSION);
+});
+
+test("an unregistered session is logged once, and again every 30 minutes while it lasts", async () => {
+  // Seventeen refusals across 3765 s: logged at the first, at the first 30 minutes after that,
+  // and at the first 30 minutes after that again.
+  const { token, logged } = await waitForRegistration(17);
+  expect(token?.accessToken).toBe("token-once-registered");
+  expect(logged.length).toBe(3);
+  for (const [i, { line, at }] of logged.entries()) {
+    expect(line).toContain(SESSION);
+    if (i > 0) expect(at - (logged[i - 1]?.at as number)).toBeGreaterThanOrEqual(30 * 60_000);
+  }
+});
+
+test("a caller that stops waiting is answered the refusal, which no later trade is barred from curing", async () => {
+  const { trades, refusal, token } = await waitForRegistration(Infinity, 2);
+  expect(token).toBeUndefined();
+  expect(trades.length).toBe(2);
+  expect(refusal).toBeInstanceOf(BrokerRefusedError);
+  expect((refusal as Error).message).toContain(UNREGISTERED);
+  expect(isFinalRefusal(refusal)).toBe(false);
+});
+
+test("every other refusal stays permanent", () => {
+  const identity = "a pod's projected service-account token";
+  const rows: [number, string, string, boolean][] = [
+    [400, "invalid_grant", UNREGISTERED, false],
+    [429, "invalid_request", "too many token requests", false],
+    [400, "invalid_dpop_proof", "", false],
+    [400, "use_dpop_nonce", "", false],
+    [400, "invalid_grant", "no entry lists the account this token names", true],
+    [400, "invalid_grant", `The session name '${SESSION}' belongs to another identity.`, true],
+    [400, "invalid_grant", "ada@example.com revoked this machine's sign-in", true],
+    // The same words under another code, past the start, or with no colon are not the refusal.
+    [400, "invalid_request", UNREGISTERED, true],
+    [400, "invalid_grant", `the refusal was: ${UNREGISTERED}`, true],
+    [400, "invalid_grant", "pod_session_not_registered", true],
+    [401, "invalid_client", "", true],
+    [
+      400,
+      "invalid_request",
+      "The subject token was refused: its audience is not this broker's.",
+      true,
+    ],
+  ];
+  for (const [status, code, description, permanent] of rows) {
+    const refused = new BrokerRefusedError(status, code, description, identity);
+    expect(refused.permanent, `HTTP ${status} ${code} ${JSON.stringify(description)}`).toBe(
+      permanent
+    );
+    expect(isFinalRefusal(refused), `HTTP ${status} ${code} ${JSON.stringify(description)}`).toBe(
+      permanent
+    );
+  }
+});

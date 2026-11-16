@@ -7016,6 +7016,8 @@ Its refusals: `401 POD_TOKEN_EXPIRED` and `401 POD_TOKEN_INVALID` for the body's
 The gate itself is `oauth.Provider.registeredPodSession`, read beside `liveCredential` and before the library builds the answer, never inside `decide`:
 a refusal raised through the library's store hook arrives as `invalid_request`, and this one is `invalid_grant` — the subject token is sound and it is broker state that refuses, exactly as a session name another principal holds is
 — and its hint names the session and says that a pod writes under a session name its deployment registered for it.
+Its `error_description` begins `pod_session_not_registered:` (`oauthwire.PodSessionNotRegistered`) in place of the library's stock `invalid_grant` text, because a pod's trade can reach the broker before its registration does — its daemon registers at the claim, a session's watch at the pod's creation, and either can be down for minutes — so it is the one `invalid_grant` a later trade cures.
+Both clients read those words as a refusal to trade again on rather than a final one: the Go client's `Run` retries it, and the TypeScript client's `token()` waits it out while its caller waits (`internal/brokerclient/testdata/wire.json` holds the two to it).
 
 `POST /v1/oauth/introspect` (RFC 7662, `handlers_introspect.go`) is how a resource server reads one of those opaque access tokens back:
 the broker's tokens carry no claims in their own bytes, so what a token says lives on its stored session and this route is the only way to read it.
@@ -7488,9 +7490,13 @@ A host installs both binaries from this release (through the operator's dotfiles
 ### The Go token client, `agent-secrets login`, and the machine identities
 
 `internal/brokerclient` is this repository's one Go client of the broker's RFC 8693 token exchange, and `packages/envoy/brokerclient` is a public re-export of it, the facade `packages/daemon`'s `legion controller start` imports for the reason `packages/envoy/brokertest` exists: Go's internal-package rule stops a foreign module importing `internal/...`.
+The facade forwards `NewDPoPTransport` too, so a foreign module presents a `Client`'s token to Dispatch or the listener with the same signer.
 `internal/broker/helper` signs its proofs with it too (`brokerclient.NewDPoPTransport`; the helper's own `dpop.go` is gone), so the repository holds one RFC 9449 signer rather than two.
 Each process makes its own key and sends only its public half; the grant issues no refresh token, so a renewal is a fresh subject token traded again, which is why every identity is read afresh at every trade.
-`Client.Token` answers the token in hand while it is live and the broker is merely unreachable, and answers the error once the broker has refused the identity or nothing live is left, so a caller that writes only with what it was given never writes with no identity; `Client.Run` keeps one token live, retrying a broker that does not answer from 15 s doubling to 5 minutes and stopping with a plain error on a refusal, which no retry cures.
+`Client.Token` answers the token in hand while it is live and the broker is merely unreachable or answers a refusal a later trade may cure, and answers the error once the broker has refused the identity or nothing live is left, so a caller that writes only with what it was given never writes with no identity;
+`Client.Run` keeps one token live, retrying from 15 s doubling to 5 minutes and stopping with a plain error on a refusal no retry cures (`RefusedError.Permanent`).
+Four refusals are not that: the broker's 429, its two DPoP refusals, and a pod session it holds no registration for yet (`RefusedError.PodSessionUnregistered`, `invalid_grant` whose description begins `pod_session_not_registered:`).
+`Run` trades again on the last for as long as its context lives, since a pod's trade can reach the broker before its registration does, and logs it once, naming the session, and again every 30 minutes while it lasts.
 
 The wire contract both this client and the TypeScript client (`packages/broker-client`) are held to is the corpus at `internal/brokerclient/testdata/wire.json`.
 Each suite replays every exchange in it against a stub broker of its own and asserts set equality — the corpus is the whole of what a request may carry and the whole of what a client may read out of an answer — so a field one client starts sending or reading without an entry there fails that client's own test, and a field added there fails the other client until it sends it too.

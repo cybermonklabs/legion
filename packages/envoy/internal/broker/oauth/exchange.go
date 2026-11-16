@@ -1163,6 +1163,13 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // decide because a refusal raised through the library's store hook arrives as invalid_request,
 // and this one is invalid_grant: the subject token is sound and it is the broker's state that
 // refuses it, exactly as a session name another principal holds is.
+//
+// Its error_description begins oauthwire.PodSessionNotRegistered and a colon, in place of the
+// library's stock invalid_grant text, because unlike every other invalid_grant a later trade can
+// cure it: a pod's trade can reach the broker before its registration does (its daemon registers
+// at the claim, a session's watch at the pod's creation, and either registrar can be down for
+// minutes), so both clients read these words as a refusal to trade again on rather than a final
+// one.
 func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore.ExchangeSession) error {
 	if session.Instance == "" {
 		return nil
@@ -1173,7 +1180,8 @@ func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore
 		return oauth2.ErrServerError.WithWrap(err).WithDebugError(err)
 	}
 	if !registered {
-		return oauth2.ErrInvalidGrant.WithHintf("No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", name)
+		return oauth2.ErrInvalidGrant.WithDescription(oauthwire.PodSessionNotRegistered+":").
+			WithHintf("No registration says this pod may write under the session name '%s'. A pod writes under a session name its deployment registered for it.", name)
 	}
 	return nil
 }

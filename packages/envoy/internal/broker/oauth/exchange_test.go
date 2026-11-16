@@ -727,6 +727,29 @@ func TestAnUnregisteredPodOfTheSameAccountIsRefusedTheName(t *testing.T) {
 	f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-third", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g2"), key), "implementer-g2", person, project)
 }
 
+// TestAnUnregisteredPodSessionIsRetryable: a pod's trade can reach the broker before its
+// registration does — its daemon registers at the claim, a session's watch at the pod's creation,
+// and either registrar can be down for minutes. That refusal is still invalid_grant, and its
+// error_description begins pod_session_not_registered:, the words both clients read as the one
+// refusal of the broker's state that a later trade can cure, so they trade again rather than stop
+// for good. It names the session, and the same pod's next trade under that name, once its
+// deployment has registered it, is answered.
+func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	const role, uid = "implementer-g1", "pod-uid-early"
+	status, body := f.exchange(t, exchangeForm(f.podToken(t, uid, nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
+	description, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_grant" || body["access_token"] != nil {
+		t.Fatalf("the trade of pod %s under %s before its registration = %d %v, want 400 invalid_grant and no access token", uid, role, status, body)
+	}
+	if !strings.HasPrefix(description, "pod_session_not_registered: ") || !strings.Contains(description, "'"+role+"'") {
+		t.Fatalf("the refusal reads %q, want it to begin %q, the words a client trades again on, and to name the session %s", description, "pod_session_not_registered: ", role)
+	}
+	f.registers(t, account, uid, role)
+	f.introspectsAs(t, f.exchanged(t, exchangeForm(f.podToken(t, uid, nil), oauthwire.SubjectTokenTypeKubernetes, role), key), role, person, project)
+}
+
 // TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses: the review's reproduction. With
 // an access lifetime of one second, a pod writes under a Legion role's session name and its token
 // lapses; a pod of another account, listed for another project and another person, then names the
