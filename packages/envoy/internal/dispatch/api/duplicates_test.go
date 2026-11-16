@@ -279,6 +279,26 @@ func TestCreateIssueDuplicateRefusesACopyWhoseTitleNamesTheCandidate(t *testing.
 	}
 }
 
+func TestCreateIssueDuplicateRefusesAKeyedCopyOfATitleThatNamesNoIssue(t *testing.T) {
+	handler := newTestHandler(t)
+	createDuplicateTestProject(t, handler, "TEST")
+
+	// The rule leaves a candidate out only when both titles name a key. A copy that adds a key to
+	// the title of an original whose title names none is still about the original, so it is
+	// still refused.
+	original := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	body := requireDuplicateRefusal(t, createIssueRequest(t, handler, map[string]any{
+		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat (see TEST-40)",
+		"spec": duplicateSpecAstrolabe,
+	}))
+	if len(body.Candidates) != 1 || body.Candidates[0].Key != original.Key {
+		t.Fatalf("candidates = %#v, want only %s", body.Candidates, original.Key)
+	}
+}
+
 func TestCreateIssueDuplicateKeepsACopyThatTemplateIssuesWouldCrowdOut(t *testing.T) {
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
