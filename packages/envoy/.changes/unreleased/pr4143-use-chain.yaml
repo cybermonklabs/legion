@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `agent-secrets` takes its broker identity from the first of four sources that has one, and needs
+  no registered session: a launcher's key directory, the person's own `agent-secrets login`, the
+  helper for a process inside a session it registered, and the machine's own cloud identity. So
+  `agent-secrets NAME -- command` works in a process the helper never saw, such as a systemd unit or
+  a cron job, on a machine the broker accepts on its own identity. A source with nothing for the
+  caller is skipped; one present but broken, and a refusal from the broker, stop the command. When
+  no source has an identity, one refusal names all four and why each had nothing, and the client
+  exits 1 where it exited 2. The machine's own session is kept in
+  `${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine`, below a person's sign-in, so a
+  sign-in takes effect at once; a machine session left in an old key directory moves there once.
