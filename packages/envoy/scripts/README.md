@@ -84,7 +84,11 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
   changes). Each new bucket carries 100,000 delete markers among its records, so the read outlasts
   many list answers. Every `old` and `both` row must be listed until the read's completed
   `cache warm-up` line, a delivered row never goes back, and the list is exactly the bucket after
-  it.
+  it. The read of a recreated bucket first writes back the records the listener owns that the new
+  bucket lacks (INFRA-4094), and the rig registers every session through the listener under its
+  machine id, so after the session and interest phases the bucket holds `old` as it was beside the
+  new bucket's records, and every later list holds it too; the `interrupt` scenario expects the
+  same of the records its old copy held.
 - `interrupt`: on a 41,000-record session bucket, stops NATS the moment the read of the new bucket
   begins (its `bucket was recreated; its cache is re-read` line), either with `SIGSTOP` until the
   scan times out (or the watcher ends) and then `SIGCONT`, or with `SIGKILL` and a restart
