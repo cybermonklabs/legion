@@ -632,7 +632,8 @@ to that person as the one file with its target list, so it sources nothing and n
   nowhere, is refused. **The list must hold each of our services' addresses on the path as lines
   of their own, not names alone**: a name line proves only where that name resolves on the
   person's device, so a name that resolves elsewhere there says nothing of the address behind
-  it. A list of names alone prints a warning.
+  it. A list of names alone prints a warning. A list holding a NUL byte is refused, since bash
+  would read another line than the one written.
 
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \

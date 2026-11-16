@@ -84,14 +84,16 @@ is_ipv4() {
   [ "$count" -eq 4 ]
 }
 
-# host_ok HOST: HOST is a name, an IPv6 address, or an IPv4 address in its canonical form. As
-# Dispatch's own origin rule has it, a host whose last label is a number or a 0x hex number is an
-# address, so it must be a canonical one: 127.1, 0x7f000001 and 172.020.000.021 each name another
-# host than they seem to.
+# host_ok HOST: HOST is a name (a trailing dot allowed), an IPv6 address, or an IPv4 address in
+# its canonical form. As Dispatch's own origin rule has it, a host whose last label is a number or
+# a 0x hex number is an address, so it must be a canonical one: 127.1, 0x7f000001 and
+# 172.020.000.021 each name another host than they seem to.
 host_ok() {
+  local last=${1%.}
   case $1 in *:*) return 0 ;; esac
-  case ${1##*.} in
-    *[!0-9]*) case ${1##*.} in 0[xX]*) ;; *) return 0 ;; esac ;;
+  last=${last##*.}
+  case $last in
+    *[!0-9]*) case $last in 0[xX]*) ;; *) return 0 ;; esac ;;
   esac
   is_ipv4 "$1"
 }
@@ -236,6 +238,11 @@ esac
 # is the origin itself, the positive control.
 targets=$OUTSIDE_PATH_TARGETS
 bom=$'\xef\xbb\xbf'
+# `read -d ''` stops at a NUL byte and succeeds only when it found one. bash 3.2 cuts a line at a
+# NUL and bash 5 drops it, so either would probe another line than the one written.
+if IFS= read -r -d '' _ <"$targets" 2>/dev/null; then
+  unknown "OUTSIDE_PATH_TARGETS names $targets, which holds a NUL byte, so it is not a text file to read"
+fi
 row=''
 rest=$({ while IFS= read -r row || [ -n "$row" ]; do
   printf 'L%s\n' "$row"
@@ -267,7 +274,7 @@ while [ -n "$rest" ]; do
     unknown "target $1: $2 is a Tailscale service selector, which resolves nowhere; write a name that resolves on this network, or the address it stands for"
     ;;
   esac
-  case $2 in *[!A-Za-z0-9.:-]*)
+  case $2 in *[!A-Za-z0-9.:-]* | .* | *..*)
     unknown "target $1: $2 is neither a host name nor an address"
     ;;
   esac

@@ -675,6 +675,43 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // bash 3.2 cuts a line at a NUL byte, so `42<NUL>22` would be probed as port 42; bash 5 drops
+  // the byte and probes 4222. Neither is the line as written, so a list holding one is refused.
+  test.skipIf(withoutTools)("refuses a target list holding a NUL byte", async () => {
+    const origin = fakeDispatch();
+    const holding = holdingTarget();
+    try {
+      const port = String(holding.port);
+      const run = await drive({
+        OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+        OUTSIDE_PATH_TARGETS: await list(`nats 127.0.0.1 ${port.slice(0, 2)}\0${port.slice(2)}`),
+      });
+      expect(verdict(run)).toEndWith("which holds a NUL byte, so it is not a text file to read");
+      expect(verdict(run)).toStartWith("UNKNOWN: OUTSIDE_PATH_TARGETS names ");
+      expect(run.code).toBe(2);
+      expect(origin.seen).toEqual([]);
+    } finally {
+      origin.stop(true);
+      holding.stop(true);
+    }
+  });
+
+  test.skipIf(withoutTools)("takes a name written with its trailing dot", async () => {
+    const origin = fakeDispatch();
+    try {
+      const port = await closedPort();
+      const run = await drive({
+        OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+        OUTSIDE_PATH_TARGETS: await list(`dotted localhost. ${port}`),
+      });
+      expect(lineFor(run, "dotted")).toStartWith(`target dotted localhost.:${port} unreachable; `);
+      expect(verdict(run)).toStartWith("PASS");
+      expect(run.code).toBe(0);
+    } finally {
+      origin.stop(true);
+    }
+  });
+
   test.skipIf(withoutTools)(
     "reads a list written with a UTF-8 byte-order mark as it reads one without",
     async () => {
