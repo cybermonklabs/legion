@@ -1,0 +1,5 @@
+kind: Bogus
+body: x
+time: 2026-11-16T14:55:00Z
+custom:
+    Issue: pr4215
