@@ -34,6 +34,9 @@ type PodSessionRenewal struct {
 	// Thumbprint is the RFC 7638 thumbprint of the role's own key, which the role's shim hello
 	// named: every write sends it, so the registration stays bound to that key alone.
 	Thumbprint string
+	// Generation is the launch generation of the process the registration is for, which every
+	// write sends: the broker writes a registration only at a generation at least the one it holds.
+	Generation int64
 	// Token answers the pod token a write presents: the pod's own projected ServiceAccount token
 	// for the broker's audience. It is asked once per write, so a write hours after the pod
 	// started presents the token the pod holds then.
@@ -51,10 +54,12 @@ type PodSessionRenewal struct {
 // that failed or that the broker refused for a reason a retry can change (IsPermanent false: a
 // 5xx, a 429, an expired pod token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a token the
 // pod did not hand over) on a backoff from registrationRetryInitial doubling to
-// registrationRetryMax. Every write sends r.Thumbprint. A permanent refusal ends it, and so do an
-// answer the broker made for another pod or key than r's (AnswerMismatchError) and a renewal named
-// with no thumbprint (MissingThumbprintError): no later write of the same registration could be
-// taken. Each write's outcome is logged, naming the pod and the session and never a token.
+// registrationRetryMax. Every write sends r.Thumbprint and r.Generation. A permanent refusal ends
+// it, and so do an answer the broker made for another pod or key than r's (AnswerMismatchError),
+// an answer at a later generation than r's, a later process's registration (SupersededError), and
+// a renewal named with no thumbprint (MissingThumbprintError): no later write of the same
+// registration could be taken. Each write's outcome is logged, naming the pod and the session and
+// never a token.
 //
 // It returns once the first write is made, with that write's error, having scheduled the next,
 // and a stop. The stop stops the write scheduled next and returns only once a write in flight, if
@@ -130,7 +135,7 @@ func (k *podSessionKeeper) attempt(ctx context.Context) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("read the pod's token: %w", err)
 	}
-	return k.client.RegisterPodSession(ctx, k.r.PodUID, token, k.r.Session, k.r.Thumbprint)
+	return k.client.RegisterPodSession(ctx, k.r.PodUID, token, k.r.Session, k.r.Thumbprint, k.r.Generation)
 }
 
 // schedule arms the next write after wait, unless the renewal is stopped or ctx has ended.

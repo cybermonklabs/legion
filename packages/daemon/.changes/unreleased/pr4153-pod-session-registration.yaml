@@ -12,9 +12,13 @@ body: |-
   again every 6 hours and retries a failed write at 15 seconds doubling to 5 minutes,
   `403 POD_REGISTRAR_NOT_LISTED` included. When a role's process ends, the daemon waits for that
   registration's write in flight, up to the RPC timeout, before the next process writes its own.
-  An answer that names another pod or another key than the daemon sent ends that registration's
-  writes, logged with the pod, the session and both values. The registration needs this
-  release's broker, which binds it; an earlier broker refuses the `thumbprint` field. Until t-e-54
+  Every write also sends the claim's launch generation, and the broker keeps the registration of
+  the latest one, so a late write of an earlier process cannot put its key back; an answer at a
+  later generation ends that registration's writes, logged with the pod, the session and both
+  generations. An answer that names another pod or another key than the daemon sent ends them
+  too, logged with the pod, the session and both values. The registration needs this release's
+  broker, which binds and orders it; an earlier broker refuses the `thumbprint` and `generation`
+  fields. Until t-e-54
   holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with
   its own key, the daemon registers whatever session id a role's agent reports and a role's own
   trade is refused, so set no `exchange_audience` before both are in. Unset, no registration is

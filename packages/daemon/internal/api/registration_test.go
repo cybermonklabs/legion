@@ -362,7 +362,7 @@ type clientRegistrar struct {
 
 func (c clientRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
 	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
-		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Token: s.Token, After: c.renewals.after, Bound: s.Bound,
+		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: c.renewals.after, Bound: s.Bound,
 	})
 }
 

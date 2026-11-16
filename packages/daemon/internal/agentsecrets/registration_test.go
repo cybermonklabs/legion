@@ -22,13 +22,15 @@ import (
 // each write's credential headers and body, and answers the next of answers, or once they run out
 // a registration of pod (the pod uid the broker reads from the token every write presents) that
 // lasts a day, bound to the thumbprint the write sent — or to bound, where a test sets it, as a
-// broker that kept another binding answers.
+// broker that kept another binding answers — at the generation the write sent, or at newer, where
+// a test sets it, as a broker holding a later process's registration answers a stale write.
 type registrationBroker struct {
 	t     *testing.T
 	pod   string
 	bound string
 
 	mu      sync.Mutex
+	newer   int64
 	answers []enrollAnswer
 	writes  []registrationWrite
 }
@@ -62,8 +64,12 @@ func (b *registrationBroker) handle(w http.ResponseWriter, r *http.Request) {
 	if b.bound != "" {
 		thumbprint = b.bound
 	}
+	generation := write.body["generation"]
+	if b.newer > 0 {
+		generation = b.newer
+	}
 	answer := enrollAnswer{status: http.StatusOK, body: mustJSON(b.t, map[string]any{
-		"pod_uid": b.pod, "session": write.body["session"], "thumbprint": thumbprint, "expires_at": registrationExpiry,
+		"pod_uid": b.pod, "session": write.body["session"], "thumbprint": thumbprint, "generation": generation, "expires_at": registrationExpiry,
 	})}
 	if len(b.answers) > 0 {
 		answer, b.answers = b.answers[0], b.answers[1:]
@@ -174,7 +180,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	path := tokenFile(t, "the-daemon's-token")
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: path}
 
-	expires, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint)
+	expires, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7)
 	if err != nil {
 		t.Fatalf("RegisterPodSession: %v", err)
 	}
@@ -192,14 +198,14 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	if got.contentType != "application/json" {
 		t.Errorf("the registration's Content-Type is %q, want application/json", got.contentType)
 	}
-	if want := map[string]any{"pod_token": testPodToken, "session": "ses_implementer", "thumbprint": testThumbprint}; mustJSON(t, got.body) != mustJSON(t, want) {
+	if want := map[string]any{"pod_token": testPodToken, "session": "ses_implementer", "thumbprint": testThumbprint, "generation": 7}; mustJSON(t, got.body) != mustJSON(t, want) {
 		t.Errorf("the registration's body is %s, want exactly %s", mustJSON(t, got.body), mustJSON(t, want))
 	}
 
 	if err := os.WriteFile(path, []byte("the-rotated-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint); err != nil {
+	if _, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7); err != nil {
 		t.Fatalf("RegisterPodSession after the rotation: %v", err)
 	}
 	if got := broker.received()[1].authorization; got != "Bearer the-rotated-token" {
@@ -209,7 +215,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	broker.mu.Lock()
 	broker.answers = []enrollAnswer{{status: http.StatusForbidden, body: `{"code":"POD_ACCOUNT_NOT_LISTED","error":"system:serviceaccount:legion:worker is not in BROKER_EXCHANGE_ACCOUNTS"}`}}
 	broker.mu.Unlock()
-	_, err = c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint)
+	_, err = c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7)
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != http.StatusForbidden || api.Code != "POD_ACCOUNT_NOT_LISTED" || !IsPermanent(err) {
 		t.Fatalf("a refused registration = %v, want a permanent *APIError 403 POD_ACCOUNT_NOT_LISTED", err)
@@ -221,7 +227,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	}
 
 	missing := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: filepath.Join(t.TempDir(), "absent")}
-	if _, err := missing.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint); err == nil || !strings.Contains(err.Error(), "read the ServiceAccount token") {
+	if _, err := missing.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer", testThumbprint, 7); err == nil || !strings.Contains(err.Error(), "read the ServiceAccount token") {
 		t.Errorf("a registration with no token file = %v, want a failure naming the token file", err)
 	}
 	if n := len(broker.received()); n != 3 {
@@ -401,7 +407,7 @@ func TestARegistrationAnsweredForAnotherPodIsNotRenewed(t *testing.T) {
 	var logged lockedLog
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
 
-	_, err := c.RegisterPodSession(context.Background(), mine, testPodToken, session, testThumbprint)
+	_, err := c.RegisterPodSession(context.Background(), mine, testPodToken, session, testThumbprint, 1)
 	var mismatch *AnswerMismatchError
 	if !errors.As(err, &mismatch) || mismatch.Field != "pod_uid" || mismatch.Pod != mine || mismatch.Session != session || mismatch.Sent != mine || mismatch.Answered != other || !IsPermanent(err) {
 		t.Fatalf("a registration the broker answered for pod %s, where the daemon registered %s for %s = %v, want a permanent *AnswerMismatchError naming both", other, mine, session, err)
@@ -438,7 +444,7 @@ func TestRegisterPodSessionRefusesAnEmptyThumbprint(t *testing.T) {
 	broker, server := newRegistrationBroker(t, "pod-uid-1")
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
 
-	_, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_tester", "")
+	_, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_tester", "", 1)
 	if writes := broker.received(); len(writes) != 0 {
 		t.Fatalf("a registration of session ses_tester with no thumbprint sent %s, want nothing sent", mustJSON(t, writes[0].body))
 	}
@@ -464,7 +470,7 @@ func TestAnAnswerForAnotherPodOrKeyIsRefused(t *testing.T) {
 			broker, server := newRegistrationBroker(t, c.answeredPod)
 			broker.bound = c.answeredThumbprint
 			client := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
-			_, err := client.RegisterPodSession(context.Background(), "pod-uid-mine", testPodToken, "ses_reviewer", testThumbprint)
+			_, err := client.RegisterPodSession(context.Background(), "pod-uid-mine", testPodToken, "ses_reviewer", testThumbprint, 1)
 			var mismatch *AnswerMismatchError
 			if !errors.As(err, &mismatch) || !IsPermanent(err) {
 				t.Fatalf("a registration of pod-uid-mine for ses_reviewer answered with %s %q = %v, want a permanent *AnswerMismatchError", c.field, c.answered, err)
@@ -531,5 +537,56 @@ func TestAStopWaitsForTheWriteInFlight(t *testing.T) {
 	}
 	if n := timers.armed(); n != 0 {
 		t.Errorf("%d writes of ses_merger are scheduled after the stop, want none", n)
+	}
+}
+
+// TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded: every write sends the launch generation
+// of the process it registers, and the broker answers the registration as it holds it, its
+// generation included, writing a write only when its generation is at least the one held. A
+// renewal of an earlier process (generation 2) answered with a later generation (3) — a later
+// process of the claim has registered the session since — is superseded: a permanent failure
+// naming the pod, the session and both generations, logged once, and nothing more is written or
+// scheduled. The same key on both sides is the case only the generation tells apart: an answer
+// bound to another key is refused anyway (TestAnAnswerForAnotherPodOrKeyIsRefused).
+func TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded(t *testing.T) {
+	const (
+		pod     = "pod-uid-6"
+		session = "ses_superseded"
+	)
+	broker, server := newRegistrationBroker(t, pod)
+	var logged lockedLog
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	timers := &manualTimers{}
+	stop, err := c.KeepPodSession(context.Background(), PodSessionRenewal{
+		PodUID: pod, Session: session, Thumbprint: testThumbprint, Generation: 2, Bound: time.Second, After: timers.after,
+		Token: func(context.Context) (string, error) { return testPodToken, nil },
+	})
+	defer stop()
+	if err != nil {
+		t.Fatalf("the first write of %s at generation 2: %v", session, err)
+	}
+
+	broker.mu.Lock()
+	broker.newer = 3
+	broker.mu.Unlock()
+	timers.fire()
+	writes := broker.received()
+	if len(writes) != 2 || writes[1].body["generation"] != float64(2) {
+		t.Fatalf("the broker received %d writes of %s, want the first and its renewal, both at generation 2: %v", len(writes), session, writes)
+	}
+	if n := timers.armed(); n != 0 {
+		t.Fatalf("the renewal of %s at generation 2, answered at generation 3, scheduled %d more writes, want none: an earlier process kept writing over a later one's registration", session, n)
+	}
+	text := logged.String()
+	for _, want := range []string{"pod=" + pod, "session=" + session, "generation 2", "generation 3"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("logged %q, want it to name %s", text, want)
+		}
+	}
+
+	_, err = c.RegisterPodSession(context.Background(), pod, testPodToken, session, testThumbprint, 2)
+	var superseded *SupersededError
+	if !errors.As(err, &superseded) || superseded.Pod != pod || superseded.Session != session || superseded.Sent != 2 || superseded.Answered != 3 || !IsPermanent(err) {
+		t.Fatalf("a write of %s at generation 2 answered at generation 3 = %v, want a permanent *SupersededError naming the pod, the session and both generations", session, err)
 	}
 }

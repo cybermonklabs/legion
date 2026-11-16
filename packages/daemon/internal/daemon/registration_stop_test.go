@@ -97,7 +97,7 @@ type renewingRegistrar struct {
 
 func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
 	return r.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
-		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Token: s.Token, After: r.renewals.after, Bound: s.Bound,
+		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: r.renewals.after, Bound: s.Bound,
 	})
 }
 
