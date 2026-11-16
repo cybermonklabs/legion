@@ -1217,6 +1217,54 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			t.Fatalf("the dead letter lines are %v, want one with reason delivery_mode", stored)
 		}
 	})
+
+	// The tester's red test of round 4 (INFRA-2846), in the class of round 3's: a claim whose
+	// reason is lost when another walk takes it over. A walk claimed the copy to forward it and
+	// ended before it confirmed the forward, so the stream may hold that forward. A walk that
+	// takes the claim over after the copy's hour owes the sender a dead letter that says the
+	// message may have reached the holder. When that walk's own dead-letter publish fails with an
+	// error that can pass, the walk that takes its claim over sends the same dead letter, which
+	// must still say so, and not that no session held the role.
+	t.Run("t a forwarded copy's dead letter sent again by a second takeover still says the message may have reached the holder", func(t *testing.T) {
+		rig := newHourRig(t)
+		const (
+			role   = "hour-forward-letter-late"
+			sender = "ses_hour_forward_late_sender"
+		)
+		held := rig.keep(role, listenerCopy(role, sender, "a copy whose forward was never confirmed"))
+		// The walk that claimed the copy to forward it ended there: its claim stands on a
+		// cursor that has passed nothing yet.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		body, err := json.Marshal(bus.KeptRoleCursor{Claiming: held.sequence})
+		if err != nil {
+			t.Fatalf("encode the forward's claim: %v", err)
+		}
+		if _, err := rig.client().PublishCursorAt(ctx, bus.KeptRoleCursorSubject(role), body, 0); err != nil {
+			t.Fatalf("write the forward's claim: %v", err)
+		}
+		seam := &deadLetterSeam{role: role}
+		seam.install(t, rig)
+		rig.moveClock(time.Hour + time.Minute)
+		rig.startSweeps()
+		rig.waitDeadLetter(held)
+		rig.waitPassed(role, held.sequence)
+		letSweepsRun()
+
+		if calls := seam.made(); len(calls) < 2 {
+			t.Fatalf("the dead letter was published %d times, want the failed one and the one sent again: %+v", len(calls), calls)
+		}
+		letters := rig.envelopesOn(contracts.AgentSubject(sender))
+		if len(letters) != 1 {
+			t.Fatalf("the sender's agent subject holds %d messages, want one dead letter: %+v", len(letters), letters)
+		}
+		assertDeadLetterOf(t, letters[0], role, held, held.stored, rig.now(), "The message may have reached that session.")
+		for _, wrong := range []string{"No session held the role", "no session held the role", "The hour ended before session"} {
+			if strings.Contains(letters[0].Payload, wrong) || strings.Contains(letters[0].PayloadSummary, wrong) {
+				t.Fatalf("the dead letter of a copy whose forward was claimed says %q:\n%s\n%s", wrong, letters[0].PayloadSummary, letters[0].Payload)
+			}
+		}
+	})
 }
 
 // TestADeadLetterClaimIsTakenOverForTheReasonItWasMade holds the rule a walk that takes over a
