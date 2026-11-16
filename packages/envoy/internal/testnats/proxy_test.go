@@ -134,7 +134,9 @@ func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 }
 
 // ProxyRate moves no faster than its rate: a payload of twice the rate takes about two seconds to
-// cross the proxy, where a proxy with no rate moves it at once.
+// cross the proxy, where a proxy with no rate moves it at once. The proxy forwards each read before
+// it sleeps for it, so the last read of the payload, up to proxyReadBuffer bytes, crosses
+// uncharged; the bound allows exactly that and nothing more.
 func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
 	const rate = 200_000
 	uri := URL(t)
@@ -165,7 +167,7 @@ func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if took, least := time.Since(started), time.Duration(total)*time.Second/rate*9/10; took < least {
+	if took, least := time.Since(started), time.Duration(total-proxyReadBuffer)*time.Second/rate; took < least {
 		t.Fatalf("%d bytes crossed a proxy of %d B/s in %v, want at least %v", total, rate, took, least)
 	}
 }

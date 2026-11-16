@@ -179,6 +179,11 @@ func (p *Proxy) untrack(conns ...net.Conn) {
 	}
 }
 
+// proxyReadBuffer is the most one read of a relayed connection takes. With ProxyRate the reader
+// forwards each read before it sleeps for it, so a direction can run up to proxyReadBuffer bytes
+// ahead of its rate.
+const proxyReadBuffer = 64 << 10
+
 // relay copies src to dst, each chunk written the proxy's delay after it was read and each read
 // held to the proxy's rate, until either ends; then it closes both, which ends the other direction
 // too.
@@ -191,7 +196,7 @@ func (p *Proxy) relay(dst, src net.Conn) {
 	queue := make(chan chunk, 4096)
 	go func() {
 		defer close(queue)
-		buffer := make([]byte, 64<<10)
+		buffer := make([]byte, proxyReadBuffer)
 		for {
 			p.pass()
 			read, err := src.Read(buffer)
