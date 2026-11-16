@@ -236,8 +236,8 @@ func threadsRequestWith(t *testing.T, seed privateSeed, caller privateCaller, ta
 	return response
 }
 
-// loggedEvent is one event of GET /api/v1/events/log, as much of it as these tests read.
-type loggedEvent struct {
+// privateLogRow is one event of GET /api/v1/events/log, as much of it as these tests read.
+type privateLogRow struct {
 	ID      int64           `json:"id"`
 	Type    string          `json:"type"`
 	Project string          `json:"project"`
@@ -245,13 +245,13 @@ type loggedEvent struct {
 }
 
 // eventLogOf is the whole event log as caller pages it.
-func eventLogOf(t *testing.T, seed privateSeed, caller privateCaller) []loggedEvent {
+func eventLogOf(t *testing.T, seed privateSeed, caller privateCaller) []privateLogRow {
 	t.Helper()
 	response := seed.request(t, caller, http.MethodGet, "/api/v1/events/log", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("%s reads the event log as %d %s", caller, response.Code, response.Body.String())
 	}
-	return decodeBody[[]loggedEvent](t, response)
+	return decodeBody[[]privateLogRow](t, response)
 }
 
 // requireLogHoldsNothingOf fails naming each event of project in caller's event log.
@@ -287,7 +287,7 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		map[string]any{"pinned": true}, http.StatusOK)
 
 	stateTypes := []string{"user_thread_state.updated", "user_state.updated"}
-	countCarols := func(events []loggedEvent) map[string]int {
+	countCarols := func(events []privateLogRow) map[string]int {
 		counted := map[string]int{}
 		for _, event := range events {
 			var payload struct {
@@ -304,18 +304,18 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 	// Each caller's socket is read through a pin of its own, written after carol's three writes.
 	markAgentState(t, threads.handler, seedAlice)
 	markAgentState(t, threads.handler, seedCarol)
-	socketEvents := func(caller privateCaller, login string) []loggedEvent {
-		var logged []loggedEvent
+	socketEvents := func(caller privateCaller, login string) []privateLogRow {
+		var logged []privateLogRow
 		for _, event := range liveEventsThrough(t, sockets[caller], "feed", agentStateOf(login)) {
-			logged = append(logged, loggedEvent{ID: event.ID, Type: event.Type, Project: event.Project, Payload: event.Payload})
+			logged = append(logged, privateLogRow{ID: event.ID, Type: event.Type, Project: event.Project, Payload: event.Payload})
 		}
 		return logged
 	}
 	for _, read := range []struct {
 		what   string
-		events func(caller privateCaller, login string) []loggedEvent
+		events func(caller privateCaller, login string) []privateLogRow
 	}{
-		{"event log", func(caller privateCaller, _ string) []loggedEvent { return eventLogOf(t, threads.privateSeed, caller) }},
+		{"event log", func(caller privateCaller, _ string) []privateLogRow { return eventLogOf(t, threads.privateSeed, caller) }},
 		{"live socket", socketEvents},
 	} {
 		if got := countCarols(read.events(callerCarol, seedCarol)); got["user_thread_state.updated"] != 1 || got["user_state.updated"] != 2 {
