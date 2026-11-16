@@ -3123,6 +3123,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a line break in a problem (yaml.v3's `unmarshal errors:` for an unknown key has one) prints as `\n`.
   A directory it cannot judge is exit 2 and one line on stderr naming it and the case, `does not exist`, `cannot be read: <error>` or `holds no note`, and a usage error (no directory argument, two of them, an unknown flag) is exit 2 and the usage line;
   neither prints a count line.
+  The line for a directory that does not exist or holds no note also names the way out: it ends `, and architecture-check reads it as the empty set only with --allow-empty`.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
   `say` writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `printable` escapes the rest of the line:

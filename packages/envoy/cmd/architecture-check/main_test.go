@@ -290,15 +290,21 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("stderr %q, want one line starting %q and naming the unknown key bogus", got.stderr, prefix)
 		}
 	})
-	t.Run("a missing path exits 2", func(t *testing.T) {
+	t.Run("a missing path exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := filepath.Join(t.TempDir(), "missing")
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": does not exist\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": does not exist, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
-	t.Run("an empty directory exits 2", func(t *testing.T) {
+	t.Run("an empty directory exits 2 and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
-		expect(t, runBinary(t, binary, "", dir), result{code: 2, stderr: "architecture-check: " + dir + ": holds no note\n"})
+		expect(t, runBinary(t, binary, "", dir), result{
+			code:   2,
+			stderr: "architecture-check: " + dir + ": holds no note, and architecture-check reads it as the empty set only with --allow-empty\n",
+		})
 	})
 	t.Run("a file given as the directory exits 2", func(t *testing.T) {
 		t.Parallel()
