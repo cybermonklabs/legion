@@ -274,7 +274,6 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 		{"5 chosen account over well-known file", orderSetup{wellKnown: wk, chosenAccount: person}, nil, "gcloud-not-a-secret-for-" + person},
 		{"6 credentials file over chosen configuration", orderSetup{wellKnown: wk, chosenConfig: theorem, credentialsFile: gac}, nil, "not-a-secret-for-" + gac},
 		{"7 lent token over credentials file", orderSetup{wellKnown: wk, chosenConfig: theorem, credentialsFile: gac, lentToken: lent}, nil, lent},
-		{"8 --profile over everything", orderSetup{wellKnown: wk, chosenConfig: theorem, chosenAccount: boxSA, credentialsFile: gac, lentToken: lent}, []string{"--profile", theorem}, "gcloud-not-a-secret-for-" + person},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -325,7 +324,7 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 		t.Fatalf("exit %d after %s, stderr %q; want 1 within 2s", code, took, stderr)
 	}
 	for _, source := range []string{
-		"--profile", "CLOUDSDK_AUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
+		"CLOUDSDK_AUTH_ACCESS_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
 		"CLOUDSDK_ACTIVE_CONFIG_NAME", "CLOUDSDK_CORE_ACCOUNT",
 		filepath.Join(dir, "application_default_credentials.json"), "gcloud", "metadata server",
 	} {
@@ -379,12 +378,6 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 			code: 1, says: []string{"application_default_credentials.json"},
 		},
 		{
-			name: "missing profile",
-			use:  func(*testing.T, string, string, *fakeSecretManager) {},
-			args: []string{"--profile", "missing"},
-			code: exitUsageError, says: []string{"missing", "box", "theorem"},
-		},
-		{
 			name: "refused under the first source",
 			use: func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager) {
 				useOrderSources(t, dir, tokenURI, orderSetup{wellKnown: "wk@example.iam.gserviceaccount.com", chosenConfig: "theorem", credentialsFile: "gac@example.iam.gserviceaccount.com", lentToken: "lent-token"})
@@ -393,16 +386,6 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 				fake.mu.Unlock()
 			},
 			code: 1, says: []string{"PermissionDenied"}, onlyCall: "Bearer lent-token",
-		},
-		{
-			// As sami-devbox's theorem configuration is once its person's login is revoked:
-			// gcloud still holds the machine's own login, which an unchosen account would fall to.
-			name: "profile names no account",
-			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
-				useGcloudConfigurations(t, "box", map[string]string{"box": "box@example.iam.gserviceaccount.com", "theorem": ""})
-			},
-			args: []string{"--profile", "theorem"},
-			code: 1, says: []string{"the gcloud configuration theorem", "names no account"},
 		},
 		{
 			name: "chosen configuration names no account",

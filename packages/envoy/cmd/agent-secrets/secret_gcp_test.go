@@ -443,16 +443,17 @@ func useGCPIdentity(t *testing.T, kind, email string) {
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	useEmptyGcloudConfigDir(t)
-	restoreFile, restoreMetadata, restoreUserinfo := gcpCredentialsFile, gcpMetadataCredentials, gcpUserinfo
+	restoreFile, restoreToken, restorePrincipal, restoreUserinfo := gcpCredentialsFile, gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo
 	t.Cleanup(func() {
-		gcpCredentialsFile, gcpMetadataCredentials, gcpUserinfo = restoreFile, restoreMetadata, restoreUserinfo
+		gcpCredentialsFile, gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo = restoreFile, restoreToken, restorePrincipal, restoreUserinfo
 	})
 	gcpUserinfo = userinfoOf(email)
 	token := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "fake"})
 	if kind == "" {
-		gcpMetadataCredentials = func(context.Context) (*google.Credentials, string, error) {
-			return &google.Credentials{TokenSource: token}, email, nil
+		gcpMetadataToken = func(context.Context) (*google.Credentials, error) {
+			return &google.Credentials{TokenSource: token}, nil
 		}
+		gcpMetadataPrincipal = func(context.Context) string { return email }
 		return
 	}
 	var data string
@@ -506,12 +507,15 @@ func useNoADC(t *testing.T) {
 	t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "")
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 	useEmptyGcloudConfigDir(t)
-	restoreMetadata, restoreUserinfo := gcpMetadataCredentials, gcpUserinfo
-	gcpMetadataCredentials = func(context.Context) (*google.Credentials, string, error) {
-		return nil, "", fmt.Errorf("%w: the test has none", googleidentity.ErrNoMetadataServer)
+	restoreToken, restorePrincipal, restoreUserinfo := gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo
+	gcpMetadataToken = func(context.Context) (*google.Credentials, error) {
+		return nil, fmt.Errorf("%w: the test has none", googleidentity.ErrNoMetadataServer)
 	}
+	gcpMetadataPrincipal = func(context.Context) string { return "" }
 	gcpUserinfo = userinfoOf("")
-	t.Cleanup(func() { gcpMetadataCredentials, gcpUserinfo = restoreMetadata, restoreUserinfo })
+	t.Cleanup(func() {
+		gcpMetadataToken, gcpMetadataPrincipal, gcpUserinfo = restoreToken, restorePrincipal, restoreUserinfo
+	})
 }
 
 // useLentGCPAccessToken lends token in CLOUDSDK_AUTH_ACCESS_TOKEN for the rest of t, and makes
@@ -1141,9 +1145,7 @@ func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 // line names - and always with file logging, HTTP logging and prompts off, though this command's
 // environment turns file logging and HTTP logging on and their token redaction off; its token
 // command prints the token in the private format, which bypasses gcloud's log file, and clears
-// none of gcloud's own auth properties. Under --profile, gcloud runs without
-// CLOUDSDK_AUTH_ACCESS_TOKEN and CLOUDSDK_CORE_ACCOUNT, which would name another credential than
-// the configuration's, and every command line names the configuration.
+// none of gcloud's own auth properties.
 func TestGCPSecretGcloudRunsWithItsOwnSettingsAndNoLogs(t *testing.T) {
 	t.Run("the caller's settings, and no logs", func(t *testing.T) {
 		fake := newFakeSecretManager()
@@ -1189,31 +1191,6 @@ func TestGCPSecretGcloudRunsWithItsOwnSettingsAndNoLogs(t *testing.T) {
 		if len(token) == 0 || token[len(token)-1] != "ada@example.com" {
 			t.Errorf("gcloud's token command %q does not end with the account", token)
 		}
-	})
-	t.Run("--profile", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useNoADC(t)
-		gcloud := useGcloud(t, "ada@example.com", machineEmail)
-		configurations := filepath.Join(os.Getenv("CLOUDSDK_CONFIG"), "configurations")
-		if err := os.MkdirAll(configurations, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(configurations, "config_theorem"), []byte("[core]\naccount = ada@example.com\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent")
-		t.Setenv("CLOUDSDK_CORE_ACCOUNT", machineEmail)
-		startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
-
-		if _, stderr, code := runSecret("list", "--profile", "theorem"); code != 0 {
-			t.Fatalf("exit %d, stderr %q", code, stderr)
-		}
-		requireRunUnder(t, fake, gcloud, "ada@example.com")
-		requireGcloudRuns(t, gcloud, map[string]string{
-			"CLOUDSDK_AUTH_ACCESS_TOKEN": "unset",
-			"CLOUDSDK_CORE_ACCOUNT":      "unset",
-		}, "--configuration=theorem")
 	})
 }
 
@@ -1717,14 +1694,15 @@ func TestOpenSecretBackendRefusesUnknownStore(t *testing.T) {
 	}
 }
 
-// TestGCPSecretProfileNamesAGcloudConfiguration: on a GCP broker --profile names a gcloud
+// TestGCPSecretChosenConfigurationNamesAGcloudLogin: CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud
 // configuration, and a form runs under that configuration's login, though another is active.
-func TestGCPSecretProfileNamesAGcloudConfiguration(t *testing.T) {
+func TestGCPSecretChosenConfigurationNamesAGcloudLogin(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGcloudConfigurations(t, "box", orderConfigurations)
+	t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
 	startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
-	_, stderr, code := runSecret("list", "--profile", "theorem")
+	_, stderr, code := runSecret("list")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 	}
@@ -1735,9 +1713,9 @@ func TestGCPSecretProfileNamesAGcloudConfiguration(t *testing.T) {
 
 // TestGCPSecretRefusalNamesTheSourceAndTheChoice: a store refusal names the source the
 // credential came from and whom it acts as - or that the principal is unknown, with no userinfo
-// call to learn it - and how to choose another: --profile and the gcloud configurations here.
+// call to learn it - and how to choose another: the variables, and the gcloud configurations here.
 func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
-	const choice = "choose another with --profile <gcloud configuration> (configurations here: box, theorem)"
+	const choice = "choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: box, theorem)"
 	for _, row := range []struct {
 		name, refused string
 		use           func(t *testing.T)
@@ -1771,6 +1749,69 @@ func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 				if !strings.Contains(stderr, said) {
 					t.Fatalf("stderr %q does not say %q", stderr, said)
 				}
+			}
+			if userinfoCalls != 0 {
+				t.Fatalf("the refusal made %d userinfo calls, want none", userinfoCalls)
+			}
+		})
+	}
+}
+
+// TestGCPSecretRefusalNamesThePrincipalOfEachSource proves R2's per-source naming: a store refusal
+// names the account the credential acts as for each source that can name one - the metadata server
+// (its email), a service-account key file (its client_email), a gcloud login (its account); names
+// "principal unknown" for an authorized_user file that holds no email; and, when the metadata
+// server's email read does not answer, still signs in under its token and names the generic
+// identity. No source makes a userinfo call to learn a principal, and every row reaches a store
+// call, which is what signing in proves.
+func TestGCPSecretRefusalNamesThePrincipalOfEachSource(t *testing.T) {
+	const (
+		dev   = "dev-box@acme.iam.gserviceaccount.com"
+		robot = "robot@acme.iam.gserviceaccount.com"
+		ada   = "ada@example.com"
+	)
+	for _, row := range []struct {
+		name    string
+		setUp   func(t *testing.T)
+		refused string
+	}{
+		{"metadata names the account", func(t *testing.T) { useGCPIdentity(t, "", dev); t.Setenv("PATH", t.TempDir()) }, "the metadata server: " + dev},
+		{"metadata email read does not answer, generic wording", func(t *testing.T) {
+			useGCPIdentity(t, "", dev)
+			t.Setenv("PATH", t.TempDir())
+			gcpMetadataPrincipal = func(context.Context) string { return "" }
+		}, "the metadata server: this machine's or this pod's identity"},
+		{"service-account key file names client_email", func(t *testing.T) { useGCPIdentity(t, "service_account", robot) }, ": " + robot},
+		{"authorized_user file cannot name", func(t *testing.T) { useGCPIdentity(t, "authorized_user", ada) }, ": principal unknown"},
+		{"gcloud login names the account", func(t *testing.T) {
+			useNoADC(t)
+			useGcloud(t, ada)
+		}, "the active gcloud account (gcloud configuration default): " + ada},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			fake.refuseMethods = map[string]codes.Code{"CreateSecret": codes.PermissionDenied}
+			startFakeSecretManager(t, fake)
+			row.setUp(t)
+			var userinfoCalls int
+			restoreUserinfo := gcpUserinfo
+			gcpUserinfo = func(context.Context, *google.Credentials) (string, error) {
+				userinfoCalls++
+				return "", errors.New("the test answers no userinfo")
+			}
+			t.Cleanup(func() { gcpUserinfo = restoreUserinfo })
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			useStdin(t, "")
+
+			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "shared", "--tier", "agent")
+			if code != 1 || !strings.Contains(stderr, "PermissionDenied") {
+				t.Fatalf("exit %d, stderr %q; want 1 with the store's PermissionDenied", code, stderr)
+			}
+			if !strings.Contains(stderr, "the store refused ") || !strings.Contains(stderr, row.refused) {
+				t.Fatalf("stderr %q does not name the refused principal %q", stderr, row.refused)
+			}
+			if _, calls := fake.calledUnder(); calls == 0 {
+				t.Fatalf("no store call was made, so the credential never signed in")
 			}
 			if userinfoCalls != 0 {
 				t.Fatalf("the refusal made %d userinfo calls, want none", userinfoCalls)

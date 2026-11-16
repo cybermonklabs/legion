@@ -85,8 +85,8 @@ func motoUser(t *testing.T, endpoint string, root motoKeys, name, policy string)
 	return motoKeys{created.ID, created.Secret}
 }
 
-// TestTheBuiltCLIAgainstMoto: the binary takes its AWS sign-in from --profile, then AWS_PROFILE,
-// then the SDK's default chain, says which it used on every form, and runs every form as the
+// TestTheBuiltCLIAgainstMoto: the binary takes its AWS sign-in from AWS_PROFILE, then
+// AWS_DEFAULT_PROFILE, then the SDK's default chain, says which it used on every form, and runs
 // profile's IAM user; a user no policy allows is named and refused.
 func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 	endpoint := os.Getenv("AGENT_SECRETS_MOTO_URL")
@@ -157,8 +157,8 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 	}
 	const writerARN = "arn:aws:iam::111122223333:user/writer"
 
-	t.Run("1 --profile writer", func(t *testing.T) {
-		using := "using the AWS profile writer (--profile): " + writerARN
+	t.Run("1 AWS_PROFILE=writer on every form", func(t *testing.T) {
+		using := "using the AWS profile writer (AWS_PROFILE): " + writerARN
 		for _, form := range []struct {
 			stdin string
 			args  []string
@@ -171,7 +171,7 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 			{"", []string{"delete", "MOTO_TEST"}},
 			{"", []string{"restore", "MOTO_TEST"}},
 		} {
-			stderr, code := run(t, nil, form.stdin, append(form.args, "--profile", "writer")...)
+			stderr, code := run(t, []string{"AWS_PROFILE=writer"}, form.stdin, form.args...)
 			if code != 0 || !strings.Contains(stderr, "agent-secrets secret "+form.args[0]+": "+using+"\n") {
 				t.Fatalf("%v: exit %d, stderr %q; want 0 and %q", form.args, code, stderr, using)
 			}
@@ -196,9 +196,9 @@ func TestTheBuiltCLIAgainstMoto(t *testing.T) {
 			t.Fatalf("exit %d, stderr %q; want 0 and %q", code, stderr, want)
 		}
 	})
-	t.Run("4 --profile nobody", func(t *testing.T) {
-		stderr, code := run(t, nil, "", "list", "--profile", "nobody")
-		if want := "using the AWS profile nobody (--profile): arn:aws:iam::111122223333:user/nobody"; code != 1 || !strings.Contains(stderr, want) {
+	t.Run("4 AWS_PROFILE=nobody is refused", func(t *testing.T) {
+		stderr, code := run(t, []string{"AWS_PROFILE=nobody"}, "", "list")
+		if want := "using the AWS profile nobody (AWS_PROFILE): arn:aws:iam::111122223333:user/nobody"; code != 1 || !strings.Contains(stderr, want) {
 			t.Fatalf("exit %d, stderr %q; want 1 and %q", code, stderr, want)
 		}
 	})

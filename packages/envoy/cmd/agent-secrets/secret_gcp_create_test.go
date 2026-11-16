@@ -495,7 +495,7 @@ func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) 
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	s, err := openSession(context.Background(), io.Discard, "secret create", "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -735,10 +735,11 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 		}, func() (string, string, string) {
 			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
 		}},
-		{"a gcloud configuration --profile names", []string{"--profile", "theorem"}, func(t *testing.T) {
+		{"a gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names", nil, func(t *testing.T) {
 			useGcloudConfigurations(t, "box", orderConfigurations)
+			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "theorem")
 		}, func() (string, string, string) {
-			return "", " --profile theorem", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
+			return "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem ", "", "CLOUDSDK_ACTIVE_CONFIG_NAME=theorem "
 		}},
 	} {
 		for _, scenario := range []struct {
@@ -795,7 +796,7 @@ func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	s, err := openSession(context.Background(), io.Discard, "secret create", "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -812,14 +813,16 @@ func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 }
 
 // signalAtFirstWrite is a standard error that runs onSignalDeath, as a signal would, at the form's
-// first write to it, while that is set.
+// first write to it after the line naming the credential it signs in with (afterUsing), while that
+// is set. That line comes before the first store call, when no cleanup can be set yet, so a signal
+// at it would prove nothing about the writes the create's cleanup could race.
 type signalAtFirstWrite struct {
 	strings.Builder
 	fired bool
 }
 
 func (w *signalAtFirstWrite) Write(p []byte) (int, error) {
-	if !w.fired {
+	if !w.fired && !strings.HasPrefix(string(p), "agent-secrets secret create: using ") {
 		w.fired = true
 		if death := onSignalDeath; death != nil {
 			death()
@@ -849,7 +852,7 @@ func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
 			refuseValueReads(t)
 			stderr := &signalAtFirstWrite{}
 			code := cmdSecret([]string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, io.Discard, stderr)
-			if out := stderr.String(); code != 1 || strings.Count(out, "agent-secrets secret create: ") != 1 || !strings.Contains(out, row.want) {
+			if out := stderr.String(); code != 1 || strings.Count(afterUsing(t, out, "secret create"), "agent-secrets secret create: ") != 1 || !strings.Contains(out, row.want) {
 				t.Fatalf("exit %d, stderr %q; want 1 and the failure, naming %q, printed once", code, out, row.want)
 			}
 		})

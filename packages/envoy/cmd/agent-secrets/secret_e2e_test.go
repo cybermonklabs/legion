@@ -29,7 +29,7 @@ func TestSecretCreateIsServedByTheBrokerAtOnce(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	t.Setenv("AGENT_SECRETS_URL", rig.URL)
 	restore := awsClients
-	awsClients = func(context.Context, string, string) (secretsAPI, stsAPI, error) {
+	awsClients = func(context.Context, string) (secretsAPI, stsAPI, error) {
 		return rig.Secrets, fakeSTS{account: "111122223333", arn: "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/" + rig.Operator}, nil
 	}
 	t.Cleanup(func() { awsClients = restore })

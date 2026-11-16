@@ -281,13 +281,17 @@ read the store (`gcloud auth login` against a broker on Google Cloud, an `AWS_PR
 on AWS).
 
 A write runs under the credential of the first source the command finds, and the store's IAM
-decides whether it lands. On Google Cloud the order is `--profile` (a gcloud configuration), then
-`CLOUDSDK_AUTH_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+decides whether it lands. On Google Cloud the order is `CLOUDSDK_AUTH_ACCESS_TOKEN`,
+`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or
 `CLOUDSDK_CORE_ACCOUNT`, the well-known credentials file, the active gcloud account and last the
-metadata server; on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default chain. Every form
+metadata server; on AWS, `AWS_PROFILE`, else `AWS_DEFAULT_PROFILE`, else the SDK's default chain. Every form
 prints the credential it uses (`agent-secrets secret <form>: using …`) before it calls the store,
 and a store refusal names it and how to choose another. A source that is present but broken stops
 the command; it never falls through to the machine's identity.
+In an agent session on a shared dev box, a chosen gcloud configuration that holds a person's login
+(for example Sami's) is refused by the machine's `gcloud` wrapper, by design: an agent must not act
+as the person, so that sign-in is theirs to run in their own shell. Use a machine credential, or
+ask the person to run the command.
 `agent-secrets secret set NAME` replaces the value of a secret that exists. A new one is
 `agent-secrets secret create NAME --owner me|shared|<email> --tier agent|human`. `--owner me` is
 the email of the person the credential names, and is refused where it names none, as a token

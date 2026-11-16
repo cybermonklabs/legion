@@ -106,7 +106,7 @@ you complete the step.
 
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
 box. `agent-secrets` writes with the credential of the first source it finds, and a choice you
-make comes before the box's own identity: first `--profile`, the gcloud configuration that holds
+make comes before the box's own identity: first `CLOUDSDK_ACTIVE_CONFIG_NAME`, the gcloud configuration that holds
 your login, then an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the credentials of the
 box. Thus, on the box, name the configuration your `gcloud auth login` signed in to, as the `set`
 command below does; the command's first line names the credential it used. For more
@@ -126,7 +126,7 @@ Set the secret from standard input, then delete the two key files once the set s
 put the private key on a command line.
 
 ```sh
-agent-secrets secret set GITHUB_APP_<PERSON> --profile '<your gcloud configuration>' < app-key.json \
+CLOUDSDK_ACTIVE_CONFIG_NAME='<your gcloud configuration>' agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json \
   && rm app-key.json '<private key file>.pem'
 ```
 

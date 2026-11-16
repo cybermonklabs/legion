@@ -31,61 +31,61 @@ You need three things:
   configure none of them.
 - **A cloud credential that may reach the broker's account or project.** The CLI takes it from
   the first source that is present, a person's or a machine's, for every form, and refuses none
-  for what kind of identity it is: the store's IAM decides what each may read and write. AWS:
-  `--profile`, else `AWS_PROFILE`, else the AWS SDK's default credential chain, in the broker's
-  account. GCP: the seven sources below, `--profile` first.
+  for what kind of identity it is: the store's IAM decides what each may read and write. It is not
+  opinionated about where the credential comes from; it reads it from the environment, as the AWS
+  CLI, boto3 and gcloud do. AWS: `AWS_PROFILE`, else `AWS_DEFAULT_PROFILE`, else the AWS SDK's
+  default credential chain, in the broker's account. GCP: the six sources below.
 
 ```sh
 export AGENT_SECRETS_URL=https://secrets.internal.example
-aws sso login --profile <profile>   # AWS
+aws sso login --profile <profile>              # AWS
 export AWS_PROFILE=<profile>
-gcloud auth login                   # GCP, once; then name its configuration with --profile
+gcloud auth login                              # GCP, once
+export CLOUDSDK_ACTIVE_CONFIG_NAME=<config>    # GCP, to name its gcloud configuration
 ```
 
 On GCP a store command takes its credential from the first of these that is present:
 
-1. `--profile NAME`: the gcloud configuration `NAME` (`gcloud config configurations list` lists
-   them) and the login it names.
-2. `CLOUDSDK_AUTH_ACCESS_TOKEN`: an access token lent to the command.
-3. `GOOGLE_APPLICATION_CREDENTIALS`: the credentials file it names.
-4. `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT`: the gcloud configuration or the gcloud
-   login it names.
-5. The well-known credentials file, `application_default_credentials.json` in gcloud's own
+1. `CLOUDSDK_AUTH_ACCESS_TOKEN`: an access token lent to the command.
+2. `GOOGLE_APPLICATION_CREDENTIALS`: the credentials file it names.
+3. `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT`: the gcloud configuration
+   (`gcloud config configurations list` lists them) or the gcloud login it names.
+4. The well-known credentials file, `application_default_credentials.json` in gcloud's own
    configuration directory (`CLOUDSDK_CONFIG`, else `~/.config/gcloud`), which
    `gcloud auth application-default login` writes.
-6. The active gcloud account, where `gcloud` is on your `PATH` and holds a login.
-7. The metadata server, on a Google Cloud VM or pod: the machine's own service account.
+5. The active gcloud account, where `gcloud` is on your `PATH` and holds a login.
+6. The metadata server, on a Google Cloud VM or pod: the machine's own service account.
 
-A source that is absent is skipped. A source that is present but fails stops the command with its
-error, and no later source is tried: a file that does not parse, a refresh gcloud cannot make, an
-account gcloud holds no login for, a configuration that names no account. A refusal of the store's
-is never tried again under another credential. With no source present, the command names each of
-the seven and why it had nothing.
+There is no `--profile` flag on either backend; a form given one is a usage error that names
+these variables. A source that is absent is skipped. A source that is present but fails stops the
+command with its error, and no later source is tried: a file that does not parse, a refresh gcloud
+cannot make, an account gcloud holds no login for, a configuration that names no account. A
+refusal of the store's is never tried again under another credential. With no source present, the
+command names each of the six and why it had nothing.
 
-So a login you choose, with `--profile` or a variable, always comes before the machine's own
-identity. On a Google VM whose active gcloud configuration is the machine's own (here `box`), name
-the configuration that holds your own `gcloud auth login` (here `ada`):
+So a login you choose, with a variable, always comes before the machine's own identity. On a
+Google VM whose active gcloud configuration is the machine's own (here `box`), name the
+configuration that holds your own `gcloud auth login` (here `ada`):
 
 ```sh
-agent-secrets secret create DEMO_DEPLOY_TOKEN --profile ada --owner me --tier human
+CLOUDSDK_ACTIVE_CONFIG_NAME=ada agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier human
 ```
 
 The CLI asks the first `gcloud` on your `PATH` for a login's token (`gcloud auth list`,
 `gcloud config list`, then `gcloud auth print-access-token`), so gcloud keeps it fresh, and its
 own error says when you must run `gcloud auth login` again; the CLI reads none of gcloud's
-credential files. gcloud runs in your own environment, so impersonation, an access token file and a
-credential file override apply as gcloud's own settings say, as they do for `gcloud` itself. It
-always runs with prompts and log files off and without `CLOUDSDK_AUTH_ACCESS_TOKEN`; under
-`--profile` it also runs without `CLOUDSDK_CORE_ACCOUNT`, and every call names the configuration
-(`--configuration=NAME`). The account of a configuration you chose is the one that configuration
-names: one that names none is refused, never run as whatever other login gcloud holds.
+credential files. gcloud runs in your own environment and reads `CLOUDSDK_ACTIVE_CONFIG_NAME` and
+`CLOUDSDK_CORE_ACCOUNT` from it, so impersonation, an access token file and a credential file
+override apply as gcloud's own settings say, as they do for `gcloud` itself. It always runs with
+prompts and log files off and without `CLOUDSDK_AUTH_ACCESS_TOKEN`. The account of a configuration
+you chose is the one that configuration names: one that names none is refused, never run as
+whatever other login gcloud holds.
 
 The login of a gcloud source is the one gcloud itself would use: the one `CLOUDSDK_CORE_ACCOUNT`
 names, else the one a chosen configuration names, else the active one, whatever kind of account it
 is. An account `CLOUDSDK_CORE_ACCOUNT` names that gcloud holds no login for is refused, never
 replaced by another login. A command the CLI prints for running again keeps the variable that chose
-the source (`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME`,
-`CLOUDSDK_CORE_ACCOUNT`) or the `--profile` you gave:
+the source (`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME`, `CLOUDSDK_CORE_ACCOUNT`):
 
 ```sh
 CLOUDSDK_CORE_ACCOUNT=ada@example.com agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
@@ -95,12 +95,11 @@ Every form prints one line on standard error, before its first call to the store
 credential it uses: where it came from, and whom it acts as.
 
 ```console
-$ agent-secrets secret show DEMO_DEPLOY_TOKEN --profile ada
-agent-secrets secret show: using the gcloud configuration ada (--profile): ada@example.com
+$ CLOUDSDK_ACTIVE_CONFIG_NAME=ada agent-secrets secret show DEMO_DEPLOY_TOKEN
+agent-secrets secret show: using the gcloud configuration ada (CLOUDSDK_ACTIVE_CONFIG_NAME): ada@example.com
 ```
 
-On GCP the source is one of `the gcloud configuration NAME (--profile)`,
-`the access token in CLOUDSDK_AUTH_ACCESS_TOKEN`,
+On GCP the source is one of `the access token in CLOUDSDK_AUTH_ACCESS_TOKEN`,
 `the credentials file GOOGLE_APPLICATION_CREDENTIALS names (PATH)`,
 `the gcloud configuration NAME (CLOUDSDK_ACTIVE_CONFIG_NAME)`,
 `the gcloud account (CLOUDSDK_CORE_ACCOUNT)`, `the well-known credentials file PATH`,
@@ -108,8 +107,10 @@ On GCP the source is one of `the gcloud configuration NAME (--profile)`,
 follows, with ` impersonating SA` where gcloud impersonates one, or `principal unknown` where the
 credential does not say whose it is: a lent token, an `authorized_user` file, and a gcloud login
 whose token comes from an access token file or a credential file override. The CLI asks for no
-email scope to learn it. On AWS the line reads `using the AWS profile NAME (--profile): ARN`,
-`using the AWS profile NAME (AWS_PROFILE): ARN`, or
+email scope to learn it. The metadata server's account is read best effort; when that read is slow
+or fails, the line names it `the metadata server: this machine's or this pod's identity` and still
+signs in under its token. On AWS the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
+`using the AWS profile NAME (AWS_DEFAULT_PROFILE): ARN`, or
 `using the AWS SDK's default credential chain: ARN`.
 
 When you have made your writes, remove a sign-in you made for them from the machine, so nothing
@@ -349,10 +350,10 @@ SIGKILL or a crash in that stretch leaves the empty secret, which
 `secrets/` of the `secret_name` that `agent-secrets secret show NAME` prints.
 
 Every command the CLI prints for settling what a create left signs in as that create did: an
-`agent-secrets` line carries `--profile` as you gave it, and on GCP the
-`GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT` that
-chose the credential; a `gcloud` line carries `CLOUDSDK_ACTIVE_CONFIG_NAME` for the configuration
-`--profile` named, the variables that chose a gcloud configuration or login, `CLOUDSDK_CORE_ACCOUNT`
+`agent-secrets` line carries, on GCP, the `GOOGLE_APPLICATION_CREDENTIALS`,
+`CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT` that chose the credential; a `gcloud` line
+carries `CLOUDSDK_ACTIVE_CONFIG_NAME` for the chosen configuration, the variables that chose a
+gcloud configuration or login, `CLOUDSDK_CORE_ACCOUNT`
 for the active gcloud account's login, or `CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE` for a key file,
 and names the credential after it, `(as …)`, so where gcloud cannot be pointed at it (the
 metadata server, the well-known credentials file) you know whose sign-in to use.
@@ -441,7 +442,7 @@ refused, and the refusal names both accounts:
 
 ```console
 $ agent-secrets secret list
-agent-secrets secret list: your AWS sign-in arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com is in account 999999999999, but the agent secrets are in account 111122223333: sign in to account 111122223333 (--profile or AWS_PROFILE names the sign-in)
+agent-secrets secret list: your AWS sign-in arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com is in account 999999999999, but the agent secrets are in account 111122223333: sign in to account 111122223333 (AWS_PROFILE names the sign-in)
 ```
 
 That account check is the one check the CLI makes of a sign-in. A write (`create`, `set`, `retag`,
@@ -449,13 +450,14 @@ That account check is the one check the CLI makes of a sign-in. A write (`create
 a machine's role, an assumed service role, an IAM user - and on GCP under any credential the CLI
 found ([Before you start](#before-you-start)), since the store's IAM, not this CLI, decides what a
 sign-in may change. Where IAM refuses one, the refusal names the credential it refused as the
-`using` line does - its source and whom it acts as - and how to choose another: `--profile` and the
-gcloud configurations there are on GCP, `--profile` or `AWS_PROFILE` on AWS.
+`using` line does - its source and whom it acts as - and how to choose another: a gcloud
+configuration in `CLOUDSDK_ACTIVE_CONFIG_NAME`, an account in `CLOUDSDK_CORE_ACCOUNT`, or a
+credentials file in `GOOGLE_APPLICATION_CREDENTIALS` on GCP; `AWS_PROFILE` on AWS.
 
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
 agent-secrets secret retag: using the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com
-agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with --profile <gcloud configuration> (configurations here: ada, box); looked in GCP Secret Manager project 100000000001
+agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
 ```
 
 `--owner me` is the one place a sign-in must name a person. Under one that names none, the command

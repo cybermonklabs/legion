@@ -19,10 +19,8 @@ import (
 type gcpSource int
 
 const (
-	// sourceProfileFlag is the gcloud configuration --profile names.
-	sourceProfileFlag gcpSource = iota
 	// sourceLentToken is the access token CLOUDSDK_AUTH_ACCESS_TOKEN holds.
-	sourceLentToken
+	sourceLentToken gcpSource = iota
 	// sourceCredentialsFile is the credentials file GOOGLE_APPLICATION_CREDENTIALS names.
 	sourceCredentialsFile
 	// sourceChosenGcloud is the gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names, or the
@@ -40,8 +38,6 @@ const (
 // name is how a refusal that found no source names s.
 func (s gcpSource) name() string {
 	switch s {
-	case sourceProfileFlag:
-		return "--profile"
 	case sourceLentToken:
 		return "CLOUDSDK_AUTH_ACCESS_TOKEN"
 	case sourceCredentialsFile:

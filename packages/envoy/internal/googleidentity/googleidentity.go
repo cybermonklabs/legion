@@ -86,7 +86,7 @@ func Token(ctx context.Context, audience string) (string, error) {
 	return token, nil
 }
 
-// ErrNoMetadataServer is Probe's answer where no Google metadata server answered: nothing
+// ErrNoMetadataServer is the answer of Probe and of AccessTokenSource's token where no Google
 // listened at its address, its host name did not resolve, it did not answer within
 // ProbeTimeout, or what answered did not say it is Google's. A caller reads it as the absence
 // of a machine identity, not as a fault.
@@ -177,7 +177,7 @@ func (metadataTokenSource) Token() (*oauth2.Token, error) {
 	asked := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("the metadata server at %s could not be reached (%s names its host): %w", callURL, MetadataHostVar, err)
+		return nil, fmt.Errorf("%w: the metadata server at %s could not be reached (%s names its host): %v", ErrNoMetadataServer, callURL, MetadataHostVar, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {

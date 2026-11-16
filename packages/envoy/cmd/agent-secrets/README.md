@@ -281,9 +281,8 @@ agent-secrets-helper sessions
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
 
 Owners manage the secrets themselves, with no helper, under the credential of the first source
-the command finds: on AWS, `--profile`, else `AWS_PROFILE`, else the SDK's default chain, in the
-broker's account; on Google Cloud, the gcloud configuration `--profile` names, else
-`CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS` names,
+the command finds: on AWS, `AWS_PROFILE`, else `AWS_DEFAULT_PROFILE`, else the SDK's default
+chain, in the broker's account; on Google Cloud, `CLOUDSDK_AUTH_ACCESS_TOKEN`, else the credentials file `GOOGLE_APPLICATION_CREDENTIALS` names,
 else the gcloud configuration or login `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT`
 names, else the well-known credentials file, else the active gcloud account, else the metadata
 server. A source that is present but broken stops the command; every form prints the source it

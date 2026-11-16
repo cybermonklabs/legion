@@ -55,14 +55,11 @@ var (
 	_ stsAPI     = (*sts.Client)(nil)
 )
 
-// awsClients loads the AWS sign-in this command's environment gives it (--profile, else
-// AWS_PROFILE, else the default chain) pinned to the broker's region. Tests replace it.
-var awsClients = func(ctx context.Context, profile, region string) (secretsAPI, stsAPI, error) {
-	options := []func(*config.LoadOptions) error{config.WithRegion(region)}
-	if profile != "" {
-		options = append(options, config.WithSharedConfigProfile(profile))
-	}
-	cfg, err := config.LoadDefaultConfig(ctx, options...)
+// awsClients loads the AWS sign-in this command's environment gives it (AWS_PROFILE, else
+// AWS_DEFAULT_PROFILE, else the default chain) pinned to the broker's region. The SDK reads the
+// profile from the environment itself, so this takes none. Tests replace it.
+var awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, error) {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
 	if err != nil {
 		return nil, nil, fmt.Errorf("load your AWS sign-in: %w", err)
 	}
@@ -84,7 +81,7 @@ func requireAccount(ctx context.Context, st stsAPI, settings Settings) (arn stri
 	}
 	arn, account := aws.ToString(id.Arn), aws.ToString(id.Account)
 	if account != settings.AWSAccountID {
-		return "", fmt.Errorf("your AWS sign-in %s is in account %s, but the agent secrets are in account %s: sign in to account %s (--profile or AWS_PROFILE names the sign-in)",
+		return "", fmt.Errorf("your AWS sign-in %s is in account %s, but the agent secrets are in account %s: sign in to account %s (AWS_PROFILE names the sign-in)",
 			arn, account, settings.AWSAccountID, settings.AWSAccountID)
 	}
 	return arn, nil
@@ -126,25 +123,18 @@ type awsBackend struct {
 	source string
 	// arn is the sign-in requireAccount read, which every form reads first.
 	arn string
-	// profile is the --profile the form was given, "" for none: a command the form prints for
-	// running again carries it (agentSecrets), so it signs in as this one did.
-	profile string
 }
 
-// agentSecrets is an agent-secrets command line for printing, carrying the --profile this form ran
-// under, so it reads the store as the identity that wrote to it.
+// agentSecrets is an agent-secrets command line for printing. Its sign-in prefix (signInPrefix)
+// carries the AWS_PROFILE the SDK read, so it reads the store as the identity that wrote to it.
 func (b *awsBackend) agentSecrets(words ...string) string {
-	return pipeCommand(b.signInPrefix(), b.profile, words...)
+	return pipeCommand(b.signInPrefix(), words...)
 }
 
 // awsProfileSource names where the AWS SDK takes the sign-in awsClients loads from, in the SDK's
-// own order: --profile, else the profile AWS_PROFILE or AWS_DEFAULT_PROFILE names, else its
-// default credential chain (the environment's keys, web identity, the default profile, the
-// instance's role).
-func awsProfileSource(profile string) string {
-	if profile != "" {
-		return "the AWS profile " + profile + " (--profile)"
-	}
+// own order: the profile AWS_PROFILE or AWS_DEFAULT_PROFILE names, else its default credential
+// chain (the environment's keys, web identity, the default profile, the instance's role).
+func awsProfileSource() string {
 	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
 		if named := os.Getenv(variable); named != "" {
 			return "the AWS profile " + named + " (" + variable + ")"
@@ -179,11 +169,18 @@ func (b *awsBackend) personEmail(context.Context) (string, error) {
 func (b *awsBackend) identity() string { return b.source + ": " + b.arn }
 
 // chooseAnother is how a refusal of the store's says to sign in with another AWS credential.
-func (*awsBackend) chooseAnother() string { return "--profile <AWS profile> or AWS_PROFILE" }
+func (*awsBackend) chooseAnother() string { return "AWS_PROFILE" }
 
-// signInPrefix is empty: an AWS sign-in a printed command needs is its --profile, which
-// pipeCommand writes itself.
-func (b *awsBackend) signInPrefix() string { return "" }
+// signInPrefix is the AWS_PROFILE a printed command carries so it signs in as this one did, or ""
+// when the SDK's default chain, not a named profile, chose the sign-in.
+func (b *awsBackend) signInPrefix() string {
+	for _, variable := range []string{"AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
+		if named := os.Getenv(variable); named != "" {
+			return variable + "=" + shellWord(named) + " "
+		}
+	}
+	return ""
+}
 
 func (b *awsBackend) list(ctx context.Context) ([]secretView, error) {
 	views := []secretView{}

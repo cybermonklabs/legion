@@ -65,7 +65,7 @@
 // operator launches by hand (`enroll --pod`, pod.go). It holds no credential a person installed;
 // the projected service-account token its own kubelet mounts is what the broker trusts instead,
 // so it needs no helper, no launcher and no approval. The secret forms
-// read AWS_PROFILE (or --profile) for the person's AWS sign-in against an AWS broker, or their
+// read AWS_PROFILE for the person's AWS sign-in against an AWS broker, or their
 // Google sign-in (their Application Default Credentials, or their gcloud login) against a GCP
 // one, and need no session identity at all. The machine and grant forms act under this machine's
 // login: the helper signs each call with its launcher credential (sign-launcher) for a process
@@ -214,8 +214,8 @@ environment:
   AGENT_SECRETS_POOL_ACCOUNT the managed identity generateIdToken is called on
   AGENT_SECRETS_SESSION      the session name a trade writes under, where the deployment's entry
                              fixes none
-  AWS_PROFILE                the AWS profile the secret forms sign in with when --profile names
-                             none (else the AWS SDK's default credential chain); every secret
+  AWS_PROFILE                the AWS profile the secret forms sign in with (else AWS_DEFAULT_PROFILE,
+                             else the AWS SDK's default credential chain); every secret
                              form needs a sign-in in the broker's account, and the store's IAM
                              decides what it may do there
   CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
