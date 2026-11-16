@@ -896,7 +896,10 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 // Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
 // sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
 // same statement for the same lock, but only once it holds its document's lock, an advisory lock
-// of its own; the title change holds none while it waits.
+// of its own; the title change holds none of those while it waits. Both hold the owner lock's
+// gate, which every write of this build takes shared in that same statement before it waits on
+// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
+// advisory lock that tells the two apart by nothing and is left out of the exclusion.
 func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
 	t.Helper()
 	ctx := context.Background()
@@ -905,8 +908,11 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 		rows, err := database.Pool.Query(ctx, `
 			select pid from pg_stat_activity
 			where datname = current_database() and query = $1
-			  and pid not in (select pid from pg_locks where locktype = 'advisory' and granted)
-		`, ownerLockStatement)
+			  and pid not in (
+			    select pid from pg_locks
+			    where locktype = 'advisory' and granted
+			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
+		`, ownerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
 		if err != nil {
 			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
 		}
