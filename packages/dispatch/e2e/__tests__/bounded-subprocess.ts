@@ -373,8 +373,10 @@ export const maxReads = 100;
  *  this loop. Measured in a gVisor pod of 3 CPUs under nine busy loops, on 2026-11-16, a kill
  *  that waits so missed nothing in 500 runs of the row of `bounded-subprocess.test.ts` whose
  *  child leaves a `setsid sleep` behind, nor in 2 000 runs of the same child in one loop, where
- *  a kill that read the table once missed 2 and 5 (`stopTree`). */
-const execPause = 5;
+ *  a kill that read the table once missed 2 and 5 (`stopTree`). Exported for the row of
+ *  `bounded-subprocess.test.ts` that runs the kill's own `pause` and reads the wait it asks
+ *  `Bun.sleepSync` for. */
+export const execPause = 5;
 
 /** One bounded child being waited for, the token its environment carries, and when it started:
  *  field 22 of its `/proc/<pid>/stat`, in clock ticks since boot, read once as it spawns. Every
@@ -390,8 +392,8 @@ interface Running {
 
 /** What `stopTree` reads the process table with, signals a process with and waits with, and
  *  whether that table comes from `/proc`. Each defaults to the real one: the rows of
- *  `bounded-subprocess.test.ts` that drive the kill over a scripted table pass their own, and no
- *  other caller passes any. */
+ *  `bounded-subprocess.test.ts` that drive the kill over a scripted table pass their own, one of
+ *  them passing `read` and `procfs` alone, and no other caller passes any. */
 interface Collaborators {
   /** Whether `read` lists processes from `/proc`, with their tokens and `unknown` reads: this
    *  machine's `procfs`. The rows pass it, so they run either path on any machine. */
@@ -440,7 +442,9 @@ interface Collaborators {
  *  `child.kill` alone, with SIGKILL, and what it started by parent pid, a process whose tokens
  *  hold the child's first, last or in the middle, an ended child by its token alone, the one read
  *  where `/proc` is missing, this process never, and a walk that ends where the table lists a
- *  loop of parents. The row whose child leaves a `setsid sleep` behind does not hold the second
+ *  loop of parents. One row hands `read` and `procfs` alone, and stands in for `process.kill`
+ *  and `Bun.sleepSync` instead, so the default `signal` sends SIGKILL and the default `pause`
+ *  waits `execPause`. The row whose child leaves a `setsid sleep` behind does not hold the second
  *  read: a kill without it misses that sleep only where the sleep is caught in its exec, which
  *  was 2 of the 500 runs above.
  *
