@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+    The airlock proxy no longer forwards a command's hop-by-hop headers: a `Connection` header and every header it names reached the service, and a service that speaks HTTP/2 failed the call with a 502.
+    A gRPC error status a service answers with no body (Trailers-Only) reaches the client as that status, where it sometimes arrived as `Internal: server closed the stream without sending trailers`.
+time: 2026-11-16T20:46:28.113698134Z
+custom:
+    Issue: pr4237

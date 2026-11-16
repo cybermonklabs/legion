@@ -1,0 +1,5 @@
+kind: Changed
+body: The agent-secrets skill says gRPC clients work through the airlock proxy, that a `CONNECT` or an `h2c` upgrade inside the proxied connection is refused, and that a WebSocket, a gRPC stream or a long poll still running when the grant ends is ended with it.
+time: 2026-11-16T20:46:30.521413082Z
+custom:
+    Issue: pr4237
