@@ -393,6 +393,8 @@ export const ProjectAccessChangedEventPayloadSchema = z
       "group_removed",
       "slack_channels",
     ]),
+    /** The person or group a list change added or removed; for an owner change, the person the
+     *  project was taken from, absent when it had none. */
     principal: z.string().optional(),
   })
   .readonly();

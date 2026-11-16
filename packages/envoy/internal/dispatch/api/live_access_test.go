@@ -222,21 +222,71 @@ func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
 	}
 }
 
-// TestAResumeOverEventsTheCallerMayNotReadIsComplete: a resume's gap is the events its caller may
-// read. The seed's log holds PRIV's events, its access changes among them, and a caller that does
-// not see PRIV is replayed none of them (TestTheLiveSocketSendsNoEventOfAHiddenProject), so its
-// resume from the log's start misses nothing it may read and says replay_complete true, as it does
-// on a deployment where PRIV was never written. Every caller that does not see PRIV is asked,
-// carol's token that lists no project among them, though PRIV's list names carol: she was added,
-// and an addition takes nothing from her.
+// TestAResumeOverEventsTheCallerMayNotReadIsComplete: a resume's gap is the events that change
+// what its caller's page holds. Once PRIV is private its log goes on - a comment, a person added
+// to its list and one taken off it - and a caller that does not see PRIV is replayed none of it
+// (TestTheLiveSocketSendsNoEventOfAHiddenProject), so its resume across that misses nothing it
+// may read and says replay_complete true, as it does on a deployment where PRIV was never written.
+// Every caller that does not see PRIV is asked, carol's token that lists no project among them,
+// though PRIV's list names carol: an addition, and another's removal, take nothing from her.
 func TestAResumeOverEventsTheCallerMayNotReadIsComplete(t *testing.T) {
+	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, dave)
+	since := eventHead(t, seed.database)
+	createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+		map[string]any{"body": "PRIV's comment, after the resume point."}))
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
+	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedBob, nil, http.StatusOK)
 	url := liveURLOf(t, seed.handler)
-	start := int64(0)
 	for _, caller := range callersBlindToPrivate {
 		client := dialLive(t, url, seed.liveHeader(t, caller))
-		if got := subscribeEventsStart(t, client, "feed", &start); !got.ReplayComplete {
-			t.Errorf("%s's resume from 0 over a log holding PRIV's events says its replay is not complete: %+v", caller, got)
+		if got := subscribeEventsStart(t, client, "feed", &since); !got.ReplayComplete {
+			t.Errorf("%s's resume from %d across PRIV's events says its replay is not complete: %+v", caller, since, got)
 		}
 	}
+}
+
+// requireResumeComplete fails unless caller's resume from since says replay_complete want, naming
+// why the caller's page does or does not owe a refresh.
+func requireResumeComplete(t *testing.T, seed privateSeed, url string, caller privateCaller, since int64, want bool, why string) {
+	t.Helper()
+	client := dialLive(t, url, seed.liveHeader(t, caller))
+	if got := subscribeEventsStart(t, client, "feed", &since); got.ReplayComplete != want {
+		t.Errorf("%s's resume from %d says replay_complete %t, want %t: %s", caller, since, got.ReplayComplete, want, why)
+	}
+}
+
+// TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToWhoLostIt: PUB turns private with nobody on
+// its list but its owner carol. Every open caller read PUB while it was public and reads it no
+// more, so its resume across that change is not complete, though it may not read the change
+// itself: its page holds PUB's rows. A caller that never saw PUB - bob, a restricted member PUB's
+// list does not name, and alice's token that lists only PRIV - resumes complete.
+func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToWhoLostIt(t *testing.T) {
+	seed := seedPrivateProject(t)
+	since := eventHead(t, seed.database)
+	seed.makePrivate(t, seedPublic)
+	url := liveURLOf(t, seed.handler)
+	for _, caller := range []privateCaller{callerAlice, callerCarolToken, callerSharedToken} {
+		requireResumeComplete(t, seed, url, caller, since, false, "it read PUB while PUB was public, and its page holds PUB's rows")
+	}
+	for _, caller := range []privateCaller{callerBob, callerAlicePrivToken} {
+		requireResumeComplete(t, seed, url, caller, since, true, "it never read PUB")
+	}
+}
+
+// TestAResumeAcrossAnOwnerChangeOwesARefreshToThePreviousOwner: carol, PRIV's owner and on its
+// list no longer, gives PRIV to dave. carol reads PRIV no more, so her resume across the change is
+// not complete, though she may not read the change itself; alice, who never read PRIV while it was
+// private, resumes complete.
+func TestAResumeAcrossAnOwnerChangeOwesARefreshToThePreviousOwner(t *testing.T) {
+	const dave = "dave@example.com"
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, dave)
+	seed.mustRequest(t, callerCarol, http.MethodDelete, "/api/v1/projects/"+seedPrivate+"/access/people/"+seedCarol, nil, http.StatusOK)
+	since := eventHead(t, seed.database)
+	seed.mustRequest(t, callerCarol, http.MethodPatch, "/api/v1/projects/"+seedPrivate+"/access", map[string]any{"owner": dave}, http.StatusOK)
+	url := liveURLOf(t, seed.handler)
+	requireResumeComplete(t, seed, url, callerCarol, since, false, "she owned PRIV, reads it no more, and her page holds PRIV's rows")
+	requireResumeComplete(t, seed, url, callerAlice, since, true, "she never read PRIV")
 }

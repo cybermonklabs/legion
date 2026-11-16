@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -577,16 +578,27 @@ func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, 
 }
 
 // eventGapSQL passes the events row eventAlias names when it belongs to the gap of a resume read
-// for the viewer bound at viewerParam: an event that viewer may read (eventReadableSQL), which a
-// complete replay sends, and the removal of the viewer's own person from a project's access list,
-// which the viewer no longer reads once it is made, and which takes from the page what it read of
-// that project (accessChanged). Every other event is one the page never held and would not be
-// sent, so it is no gap: a resume across a project the caller never saw is complete.
+// for the viewer bound at viewerParam: an event that changes what that viewer's page holds. That is
+// an event the viewer may read (eventReadableSQL), which a complete replay sends, and a change of a
+// project's access that took the project from the viewer, which the viewer no longer reads once it
+// is made (accessChanged):
+//
+//   - the removal of the viewer's own person from the project's list;
+//   - an owner change that took the project from the viewer's person (its principal, SetOwner);
+//   - the project turned private, to an open viewer: one that read it while it was public, as
+//     every open viewer reads a public project, and now does not.
+//
+// Each is asked only of a project the viewer does not see now. Every other event is one the page
+// never held and would not be sent, so it is no gap: a resume across a project the caller never
+// saw is complete.
 func eventGapSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
 	return `(` + eventReadableSQL(e, viewerParam) + `
-		or (` + e + `.type = '` + projectAccessChangedEvent + `' and ` + e + `.payload->>'change' = '` + model.AccessPersonRemoved + `'
-			and ` + e + `.payload->>'principal' = ` + viewerParam + `::jsonb->>'person'))`
+		or (` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and (
+			(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
+				and ` + e + `.payload->>'principal' = ` + viewerParam + `::jsonb->>'person')
+			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and ` + e + `.payload->>'visibility' = '` + model.ProjectPrivate + `'
+				and ` + access.OpenClause(viewerParam) + `))))`
 }
 
 // endEventsAfterFailure ends a subscription whose read failed, with an ended frame (behind), so its

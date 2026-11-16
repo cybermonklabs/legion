@@ -384,8 +384,9 @@ const (
 
 // ProjectAccessEventPayload is `project.access_changed`: one write of a project's owner,
 // visibility or access list committed. It carries the project's access as that write left it,
-// which change it was, and the person or group it added or removed, so every reader that
-// resolved a viewer before it resolves again. It is owned by the project and never notifies.
+// which change it was, and the person or group it added or removed - for an owner change, the
+// person the project was taken from - so every reader that resolved a viewer before it resolves
+// again. It is owned by the project and never notifies.
 type ProjectAccessEventPayload struct {
 	ProjectAccess
 	Change    string `json:"change"`

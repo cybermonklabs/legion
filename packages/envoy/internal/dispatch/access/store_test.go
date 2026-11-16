@@ -62,10 +62,10 @@ func TestEveryAccessWriteAppendsItsEvent(t *testing.T) {
 		}
 	}
 	for _, step := range []written{
-		{"the owner gives PUB to carol", func(tx pgx.Tx) ([]model.Event, error) {
+		{"the owner gives PUB to carol, and the event names olga, whom PUB was taken from", func(tx pgx.Tx) ([]model.Event, error) {
 			_, event, err := SetOwner(ctx, tx, broker, "PUB", carol, olgaActor)
 			return []model.Event{event}, err
-		}, projectChange("PUB", model.AccessOwnerChanged, "", func(a model.ProjectAccess) bool { return a.Owner == carol })},
+		}, projectChange("PUB", model.AccessOwnerChanged, olga, func(a model.ProjectAccess) bool { return a.Owner == carol })},
 		{"PUB is made private", func(tx pgx.Tx) ([]model.Event, error) {
 			_, event, err := SetVisibility(ctx, tx, broker, "PUB", model.ProjectPrivate, olgaActor)
 			return []model.Event{event}, err

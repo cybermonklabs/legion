@@ -161,16 +161,25 @@ func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAcces
 }
 
 // SetOwner gives project key to owner, a full member who has signed in, at any time, whoever owned
-// it before. It appends project.access_changed in tx.
+// it before. It appends project.access_changed in tx, whose principal is the person the project was
+// taken from, when that is another: a reader that held the project's rows through its ownership
+// alone learns from it that it no longer reads them (api: eventGapSQL).
 func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	login, err := fullMemberOwner(ctx, tx, owner)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
+	var previous string
+	if err := tx.QueryRow(ctx, `select coalesce(owner, '') from projects where key = $1`, key).Scan(&previous); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read the owner of project %s: %w", key, err)
+	}
 	if err := updateProject(ctx, tx, key, `update projects set owner = $2 where key = $1`, login); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
-	return appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, "", by)
+	if previous == login {
+		previous = ""
+	}
+	return appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, previous, by)
 }
 
 // fullMemberOwner answers the stored form of owner when a full member who has signed in holds it,
