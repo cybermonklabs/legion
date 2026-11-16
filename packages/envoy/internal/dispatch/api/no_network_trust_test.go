@@ -12,6 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 )
 
+// The hosts of the API walk: apiHost is its DISPATCH_SERVER_URL's, and foreignHost a host it does
+// not answer at, which a forwarding header names.
+const (
+	apiHost     = "dispatch.example"
+	foreignHost = "attacker.example"
+)
+
 // apiWalk is the API mounted as a production deployment mounts it (no test hooks, the document
 // service of its own) on a mux of its own, with no database, and every route it serves: each row
 // of the route table and each pattern mounted beside the table, the two sockets
@@ -22,7 +29,7 @@ func apiWalk(t *testing.T) (http.Handler, []string) {
 	deps, err := NewDeps(DepsInput{
 		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User"},
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL:   "https://dispatch.example",
+		ServerURL:   "https://" + apiHost,
 	})
 	if err != nil {
 		t.Fatalf("build the API's dependencies: %v", err)
@@ -61,7 +68,7 @@ func walkRequest(t *testing.T, route string) *http.Request {
 	if method != http.MethodGet {
 		body = routeProbeBody(apiRoute{routeRow: routeRow{Method: method, Pattern: pattern}})
 	}
-	request := httptest.NewRequestWithContext(t.Context(), method, "https://dispatch.example"+path, strings.NewReader(body))
+	request := httptest.NewRequestWithContext(t.Context(), method, "https://"+apiHost+path, strings.NewReader(body))
 	if method != http.MethodGet {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -70,8 +77,9 @@ func walkRequest(t *testing.T, route string) *http.Request {
 
 // TestEveryRouteNeedsACredentialButTheNamedOnes (c-no-route-trusts-the-network): every route the
 // API serves, sent with no cookie and no Authorization, is refused for the credential it does not
-// carry (authRefusal). The API names no route that needs none: sign-in, health and the web app
-// are the router's and the process's, and routes' test of this name holds them.
+// carry (authRefusal); sent as HEAD and as OPTIONS, it is refused for the credential too, or
+// answered 404 or 405, and never served. The API names no route that needs none: sign-in, health
+// and the web app are the router's and the process's, and routes' test of this name holds them.
 func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 	handler, routes := apiWalk(t)
 	for _, route := range routes {
@@ -80,35 +88,53 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 		if refused, _ := authRefusal(response); !refused {
 			t.Errorf("%s answers a caller with no credential %d %s, want it refused for the credential it does not carry", route, response.Code, firstLine(response.Body.String()))
 		}
+		for _, method := range []string{http.MethodHead, http.MethodOptions} {
+			// HEAD is served by a GET pattern, and OPTIONS by none of the table's, so each is the
+			// route's own answer or the mux's.
+			request := walkRequest(t, route)
+			request.Method = method
+			request.Body, request.ContentLength = http.NoBody, 0
+			request.Header.Del("Content-Type")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if refused, _ := authRefusal(response); !refused && response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+				t.Errorf("%s sent as %s answers a caller with no credential %d %s, want it refused for the credential, 404 or 405", route, method, response.Code, firstLine(response.Body.String()))
+			}
+		}
 	}
 }
 
 // TestNoRouteGrantsAccessByNetworkAddress (c-no-route-trusts-the-network): every route the API
 // serves answers a caller with no credential alike whether it comes bare or from a loopback peer
-// carrying every network header set to an internal address.
+// carrying every network header set to an internal address, with X-Forwarded-Host naming the API's
+// own host, so a route that trusts what a proxy of ours says it forwarded is caught, and naming a
+// host it does not answer at, so a route that takes the origin a request came to from that header
+// rather than from Host is caught.
 func TestNoRouteGrantsAccessByNetworkAddress(t *testing.T) {
 	handler, routes := apiWalk(t)
-	for _, route := range routes {
-		bare, inside := httptest.NewRecorder(), httptest.NewRecorder()
-		handler.ServeHTTP(bare, walkRequest(t, route))
-		request := walkRequest(t, route)
-		request.RemoteAddr = "127.0.0.1:40000"
-		for name, value := range map[string]string{
-			"X-Forwarded-For":        "127.0.0.1, 10.0.0.1, 100.64.0.1, fd7a:115c:a1e0::1",
-			"X-Real-IP":              "100.64.0.1",
-			"Forwarded":              `for=127.0.0.1;proto=https, for="[fd7a:115c:a1e0::1]"`,
-			"X-Forwarded-Host":       "dispatch.example",
-			"Via":                    "1.1 10.0.0.1",
-			"Tailscale-User-Login":   "alice@example.com",
-			"Tailscale-User-Name":    "alice@example.com",
-			"Tailscale-Headers-Info": "https://tailscale.com/s/serve-headers",
-		} {
-			request.Header.Set(name, value)
-		}
-		handler.ServeHTTP(inside, request)
-		if bare.Code != inside.Code || bare.Body.String() != inside.Body.String() {
-			t.Errorf("%s answers a caller with no credential %d %s, and the same caller from an address of ours %d %s",
-				route, bare.Code, firstLine(bare.Body.String()), inside.Code, firstLine(inside.Body.String()))
+	for _, forwardedHost := range []string{apiHost, foreignHost} {
+		for _, route := range routes {
+			bare, inside := httptest.NewRecorder(), httptest.NewRecorder()
+			handler.ServeHTTP(bare, walkRequest(t, route))
+			request := walkRequest(t, route)
+			request.RemoteAddr = "127.0.0.1:40000"
+			for name, value := range map[string]string{
+				"X-Forwarded-For":        "127.0.0.1, 10.0.0.1, 100.64.0.1, fd7a:115c:a1e0::1",
+				"X-Real-IP":              "100.64.0.1",
+				"Forwarded":              `for=127.0.0.1;proto=https, for="[fd7a:115c:a1e0::1]"`,
+				"X-Forwarded-Host":       forwardedHost,
+				"Via":                    "1.1 10.0.0.1",
+				"Tailscale-User-Login":   "alice@example.com",
+				"Tailscale-User-Name":    "alice@example.com",
+				"Tailscale-Headers-Info": "https://tailscale.com/s/serve-headers",
+			} {
+				request.Header.Set(name, value)
+			}
+			handler.ServeHTTP(inside, request)
+			if bare.Code != inside.Code || bare.Body.String() != inside.Body.String() {
+				t.Errorf("%s answers a caller with no credential %d %s, and the same caller from an address of ours, forwarded for %s, %d %s",
+					route, bare.Code, firstLine(bare.Body.String()), forwardedHost, inside.Code, firstLine(inside.Body.String()))
+			}
 		}
 	}
 }

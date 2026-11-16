@@ -3826,7 +3826,8 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 `GET /api/v1` is the authoritative list, for any signed-in person or agent credential:
 every route of the table, the `/api/v1` routes and `GET /metrics`, with its `method`, `path`, `auth` (`any` or `bearer`), and `description`, sorted by path then method.
-Every route Dispatch serves needs a credential but `GET /auth/start`, `GET /auth/callback`, `/healthz`, `/livez` and the dashboard's own files, and none grants access by the caller's network address or a header naming one (`TestEveryRouteNeedsACredentialButTheNamedOnes`, `TestNoRouteGrantsAccessByNetworkAddress`).
+Every route Dispatch serves needs a credential but `GET /auth/start`, `GET /auth/callback`, `/healthz`, `/livez` and the dashboard's own files, at `DISPATCH_SERVER_URL` and at `DISPATCH_OUTSIDE_ORIGIN` alike, and as `HEAD` or `OPTIONS` too (refused, or answered `404` or `405`);
+none grants access by the caller's network address or a header naming one, or takes the origin a request came to from `X-Forwarded-Host` (`TestEveryRouteNeedsACredentialButTheNamedOnes`, `TestNoRouteGrantsAccessByNetworkAddress`).
 `envoy-dispatch routes` prints the same body from the table alone, with no database or listener and never a test hook;
 the docs site's HTTP API reference is generated from it.
 `envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;

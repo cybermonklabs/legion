@@ -2,6 +2,7 @@ package routes
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -26,53 +27,55 @@ import (
 // serves needs a credential (c-no-route-trusts-the-network).
 var noCredentialNeeded = []string{"GET /auth/start", "GET /auth/callback", "GET /healthz", "GET /livez", "/"}
 
-// processWalk is a Dispatch process built as cmd/dispatch builds one (Process over New) and the
-// routes it serves. The router signs people in with Google through a fake issuer, with no dev
-// sign-in, and holds no database: Store is nil, as cmd/dispatch's settings tests build a router,
-// so the walk needs no DISPATCH_TEST_DATABASE_URL and cannot skip having walked nothing.
+// The hosts of the walk: canonicalHost is its processes' DISPATCH_SERVER_URL's, outsideHost the
+// DISPATCH_OUTSIDE_ORIGIN's of the process that answers at two origins, and foreignHost a host
+// neither process answers at, which a forwarding header names.
+const (
+	canonicalHost = "dispatch.example"
+	outsideHost   = "guests.example"
+	foreignHost   = "attacker.example"
+)
+
+// processWalk is two Dispatch processes built as cmd/dispatch builds one (Process over New), the
+// routes they serve, and each origin each answers at. Each router signs people in with Google
+// through a fake issuer, with no dev sign-in, and holds no database: Store is nil, as
+// cmd/dispatch's settings tests build a router, so the walk needs no DISPATCH_TEST_DATABASE_URL
+// and cannot skip having walked nothing.
 type processWalk struct {
-	handler http.Handler
 	// routes is every route walked, "<method> <pattern>" or a bare pattern for one that names no
 	// method: the route index's rows (api.WriteRouteIndex), and every pattern readclass recorded on
-	// the router's mux and on Process's.
+	// either process's router mux and Process mux.
 	routes []string
+	// at is each process at each origin it answers at: the process with none of the outside
+	// settings at its one origin, then the process that also answers at outsideHost
+	// (DISPATCH_OUTSIDE_ORIGIN) and signs people from outside the domain in
+	// (DISPATCH_SIGNIN_OUTSIDE), at its canonical origin and at its outside origin.
+	at []walkOrigin
+}
+
+// walkOrigin is a process of the walk at one origin it answers at.
+type walkOrigin struct {
+	// name says which process and which origin, for a failure to name.
+	name string
+	// host is the origin's host, which a request to it carries as its Host, and otherHost the host
+	// of the process's other origin, empty for the process at one.
+	host, otherHost string
+	handler         http.Handler
 }
 
 func newProcessWalk(t *testing.T) processWalk {
 	t.Helper()
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret")
-	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", rigDomain)
-	people := newMemoryPeople()
-	sessions := &memorySessionStore{generations: map[string]int64{}}
-	rule := identity.DomainRule{Domain: rigDomain}
-	membership := &identity.Membership{People: people, Sessions: sessions, SignIn: flow, Rule: rule}
-	webDist := t.TempDir()
-	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html><title>Dispatch</title>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ctx, err := BuildAppContext(AppContextOptions{
-		SigningKey:  testSigningKey,
-		WebDistDir:  webDist,
-		People:      people,
-		Sessions:    sessions,
-		Identity:    identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions, Membership: membership},
-		SignIn:      flow,
-		SignInRule:  rule,
-		AgentTokens: sharedAgentTokens(t, "agent-token"),
-		ServerURL:   "https://dispatch.example",
-		Lifetime:    t.Context(),
-	})
-	if err != nil {
-		t.Fatalf("build context: %v", err)
-	}
-	standInEventLog(ctx, 0)
-	router, mux, _ := serve(ctx)
-	health := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	})
-	process := Process(router, health)
+	domain := identity.DomainRule{Domain: rigDomain}
+	outside := identity.OutsideRule{DomainRule: domain, People: identity.ListerFunc(func(context.Context, string) (bool, error) { return false, nil })}
+	atOne, onePatterns := walkProcess(t, issuer, domain, "")
+	atTwo, twoPatterns := walkProcess(t, issuer, outside, "https://"+outsideHost)
+	walk := processWalk{at: []walkOrigin{
+		{name: "at the one origin of a process with no outside origin", host: canonicalHost, handler: atOne},
+		{name: "at the canonical origin of a process with an outside origin", host: canonicalHost, otherHost: outsideHost, handler: atTwo},
+		{name: "at the outside origin", host: outsideHost, otherHost: canonicalHost, handler: atTwo},
+	}}
 
 	var index bytes.Buffer
 	if err := api.WriteRouteIndex(&index); err != nil {
@@ -88,10 +91,9 @@ func newProcessWalk(t *testing.T) processWalk {
 	for _, row := range table.Routes {
 		union[row.Method+" "+row.Path] = true
 	}
-	for _, pattern := range slices.Concat(readclass.Patterns(mux), readclass.Patterns(process)) {
+	for _, pattern := range slices.Concat(onePatterns, twoPatterns) {
 		union[pattern] = true
 	}
-	walk := processWalk{handler: process}
 	for route := range union {
 		walk.routes = append(walk.routes, route)
 	}
@@ -112,13 +114,62 @@ func newProcessWalk(t *testing.T) processWalk {
 			t.Fatalf("%s needs no credential, and the walk does not hold it: the list names a route the process does not serve", exempt)
 		}
 	}
-	// A credential is admitted: the router the walk reads answers a signed-in caller, so a
-	// refusal below is the route refusing the caller and not a router that refuses everyone.
-	if response := walk.send(t, "GET /api/v1", func(r *http.Request) { r.Header.Set("Authorization", "Bearer agent-token") }); response.Code != http.StatusOK {
-		t.Fatalf("GET /api/v1 with the shared agent token answered %d %s, want 200", response.Code, firstLine(response.Body.String()))
+	for _, at := range walk.at {
+		// A credential is admitted: the router the walk reads answers a signed-in caller, so a
+		// refusal below is the route refusing the caller and not a router that refuses everyone.
+		if response := at.send(t, "GET /api/v1", func(r *http.Request) { r.Header.Set("Authorization", "Bearer agent-token") }); response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1 with the shared agent token %s answered %d %s, want 200", at.name, response.Code, firstLine(response.Body.String()))
+		}
+		// The origin is answered as itself: a sign-in started at it comes back to its own
+		// callback, so the walk at the outside origin is not the canonical origin walked again.
+		start := at.send(t, "GET /auth/start", nil)
+		location := start.Header().Get("Location")
+		target, err := url.Parse(location)
+		if want := "https://" + at.host + "/auth/callback"; err != nil || target.Query().Get("redirect_uri") != want {
+			t.Fatalf("GET /auth/start %s answered %d to %q, want a sign-in that comes back to %s", at.name, start.Code, location, want)
+		}
 	}
-	t.Logf("walked %d routes: %d rows of the route index and %d patterns mounted beside it", len(walk.routes), len(table.Routes), len(walk.routes)-len(table.Routes))
+	t.Logf("walked %d routes at %d origins: %d rows of the route index and %d patterns mounted beside it", len(walk.routes), len(walk.at), len(table.Routes), len(walk.routes)-len(table.Routes))
 	return walk
+}
+
+// walkProcess is a process of the walk, signing people in through issuer under rule, answering at
+// https://canonicalHost (DISPATCH_SERVER_URL) and at outside too (DISPATCH_OUTSIDE_ORIGIN; empty
+// for none), and the patterns readclass recorded on its router's mux and on Process's.
+func walkProcess(t *testing.T, issuer *oidctest.Issuer, rule identity.SignInRule, outside string) (http.Handler, []string) {
+	t.Helper()
+	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", rigDomain)
+	people := newMemoryPeople()
+	sessions := &memorySessionStore{generations: map[string]int64{}}
+	membership := &identity.Membership{People: people, Sessions: sessions, SignIn: flow, Rule: rule}
+	webDist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDist, "index.html"), []byte("<!doctype html><title>Dispatch</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := BuildAppContext(AppContextOptions{
+		SigningKey:    testSigningKey,
+		WebDistDir:    webDist,
+		People:        people,
+		Sessions:      sessions,
+		Identity:      identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions, Membership: membership},
+		SignIn:        flow,
+		SignInRule:    rule,
+		AgentTokens:   sharedAgentTokens(t, "agent-token"),
+		ServerURL:     "https://" + canonicalHost,
+		OutsideOrigin: outside,
+		Lifetime:      t.Context(),
+	})
+	if err != nil {
+		t.Fatalf("build context: %v", err)
+	}
+	standInEventLog(ctx, 0)
+	router, mux, _ := serve(ctx)
+	health := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	process := Process(router, health)
+	return process, slices.Concat(readclass.Patterns(mux), readclass.Patterns(process))
 }
 
 // wildcard is a path wildcard of a ServeMux pattern.
@@ -143,10 +194,10 @@ var wildcardValues = map[string]string{
 	"point":      "after-commit",
 }
 
-// walkRequest is route's request with no credential: its method (GET for a pattern that names
-// none), its path with every wildcard filled, and, for a write, the body a bearer names its
+// walkRequest is route's request to host with no credential: its method (GET for a pattern that
+// names none), its path with every wildcard filled, and, for a write, the body a bearer names its
 // session in.
-func walkRequest(t *testing.T, route string) *http.Request {
+func walkRequest(t *testing.T, host, route string) *http.Request {
 	t.Helper()
 	method, path, named := strings.Cut(route, " ")
 	if !named {
@@ -167,35 +218,62 @@ func walkRequest(t *testing.T, route string) *http.Request {
 	if method != http.MethodGet {
 		body = `{"actor":{"kind":"session","id":"s1"}}`
 	}
-	request := httptest.NewRequestWithContext(t.Context(), method, "https://dispatch.example"+path, strings.NewReader(body))
+	request := httptest.NewRequestWithContext(t.Context(), method, "https://"+host+path, strings.NewReader(body))
 	if method != http.MethodGet {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	return request
 }
 
-func (w processWalk) send(t *testing.T, route string, edit func(*http.Request)) *httptest.ResponseRecorder {
+func (at walkOrigin) send(t *testing.T, route string, edit func(*http.Request)) *httptest.ResponseRecorder {
 	t.Helper()
-	request := walkRequest(t, route)
+	request := walkRequest(t, at.host, route)
 	if edit != nil {
 		edit(request)
 	}
 	response := httptest.NewRecorder()
-	w.handler.ServeHTTP(response, request)
+	at.handler.ServeHTTP(response, request)
 	return response
 }
 
+// asMethod sends a route's request as method, with no body: HEAD or OPTIONS, which a pattern
+// serves as its own method only in part (a GET pattern serves HEAD, a pattern naming no method
+// serves both, and any other is the mux's).
+func asMethod(method string) func(*http.Request) {
+	return func(r *http.Request) {
+		r.Method = method
+		r.Body, r.ContentLength = http.NoBody, 0
+		r.Header.Del("Content-Type")
+	}
+}
+
 // TestEveryRouteNeedsACredentialButTheNamedOnes (c-no-route-trusts-the-network): every route the
-// process serves, sent with no cookie and no Authorization, is refused for the credential it does
-// not carry (refusedForNoCredential), but the ones noCredentialNeeded names.
+// processes serve, but the ones noCredentialNeeded names, sent with no cookie and no Authorization
+// at each origin of the walk, is refused for the credential it does not carry
+// (refusedForNoCredential), with the same refusal at every origin. Sent as HEAD and as OPTIONS, it
+// is refused for the credential too, or answered 404 or 405, and never served.
 func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 	walk := newProcessWalk(t)
+	first := walk.at[0]
 	for _, route := range walk.routes {
 		if slices.Contains(noCredentialNeeded, route) {
 			continue
 		}
-		if response := walk.send(t, route, nil); !refusedForNoCredential(response) {
-			t.Errorf("%s answers a caller with no credential %d %s, want it refused for the credential it does not carry", route, response.Code, firstLine(response.Body.String()))
+		want := first.send(t, route, nil)
+		for _, at := range walk.at {
+			response := at.send(t, route, nil)
+			if !refusedForNoCredential(response) {
+				t.Errorf("%s %s answers a caller with no credential %d %s, want it refused for the credential it does not carry", route, at.name, response.Code, firstLine(response.Body.String()))
+			} else if response.Code != want.Code || answerOf(response) != answerOf(want) {
+				t.Errorf("%s %s answers a caller with no credential %d %s, and %s %d %s: want one refusal at every origin",
+					route, at.name, response.Code, firstLine(answerOf(response)), first.name, want.Code, firstLine(answerOf(want)))
+			}
+			for _, method := range []string{http.MethodHead, http.MethodOptions} {
+				response := at.send(t, route, asMethod(method))
+				if !refusedForNoCredential(response) && response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+					t.Errorf("%s sent as %s %s answers a caller with no credential %d %s, want it refused for the credential, 404 or 405", route, method, at.name, response.Code, firstLine(response.Body.String()))
+				}
+			}
 		}
 	}
 }
@@ -204,33 +282,36 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 // the process's own routes another way - with a trailing slash (`/metrics/`) or in another case
 // (`/API/V1`) - is answered by the server as a JSON refusal or a JSON 404, with no credential,
 // and never by the dashboard's page, whose 200 a scraper or a client would read as an answer of
-// the route it meant. Every walked route but the static web app is tried both ways.
+// the route it meant. Every walked route but the static web app is tried both ways, at each origin
+// of the walk.
 func TestNoVariantOfAServerRouteIsTheDashboard(t *testing.T) {
 	walk := newProcessWalk(t)
 	tried := 0
-	for _, route := range walk.routes {
-		if route == "/" {
-			continue
-		}
-		method, pattern, named := strings.Cut(route, " ")
-		if !named {
-			method, pattern = http.MethodGet, route
-		}
-		var variants []string
-		if !strings.HasSuffix(pattern, "/") {
-			variants = append(variants, method+" "+pattern+"/")
-		}
-		variants = append(variants, method+" "+strings.ToUpper(pattern))
-		for _, variant := range variants {
-			tried++
-			response := walk.send(t, variant, nil)
-			if strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") || response.Code == http.StatusOK {
-				t.Errorf("%s (a variant of %s) answers %d %s %s, want a JSON refusal or 404, not the dashboard", variant, route, response.Code, response.Header().Get("Content-Type"), firstLine(response.Body.String()))
+	for _, at := range walk.at {
+		for _, route := range walk.routes {
+			if route == "/" {
+				continue
+			}
+			method, pattern, named := strings.Cut(route, " ")
+			if !named {
+				method, pattern = http.MethodGet, route
+			}
+			var variants []string
+			if !strings.HasSuffix(pattern, "/") {
+				variants = append(variants, method+" "+pattern+"/")
+			}
+			variants = append(variants, method+" "+strings.ToUpper(pattern))
+			for _, variant := range variants {
+				tried++
+				response := at.send(t, variant, nil)
+				if strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") || response.Code == http.StatusOK {
+					t.Errorf("%s (a variant of %s) %s answers %d %s %s, want a JSON refusal or 404, not the dashboard", variant, route, at.name, response.Code, response.Header().Get("Content-Type"), firstLine(response.Body.String()))
+				}
 			}
 		}
 	}
-	if tried < len(walk.routes) {
-		t.Fatalf("tried %d variants of %d routes: the walk tried too few", tried, len(walk.routes))
+	if tried < len(walk.routes)*len(walk.at) {
+		t.Fatalf("tried %d variants of %d routes at %d origins: the walk tried too few", tried, len(walk.routes), len(walk.at))
 	}
 }
 
@@ -251,38 +332,57 @@ func refusedForNoCredential(response *httptest.ResponseRecorder) bool {
 }
 
 // networkHeaders are the headers a proxy or a tailnet writes to say where a request came from,
-// each set to an address of ours or a person of ours.
+// each set to an address of ours or a person of ours. X-Forwarded-Host, the host a proxy says it
+// was asked for, is set apart, to each of forwardedHosts.
 var networkHeaders = map[string]string{
 	"X-Forwarded-For":        "127.0.0.1, 10.0.0.1, 100.64.0.1, fd7a:115c:a1e0::1",
 	"X-Real-IP":              "100.64.0.1",
 	"Forwarded":              `for=127.0.0.1;proto=https, for="[fd7a:115c:a1e0::1]"`,
-	"X-Forwarded-Host":       "dispatch.example",
 	"Via":                    "1.1 10.0.0.1",
 	"Tailscale-User-Login":   "alice@example.com",
 	"Tailscale-User-Name":    "alice@example.com",
 	"Tailscale-Headers-Info": "https://tailscale.com/s/serve-headers",
 }
 
-// TestNoRouteGrantsAccessByNetworkAddress (c-no-route-trusts-the-network): every route the process
-// serves is sent the same request twice, once bare and once from a loopback peer carrying every
-// network header set to an internal address, and answers the two alike. A route that needs a
-// credential is thereby refused on both, so no address of ours is what a credential gets.
+// forwardedHosts are the hosts X-Forwarded-Host names on a request to at: at's own, so a route
+// that trusts what a proxy of ours says it forwarded is caught; and the process's other origin's
+// and foreignHost, which no route may read as the origin a request came to in place of its Host,
+// so a route that takes its origin from the header is caught at each origin.
+func (at walkOrigin) forwardedHosts() []string {
+	hosts := []string{at.host, foreignHost}
+	if at.otherHost != "" {
+		hosts = append(hosts, at.otherHost)
+	}
+	return hosts
+}
+
+// TestNoRouteGrantsAccessByNetworkAddress (c-no-route-trusts-the-network): every route the
+// processes serve is sent the same request at each origin of the walk, once bare and once from a
+// loopback peer carrying every network header set to an internal address and X-Forwarded-Host set
+// to each of forwardedHosts, and answers them all alike. A route that needs a credential is thereby
+// refused on each, so no address of ours is what a credential gets, and no route takes the origin
+// a request came to from a header.
 func TestNoRouteGrantsAccessByNetworkAddress(t *testing.T) {
 	walk := newProcessWalk(t)
 	if slices.Contains(walk.routes, "GET /auth/_dev/signin") {
 		t.Fatalf("the production-shaped process mounts GET /auth/_dev/signin, which signs anyone in from a loopback peer")
 	}
-	internal := func(r *http.Request) {
-		r.RemoteAddr = "127.0.0.1:40000"
-		for name, value := range networkHeaders {
-			r.Header.Set(name, value)
-		}
-	}
-	for _, route := range walk.routes {
-		bare, inside := walk.send(t, route, nil), walk.send(t, route, internal)
-		if bare.Code != inside.Code || answerOf(bare) != answerOf(inside) {
-			t.Errorf("%s answers a caller with no credential %d %s, and the same caller from an address of ours %d %s",
-				route, bare.Code, firstLine(answerOf(bare)), inside.Code, firstLine(answerOf(inside)))
+	for _, at := range walk.at {
+		for _, forwardedHost := range at.forwardedHosts() {
+			internal := func(r *http.Request) {
+				r.RemoteAddr = "127.0.0.1:40000"
+				for name, value := range networkHeaders {
+					r.Header.Set(name, value)
+				}
+				r.Header.Set("X-Forwarded-Host", forwardedHost)
+			}
+			for _, route := range walk.routes {
+				bare, inside := at.send(t, route, nil), at.send(t, route, internal)
+				if bare.Code != inside.Code || answerOf(bare) != answerOf(inside) {
+					t.Errorf("%s %s answers a caller with no credential %d %s, and the same caller from an address of ours, forwarded for %s, %d %s",
+						route, at.name, bare.Code, firstLine(answerOf(bare)), forwardedHost, inside.Code, firstLine(answerOf(inside)))
+				}
+			}
 		}
 	}
 }

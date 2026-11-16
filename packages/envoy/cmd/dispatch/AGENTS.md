@@ -714,9 +714,11 @@ row — never a `mux.HandleFunc` line — with, for a `GET` row, its entry in `r
 outside the table is mounted only through `readclass.Handle`, with its read classes. `auth` is
 `any` (user or bearer) or
 `bearer`; it describes the check the handler makes, the handler still enforces it. Every route
-needs a credential but sign-in, `/healthz`, `/livez` and the dashboard's files, and none trusts the
-caller's network address (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and
-`TestNoRouteGrantsAccessByNetworkAddress`, over the process `routes.Process` builds). The OAuth
+needs a credential but sign-in, `/healthz`, `/livez` and the dashboard's files, at either origin
+and as `HEAD` or `OPTIONS` too, and none trusts the caller's network address or takes its origin
+from `X-Forwarded-Host` (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and
+`TestNoRouteGrantsAccessByNetworkAddress`, over the process `routes.Process` builds, with no
+outside origin and with one, at each origin). The OAuth
 scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
 which `routes()` stamps onto `apiRoute.OAuthScopes`: a positional row literal would make every
 one of the 151 rows carry a sixth value, and most rows need no scope. A name in that map which is
