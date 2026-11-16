@@ -115,8 +115,12 @@ func TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage(t *test
 	}
 	consumers := sessionConsumersOn(client, 0, nil)
 	t.Cleanup(consumers.Close)
-	if err := natsversion.Refusal(client.Connection().ConnectedServerVersion()); err == nil {
-		t.Fatalf("the pinned nats:2.10 image reports %s, which natsversion takes; this control needs a server it refuses", client.Connection().ConnectedServerVersion())
+	version := client.Connection().ConnectedServerVersion()
+	if version == "" {
+		t.Fatal("the connection reports no server version: this control needs the pinned nats:2.10 image's own, which natsversion refuses")
+	}
+	if err := natsversion.Refusal(version); err == nil {
+		t.Fatalf("the pinned nats:2.10 image reports %s, which natsversion takes; this control needs a server it refuses", version)
 	}
 	pull, _ := releasedAndRegisteredAgain(t, owner, consumers)
 	got := next(t, pull)

@@ -7,8 +7,9 @@ import { claimProject, roleClaimKey, roleProject } from "./subject-project";
 // twins of KC1 decide one claim two ways: a differential run over 539,475 (role, requested) pairs at
 // f565979e50 found these three role names, and nothing else, on which they disagree (51 claim pairs,
 // 3 roleProject answers). No route reaches them today, since roles.PatternString refuses the name,
-// but ClaimProject and RoleClaimKey are "the one place" a claim's project and key are decided, so
-// the twins answer every input alike.
+// and nothing calls ClaimProject in this slice (the listener's route decides with RoleProject), but
+// the twins of RoleProject, ClaimProject and RoleClaimKey must answer every input alike before
+// t-c-8 makes them the decision.
 describe("a role name with a line terminator after its Legion token", () => {
   for (const role of ["legion-infra-\n", "legion-infra-\r", "legion-infra-\u2028"]) {
     test(JSON.stringify(role), () => {

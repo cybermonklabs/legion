@@ -539,12 +539,13 @@ const (
 
 // connectedDefaultsAnUnsetCap is serverDefaultsAnUnsetCap of the version conn's server reports,
 // read as natsversion.ConnectedVersion reads it: only once the connection reports one. A
-// connection that is reconnecting or draining answers "" for its server's version, and nats.go
-// holds the requests it is given while it reconnects and sends them to the server it reaches, so
-// a decision on that "" would be an older server's answer applied to whichever server the ensure
-// then writes to: on nats-server 2.15 a stream with no consumer cap, capped at 1000, would be left
-// as it is. A connection that reports no version before ctx is done or the wait passes answers the
-// error, and the caller decides nothing; a ctx already done looks once
+// connection that is reconnecting or draining answers "" for its server's version. A bus
+// connection buffers nothing while it reconnects (ReconnectBufSize -1, internal/bus Connect), so
+// an ensure's request on it then fails at once; but a reconnect that lands between an empty read
+// and the ensure's first request let the ensure write the stream with an older server's answer:
+// on nats-server 2.15 a stream with no consumer cap, capped at 1000, was left as it is. A
+// connection that reports no version before ctx is done or the wait passes answers the error, and
+// the caller decides nothing; a ctx already done looks once
 // (TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion).
 func connectedDefaultsAnUnsetCap(ctx context.Context, conn *nats.Conn) (bool, error) {
 	version, err := connectedVersion(ctx, conn)

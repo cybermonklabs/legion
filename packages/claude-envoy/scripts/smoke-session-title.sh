@@ -56,6 +56,32 @@ for tool in bun curl jq go nats-server; do
   command -v "$tool" >/dev/null 2>&1 ||
     fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.15.1)"
 done
+# nats_floor_takes MAJOR MINOR PATCH PRERELEASE: natsversion's fixed() (packages/envoy/natsversion),
+# the rule the listener refuses a server by: 2.11.12, 2.12.4, 2.14.0 and every later line, 2.13
+# too; a prerelease (1) counts as before its release.
+nats_floor_takes() {
+  local major=$1 minor=$2 patch=$3 prerelease=$4 first
+  if ((major != 2)); then
+    ((major > 2))
+    return
+  fi
+  case $minor in
+  11) first=12 ;;
+  12) first=4 ;;
+  13) return 0 ;;
+  14) first=0 ;;
+  *)
+    ((minor > 14))
+    return
+    ;;
+  esac
+  ((patch > first || (patch == first && prerelease == 0)))
+}
+nats_version=$(nats-server --version 2>/dev/null | sed -n 's/^nats-server: v\{0,1\}\([0-9][0-9]*\)\.\([0-9][0-9]*\)\.\([0-9][0-9]*\)\(.*\)$/\1 \2 \3 \4/p')
+read -r nats_major nats_minor nats_patch nats_rest <<<"$nats_version"
+[[ -n "${nats_patch:-}" ]] || fail "could not read nats-server's version from '$(nats-server --version 2>&1)'"
+nats_floor_takes "$nats_major" "$nats_minor" "$nats_patch" "$([[ "${nats_rest:-}" == -* ]] && echo 1 || echo 0)" ||
+  fail "$(command -v nats-server) is nats-server v${nats_major}.${nats_minor}.${nats_patch}${nats_rest:-}, which the listener refuses (it needs v2.11.12, v2.12.4, or v2.14.0 and later): go install github.com/nats-io/nats-server/v2@v2.15.1"
 
 workdir="$(mktemp -d /tmp/claude-session-title.XXXXXX)"
 readonly workdir

@@ -13,10 +13,12 @@ import (
 )
 
 // A connection that is reconnecting reports no server version ((*nats.Conn).ConnectedServerVersion
-// answers "" outside CONNECTED), and nats.go holds the requests it is given until it is connected
-// again. So an ensure that read "" there and decided on it wrote the stream on the server it
-// reached with an older server's answer: a deployed stream with no consumer cap, which
-// nats-server 2.15 caps at a default of 1000, was left as it is. The reconnect hook's ensure
+// answers "" outside CONNECTED). A bus connection buffers nothing while it reconnects, so the race
+// the version read closes is narrow: an ensure that read "" and then met a reconnect before its
+// first request wrote the stream on the server it reached with an older server's answer, and a
+// deployed stream with no consumer cap, which nats-server 2.15 caps at a default of 1000, was left
+// as it is. This connection keeps nats.go's default reconnect buffer, which holds the ensure's
+// requests until the reconnect, to make that window exact. The reconnect hook's ensure
 // (ensureStreamOn) decides only on a version the connection reports, and it looks once rather than
 // wait on nats.go's callback goroutine, so on a reconnecting connection it answers an error and
 // writes nothing; the recovery runs it again once the connection is back (onReconnect, recover),

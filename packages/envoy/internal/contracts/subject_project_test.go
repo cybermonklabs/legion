@@ -220,10 +220,11 @@ func TestAnIssueEventNamesItsKeyInEitherForm(t *testing.T) {
 	}
 }
 
-// A claim's project is decided in one place (ClaimProject): a Legion role token works for the
-// project its own name gives, whatever a claim requests, and only a free-form role name takes a
-// requested project, which must be a project key or NoProject. A request the rule refuses is an
-// error the route answers 400 with, never a claim keyed under a project the role does not work
+// A claim's project, once a claim keys on its project (ClaimProject, which t-c-8 wires into the
+// listener's route; in this slice the route decides with RoleProject and calls nothing here): a
+// Legion role token works for the project its own name gives, whatever a claim requests, and only
+// a free-form role name takes a requested project, which must be a project key or NoProject. A
+// request the rule refuses is an error, never a claim keyed under a project the role does not work
 // for.
 func TestAClaimsProjectIsItsRolesOrTheOneItAsksFor(t *testing.T) {
 	for _, row := range readSubjectProjectFixture(t).ClaimProject {

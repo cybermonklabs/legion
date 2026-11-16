@@ -9,6 +9,9 @@ import { join } from "node:path";
 // testnats.HubImage (packages/envoy/internal/testnats/nats.go), the hub's nats:2.15.1-alpine. A
 // script or a page that installs a host nats-server with `go install` or `go run` pins a release
 // the floor takes. Both are scans of every tracked file, so a new driver or a new page is held too.
+// What neither scan sees, and nothing in the tree uses: a `docker run` continued over lines, `podman`
+// or a launcher that is not a shell script; an `export name=` or `${name:-<version>}` assignment;
+// and a version set in another file the script sources.
 
 const root = join(import.meta.dir, "..", "..", "..");
 
