@@ -266,7 +266,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The count of access re-checks is read before the person's read of the room, so a re-check
-	// that begins before this socket is recorded closes it once it is (schemaAdmissions.admit).
+	// that begins before this socket is recorded has the person read again once it is
+	// (schemaAdmissions.admit, recheckAdmission).
 	// The person is a cookie's (requestActor), so what they see is resolved as their browser's;
 	// the actor the room records stays without the credential (model.Actor.Recorded).
 	accessChecks := s.schemaAdmissions.accessCheckCount()
@@ -542,7 +543,9 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	admission.key = schemaAdmissionKey{room: room, token: query.Get("schema_version")}
 	admission.page = schemaPageOf(query)
 	admission.writable = open && fleet.admits(admission.page, admission.documentSince)
-	s.schemaAdmissions.admit(admission)
+	if s.schemaAdmissions.admit(admission) {
+		s.recheckAdmission(r.Context(), admission)
+	}
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
 	// load finishes (awarenessRelay.RoomActivated), and the connection registered above is what

@@ -124,32 +124,58 @@ func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 	}
 }
 
-// TestASocketAdmittedAcrossAnAccessCheckIsClosed: an access re-check walks the sockets recorded when
-// it begins, so one whose admission read its room before the re-check began and that is recorded
-// only after it is closed as it is recorded, with the cause on which the provider reconnects; one
-// whose admission read its room after the re-check began is recorded and kept.
-func TestASocketAdmittedAcrossAnAccessCheckIsClosed(t *testing.T) {
-	var admissions schemaAdmissions
-	admitted := func(checks uint64) (*schemaAdmission, context.Context) {
-		ctx, cancel := context.WithCancelCause(context.Background())
-		t.Cleanup(func() { cancel(nil) })
-		return &schemaAdmission{key: schemaAdmissionKey{room: uuid.NewString()}, person: "bob@outside.example", accessChecks: checks, cancel: cancel}, ctx
-	}
-	before, beforeCtx := admitted(admissions.accessCheckCount())
-	if held := admissions.beginAccessCheck(); len(held) != 0 {
-		t.Fatalf("the re-check found %v before any socket was recorded", held)
-	}
-	after, afterCtx := admitted(admissions.accessCheckCount())
-	admissions.admit(before)
-	admissions.admit(after)
-	if cause := context.Cause(beforeCtx); cause != errAccessRevoked {
-		t.Errorf("the socket that read its room before the re-check began ends with %v, want errAccessRevoked", cause)
-	}
-	if afterCtx.Err() != nil {
-		t.Errorf("the socket that read its room after the re-check began was closed: %v", context.Cause(afterCtx))
-	}
-	if held := admissions.beginAccessCheck()["bob@outside.example"]; len(held) != 1 || held[0] != after {
-		t.Errorf("the next re-check walks %v, want the kept socket alone", held)
+// TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson: an access re-check walks the
+// sockets recorded when it begins, so a socket whose admission read its room before a re-check
+// began, and that is recorded only after it, is one that re-check never walked. Its admission reads
+// again whether its person may read the room, which it does after the access change that re-check
+// is for has committed: bob, still on DOC's list, keeps his socket, as a socket admitted across a
+// re-check of somebody else's access must, and bob, taken off the list between his read of the room
+// and his socket's record, has it closed with the cause on which the provider reconnects.
+func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T) {
+	const bob = "bob@outside.example"
+	owner := model.Actor{Kind: "user", ID: "alice"}
+	for _, row := range []struct {
+		name    string
+		removed bool
+		want    error
+	}{
+		{name: "bob, still on DOC's list, keeps his socket", want: nil},
+		{name: "bob, taken off DOC's list meanwhile, has his socket closed", removed: true, want: errAccessRevoked},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+				if _, _, err := access.SetVisibility(ctx, tx, service.events, "DOC", model.ProjectPrivate, owner); err != nil {
+					return err
+				}
+				_, _, err := access.AddPrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, bob, owner)
+				return err
+			})
+			request := httptest.NewRequest(http.MethodGet, "/ws/doc/"+artifactID, nil)
+			request.Header.Set("X-Dispatch-User", bob)
+			request.SetPathValue("room", artifactID)
+			request = admittedRequest(t, service, request)
+			// bob's read of the room, as ServeHTTP makes it, before the re-check begins.
+			connection := request.Context().Value(connectionContextKey{}).(*connectionState)
+			connection.actor = model.Actor{Kind: "user", ID: bob}
+			connection.admission.person = bob
+			connection.admission.accessChecks = service.schemaAdmissions.accessCheckCount()
+			if row.removed {
+				writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+					_, _, err := access.RemovePrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, bob, owner)
+					return err
+				})
+			}
+			if held := service.schemaAdmissions.beginAccessCheck(); len(held) != 0 {
+				t.Fatalf("the re-check walks %v before bob's socket is recorded", held)
+			}
+			if _, ok := service.authorize(request); !ok {
+				t.Fatal("bob's socket was refused before its admission was recorded")
+			}
+			if cause := context.Cause(request.Context()); cause != row.want {
+				t.Errorf("bob's socket, admitted across a re-check, ends with %v, want %v", cause, row.want)
+			}
+		})
 	}
 }
 

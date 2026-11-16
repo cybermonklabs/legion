@@ -129,26 +129,25 @@ type schemaAdmissions struct {
 	mu      sync.Mutex
 	sockets map[*schemaAdmission]struct{}
 	// accessChecks counts the access re-checks begun (beginAccessCheck). A socket's admission reads
-	// it before it reads whether its person may read the room, and admit closes a socket whose
+	// it before it reads whether its person may read the room, and admit reports a socket whose
 	// count has moved by then: a re-check that began meanwhile walked the sockets before this one
-	// was among them, so the socket's read may predate the access change that re-check is for.
+	// was among them, so the socket's read may predate the access change that re-check is for, and
+	// the socket's person is read again (Service.recheckAdmission).
 	accessChecks uint64
 }
 
-// admit records admission, once authorize has decided it, until its socket's ServeHTTP removes it.
-// A socket an access re-check began after the admission's read of the room is closed at once
-// (errAccessRevoked), and its provider's reconnect is admitted afresh.
-func (a *schemaAdmissions) admit(admission *schemaAdmission) {
+// admit records admission, once authorize has decided it, until its socket's ServeHTTP removes it,
+// and reports whether an access re-check began after the admission's read of the room: that
+// re-check never walked this socket, so the caller reads its person's access again
+// (Service.recheckAdmission).
+func (a *schemaAdmissions) admit(admission *schemaAdmission) (missed bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.sockets == nil {
 		a.sockets = make(map[*schemaAdmission]struct{})
 	}
 	a.sockets[admission] = struct{}{}
-	if admission.accessChecks != a.accessChecks && !admission.revoked {
-		admission.revoked = true
-		admission.cancel(errAccessRevoked)
-	}
+	return admission.accessChecks != a.accessChecks
 }
 
 // accessCheckCount is how many access re-checks have begun (accessChecks).
@@ -266,9 +265,9 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 // (access.Resolve) and which of their rooms they may read (documentReadable), and revokes the rest
 // (revokeUnless). It runs on each access change and after each LISTEN stands, since a change
 // notified while the hub had no connection reached nobody. A socket whose admission read its room
-// before this pass began and that is recorded only after the pass looked is closed as it is
-// recorded (schemaAdmissions.admit). A person whose read fails keeps their sockets until the next
-// pass, as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
+// before this pass began and that is recorded only after the pass looked is read again as it is
+// recorded (recheckAdmission). A person whose read fails keeps their sockets until the next pass,
+// as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
 func (s *Service) recheckAccess(ctx context.Context) {
 	hidden := make(map[*schemaAdmission]bool)
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
@@ -291,6 +290,24 @@ func (s *Service) recheckAccess(ctx context.Context) {
 	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] }, errAccessRevoked) {
 		slog.Info("dispatch: close a document socket whose person no longer reads its document; the provider reconnects", "room", admission.key.room)
 	}
+}
+
+// recheckAdmission reads again whether admission's person may read its room, for a socket an
+// access re-check never walked (schemaAdmissions.admit), and closes the socket when they may not
+// (errAccessRevoked): the provider reconnects, and the reconnect is refused as a room no document
+// holds is. The read begins after that re-check began, and so after the access change it is for
+// committed, and a re-check that begins during it walks this socket too, so no change is missed.
+// A socket of a person who still reads the room is kept, whoever's access the re-check was for. A
+// read that fails closes the socket: its admission's own read is what was missed.
+func (s *Service) recheckAdmission(ctx context.Context, admission *schemaAdmission) {
+	readable, err := s.readableRooms(ctx, admission.person, []*schemaAdmission{admission})
+	if err == nil && readable[admission.key.room] {
+		return
+	}
+	if err != nil && ctx.Err() == nil {
+		slog.Warn("dispatch: read again whether a document socket admitted during an access re-check still reads its document", "room", admission.key.room, "error", err)
+	}
+	s.schemaAdmissions.revokeUnless(func(other *schemaAdmission) bool { return other != admission }, errAccessRevoked)
 }
 
 // readableRoomsStatement reads which of the documents $1 the reader bound at $2 may read.
