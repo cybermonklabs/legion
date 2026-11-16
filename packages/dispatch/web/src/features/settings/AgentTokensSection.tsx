@@ -183,6 +183,9 @@ function TokenProjectsChoice({
   const [error, setError] = useState<string | null>(null);
   const names = new Map(projects.map((listed) => [listed.key, listed.name]));
   const options = [...names.keys(), ...chosen.filter((key) => !names.has(key))];
+  // The name holds the text the trigger shows, after whose token it is, so a reader who says what
+  // they see reaches it (WCAG 2.5.3, Label in Name).
+  const shown = chosen.length === 0 ? "Public projects only" : chosen.join(", ");
   return (
     <MultiSelect
       disabled={disabled}
@@ -215,9 +218,9 @@ function TokenProjectsChoice({
       options={options}
       searchLabel="Search projects"
       selected={open ? draft : chosen}
-      triggerAriaLabel={`Projects (${subject})`}
+      triggerAriaLabel={`Projects (${subject}): ${shown}`}
     >
-      {chosen.length === 0 ? "Public projects only" : chosen.join(", ")}
+      {shown}
     </MultiSelect>
   );
 }

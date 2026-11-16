@@ -208,9 +208,13 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
   }
 });
 
-/** The projects picker of `subject`'s token: its trigger, which reads the projects it names. */
+/** The projects picker of `subject`'s token: its trigger, which reads the projects it names. Its
+ *  accessible name holds the text it shows, after whose token it is (WCAG 2.5.3, which the
+ *  accessibility pass's `label-content-name-mismatch` reads), so the helper checks both. */
 function projectsPicker(subject: string): HTMLElement {
-  return screen.getByRole("button", { name: `Projects (${subject})` });
+  const trigger = screen.getByRole("button", { name: new RegExp(`^Projects \\(${subject}\\): `) });
+  expect(trigger.getAttribute("aria-label")).toBe(`Projects (${subject}): ${trigger.textContent}`);
+  return trigger;
 }
 
 // A token that names no project uses the public projects only, and one that names projects uses
