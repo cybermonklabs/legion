@@ -1,8 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises"
+import { chmod, mkdir, rename, rm, stat } from "node:fs/promises"
 import { request as httpRequest } from "node:http"
 import { createServer, type Server } from "node:net"
-import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import {
   MOD_HEALTH_MARKER,
@@ -20,6 +19,7 @@ import {
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
 import { type ModSession, modSession } from "../src/mod-session"
+import { modSocketScratch } from "./mod-socket-scratch"
 
 const scratch: string[] = []
 const links: ModLink[] = []
@@ -30,7 +30,7 @@ afterEach(async () => {
 
 /** A scratch directory to put sockets in, short enough that the path stays under the bound. */
 async function directory(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "mod-"))
+  const dir = await modSocketScratch("mod-")
   scratch.push(dir)
   return dir
 }
