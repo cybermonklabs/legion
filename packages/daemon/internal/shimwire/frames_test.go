@@ -440,10 +440,10 @@ func TestALineThatIsNotAJSONObjectIsRefused(t *testing.T) {
 	}
 }
 
-// Every frame the shipped code refuses when its fields are malformed, because in each case the
+// Four frames the shipped code refuses when their fields are malformed, because in each case the
 // sender is the only writer and a malformed one is a bug to name: the hello
-// (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180),
-// and the frames this daemon validates of its own.
+// (worker-stream-listener.ts:140-148), the daemon's adoption request (worker-shim.ts:171-180), the
+// compaction request and the launcher's volume report.
 func TestTheFramesTheShippedCodeValidatesRefuseTheirMalformedForms(t *testing.T) {
 	if err := (Hello{BootToken: "boot-1"}).Validate(); err != nil {
 		t.Fatalf("Hello.Validate: %v", err)
@@ -719,9 +719,10 @@ func TestMemoryGuardFramesRoundTripThroughTheWire(t *testing.T) {
 	}
 }
 
-// The acknowledgement of a daemon built before the guard, and of one whose deployment turned the
-// guard off, carries no member, and decodes with none: the launcher's guard turns off on that
-// absence. The empty acknowledgement every caller already builds is that same line.
+// An acknowledgement with no memoryGuard member decodes with none, and the launcher's guard turns
+// off on that absence: a daemon built before the guard writes such a line, and so does one whose
+// deployment turned the guard off, with or without a volumeTrim member beside it. This case
+// decodes the empty acknowledgement, the plainest such line.
 func TestMemoryGuardAnAcknowledgementWithNoMemberDecodesWithNone(t *testing.T) {
 	decoded, err := Decode([]byte(`{"type":"launcher_hello_ack"}`))
 	if err != nil {
@@ -831,9 +832,10 @@ func TestMemoryGuardKillValidateRefusesWhatTheDaemonCannotApply(t *testing.T) {
 	}
 }
 
-// An ack with no volumeTrim is the one ack that hands the launcher no settings: the empty object
-// every daemon built before INFRA-2009 writes, and the ack a deployment that turned the trimmer
-// off writes, are the same line. Settings whose numbers are all zero are not that line — they are
+// An ack with no volumeTrim member is the one ack that hands the launcher no settings: a daemon
+// built before INFRA-2009 writes such a line, and so does a deployment that turned the trimmer
+// off, with or without a memoryGuard member beside it. This case decodes the empty object, the
+// plainest such line. Settings whose numbers are all zero are not that line — they are
 // settings, which the launcher refuses value by value, and a launcher that read them as an
 // absence would say no settings came and discard a held report that the daemon which sent them
 // can take — which is why the member is a pointer (LauncherHelloAck.VolumeTrim).
