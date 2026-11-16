@@ -34,6 +34,7 @@ import {
   recordedRounds,
   reply,
 } from "./approval-events.ts";
+import { holdDeadlines } from "./held-deadlines.ts";
 
 // One request since #1671, when an approval request began following its document's versions:
 // opened at version 1, moved to version 2 by a new version, reworded and handed back at 2,
@@ -397,28 +398,14 @@ describe("ask census", () => {
 });
 
 test("ask-census's own read hands its credential the request's deadline", async () => {
-  // A broker credential waiting on a pod's missing registration stops at the deadline it is
-  // given, naming the session; one given none waits until the registration lands.
-  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json([]) });
+  const held = holdDeadlines(() => Response.json([]));
   try {
-    const given: (AbortSignal | undefined)[] = [];
-    const bearer = bearerCredential("token");
-    const credential = {
-      ...bearer,
-      headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {
-        given.push(signal);
-        return bearer.headers(method, url, session, signal);
-      },
-    };
     await get(
-      { url: `http://127.0.0.1:${server.port}`, credential },
+      { url: "http://dispatch.test", credential: held.credential },
       "/api/v1/issues?project=ACME"
     );
-    expect(given.length).toBe(1);
-    expect(given[0], "ask-census's read handed its credential no deadline").toBeInstanceOf(
-      AbortSignal
-    );
+    held.expectEachRequestBoundByItsDeadline("ask-census's read");
   } finally {
-    server.stop(true);
+    held.restore();
   }
 });

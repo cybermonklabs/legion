@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { bearerCredential } from "../packages/envoy-client/src/bearer";
+import { holdDeadlines } from "./dispatch/__tests__/held-deadlines";
 import { priorityDescription, rowMarker, seedPriorities } from "./priorities-seed";
 
 /** One priority as the fake Dispatch below holds it. */
@@ -403,21 +404,11 @@ test("run as a command with the shared bearer, the seed names its session on eve
 });
 
 test("every request of the seed hands its credential a deadline", async () => {
-  // A broker credential waiting on a pod's missing registration stops at the deadline it is
-  // given, naming the session; one given none waits until the registration lands.
-  const given: (AbortSignal | undefined)[] = [];
-  const bearer = bearerCredential("token");
-  const credential = {
-    ...bearer,
-    headers: (method: string, url: string, session?: string, signal?: AbortSignal) => {
-      given.push(signal);
-      return bearer.headers(method, url, session, signal);
-    },
-  };
-  await seedPriorities({ ...config, credential }, DOCUMENT);
-  expect(given.length).toBeGreaterThan(0);
-  // Counted, not compared to []: toEqual ignores undefined array items, so `[undefined]` would
-  // pass as `[]`.
-  const withoutDeadline = given.filter((signal) => !(signal instanceof AbortSignal)).length;
-  expect(withoutDeadline, "a request handed its credential no deadline").toBe(0);
+  const held = holdDeadlines();
+  try {
+    await seedPriorities({ ...config, credential: held.credential }, DOCUMENT);
+    held.expectEachRequestBoundByItsDeadline("the seed");
+  } finally {
+    held.restore();
+  }
 });
