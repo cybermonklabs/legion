@@ -6735,6 +6735,9 @@ no credential, a helper from before the op (which answers `unknown op sign-launc
 Both lists print a table; `--json` prints the broker's body verbatim:
 `grant list`'s is byte-identical to the body Dispatch's Live grants page reads for the same person, and `machine list`'s holds that person's own machines' rows of Dispatch's machine-login page, byte for byte, without the service logins that page also lists (`machine_linux_test.go` drives both commands against a real helper and broker).
 A machine with no helper has no machine login to act as, so the commands refuse with exit 2 naming the socket they looked for.
+Inside a session `grant revoke` takes none of this: it is the session's own revoke, `POST /v1/grants/{id}/revoke`, which `agent-secrets revoke` makes too (`revokeAsSession`), with the identity, the enrollment wait and the exit codes of every session command (`sessionContext`, `sessionFailed`).
+`inSession` reads the key dir by `identity`'s rule (`launcherKeyDir`: a `key.pem` with no `machine-session` marker, or a fresh `enrollment.pending`) and otherwise asks the helper's identity probe, so an operator's shell beside a machine session an older client left in the key dir takes the operator route.
+The broker ends only a grant of the enrollment that signs and refuses any other `NOT_YOURS`, which the command prints as one line and exits 1 on, trying no other route; sessions that sign as one enrollment, such as every session of one person's `agent-secrets login`, share its grants (`grant_test.go`, and `machine_linux_test.go` against a real helper and broker).
 
 `internal/broker/approval` is the page a person approves a secret request on, and the only place a person approves one:
 `GET /approve/{record}`, `POST /approve`, `GET /signin/callback`, `POST /signin/logout`, `GET /signin/status` and `GET /approve/assets/approve.css` (`routes_table.go`).

@@ -787,7 +787,8 @@ the value: approve a secret only for a session you would trust with the value it
 behind the airlock is the exception: the broker releases a placeholder for it and never the value
 ([The airlock](#the-airlock)).
 
-A grant ends when its lifetime runs out, when its session revokes it (`agent-secrets revoke`), when
+A grant ends when its lifetime runs out, when its session revokes it (`agent-secrets revoke`, or
+`agent-secrets grant revoke` run inside the session), when
 its approver or its enrollment's operator revokes it in Dispatch or from one of their machines
 (`agent-secrets grant revoke`), and when the enrollment holding it ends for good: a person's revoke
 of the machine login or the sign-in behind it, or the carry window closing on an enrollment the

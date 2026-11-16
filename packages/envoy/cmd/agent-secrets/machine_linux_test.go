@@ -404,11 +404,15 @@ func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
 	}
 }
 
-// TestGrantRevokeInsideASessionRefusesAnotherSessionsGrant: a grant belongs to the session it was
-// given to. A second session's `grant revoke` of it is refused, names that it is not this
-// session's, and leaves the grant live — which it could not be had the command fallen through to
-// the operator route, since the operator may end any grant.
-func TestGrantRevokeInsideASessionRefusesAnotherSessionsGrant(t *testing.T) {
+// TestGrantRevokeInsideASessionRefusesAnotherEnrollmentsGrant: the broker ends only a grant of the
+// enrollment that signs, and two sessions the helper registered are two enrollments. So a second
+// session's `grant revoke` of the first one's grant is refused NOT_YOURS: it prints that one line
+// and nothing more, exits 1, and the grant stays live. Inside a registered session the helper
+// refuses every launcher proof, so the grant would stay live even had the command fallen through
+// to the operator route; the whole of stderr being that one line is what shows no other route
+// printed a failure here. TestGrantRevokeTriesNoOtherRouteAfterNotYours holds the case where the
+// helper would sign the operator's route.
+func TestGrantRevokeInsideASessionRefusesAnotherEnrollmentsGrant(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -425,8 +429,8 @@ func TestGrantRevokeInsideASessionRefusesAnotherSessionsGrant(t *testing.T) {
 
 	other := startGrantSession(t, binary, sock, rig.URL)
 	res := other.run("grant", "revoke", grantID)
-	if res.Code != 1 || res.Stdout != "" || !strings.Contains(res.Stderr, "is not this session's") {
-		t.Fatalf("another session's grant revoke: exit %d, stdout %q, stderr %q; want 1 and \"is not this session's\"", res.Code, res.Stdout, res.Stderr)
+	if want := notYoursStderr(grantID); res.Code != 1 || res.Stdout != "" || res.Stderr != want {
+		t.Fatalf("another session's grant revoke: exit %d, stdout %q, stderr %q; want 1 and exactly %q", res.Code, res.Stdout, res.Stderr, want)
 	}
 	if stdout, _, exit := grantOutside("list"); exit != 0 || !strings.Contains(stdout, grantID) {
 		t.Fatalf("grant list after the refused revoke: exit %d, stdout %q; want %s still live", exit, stdout, grantID)

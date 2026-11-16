@@ -265,8 +265,11 @@ standard output stays one row per login or grant for a script.
 
 `machine list` shows your own machines' logins alone; Dispatch's machine-login page also lists
 every service's. `agent-secrets grant revoke <grant id>` ends a grant there, and
-`agent-secrets machine revoke <credential id>` one of your logins. Run in the session's shell, they
-are refused `IN_SESSION`, so the session's own commands cannot act as you:
+`agent-secrets machine revoke <credential id>` one of your logins. `grant revoke` run in a
+session's shell is the session's own revoke, as `agent-secrets revoke` is: it ends only a grant
+given to the broker identity (enrollment) the session signs as. Run there, `machine list`,
+`machine revoke` and `grant list` are refused `IN_SESSION`, so the session's own commands cannot
+act as you:
 
 ```console
 $ agent-secrets machine list

@@ -148,7 +148,7 @@ var commands = []command{
 	{"grant list", "agent-secrets grant list [--json]",
 		"List the live grants of your sessions and those you approved, under this machine's login:\neach one's id, secrets, how it was granted, who approved it, who decided it (the model judge\nfor a grant it approved), its session and operator, and when it expires. Dispatch's Live\ngrants page lists the same."},
 	{"grant revoke", "agent-secrets grant revoke <grant_id>",
-		"End a grant as its operator or approver, under this machine's login, as Dispatch's Live\ngrants page does. Ending an automatic grant also makes its session ask before it gets those\nsecrets again."},
+		"End a grant. From your own shell, end it as its operator or approver, under this\nmachine's login, as Dispatch's Live grants page does; ending an automatic grant also\nmakes its session ask before it gets those secrets again. Inside a session, end a grant\ngiven to the broker identity this session signs as, as `revoke` does; any other grant is\nrefused NOT_YOURS."},
 	{"login", "agent-secrets login",
 		"Sign in on this machine as yourself: print the code to type in at Google, then record the\nsign-in at the secrets broker, which binds it to a box key this machine makes. Every session\nof yours on this machine then acts as you. A second person signs in beside you, and\nAGENT_SECRETS_PERSON then says which of you a session acts for."},
 	{"register", "agent-secrets register [--wait SECONDS] [--session-id ID] [--exec -- COMMAND [ARGS...]]",
@@ -960,18 +960,31 @@ func cmdRevoke(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "agent-secrets revoke: exactly one grant_id is required")
 		return exitUsageError
 	}
-	base, _, signer, err := sessionContext()
-	if err != nil {
-		return sessionFailed(stderr, "agent-secrets revoke", err)
-	}
-	ctx := context.Background()
-	c := newClient(base)
-	if err := c.RevokeGrant(ctx, signer, positional[0]); err != nil {
-		refuse(stderr, "agent-secrets revoke", c.source(ctx), err)
+	c, failed, err := revokeAsSession(positional[0])
+	switch {
+	case failed != nil:
+		return sessionFailed(stderr, "agent-secrets revoke", failed)
+	case err != nil:
+		refuse(stderr, "agent-secrets revoke", c.source(context.Background()), err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(base))
+	fmt.Fprintf(stdout, "revoked at %s\n", brokerSource(c.baseURL))
 	return 0
+}
+
+// revokeAsSession is the session's own revoke of grantID (POST /v1/grants/{id}/revoke), which
+// `revoke` and `grant revoke` inside a session both make, under the identity, the enrollment wait
+// and the exit codes of every session command (sessionContext, sessionFailed). failed is why this
+// process has no such identity, for the form to report through sessionFailed, so the exit code
+// comes from a function broker-refgen follows; otherwise err is the broker's answer to c's call,
+// unreported, for the form to word.
+func revokeAsSession(grantID string) (c *client, failed, err error) {
+	base, _, signer, failed := sessionContext()
+	if failed != nil {
+		return nil, failed, nil
+	}
+	c = newClient(base)
+	return c, nil, c.RevokeGrant(context.Background(), signer, grantID)
 }
 
 // ---------------------------------------------------------------------------
