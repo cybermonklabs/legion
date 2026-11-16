@@ -55,8 +55,8 @@ slot back for that wait, each with what it waits on — the unfinished Dispatch 
 for a parent, the open children beneath it that children-first holds it for. `read_state` shows the
 same list under `admission.blocked`, and `legion state` prints it as `blocked on Dispatch links:`.
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
-link is taken off (by a person or the tree's architect), and a children-first wait ends when the
-last open child leaves the workflow: name the waits in the day's report and
+link is taken off (by a person or an architect of the tree), and a children-first wait ends when
+the last open child leaves the workflow: name the waits in the day's report and
 take nothing for them.
 
 `held`, when present, is `[{issue, reason, heldBy?}, …]`: every issue the daemon's record holds
@@ -92,13 +92,16 @@ handler refuses a fact of another generation.
 So read the issue's record for every entry rather than taking its architect as told:
 `read_state`'s `issues.<KEY>` gives its phase and each role's claim, and says whether the worker
 has moved since the tick was queued.
-Where the architect of that issue is itself a claim that is not answering, a notice sent to it
-reaches nobody and the work stands still. When the tree's architect claim reads `failed`
+Where the architect that owns that issue is itself a claim that is not answering, a notice sent to
+it reaches nobody and the work stands still. That architect is the issue's own while its claim
+holds its role, else the nearest one above it whose claim holds its role, else the root's. A
+failed claim holds no role, so a notice passes over a failed architect of a child and goes on up
+the tree. When the tree's architect claim reads `failed`
 (`issues.<ROOT>.architect.state`, `<ROOT>` being the silent issue's `tree`), act as the
 `worker-died` section below says, with `<ROOT>` as its `<KEY>`: restart the tree when you find no
 cause or its cause is gone, and otherwise ask the person whether to park it, with no relaunch
-while the cause stays. When its claim does not read `failed` and the Envoy registry shows its
-session gone, `fresh_session` on that architect.
+while the cause stays. When the claim of the architect that owns the issue does not read `failed`
+and the Envoy registry shows its session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
@@ -179,7 +182,8 @@ says.
 ## `held on <KEY>` (`{kind: "held", phase, role?, reason?, failure?, escalation?}`)
 
 Check that the issue's `phase` is `held`. Without `reason`, a phase worker's launches or prompts
-ran out, and the tree's architect decides whether to retry or escalate: do nothing. With
+ran out, and the architect that owns the issue (a child's own architect while it holds its role)
+decides whether to retry or escalate: do nothing. With
 `reason: "escalated"` (`issues.<KEY>.holdReason` is `escalated`), the architect handed it to you:
 handle it as an escalation (`skill://legion-controller/references/escalation.md`). A held issue
 whose tree lingers (the time after its root closes when a reopen resumes it) or is closed waits
@@ -347,8 +351,9 @@ escalated hold above says.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
-The tree's architect ran out of launches or prompts, and the daemon relaunches nothing. Every other
-notice of the tree goes to that architect, so nobody inside the tree can act. Check that
+The tree's architect ran out of launches or prompts, and the daemon relaunches nothing. A child's
+own architect still takes that child's notices while it holds its role. Every other notice of the
+tree goes to the failed architect, so nobody inside the tree can act on those. Check that
 `issues.<KEY>.architect.state` is `failed`. When the root's `phase` is `done`, the tree is already
 parked: do nothing (a failed architect reads `failed` until the tree closes). Otherwise look for
 the cause. `issues.<KEY>.architect.failure` holds the record the `held` wake above describes. Read
@@ -383,8 +388,9 @@ before it.
 The daemon's stall backstop acted on a stalled turn of the tree's architect: its agent had not
 stepped for longer than the `worker_stall_backstop_hours` the deployment gives that role, and most
 often the daemon ended the turn and brought the same session back on a new process. You get a copy
-only for a tree's own architect, because every other notice of the tree goes to that architect and
-nobody inside the tree is left to read this one; the architect is told on its issue as well. The
+only for a tree's own architect, because no architect stands above it to read this one, and that
+architect is told on its issue as well. A stall of a child's own architect goes to the architect
+above that child. The
 `reason` is the record the daemon read: when the agent last stepped and how long ago that was, the
 bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
 id, when it started and whether it ended — never a call's arguments, whose text the daemon keeps

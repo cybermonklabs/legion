@@ -1,6 +1,6 @@
 # Architect escalation
 
-Read this when a tree's architect sends you a matter, when a `held` wake carries
+Read this when an architect of a tree sends you a matter, when a `held` wake carries
 `reason: "escalated"`, or when an `update-stalled` wake says the daemon cannot replace an issue's
 pod. Three matters come to you from an architect: a child that looks independent of its tree,
 capacity (an architect says its tree cannot run what it needs under the slots it has), and a

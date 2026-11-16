@@ -145,9 +145,10 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   person's request says to wait or puts it out of scope. That request is the request itself, the
   deployment instructions, or a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
-  a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
-  `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
-  `read_state` records with an `architect`. When `issues.<ROOT>.architect.locator.claim` is there,
+  a decision only an architect of its tree can make about an issue Legion runs. Find the tree:
+  follow `Links:` up through each `child_of` parent with `dispatch read` until you reach an issue
+  `read_state` records. Its `issues.<KEY>.tree` is `<ROOT>`, the tree's root, whose architect owns
+  every issue of the tree. When `issues.<ROOT>.architect.locator.claim` is there,
   `envoy_publish` the person's words to `notifications.role.` followed by it, with the channel id
   and `thread_ts` you reply on, and reply in the thread that you passed it to the architect that
   owns `<ROOT>`, which answers on the issue. When the architect is not running (no locator), say

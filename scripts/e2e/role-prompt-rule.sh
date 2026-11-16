@@ -30,16 +30,13 @@
 # starts a pane with no tmux. Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
-# The whole run took 64 s and 104 s on two runs measured in a Legion worker pod (omp/18.16.0)
-# with a warm Go build cache, the driver 41 s and 43 s of them, and 111 s and 69 s on two runs of
-# this proof with its fourth step, measured in a Legion worker pod the same way, the driver 56 s
-# and 45 s of them; the same pod's first run took 179 s, which is that cache cold and the pinned
-# nats-server installed by the run itself. With its third pane and its fifth step, a run took 76 s
-# in a Legion worker pod (omp/18.16.0), the driver 59 s of it. The proof waits on no clock of its
-# own. Its one wait is the panes starting Oh My Pi, loading the two plugins and reporting ready,
-# which took 10 s of the driver's time in each of the three runs measured before the fourth step
-# and 19 s for the three panes; the command line it reads is on each process from the moment that
-# process began.
+# Two runs of this proof, with its three panes and five steps, took 76 s and 70 s in a Legion
+# worker pod (omp/18.16.0), the driver 59 s and 48 s of them, and the three panes were ready 19 s
+# and 16 s into step 1. A first run in such a pod took 179 s, with the Go build cache cold and the
+# pinned nats-server installed by the run itself. Each of these figures is from a Legion worker
+# pod, which runs under gVisor. The proof waits on no clock of its own. Its one wait is the panes
+# starting Oh My Pi, loading the two plugins and reporting ready, and the command line it reads is
+# on each process from the moment that process began.
 #
 # Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \

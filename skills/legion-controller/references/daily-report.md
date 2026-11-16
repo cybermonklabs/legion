@@ -69,8 +69,8 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
 - **Waiting on Dispatch links.** Each root and child in `admission.blocked`, with what it waits
   on: the issues of its `blocked_by` links, or the open children children-first holds it for. A
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
-  merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
-  ends when the last open child leaves the workflow, so take nothing for them.
+  merge) or its link is taken off (by a person or an architect of the tree), and a children-first
+  wait ends when the last open child leaves the workflow, so take nothing for them.
   Of the issues here, say of each whose `issues.<KEY>.waitingLine.kind` is `waiting_on_issue`
   that it holds no admission slot while it waits,
   that nothing of its work has stopped,
