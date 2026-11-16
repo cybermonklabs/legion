@@ -22,8 +22,9 @@ func (v *Verifier) namesIssuer(iss string) bool {
 }
 
 // IssuesGoogleIdentity reports whether raw names this verifier's issuer, including Google's
-// scheme-less spelling when the verifier is Google's. Verify accepts that spelling too. This
-// reads no signature and grants no admission; VerifyGoogleIdentity still checks the token.
+// scheme-less spelling when the verifier is Google's. Verify accepts that spelling too. It reads
+// unverified text, so it only picks the verifier a token goes to and decides nothing about a
+// caller; VerifyGoogleIdentity checks the token and reads every claim from its verified payload.
 func (v *Verifier) IssuesGoogleIdentity(raw string) bool {
 	claims, err := decodeClaims(raw)
 	return err == nil && v.namesIssuer(claims.Issuer)
@@ -31,17 +32,17 @@ func (v *Verifier) IssuesGoogleIdentity(raw string) bool {
 
 // VerifyGoogleIdentity is Verify for a Google identity token, which names its caller by an
 // address rather than by its subject: it also reads Claims.Email, Claims.EmailVerified and
-// Claims.HostedDomain from the verified token, as a domain-mode CodeFlow reads them
-// (readWorkspaceClaims). A token minted without format=full carries no email, and the claims then
-// name no account. It refuses nothing Verify does not: whether the account may call is the
-// caller's rule. Every error wraps one of Verify's classes; a payload that is not a claim set is
-// ErrMalformed.
+// Claims.HostedDomain from the verified token's payload, the one the signature covers, as a
+// domain-mode CodeFlow reads them (readWorkspaceClaims), and never from the token's text. A token
+// minted without format=full carries no email, and the claims then name no account. It refuses
+// nothing Verify does not: whether the account may call is the caller's rule. Every error wraps
+// one of Verify's classes; a payload that is not a claim set is ErrMalformed.
 func (v *Verifier) VerifyGoogleIdentity(ctx context.Context, raw string) (Claims, error) {
-	claims, err := v.Verify(ctx, raw)
+	token, claims, err := v.verify(ctx, raw)
 	if err != nil {
 		return Claims{}, err
 	}
-	if err := readWorkspaceClaims(raw, &claims); err != nil {
+	if err := readWorkspaceClaims(token, &claims); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
 	return claims, nil

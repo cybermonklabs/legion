@@ -5378,6 +5378,8 @@ The Google pair is for a caller on Google's platform that holds no Kubernetes to
 The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
 and that names, in its `email` claim, an account `ENVOY_OIDC_GOOGLE_ACCOUNTS` lists (addresses separated by commas or white space, compared in lower case) whose address Google verified,
 so the caller asks its metadata server for the token with `format=full`, the form that carries the address (`oidc.Verifier.VerifyGoogleIdentity`).
+Every claim a caller is admitted on, the address and `email_verified` among them, is read from the payload the verified signature covers (`oidc.Verifier.VerifyClaims`, `IDToken.Claims`), never from the token's text;
+a token in any serialization but the compact one (the JWS JSON form go-jose also verifies, whose text can carry an unsigned claim set beside the signed members) is refused as `malformed` before its signature is checked.
 One of the pair without the other refuses the start, naming the missing one, and so does an entry that is not an address.
 A refused Google token is one `listener: Google identity token rejected` warning carrying the class
 — `oidc.Reason`'s, `no_email`, `email_not_verified` or `not_listed` —
