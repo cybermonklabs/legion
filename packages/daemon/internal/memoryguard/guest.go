@@ -6,11 +6,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -35,22 +35,34 @@ import (
 //
 // The kills. The kernel counts each process it kills in the cgroup's oom_kill (memory.events in
 // v2, memory.oom_control in v1), and a killed grandchild's exit goes to its parent, not to the
-// launcher. So each scan keeps every process the scan read, by pid and start time, with its
-// resident size (stat's rss) and its oom_score, and reads the counter after the scan. When the
-// counter rises by n, the killed are the processes the watch held by the scan that saw the rise
-// (the first rise's, while rises add up) that a scan no longer holds (exited, a zombie, or a pid
-// another process took), ranked by their last oom_score before that rise, then their resident
-// size, highest first; the first n are named (attribute). A process the watch first held at a
-// later scan was not among the processes that scan read, so it is neither named nor waited for:
-// a command that starts during the wait and exits by itself is no kill. A process the kernel
-// killed may still run while it frees its memory, so a rise waits, up to guestKillWait, while a
-// process ranked above the n-th gone one still runs; at the wait's end the n highest gone ones are
-// named, and a rise beyond them has one unnamed line. Each killed process has the guard's own
-// endedLine and, in a role, a Kill to the sink with the watch's id and its own sequence from 1,
-// as the guard's kills have (writeKill), and Cause shimwire.MemoryKillCauseKernel, or
-// shimwire.MemoryKillCauseKernelProtected for a process the classifier protected before the rise:
-// one of the processes that run the role's session, whose end the role is told of in its own
-// words. A process of no role, protected or not, has the line alone.
+// launcher. So each scan reads the counter after it reads the processes, and keeps every process
+// it read, by pid and start time, with its role, whether the classifier protects it, its name and
+// its resident size (stat's rss). A process is named as killed only on the evidence the kernel's
+// kill leaves, read after the counter rose: the out-of-memory kill raises the counter, then sends
+// SIGKILL to the victim's thread group, and that SIGKILL stays pending in the victim's status
+// while its memory is freed, through its exit and while it is a zombie, until its parent reaps
+// it. So while kills are pending, each scan reads the status of every process the watch knows (a
+// zombie the scan has just left out among them) that has not shown the kill yet, and one whose
+// status has SIGKILL pending, and whose stat, read after that status, has the start time the
+// watch holds, shows the kill (attribute). It is marked, and never read again while the watch
+// holds it, so a victim still freeing its memory, or a zombie, is evidence for one kill alone. The
+// processes newly marked at a scan are named, in pid order, one kill each, where they are no more
+// than the kills pending; where they are more, the evidence does not say which of them the kernel
+// killed, and none of them is named. A process is never named because it left /proc, or because
+// it ranked first before the rise: a command that exits by itself in that second leaves as well.
+// The kills no process has been named for by guestKillWait after the burst's latest rise have one
+// unnamed line, with the pod's memory at its first rise, and no role is told of them. The rule has
+// two limits. A process that something other than the kernel has sent SIGKILL, and that is still
+// in /proc while kills are pending and the kernel's own victim has already left it, is named in
+// the victim's place; in a microVM pod only a role's own kill -9 or a timeout tool sends it. And a
+// victim that its parent reaps before the next scan shows nothing, and its kill has the unnamed
+// line. Each killed process has the guard's own endedLine, with its resident size at the scan
+// before the one that showed its kill and the pod's memory at the burst's first rise, and, in a
+// role, a Kill to the sink with the watch's id and its own sequence from 1, as the guard's kills
+// have (writeKill), and Cause shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process the classifier protected: one of the
+// processes that run the role's session, whose end the role is told of in its own words. A process
+// of no role, protected or not, has the line alone.
 //
 // The hour. Each hour from its start, one line gives the cgroup's usage, its working set (the usage
 // less the inactive file pages, cAdvisor's figure), each with its high and when, memory.stat's
@@ -60,7 +72,8 @@ import (
 //
 // Without a readable kill counter the watch logs one line and names nothing, and goes on with the
 // score and the hour, which do not depend on it. Without a readable /proc it logs one line, raises
-// and names nothing, and goes on with the hour from the cgroup.
+// and names nothing, writes each rise of the counter as one unnamed line at once, and goes on with
+// the hour from the cgroup.
 type Guest struct {
 	// killWriter is the watch's id, its log, its sink of the kills of a role's processes
 	// (roleKills) and its count of kills (writeKill).
@@ -90,21 +103,18 @@ type Guest struct {
 	countsKills bool
 	kills       uint64
 	// known is every process the watch has read and not let go, by pid and start time: each one
-	// the last scan held, and each one gone since, until no rise waits (snapshot, attribute).
+	// the last scan held, and each one whose stat that scan could not read. The evidence pass runs
+	// before this scan's snapshot lets go of what this scan no longer holds, so a process that has
+	// just become a zombie, which the scan leaves out, is still known to it (attribute, snapshot).
 	known map[procKey]*watched
-	// scans counts the scans that read the processes, by which snapshot marks what a scan held
-	// and the scan that first held each process.
-	scans uint64
 	// pending is the kills of the counter's rises that no process has been named for yet, a burst
 	// from the rise that found none pending, which wait until deadline, guestKillWait after the
-	// latest rise; riseAt, riseMemory and riseScan are the time, the pod's memory and the scan at
-	// the first rise of the burst, after whose scan a process first held is taken for none of
-	// them (attribute).
+	// latest rise; riseAt and riseMemory are the time and the pod's memory at the first rise of
+	// the burst, which each of its kill lines carries, named or not.
 	pending    uint64
 	deadline   time.Time
 	riseAt     time.Time
 	riseMemory killMemory
-	riseScan   uint64
 	window     guestWindow
 	// usage is the cgroup's usage at this scan, and stat and limit its memory.stat and limit at
 	// their last read, taken at statAt.
@@ -112,8 +122,10 @@ type Guest struct {
 	stat   cgroupStat
 	limit  figure
 	statAt time.Time
-	// small is the buffer of the watch's reads of one short file: an oom_score, an oom_score_adj.
-	small []byte
+	// small is the buffer of the watch's reads of one short file, an oom_score_adj, and status the
+	// one of its reads of a process's status (showsKill).
+	small  []byte
+	status []byte
 }
 
 // GuestConfig is what a guest watch reads, whom it asks, and where it reports.
@@ -143,10 +155,10 @@ const guestInterval = time.Duration(shimwire.MemoryGuardIntervalDefault) * time.
 // guestStatEvery is how often the watch reads memory.stat and the limit for its hourly line.
 const guestStatEvery = 5 * time.Second
 
-// guestKillWait is the longest a rise of the kill counter waits for a process ranked above the
-// ones gone to leave the scan, since the process the kernel killed runs until it has freed its
-// memory: the kernel's own oom_reaper gives a victim two seconds to exit before it frees the
-// victim's memory itself.
+// guestKillWait is how long, after the latest rise of a burst, the watch reads for the processes
+// the burst killed to show the kill before it writes the kills none showed as unnamed: the kernel
+// raises the counter just before it sends the SIGKILL a victim shows, and its own oom_reaper gives
+// a victim two seconds to exit before it frees the victim's memory itself.
 const guestKillWait = 2 * time.Second
 
 // raisedScore is the oom_score_adj the watch raises a process to, the highest, and
@@ -162,20 +174,18 @@ type procKey struct {
 	start uint64
 }
 
-// watched is one process the watch read: its role, whether the classifier protects it, and its
-// name, and its resident size and oom_score, each at its last read before any pending rise, by
-// which a kill is ranked, named and reported. first is the scan that first held it, seen the last
-// scan that held it, and gone a process a later scan no longer held.
+// watched is one process the watch read: its role, whether the classifier protects it, its name,
+// and its resident size, at the watch's last read of it, by which a kill is named and reported.
+// sigkill is a process that has shown the kernel's kill (attribute), named or not: the watch reads
+// it no more, and it is evidence for no later kill while the watch holds it, so a victim that is
+// still freeing its memory when the counter rises again is not named twice.
 type watched struct {
 	key        procKey
 	role       string
 	protected  bool
 	executable string
 	resident   uint64
-	score      int64
-	first      uint64
-	seen       uint64
-	gone       bool
+	sigkill    bool
 }
 
 // killMemory is the pod's memory as a kill line writes it, read at the scan that saw the rise:
@@ -291,8 +301,9 @@ func (g *Guest) findCgroup() (version, dir string, err error) {
 	return "", g.cgroupDir, fmt.Errorf("%s holds no memory cgroup file", g.cgroupDir)
 }
 
-// tick is one scan: the hour's readings, the scores, the kill counter, and the processes it
-// names.
+// tick is one scan: the hour's readings, the scores, the kill counter, while kills are pending the
+// evidence pass that names the processes the kernel killed (attribute), and then the snapshot of
+// the processes, which comes after that pass (snapshot).
 func (g *Guest) tick(now time.Time) {
 	g.hour(now)
 	t, classes := g.look()
@@ -304,17 +315,14 @@ func (g *Guest) tick(now time.Time) {
 		g.unnamed(g.pending)
 		return
 	}
-	g.snapshot(t, classes)
 	if g.pending > 0 {
 		g.attribute(now)
-		if g.pending == 0 {
-			maps.DeleteFunc(g.known, func(_ procKey, w *watched) bool { return w.gone })
-		}
 	}
+	g.snapshot(t, classes)
 }
 
-// look scans the processes, counts the scan, and sets their scores, or answers nil where the watch
-// reads no /proc: a scan that fails turns the watch's processes off for good, with one line.
+// look scans the processes and sets their scores, or answers nil where the watch reads no /proc: a
+// scan that fails turns the watch's processes off for good, with one line.
 func (g *Guest) look() (*Table, map[int]Class) {
 	if !g.watching {
 		return nil, nil
@@ -326,7 +334,6 @@ func (g *Guest) look() (*Table, map[int]Class) {
 		g.logf(guestOffLine, fmt.Sprintf("cannot list the processes in %s: %v", g.proc, err))
 		return nil, nil
 	}
-	g.scans++
 	var classes map[int]Class
 	if g.classify != nil {
 		classes = g.classify(t)
@@ -380,12 +387,11 @@ func (g *Guest) score(t *Table, classes map[int]Class) {
 	}
 }
 
-// count reads the kill counter. A rise that finds no kill pending starts a burst, the wait for
-// the processes it killed, as of this scan (riseAt, riseMemory, riseScan); a rise while kills are
-// pending adds its own to the burst, which keeps the first rise's scan, so that a process first
-// held after it is named for none of them, and moves the wait's end to guestKillWait after it. A
-// read that fails sees no rise; a counter below the last reading, a cgroup made anew, is the next
-// rise's base.
+// count reads the kill counter. A rise that finds no kill pending starts a burst, the wait for the
+// processes it killed to show the kill, as of this scan (riseAt, riseMemory); a rise while kills
+// are pending adds its own to the burst, which keeps the first rise's time and memory, and moves
+// the wait's end to guestKillWait after it. A read that fails sees no rise; a counter below the
+// last reading, a cgroup made anew, is the next rise's base.
 func (g *Guest) count(now time.Time) {
 	n, err := g.cgroup.readKills()
 	if err != nil || n == g.kills {
@@ -399,95 +405,105 @@ func (g *Guest) count(now time.Time) {
 	g.kills = n
 	g.window.oomKills += rise
 	if g.pending == 0 {
-		g.riseAt, g.riseMemory, g.riseScan = now, g.memoryNow(), g.scans
+		g.riseAt, g.riseMemory = now, g.memoryNow()
 	}
 	g.pending += rise
 	g.deadline = now.Add(guestKillWait)
 }
 
-// snapshot takes t into known: each process it holds that the watch had not read, with the scan
-// that first held it, its role, whether the classifier protects it, its size and its score, and
-// each it holds that the watch had, read again unless a rise waits, whose ranking is by the reads
-// before it. Each the watch had that t does not hold is let go where no rise waits, and marked
-// gone while one does, for attribute to name. A pid whose stat the scan could not read is not
-// gone, since nothing says it is.
+// snapshot takes t into known, after the scan's evidence pass (tick), so a process is named with
+// its reads from the scan before the one that showed its kill, its size before the kernel freed
+// it: each process t holds that the watch had not read, with its name, and each it holds that the
+// watch had and that has not shown the kill, read again: its role, whether the classifier protects
+// it, and its resident size. One that has shown the kill keeps the reads it was named by. Each
+// process the watch had that t no longer holds (exited, a zombie, or a pid another process took)
+// is let go, but for a pid whose stat the scan could not read, since nothing says it is gone.
 func (g *Guest) snapshot(t *Table, classes map[int]Class) {
 	for pid, p := range t.byPID {
 		key := procKey{pid: pid, start: p.StartTime}
 		w := g.known[key]
-		fresh := w == nil
-		if fresh {
-			w = &watched{key: key, executable: processName(p), first: g.scans}
+		if w == nil {
+			w = &watched{key: key, executable: processName(p)}
 			g.known[key] = w
+		} else if w.sigkill {
+			continue
 		}
-		if fresh || g.pending == 0 {
-			w.role, w.protected = classes[pid].Role, classes[pid].Protected
-			w.resident = p.Resident * g.pageSize
-			g.read(w)
-		}
-		w.seen = g.scans
+		w.role, w.protected = classes[pid].Role, classes[pid].Protected
+		w.resident = p.Resident * g.pageSize
 	}
-	for _, w := range g.known {
-		if w.seen == g.scans || w.gone {
+	for key := range g.known {
+		p, held := t.byPID[key.pid]
+		if held && p.StartTime == key.start {
 			continue
 		}
-		if _, held := t.byPID[w.key.pid]; !held {
-			if _, unread := t.unread[w.key.pid]; unread {
-				w.seen = g.scans
-				continue
-			}
-		}
-		if g.pending == 0 {
-			delete(g.known, w.key)
+		if _, unread := t.unread[key.pid]; !held && unread {
 			continue
 		}
-		w.gone = true
+		delete(g.known, key)
 	}
 }
 
-// read reads w's oom_score, keeping the last that does not read.
-func (g *Guest) read(w *watched) {
-	if score, err := readScore(filepath.Join(g.proc, strconv.Itoa(w.key.pid), "oom_score"), g.small); err == nil {
-		w.score = score
-	}
-}
-
-// attribute names the processes the pending kills killed: walking every process the watch knows,
-// highest last oom_score first, then largest resident size, it takes each gone one until it has
-// one for each kill. A process that still runs, met before that, may be one the kernel killed
-// that has not exited yet, so the walk waits for the next scan, until the wait passes; then it
-// passes over each one that runs. A process first held after the scan that saw the first rise of
-// the burst (riseScan) is passed over whether it runs or not: it was not among the processes that
-// scan read, and every kill of the burst is ranked by the reads before that rise (snapshot), so a
-// command that started during the wait, after any rise of the burst, is not named for a kill, and
-// does not hold the walk. The kills left over have one unnamed line.
+// attribute is the evidence pass, which runs while kills are pending: it marks each process the
+// watch knows that shows the kernel's kill (showsKill) and has not shown it before. Where the
+// processes it newly marks are no more than the kills pending, it names each of them, in pid order,
+// for one kill; where they are more, the evidence does not say which of them the kernel killed, so
+// it names none of them, and their kills stay pending. Once the wait has passed (deadline), the
+// kills still pending have one unnamed line.
 func (g *Guest) attribute(now time.Time) {
-	final := !now.Before(g.deadline)
-	ranked := slices.SortedFunc(maps.Values(g.known), func(a, b *watched) int {
-		return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.resident, a.resident),
-			cmp.Compare(b.key.start, a.key.start), cmp.Compare(b.key.pid, a.key.pid))
-	})
-	var killed []*watched
-	for _, w := range ranked {
-		if uint64(len(killed)) == g.pending {
-			break
-		}
-		if w.first > g.riseScan {
-			continue
-		}
-		if w.gone {
-			killed = append(killed, w)
-			continue
-		}
-		if !final {
-			return
+	var shown []*watched
+	for _, w := range g.known {
+		if !w.sigkill && g.showsKill(w) {
+			w.sigkill = true
+			shown = append(shown, w)
 		}
 	}
-	for _, w := range killed {
-		g.report(w)
-		delete(g.known, w.key)
+	if uint64(len(shown)) <= g.pending {
+		slices.SortFunc(shown, func(a, b *watched) int { return cmp.Compare(a.key.pid, b.key.pid) })
+		for _, w := range shown {
+			g.report(w)
+		}
+		g.pending -= uint64(len(shown))
 	}
-	g.unnamed(g.pending - uint64(len(killed)))
+	if !now.Before(g.deadline) {
+		g.unnamed(g.pending)
+	}
+}
+
+// showsKill is whether w shows the kernel's kill: its status has SIGKILL pending (sigkillPending),
+// and its stat, read after that status, has the start time the watch holds. A pid is not reused
+// while its process is in /proc, a zombie too, so that start time makes the status w's and not that
+// of a process that took its pid. A read that fails shows nothing.
+func (g *Guest) showsKill(w *watched) bool {
+	status, err := readAll(filepath.Join(g.proc, strconv.Itoa(w.key.pid), "status"), g.status)
+	g.status = status
+	if err != nil || !sigkillPending(status) {
+		return false
+	}
+	start, err := readStartTime(g.proc, w.key.pid)
+	return err == nil && start == w.key.start
+}
+
+// sigkillBit is SIGKILL's bit in a status's signal masks, which hold signal n at bit n-1.
+const sigkillBit = 1 << (syscall.SIGKILL - 1)
+
+// sigkillPending is whether a /proc/<pid>/status has SIGKILL pending: its bit set in SigPnd, the
+// signals pending for the thread, or in ShdPnd, those pending for its whole thread group, each a
+// mask in hex. The kernel's out-of-memory kill sends SIGKILL to the thread group, so ShdPnd shows
+// it while the process frees its memory, exits and is a zombie, until its parent reaps it. A mask
+// that does not parse shows nothing.
+func sigkillPending(status []byte) bool {
+	for len(status) > 0 {
+		var line []byte
+		line, status, _ = bytes.Cut(status, []byte{'\n'})
+		key, mask, ok := bytes.Cut(line, []byte{':'})
+		if !ok || (string(key) != "SigPnd" && string(key) != "ShdPnd") {
+			continue
+		}
+		if n, err := strconv.ParseUint(string(bytes.TrimSpace(mask)), 16, 64); err == nil && n&sigkillBit != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // report writes the guard's own line for w, which the kernel killed, and gives a role's process's
@@ -510,14 +526,16 @@ func (g *Guest) report(w *watched) {
 	}, m.shmem)
 }
 
-// unnamed writes n kills no process was named for, if any, as one line, and lets them go.
+// unnamed writes n kills no process was named for, if any, as one line with the pod's memory at
+// the burst's first rise, and lets them go.
 func (g *Guest) unnamed(n uint64) {
 	g.pending = 0
 	if n == 0 {
 		return
 	}
 	g.window.unnamed += n
-	g.logf(guestKilledUnnamedLine, n, g.kills)
+	m := g.riseMemory
+	g.logf(guestKilledUnnamedLine, n, g.kills, m.reading, m.counter, m.shmem, m.limit)
 }
 
 // memoryNow is the pod's memory for the kill lines of a rise: memory.stat and the limit read
@@ -593,7 +611,7 @@ func stampOrDash(t time.Time) string {
 	return stamp(t)
 }
 
-// readScore reads an oom_score or oom_score_adj, a signed number on one line, through buf.
+// readScore reads an oom_score_adj, a signed number on one line, through buf.
 func readScore(path string, buf []byte) (int64, error) {
 	data, err := readHead(path, buf)
 	if err != nil {

@@ -161,8 +161,8 @@ func (p *guardPod) writeWhole(path, content string) {
 	}
 }
 
-// setScore writes the files the guest watch reads of pid besides the scan's: its oom_score_adj and
-// its oom_score.
+// setScore writes pid's oom_score_adj, which the guest watch reads and raises, and its oom_score,
+// the kernel's badness of it, which the watch does not read.
 func (p *guardPod) setScore(pid, adj, score int) {
 	p.t.Helper()
 	dir := filepath.Join(p.proc, strconv.Itoa(pid))
@@ -203,12 +203,13 @@ func (p *guardPod) setKernelKills(n, anon, shmem uint64) {
 		"cache 4096\nrss 4096\ntotal_cache %d\ntotal_rss %d\ntotal_shmem %d\ntotal_inactive_file %d\n", 400*guardMiB, anon, shmem, 100*guardMiB))
 }
 
-// remove takes pid out of the pod, as a process that has exited and been reaped leaves /proc.
-func (p *guardPod) remove(pid int) {
+// showKernelKill writes pid's status as the guest kernel's out-of-memory kill leaves the process
+// while its memory is freed: still in /proc, with SIGKILL pending for its thread and its thread
+// group, the evidence by which the guest watch names a kill.
+func (p *guardPod) showKernelKill(pid int) {
 	p.t.Helper()
-	if err := os.RemoveAll(filepath.Join(p.proc, strconv.Itoa(pid))); err != nil {
-		p.t.Fatal(err)
-	}
+	p.writeWhole(filepath.Join(p.proc, strconv.Itoa(pid), "status"), fmt.Sprintf(
+		"State:\tR (running)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n", pid, pid))
 }
 
 // guardClock hands each wait the guard asks for to the test, which fires it: a reading is then a
@@ -1369,10 +1370,10 @@ func TestAMicroVMLauncherRaisesTheAgentsWorkAndKeepsItsOwnProcessesAtTheStarting
 
 // A microVM pod's launcher never builds the memory guard, whatever its acknowledgements say: it
 // logs one off line, and an acknowledgement's guard settings reach no guard, so no settings line
-// follows. Its guest watch reports the kernel's kill of the tester's process to the tester's
-// manager, which sends it, with the kernel's cause, on the tester's connection, whose
-// acknowledgement carries kernelKills; the reviewer's connection, which carries kernelKills too,
-// gets nothing.
+// follows. Its guest watch reports the kernel's kill of the tester's process, which shows the kill
+// with SIGKILL pending in its status, to the tester's manager, which sends it, with the kernel's
+// cause, on the tester's connection, whose acknowledgement carries kernelKills; the reviewer's
+// connection, which carries kernelKills too, gets nothing.
 func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testing.T) {
 	const testers, reviewers = 750, 751
 	pod := newGuardPod(t)
@@ -1402,7 +1403,7 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 		t.Fatalf("the launcher logged %s, want the guest watch's start line", f.stderr.String())
 	}
 
-	pod.remove(testers)
+	pod.showKernelKill(testers)
 	pod.setKernelKills(1, 3500*guardMiB, 64*guardMiB)
 	rig.tick()
 	at := rig.clock.Now()

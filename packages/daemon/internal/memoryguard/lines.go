@@ -45,16 +45,19 @@ const (
 // has the guard's own endedLine, so a reader finds a process stopped for memory by one line,
 // whichever stopped it. The start line names the cgroup's version, its directory, v2's
 // memory.oom.group and the starting score; a watch with no readable kill counter has its
-// guestKillsUnnamedLine once, and one with no readable /proc its guestOffLine once. A rise of the
-// counter that no process is named for has one guestKilledUnnamedLine, with the count left over
-// and the counter's total, and a process whose score write failed its guestScoreFailedLine once,
-// with the score the write would have set.
+// guestKillsUnnamedLine once, and one with no readable /proc its guestOffLine once. The kills of a
+// burst of the counter's rises that no process was named for by the wait's end, since none showed
+// the kernel's kill, or more showed it at one scan than kills were pending, and every kill of a
+// rise where the watch reads no /proc, have one guestKilledUnnamedLine, which names no process: the
+// count of those kills, the counter's total, and the pod's memory at the burst's first rise, the
+// fields an endedLine gives it (reading, counter, shmem and limit). A process whose score write
+// failed has its guestScoreFailedLine once, with the score the write would have set.
 const (
 	guestPrefix            = "launcher: guest memory: "
 	guestStartLine         = guestPrefix + "start cgroup=%s dir=%s oom_group=%s score=%s"
 	guestOffLine           = guestPrefix + "off reason=%s"
 	guestKillsUnnamedLine  = guestPrefix + "kills unnamed reason=%v"
-	guestKilledUnnamedLine = guestPrefix + "killed unnamed count=%d oom_kill=%d"
+	guestKilledUnnamedLine = guestPrefix + "killed unnamed count=%d oom_kill=%d reading=%d counter=%d shmem=%d limit=%d"
 	guestScoreFailedLine   = guestPrefix + "score failed pid=%d start_time=%d score=%d reason=%v"
 	guestHourLine          = guestPrefix + "hour start=%s end=%s current=%s current_high=%s current_high_at=%s" +
 		" working_set=%s working_set_high=%s working_set_high_at=%s anon=%s file=%s inactive_file=%s shmem=%s limit=%s" +
