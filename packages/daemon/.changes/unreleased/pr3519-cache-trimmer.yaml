@@ -11,9 +11,9 @@ body: |-
   `low_percent` (70), stopping there or sooner. It deletes nothing from workspaces, repositories,
   the Go module cache or the uv caches, and nothing else of the temporary directory.
   `enabled: false` switches it off, and the settled block is in the state body under
-  `settings.runtime.kubernetes.volume_trim`. A launcher that is not its container's first process
-  runs no trimmer, as it runs no memory guard: it cannot see every process that may be using the
-  volume.
+  `settings.runtime.kubernetes.volume_trim`. A launcher that is not PID 1 of its PID namespace, which in a
+  pod is the container's first process, runs no trimmer, as it runs no memory guard: it may not
+  see every process that may be using the volume.
 
   A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
   trimmer that switches itself off after three panics in a row, reach the issue's architect as a

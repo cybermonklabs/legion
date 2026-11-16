@@ -3643,25 +3643,25 @@ func script(percents ...float64) func(int) volumeUsage {
 	}
 }
 
-// The rise that raises an episode is five points above the anchor: a reading four and nine
-// tenths above the reading a reported sweep started from raises nothing, and one exactly five
-// above raises it. R4 has the episode raised "when a reading rises five percentage points above
-// the highest reading at the start of any sweep that reported in this episode". A smaller rise
-// reads the roles' ordinary rebuilding between the marks as a fresh deterioration and wakes the
-// issue's architect on every cycle of a volume that is merely oscillating; a larger one keeps a
-// higher reading inside the episode it is in, under that episode's three notices. The rule sees
-// no other growth: each reported sweep moves the anchor up to its own start (anchorAt), so a
-// volume that climbs by less than five points from one reported sweep to the next raises no
-// episode on its way from 86% to 100%.
+// The rise that raises an episode is five points above the anchor: a reading four and nine tenths
+// above the reading a reported sweep started from raises nothing, and one exactly five above raises
+// it. R4 has the episode raised "when a reading rises five percentage points above the highest
+// reading at the start of any sweep that reported in this episode". A smaller rise reads the roles'
+// ordinary rebuilding between the marks as a fresh deterioration and wakes the issue's architect on
+// every cycle of a volume that is merely oscillating; a larger one keeps a higher reading inside
+// the episode it is in, under that episode's three notices. The rule sees no other growth: each
+// reported sweep raises the anchor to its own start where it is higher (anchorAt), so a volume that
+// climbs by less than five points from one reported sweep to the next raises no episode on its way
+// from 86% to 100%.
 //
 // The readings are put through episodeOf and anchorAt, which is where the trimmer decides this,
-// rather than through the interval loop: a reading that is a rise is at or above the high mark,
-// so where no pause holds the trimmer it starts a sweep of its own, and that sweep, where it
-// ends above the low mark and reports, re-anchors the episode on that very reading (tick,
-// anchorAt), so the loop cannot be relied on to offer both sides of this boundary against one
-// anchor. The loop's own path through the same code is the case above. The points are this
-// case's own figures and not volumeRisePoints, because a case staged from the constant it tests
-// moves with it (INFRA-2009, review round 6).
+// rather than through the interval loop: a reading that is a rise is at or above the high mark
+// while the settings stand as the episode began under, so where no pause holds the trimmer it
+// starts a sweep of its own, and that sweep, where it ends above the low mark and reports,
+// re-anchors the episode on that very reading (tick, anchorAt), so the loop cannot be relied on to
+// offer both sides of this boundary against one anchor. The loop's own path through the same code
+// is the case above. The points are this case's own figures and not volumeRisePoints, because a
+// case staged from the constant it tests moves with it (INFRA-2009, review round 6).
 func TestAReadingFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t *testing.T) {
 	const (
 		anchored = 90.0

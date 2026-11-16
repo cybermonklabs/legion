@@ -189,16 +189,16 @@ func Run(ctx context.Context, cfg Config) error {
 // Run's single-role branch returns before this is reached, since that launcher runs one role, its
 // volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
 //
-// The trimmer runs only where the launcher is the container's first process (containerInit), as
-// the memory guard and the git lock sweep do (serveMemoryGuard, serveGitLockSweep). A sweep
-// deletes no entry a process of the pod is using, and it reads what each process uses from
-// /proc (readUsedPaths): PID 1 of the container sees every process of the container, each
-// role's namespaces' included, where a launcher started anywhere else (by hand inside a role)
-// sees that role's processes alone and would delete a cache entry a process of another role is
-// using. Any other launcher logs one line, builds no trimmer, and answers a channel already
-// closed, so Run waits on nothing. Every acknowledgement still writes the settings it carries
-// into its role's manager (applyAck), where nothing then reads them: the trimmer is their one
-// reader and the one caller of sendVolumeReport, so no report is ever sent.
+// The trimmer runs only where the launcher is PID 1 of its PID namespace (containerInit), which in
+// an issue pod is the container's first process, as the memory guard and the git lock sweep do
+// (serveMemoryGuard, serveGitLockSweep). A sweep deletes no entry a process of the pod is using,
+// and it reads what each process uses from /proc (readUsedPaths): PID 1 of the container sees every
+// process of the container, each role's namespaces' included, where a launcher started anywhere
+// else (by hand inside a role) can see that role's processes alone and would then delete a cache
+// entry a process of another role is using. Any other launcher logs one line, builds no trimmer,
+// and answers a channel already closed, so Run waits on nothing. Every acknowledgement still writes
+// the settings it carries into its role's manager (applyAck), where nothing then reads them: the
+// trimmer is their one reader and the one caller of sendVolumeReport, so no report is ever sent.
 //
 // The trimmer is constructed here, once per launcher process and never again: its identifier is
 // minted at construction (trimmer.id) and kept across every reconnection, where an identifier

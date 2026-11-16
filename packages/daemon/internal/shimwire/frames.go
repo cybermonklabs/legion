@@ -380,10 +380,11 @@ const (
 	VolumeEpisodeRecovery = "recovery"
 	// VolumeEpisodeRise is a reading five percentage points or more above the highest reading at
 	// the start of any sweep that reported in the episode the reading ends, and no other growth:
-	// each such sweep moves that highest reading up to its own start, so a volume that climbs by
-	// less than five points from one of them to the next raises no episode. The daemon sends a
-	// report of an episode raised this way without holding it for the pod's hour, and holds it
-	// to the three of its episode like any other (internal/workflow's volumeNoticeHeldBy).
+	// each such sweep raises that highest reading to its own start where it is higher, so a volume
+	// that climbs by less than five points from one of them to the next raises no episode. The
+	// daemon sends a report of an episode raised this way without holding it for the pod's hour,
+	// and holds it to the three of its episode like any other (internal/workflow's
+	// volumeNoticeHeldBy).
 	VolumeEpisodeRise = "rise"
 )
 
