@@ -2,6 +2,7 @@ package agentsecrets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -37,6 +38,11 @@ type PodSessionRenewal struct {
 	// Generation is the launch generation of the process the registration is for, which every
 	// write sends: the broker writes a registration only at a generation at least the one it holds.
 	Generation int64
+	// Latest answers the claim's current generation, read when an answer comes back at a later
+	// generation than r.Generation: an answered generation above it is one no process of this claim
+	// reached, so the registration is one this daemon never made (SupersededError.Foreign). Nil
+	// reads every later generation as a later process of this claim's.
+	Latest func() int64
 	// Token answers the pod token a write presents: the pod's own projected ServiceAccount token
 	// for the broker's audience. It is asked once per write, so a write hours after the pod
 	// started presents the token the pod holds then.
@@ -56,7 +62,8 @@ type PodSessionRenewal struct {
 // pod did not hand over) on a backoff from registrationRetryInitial doubling to
 // registrationRetryMax. Every write sends r.Thumbprint and r.Generation. A permanent refusal ends
 // it, and so do an answer the broker made for another pod or key than r's (AnswerMismatchError),
-// an answer at a later generation than r's, a later process's registration (SupersededError), and
+// an answer at a later generation than r's (SupersededError: a later process of this claim's
+// registration, or, above the claim's current generation, one this daemon never made), and
 // a renewal named with no thumbprint (MissingThumbprintError): no later write of the same
 // registration could be taken. Each write's outcome is logged, naming the pod and the session and
 // never a token.
@@ -118,6 +125,15 @@ func (k *podSessionKeeper) write() error {
 		log.Info("agent-secrets: registered the pod to trade under its session",
 			"expires_at", expires.UTC().Format(time.RFC3339), "next_write_in", wait.String())
 	case IsPermanent(err):
+		var superseded *SupersededError
+		if errors.As(err, &superseded) && k.r.Latest != nil {
+			superseded.Latest = k.r.Latest()
+			superseded.Foreign = superseded.Answered > superseded.Latest
+		}
+		if superseded != nil && superseded.Foreign {
+			log.Error("agent-secrets: the broker holds this pod's session registration at a generation this claim never reached, a registration this daemon never made; not writing it again", "error", err)
+			return err
+		}
 		log.Error("agent-secrets: the pod's session registration cannot be written for this pod; not writing it again", "error", err)
 		return err
 	default:

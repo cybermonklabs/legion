@@ -6227,7 +6227,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - Every write also sends the claim's launch generation, which rises with every launch of the claim and is stored with the claim, so no two processes send the same one and it survives a daemon restart.
     The broker writes a registration only when the generation sent is at least the one it holds, and answers the registration it holds, so a late write of an earlier process, one the wait above gave up on, cannot put that process's key back.
-    An answer at a later generation than the daemon sent is a later process's registration: the daemon logs it, naming the pod, the session and both generations, and stops writing that registration.
+    An answer at a later generation than the daemon sent ends that registration's writes, and the daemon logs it, naming the pod, the session and both generations: as a later process's registration when the answered generation is at most the claim's current one, and at error level as a registration this daemon never made when it is above it, since no process of the claim reached that generation (another claim registered the session id, or another service login wrote it).
 
   - A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
     that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.

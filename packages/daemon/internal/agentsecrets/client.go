@@ -193,7 +193,7 @@ func (e *APIError) RegistrarNotListed() bool {
 
 // IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
 // (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError)
-// or at a later process's generation (*SupersededError), or one named with no key
+// or at a later generation than sent (*SupersededError), or one named with no key
 // (*MissingThumbprintError). A transport failure, a 5xx, a 429, an expired pod token and a daemon
 // with no credential yet are all transient.
 func IsPermanent(err error) bool {
@@ -512,8 +512,8 @@ type podSessionBody struct {
 // cannot read. It sends generation, the launch generation of the process it registers, which rises
 // with each launch of a claim. The broker answers the registration as it stands after the write:
 // the pod uid it read from the token (pod_uid), its generation and the key the row is bound to
-// (thumbprint). An answer at a later generation than sent is a later process's registration, which
-// the broker kept: a *SupersededError, permanent. An answer naming another pod than podUID, or
+// (thumbprint). An answer at a later generation than sent is a registration the broker kept: a
+// *SupersededError, permanent. An answer naming another pod than podUID, or
 // another key than thumbprint, is an *AnswerMismatchError, permanent, since the token presented
 // was not that pod's or the broker did not bind the role's key. Any other answer than 200 is an
 // *APIError carrying the broker's code (Permanent says which a retry can change), and a transport
@@ -586,16 +586,23 @@ func (e *MissingThumbprintError) Error() string {
 func (*MissingThumbprintError) Permanent() bool { return true }
 
 // SupersededError is a registration of Pod under Session written at generation Sent and answered
-// at generation Answered, a later one: a later process of the claim registered the session since,
-// and the broker kept that registration. Its message names the pod, the session and both
-// generations, never a token.
+// at generation Answered, a later one: the broker holds a registration it took at that generation
+// and kept. Foreign is whether Answered is above Latest, the claim's current generation
+// (PodSessionRenewal.Latest), so that no process of this claim made it — another claim registered
+// the session, or another service login wrote the row; otherwise a later process of this claim
+// registered the session since. Its message names the pod, the session and the generations, never
+// a token.
 type SupersededError struct {
-	Pod, Session   string
-	Sent, Answered int64
+	Pod, Session           string
+	Sent, Answered, Latest int64
+	Foreign                bool
 }
 
 func (e *SupersededError) Error() string {
-	return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, later than this write's generation %d: a later process registered the session", e.Pod, e.Session, e.Answered, e.Sent)
+	if e.Foreign {
+		return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, above this claim's generation %d (this write's was generation %d): a registration this daemon never made", e.Pod, e.Session, e.Answered, e.Latest, e.Sent)
+	}
+	return fmt.Sprintf("the broker holds the registration of pod %s for session %s at generation %d, later than this write's generation %d: a later process of this claim registered the session", e.Pod, e.Session, e.Answered, e.Sent)
 }
 
 // Permanent is true: this process's generation never rises, so no later write of it is taken.

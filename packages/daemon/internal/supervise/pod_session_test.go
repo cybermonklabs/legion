@@ -228,12 +228,13 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 	}
 }
 
-// keyRecorder is a Registrar that records the thumbprint and the generation of every registration
-// a machine starts.
+// keyRecorder is a Registrar that records the thumbprint, the generation and the claim's-current-
+// generation reader of every registration a machine starts.
 type keyRecorder struct {
-	mu   sync.Mutex
-	keys []string
-	gens []uint64
+	mu      sync.Mutex
+	keys    []string
+	gens    []uint64
+	latests []func() uint64
 }
 
 func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), error) {
@@ -241,6 +242,7 @@ func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), e
 	defer r.mu.Unlock()
 	r.keys = append(r.keys, s.Thumbprint)
 	r.gens = append(r.gens, s.Generation)
+	r.latests = append(r.latests, s.Latest)
 	return func() {}, nil
 }
 
@@ -300,6 +302,68 @@ func TestEachProcessRegistersAtItsLaunchGeneration(t *testing.T) {
 	if got, want := recorder.generations(), []uint64{1, 2, 2}; !slices.Equal(got, want) {
 		t.Fatalf("the session of pod %s was registered at generations %v, want %v: the first process at 1, the relaunch at 2, and the restart registering the running process again at its own 2", pod, got, want)
 	}
+}
+
+// TestARegistrationReadsTheClaimsCurrentGenerationWhenItIsAnswered: a registration reads the claim's
+// current generation when an answer comes back at a later one (PodSession.Latest), to tell a later
+// process of this claim from a registration this daemon never made. It reads it then, not when the
+// registration started: the first process's registration, asked after the relaunch, answers the
+// claim's generation 2. It reads it without the machine's lock, from the view each decision
+// publishes, since a renewal's answer comes back on the clock's goroutine while a decision may hold
+// that lock.
+func TestARegistrationReadsTheClaimsCurrentGenerationWhenItIsAnswered(t *testing.T) {
+	const pod = "pod-uid-11"
+	h := newHarness(t)
+	h.withSecrets()
+	recorder := &keyRecorder{}
+	h.deps.Registrar = recorder
+	h.start(h.store.load(h.token))
+	inPod := func(generation uint64) fake.SpawnResult {
+		return fake.SpawnResult{Locator: runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: runtime.SandboxIncarnation(pod, generation),
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: generation},
+		}}
+	}
+	hello := func() {
+		t.Helper()
+		h.conns.Register(h.token, h.conn)
+		h.must(StreamHello{Claim: h.token, Generation: h.generation(), AgentSecrets: &AgentSecretsIdentity{Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken}})
+	}
+
+	h.rt.ScriptSpawn(inPod(1))
+	h.launch()
+	hello()
+	h.register()
+	h.ready()
+	recorder.mu.Lock()
+	first := recorder.latests[0]
+	recorder.mu.Unlock()
+	if first == nil {
+		t.Fatal("the registration carries no reader of the claim's current generation")
+	}
+	if got := first(); got != 1 {
+		t.Fatalf("the first process's registration reads the claim's generation as %d, want 1", got)
+	}
+	h.rt.ScriptResume(inPod(2))
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestResume{Claim: h.token})
+	if got := first(); got != 2 {
+		t.Fatalf("after the relaunch the first process's registration reads the claim's generation as %d, want 2, the claim's current one", got)
+	}
+
+	// Read while a decision holds the machine's lock: it must not wait on it.
+	h.m.mu.Lock()
+	read := make(chan uint64, 1)
+	go func() { read <- first() }()
+	select {
+	case got := <-read:
+		if got != 2 {
+			t.Errorf("read under a held lock, the claim's generation is %d, want 2", got)
+		}
+	case <-time.After(time.Second):
+		t.Error("reading the claim's current generation waited on the machine's lock")
+	}
+	h.m.mu.Unlock()
 }
 
 // TestARegistrationKeepsTheKeyItsProcessFirstHelloNamed: a registration's thumbprint is pinned at

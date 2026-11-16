@@ -560,6 +560,8 @@ func TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded(t *testing.T) {
 	stop, err := c.KeepPodSession(context.Background(), PodSessionRenewal{
 		PodUID: pod, Session: session, Thumbprint: testThumbprint, Generation: 2, Bound: time.Second, After: timers.after,
 		Token: func(context.Context) (string, error) { return testPodToken, nil },
+		// The claim has moved on to generation 3, the generation the broker answers.
+		Latest: func() int64 { return 3 },
 	})
 	defer stop()
 	if err != nil {
@@ -578,15 +580,71 @@ func TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded(t *testing.T) {
 		t.Fatalf("the renewal of %s at generation 2, answered at generation 3, scheduled %d more writes, want none: an earlier process kept writing over a later one's registration", session, n)
 	}
 	text := logged.String()
-	for _, want := range []string{"pod=" + pod, "session=" + session, "generation 2", "generation 3"} {
+	for _, want := range []string{"pod=" + pod, "session=" + session, "generation 2", "generation 3", "a later process of this claim"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("logged %q, want it to name %s", text, want)
 		}
+	}
+	if strings.Contains(text, "never made") {
+		t.Errorf("logged %q: a later process of this claim's registration read as one this daemon never made", text)
 	}
 
 	_, err = c.RegisterPodSession(context.Background(), pod, testPodToken, session, testThumbprint, 2)
 	var superseded *SupersededError
 	if !errors.As(err, &superseded) || superseded.Pod != pod || superseded.Session != session || superseded.Sent != 2 || superseded.Answered != 3 || !IsPermanent(err) {
 		t.Fatalf("a write of %s at generation 2 answered at generation 3 = %v, want a permanent *SupersededError naming the pod, the session and both generations", session, err)
+	}
+}
+
+// TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign: the broker answers a
+// write with a registration at a generation above the claim's current one — above every process
+// this daemon has launched for the claim — so no process of this claim wrote it: another claim
+// registered the session id, or another service login wrote the row (review round 4 of #4153,
+// R4-1, R4-2). That is a permanent failure like any superseded write, and it is logged at Error as
+// a registration this daemon never made, naming the pod, the session and both generations, never
+// as a later process of this claim.
+func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *testing.T) {
+	const (
+		pod     = "pod-uid-10"
+		session = "ses_foreign"
+	)
+	broker, server := newRegistrationBroker(t, pod)
+	var logged lockedLog
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
+	timers := &manualTimers{}
+	stop, err := c.KeepPodSession(context.Background(), PodSessionRenewal{
+		PodUID: pod, Session: session, Thumbprint: testThumbprint, Generation: 2, Bound: time.Second, After: timers.after,
+		Token: func(context.Context) (string, error) { return testPodToken, nil },
+		// The claim's current generation is this process's own: no later process exists.
+		Latest: func() int64 { return 2 },
+	})
+	defer stop()
+	if err != nil {
+		t.Fatalf("the first write of %s at generation 2: %v", session, err)
+	}
+
+	broker.mu.Lock()
+	broker.newer = 9
+	broker.mu.Unlock()
+	timers.fire()
+	if n := timers.armed(); n != 0 {
+		t.Fatalf("the renewal of %s, answered at generation 9 above the claim's 2, scheduled %d more writes, want none", session, n)
+	}
+	var line string
+	for _, l := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(l, "never made") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("logged %q, want the answer at generation 9, above the claim's generation 2, logged as a registration this daemon never made", logged.String())
+	}
+	for _, want := range []string{"level=ERROR", "pod=" + pod, "session=" + session, "generation 2", "generation 9"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("logged %q, want it to name %s", line, want)
+		}
+	}
+	if strings.Contains(line, "a later process of this claim") {
+		t.Errorf("logged %q: a registration no process of this claim made read as a later process of it", line)
 	}
 }

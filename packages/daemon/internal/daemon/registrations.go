@@ -29,7 +29,12 @@ func newRegistrar(a config.AgentSecretsConfig, client *agentsecrets.Client) supe
 type brokerRegistrar struct{ client *agentsecrets.Client }
 
 func (b brokerRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
+	var latest func() int64
+	if s.Latest != nil {
+		latest = func() int64 { return int64(s.Latest()) }
+	}
 	return b.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
-		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: s.After, Bound: s.Bound,
+		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Latest: latest,
+		Token: s.Token, After: s.After, Bound: s.Bound,
 	})
 }

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -196,5 +197,127 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	}
 	if after := broker.taken(); len(after) != len(writes) {
 		t.Errorf("the broker took %d writes of session %s after the claim ended, want none", len(after)-len(writes), session)
+	}
+}
+
+// foreignBroker is POST /v1/oauth/exchange/pod-sessions answering a write at the generation it
+// sent, until it is set to answer at a fixed one, as a broker holding a row another claim or
+// another service login wrote at that generation answers.
+type foreignBroker struct {
+	mu     sync.Mutex
+	answer int64
+	writes int
+}
+
+func (b *foreignBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PodToken   string `json:"pod_token"`
+		Session    string `json:"session"`
+		Thumbprint string `json:"thumbprint"`
+		Generation int64  `json:"generation"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	pod, _ := strings.CutPrefix(body.PodToken, "token-of-")
+	b.mu.Lock()
+	b.writes++
+	generation := body.Generation
+	if b.answer > 0 {
+		generation = b.answer
+	}
+	b.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"pod_uid": pod, "session": body.Session, "thumbprint": body.Thumbprint, "generation": generation, "expires_at": time.Now().Add(podSessionRetention)})
+}
+
+// TestTheDaemonLogsARegistrationItNeverMadeAsForeign drives the daemon's own registrar
+// (newRegistrar's adapter over the agent-secrets client) from a machine whose claim is at
+// generation 1. When the broker answers the renewal at generation 9, above the claim's current
+// generation read from the machine (supervise.PodSession.Latest, through the adapter), the daemon
+// logs at Error a registration it never made, naming the pod, the session and the generations, and
+// writes it no more.
+func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
+	const (
+		pod        = "pod-uid-foreign"
+		session    = "ses_foreign"
+		thumbprint = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+	)
+	clock := newWaveClock()
+	broker := &foreignBroker{}
+	server := httptest.NewServer(broker)
+	defer server.Close()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("the-daemon's-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var logged syncBuffer
+	secrets := config.AgentSecretsConfig{URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", ExchangeAudience: "legion-broker-exchange"}
+	registrar := newRegistrar(secrets, &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: slog.New(slog.NewTextHandler(&logged, nil))})
+
+	project, _ := claim.ProjectToken("legion")
+	token, _ := claim.NewToken(project, "LEGION-840", claim.RoleTester)
+	rt, conns := fake.NewRuntime(), fake.NewConns()
+	rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{
+		Runtime: runtime.RuntimeSandbox, Claim: token, Incarnation: runtime.SandboxIncarnation(pod, 1),
+		Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-legion-840", PodUID: pod, Container: runtime.IssuePodContainer, Generation: 1},
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
+	sup.deps = supervise.Deps{
+		Runtime: rt, Conns: conns, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: 5 * time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract: api.DaemonAPIVersion,
+		Secrets:        enrollsEveryPod{},
+		Registrar:      registrar,
+		RefreshGate:    supervise.NewRefreshGate(0),
+	}
+	t.Cleanup(sup.stop)
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: project, Tree: "LEGION-840", Issue: "LEGION-840",
+		Role: claim.RoleTester, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create %s: %v", token, err)
+	}
+	conn := fake.NewConn()
+	conn.SetAgentSecretsToken("token-of-" + pod)
+	conns.Register(token, conn)
+	for _, ev := range []supervise.Event{
+		supervise.RequestSpawn{Claim: token},
+		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.at-the-hello"}},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion},
+		supervise.RequestReady{Claim: token, Generation: 1, Session: session},
+	} {
+		if err := machine.Handle(ctx, ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
+		}
+	}
+
+	broker.mu.Lock()
+	broker.answer = 9
+	broker.mu.Unlock()
+	clock.advance(agentsecrets.RegistrationRenewal)
+	for range 3 {
+		clock.advance(agentsecrets.RegistrationRenewal)
+	}
+
+	var line string
+	for _, l := range strings.Split(logged.String(), "\n") {
+		if strings.Contains(l, "never made") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatalf("logged %q, want the renewal answered at generation 9, above the claim's generation 1, logged as a registration this daemon never made", logged.String())
+	}
+	for _, want := range []string{"level=ERROR", "pod=" + pod, "session=" + session, "generation 9", "generation 1"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("logged %q, want it to name %s", line, want)
+		}
+	}
+	broker.mu.Lock()
+	writes := broker.writes
+	broker.mu.Unlock()
+	if writes != 2 {
+		t.Errorf("the broker took %d writes of %s, want 2: the first, and the renewal answered as foreign, and none after it", writes, session)
 	}
 }
