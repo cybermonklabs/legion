@@ -1780,6 +1780,69 @@ test("a refused pick puts back the priority of the newest read across the caches
   }
 });
 
+// R3: the put-back is the field in the newest answer Dispatch gave, and of two reads that each
+// hold the issue the newer is the one whose request went out last - whichever cache it filled,
+// and whichever of the two answered first since the page began keeping answers. Each order is a
+// row: a put-back that takes the first answer it keeps, or that ranks one cache over another,
+// fails one of the two.
+for (const [older, newer] of [
+  ["detail", "list"],
+  ["list", "detail"],
+] as const) {
+  test(`a refused pick puts back the priority of the newer of two reads of the issue: the ${newer}'s, read again after the ${older}'s`, async () => {
+    const save = Promise.withResolvers<Issue>();
+    const patchIssue = answerIssuePatches().mockImplementationOnce(() => save.promise);
+    const client = signedInHolding();
+    const reads = dispatchReads();
+    reads.store(3);
+    const keys = { detail: detailKey, list: listKey } as const;
+    const view = renderIn(
+      client,
+      <>
+        <Surfaces reads={reads} />
+        <CachedPriority reads={reads} />
+      </>
+    );
+    const user = userEvent.setup();
+    try {
+      await waitFor(() =>
+        expect(shownPriorities()).toEqual({ detail: "P3", inbox: "P3", list: "P3" })
+      );
+      // Both reads go out while the page keeps every answer: the older at P3, the newer at P1.
+      await act(() => client.refetchQueries({ queryKey: keys[older] }));
+      reads.store(1);
+      await act(() => client.refetchQueries({ queryKey: keys[newer] }));
+      await waitFor(() => expect(shownPriorities()[newer]).toBe("P1"));
+      expect(shownPriorities()[older], `the ${older} read before Dispatch stored P1`).toBe("P3");
+
+      await user.selectOptions(prioritySelects()[0] as HTMLSelectElement, "0");
+      await waitFor(() => expect(bodies(patchIssue)).toEqual([{ priority: 0 }]));
+      // The reads the refusal starts are held until what it put back is checked.
+      const answerReads = reads.hold();
+      await act(async () => {
+        save.reject(closed());
+        await save.promise.catch(() => undefined);
+      });
+      await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+      expect(shownPriorities(), "P0 refused, before the re-read answers").toEqual({
+        detail: "P1",
+        inbox: "P1",
+        list: "P1",
+      });
+      await act(async () => answerReads());
+      await waitFor(() => expect(client.isFetching()).toBe(0));
+      expect(shownPriorities(), "the re-read answers").toEqual({
+        detail: "P1",
+        inbox: "P1",
+        list: "P1",
+      });
+    } finally {
+      view.unmount();
+      patchIssue.mockRestore();
+    }
+  });
+}
+
 // R3: a read is as new as its request, whether a pick was live when it went out or not. P1
 // lands, and the app reads the issue again; another person sets P0, and a read of the issue goes
 // out while no pick is live. The person picks P2 while that read is out, the read answers with
