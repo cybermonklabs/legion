@@ -22,7 +22,8 @@ You judge what no program decides, and nothing else, so that one rule never gets
    A statement is a `:::requirement{#<id>}` block, and that id is its node.
    A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names the statements that it serves.
    The terms of the request are the `- **<term>**: <definition>` lines under its `## Terms` heading.
-   When the issue keeps the checks of the request in its Verification document, run both commands for `verification.md` too.
+   Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
+   When the list holds `verification.md`, the issue keeps the checks of the request there, so run both commands for that document too.
 
    When a command fails, print `NOT REVIEWED: <the command> failed: <the first line of its error>` and stop.
    A review without the list of terms cannot find an undefined noun, and `NO FINDING` would then tell the author a false thing.
