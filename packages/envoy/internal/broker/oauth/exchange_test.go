@@ -1551,16 +1551,16 @@ func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
 
 // TestDispatchRefusingTheBrokersTokenRefusesTheTrade: Dispatch answering 403 to the broker's own
 // account token is a deployment that has not listed the broker as one that may ask, a
-// misconfiguration and not an outage, so the trade is refused naming that refusal, never minted
-// unchecked: an operator entry's token, a person's trade naming a project, and a person's trade
-// naming none alike.
+// misconfiguration and not an outage, so the trade is refused naming that refusal and the setting
+// that holds the token, never minted unchecked: an operator entry's token, a person's trade naming
+// a project, and a person's trade naming none alike.
 func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 	access := newFakeAccess()
 	access.refused = true
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
-	const says = "Dispatch refused the broker's own account token"
+	const says = "Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
 	refusedSaying(t, status, body, http.StatusInternalServerError, "server_error", says)
 	machine := f.devBoxToken(t, key, person)

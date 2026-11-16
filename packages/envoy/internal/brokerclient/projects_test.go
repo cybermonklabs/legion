@@ -17,9 +17,12 @@ import (
 // none, and a value that is no list is an error naming the variable rather than a trade that
 // quietly names fewer projects than its session asked for.
 func TestTradeProjectsReadsAgentSecretsProjects(t *testing.T) {
+	// The spelling a deployment sets, written out rather than read off ProjectsVar, so a renamed
+	// constant fails here instead of reading a variable nobody sets.
+	const variable = "AGENT_SECRETS_PROJECTS"
 	read := func(value string) ([]string, error) {
 		return TradeProjects(func(name string) string {
-			if name == ProjectsVar {
+			if name == variable {
 				return value
 			}
 			return ""
@@ -28,12 +31,12 @@ func TestTradeProjectsReadsAgentSecretsProjects(t *testing.T) {
 	for value, want := range map[string][]string{"": nil, "  ": nil, "PRIV": {"PRIV"}, "PUB PRIV": {"PRIV", "PUB"}} {
 		got, err := read(value)
 		if err != nil || !reflect.DeepEqual(got, want) {
-			t.Errorf("TradeProjects(%s=%q) = %v, %v; want %v", ProjectsVar, value, got, err, want)
+			t.Errorf("TradeProjects(%s=%q) = %v, %v; want %v", variable, value, got, err, want)
 		}
 	}
 	for _, bad := range []string{"priv", "PRIV,PUB", "PRIV PRIV"} {
-		if got, err := read(bad); err == nil || got != nil || !strings.Contains(err.Error(), ProjectsVar) {
-			t.Errorf("TradeProjects(%s=%q) = %v, %v; want no list and an error naming the variable", ProjectsVar, bad, got, err)
+		if got, err := read(bad); err == nil || got != nil || !strings.Contains(err.Error(), variable) {
+			t.Errorf("TradeProjects(%s=%q) = %v, %v; want no list and an error naming the variable", variable, bad, got, err)
 		}
 	}
 }

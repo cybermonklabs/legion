@@ -489,3 +489,52 @@ func TestARefusalOfTheBrokersOwnTokenIsErrBrokerRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestARefusalIsErrBrokerRefusedWhateverItsBody: the status is the refusal. A 401 or a 403 whose
+// body runs past what the client reads of an answer, or ends before the length its header
+// declares, is ErrBrokerRefused from both routes all the same: never a failure to ask Dispatch,
+// which a caller mints through.
+func TestARefusalIsErrBrokerRefusedWhateverItsBody(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		for _, body := range []string{refusalOversized, refusalCutShort} {
+			client := projectaccess.New(refusingServer(t, status, body), projectaccesstest.StaticAccount("token"), nil)
+			if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+				t.Errorf("Access answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
+			}
+			if _, err := client.MemberKind(t.Context(), "carol@example.com"); !errors.Is(err, projectaccess.ErrBrokerRefused) {
+				t.Errorf("MemberKind answered %d with a body %s = %v, want ErrBrokerRefused", status, body, err)
+			}
+		}
+	}
+}
+
+// The two bodies refusingServer answers with.
+const (
+	refusalOversized = "past 64 KiB"
+	refusalCutShort  = "cut short of its Content-Length"
+)
+
+// refusingServer answers every request status, with a body past what the client reads of an
+// answer, or one that ends, its connection closed, before the length its header declares, so
+// reading it fails.
+func refusingServer(t *testing.T, status int, body string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if body == refusalOversized {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = fmt.Fprintf(w, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"%s"}`, strings.Repeat("x", 70<<10))
+			return
+		}
+		conn, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack the refusal's connection: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = fmt.Fprintf(buffered, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n{\"code\":\"ACCESS_ACC", status, http.StatusText(status))
+		_ = buffered.Flush()
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}

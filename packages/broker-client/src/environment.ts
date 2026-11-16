@@ -188,7 +188,7 @@ export function tradeProjects(env: BrokerEnvironment): string[] {
       throw new Error(`${PROJECTS_VAR}: "${key}" is not a project key: ${PROJECT_KEY_RULE}`);
     }
   }
-  const sorted = [...keys].sort();
+  const sorted = keys.sort();
   for (let at = 1; at < sorted.length; at += 1) {
     if (sorted[at] === sorted[at - 1]) {
       throw new Error(

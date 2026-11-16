@@ -6277,7 +6277,7 @@ An operator's entry is held to Dispatch the same way: a `named` token is refused
 Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.
 A broker with neither setting asks Dispatch nothing: it mints every token that names no project as before, mints an entry's token as before, and refuses a `person` trade that names a project.
 So does a broker whose Dispatch cannot be reached, except that it refuses such a trade `temporarily_unavailable` for the client to ask again, and logs one line naming each token it mints unchecked.
-A Dispatch that answers 401 or 403 to the broker's own account token has not listed the broker as one that may ask: every trade that asks it is refused `server_error`, saying so, and nothing is minted unchecked.
+A Dispatch that answers 401 or 403 to the broker's own account token does not list the broker's account as one that may ask, or does not accept that token (one minted for another audience, say): every trade that asks it is refused `server_error`, saying so, and nothing is minted unchecked.
 A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
 A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
 The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.

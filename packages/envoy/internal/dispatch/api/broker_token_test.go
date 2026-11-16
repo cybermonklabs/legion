@@ -371,7 +371,10 @@ func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
 // for a named token this release stored (a rolling update, a canary, a rollback), it reads the
 // token's one project from the older `project` claim the exchange also writes, and answers
 // `"project":"<key>"` with no `projects`. Dispatch refuses that answer before any write, rather
-// than reading a named token naming no project, which it would hold to no project at all.
+// than reading a named token naming no project, which it would hold to no project at all. This is
+// the reader's half and passes whatever the exchange stores; the writer's half, that the exchange
+// stores that claim at all, is TestANamedTokenStoresItsProjectUnderTheOlderClaimToo
+// (internal/broker/oauth).
 func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)

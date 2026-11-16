@@ -652,13 +652,13 @@ func entryProjects(identity, project string, asked []string) ([]string, error) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("%w: %s's entry names no project, and the request named %s",
-			ErrProjectsFixed, identity, strings.Join(asked, " "))
+			ErrProjectsFixed, identity, oauthwire.JoinProjects(asked))
 	}
 	if len(asked) == 0 || (len(asked) == 1 && asked[0] == project) {
 		return []string{project}, nil
 	}
 	return nil, fmt.Errorf("%w: %s writes the project %s that its entry names, and the request named %s",
-		ErrProjectsFixed, identity, project, strings.Join(asked, " "))
+		ErrProjectsFixed, identity, project, oauthwire.JoinProjects(asked))
 }
 
 // checkGrant refuses what every entry shares: a blank person, which would mint a token answerable
@@ -878,7 +878,7 @@ func (s *Set) Google(token map[string]any, session string, projects []string) (C
 	if entry.Person == "" {
 		if len(projects) > 0 {
 			return Claims{}, fmt.Errorf("%w: %s is the service %s and names no person, and the request named %s",
-				ErrProjectsNoPerson, identity.Account, entry.Service, strings.Join(projects, " "))
+				ErrProjectsNoPerson, identity.Account, entry.Service, oauthwire.JoinProjects(projects))
 		}
 		claims.Service = entry.Service
 		return claims, nil

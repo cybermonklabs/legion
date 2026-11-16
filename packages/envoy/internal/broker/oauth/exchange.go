@@ -703,8 +703,9 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 const claimLegacyProject = "project"
 
 // refusedByDispatch is the trade's refusal when Dispatch answers 401 or 403 to the broker's own
-// account token: a deployment that has not listed the broker as one that may ask, which is a
-// misconfiguration and not an outage, so the trade is refused naming it rather than minted.
+// account token: Dispatch does not list the broker's account, or does not accept its token (one
+// minted for another audience, say). That is a misconfiguration and not an outage, so the trade is
+// refused naming it rather than minted.
 func refusedByDispatch(err error) error {
 	return oauth2.ErrServerError.WithHint("Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so this broker cannot check the token's projects: its operator lists the broker's account as one Dispatch answers.").WithWrap(err).WithDebugError(err)
 }
@@ -768,7 +769,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		case errors.Is(err, projectaccess.ErrBrokerRefused):
 			return refusedByDispatch(err)
 		default:
-			slog.WarnContext(ctx, "broker: the token exchange minted an entry's token unchecked, since Dispatch could not be asked whether its person sees its projects",
+			slog.WarnContext(ctx, "broker: the token exchange goes on to mint an entry's token unchecked, since Dispatch could not be asked about its person",
 				"principal", session.Principal, "session", name, "person", person, "projects", stored, "error", err)
 			return nil
 		}
@@ -795,7 +796,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	case errors.Is(err, projectaccess.ErrBrokerRefused):
 		return refusedByDispatch(err)
 	case errors.Is(err, projectaccess.ErrUnchecked):
-		slog.WarnContext(ctx, "broker: the token exchange minted a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
+		slog.WarnContext(ctx, "broker: the token exchange goes on to mint a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
 			"principal", session.Principal, "session", name, "person", person, "error", err)
 		return nil
 	default:

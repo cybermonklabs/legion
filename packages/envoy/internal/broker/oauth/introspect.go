@@ -82,23 +82,29 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 	}
 	// The stored claim is the list's space-joined spelling (ClaimProjects), which the store
 	// hands back as the string it wrote; one that is not a string or does not parse is a row this
-	// broker did not write: ErrStoredClaimMalformed, naming the token's session and the launcher
-	// credential it follows, if any, so an operator reads which row to look at rather than an
-	// outage, and never a token naming no project.
-	owner := fmt.Sprintf("the token of the session %q", answer.Session)
-	if credential, _ := session.Extra[oauthwire.ExtraCredentialID].(string); credential != "" {
-		owner += fmt.Sprintf(" under the launcher credential %s", credential)
-	}
+	// broker did not write: ErrStoredClaimMalformed, naming the row (malformedClaimOwner) so an
+	// operator reads which row to look at rather than an outage, and never a token naming no
+	// project.
 	text, ok := stored.(string)
 	if !ok {
-		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores its projects as a %T, not their string", ErrStoredClaimMalformed, owner, stored)
+		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores its projects as a %T, not their string", ErrStoredClaimMalformed, malformedClaimOwner(session, answer.Session), stored)
 	}
 	projects, err := oauthwire.ParseProjects(text)
 	if err != nil {
-		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores projects that do not parse: %w", ErrStoredClaimMalformed, owner, err)
+		return oauthwire.Introspection{}, fmt.Errorf("%w: %s stores projects that do not parse: %w", ErrStoredClaimMalformed, malformedClaimOwner(session, answer.Session), err)
 	}
 	answer.Projects = projects
 	return answer, nil
+}
+
+// malformedClaimOwner names the row of a malformed stored claim: the token's session and the
+// launcher credential it follows, if any.
+func malformedClaimOwner(session *oauthstore.ExchangeSession, name string) string {
+	owner := fmt.Sprintf("the token of the session %q", name)
+	if credential, _ := session.Extra[oauthwire.ExtraCredentialID].(string); credential != "" {
+		owner += fmt.Sprintf(" under the launcher credential %s", credential)
+	}
+	return owner
 }
 
 // ErrStoredClaimMalformed is a token row whose stored project claim this broker could not have

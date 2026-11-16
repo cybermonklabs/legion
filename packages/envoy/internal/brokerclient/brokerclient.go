@@ -31,7 +31,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -208,7 +207,8 @@ type Client struct {
 	subject   Source
 	actor     Source
 	session   string
-	projects  []string
+	// projects is Config.Projects in its form spelling (oauthwire.JoinProjects), empty for none.
+	projects string
 	// noLauncherCredential is Config.NoLauncherCredential: this trade declines the credential.
 	noLauncherCredential bool
 	http                 *http.Client
@@ -256,7 +256,7 @@ func New(cfg Config) (*Client, error) {
 		subject:              cfg.Subject,
 		actor:                cfg.Actor,
 		session:              cfg.Session,
-		projects:             slices.Clone(cfg.Projects),
+		projects:             oauthwire.JoinProjects(cfg.Projects),
 		noLauncherCredential: cfg.NoLauncherCredential,
 		http:                 cfg.HTTP,
 		log:                  cfg.Log,
@@ -425,10 +425,10 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 	if c.session != "" {
 		form.Set(oauthwire.FormSession, c.session)
 	}
-	if len(c.projects) > 0 {
+	if c.projects != "" {
 		// Sent only when there is a list: a trade naming none reads exactly as one written before
 		// the parameter existed.
-		form.Set(oauthwire.FormProjects, oauthwire.JoinProjects(c.projects))
+		form.Set(oauthwire.FormProjects, c.projects)
 	}
 	if c.noLauncherCredential {
 		// Sent only to decline: an absent parameter asks, so a broker that has never heard of
