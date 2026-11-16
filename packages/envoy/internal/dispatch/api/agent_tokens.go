@@ -14,7 +14,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -56,7 +55,27 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("iterate agent tokens: %w", err))
 		return
 	}
+	// Each list names only what its reader sees (seenProjects). A list in which no token lists a
+	// project resolves no viewer, so it costs what it cost before lists.
+	if slices.ContainsFunc(tokens, func(token model.AgentToken) bool { return len(token.Projects) > 0 }) {
+		reader, ok := s.readerOf(w, r)
+		if !ok {
+			return
+		}
+		for i := range tokens {
+			tokens[i].Projects = seenProjects(reader.Viewer, tokens[i].Projects)
+		}
+	}
 	WriteJSON(w, http.StatusOK, tokens)
+}
+
+// seenProjects is projects, one token's list, as a reader whose viewer is viewer reads it: only the
+// projects viewer sees, so no token answer names a project to a credential that does not see it
+// (R3). A browser reads the list its person sees; a token whose every project is hidden from its
+// reader answers as one that lists none. What the token lists is its row's, which this never
+// changes: projects is the copy scanned for this answer, cut in place.
+func seenProjects(viewer *model.Viewer, projects []string) []string {
+	return slices.DeleteFunc(projects, func(project string) bool { return !slices.Contains(viewer.Sees, project) })
 }
 
 // createAgentTokenInput is the body of POST /api/v1/me/agent-tokens.
@@ -165,12 +184,17 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	// Nil keeps the token's list: the update below reads it as null.
+	// Nil keeps the token's list: the update below reads it as null. A list the body names is one
+	// the caller sees (tokenProjects); a kept one is cut to what the caller sees in the answer
+	// (seenProjects), whose viewer is resolved here, before the transaction holds a connection.
 	var projects []string
+	var reader model.Actor
 	if input.Projects != nil {
 		if projects, ok = s.tokenProjects(w, r, input.Projects); !ok {
 			return
 		}
+	} else if reader, ok = s.readerOf(w, r); !ok {
+		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -195,6 +219,9 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("update agent token scopes: %w", err))
 		return
+	}
+	if reader.Viewer != nil {
+		token.Projects = seenProjects(reader.Viewer, token.Projects)
 	}
 	WriteJSON(w, http.StatusOK, token)
 }
@@ -268,10 +295,11 @@ const maxTokenProjects = 16
 // (internal/dispatch/access, the rule), so such a credential gives a token only a part of its own.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
 //
-// What the caller sees is resolved as every read resolves it, access.Resolve once over the caller
+// What the caller sees is resolved as every read resolves it (readerFor) over the caller
 // optionalActor decided, and only for a list that names a key. A key the caller does not see is
 // refused in the same words whether a hidden project holds it or none does, so the refusal says
-// nothing of a project the caller may not see.
+// nothing of a project the caller may not see. So the list a mint answers, and the one an edit
+// names, is one its caller sees whole, and needs no cut (seenProjects).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
@@ -300,13 +328,13 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.
 		return []string{}, true
 	}
-	viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, caller)
+	reader, err := s.readerFor(r.Context(), caller)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return nil, false
 	}
 	for _, project := range projects {
-		if !slices.Contains(viewer.Sees, project) {
+		if !slices.Contains(reader.Viewer.Sees, project) {
 			writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
 				"%q is no project this request's credential sees", project))
 			return nil, false

@@ -113,18 +113,25 @@ func viewerOf(t *testing.T, deps Deps, request *http.Request) model.Viewer {
 	return viewer
 }
 
-// tokenListOf is the list GET /api/v1/me/agent-tokens answers for login's token id, and whether
-// the row carries a projects field at all.
+// tokenListOf is the list GET /api/v1/me/agent-tokens answers login's browser for token id, and
+// whether the row carries a projects field at all.
 func tokenListOf(t *testing.T, handler http.Handler, login, id string) ([]string, bool) {
 	t.Helper()
-	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/agent-tokens", nil, login)
-	if listed.Code != http.StatusOK {
-		t.Fatalf("list %s's tokens: status=%d body=%s", login, listed.Code, listed.Body.String())
+	return tokenListIn(t, "GET /api/v1/me/agent-tokens as "+login,
+		dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/agent-tokens", nil, login), id)
+}
+
+// tokenListIn is the list answer, a 200 list of tokens that call names, gives token id, and whether
+// the row carries a projects field at all.
+func tokenListIn(t *testing.T, call string, answer *httptest.ResponseRecorder, id string) ([]string, bool) {
+	t.Helper()
+	if answer.Code != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s", call, answer.Code, answer.Body.String())
 	}
-	for _, row := range decodeBody[[]map[string]json.RawMessage](t, listed) {
+	for _, row := range decodeBody[[]map[string]json.RawMessage](t, answer) {
 		var rowID string
 		if err := json.Unmarshal(row["id"], &rowID); err != nil {
-			t.Fatalf("decode a token row's id: %v", err)
+			t.Fatalf("%s: decode a token row's id: %v", call, err)
 		}
 		if rowID != id {
 			continue
@@ -135,11 +142,11 @@ func tokenListOf(t *testing.T, handler http.Handler, login, id string) ([]string
 		}
 		var projects []string
 		if err := json.Unmarshal(raw, &projects); err != nil {
-			t.Fatalf("decode token %s's projects %s: %v", id, raw, err)
+			t.Fatalf("%s: decode token %s's projects %s: %v", call, id, raw, err)
 		}
 		return projects, true
 	}
-	t.Fatalf("%s's tokens hold no row %s: %s", login, id, listed.Body.String())
+	t.Fatalf("%s holds no token %s: %s", call, id, answer.Body.String())
 	return nil, false
 }
 
@@ -261,7 +268,8 @@ func TestATokenCannotListAProjectItsPersonCannotSee(t *testing.T) {
 
 // TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt: alice's token listing PRIV, minted
 // while PRIV was public, keeps its list when PRIV becomes private, and from then on sees nothing:
-// the rule reads its list against what alice sees on every request. It passes nothing of PRIV on.
+// the rule reads its list against what alice sees on every request. It passes nothing of PRIV on,
+// and alice's own token list no longer names PRIV to her, a key she no longer sees.
 func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
@@ -274,8 +282,15 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 	if got := viewerOf(t, deps, bearerOf(token.Token)); !got.Listed || got.Open || len(got.Sees) != 0 {
 		t.Fatalf("alice's PRIV token sees %+v once PRIV is private, want nothing, as a viewer holding a list", got)
 	}
-	if projects, present := tokenListOf(t, handler, "alice", token.ID); !present || !slices.Equal(projects, []string{privateProject}) {
-		t.Fatalf("alice's PRIV token lists %v (present %v), want [PRIV]: nothing rewrites a token's list", projects, present)
+	var stored []string
+	if err := database.Pool.QueryRow(context.Background(), `select projects from agent_tokens where id = $1`, token.ID).Scan(&stored); err != nil {
+		t.Fatalf("read alice's PRIV token's row: %v", err)
+	}
+	if !slices.Equal(stored, []string{privateProject}) {
+		t.Fatalf("alice's PRIV token's row lists %v, want [PRIV]: nothing rewrites a token's list", stored)
+	}
+	if projects, present := tokenListOf(t, handler, "alice", token.ID); present {
+		t.Fatalf("GET /api/v1/me/agent-tokens as alice lists her PRIV token's projects as %v, want none: alice no longer sees PRIV", projects)
 	}
 	for name, projects := range map[string][]string{"naming PRIV": {privateProject}, "inheriting its list": nil} {
 		wantRefusal(t, agentRequest(t, handler, http.MethodPost, "/api/v1/me/agent-tokens", mintBody("child", projects), token.Token),
@@ -353,4 +368,74 @@ func TestANamedTokenWithNoProjectUsesPublicProjectsOnly(t *testing.T) {
 			})
 		})
 	}
+}
+
+// TestATokenListShowsOnlyTheProjectsItsReaderSees: each token's list, in GET
+// /api/v1/me/agent-tokens and in the PATCH answer, holds only the projects the reading credential
+// sees, so a credential that sees only public projects learns no private project's key from a
+// sibling token (R3). Carol's browser, whose person sees PRIV, still reads every list whole, and
+// what a token lists is unchanged by who reads it. With no private project, a token reads the list
+// byte for byte as the browser does (R9).
+func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedCredentialProjects(t, handler, database)
+	first := mintListed(t, handler, accessCarol, "first", []string{privateProject})
+	second := mintListed(t, handler, accessCarol, "second", []string{privateProject, publicProject})
+	open := mintListed(t, handler, accessCarol, "open", nil)
+	const route = "GET /api/v1/me/agent-tokens"
+	asToken := func(token string) *httptest.ResponseRecorder {
+		return agentRequest(t, handler, http.MethodGet, "/api/v1/me/agent-tokens", nil, token)
+	}
+	asCarol := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/agent-tokens", nil, accessCarol)
+	}
+
+	t.Run("with no private project a token reads the list as the browser does", func(t *testing.T) {
+		token := asToken(open.Token).Body.String()
+		if browser := asCarol().Body.String(); token != browser {
+			t.Fatalf("%s under carol's token listing nothing = %s, want carol's browser's answer byte for byte: %s", route, token, browser)
+		}
+		if !strings.Contains(token, `"projects":["PRIV"]`) {
+			t.Fatalf("%s under carol's token listing nothing = %s, want first's list [PRIV], which it sees while PRIV is public", route, token)
+		}
+	})
+
+	makePrivate(t, database, privateProject)
+	for _, read := range []struct {
+		name          string
+		answer        func() *httptest.ResponseRecorder
+		first, second []string
+	}{
+		{"carol's browser", asCarol, []string{privateProject}, []string{privateProject, publicProject}},
+		{"carol's token listing nothing", func() *httptest.ResponseRecorder { return asToken(open.Token) }, nil, []string{publicProject}},
+		{"carol's token listing PRIV", func() *httptest.ResponseRecorder { return asToken(first.Token) }, []string{privateProject}, []string{privateProject}},
+	} {
+		t.Run(read.name+" reads only the projects it sees", func(t *testing.T) {
+			answer := read.answer()
+			call := route + " under " + read.name
+			for _, token := range []struct {
+				name, id string
+				want     []string
+			}{{"first", first.ID, read.first}, {"second", second.ID, read.second}, {"open", open.ID, nil}} {
+				if got, present := tokenListIn(t, call, answer, token.id); !slices.Equal(got, token.want) || present != (token.want != nil) {
+					t.Fatalf("%s lists %s's projects as %v (present %v), want %v", call, token.name, got, present, token.want)
+				}
+			}
+			if read.first == nil && strings.Contains(answer.Body.String(), privateProject) {
+				t.Fatalf("%s names PRIV, which it does not see: %s", call, answer.Body.String())
+			}
+		})
+	}
+
+	t.Run("the PATCH answer leaves it out, and the token keeps its list", func(t *testing.T) {
+		edited := agentRequest(t, handler, http.MethodPatch, "/api/v1/me/agent-tokens/"+first.ID,
+			map[string]any{"scopes": model.Scopes}, open.Token)
+		if edited.Code != http.StatusOK || strings.Contains(edited.Body.String(), privateProject) {
+			t.Fatalf("PATCH /api/v1/me/agent-tokens/{id} under carol's token listing nothing = %d %s, want 200 naming no PRIV",
+				edited.Code, edited.Body.String())
+		}
+		if got, present := tokenListOf(t, handler, accessCarol, first.ID); !present || !slices.Equal(got, []string{privateProject}) {
+			t.Fatalf("first lists %v (present %v) after the edit, want [PRIV]: a reader's cut never reaches the row", got, present)
+		}
+	})
 }
