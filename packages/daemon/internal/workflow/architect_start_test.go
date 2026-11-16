@@ -136,7 +136,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 			name: "a root a hand-over carried in that brought no design gate",
 			start: ArchitectStart{Root: rootAt(phase.Implementing),
 				Carried: true, Gate: record.TreeGate{Steps: specGated}},
-			want: "LEGION-208 is yours and stands in implementing, in the run a hand-over carried it into, which brought no design gate. " +
+			want: "LEGION-208 is yours and stands in implementing, in the run a hand-over carried it into, and that hand-over brought no design gate. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + carriedClosing,
 		},
@@ -661,7 +661,7 @@ func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *test
 		{
 			name: "a hand-over that brought no design gate", stands: phase.Testing,
 			says: "LEGION-208 is yours and stands in testing, in the run a hand-over carried it into, " +
-				"which brought no design gate.",
+				"and that hand-over brought no design gate.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

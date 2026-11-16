@@ -2372,7 +2372,7 @@ A caller from a pod whose claims record a contract below 146 is served the issue
 The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
 
 - the architect took nothing: the task of the entry its `phases` row names was first queued to its claim more than ten minutes ago, and no turn confirmed it.
-  The claim keeps when each entry's task was first queued (`claims.handshake_queued_at`), so a task the daemon sends again for the same entry is counted from that first queueing and not from the send.
+  The claim keeps one such moment, for the entry it was last queued a task of: when that entry's task was first queued (`claims.handshake_queued_at`), so a task the daemon sends again for that entry is counted from that first queueing and not from the send.
   A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
   Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than that first queueing, so the relaunch of an architect that was working its task raises no wake.
   A task the root's own record has superseded — one of a run before its generation, or of an entry its `phases` row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.

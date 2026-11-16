@@ -335,7 +335,7 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 // held or a wait on a person, starts no worker until the architect retries it or the person
 // answers.
 func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
-	gate := ", which brought no design gate"
+	gate := ", and that hand-over brought no design gate"
 	if start.GateCarried {
 		gate = ", with the design gate that hand-over brought"
 	}

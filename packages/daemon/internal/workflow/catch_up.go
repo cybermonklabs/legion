@@ -263,11 +263,11 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 // says what is the architect's own to do.
 func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (record.CatchUp, []string, error) {
 	catchUp := record.CatchUp{Generation: root.Generation}
-	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
+	handed, err := ArchitectCarried(ctx, tx, store, root)
 	if err != nil {
 		return record.CatchUp{}, nil, err
 	}
-	if handed != nil && handed.Generation == root.Generation {
+	if handed != nil {
 		catchUp.HandedOver, catchUp.Carried = true, handed.GateCarried
 	}
 	gates, err := store.GatesOf(ctx, tx, root.Key)

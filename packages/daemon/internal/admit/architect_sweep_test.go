@@ -592,7 +592,7 @@ func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
 		},
 		{
 			name: "a phase of that run it has moved on to, with no gate carried", stands: phase.Testing,
-			says: "stands in testing, in the run a hand-over carried it into, which brought no design gate.",
+			says: "stands in testing, in the run a hand-over carried it into, and that hand-over brought no design gate.",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

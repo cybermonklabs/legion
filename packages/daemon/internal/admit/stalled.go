@@ -835,12 +835,10 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		root, measure.Quiet.Hours())
 	for _, member := range members {
 		fmt.Fprintf(&reason, "\n%s is in %s. ", member.Key, member.Phase)
+		// The architect works admitted (workflow.RoleFor), and this notice says what it said
+		// before that: no role works an issue standing there (dispatch://INFRA-2614 R2).
 		standsAt := record.StandsAt(member)
-		role := workflow.RoleFor(standsAt)
-		if standsAt == phase.Admitted {
-			role = ""
-		}
-		if role != "" {
+		if role := workflow.RoleFor(standsAt); role != "" && standsAt != phase.Admitted {
 			fmt.Fprintf(&reason, "The %s has the turn. ", role)
 		} else {
 			reason.WriteString("No role works this phase. ")

@@ -33,8 +33,8 @@ import (
 //     and the architect's own entry moves again with each resume. The issue's movement mark moves
 //     with every fact of the issue, a Dispatch event among them, and neither its run mark
 //     (record.Issue.TakenBack) nor its phase records hold a fact the promotion writes and a
-//     transition changes. Holding the reach to the carried phase would take a column of its own,
-//     which this release adds none of. So the task the derivation writes for such a root says
+//     transition changes. Holding the reach to the carried phase would take a column of its own.
+//     So the task the derivation writes for such a root says
 //     only what holds in every phase of that run (writeCarriedPhase), and what the reach does
 //     past the carried phase holds of such a root wherever it stands: the sweep sends its
 //     architect an entry the claim was not given, and the first stall arm reads the task of the
@@ -149,7 +149,8 @@ func ArchitectStartPending(root record.Issue, entry int64, run record.RoleRun) (
 		}
 		return "", false
 	}
-	if held := *run.Claim; held.Pending != nil && held.Pending.SupersededBy(root.Generation, entry) {
+	if p := run.Claim.Pending; p != nil && p.SupersededBy(root.Generation, entry) {
+		held := *run.Claim
 		held.Pending = nil
 		run.Claim = &held
 	}
