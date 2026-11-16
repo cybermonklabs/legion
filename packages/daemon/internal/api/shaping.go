@@ -1293,19 +1293,24 @@ type fieldArrivals struct {
 	// records each value at the later of the value's own arrival and its field's (answers.go's
 	// EnumeratedFields), so it records no value below the field, and it records the values that
 	// came with the field at the field's arrival. A field older than the floor reads as
-	// ServingFloor.
+	// ServingFloor. This takes the list to still declare a value the field arrived with: a
+	// change that removed every such value would leave the earliest arrival later than the
+	// field's, and a value arriving at that later contract would read as one that came with the
+	// field, so no strip would take it. TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey
+	// holds each list's earliest arrival to its key's, read from the recorded shapes.
 	field int
 	// values is each declared value's arrival.
 	values map[string]int
 }
 
 // heldBack is whether a caller whose pod's lowest contract is restore is served the body
-// without value: the value arrived after its field, and above restore. A reader from the field's arrival up to
-// the contract before the value's knows the field and reads it with an enumeration that does
-// not name the value, so it refuses the whole body for it. restore is the lowest contract the
-// caller's pod records, and the pod's reading keeps its lowest and its highest contract alone
-// (podContracts), so a pod whose lowest contract is below the field's arrival may hold such a
-// reader too, and the value is held back from that pod as well.
+// without value: the value arrived after its field, and above restore. A reader from the
+// field's arrival up to the contract before the value's knows the field and reads it with an
+// enumeration that does not name the value, so it refuses the whole body for it. restore is
+// the lowest contract the caller's pod records, and the pod's reading keeps its lowest and
+// its highest contract alone (podContracts), so a pod whose lowest contract is below the
+// field's arrival may hold such a reader too, and the value is held back from that pod as
+// well.
 //
 // A value that arrived with its field is never held back here, whatever restore is. A reader
 // below that arrival knows no such key and has no enumeration of it, so the value by itself

@@ -1369,6 +1369,60 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	}
 }
 
+// Each enumerated field arrived with the earliest value its list declares, which is what
+// shaping.go's fieldArrivals reads the field's own arrival as: a value strip takes only a value
+// that arrived after its field, and tells such a value from one that came with the field by that
+// earliest arrival. That holds while the list still declares a value the field arrived with. A
+// change that removed every such value would leave the earliest arrival later than the field's,
+// and a value arriving at that later contract would read as one that came with the field: no
+// strip would take it, and a mixed pod whose older process knows the field from before that
+// contract would be served the value and refuse the whole body for it.
+//
+// The key's arrival is read from the records and written nowhere here: it is the earliest
+// contract of SupportedContracts whose record of the row's answer carries the row's key path,
+// which is the floor for a key the floor's record already carries. Every row the table writes is
+// held to it, the state's and the registration's. The record answer's rows are the state's rows
+// with the issue map's prefix gone (answers.go's enumeratedFields), so the state's rows hold
+// them, and that answer's own records begin at the contract its route arrived at, which says
+// nothing of when its fields did.
+func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
+	if *updateGolden {
+		t.Skip("the fixture is being rewritten; run the suite again without -update")
+	}
+	records := loadContractShapes(t)
+	for _, field := range EnumeratedFields {
+		if field.Answer == AnswerIssueRecord {
+			continue
+		}
+		if len(field.Values) == 0 {
+			t.Errorf("answers.go's EnumeratedFields declares `%s` of the %s answer with no value", field.KeyPath, field.Answer)
+			continue
+		}
+		earliest := field.Values[0].Since
+		for _, value := range field.Values {
+			earliest = min(earliest, value.Since)
+		}
+		key := 0
+		for _, contract := range SupportedContracts {
+			record, recorded := records[shapeKey{contract: contract, answer: field.Answer}]
+			if recorded && slices.Contains(record.KeyPaths, field.KeyPath) && (key == 0 || contract < key) {
+				key = contract
+			}
+		}
+		switch {
+		case key == 0:
+			t.Errorf("no record of the %s answer in %s carries `%s`, which answers.go's EnumeratedFields declares: a field is recorded from the contract its key arrived at",
+				field.Answer, contractShapesFixture, field.KeyPath)
+		case earliest > key:
+			t.Errorf("`%s` of the %s answer has its earliest value at %d and its key at %d, the earliest record carrying it: a value arriving at %d would be read as arriving with its field and served to a mixed pod whose older process refuses it (shaping.go's fieldArrivals)",
+				field.KeyPath, field.Answer, earliest, key, earliest)
+		case earliest < key:
+			t.Errorf("`%s` of the %s answer has its earliest value at %d and its key at %d, the earliest record carrying it: a value arrives with its field or after it, and the table records each at the later of the two (answers.go's EnumeratedFields)",
+				field.KeyPath, field.Answer, earliest, key)
+		}
+	}
+}
+
 // What the gate catches, shown by six changes a shape change would make. Each is applied to a
 // copy inside this case, so none of them edits a file and none needs a commit.
 func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
