@@ -416,8 +416,11 @@ const requestWaitStep = 500 * time.Millisecond
 // stalls holds a read until its caller gives up or the request deadline ends it. That stall is
 // logged and counted failed, as it is when it holds the proof check. The wait counts from the
 // request's arrival, so a caller that goes away while its proof is still being checked leaves
-// inside its wait, but it never reaches this handler: the proof check ends instead, as `broker:
-// verify proof failed`, a failed 503 (sessionCaller).
+// inside its wait. One that leaves while the broker looks its enrollment up or records the
+// proof's jti does not reach this handler: the proof check ends instead, as `broker: verify proof
+// failed`, a failed 503 (sessionCaller). One that leaves during Replay's prune of expired jtis,
+// whose error the check ignores, reaches it, and its first read fails inside the window, so it is
+// REQUEST_ENDED and counted cancelled, by the rule above.
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")

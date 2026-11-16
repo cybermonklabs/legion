@@ -309,24 +309,23 @@ func lockInTx(ctx context.Context, tx pgx.Tx, table string) error {
 }
 
 // The series of a request read's 503: a held read's caller's own end, a failure the read itself
-// met, and a failure of its proof check, which counts its caller unauthenticated.
+// met, and a failure of its proof check, which counts its caller unauthenticated; and the ERROR
+// lines the two failures write.
 const (
-	readCancelled     = `outcome="cancelled",code="HTTP_503",caller_class="session"`
-	readFailed        = `outcome="failed",code="HTTP_503",caller_class="session"`
-	proofCheckFailed  = `outcome="failed",code="HTTP_503",caller_class="unauthenticated"`
-	readFailedLine    = "broker: read request failed"
-	proofCheckFailure = "broker: verify proof failed"
+	readCancelled        = `outcome="cancelled",code="HTTP_503",caller_class="session"`
+	readFailed           = `outcome="failed",code="HTTP_503",caller_class="session"`
+	proofCheckFailed     = `outcome="failed",code="HTTP_503",caller_class="unauthenticated"`
+	readFailedLine       = "broker: read request failed"
+	proofCheckFailedLine = "broker: verify proof failed"
 )
 
-// requireFailed fails t unless ts counted one answer under failed and none under readCancelled, and
-// capture holds line at ERROR.
+// requireFailed fails t unless ts counted one answer under failed, the series of a failed 503, and
+// capture holds line at ERROR. Each answer is counted once, so one under failed is also none under
+// cancelled.
 func requireFailed(t *testing.T, ts *testServer, capture *logtest.Recorder, failed, line, why string) {
 	t.Helper()
 	if n := ts.countedSoon(t, failed); n != 1 {
 		t.Fatalf("broker_answers_total{%s} = %d, want 1: %s", failed, n, why)
-	}
-	if n := ts.answersCounted(t, readCancelled); n != 0 {
-		t.Errorf("broker_answers_total{%s} = %d, want 0: %s", readCancelled, n, why)
 	}
 	logged := false
 	for _, r := range capture.Records() {
@@ -335,14 +334,6 @@ func requireFailed(t *testing.T, ts *testServer, capture *logtest.Recorder, fail
 	if !logged {
 		t.Errorf("no `%s` line at ERROR; want one: %s", line, why)
 	}
-}
-
-// requireFailedRead fails t unless the read ts answered was counted outcome="failed", not
-// cancelled, with a `broker: read request failed` line at ERROR in capture, as a stall of the store
-// in the proof check is logged and counted.
-func requireFailedRead(t *testing.T, ts *testServer, capture *logtest.Recorder, why string) {
-	t.Helper()
-	requireFailed(t, ts, capture, readFailed, readFailedLine, why)
 }
 
 // TestReadRequestWaitEndedByItsCallerIsNoFailure: a held read whose caller goes away a second into
@@ -386,7 +377,7 @@ func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
 	if err := <-locked; err != nil {
 		t.Fatalf("lock the requests table: %v", err)
 	}
-	requireFailedRead(t, ts, capture, "a store that stalled past the read's wait failed")
+	requireFailed(t, ts, capture, readFailed, readFailedLine, "a store that stalled past the read's wait failed")
 }
 
 // TestReadRequestWithNoWaitEndedByItsCallerIsAFailure: a read with no wait owes its answer at once,
@@ -401,7 +392,7 @@ func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 
 	ts.lockNow(t, "requests", 0)
 	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "", 300*time.Millisecond)
-	requireFailedRead(t, ts, capture, "a read with no wait owed its answer at once")
+	requireFailed(t, ts, capture, readFailed, readFailedLine, "a read with no wait owed its answer at once")
 }
 
 // TestReadRequestWaitCountsFromItsArrival: a held read's wait counts from when the request reached
@@ -428,9 +419,10 @@ func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
 // TestReadRequestOwedTimeCountsFromItsArrival: the time a held read owes its answer by counts from
 // the request's arrival too, on the clock its hold counts on. A ?wait=1 read whose proof check the
 // store stalls for a second (enrollments), and whose read the store then stalls (requests), owes
-// its answer 1.5 s after it arrived; its caller, giving up at 1.7 s, left a broker already late, so
+// its answer 1.5 s after it arrived; its caller, giving up at 2 s, left a broker already late, so
 // the read is a store failure, logged and counted failed. Counted from after the proof check, the
-// window would run to 2.5 s and count it cancelled.
+// window would run to 2.5 s and count it cancelled. The cut at 2 s sits half a second from each
+// end, so a request a few hundred ms late to arrive still lands on the right side.
 func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
@@ -439,14 +431,15 @@ func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
 
 	ts.lockNow(t, "requests", 0)
 	ts.lockNow(t, "enrollments", time.Second)
-	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=1", 1700*time.Millisecond)
-	requireFailedRead(t, ts, capture, "the caller gave up at 1.7 s, past the 1.5 s its read owed its answer by, counted from its arrival")
+	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=1", 2*time.Second)
+	requireFailed(t, ts, capture, readFailed, readFailedLine, "the caller gave up at 2 s, past the 1.5 s its read owed its answer by, counted from its arrival")
 }
 
 // TestReadRequestWaitEndedDuringItsProofCheckIsAFailure: the wait counts from arrival, so a caller
-// that goes away while the store stalls its proof check leaves inside its wait; but its request
-// never reaches the read, and the proof check it ended is a store failure: `broker: verify proof
-// failed` at ERROR, a 503 counted failed for an unauthenticated caller, and never cancelled.
+// that goes away while the store stalls its proof check, here while the broker looks its
+// enrollment up, leaves inside its wait; its request does not reach the read, and the proof check
+// it ended is a store failure: `broker: verify proof failed` at ERROR, a 503 counted failed for an
+// unauthenticated caller.
 func TestReadRequestWaitEndedDuringItsProofCheckIsAFailure(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
@@ -455,10 +448,10 @@ func TestReadRequestWaitEndedDuringItsProofCheckIsAFailure(t *testing.T) {
 
 	ts.lockNow(t, "enrollments", 0)
 	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=5", time.Second)
-	requireFailed(t, ts, capture, proofCheckFailed, proofCheckFailure, "the caller left while its proof was being checked, inside its wait")
+	requireFailed(t, ts, capture, proofCheckFailed, proofCheckFailedLine, "the caller left while its proof was being checked, inside its wait")
 	for _, r := range capture.Records() {
 		if r.Message == readFailedLine {
-			t.Errorf("logged %q; want the proof check's line alone: the request never reached the read", r.Message)
+			t.Errorf("logged %q; want the proof check's line alone: the request did not reach the read", r.Message)
 		}
 	}
 }

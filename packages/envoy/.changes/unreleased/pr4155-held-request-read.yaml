@@ -14,8 +14,8 @@ body: |-
   `503 REQUEST_ENDED`, logs nothing, and is counted in `broker_answers_total` under a new outcome,
   `cancelled`. Every other read that ends early is still a logged failure: a read with no wait,
   and a held read the database stalled until its caller gave up or the request deadline ended it,
-  are `read request failed`; and a caller that goes away while its proof is still being checked,
-  inside its wait since the wait counts from arrival, ends that check, which is `verify proof
-  failed`. The exec form asks each read to hold for what is left of `--wait`, at most 20 s;
-  against a broker from before this change, which answers every read at once, it sleeps its old
-  backoff between reads. `agent-secrets status` sends no wait.
+  are `read request failed`; and a caller that goes away while the broker looks its enrollment up
+  or records its proof's jti, inside its wait since the wait counts from arrival, ends the proof
+  check, which is `verify proof failed`. The exec form asks each read to hold for what is left of
+  `--wait`, at most 20 s; against a broker from before this change, which answers every read at
+  once, it sleeps its old backoff between reads. `agent-secrets status` sends no wait.
