@@ -778,6 +778,108 @@ func TestGuestNamesNoProcessThatStartedAfterTheFirstOfThreeRises(t *testing.T) {
 	}
 }
 
+// reaped puts a process of the tester's command (command) in /proc as the kernel leaves a process
+// it killed while its oom_reaper frees the process's memory: still there, its resident size and
+// oom_score at nothing, its oom_score_adj the raise the watch gave it, and the SIGKILL the kernel
+// sent it pending in its status.
+func reaped(pod *fakePod, pid int, start uint64, name string) {
+	pod.t.Helper()
+	process := command(pid, start, name, 0, 0)
+	process.adj = raisedScore
+	pod.addGuest(process)
+	pod.writeWhole(filepath.Join(pod.proc, strconv.Itoa(pid), "status"), fmt.Sprintf(
+		"Name:\t%s\nState:\tR (running)\nTgid:\t%d\nPid:\t%d\nPPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n",
+		name, pid, pid, guestBash))
+}
+
+// A command that exits by itself is no kill, though the watch read it above the process the
+// kernel killed. The reviewer's cargo and the tester's python3 run before the rise, cargo read
+// above python3. python3 then grows past cargo before the next scan, the kernel kills it, and it
+// stays in /proc while its memory is freed. cargo exits by itself during the wait. The watch names
+// python3, to the tester, and tells the reviewer nothing.
+func TestGuestNamesNoProcessThatExitsByItselfWhileTheKilledOneIsReaped(t *testing.T) {
+	const cargo, python = 910, 911
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(cargo, 9100, "cargo", 1380, 400*mib), command(python, 9110, "python3", 1340, 100*mib))
+	classes[cargo], classes[python] = Class{Role: "reviewer"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills python3, which stays in /proc while its memory is freed.
+	reaped(pod, python, 9110, "python3")
+	cgroup.setKills(1)
+	h.tick()
+	// cargo exits by itself.
+	pod.remove(cargo)
+	h.tick()
+	for _, kill := range h.reported() {
+		if kill.PID == cargo {
+			t.Fatalf("the sink took %+v: the watch named cargo (%d), which exited by itself, and told the reviewer; the log:\n%s", kill, cargo, h.logged())
+		}
+	}
+	pod.remove(python)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != python || kills[0].Role != "tester" {
+		t.Fatalf("the sink took %+v, want the one kill of python3 (%d), the tester's; the log:\n%s", kills, python, h.logged())
+	}
+	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+}
+
+// The same inside a burst, where a process the second rise killed was read before the first: the
+// tester's node, the reviewer's cargo and the tester's python3 run before the burst, cargo read
+// above python3. The first rise kills node, which stays in /proc. python3 grows past every other
+// command and the second rise kills it, and it stays in /proc too. node leaves, and cargo exits by
+// itself. The watch names node and python3, each to the tester, and tells the reviewer nothing.
+func TestGuestNamesNoProcessThatExitsByItselfDuringABurst(t *testing.T) {
+	const node, cargo, python = 900, 901, 902
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(node, 9000, "node", 1400, 2*gib), command(cargo, 9010, "cargo", 1380, 400*mib), command(python, 9020, "python3", 1340, 100*mib))
+	classes[node], classes[cargo], classes[python] = Class{Role: "tester"}, Class{Role: "reviewer"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills node, which stays in /proc.
+	reaped(pod, node, 9000, "node")
+	cgroup.setKills(1)
+	h.tick()
+	// python3 grows to 3 GiB.
+	grown := command(python, 9020, "python3", 1700, 3*gib)
+	grown.adj = raisedScore
+	pod.addGuest(grown)
+	h.tick()
+	// The kernel kills python3, which stays in /proc.
+	reaped(pod, python, 9020, "python3")
+	cgroup.setKills(2)
+	h.tick()
+	// node leaves, and cargo exits by itself.
+	pod.remove(node)
+	pod.remove(cargo)
+	h.tick()
+	for _, kill := range h.reported() {
+		if kill.PID == cargo {
+			t.Fatalf("the sink took %+v: the watch named cargo (%d), which exited by itself, and told the reviewer; the log:\n%s", kill, cargo, h.logged())
+		}
+	}
+	pod.remove(python)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 2 || kills[0].PID != node || kills[0].Role != "tester" || kills[1].PID != python || kills[1].Role != "tester" {
+		t.Fatalf("the sink took %+v, want node (%d) then python3 (%d), each the tester's; the log:\n%s", kills, node, python, h.logged())
+	}
+	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+}
+
 // A process of a role that the classifier protects, one of those that run the role's session
 // (the agent here, which Oh My Pi's in-process shell can grow past every command), that the kernel
 // killed has the guard's own line as every kill has, and one Kill of its role with the kernel's
