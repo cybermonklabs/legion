@@ -1,6 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { connect, createServer } from "node:net";
-import { holdRefusedPort, type RefusedPort } from "./refused-port";
+import { holdRefusedPort, type RefusedPort, refusingOrigin } from "./refused-port";
 
 const held: RefusedPort[] = [];
 afterEach(() => {
@@ -39,6 +39,13 @@ async function listenOutcome(port: number): Promise<string> {
   return await outcome.promise;
 }
 
+/** Runs `code` in another Bun process and answers what it printed. */
+function inChild(code: string): string {
+  const child = Bun.spawnSync([process.execPath, "-e", code], { stdout: "pipe", stderr: "pipe" });
+  expect(child.stderr.toString()).toBe("");
+  return child.stdout.toString();
+}
+
 test("a connection to the held port is refused, and its origin names it", async () => {
   const refused = hold();
   expect(refused.port).toBeGreaterThan(0);
@@ -46,25 +53,44 @@ test("a connection to the held port is refused, and its origin names it", async 
   expect(await dial(refused.port)).toBe("ECONNREFUSED");
 });
 
-test("a connection from another process is refused too", async () => {
+test("a connection from another process is refused too", () => {
   // A test's code under test often dials from a child: the hold is the socket's, not the process's.
   const refused = hold();
-  const child = Bun.spawnSync(
-    [
-      process.execPath,
-      "-e",
-      `const s = require("node:net").connect(${refused.port}, "127.0.0.1");
+  expect(
+    inChild(`const s = require("node:net").connect(${refused.port}, "127.0.0.1");
 s.once("connect", () => { console.log("connected"); s.destroy(); });
-s.once("error", (e) => console.log(e.code));`,
-    ],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  expect(child.stderr.toString()).toBe("");
-  expect(child.stdout.toString()).toBe("ECONNREFUSED\n");
+s.once("error", (e) => console.log(e.code));`)
+  ).toBe("ECONNREFUSED\n");
 });
 
 test("no other socket can take the held port while it is held", async () => {
   const refused = hold();
   expect(await listenOutcome(refused.port)).toBe("EADDRINUSE");
   expect(await dial(refused.port)).toBe("ECONNREFUSED");
+});
+
+test("no other process can take the held port while it is held", () => {
+  const refused = hold();
+  expect(
+    inChild(`const s = require("node:net").createServer();
+s.once("error", (e) => console.log(e.code));
+s.listen(${refused.port}, "127.0.0.1", () => { console.log("listened"); s.close(); });`)
+  ).toBe("EADDRINUSE\n");
+});
+
+describe("refusingOrigin", () => {
+  /** The port the row below held, 0 until it runs. */
+  let port = 0;
+  afterAll(async () => {
+    // The row has finished, so its port is free again.
+    expect(await listenOutcome(port)).toBe("listened");
+  });
+
+  test("holds a refused port for the row that calls it, and frees it once the row is done", async () => {
+    const origin = new URL(refusingOrigin());
+    port = Number(origin.port);
+    expect(origin.origin).toBe(`http://127.0.0.1:${port}`);
+    expect(await dial(port)).toBe("ECONNREFUSED");
+    expect(await listenOutcome(port)).toBe("EADDRINUSE");
+  });
 });

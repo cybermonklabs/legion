@@ -36,10 +36,10 @@ const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
-// A GitHub that never answers: a port this file holds bound and never listens on
+// A GitHub that never answers: a port the row that calls this holds bound and never listens on
 // (`refusingOrigin`), so every request to it is refused, and no other process can bind it to
 // answer as another GitHub.
-const unreachable = `${refusingOrigin()}/`;
+const unreachable = () => `${refusingOrigin()}/`;
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
@@ -502,7 +502,7 @@ describe("app-logins.ts", () => {
   });
 
   test("a GitHub that never answers is named by the App's role and app id", async () => {
-    const { code, stdout, stderr } = await run(config(app("101"), app("202")), {}, unreachable);
+    const { code, stdout, stderr } = await run(config(app("101"), app("202")), {}, unreachable());
     expect(code).toBe(1);
     expect(stdout).toBe("");
     expect(stderr).toMatch(namesApp("implement", "101"));
@@ -759,7 +759,7 @@ describe("read_app_logins", () => {
     const { code, stdout, stderr } = await readAppLogins(
       config(app("101"), app("202")),
       "echo after-read",
-      unreachable
+      unreachable()
     );
     expect(code).toBe(1);
     expect(stdout).not.toContain("after-read");

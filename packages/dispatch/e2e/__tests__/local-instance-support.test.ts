@@ -244,9 +244,6 @@ describe("shellQuote", () => {
 const supportModule = new URL("../local-instance-support.ts", import.meta.url).pathname;
 
 describe("agentViewRefusal", () => {
-  /** The Dispatch the row whose socket cannot be opened dials. */
-  const refusing = refusingOrigin();
-
   const SESSION = "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01";
   const servers: FakeDispatchServer<unknown>[] = [];
   afterEach(() => {
@@ -333,9 +330,11 @@ describe("agentViewRefusal", () => {
   });
 
   test("a live socket that cannot be opened at all says so", async () => {
-    // A port this describe holds bound and never listens on (`refusingOrigin`), so the socket's
+    // A port this row holds bound and never listens on (`refusingOrigin`), so the socket's
     // connection is refused, and no other process can bind it to answer the socket some other way.
-    expect(await refusalFrom(refusing, {}, SESSION)).toBe("the live socket could not be opened");
+    expect(await refusalFrom(refusingOrigin(), {}, SESSION)).toBe(
+      "the live socket could not be opened"
+    );
   });
 });
 

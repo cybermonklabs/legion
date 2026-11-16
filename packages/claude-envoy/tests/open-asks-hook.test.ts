@@ -33,9 +33,6 @@ const hookInput = {
   hook_event_name: "SessionStart",
 }
 
-/** The Dispatch the unreachable row dials. */
-const refusingDispatch = refusingOrigin()
-
 test("summarises the session's open asks into context and records the session id for its Claude process", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-"))
   const requests: string[] = []
@@ -99,13 +96,13 @@ test("summarises the session's open asks into context and records the session id
 
 test("reports an unreachable Dispatch as unavailable, still exits 0, and still records the session id", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-down-"))
-  // A port this file holds bound and never listens on (`refusingOrigin`), so the hook's request is
+  // A port this row holds bound and never listens on (`refusingOrigin`), so the hook's request is
   // refused, and no other process can bind it to give an answer of its own.
   try {
     const result = await runHook(hookInput, {
       HOME: scratch,
       CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
-      DISPATCH_URL: refusingDispatch,
+      DISPATCH_URL: refusingOrigin(),
       DISPATCH_TOKEN: "hook-token",
     })
 

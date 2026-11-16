@@ -82,11 +82,6 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
   return { url: `http://127.0.0.1:${server.port}`, answered };
 }
 
-/** A port nothing listens on: a connection to it is refused, as it is while a daemon restarts.
- *  This file holds it bound and never listens on it (`refusingOrigin`), so no other process can
- *  bind it and answer in the daemon's place. */
-const REFUSING_ORIGIN = refusingOrigin();
-
 /** A listener that accepts each connection and closes it once the request arrives, before any
  * response: the daemon going down mid-request. */
 async function closingOrigin(): Promise<string> {
@@ -103,7 +98,10 @@ async function closingOrigin(): Promise<string> {
 }
 
 /** The real daemon client over a fetch that sends its first `outage` requests to `down` (each
- * failing there with the real fetch error) and every later one to the live daemon. */
+ * failing there with the real fetch error) and every later one to the live daemon. A row whose
+ * daemon is restarting passes `refusingOrigin()` as `down`: a port the row holds bound and never
+ * listens on, so a connection to it is refused, as it is while a daemon restarts, and no other
+ * process can bind it and answer in the daemon's place. */
 function restartingClient(live: string, down: string, outage: number) {
   let sent = 0;
   const fetchFn = ((input: string | URL | Request, init?: RequestInit) => {
@@ -178,7 +176,7 @@ test("handoff_complete waits out a daemon that refuses connections while it rest
   const completed: string[] = [];
   const tool = toolFor(
     "implementer",
-    restartingClient(live.url, REFUSING_ORIGIN, 4),
+    restartingClient(live.url, refusingOrigin(), 4),
     clock,
     completed
   );
@@ -239,7 +237,7 @@ test("a 409 after refused connections only is passed on unmarked, since a refuse
     body: { error: detail, code: "HANDOFF_NOT_NEW" },
   });
   const clock = virtualClock();
-  const tool = toolFor("implementer", restartingClient(live.url, REFUSING_ORIGIN, 2), clock);
+  const tool = toolFor("implementer", restartingClient(live.url, refusingOrigin(), 2), clock);
 
   const { result } = await run(tool, { op: "handoff_complete", summary: "Done." });
 
@@ -258,7 +256,7 @@ test("the daemon's own 502 or 503, which carries its code, is its answer and is 
     body: { error: "the daemon could not reach GitHub", code: "GITHUB_READ_FAILED" },
   });
   const clock = virtualClock();
-  const tool = toolFor("architect", restartingClient(live.url, REFUSING_ORIGIN, 0), clock);
+  const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 0), clock);
 
   const { result, updates } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
 
@@ -271,7 +269,7 @@ test("the daemon's own 502 or 503, which carries its code, is its answer and is 
 test("register_gate waits out a restarting daemon", async () => {
   const live = liveDaemon();
   const clock = virtualClock();
-  const client = restartingClient(live.url, REFUSING_ORIGIN, 2);
+  const client = restartingClient(live.url, refusingOrigin(), 2);
   const tool = toolFor("architect", client, clock, [], "LEGION-208");
 
   const { result, updates } = await run(tool, {
@@ -293,7 +291,7 @@ test("an aborted call stops waiting and sends nothing more, even with the daemon
   const live = liveDaemon();
   const clock = virtualClock();
   const abort = new AbortController();
-  const tool = toolFor("architect", restartingClient(live.url, REFUSING_ORIGIN, 3), {
+  const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 3), {
     now: clock.now,
     sleep: async (ms) => {
       await clock.sleep(ms);
@@ -328,7 +326,7 @@ test("a 409 from the daemon is its answer and is never retried", async () => {
   const completed: string[] = [];
   const tool = toolFor(
     "implementer",
-    restartingClient(live.url, REFUSING_ORIGIN, 0),
+    restartingClient(live.url, refusingOrigin(), 0),
     clock,
     completed
   );
@@ -351,7 +349,7 @@ test("a 409 from the daemon is its answer and is never retried", async () => {
 test("sign_off waits out a restarting daemon with a fresh grant on each attempt, and a 409 is not retried", async () => {
   const live = liveDaemon();
   const clock = virtualClock();
-  const tool = toolFor("architect", restartingClient(live.url, REFUSING_ORIGIN, 2), clock);
+  const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 2), clock);
 
   const { result, updates } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
 
@@ -371,7 +369,7 @@ test("sign_off waits out a restarting daemon with a fresh grant on each attempt,
   });
   const quiet = virtualClock();
   const refused = await run(
-    toolFor("architect", restartingClient(refusing.url, REFUSING_ORIGIN, 0), quiet),
+    toolFor("architect", restartingClient(refusing.url, refusingOrigin(), 0), quiet),
     { op: "sign_off", issue: "LEGION-208" }
   );
   expect(refused.result.isError).toBe(true);
@@ -423,7 +421,7 @@ test("a 503 from a proxy in front of the daemon is retried like a refused connec
 test("a daemon that stays down past the ten-minute budget fails the call with the reason", async () => {
   const live = liveDaemon();
   const clock = virtualClock();
-  const tool = toolFor("architect", restartingClient(live.url, REFUSING_ORIGIN, 1_000), clock);
+  const tool = toolFor("architect", restartingClient(live.url, refusingOrigin(), 1_000), clock);
 
   const { result, updates } = await run(tool, { op: "sign_off", issue: "LEGION-208" });
 

@@ -32,9 +32,6 @@ fi
 LEGION_SLACK_BOT_TOKEN=xoxb-granted exec "$@"
 `;
 
-/** The Slack the row that gets no answer dials. */
-const refusingSlack = refusingOrigin();
-
 interface SlackCall {
   readonly path: string;
   readonly authorization: string | null;
@@ -364,9 +361,9 @@ describe("postSlackReply", () => {
   });
 
   test("a Slack that does not answer is a failure that says the reply may have been posted", async () => {
-    // A port this file holds bound and never listens on (`refusingOrigin`), so the poster's request
+    // A port this row holds bound and never listens on (`refusingOrigin`), so the poster's request
     // is refused after the grant, and no other process can bind it to give an answer of its own.
-    const { env } = brokerEnvironment("granted", `${refusingSlack}/api`);
+    const { env } = brokerEnvironment("granted", `${refusingOrigin()}/api`);
 
     await expect(postSlackReply(reply, { env })).rejects.toThrow(
       "Slack did not answer chat.postMessage: the reply may have been posted, and posting it again may put it in the thread twice"
