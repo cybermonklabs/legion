@@ -494,6 +494,50 @@ func TestASecondPauseIsRefusedWithThePauseThatStands(t *testing.T) {
 	}
 }
 
+// A live claim of another project's issue — one the operator's spawn can make under this project's
+// token — is left out of the pause rather than failing it: the stop table holds each stop to its
+// pause's own project, so no stop of that issue can be written beside this project's pause. The
+// pause commits, asks the stop of every other live role, writes no stop and no pause_stop row of
+// that claim, and names it in one line.
+func TestAPauseLeavesOutALiveClaimOfAnotherProjectsIssueAndSaysSo(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	seedClaims(t, r.st)
+	const foreign claim.Token = "legion-legion-infra-5-implementer"
+	if err := r.st.PutClaim(ctx, supervise.Claim{Token: foreign, Project: "legion", Tree: "INFRA-5", Issue: "INFRA-5",
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle}); err != nil {
+		t.Fatalf("seed the claim of INFRA-5: %v", err)
+	}
+
+	pause, err := r.svc.Pause(ctx, operator, "the model provider is down")
+	if err != nil {
+		t.Fatalf("pause with a live claim of another project's issue: %v", err)
+	}
+	if id, paused := r.svc.Paused(); !paused || id != pause.ID {
+		t.Fatalf("Paused after the pause = %d, %t; want pause %d", id, paused, pause.ID)
+	}
+	calls := r.effects.pausedCalls()
+	if len(calls) != 1 || !slices.Equal(tokens(calls[0].asked), []claim.Token{implementer, tester}) {
+		t.Fatalf("Effects.Paused calls = %+v, want one asking the implementer and the tester", calls)
+	}
+	if got := count(t, r.st, `select count(*) from project_pause_stops where pause_id = $1`, pause.ID); got != 2 {
+		t.Fatalf("stops of pause %d = %d, want the two live roles of LEGION's issues", pause.ID, got)
+	}
+	if got := count(t, r.st, `select count(*) from project_pause_stops where claim = $1`, string(foreign)); got != 0 {
+		t.Fatalf("stops of %s = %d, want none", foreign, got)
+	}
+	if got := count(t, r.st, `select count(*) from outbox where issue = 'INFRA-5'`); got != 0 {
+		t.Fatalf("outbox rows of INFRA-5 = %d, want none", got)
+	}
+	left := lines(t, r.log, "pause: live claims of another project's issue are left out of the pause")
+	if len(left) != 1 {
+		t.Fatalf("left-out lines = %d, want one; log %s", len(left), r.log.String())
+	}
+	if got, ok := left[0]["claims"].([]any); !ok || len(got) != 1 || got[0] != string(foreign) || left[0]["pause"] != float64(pause.ID) {
+		t.Fatalf("the left-out line is %v, want it to name pause %d and %s alone", left[0], pause.ID, foreign)
+	}
+}
+
 // A resume of a project that runs is refused with the store's own *store.NotPausedError, before
 // any pause and after one has ended, and runs no after-commit step and logs nothing.
 func TestAResumeOfARunningProjectIsRefused(t *testing.T) {

@@ -58,7 +58,7 @@ func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
 	if err := st.PutClaim(ctx, late); err != nil {
 		t.Fatal(err)
 	}
-	asked, err = st.AskLivePauseStops(ctx, pause.ID, pausedAt.Add(2*time.Minute), pauseStopRow)
+	asked, _, err = st.AskLivePauseStops(ctx, pause.ID, pausedAt.Add(2*time.Minute), pauseStopRow)
 	if err != nil || !slices.Equal(stopsAsked(asked), []claim.Token{late.Token}) {
 		t.Fatalf("the boot's pass asked %v, %v; want %s alone: the implementer's stop ended and the tester's is open", stopsAsked(asked), err, late.Token)
 	}
@@ -69,8 +69,58 @@ func TestThePausesCatchUpAsksOnlyTheStopsItHasNotAsked(t *testing.T) {
 	if _, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator}, At: pausedAt.Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if asked, err := st.AskLivePauseStops(ctx, pause.ID, pausedAt.Add(2*time.Hour), pauseStopRow); err != nil || len(asked) != 0 {
+	if asked, _, err := st.AskLivePauseStops(ctx, pause.ID, pausedAt.Add(2*time.Hour), pauseStopRow); err != nil || len(asked) != 0 {
 		t.Fatalf("the pass over an ended pause asked %v, %v; want nothing", stopsAsked(asked), err)
+	}
+}
+
+// A live claim of another project's issue — one the operator's spawn can make under this project's
+// token — is left out of the pause's transaction and of the boot's pass, each of which answers it
+// as left out: the stop table's foreign key holds each stop to its pause's own project, so a stop
+// of it would fail the transaction. Every other live role is asked, and nothing names the left-out
+// claim. A pass over an ended pause leaves nothing out.
+func TestAPauseAndTheBootsPassLeaveOutALiveClaimOfAnotherProjectsIssue(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	seedPauseClaims(t, st)
+	foreign := supervise.Claim{Token: "legion-legion-infra-5-implementer", Project: "legion", Tree: "INFRA-5", Issue: "INFRA-5",
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle}
+	if err := st.PutClaim(ctx, foreign); err != nil {
+		t.Fatal(err)
+	}
+
+	pause, asked, leftOut, err := st.Pause(ctx, PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
+		Reason: "the model provider is down", At: pausedAt, StopRow: pauseStopRow})
+	if err != nil {
+		t.Fatalf("pause with a live claim of another project's issue: %v", err)
+	}
+	if want := []claim.Token{"legion-legion-legion-208-implementer", "legion-legion-legion-209-tester"}; !slices.Equal(stopsAsked(asked), want) {
+		t.Fatalf("the pause asked %v, want %v", stopsAsked(asked), want)
+	}
+	if !slices.Equal(stopsAsked(leftOut), []claim.Token{foreign.Token}) || leftOut[0].Issue != foreign.Issue {
+		t.Fatalf("the pause left out %+v, want %s alone", leftOut, foreign.Token)
+	}
+	if got := pauseCount(t, st, `select count(*) from project_pause_stops where claim = $1`, string(foreign.Token)); got != 0 {
+		t.Fatalf("stops of %s = %d, want none", foreign.Token, got)
+	}
+	if got := pauseCount(t, st, `select count(*) from outbox where issue = 'INFRA-5'`); got != 0 {
+		t.Fatalf("outbox rows of INFRA-5 = %d, want none", got)
+	}
+
+	asked, leftOut, err = st.AskLivePauseStops(ctx, pause.ID, pausedAt.Add(time.Minute), pauseStopRow)
+	if err != nil || len(asked) != 0 || !slices.Equal(stopsAsked(leftOut), []claim.Token{foreign.Token}) {
+		t.Fatalf("the boot's pass asked %v and left out %v, %v; want nothing asked and %s left out",
+			stopsAsked(asked), stopsAsked(leftOut), err, foreign.Token)
+	}
+	if got := pauseCount(t, st, `select count(*) from project_pause_stops where claim = $1`, string(foreign.Token)); got != 0 {
+		t.Fatalf("stops of %s after the boot's pass = %d, want none", foreign.Token, got)
+	}
+
+	if _, err := st.Resume(ctx, ResumeRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator}, At: pausedAt.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if asked, leftOut, err := st.AskLivePauseStops(ctx, pause.ID, pausedAt.Add(2*time.Hour), pauseStopRow); err != nil || len(asked) != 0 || len(leftOut) != 0 {
+		t.Fatalf("the pass over an ended pause asked %v and left out %v, %v; want neither", stopsAsked(asked), stopsAsked(leftOut), err)
 	}
 }
 

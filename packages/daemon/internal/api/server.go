@@ -689,8 +689,11 @@ func (s *server) stopRefusal(request string) string {
 // pause flag decides (pause.Service.Paused), as it decides every launch the machines hold; the
 // refusal names the standing pause when the store's read finds it. A stop, a suspension, an
 // issue's status and the daemon's own status are not turns, and no caller of this asks of them.
+// A claim of another project's issue, which the operator's spawn can make, is refused nothing, its
+// spawn included: the pause leaves it out (claim.IssueOfProject) and its machine's gate holds none
+// of its turns.
 func (s *server) refusedWhilePaused(w http.ResponseWriter, r *http.Request, request string, c supervise.Claim) bool {
-	if s.pause == nil || claim.IsController(c.Role, c.Issue, c.Tree) {
+	if s.pause == nil || claim.IsController(c.Role, c.Issue, c.Tree) || !claim.IssueOfProject(c.Issue, c.Project) {
 		return false
 	}
 	id, paused := s.pause.Paused()

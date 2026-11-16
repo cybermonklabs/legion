@@ -75,7 +75,7 @@ func pauseNoticeRow(kind record.NoticeKind) func(Pause) (PauseRow, error) {
 // pauseLegion pauses project LEGION as the operator, through the store's own transaction.
 func pauseLegion(t *testing.T, st *Store, at time.Time) (Pause, []PauseStopClaim) {
 	t.Helper()
-	pause, stops, err := st.Pause(context.Background(), PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
+	pause, stops, _, err := st.Pause(context.Background(), PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByOperator},
 		Reason: "the model provider is down", At: at, StopRow: pauseStopRow, Notice: pauseNoticeRow(record.ProjectPausedNotice)})
 	if err != nil {
 		t.Fatalf("pause LEGION: %v", err)
@@ -187,7 +187,7 @@ func TestAPauseStopsEveryLiveRoleButTheControllerAndRefusesASecond(t *testing.T)
 		t.Fatalf("rows of another project = %d, want none: its claims are not this project's", got)
 	}
 
-	_, _, err = st.Pause(ctx, PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByController, Session: "session-1"},
+	_, _, _, err = st.Pause(ctx, PauseRequest{Project: "LEGION", By: PauseActor{Kind: PauseByController, Session: "session-1"},
 		Reason: "again", At: pausedAt.Add(time.Minute), StopRow: pauseStopRow})
 	var standing *AlreadyPausedError
 	if !errors.As(err, &standing) || standing.Standing.ID != pause.ID {

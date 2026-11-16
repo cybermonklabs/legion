@@ -442,6 +442,56 @@ func TestNoTaskIsSentWhilePausedButTheControllersAndTheResumeSendsIt(t *testing.
 	})
 }
 
+// A claim of another project's issue — one the operator's spawn can make under this project's
+// token — is outside the pause (claim.IssueOfProject): while the project is paused the gate holds
+// neither its launch nor its task, since the gate's own stop would reach the stop transaction,
+// which records no stop of another project's issue beside this project's pause. A claim of the
+// project's own issue is still held.
+func TestThePauseHoldsNoClaimOfAnotherProjectsIssue(t *testing.T) {
+	other := func() Claim {
+		c := queuedClaim()
+		c.Token, c.Tree, c.Issue = "legion-legion-other-5-implementer", "OTHER-5", "OTHER-5"
+		return c
+	}
+
+	t.Run("its launch runs", func(t *testing.T) {
+		h, flag, stops := pauseHarness(t, other())
+		flag.set(7)
+
+		h.must(RequestSpawn{Claim: h.token})
+
+		h.wantState(StateLaunching)
+		h.wantStarts(h.token, 1)
+		if h.armed(TimerPause) {
+			t.Fatal("the gate posted a stop of the claim of another project's issue")
+		}
+		stops.wantStops(t)
+	})
+
+	t.Run("its task is sent", func(t *testing.T) {
+		h, flag, _ := pauseHarness(t, other())
+		h.reach(StateReady)
+		flag.set(7)
+
+		h.must(RequestDeliver{Claim: h.token, Task: "summarize the incident"})
+
+		h.wantPrompts(1)
+	})
+
+	t.Run("a claim of the project's own issue is held", func(t *testing.T) {
+		h, flag, stops := pauseHarness(t, queuedClaim())
+		flag.set(7)
+
+		h.must(RequestSpawn{Claim: h.token})
+
+		h.wantStarts(h.token, 0)
+		if !h.armed(TimerPause) {
+			t.Fatal("the gate posted no stop of the claim of the project's own issue")
+		}
+		stops.wantStops(t)
+	})
+}
+
 // A pause's hold whose pause has ended is dropped at the start of the decision that would fire it
 // (decision 5, dropEndedPauseHold): the turn's end, a start, and the agent's ready each leave the
 // claim running, and nothing is stopped or written through the stop transaction. The flag is

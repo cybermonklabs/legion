@@ -132,25 +132,25 @@ type PauseRequest struct {
 // claims — every claim of the project that is not suspended, failed or retired, the controller's
 // claim excepted (claim.IsController) — and writes for each one stop row and one `pause_stop`
 // outbox row (req.StopRow), then queues the controller's notice when req.Notice is given. It
-// answers the pause and the claims it asked to stop, in token order.
-func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStopClaim, error) {
+// answers the pause and the claims it asked to stop, in token order, and in leftOut the live
+// claims of another project's issue it asked nothing of (liveClaimsOf), so one such claim cannot
+// fail the pause.
+func (s *Store) Pause(ctx context.Context, req PauseRequest) (pause Pause, asked, leftOut []PauseStopClaim, err error) {
 	if err := req.By.validate(); err != nil {
-		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
+		return Pause{}, nil, nil, fmt.Errorf("pause %s: %w", req.Project, err)
 	}
 	if strings.TrimSpace(req.Reason) == "" {
-		return Pause{}, nil, fmt.Errorf("pause %s: a pause needs a reason", req.Project)
+		return Pause{}, nil, nil, fmt.Errorf("pause %s: a pause needs a reason", req.Project)
 	}
 	if req.At.IsZero() || req.StopRow == nil {
-		return Pause{}, nil, fmt.Errorf("pause %s: a pause needs its moment and the builder of its stop rows", req.Project)
+		return Pause{}, nil, nil, fmt.Errorf("pause %s: a pause needs its moment and the builder of its stop rows", req.Project)
 	}
 	token, err := claim.ProjectToken(req.Project)
 	if err != nil {
-		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
+		return Pause{}, nil, nil, fmt.Errorf("pause %s: %w", req.Project, err)
 	}
-	var pause Pause
-	var stops []PauseStopClaim
 	err = s.Tx(ctx, func(tx pgx.Tx) error {
-		pause, stops = Pause{}, nil
+		pause, asked, leftOut = Pause{}, nil, nil
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -166,8 +166,8 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 			req.Project, req.At, string(req.By.Kind), req.By.Session, req.Reason)); err != nil {
 			return fmt.Errorf("write the pause: %w", err)
 		}
-		live, err := liveClaimsOf(ctx, tx, token)
-		if err != nil {
+		var live []PauseStopClaim
+		if live, leftOut, err = liveClaimsOf(ctx, tx, token); err != nil {
 			return err
 		}
 		for _, stop := range live {
@@ -177,7 +177,7 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 			if err := queuePauseStopRow(ctx, tx, pause, stop, req.StopRow); err != nil {
 				return err
 			}
-			stops = append(stops, stop)
+			asked = append(asked, stop)
 		}
 		if req.Notice != nil {
 			return queuePauseNotice(ctx, tx, req.Project, pause, req.Notice)
@@ -185,9 +185,9 @@ func (s *Store) Pause(ctx context.Context, req PauseRequest) (Pause, []PauseStop
 		return nil
 	})
 	if err != nil {
-		return Pause{}, nil, fmt.Errorf("pause %s: %w", req.Project, err)
+		return Pause{}, nil, nil, fmt.Errorf("pause %s: %w", req.Project, err)
 	}
-	return pause, stops, nil
+	return pause, asked, leftOut, nil
 }
 
 // queuePauseStopRow queues pause's `pause_stop` outbox row of one claim, built by stopRow
@@ -229,30 +229,32 @@ func (s *Store) AskPauseStops(ctx context.Context, pause int64, claims []PauseSt
 // table holds it in the same transaction (liveClaimsOf: not suspended, failed or retired, the
 // controller's excepted): the boot's pass while the project is paused (decision 18 and R5 of
 // dispatch://INFRA-3759), run once the supervisor has restored every claim, so a role a restart
-// finds live is stopped for the pause whatever the daemon that stopped knew of it.
+// finds live is stopped for the pause whatever the daemon that stopped knew of it. It answers the
+// claims it asked to stop and, in leftOut, the live claims of another project's issue it asked
+// nothing of (liveClaimsOf). A pause that has ended asks nothing and leaves nothing out.
 func (s *Store) AskLivePauseStops(ctx context.Context, pause int64, at time.Time,
-	stopRow func(Pause, PauseStopClaim) (PauseRow, error)) ([]PauseStopClaim, error) {
-	var asked []PauseStopClaim
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	stopRow func(Pause, PauseStopClaim) (PauseRow, error)) (asked, leftOut []PauseStopClaim, err error) {
+	err = s.Tx(ctx, func(tx pgx.Tx) error {
+		asked, leftOut = nil, nil
 		held, err := LockPauseTx(ctx, tx, pause)
-		if err != nil {
+		if err != nil || held.Ended() {
 			return err
 		}
 		token, err := claim.ProjectToken(held.Project)
 		if err != nil {
 			return err
 		}
-		live, err := liveClaimsOf(ctx, tx, token)
-		if err != nil {
+		var live []PauseStopClaim
+		if live, leftOut, err = liveClaimsOf(ctx, tx, token); err != nil {
 			return err
 		}
 		asked, err = askPauseStopsTx(ctx, tx, held, live, at, stopRow)
 		return err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("ask pause %d's stops of the live claims: %w", pause, err)
+		return nil, nil, fmt.Errorf("ask pause %d's stops of the live claims: %w", pause, err)
 	}
-	return asked, nil
+	return asked, leftOut, nil
 }
 
 // askPauseStopsTx opens held's stop of each of claims at at and queues its `pause_stop` row, and
@@ -520,32 +522,40 @@ func OpenOrLastPauseTx(ctx context.Context, tx pgx.Tx, project string) (Pause, b
 
 // liveClaimsOf is every live claim of the project whose token is project, in token order: one
 // that is not suspended, failed or retired, and is not the controller's (claim.IsController),
-// which the pause never stops (spec Design item 8).
-func liveClaimsOf(ctx context.Context, tx pgx.Tx, project string) ([]PauseStopClaim, error) {
+// which the pause never stops (spec Design item 8). A live claim of another project's issue
+// (claim.IssueOfProject), which the operator's spawn can make under this project's token, is
+// answered apart in leftOut rather than in live: the stop table holds each stop to its pause's
+// own project (its foreign key on (pause_id, project)), so no stop of it can be written beside
+// this project's pause, and asking one would fail the whole transaction. The outbox runs no row of
+// its issue either (record's split_part(issue, '-', 1) clause), so its `pause_stop` would never run.
+func liveClaimsOf(ctx context.Context, tx pgx.Tx, project string) (live, leftOut []PauseStopClaim, err error) {
 	rows, err := tx.Query(ctx, `select token, tree, issue, role, generation from claims
 		where project = $1 and state <> all($2) order by token`, project, goneStates())
 	if err != nil {
-		return nil, fmt.Errorf("read the live claims of %s: %w", project, err)
+		return nil, nil, fmt.Errorf("read the live claims of %s: %w", project, err)
 	}
 	defer rows.Close()
-	var live []PauseStopClaim
 	for rows.Next() {
 		var c PauseStopClaim
 		var token, role string
 		var generation int64
 		if err := rows.Scan(&token, &c.Tree, &c.Issue, &role, &generation); err != nil {
-			return nil, fmt.Errorf("read the live claims of %s: %w", project, err)
+			return nil, nil, fmt.Errorf("read the live claims of %s: %w", project, err)
 		}
 		c.Claim, c.Role, c.Generation = claim.Token(token), claim.Role(role), uint64(generation)
-		if claim.IsController(c.Role, c.Issue, c.Tree) {
-			continue
+		switch {
+		case claim.IsController(c.Role, c.Issue, c.Tree):
+			// The pause never stops the controller's claim, and names it nowhere.
+		case !claim.IssueOfProject(c.Issue, project):
+			leftOut = append(leftOut, c)
+		default:
+			live = append(live, c)
 		}
-		live = append(live, c)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the live claims of %s: %w", project, err)
+		return nil, nil, fmt.Errorf("read the live claims of %s: %w", project, err)
 	}
-	return live, nil
+	return live, leftOut, nil
 }
 
 // PauseStopEnd is how a pause's stop of one role ended (project_pause_stops.ended_as).

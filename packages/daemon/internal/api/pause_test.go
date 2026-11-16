@@ -512,6 +512,31 @@ func TestPauseRoutes(t *testing.T) {
 		}
 	})
 
+	// A claim of another project's issue, which the operator's spawn can make under this project's
+	// token, is outside the pause: the pause commits, and while the project is paused that claim's
+	// task is delivered, as the controller's is, while a role of the project's own issue is still
+	// refused.
+	t.Run("a claim of another project's issue is outside the pause", func(t *testing.T) {
+		h := newPauseHarness(t, pauseCapable())
+		other, _ := h.launch("OTHER-5", claim.RoleArchitect)
+		h.ready(other, "ses_other", 1)
+		own, _ := h.launch("LEGION-208", claim.RoleImplementer)
+		h.ready(own, "ses_implementer", 1)
+		route := func(token claim.Token, action string) string {
+			return "/legion/v1/operator/claims/" + string(token) + "/" + action
+		}
+
+		began := beganPause(t, h.pauseOK(operatorPauseRoute, OperatorPauseRequest{Reason: "a provider outage"}, bearer))
+
+		if recorder := h.operator(http.MethodPost, route(other, "deliver"), DeliverRequest{Task: "Read the state."}); recorder.Code != http.StatusOK {
+			t.Fatalf("deliver to the claim of OTHER-5 while paused = %d, want 200; body %s", recorder.Code, recorder.Body)
+		}
+		failure := h.pauseRefused(route(own, "deliver"), DeliverRequest{Task: "Do it."}, bearer, http.StatusConflict, projectPaused)
+		if failure.Pause == nil || failure.Pause.ID != began.ID {
+			t.Fatalf("deliver to the claim of LEGION-208 refused %+v, want it to name pause %d", failure, began.ID)
+		}
+	})
+
 	// A daemon that cannot hold a pause answers PAUSE_UNAVAILABLE naming its setting, at both
 	// doors, and one with no workflow, which has no pause service, answers it naming why.
 	t.Run("a daemon that cannot hold a pause says which setting", func(t *testing.T) {

@@ -293,13 +293,14 @@ func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Ro
 }
 
 // Paused is the catch-up once a pause has committed and the flag is set (pause.Effects, decision
-// 3): every live role of the project's machines but the controller's that the pause's
-// transaction did not name — a launch that passed the gate before the flag was set, a claim the
-// store held suspended while its machine was already bringing it back — is asked to stop through
-// the store, a stop row and a `pause_stop` row each (store.Store.AskPauseStops), so a restart
-// keeps the ask. Then the lifecycle lane of every issue a stop was asked of is woken, so the stops
-// run now rather than at the next sweep. A failed ask is logged: the gate still holds every
-// launch, and the next boot's pass asks what this one could not.
+// 3): every live role of the project's machines that the pause's transaction did not name — a
+// launch that passed the gate before the flag was set, a claim the store held suspended while its
+// machine was already bringing it back — is asked to stop through the store, a stop row and a
+// `pause_stop` row each (store.Store.AskPauseStops), so a restart keeps the ask. The controller's
+// claim and a claim of another project's issue are asked nothing (pausable). Then the lifecycle
+// lane of every issue a stop was asked of is woken, so the stops run now rather than at the next
+// sweep. A failed ask is logged: the gate still holds every launch, and the next boot's pass asks
+// what this one could not.
 func (p *projectPause) Paused(ctx context.Context, held store.Pause, asked []store.PauseStopClaim) {
 	named := make(map[claim.Token]bool, len(asked))
 	issues := map[string]bool{}
@@ -432,7 +433,9 @@ func (p *projectPause) endLiveHolds(ctx context.Context, ended store.Pause) {
 // asked no stop of — a role an earlier daemon launched before the pause reached it, or whose stop
 // it never queued — is asked to stop (store.Store.AskLivePauseStops). Its rows run once the
 // outbox's boot sweep starts the lanes, and the relaunches and the stale-plugin pass of this boot
-// meet the gate meanwhile, so the boot launches nothing but the controller.
+// meet the gate meanwhile, so the boot launches nothing but the controller and the live claims of
+// another project's issue, which the pass leaves out and names in the pause's warning
+// (pause.LogLeftOut), as the pause itself does.
 //
 // The stops the pause still waits on are asked again at once as well (store.Store.ExpeditePauseStops):
 // a stop its claim held for a turn waits on its row's bounded retry, up to pauseStopWait out, and
@@ -441,7 +444,7 @@ func (p *projectPause) endLiveHolds(ctx context.Context, ended store.Pause) {
 // row comes due (decision 4: a restart holds the stop again).
 func (p *projectPause) askBootStops(ctx context.Context, open store.Pause) error {
 	at := p.now().UTC()
-	asked, err := p.store.AskLivePauseStops(ctx, open.ID, at, pause.StopRow)
+	asked, leftOut, err := p.store.AskLivePauseStops(ctx, open.ID, at, pause.StopRow)
 	if err != nil {
 		return err
 	}
@@ -449,6 +452,7 @@ func (p *projectPause) askBootStops(ctx context.Context, open store.Pause) error
 		p.log.Info("pause: the boot asked the stop of the live roles the project's pause has not stopped",
 			"pause", open.ID, "claims", stopTokens(asked))
 	}
+	pause.LogLeftOut(p.log, open.ID, leftOut)
 	again, err := p.store.ExpeditePauseStops(ctx, open.ID, at)
 	if err != nil {
 		return err
@@ -460,10 +464,11 @@ func (p *projectPause) askBootStops(ctx context.Context, open store.Pause) error
 }
 
 // pausable is whether a pause stops c: a live claim — not gone (supervise.Claim.Gone: suspended,
-// failed or retired) — that is not the controller's, which the pause never stops (store's
-// liveClaimsOf reads the same rule).
+// failed or retired) — that is not the controller's, which the pause never stops, and is of the
+// project's own issue (claim.IssueOfProject), since no stop of another project's issue can be
+// recorded beside the pause (store's liveClaimsOf reads the same rule).
 func pausable(c supervise.Claim) bool {
-	return !c.Gone() && !claim.IsController(c.Role, c.Issue, c.Tree)
+	return !c.Gone() && !claim.IsController(c.Role, c.Issue, c.Tree) && claim.IssueOfProject(c.Issue, c.Project)
 }
 
 // stopTokens is the claims of stops, for a log line.

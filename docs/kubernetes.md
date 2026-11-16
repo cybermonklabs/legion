@@ -5334,6 +5334,7 @@ Every outbox row outside the list above runs as before: a stop (a `supervise` ro
 The workflow still records what happens.
 A handoff, a review, a CI result or a merge moves its issue's phase as it does while the project runs, and the start that the move writes waits with the other held rows.
 `legion claims suspend`, `legion claims stop`, `legion status` and the controller's `set_status` still work, because none of them starts a turn.
+A claim of another project's issue, which `legion claims spawn` can make and whose outbox rows this daemon does not run, is outside the pause: no gate holds it, no stop is asked of it, and the pause names it in a warning of its own (below).
 
 **How each role stops.**
 The pause's transaction asks for the stop of each live role of the project but the controller: one stop record (`project_pause_stops`) and one `pause_stop` row in the outbox for each.
@@ -5449,7 +5450,7 @@ The summary of the controller's `read_state` prints each line in the same words,
 Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
 A caller from a pod whose plugin speaks a contract below the one that added the two keys is served the state with neither (`withoutPause`, `internal/api/server.go`).
 
-The daemon logs four messages, each with the claim it is about where it has one:
+The daemon logs five messages, each with the claim it is about where it has one:
 
 - `pause: the project is paused`, with the pause, who paused, the reason and the claims asked to stop;
 
@@ -5457,7 +5458,9 @@ The daemon logs four messages, each with the claim it is about where it has one:
 
 - `pause: the project is resumed`, with the pause, who ended it and how many rows it held;
 
-- `pause: a held row released`, once for each held row, with the row, its kind, its issue and its claim.
+- `pause: a held row released`, once for each held row, with the row, its kind, its issue and its claim;
+
+- `pause: live claims of another project's issue are left out of the pause`, a warning with the pause and the claims it left out, written by the pause and by a boot while the project is paused.
 
 **Refusals.**
 
@@ -5474,7 +5477,7 @@ The daemon logs four messages, each with the claim it is about where it has one:
   A daemon that runs no workflow, because its `legion.yaml` names no `dispatch_url`, answers both a pause and a resume with the same code and no setting (`refuseWithoutPause`, `internal/api/pause.go`).
   On every other daemon, a resume is never refused for the configuration.
 
-- While the project is paused, an operation that would start a turn of a role other than the controller answers 409 `PROJECT_PAUSED`, with the pause that stands, and changes nothing.
+- While the project is paused, an operation that would start a turn of a role other than the controller answers 409 `PROJECT_PAUSED`, with the pause that stands, and changes nothing, unless the claim is of another project's issue, which is outside the pause.
   These are the controller's `compact` and `fresh_session`, and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
 
 `legion project release` (dispatch://INFRA-3583) is not in this release.
@@ -5485,8 +5488,8 @@ An operator who must release a held pod ends its hold first, by resuming one rol
 The daemon reads the open pause at boot, before it restores any claim, and again at every outbox sweep, which runs every 30 seconds.
 So a pause or a resume made through another daemon of a rolling restart holds or frees this daemon's launches within one sweep.
 The outbox's claim and the admission pass read the store each time they run, so they wait for no sweep.
-A boot while the project is paused launches no session but the controller's.
-It asks the stop of each live role that the pause has not asked yet.
+A boot while the project is paused launches no session but the controller's and the sessions of another project's issues, which are outside the pause.
+It asks the stop of each live role that the pause has not asked yet, and names in the pause's warning each claim of another project's issue that it leaves out.
 It also asks again, at once, each stop that the pause still waits on, because the daemon that stopped held those stops in memory alone.
 A boot that cannot read the pause does not start.
 

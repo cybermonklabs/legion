@@ -91,7 +91,7 @@ func (r *pauseRig) claim(role claim.Role, state supervise.ClaimState) supervise.
 // (pause.Service.Refresh), and answers the pause.
 func (r *pauseRig) pauseLegion() store.Pause {
 	r.t.Helper()
-	held, _, err := r.st.Pause(r.ctx, store.PauseRequest{Project: "LEGION", By: pauseOperator, Reason: "the model provider is down",
+	held, _, _, err := r.st.Pause(r.ctx, store.PauseRequest{Project: "LEGION", By: pauseOperator, Reason: "the model provider is down",
 		At: time.Now(), StopRow: pause.StopRow})
 	if err != nil {
 		r.t.Fatalf("pause LEGION: %v", err)
@@ -216,6 +216,12 @@ func (r *pauseRig) heldWakes(pause int64, role claim.Role) (all, open int) {
 // releasedLines is every `pause: a held row released` line the rig's log holds, decoded.
 func (r *pauseRig) releasedLines() []map[string]any {
 	r.t.Helper()
+	return r.lines(pause.HeldRowReleasedMessage)
+}
+
+// lines is every line of the rig's log whose message is msg, decoded.
+func (r *pauseRig) lines(msg string) []map[string]any {
+	r.t.Helper()
 	var lines []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(r.logs.String()), "\n") {
 		if line == "" {
@@ -225,7 +231,7 @@ func (r *pauseRig) releasedLines() []map[string]any {
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			r.t.Fatalf("decode the log line %q: %v", line, err)
 		}
-		if entry["msg"] == pause.HeldRowReleasedMessage {
+		if entry["msg"] == msg {
 			lines = append(lines, entry)
 		}
 	}
@@ -403,6 +409,41 @@ func TestTheBootOfAPausedProjectAsksItsWaitingStopsAgainAtOnce(t *testing.T) {
 	}
 	if got := r.count(`select count(*) from outbox where payload->>'op' = 'pause_stop'`); got != 1 {
 		t.Fatalf("pause_stop rows = %d, want the one the pause queued: the boot asks no stop twice", got)
+	}
+}
+
+// A live claim of another project's issue, which the operator's spawn can make under this
+// project's token, is outside the pause: the boot of a paused project asks no stop of it and names
+// it in the pause's warning (pause.LeftOutMessage), and the catch-up after a pause asks none
+// either (pausable), while it still asks the project's own live roles.
+func TestTheBootOfAPausedProjectLeavesOutAClaimOfAnotherProjectsIssueAndSaysSo(t *testing.T) {
+	r := newPauseRig(t, claim.RoleImplementer)
+	held := r.pauseLegion()
+	foreign := supervise.Claim{Token: "legion-legion-infra-5-implementer", Project: "legion", Tree: "INFRA-5", Issue: "INFRA-5",
+		Role: claim.RoleImplementer, Generation: 1, State: supervise.StateIdle}
+	if err := r.st.PutClaim(r.ctx, foreign); err != nil {
+		t.Fatalf("seed the claim of INFRA-5: %v", err)
+	}
+
+	if err := r.pauses.askBootStops(r.ctx, held); err != nil {
+		t.Fatalf("the boot's pass with a live claim of another project's issue: %v", err)
+	}
+
+	if got := r.count(`select count(*) from project_pause_stops where claim = $1`, string(foreign.Token)); got != 0 {
+		t.Fatalf("stops of %s = %d, want none", foreign.Token, got)
+	}
+	left := r.lines(pause.LeftOutMessage)
+	if len(left) != 1 {
+		t.Fatalf("left-out lines = %d, want one; log %s", len(left), r.logs.String())
+	}
+	if got, ok := left[0]["claims"].([]any); !ok || len(got) != 1 || got[0] != string(foreign.Token) || left[0]["pause"] != float64(held.ID) {
+		t.Fatalf("the boot's left-out line is %v, want it to name pause %d and %s alone", left[0], held.ID, foreign.Token)
+	}
+	if pausable(foreign) {
+		t.Fatalf("the catch-up would ask the stop of %s", foreign.Token)
+	}
+	if own := r.claim(claim.RoleImplementer, supervise.StateIdle); !pausable(own) {
+		t.Fatalf("the catch-up would not ask the stop of %s, a live role of the project's own issue", own.Token)
 	}
 }
 

@@ -49,6 +49,31 @@ var ErrReasonRequired = errors.New("a pause needs a reason")
 // as well.
 const HeldRowReleasedMessage = "pause: a held row released"
 
+// LeftOutMessage is the warning a pause writes naming the live claims of another project's issue
+// it left out (`claims`, store.Store.Pause), and the boot's pass while the project is paused
+// writes for the ones it left out (store.Store.AskLivePauseStops). The operator's spawn can make
+// such a claim; the pause neither stops nor holds it (claim.IssueOfProject), so it runs on while
+// the project is paused.
+const LeftOutMessage = "pause: live claims of another project's issue are left out of the pause"
+
+// LogLeftOut writes LeftOutMessage for pause's leftOut claims, once, and nothing when there are
+// none.
+func LogLeftOut(log *slog.Logger, pause int64, leftOut []store.PauseStopClaim) {
+	if len(leftOut) == 0 {
+		return
+	}
+	log.Warn(LeftOutMessage, "pause", pause, "claims", claimTokens(leftOut))
+}
+
+// claimTokens is the claims of stops, for a log line.
+func claimTokens(stops []store.PauseStopClaim) []string {
+	tokens := make([]string, len(stops))
+	for i, stop := range stops {
+		tokens[i] = string(stop.Claim)
+	}
+	return tokens
+}
+
 // Setting is a setting of legion.yaml under which a daemon cannot hold a pause, spelled as the
 // file spells it, with the path of its key as the config package's own errors name a key
 // (config's readIdleRelease).
@@ -107,8 +132,8 @@ func (e *UnavailableError) Error() string {
 type Effects interface {
 	// Paused runs once pause has committed and the flag is set. asked are the claims the pause's
 	// transaction asked to stop; the daemon asks the stop of every other live role of the project
-	// but the controller, which catches a launch that passed the gate before the flag was set
-	// (decision 3).
+	// but the controller and a claim of another project's issue (LeftOutMessage), which catches a
+	// launch that passed the gate before the flag was set (decision 3).
 	Paused(ctx context.Context, pause store.Pause, asked []store.PauseStopClaim)
 	// Resumed runs once the resume that ended pause has committed and the flag is cleared: the
 	// steps of decision 22 after the transaction, in their order, are the daemon's.
@@ -130,7 +155,8 @@ type Options struct {
 	// Effects runs after each commit; nil runs nothing.
 	Effects Effects
 	// Log takes the lines of decision 23 this package writes: the pause, the resume, and each held
-	// row the resume released. nil is slog.Default().
+	// row the resume released; and the warning that names the claims a pause left out
+	// (LeftOutMessage). nil is slog.Default().
 	Log *slog.Logger
 	// Now is the daemon's clock; nil is time.Now.
 	Now func() time.Time
@@ -185,8 +211,9 @@ func (s *Service) Paused() (int64, bool) {
 // (ErrReasonRequired) and a daemon that cannot hold a pause (*UnavailableError), then runs the
 // store's pause transaction, which refuses a second pause with the *store.AlreadyPausedError it
 // returns unchanged. Once that commits it sets the flag, runs Effects.Paused with the claims the
-// transaction asked to stop, and logs the pause. A caller that goes away does not stop an act
-// under way, so no pause commits without its flag and its after-commit steps.
+// transaction asked to stop, logs the pause, and warns of the live claims of another project's
+// issue the transaction left out (LogLeftOut). A caller that goes away does not stop an act under
+// way, so no pause commits without its flag and its after-commit steps.
 func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string) (store.Pause, error) {
 	if strings.TrimSpace(reason) == "" {
 		return store.Pause{}, ErrReasonRequired
@@ -205,7 +232,7 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if tell {
 		req.Notice = pausedNotice
 	}
-	pause, asked, err := s.store.Pause(ctx, req)
+	pause, asked, leftOut, err := s.store.Pause(ctx, req)
 	if standing := (*store.AlreadyPausedError)(nil); errors.As(err, &standing) {
 		// The refusal read the pause that stands, which another daemon of a rolling restart may
 		// have made since this one's last Refresh: the flag holds it from now.
@@ -218,12 +245,9 @@ func (s *Service) Pause(ctx context.Context, by store.PauseActor, reason string)
 	if s.effects != nil {
 		s.effects.Paused(ctx, pause, asked)
 	}
-	claims := make([]string, len(asked))
-	for i, stop := range asked {
-		claims[i] = string(stop.Claim)
-	}
 	s.log.Info("pause: the project is paused", "pause", pause.ID, "by", string(pause.By.Kind), "by_session", pause.By.Session,
-		"reason", pause.Reason, "stops", len(asked), "claims", claims, "told_controller", tell)
+		"reason", pause.Reason, "stops", len(asked), "claims", claimTokens(asked), "told_controller", tell)
+	LogLeftOut(s.log, pause.ID, leftOut)
 	return pause, nil
 }
 

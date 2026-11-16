@@ -217,6 +217,27 @@ func TestProjectTokenIsTheShippedSpelling(t *testing.T) {
 	}
 }
 
+// An issue is a project's own when its key's project, spelled as a token, is the project's token:
+// the Dispatch key and the claims' token meet there. Another project's key, a key with no
+// project, and a project that is no token are none of the project's issues.
+func TestIssueOfProjectReadsTheKeysProjectAsAToken(t *testing.T) {
+	for _, testCase := range []struct {
+		issue, project string
+		want           bool
+	}{
+		{"LEGION-208", "legion", true},
+		{"A1-9", "a1", true},
+		{"INFRA-5", "legion", false},
+		{"LEGION-208", "LEGION", false},
+		{"LEGION", "legion", false},
+		{"", "legion", false},
+	} {
+		if got := IssueOfProject(testCase.issue, testCase.project); got != testCase.want {
+			t.Errorf("IssueOfProject(%q, %q) = %t, want %t", testCase.issue, testCase.project, got, testCase.want)
+		}
+	}
+}
+
 // A claim token is the Envoy role the agent claims and the name every file of its pane is filed
 // under, so it is the shipped roleToken byte for byte (legion-roles.ts:48-55) — a token Envoy
 // would refuse, or one the TypeScript plugin would spell differently, is a role nobody reaches.
