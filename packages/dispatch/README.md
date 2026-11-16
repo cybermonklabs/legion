@@ -623,7 +623,7 @@ to that person as the one file with its target list, so it sources nothing and n
 (3.2, as macOS ships it, or later) and curl 7.40 or later; curl's own `--connect-timeout` and
 `--max-time` bound every probe, so it needs no GNU `timeout`. Its inputs:
 
-- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`;
+- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets;
 - `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
   listeners, the secrets broker, the other Dispatch origin). `#` starts a comment, so the address a
   name stands for is written beside it; `host` is a name that resolves on that person's network or
@@ -635,21 +635,16 @@ OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt
 ```
 
 It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401), then
-probes the origin's own host and port and every target at once, each with
-`curl telnet://<host>:<port>`, and judges each probe by whether TCP connected (`time_connect`), not
-by curl's exit code alone: NATS, an HTTP listener and a TLS port each accept a connection and then
-wait for the client, so a reached one ends at `--max-time` with the exit a blackholed address
-gives. It prints the origin, the device's name, the UTC time, one line per probe with its exit
-code and times, and a verdict: `PASS` (exit 0) only when Dispatch answered, the probe reached the
-origin itself and every target was unreachable; `FAIL` (exit 1) naming each target it reached, or
-an origin that served a read with no credential; and `UNKNOWN` (exit 2) for every run that proved
-nothing — an input refused, curl missing or too old, the origin not answering as Dispatch, the
-probe unable to reach the origin, a target that did not resolve, an empty list — which is never a
-pass. `OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"` judges one recorded probe alone. A
-path that puts a sign-in of its own in front of Dispatch, such as an identity-aware proxy, answers
-a request with no credential with that sign-in's redirect or refusal, not Dispatch's 200 and 401,
-so the run reads `UNKNOWN` there.
-`e2e/__tests__/outside-path-reach.test.ts` (`bun run test`) drives it against real listeners.
+probes the origin's own host and port and every target at once, and judges each probe by whether
+TCP connected, not by curl's exit code alone. Its curls ignore the device's `~/.curlrc` and any
+proxy, so the run measures what that device itself reaches. `PASS` (exit 0) needs Dispatch's two
+answers, a connect to the origin itself and every target unreachable; `FAIL` (exit 1) names each
+target reached, or an origin that served a read with no credential; every run that proved
+nothing is `UNKNOWN` (exit 2), never a pass. The script's own header has every rule. A path that
+puts a sign-in of its own in front of Dispatch, such as an identity-aware proxy, answers a request
+with no credential with that sign-in, not Dispatch's 200 and 401, so the run reads `UNKNOWN`
+there. `cd packages/dispatch && bun test --timeout 60000 e2e/__tests__/outside-path-reach.test.ts`
+drives it against real listeners.
 
 ## Acceptance run against the deployed image
 
