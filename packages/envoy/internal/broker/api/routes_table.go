@@ -273,7 +273,7 @@ func routes() []apiRoute {
 		// machine login's launcher credential; mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/token", public((*server).oauthToken)},
 		// Read one of the broker's access tokens back (RFC 7662): whether it is live and, when it
-		// is, the session, the person and the project it carries, and the key it is bound to.
+		// is, the session, the person and the projects it carries, and the key it is bound to.
 		// Mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/introspect", accountAuth(readsTokensBack, (*server).introspect)},
 		// End one of the broker's own access tokens (RFC 7009), an exchanged pod's or workflow

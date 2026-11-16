@@ -464,7 +464,9 @@ The broker evaluates every name
 (`packages/envoy/internal/broker/requests/machine_state.go`):
 
 - A name the policy does not serve, even after the reread above, refuses the whole request with
-  `UNKNOWN_SECRET`, and nothing is recorded.
+  `UNKNOWN_SECRET`, and nothing is recorded. A secret `agent-secrets secret create` made and has not
+  yet filled, in the ten minutes it waits for its value, refuses the request with `PENDING_VALUE`
+  instead, which is not final: ask again once its owner has stored the value.
 - A name the policy denies denies the whole request; nothing is ever half-granted. Only a service's
   secret, asked for by anyone but that service, is denied.
 - A request that reaches a person needs a reason. Where a name's answer would be an approval —

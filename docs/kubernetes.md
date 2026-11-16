@@ -1338,6 +1338,10 @@ the daemon accepts a launcher connection only for that role, that pod and that t
 Each generation's boot token and launch credentials (the Envoy and Dispatch bearers, a spec's secrets) travel in the authenticated start command, and the launcher writes them owner-only and exclusively into a fresh `g<generation>` directory of its role's memory-backed private directory, removing anything already there without following it, and removes that directory when the generation ends:
 a role started in a running pod never waits on the kubelet to refresh a Secret, and no credential is in an argv, an environment value, a log or an error.
 The role's own agent sees only its own private directory, inside its namespaces, so it can read its own generation's credentials, as a pane can; it cannot read another role's.
+The generation's system prompt travels the same way: the daemon composes it (the role's prompt parts, its addressing, the deployment's `instructions` and each arm's) and sends it in that start command, the launcher writes it as `system-prompt.md` into the same `g<generation>` directory, and the agent's one `--append-system-prompt` (Claude Code's `--append-system-prompt-file`) names that file.
+No argument grows with the prompt, so a prompt longer than the 131,072 bytes Linux allows one argument (`MAX_ARG_STRLEN`) launches, and no other role's process can read or change the file, since it is in this role's private directory alone.
+A prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts: the claim fails at once with cause `launch_refused`, charged no launch failure, and its `lastStartFailure` and `failure.detail` name the role, the prompt's size and the limit.
+The daemon sets no bound of its own on a model's context, which it cannot read; Oh My Pi answers a request too large for its model.
 What the container mounts for the pod rather than for a role is every role's alike:
 the operator's providers Secret (`provider_keys`) and, under `runtime.kubernetes.agent_secrets`, the projected broker token.
 A role process is addressed by the pod's uid, its role and its generation (the incarnation `<pod uid>/<generation>`):
@@ -5751,9 +5755,9 @@ Every one of those is a boot refusal before anything is spawned.
 Four prerequisites and caveats the configuration cannot check for you:
 
 - **The `instructions` file must hold no secret.**
-  Under tmux it is read by the pane through `$(cat …)` on the daemon host;
-  under Kubernetes the daemon inlines its text into the pod's `--append-system-prompt` argument, so it travels in the pod spec's argv
-  — visible to anyone who can `get pods -o yaml` in the namespace, and recorded in the API server's audit log.
+  Its text is part of every role's system prompt, which the daemon composes and writes to a file only that role's process reads: under tmux `<state_dir>/secrets/<claim>-system-prompt.md` on the daemon host, 0600 in a 0700 directory;
+  under Kubernetes a 0600 file of the role's own generation directory, which the launcher writes from the start command ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
+  It is in no argv and no pod spec, but every agent of the deployment reads it, and an agent can repeat what it reads.
   Provider keys and tokens belong in the providers Secret only.
 
 - **The daemon host still needs the tmux runtime's toolchain.**
@@ -6005,7 +6009,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **What a memory-group role is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the project's memory overlays, which outrank both;
-  its one `--append-system-prompt` value ends with the memory instructions, after the deployment's own.
+  its system prompt, the file its one `--append-system-prompt` names, ends with the memory instructions, after the deployment's own.
   The controller is in no memory group whatever the mode says, since a memory group is a tree's and the controller runs in none;
   a role of a tree drawn `none` is told exactly what it was told before the block existed; and a block with no `instructions` appends nothing.
   The launch follows the record, not the mode:
@@ -6079,7 +6083,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **What a role of a drawn unit is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into, in the order the project's file declares the experiments, which outrank both.
-  Its one `--append-system-prompt` value ends with each such arm's `instructions`, in that same order, after the deployment's own.
+  Its system prompt, the file its one `--append-system-prompt` names, ends with each such arm's `instructions`, in that same order, after the deployment's own.
   The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
   The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
   An arm's overlays take part in everything `role_config_files` takes part in:
@@ -6250,10 +6254,14 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named` or `person`, which says what `project` means.
+- `project_scope` — `named` or `person`, which says what `projects` means.
 
-- `project` — the one project key a `named` token may write.
-  A `person` token carries none.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
+  A token whose trade named none, and a token that names a service and no person, carry none.
+
+- `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
+  No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
+  Every other token carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
@@ -6264,9 +6272,24 @@ A pod's token needs an entry for its service account, which gives the project an
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
-A machine login's token needs no entry at all: the person is the login's approver, the scope is `person`, and the token names no project (`Set.Machine`).
+A request under an entry may name that entry's project or nothing, and is refused when it names any other; a token that names no person is refused any project.
+A machine login's token needs no entry at all: the person is the login's approver and the scope is `person` (`Set.Machine`).
 A person's own Google identity token needs the machine's own as the actor token, of an account an entry lists (`Set.Person`):
 the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gives, the scope is `person`, and the token names that person and that machine.
+
+A `person` token names the projects its trade asks for (`projects`, keys separated by spaces, at most 16, each a project key; `AGENT_SECRETS_PROJECTS` is where a session's client reads them from).
+Before it mints, the broker asks Dispatch, with its own projected ServiceAccount token, whether the token's person may see each one (`BROKER_PROJECT_ACCESS_URL`, `BROKER_PROJECT_ACCESS_TOKEN_FILE`, `packages/envoy/internal/broker/projectaccess`), and refuses `invalid_request` naming the first it may not see, in the same words whether Dispatch holds that project or not.
+A trade that names no project is refused only for a person Dispatch calls a restricted member, who sees only the projects that name them;
+a person's sign-in is taken as a full member's and asks no member kind, since the broker checked its Workspace domain itself.
+An operator's entry is held to Dispatch the same way: a `named` token is refused when the entry's person may not see the entry's project.
+Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.
+A broker with neither setting asks Dispatch nothing: it mints every token that names no project as before, mints an entry's token as before, and refuses a `person` trade that names a project.
+A broker whose Dispatch cannot be asked mints a token that names no project as before, logging one line naming each, and refuses every trade that names a project `temporarily_unavailable` for the client to ask again, an entry's token naming its project included.
+A Dispatch that answers 401 or 403 to the broker's own account token does not list the broker's account as one that may ask, or does not accept that token (one minted for another audience, say); a broker that cannot read that token from its file, and a Dispatch answering a member kind the broker does not know, are refused the same way: every trade that asks is refused `server_error`, saying so, and nothing is minted unchecked.
+A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
+A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
+The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
+
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`).
 A claim holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
@@ -6285,8 +6308,8 @@ For the settings themselves, read the broker's generated configuration reference
 Nothing Legion runs presents such a token at this release.
 A pod, the daemon, a tmux pane and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes.
 An operator-launched controller presents the token its own file names.
-Dispatch accepts no broker token yet.
-`dispatch://INFRA-264` is where Dispatch accepts one and reads the session, the person and the project from it.
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person the token names, and holds a `named` token's writes to its one project (`packages/envoy/internal/dispatch/api/broker_token.go`).
+A `person` token's list of projects limits no Dispatch write at this release.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares
@@ -6413,12 +6436,10 @@ Containers, in order:
 
 2. **Main container `worker`** runs `legion worker-shim --connect tcp://<host of daemon_url>:<worker_stream_port>
    --boot-token-file /var/run/legion/boot/LEGION_BOOT_TOKEN --provider-env-dir /var/run/legion/providers
-   -- omp [--resume=<session file>] --mode rpc --append-system-prompt <role prompt, addressing text,
-   and deployment instructions joined by blank lines>`.
-   The prompt texts are passed inline (the daemon has them;
-   the image may be built from another commit) and, exactly as on tmux, in **one** `--append-system-prompt` argument
+   -- omp [--resume=<session file>] --mode rpc --append-system-prompt <path of the role's prompt file>`.
+   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text and deployment instructions joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
    — OMP's flag is last-wins, so several flags would hand the model only the last text.
-   A joined value over 128 KiB (Linux `MAX_ARG_STRLEN`) is refused at spawn.
+   No argument grows with the prompt; a prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
@@ -6735,7 +6756,7 @@ In order, and keeping nothing until the daemon has answered, the command:
    Before step 3 the command finds the real gh its session's `gh` wrapper runs:
    the operator's `LEGION_GH_PATH`, or the first `gh` on its PATH that is not the state directory's own wrapper, and refuses to start with neither (`gh is not on PATH`) or when that first `gh` is a script, a `gh` wrapper of the operator's machine that would answer in place of the review App;
 
-6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one joined `--append-system-prompt` holding the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
+6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one `--append-system-prompt` naming the file `<state_dir>/secrets/<controller claim>-<run>-system-prompt.md`, this run's own, which the command writes first and removes when Oh My Pi exits, and which holds the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
    it sends it once the controller is registered, right before the role claim and the live wake subscription, so the controller's first turn runs its start procedure deterministically, with nothing typed, rather than racing a card or a wake for the session's one first-turn slot
    — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, `PERSON_SIGNIN_TRADE=off` (the controller's own broker credentials trade this machine, never its operator's sign-in), and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED_FILE` (the controller is pane-side, and never gets the daemon's seed) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
 

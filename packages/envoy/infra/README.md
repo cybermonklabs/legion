@@ -733,6 +733,39 @@ cookie for its thirty days, and no membership check is left behind it. A sandbox
 an older image exits 1 when it is given no `DISPATCH_SIGNIN_*` setting, so the app's pods never
 start.
 
+`outsideOrigin` and `signInOutside`, both unset by default, are the component's part of sign-in
+for people from outside the company. Neither is in a group, and with both unset the component
+renders exactly what it rendered before they existed. `outsideOrigin` is a second origin Dispatch
+is reached at: an `https` origin written as a browser writes it, with a lowercase scheme, no
+`:443`, a port (if any) of 1 to 65535 with no leading zero, and no path, user, query or fragment
+(a trailing slash is trimmed). Its host is not the front door's `<hostname>.<tailnetDnsName>`,
+ends in a number only if it is an IPv4 address in its canonical form, and has every label a
+lowercase DNS label that, where `--` is its third and fourth characters, is an `xn--` label the
+IDNA lookup profile takes: RFC 5890 section 2.3.1 reserves that form, public certificate
+authorities refuse to issue for its labels that do not begin with `xn--`, and an `xn--` label that
+profile refuses is a Fake A-label. Dispatch compares the `Origin` a
+browser sends with it as a string, so another spelling of the same origin is refused rather than
+rewritten. It renders `DISPATCH_OUTSIDE_ORIGIN=<outsideOrigin>` on the app's container, right
+after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and forwards it to the
+app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
+in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
+namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
+the Google client `signInClientId` names must list the rendered `DISPATCH_OUTSIDE_ORIGIN`
+followed by `/auth/callback` as an authorized redirect URI, beside
+`https://<hostname>.<tailnetDnsName>/auth/callback`, so with them the component also refuses a
+host Google refuses there: a raw IP address, and one whose top-level domain is not on the public
+suffix list, a single label among them ([Redirect URI validation
+rules](https://developers.google.com/identity/protocols/oauth2/web-server)).
+`signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
+which lets a verified Google account outside `signInDomain` sign in as a restricted member while
+some project's owner or access list names its email directly, never through a group; with it,
+that client's OAuth consent screen's audience must be External, since an Internal one admits no
+account outside the organization. Both inputs need the tailnet group, so the sandbox refuses each
+by name, and `signInOutside` needs the sign-in group too, refused without it with the clause
+naming each sign-in input still unset. An `envoyImage` whose `envoy-dispatch` predates the two
+settings ignores both, as it ignores every variable its settings table
+(`packages/envoy/cmd/dispatch/settings.go`) does not list.
+
 `databaseVersion` defaults to `POSTGRES_18`; envoy-infra v2.9.1 and every release before this
 change defaulted to `POSTGRES_16`. A stack that leaves `databaseVersion` unset is upgraded in place
 from its current major version to PostgreSQL 18 at its first `pulumi up` after its `envoy-infra`
@@ -1141,7 +1174,8 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an
+`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that breaks the rule the paragraph on it
+above states, a `signInOutside` without the sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside
@@ -1653,6 +1687,19 @@ JetStream numbers both containers carry; every other property above is unchanged
       natsReplicas: 3
       streamMaxBytes: 1073741824
 ```
+
+A deployment that lets people from outside the company sign in names the second origin they reach
+it at and turns outside sign-in on; every other property above is unchanged:
+
+```yaml
+      outsideOrigin: https://dispatch-outside.example.com
+      signInOutside: true
+      # Only where what serves that origin runs in this cluster: its namespace.
+      allowedNamespaces: [example-outside]
+```
+
+Its app then carries `DISPATCH_OUTSIDE_ORIGIN=https://dispatch-outside.example.com` and
+`DISPATCH_SIGNIN_OUTSIDE=1` ([Inputs](#inputs-1)).
 
 A sandbox stack sets neither the tailnet group nor the sign-in group, and sets the two inputs the
 mode then requires: `natsInCluster`, since no front door runs a proxy to a tailnet hub, and
