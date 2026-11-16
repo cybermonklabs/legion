@@ -164,16 +164,23 @@ const MAX_TOKEN_PROJECTS = 16;
  *  ones included. It offers the projects the reader sees (`projects`), and any the token names
  *  that the reader no longer sees, ticked, so they can be taken off. The choice is staged while
  *  the picker is open and handed to `onChoose` once it closes, and only when it changed.
- *  `subject` is the token it belongs to, as for the scope boxes. */
+ *  `subject` is the token it belongs to, as for the scope boxes.
+ *
+ *  Dispatch cuts a token's list to what the reader sees, and tells the person's own browser when
+ *  the cut removed some (`hidden`): such a token is never shown as one of the public projects
+ *  only, and the picker says a change drops them, since an edit names the whole list and Dispatch
+ *  refuses a project the reader does not see. */
 function TokenProjectsChoice({
   chosen,
   disabled,
+  hidden = false,
   onChoose,
   projects,
   subject,
 }: {
   chosen: readonly string[];
   disabled: boolean;
+  hidden?: boolean;
   onChoose: (projects: string[]) => void;
   projects: readonly Project[];
   subject: string;
@@ -185,43 +192,57 @@ function TokenProjectsChoice({
   const options = [...names.keys(), ...chosen.filter((key) => !names.has(key))];
   // The name holds the text the trigger shows, after whose token it is, so a reader who says what
   // they see reaches it (WCAG 2.5.3, Label in Name).
-  const shown = chosen.length === 0 ? "Public projects only" : chosen.join(", ");
+  const shown =
+    chosen.length === 0
+      ? hidden
+        ? "No project you can see"
+        : "Public projects only"
+      : hidden
+        ? `${chosen.join(", ")}, and projects you cannot see`
+        : chosen.join(", ");
   return (
-    <MultiSelect
-      disabled={disabled}
-      emptyMessage="No project matches that."
-      error={error}
-      label="Projects"
-      onChange={(next) => {
-        if (next.length > MAX_TOKEN_PROJECTS) {
-          setError(`A token names at most ${MAX_TOKEN_PROJECTS} projects.`);
-          return;
-        }
-        setError(null);
-        setDraft(next);
-      }}
-      onOpenChange={(next) => {
-        if (next) {
-          setDraft([...chosen]);
+    <>
+      <MultiSelect
+        disabled={disabled}
+        emptyMessage="No project matches that."
+        error={error}
+        label="Projects"
+        onChange={(next) => {
+          if (next.length > MAX_TOKEN_PROJECTS) {
+            setError(`A token names at most ${MAX_TOKEN_PROJECTS} projects.`);
+            return;
+          }
           setError(null);
-          setOpen(true);
-          return;
-        }
-        if (!open) return;
-        setOpen(false);
-        if (draft.length !== chosen.length || draft.some((key) => !chosen.includes(key))) {
-          onChoose(draft);
-        }
-      }}
-      open={open}
-      optionDetail={(key) => names.get(key)}
-      options={options}
-      searchLabel="Search projects"
-      selected={open ? draft : chosen}
-      triggerAriaLabel={`Projects (${subject}): ${shown}`}
-    >
-      {shown}
-    </MultiSelect>
+          setDraft(next);
+        }}
+        onOpenChange={(next) => {
+          if (next) {
+            setDraft([...chosen]);
+            setError(null);
+            setOpen(true);
+            return;
+          }
+          if (!open) return;
+          setOpen(false);
+          if (draft.length !== chosen.length || draft.some((key) => !chosen.includes(key))) {
+            onChoose(draft);
+          }
+        }}
+        open={open}
+        optionDetail={(key) => names.get(key)}
+        options={options}
+        searchLabel="Search projects"
+        selected={open ? draft : chosen}
+        triggerAriaLabel={`Projects (${subject}): ${shown}`}
+      >
+        {shown}
+      </MultiSelect>
+      {hidden ? (
+        <p className={`mt-1 max-w-xs text-xs ${textMutedOnSurface}`}>
+          A change here drops the projects you cannot see.
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -465,6 +486,7 @@ export function AgentTokensSection(): ReactNode {
                     <td className="px-4 py-3">
                       <TokenProjectsChoice
                         chosen={token.projects ?? []}
+                        hidden={token.projects_hidden === true}
                         disabled={token.revoked_at !== null || updateToken.isPending}
                         onChoose={(named) =>
                           updateToken.mutate({

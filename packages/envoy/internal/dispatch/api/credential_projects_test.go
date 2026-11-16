@@ -439,3 +439,187 @@ func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
 		}
 	})
 }
+
+// agentTokenBeforeHidden is a token answer's row as it was before projects_hidden: model.AgentToken
+// with every field it had, in the order it had them. An answer that encodes the same through it is
+// byte for byte the answer that release gave.
+type agentTokenBeforeHidden struct {
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Prefix     string   `json:"prefix"`
+	Scopes     []string `json:"scopes"`
+	Projects   []string `json:"projects,omitempty"`
+	CreatedAt  string   `json:"created_at"`
+	LastUsedAt *string  `json:"last_used_at"`
+	RevokedAt  *string  `json:"revoked_at"`
+}
+
+// wantAnswerBeforeHidden fails the test unless body, the JSON answer call gave (one token, or a
+// list of them when list is set), is byte for byte what the release before projects_hidden
+// answered for the same rows.
+func wantAnswerBeforeHidden(t *testing.T, call, body string, list bool) {
+	t.Helper()
+	var before any
+	if list {
+		before = &[]agentTokenBeforeHidden{}
+	} else {
+		before = &agentTokenBeforeHidden{}
+	}
+	if err := json.Unmarshal([]byte(body), before); err != nil {
+		t.Fatalf("%s: decode %s: %v", call, body, err)
+	}
+	encoded, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("%s: encode the answer as before: %v", call, err)
+	}
+	if want := string(encoded) + "\n"; body != want {
+		t.Fatalf("%s = %s, want the answer before projects_hidden byte for byte: %s", call, body, want)
+	}
+}
+
+// hiddenFlagOf is whether the row of token id in a token answer (a list, or one token) carries
+// projects_hidden, and its value.
+func hiddenFlagOf(t *testing.T, call, body, id string) (hidden, present bool) {
+	t.Helper()
+	var rows []map[string]json.RawMessage
+	if strings.HasPrefix(body, "[") {
+		if err := json.Unmarshal([]byte(body), &rows); err != nil {
+			t.Fatalf("%s: decode %s: %v", call, body, err)
+		}
+	} else {
+		var row map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(body), &row); err != nil {
+			t.Fatalf("%s: decode %s: %v", call, body, err)
+		}
+		rows = []map[string]json.RawMessage{row}
+	}
+	for _, row := range rows {
+		var rowID string
+		if err := json.Unmarshal(row["id"], &rowID); err != nil || rowID != id {
+			continue
+		}
+		raw, present := row["projects_hidden"]
+		if !present {
+			return false, false
+		}
+		if err := json.Unmarshal(raw, &hidden); err != nil {
+			t.Fatalf("%s: decode token %s's projects_hidden %s: %v", call, id, raw, err)
+		}
+		return hidden, true
+	}
+	t.Fatalf("%s holds no token %s: %s", call, id, body)
+	return false, false
+}
+
+// TestABrowserIsToldItsTokenListsProjectsItCannotSee: a token answer cuts each list to what its
+// reader sees (seeToken), so a token whose every project is hidden reads as one that lists
+// none. The person's own browser is told so (projects_hidden), so Settings never shows such a token
+// as one of the public projects only, nor offers to widen it. A credential reading its person's
+// list is never told, since that would say a project exists it cannot see (R3). And with no private
+// project, every answer is byte for byte the answer before the field (R9).
+func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedCredentialProjects(t, handler, database)
+	// alice's tokens, minted while PRIV is public and she sees it.
+	alicePriv := mintListed(t, handler, "alice", "alice-priv", []string{privateProject})
+	aliceBoth := mintListed(t, handler, "alice", "alice-both", []string{privateProject, publicProject})
+	alicePub := mintListed(t, handler, "alice", "alice-pub", []string{publicProject})
+	aliceOpen := mintListed(t, handler, "alice", "alice-open", nil)
+	// carol's, who owns PRIV and sees both projects at her browser.
+	carolPriv := mintListed(t, handler, accessCarol, "carol-priv", []string{privateProject})
+	carolBoth := mintListed(t, handler, accessCarol, "carol-both", []string{privateProject, publicProject})
+	carolOpen := mintListed(t, handler, accessCarol, "carol-open", nil)
+	const list = "/api/v1/me/agent-tokens"
+	keepScopes := map[string]any{"scopes": model.Scopes}
+	readers := []struct {
+		name string
+		read func(method, path string, body any) *httptest.ResponseRecorder
+	}{
+		{"alice's browser", func(method, path string, body any) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, method, path, body, "alice")
+		}},
+		{"carol's browser", func(method, path string, body any) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, method, path, body, accessCarol)
+		}},
+		{"carol's token listing nothing", func(method, path string, body any) *httptest.ResponseRecorder {
+			return agentRequest(t, handler, method, path, body, carolOpen.Token)
+		}},
+		{"carol's token listing PRIV", func(method, path string, body any) *httptest.ResponseRecorder {
+			return agentRequest(t, handler, method, path, body, carolPriv.Token)
+		}},
+	}
+	// Each reader's own token that a PATCH below edits, keeping its list.
+	edited := map[string]string{
+		"alice's browser":               alicePriv.ID,
+		"carol's browser":               carolPriv.ID,
+		"carol's token listing nothing": carolPriv.ID,
+		"carol's token listing PRIV":    carolBoth.ID,
+	}
+
+	t.Run("with no private project every answer is the answer before the field", func(t *testing.T) {
+		for _, reader := range readers {
+			listed := reader.read(http.MethodGet, list, nil)
+			if listed.Code != http.StatusOK {
+				t.Fatalf("GET %s under %s: status=%d body=%s", list, reader.name, listed.Code, listed.Body.String())
+			}
+			wantAnswerBeforeHidden(t, "GET "+list+" under "+reader.name, listed.Body.String(), true)
+			patched := reader.read(http.MethodPatch, list+"/"+edited[reader.name], keepScopes)
+			if patched.Code != http.StatusOK {
+				t.Fatalf("PATCH under %s: status=%d body=%s", reader.name, patched.Code, patched.Body.String())
+			}
+			wantAnswerBeforeHidden(t, "PATCH "+list+"/{id} under "+reader.name, patched.Body.String(), false)
+		}
+	})
+
+	makePrivate(t, database, privateProject)
+
+	t.Run("alice's browser is told which of her tokens list projects she cannot see", func(t *testing.T) {
+		call := "GET " + list + " as alice"
+		body := dispatchRequest(t, handler, http.MethodGet, list, nil, "alice").Body.String()
+		for _, token := range []struct {
+			name, id string
+			projects []string
+			hidden   bool
+		}{
+			{"alice-priv", alicePriv.ID, nil, true},
+			{"alice-both", aliceBoth.ID, []string{publicProject}, true},
+			{"alice-pub", alicePub.ID, []string{publicProject}, false},
+			{"alice-open", aliceOpen.ID, nil, false},
+		} {
+			projects, _ := tokenListIn(t, call, httptestBody(body), token.id)
+			hidden, present := hiddenFlagOf(t, call, body, token.id)
+			if !slices.Equal(projects, token.projects) || hidden != token.hidden || present != token.hidden {
+				t.Fatalf("%s gives %s projects %v and projects_hidden %v (present %v), want %v and %v (present only when true): %s",
+					call, token.name, projects, hidden, present, token.projects, token.hidden, body)
+			}
+		}
+		patch := "PATCH " + list + "/{id} as alice keeping alice-priv's list"
+		patched := dispatchRequest(t, handler, http.MethodPatch, list+"/"+alicePriv.ID, keepScopes, "alice")
+		if hidden, _ := hiddenFlagOf(t, patch, patched.Body.String(), alicePriv.ID); patched.Code != http.StatusOK || !hidden {
+			t.Fatalf("%s = %d %s, want 200 with projects_hidden true", patch, patched.Code, patched.Body.String())
+		}
+	})
+
+	t.Run("no credential is told a sibling token lists a project it cannot see", func(t *testing.T) {
+		for _, reader := range readers[2:] {
+			listed := reader.read(http.MethodGet, list, nil)
+			patched := reader.read(http.MethodPatch, list+"/"+edited[reader.name], keepScopes)
+			for call, answer := range map[string]*httptest.ResponseRecorder{
+				"GET " + list + " under " + reader.name:        listed,
+				"PATCH " + list + "/{id} under " + reader.name: patched,
+			} {
+				if answer.Code != http.StatusOK || strings.Contains(answer.Body.String(), "projects_hidden") {
+					t.Fatalf("%s = %d %s, want 200 with no projects_hidden on any token", call, answer.Code, answer.Body.String())
+				}
+			}
+		}
+	})
+}
+
+// httptestBody is body as a 200 answer, for the helpers that read a recorder.
+func httptestBody(body string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	recorder.Code = http.StatusOK
+	recorder.Body.WriteString(body)
+	return recorder
+}

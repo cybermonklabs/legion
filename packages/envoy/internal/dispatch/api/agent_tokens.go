@@ -55,7 +55,7 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("iterate agent tokens: %w", err))
 		return
 	}
-	// Each list names only what its reader sees (seenProjects). A list in which no token lists a
+	// Each list names only what its reader sees (seeToken). A list in which no token lists a
 	// project resolves no viewer, so it costs what it cost before lists.
 	if slices.ContainsFunc(tokens, func(token model.AgentToken) bool { return len(token.Projects) > 0 }) {
 		reader, ok := s.readerOf(w, r)
@@ -63,19 +63,27 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for i := range tokens {
-			tokens[i].Projects = seenProjects(reader.Viewer, tokens[i].Projects)
+			seeToken(reader, &tokens[i])
 		}
 	}
 	WriteJSON(w, http.StatusOK, tokens)
 }
 
-// seenProjects is projects, one token's list, as a reader whose viewer is viewer reads it: only the
-// projects viewer sees, so no token answer names a project to a credential that does not see it
-// (R3). A browser reads the list its person sees; a token whose every project is hidden from its
-// reader answers as one that lists none. What the token lists is its row's, which this never
-// changes: projects is the copy scanned for this answer, cut in place.
-func seenProjects(viewer *model.Viewer, projects []string) []string {
-	return slices.DeleteFunc(projects, func(project string) bool { return !slices.Contains(viewer.Sees, project) })
+// seeToken is token as reader reads it: its list cut to the projects reader's viewer sees, so no
+// token answer names a project to a credential that does not see it (R3). What the token lists is
+// its row's, which this never changes: the list is the copy scanned for this answer, cut in place.
+//
+// A token whose every project is hidden from its reader reads as one that lists none, so the
+// person's own browser (the reader access.Resolve reads as one, Kind "user") is told the cut
+// removed some (ProjectsHidden): Settings must not show such a token as one of the public projects
+// only. No other reader is told, since telling a credential that a sibling lists a project it
+// cannot see says that project exists. A cut that removed nothing leaves the answer as it was.
+func seeToken(reader model.Actor, token *model.AgentToken) {
+	listed := len(token.Projects)
+	token.Projects = slices.DeleteFunc(token.Projects, func(project string) bool {
+		return !slices.Contains(reader.Viewer.Sees, project)
+	})
+	token.ProjectsHidden = reader.Kind == "user" && len(token.Projects) < listed
 }
 
 // createAgentTokenInput is the body of POST /api/v1/me/agent-tokens.
@@ -186,7 +194,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 	}
 	// Nil keeps the token's list: the update below reads it as null. A list the body names is one
 	// the caller sees (tokenProjects); a kept one is cut to what the caller sees in the answer
-	// (seenProjects), whose viewer is resolved here, before the transaction holds a connection.
+	// (seeToken), whose viewer is resolved here, before the transaction holds a connection.
 	var projects []string
 	var reader model.Actor
 	if input.Projects != nil {
@@ -221,7 +229,7 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if reader.Viewer != nil {
-		token.Projects = seenProjects(reader.Viewer, token.Projects)
+		seeToken(reader, &token)
 	}
 	WriteJSON(w, http.StatusOK, token)
 }
@@ -299,7 +307,7 @@ const maxTokenProjects = 16
 // optionalActor decided, and only for a list that names a key. A key the caller does not see is
 // refused in the same words whether a hidden project holds it or none does, so the refusal says
 // nothing of a project the caller may not see. So the list a mint answers, and the one an edit
-// names, is one its caller sees whole, and needs no cut (seenProjects).
+// names, is one its caller sees whole, and needs no cut (seeToken).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {

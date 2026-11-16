@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
@@ -332,6 +332,81 @@ test("a token's row edits the projects it names, sent with the scopes it holds",
     queryClient.clear();
     listAgentTokens.mockRestore();
     updateAgentToken.mockRestore();
+  }
+});
+
+// Dispatch cuts each token's list to the projects its reader sees, so a token whose every
+// project is hidden from the reader arrives with no list, the same as one that lists none. An
+// edit the reader made only to its scopes, and a picker opened and closed unchanged, must leave
+// the stored list alone: a body that named `projects` would replace it with the empty list, and
+// so widen the token to every public project.
+test("a token's scope edit and an unchanged picker never send its projects", async () => {
+  const user = userEvent.setup();
+  listProjects.mockResolvedValue([project("CORE", "Core")]);
+  // As the list answers a token listing PRIV to a reader who no longer sees PRIV.
+  const cut: AgentToken = { ...token, projects_hidden: true, scopes: ["person"] };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([cut]);
+  const updateAgentToken = spyOn(api, "updateAgentToken").mockImplementation(
+    async (id: string, input: { scopes: DispatchScope[] }) => ({ ...cut, id, scopes: input.scopes })
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
+    await user.click(box("Approve and control credentials", "architect"));
+    await waitFor(() => expect(updateAgentToken).toHaveBeenCalledTimes(1));
+    const [, body] = updateAgentToken.mock.calls[0] ?? [];
+    expect(Object.keys(body ?? {})).toEqual(["scopes"]);
+
+    await user.click(projectsPicker("architect"));
+    await user.keyboard("{Escape}");
+    await settle();
+    expect(updateAgentToken).toHaveBeenCalledTimes(1);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
+    updateAgentToken.mockRestore();
+  }
+});
+
+// Dispatch tells the person's own browser when it cut a token's list (`projects_hidden`): the
+// row then says the token lists projects the reader cannot see, never "Public projects only",
+// and warns that a change of the list drops them.
+test("a token listing projects its reader cannot see says so, and never reads as public only", async () => {
+  listProjects.mockResolvedValue([project("CORE", "Core")]);
+  const allHidden: AgentToken = { ...token, id: "hidden", name: "hidden", projects_hidden: true };
+  const partHidden: AgentToken = {
+    ...token,
+    id: "part",
+    name: "part",
+    projects: ["CORE"],
+    projects_hidden: true,
+  };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([allHidden, partHidden]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await screen.findAllByRole("cell", { name: "dsp_AbCdEf12…" });
+    expect(projectsPicker("hidden").textContent).toBe("No project you can see");
+    expect(projectsPicker("part").textContent).toBe("CORE, and projects you cannot see");
+    expect(screen.getAllByText("A change here drops the projects you cannot see.")).toHaveLength(2);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    listAgentTokens.mockRestore();
   }
 });
 

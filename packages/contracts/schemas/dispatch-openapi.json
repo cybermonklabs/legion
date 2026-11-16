@@ -7871,7 +7871,7 @@
     },
     "/api/v1/me/agent-tokens": {
       "get": {
-        "description": "List the caller's personal agent tokens, each with the scopes it holds and the projects it lists, absent when it lists none. Each list holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none.",
+        "description": "List the caller's personal agent tokens, each with the scopes it holds and the projects it lists, absent when it lists none. Each list holds only the projects the caller's own credential sees, so a token whose every project is hidden from the caller reads as one that lists none. At the person's own browser, projects_hidden is true on a token that lists a project the person no longer sees; it is absent everywhere else.",
         "operationId": "getApiV1MeAgentTokens",
         "parameters": [
           {
@@ -8011,7 +8011,7 @@
         "x-write-scope": "session"
       },
       "patch": {
-        "description": "Set the scopes, and the projects, of one of the caller's personal agent tokens {scopes, projects?}, answering the updated token: scopes is the whole set it is to hold, with the mint's refusals. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. Left out, the token keeps its list, and the answer holds only the projects of it the caller sees. A token of another person's, or none, is 404 NOT_FOUND.",
+        "description": "Set the scopes, and the projects, of one of the caller's personal agent tokens {scopes, projects?}, answering the updated token: scopes is the whole set it is to hold, with the mint's refusals. projects is the list of projects the token may use, at most 16, each one the caller sees; 400 TOKEN_PROJECTS_INPUT otherwise. Left out, the token keeps its list, and the answer holds only the projects of it the caller sees, with projects_hidden as the list answers it. A token of another person's, or none, is 404 NOT_FOUND.",
         "operationId": "patchApiV1MeAgentTokensById",
         "parameters": [
           {
@@ -12948,6 +12948,9 @@
             },
             "type": "array"
           },
+          "projects_hidden": {
+            "type": "boolean"
+          },
           "revoked_at": {
             "format": "date-time",
             "type": [
@@ -17654,6 +17657,9 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "projects_hidden": {
+            "type": "boolean"
           },
           "revoked_at": {
             "format": "date-time",

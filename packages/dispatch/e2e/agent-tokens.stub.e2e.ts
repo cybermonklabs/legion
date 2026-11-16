@@ -1,26 +1,33 @@
 /** The projects a personal agent token names, as Settings draws and sends them, read over a
  *  recording (packages/dispatch/AGENTS.md, "The stubbed layer").
  *
- *  The row asserts what the page does with fixed answers: a token's row reads the projects the
+ *  The rows assert what the page does with fixed answers: a token's row reads the projects the
  *  token list names, the mint form names none until the reader picks, and the mint sends exactly
- *  the projects picked. That Dispatch stores the list, and a row's edit of it survives a reload,
- *  is the real-stack row's claim, in `agent-tokens.e2e.ts`, which runs on the full lane. */
+ *  the projects picked; a token that lists a project its reader no longer sees reads as such, and
+ *  an edit of its scopes leaves its list alone. That Dispatch stores the list, and a row's edit of
+ *  it survives a reload, is the real-stack row's claim, in `agent-tokens.e2e.ts`, which runs on the
+ *  full lane. */
 import { expect } from "@playwright/test";
 
 import { baseUrl, createProject, userHeaders } from "./api";
+import { sql } from "./psql";
 import { stubbed } from "./stub/stub-test";
 
-const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "SIDE", name: "Side work" });
+/** Mints alice's token `name` listing `projects`, at her browser. */
+async function mintAs(name: string, projects: string[]): Promise<void> {
   const minted = await fetch(new URL("/api/v1/me/agent-tokens", baseUrl), {
-    body: JSON.stringify({ name: "Scoped", projects: ["CORE"] }),
+    body: JSON.stringify({ name, projects }),
     headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
     method: "POST",
   });
   if (minted.status !== 201) {
-    throw new Error(`minting the token Scoped answered ${minted.status}: ${await minted.text()}`);
+    throw new Error(`minting the token ${name} answered ${minted.status}: ${await minted.text()}`);
   }
+}
+const test = stubbed(async () => {
+  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: "SIDE", name: "Side work" });
+  await mintAs("Scoped", ["CORE"]);
   return { label: "Reviewer", token: "Scoped" };
 });
 
@@ -55,3 +62,33 @@ test("a token's row reads the projects it names, and the mint sends the projects
   );
   await expect(newPicker).toHaveText("Public projects only");
 });
+
+/** alice's token Hidden lists PRIV, which bob owns and made private after she minted it, so she
+ *  no longer sees it: Dispatch answers her browser the token with no list and `projects_hidden`.
+ *  This release's route refuses a private setting until the deployment's bus can hold it, so the
+ *  row is written as that write writes it. */
+const hiddenTest = stubbed(async () => {
+  await createProject({ key: "PRIV", name: "Private work" }, { login: "bob" });
+  await mintAs("Hidden", ["PRIV"]);
+  await sql(`update projects set visibility = 'private' where key = 'PRIV'`);
+  return { token: "Hidden" };
+});
+
+hiddenTest(
+  "a token listing only projects its reader cannot see says so, and a scope edit leaves its list alone @pr",
+  async ({ page, scene }) => {
+    await page.goto("/settings");
+    await expect(page.getByRole("button", { name: `Projects (${scene.token})` })).toHaveText(
+      "No project you can see"
+    );
+    await expect(page.getByText("A change here drops the projects you cannot see.")).toBeVisible();
+
+    const edit = page.waitForRequest(
+      (request) =>
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname.startsWith("/api/v1/me/agent-tokens/")
+    );
+    await page.getByLabel(`Approve and control credentials (${scene.token})`).click();
+    expect((await edit).postDataJSON()).toEqual({ scopes: ["person"] });
+  }
+);
