@@ -17830,6 +17830,88 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  // A failed read that gives the cached list with the same items keeps the bytes placed before,
+  // which do not say that the read failed, so the log says it: on the first such request, and
+  // then not until a read has answered again, so a lasting failure is one line. A read that
+  // answers logs nothing: what it gives reaches the model, or is what the model has.
+  test("a failed read whose cached list keeps the placed bytes logs why once, and again only after a read has answered", async () => {
+    answeringDispatch("Go the second way.");
+    const answering = rowFetch();
+    let failing = false;
+    globalThis.fetch = async (input, init) =>
+      failing && new URL(input.toString()).host === "dispatch.test"
+        ? Response.json({ unexpected: true })
+        : answering(input, init);
+    const { default: envoyExtension } = await import("./envoy.ts?session-answers-kept-failure");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const context = sessionContext("ses_answers_kept_failure");
+    await fixture.handlers.get("session_start")?.({}, context);
+    const prompt = {
+      role: "user",
+      content: [{ type: "text", text: "Fix the bug." }],
+      timestamp: 1,
+    };
+    /** Tool round `n` of the conversation: a read call and its result. */
+    const round = (n: number) => [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: `call-${n}`, name: "read", arguments: { path: "x.ts" } }],
+        timestamp: 2 * n,
+      },
+      {
+        role: "toolResult",
+        toolCallId: `call-${n}`,
+        toolName: "read",
+        content: [{ type: "text", text: "export {};" }],
+        isError: false,
+        timestamp: 2 * n + 1,
+      },
+    ];
+    const warnings: string[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push(entry.message);
+    });
+    const unshown = () => warnings.filter((warning) => warning.includes("could not be read"));
+    const failure =
+      "envoy: people's answers could not be read (Dispatch answered with something that is not an answers list); the request keeps the list placed before, which does not name this read's failure";
+    try {
+      const first = contextMessages(
+        await fixture.handlers.get("context")?.({ messages: [prompt] }, context)
+      );
+      const placed = first.at(-1);
+      expect(JSON.stringify(placed)).toContain("Go the second way.");
+      expect(unshown()).toEqual([]);
+      const rounds = [1, 2, 3, 4, 5].map(round);
+      /** Sends the request after `n` tool rounds, and checks that it keeps the placed bytes where
+       *  the first request put them. */
+      const keeps = async (n: number) => {
+        const conversation = [prompt, ...rounds.slice(0, n).flat()];
+        const messages = contextMessages(
+          await fixture.handlers.get("context")?.({ messages: conversation }, context)
+        );
+        expect(messages.slice(1)).toEqual([prompt, placed, ...conversation.slice(1)]);
+      };
+
+      // Three failed reads keep the placed bytes, and only the first logs.
+      failing = true;
+      for (const n of [1, 2, 3]) {
+        await keeps(n);
+        expect(unshown()).toEqual([failure]);
+      }
+      // Dispatch answers again, with the same item: the placed bytes stay, and nothing is logged.
+      failing = false;
+      await keeps(4);
+      expect(unshown()).toEqual([failure]);
+      // The first failed read after that logs again.
+      failing = true;
+      await keeps(5);
+      expect(unshown()).toEqual([failure, failure]);
+    } finally {
+      stopSink();
+    }
+  });
+
   test("a task subagent's context handler reads its parent's list", async () => {
     const fixture = transcriptFixture();
     try {

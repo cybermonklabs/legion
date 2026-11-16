@@ -12,7 +12,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor } from "./errors";
+import { messageFor, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -706,6 +706,7 @@ export class EnvoyApiError extends Error {
   constructor(
     readonly details: {
       readonly method: string;
+      /** The request's URL as text names it: without the user and password it may carry. */
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;
@@ -903,7 +904,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // come back — and the error names both halves.
       return {
         unanswered: new Error(
-          `${init.method ?? "GET"} ${url} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
+          `${init.method ?? "GET"} ${withoutUserinfo(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
           { cause: unminted }
         ),
       };
@@ -947,7 +948,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       const error = new EnvoyApiError({
         method: init.method ?? "GET",
-        url,
+        url: withoutUserinfo(url),
         status: response.status,
         responseBody: body,
       });

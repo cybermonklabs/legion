@@ -6587,7 +6587,7 @@ Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker 
 it projects the broker's token, has a key directory of its own, and its shim takes the three agent-secrets flags and its agent `AGENT_SECRETS_URL` and `AGENT_SECRETS_KEY_DIR`.
 It runs as the operator's ServiceAccount (`runtime.kubernetes.pod`), the same account as every issue pod, and it is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps that account to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
-The broker grants it, with no person asked, an agent secret whose owner is `legion-daemon` and whose tier is `agent`, which is how the operator stores `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token its `slack_post` replies with.
+Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
 "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:
 Karpenter never consolidates or replaces for drift the node it runs on, though issue pods can still be scheduled onto that node;

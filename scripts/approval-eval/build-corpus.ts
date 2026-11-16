@@ -13,7 +13,8 @@ import {
   verdictOf,
 } from "./corpus-io";
 import { type DispatchEvent, pageEventLog } from "./dispatch-read";
-import { noteIssueCreated, reserveOf } from "./reserve";
+import { type IssueParents, noteAskRoot, noteIssueParent, reserveOf, treeRootOf } from "./reserve";
+import { TREES_FILE, TREES_VERSION, TreeLog, type TreesFile } from "./trees";
 
 /**
  * Builds the corpus of one person's approval decisions: every ask that person answered, up to a
@@ -28,9 +29,13 @@ import { noteIssueCreated, reserveOf } from "./reserve";
  * ask and its own `at`) collapse to the earliest event; an answer the person changed carries a
  * later `at` and is a second case.
  *
- * The same walk reads each issue's `issue.created` event, so each case carries when its issue was
- * created. The reserve of INFRA-2897's next final test reads that time (`reserve.ts`), and the
- * build prints how many of its cases the reserve holds from every command.
+ * The same walk reads each issue's `parent` as every whole-issue event records it, so each case
+ * carries the root of its issue's tree at its ask's first opening and at the build's pinned event.
+ * The reserve of INFRA-2897's next final test reads them (`reserve.ts`), and the build prints how
+ * many of its cases the reserve holds from every command. The walk also keeps every parent link
+ * any of those events recorded, every ask's first opening and every change of a parent, and
+ * writes them by tree to `trees.json` for each tree that holds a case (`trees.ts`): the claim's
+ * draw groups by those trees (the reserve's item 6).
  *
  * Nothing it writes goes into this repository: `--out` is an absolute path outside the workspace,
  * since a corpus of a production log is large and the workspace is snapshotted whole.
@@ -43,8 +48,8 @@ Builds one person's approval corpus from Dispatch's event log.
 
 Options:
   --person <login>     Required. The login whose own answers make the cases.
-  --out <dir>          Required. Where corpus.jsonl, snapshot.json and counts.json are written.
-                       An absolute path outside this repository's workspace.
+  --out <dir>          Required. Where corpus.jsonl, snapshot.json, counts.json and trees.json
+                       are written. An absolute path outside this repository's workspace.
   --through <event id> The last event of the walk, which pins the build. With none, the log is
                        walked once to learn its newest event id, and that id is the pin.
 
@@ -125,11 +130,17 @@ export interface CaseRow {
   hasWords: boolean;
   askCreatedAt: string | null;
   /**
-   * When the case's issue was created, from the log's `issue.created` event: null where the walk
-   * found none, and absent from a corpus built before the build recorded it. The reserve of the
-   * next final test reads it (`reserve.ts`).
+   * The root of the case's issue tree at its ask's first opening, following each issue's `parent`
+   * as the log's whole-issue events recorded it up to the `ask.opened` event: null where the ask
+   * opened on no issue, the walk found no opening, or the chain could not be followed; absent from
+   * a corpus built before the build recorded it. The reserve reads it (`reserve.ts`).
    */
-  issueCreatedAt?: string | null;
+  askTreeRoot?: string | null;
+  /**
+   * The root of the case's issue tree at the build's pinned event, read the same way: null where
+   * the case has no issue or the chain could not be followed, and absent as `askTreeRoot` is.
+   */
+  issueTreeRoot?: string | null;
   answeredAt: string;
   eventCreatedAt: string;
   approval: CaseApproval | null;
@@ -376,13 +387,17 @@ async function build(flags: Flags): Promise<number> {
     console.log(`no --through given: pinned to the log's newest event, ${through}`);
   }
   const seeds = new Map<string, CaseSeed>();
-  const issueCreated = new Map<string, string>();
+  const parents: IssueParents = new Map();
+  const askRoots = new Map<string, string | null>();
+  const trees = new TreeLog();
   let keptEvents = 0;
   const walk = await pageEventLog({
     through,
     onPage: (events) => {
       for (const event of events) {
-        noteIssueCreated(issueCreated, event);
+        noteIssueParent(parents, event);
+        noteAskRoot(askRoots, parents, event);
+        trees.note(event);
         if (KEPT_TYPES[event.type] !== true) continue;
         keptEvents += 1;
         const seed = caseOf(event, flags.person);
@@ -395,7 +410,8 @@ async function build(flags: Flags): Promise<number> {
   const rows = withConfounds(
     [...seeds.values()].map((seed) => ({
       ...seed,
-      issueCreatedAt: seed.issueKey === null ? null : (issueCreated.get(seed.issueKey) ?? null),
+      askTreeRoot: askRoots.get(seed.askId) ?? null,
+      issueTreeRoot: seed.issueKey === null ? null : treeRootOf(seed.issueKey, parents),
     }))
   );
   const counts = countsOf(rows);
@@ -415,6 +431,14 @@ async function build(flags: Flags): Promise<number> {
   );
   await writeFile(join(directory, "snapshot.json"), `${JSON.stringify(snapshot, null, 2)}\n`);
   await writeFile(join(directory, "counts.json"), `${JSON.stringify(counts, null, 2)}\n`);
+  const treesFile: TreesFile = {
+    version: TREES_VERSION,
+    throughEventId: through,
+    groups: trees.groupsOf(
+      rows.map((row) => row.issueKey).filter((key): key is string => key !== null)
+    ),
+  };
+  await writeFile(join(directory, TREES_FILE), `${JSON.stringify(treesFile)}\n`);
   console.log(report(counts, snapshot, directory));
   if (rows.length === 0) {
     console.error(`no case: ${flags.person} answered no ask through event ${through}`);

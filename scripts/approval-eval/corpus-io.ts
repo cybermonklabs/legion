@@ -234,15 +234,15 @@ export async function outDirectory(out: string): Promise<string> {
  * a reading of the same rows, and this reader never opens it.
  *
  * Every command reads its corpus here, so this is where the reserve of INFRA-2897's next final
- * test is held (`reserve.ts`): a case on a reserved issue is left out of the corpus, and the
+ * test is held (`reserve.ts`): a case the reserve holds is left out of the corpus, and the
  * count left out is printed, unless `APPROVAL_EVAL_RESERVE` is `read:<reference>` and the
  * registration (`claim.ts` unless `options.registration` names another) lists that reference with
  * this run's digest. `options.inputs` is what a command adds to the digest for what it runs from
  * outside the repository, and `options.root` the root the bundle is read under (this checkout's
  * unless a test names another). Any other read of the reserve is refused, with the run's digest.
  * Once the registration records that the reserve ended, nothing is held. A corpus built before the
- * build recorded when each issue was created, holding a case the reserve could hold, is refused:
- * only a new build can say whether that case is reserved.
+ * build recorded what the reserve reads of a case, holding a case the reserve could hold, is
+ * refused: only a new build can say whether that case is reserved.
  */
 export async function readCorpus(
   corpus: string,
@@ -272,7 +272,8 @@ export async function readCorpus(
       throw new CorpusError(
         `${join(directory, "corpus.jsonl")} line ${index + 1}: case ${row.caseId} on ` +
           `${row.issueKey} may be reserved for INFRA-2897's next final test, and this corpus ` +
-          "was built before build-corpus.ts recorded when each issue was created: build it again"
+          "was built before build-corpus.ts recorded what the reserve reads of a case (the roots " +
+          "of its tree at the ask's opening and at the build): build it again"
       );
     }
     if (reserve === "held") {

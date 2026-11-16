@@ -94,6 +94,7 @@ import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
+import { withoutUserinfo } from "./errors";
 
 export type {
   CredentialPendingResponse,
@@ -149,7 +150,7 @@ export class DispatchGatewayError extends DispatchServiceError {
     status: number,
     /**
      * `<METHOD> <url> answered <status>[ <reason>] with <body>, which looks like a proxy or
-     * gateway page rather than Dispatch's own answer`.
+     * gateway page rather than Dispatch's own answer`, the URL without its user and password.
      */
     readonly answer: string,
     /** What asking again can do, as a clause that follows "so", without a final stop. */
@@ -183,7 +184,8 @@ export class DispatchWriteUnsettledError extends Error {
     readonly attempts: number,
     /**
      * What the write got, as the message's first clause, where `last` is no refusal that says it:
-     * `<METHOD> <url>` and how it ended. `last`'s own message otherwise.
+     * `<METHOD> <url>` (the URL without its user and password) and how it ended. `last`'s own
+     * message otherwise.
      */
     unanswered?: string,
     keyed = false
@@ -237,8 +239,9 @@ export class DispatchWriteLandedError extends Error {
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
         ? "Dispatch kept no copy of its answer, which was too large"
         : "its answer was lost on the way back";
+    const request = `${method} ${withoutUserinfo(url)}`;
     super(
-      `${method} ${url} was made, but ${lost} (${code}), so this command cannot print what it ` +
+      `${request} was made, but ${lost} (${code}), so this command cannot print what it ` +
         "made: read it back with `dispatch read`, or with the matching list for something it created."
     );
   }
@@ -294,14 +297,15 @@ function reviewNoRouteRefusal(
   route: string,
   version: number
 ): DispatchServiceError {
+  const shown = withoutUserinfo(baseUrl);
   return new DispatchServiceError(
     "NOT_FOUND",
     404,
-    `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, and an ` +
+    `Dispatch at ${shown} answered no route for ${route} each time the review was sent, and an ` +
       "answer of no route records no review. This build is older than that route. No other review " +
       "route was asked: the review route an older build serves takes no version, and it " +
       `would record the review at a version that build chooses, which may not be version ${version}. ` +
-      `The no-route answer does not name the build; GET ${baseUrl}/healthz names the commit of the ` +
+      `The no-route answer does not name the build; GET ${shown}/healthz names the commit of the ` +
       "build that answers it, when that build was stamped with one."
   );
 }
@@ -925,9 +929,9 @@ export class DispatchClient {
     const answer: unknown = await this.#json("GET", path, undefined, query);
     const refusal = whyNotAPage(answer);
     if (refusal === undefined) return answer as IssueSummaryPage;
+    const url = withoutUserinfo(this.#url(path, query));
     throw new Error(
-      `GET ${this.#url(path, query)} asked for a page ({issues, total, limit, offset}) and got ` +
-        refusal
+      `GET ${url} asked for a page ({issues, total, limit, offset}) and got ${refusal}`
     );
   }
 
@@ -945,9 +949,8 @@ export class DispatchClient {
     const query = { ...options };
     const answer: unknown = await this.#json("GET", path, undefined, query);
     if (Array.isArray(answer)) return answer as IssueSummary[];
-    throw new Error(
-      `GET ${this.#url(path, query)} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`
-    );
+    const url = withoutUserinfo(this.#url(path, query));
+    throw new Error(`GET ${url} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`);
   }
 
   /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
@@ -2019,7 +2022,7 @@ export class DispatchClient {
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;
-    const request = `${method} ${url}`;
+    const request = `${method} ${withoutUserinfo(url)}`;
     const started = this.#now();
     // An upload, a body of `STREAMED_BODY_MIN` or more that goes out as a stream (`attemptBody`),
     // sends that whole body again on every repeat, so it keeps the schedule alone and never enters
@@ -2291,12 +2294,12 @@ export class DispatchClient {
    * `error` (`writeError` in the server), and it renders as that text with its `code`. Any other
    * non-2xx body — a gateway's HTML page, an empty body, JSON of another shape — did not come
    * from Dispatch, so it is a `DispatchGatewayError` naming the request (method, URL and query;
-   * the token travels in a header, never the URL), the status and reason phrase, a one-line
-   * plain-text excerpt of the body (or, when none of what the excerpt reads is text, the body's
-   * size), and what asking again can do for that method and status. A write Dispatch made whose
-   * answer is gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading
-   * `IDEMPOTENCY_ANSWER_NOT_KEPT` (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a
-   * refusal nor a payload.
+   * the URL's user and password are left out, and the token travels in a header, never the URL),
+   * the status and reason phrase, a one-line plain-text excerpt of the body (or, when none of
+   * what the excerpt reads is text, the body's size), and what asking again can do for that
+   * method and status. A write Dispatch made whose answer is gone —
+   * `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`
+   * (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a refusal nor a payload.
    */
   async #response<T>(method: string, url: string, response: Response): Promise<T> {
     const text = await response.text();
@@ -2342,9 +2345,10 @@ export class DispatchClient {
       }
       const reasonPhrase = excerpt(response.statusText, this.token);
       const reason = reasonPhrase === "" ? "" : ` ${reasonPhrase}`;
+      const request = `${method} ${withoutUserinfo(url)}`;
       throw new DispatchGatewayError(
         response.status,
-        `${method} ${url} answered ${response.status}${reason} with ${body}, ${GATEWAY_PAGE}`,
+        `${request} answered ${response.status}${reason} with ${body}, ${GATEWAY_PAGE}`,
         gatewayAdvice(method, response.status)
       );
     }

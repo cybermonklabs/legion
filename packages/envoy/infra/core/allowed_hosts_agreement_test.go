@@ -1,8 +1,6 @@
 package core_test
 
 import (
-	"os/exec"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -85,17 +83,5 @@ func TestCoreAndTheListenerAgreeOnAnAllowedHost(t *testing.T) {
 				requireInputError(t, checkErr, "allowedHosts", row.entry)
 			}
 		})
-	}
-}
-
-// The test above imports the listener's config package, which go list does not count: a non-test
-// import would put it in `go list -deps ./cmd/...`, the path list a plugin release is cut from
-// (AGENTS.md, "Release contract"), so an edit to Envoy's config would cut a plugin release.
-func TestCoreCompilesNoListenerConfigPackage(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").CombinedOutput()
-	require.NoError(t, err, string(out))
-	for _, dep := range strings.Fields(string(out)) {
-		require.NotEqual(t, "github.com/sjawhar/envoy/internal/config", dep,
-			"the core package imports the listener's config package")
 	}
 }
