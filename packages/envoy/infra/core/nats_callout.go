@@ -71,7 +71,7 @@ type AuthCallout struct {
 // group then, by unsubscribing or closing its connection; that is INFRA-840's to provide.
 //
 // ping_interval also governs a server's routes unless cluster.ping_interval is set, so the
-// clustered hub pins the routes' own (gcp clusteredHubRoutePing). The lines are part of
+// clustered hub pins the routes' own (gcp clusteredHubCluster). The lines are part of
 // CalloutLines, whose change rolls the clustered hub's pods.
 const calloutPingLines = "# a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s\n" +
 	"ping_interval: \"20s\"\n" +

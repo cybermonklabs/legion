@@ -55,7 +55,7 @@ const (
 	// them the server would take is an edit of their value, which each connection applies at its
 	// timer's next re-arm (server/client.go:6037-6050), within one interval of 20 s. They are in the
 	// digest so that every server applies such an edit at one known moment, its pod's restart, with
-	// every connection's timer started fresh. The routes' ping pin (clusteredHubRoutePing) appears
+	// every connection's timer started fresh. The routes' ping pin (clusteredHubCluster) appears
 	// and goes with the callout, so it always arrives with a roll.
 	clusteredHubAuthCalloutAnnotation = "envoy-infra.sjawhar.dev/auth-callout"
 	// clusteredHubAuthConf is the file of the chart's ConfigMap holding the users' authorization,
@@ -68,20 +68,6 @@ const (
 	// <group>/namespaces/<namespace>/<kind>/<name>, the core group's empty.
 	clusteredHubDependsOnAnnotation = "config.kubernetes.io/depends-on"
 )
-
-// clusteredHubRoutePing is what the hub merges into nats.conf's cluster block beside a callout:
-// the routes' own ping_interval and ping_max, at what routes used before the callout. A route reads
-// cluster.ping_interval first and the top-level ping_interval otherwise (server/client.go:5957-5964,
-// :6042-6049, :7124), so the callout's top-level 20 s would govern routes too. A route is pinged on
-// every tick whether or not it carries traffic (:5968-5970), and a PING queues behind pending data,
-// so a route whose queue takes longer than 2 to 3 intervals to drain is closed as stale and loses
-// what was in transit. Without a callout, the 2-minute default (server/const.go:120) is capped for
-// routes at routeMaxPingInterval, 30 s (server/route.go:144, :152; client.go:6005-6010), and a
-// route takes the top-level ping_max, 2 (const.go:123; client.go:5983-5986). Pinned, only client
-// connections get the 20 s ping. Without a callout the cluster block is as it was (R9).
-func clusteredHubRoutePing() pulumi.Map {
-	return pulumi.Map{"ping_interval": pulumi.String("30s"), "ping_max": pulumi.Int(2)}
-}
 
 // clusteredHubConfigMapRef is the depends-on reference of the chart's ConfigMap, which holds
 // nats.conf and auth.conf: the chart names it <fullname>-config (values.yaml configMap.name), and
@@ -304,12 +290,23 @@ func clusteredHubChartValues(s clusteredHubSettings) pulumi.Map {
 }
 
 // clusteredHubCluster is the chart's cluster values: three servers that advertise no pod address
-// and, beside a callout, whose routes keep their own ping (clusteredHubRoutePing). The settings
-// carry a callout exactly when calloutDigest is set.
+// and, beside a callout, whose routes keep their own ping. The settings carry a callout exactly
+// when calloutDigest is set.
+//
+// The merge pins the routes' own ping_interval and ping_max at what routes used before the
+// callout. A route reads cluster.ping_interval first and the top-level ping_interval otherwise
+// (server/client.go:5957-5964, :6042-6049, :7124), so the callout's top-level 20 s would govern
+// routes too. A route is pinged on every tick whether or not it carries traffic (:5968-5970), and a
+// PING queues behind pending data, so a route whose queue takes longer than 2 to 3 intervals to
+// drain is closed as stale and loses what was in transit. Without a callout, the 2-minute default
+// (server/const.go:120) is capped for routes at routeMaxPingInterval, 30 s (server/route.go:144,
+// :152; client.go:6005-6010), and a route takes the top-level ping_max, 2 (const.go:123;
+// client.go:5983-5986). Pinned, only client connections get the 20 s ping. Without a callout the
+// cluster block is as it was (R9).
 func clusteredHubCluster(s clusteredHubSettings) pulumi.Map {
 	cluster := pulumi.Map{"enabled": pulumi.Bool(true), "replicas": pulumi.Int(clusteredHubServers), "noAdvertise": pulumi.Bool(true)}
 	if s.calloutDigest != "" {
-		cluster["merge"] = clusteredHubRoutePing()
+		cluster["merge"] = pulumi.Map{"ping_interval": pulumi.String("30s"), "ping_max": pulumi.Int(2)}
 	}
 	return cluster
 }
