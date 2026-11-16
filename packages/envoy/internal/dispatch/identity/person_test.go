@@ -45,7 +45,8 @@ func TestPersonOutsideTheGroupIsRefusedByName(t *testing.T) {
 }
 
 // Only a username a federated provider issued carries an email Dispatch trusts: a pool's own
-// account, or a username whose remainder is not an address, names nobody.
+// account, or a username whose remainder is not an address, one holding a Unicode space included,
+// names nobody.
 func TestPersonRefusesAUsernameNoProviderIssued(t *testing.T) {
 	for _, claims := range []oidc.Claims{
 		{Username: "sami@d.example", Groups: []string{"dispatch-members"}},
@@ -53,6 +54,8 @@ func TestPersonRefusesAUsernameNoProviderIssued(t *testing.T) {
 		{Username: "OtherProvider_sami@d.example", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
 		{Username: "ExampleIdP_not-an-address", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
 		{Username: "ExampleIdP_two@at@d.example", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
+		{Username: "ExampleIdP_sami@d.example\u00a0", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
+		{Username: "ExampleIdP_\u2003sami@d.example", Groups: []string{"dispatch-members"}, Providers: []string{"ExampleIdP"}},
 		{Username: "_sami@d.example", Groups: []string{"dispatch-members"}, Providers: []string{""}},
 	} {
 		if person, err := dispatchMembers.Person(context.Background(), claims); !errors.Is(err, ErrNoPerson) {
@@ -94,6 +97,8 @@ func TestPersonUnderTheDomainRefusesEachWayWithItsReason(t *testing.T) {
 		{"an email Google has not verified", func(c *oidc.Claims) { c.EmailVerified = false }, ErrEmailNotVerified, "a.person@example.com"},
 		{"no email", func(c *oidc.Claims) { c.Email = "" }, ErrNoEmail, ""},
 		{"an email of no address's shape", func(c *oidc.Claims) { c.Email = "not-an-address" }, ErrNoEmail, ""},
+		{"an email ending in a no-break space", func(c *oidc.Claims) { c.Email = "A.Person@example.com\u00a0" }, ErrNoEmail, ""},
+		{"an email starting with an em space", func(c *oidc.Claims) { c.Email = "\u2003A.Person@example.com" }, ErrNoEmail, ""},
 		{"no subject", func(c *oidc.Claims) { c.Subject = "" }, ErrNoPerson, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

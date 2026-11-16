@@ -18,9 +18,15 @@ var (
 )
 
 // EmailShape is an address with one @ and a dotted domain, the shape the deployment repository's
-// identity_email accepts: Google's email claim here, and Dispatch's federated username
-// (identity.GroupRule).
-var EmailShape = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+// identity_email accepts, holding no space: Google's email claim here, and Dispatch's federated
+// username (identity.GroupRule). A space is any character unicode.IsSpace names, not only the ASCII
+// ones Go's \s does: a trim (model.CanonicalLogin) takes U+00A0 NO-BREAK SPACE off an address's
+// end, so an address holding one could be read as another person's.
+var EmailShape = regexp.MustCompile(`^` + addressPart + `@` + addressPart + `\.` + addressPart + `$`)
+
+// addressPart is a run of characters that are neither @ nor a space: \s is \t, \n, \f, \r and the
+// space, and \v, U+0085 and the separators (\p{Z}) are the rest of unicode.IsSpace.
+const addressPart = `[^@\s\v\x{85}\p{Z}]+`
 
 // WorkspaceLogin applies the Google Workspace person rule to the claims a domain-mode code flow read
 // from a verified Google ID token, and returns the person's login: the email with its ASCII letters
