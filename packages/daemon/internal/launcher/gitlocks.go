@@ -59,6 +59,13 @@ var gitLockRecheck = 2 * time.Second
 // worktree entry's gitdir that is a fifo among them (internal/workspace's readGitdir).
 var gitLockRemove = os.Remove
 
+// gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc), the container's
+// own, which the holder read walks to keep every lock a process holds open. It is a variable for
+// the rows that start a real launcher (useSweepingLauncher): the machine's /proc holds processes
+// such a row knows nothing of, and one git among them whose open files the row cannot read makes
+// the sweep keep every lock.
+var gitLockProc = "/proc"
+
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
 // decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
 // serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass that goes
@@ -167,9 +174,8 @@ type gitLockSweep struct {
 }
 
 // serveGitLockSweep is the pod's one sweep of the clone's stale git locks: it builds the sweep
-// (newGitLockSweep) over the /proc cfg names (Config.GitLockProc, "" for the container's own),
-// gives it to every role manager, runs its first pass and its clock (serve), and answers the
-// channel serve answers, closed once its ticker has returned.
+// (newGitLockSweep), gives it to every role manager, runs its first pass and its clock (serve), and
+// answers the channel serve answers, closed once its ticker has returned.
 //
 // The sweep runs only where the launcher is the container's first process (containerInit), as
 // the memory guard does (serveMemoryGuard). A pass keeps a lock that a process holds open and may
@@ -179,7 +185,7 @@ type gitLockSweep struct {
 // another role's git or jj holds. Any other launcher logs one line, sweeps nothing, and answers a
 // channel already closed. No manager then holds a sweep (manager.gitLocks), so a role start
 // learns nothing (learn) and runs its restore over the clone as the clone stands.
-func serveGitLockSweep(ctx context.Context, cfg Config, managers []*manager) <-chan struct{} {
+func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{} {
 	if !containerInit() {
 		managers[0].log.linef("launcher: git lock sweep: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may hold a lock",
 			os.Getpid())
@@ -188,9 +194,6 @@ func serveGitLockSweep(ctx context.Context, cfg Config, managers []*manager) <-c
 		return done
 	}
 	sweep := newGitLockSweep(managers[0].log.linef)
-	if cfg.GitLockProc != "" {
-		sweep.proc = cfg.GitLockProc
-	}
 	for _, m := range managers {
 		m.gitLocks = sweep
 	}
@@ -218,15 +221,15 @@ func serveGitLockSweep(ctx context.Context, cfg Config, managers []*manager) <-c
 // person reading the pod's log sees which clone every pass of the pod walks, or which one it
 // would not walk and why.
 //
-// The two numbers a test shortens, the interval and the recheck, and the removal a test holds are
-// read here, in the caller's own goroutine, and never inside the ticker's: they are package
-// variables, and a goroutine still reading one after the test restored it is a data race the race
-// detector fails the test for (serveTestPG reads its interval the same way). The guard and the
-// first pass's bound are constants nothing writes; a test that varies the guard writes the
-// sweep's own field.
+// The two numbers a test shortens, the interval and the recheck, the removal a test holds and the
+// /proc a test names are read here, in the caller's own goroutine, and never inside the ticker's:
+// they are package variables, and a goroutine still reading one after the test restored it is a
+// data race the race detector fails the test for (serveTestPG reads its interval the same way).
+// The guard and the first pass's bound are constants nothing writes; a test that varies the guard
+// writes the sweep's own field.
 func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	s := &gitLockSweep{
-		proc: "/proc", guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
+		proc: gitLockProc, guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
 		remove: gitLockRemove, now: time.Now, log: log,
 	}
 	dir, err := os.Getwd()

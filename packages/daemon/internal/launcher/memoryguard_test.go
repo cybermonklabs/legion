@@ -841,7 +841,7 @@ func TestMemoryGuardAndTheGitLockSweepRunOnlyInTheContainersFirstProcess(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	select {
-	case <-serveGitLockSweep(ctx, Config{}, managers):
+	case <-serveGitLockSweep(ctx, managers):
 	default:
 		t.Fatal("serveGitLockSweep left something running in a launcher that runs no sweep")
 	}
