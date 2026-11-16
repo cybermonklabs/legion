@@ -56,6 +56,22 @@ func lastEventID(t *testing.T, database *store.Store) int64 {
 	return id
 }
 
+// awaitEventSettled returns once event id is settle old by the database's clock, the one a pass
+// reads every age by (readSuggestionPage): a pass whose transaction starts after it reads the
+// event as settled, however long the box took to get there. An id with no event fails the test
+// rather than returning at once.
+func awaitEventSettled(t *testing.T, database *store.Store, id int64, settle time.Duration) {
+	t.Helper()
+	var slept string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select pg_sleep(greatest(0::double precision,
+			$2::double precision - extract(epoch from clock_timestamp() - created_at)::double precision))::text
+		  from events where id = $1
+	`, id, settle.Seconds()).Scan(&slept); err != nil {
+		t.Fatalf("wait for event %d to be %v old: %v", id, settle, err)
+	}
+}
+
 // sweepSuggestionOutcomes judges everything there is to judge at the server's page size, holding
 // nothing back to settle, up to a safe horizon proven after the call (safeHorizon), so the pass
 // reads every event committed before it: what a test that has just written what it wants judged
@@ -178,10 +194,16 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 }
 
 // A suggestion younger than settle is not judged, whatever older event a page carries: here
-// another person's message on the suggested issue, written before the suggestion, becomes settle
-// old while the suggestion is not. The agent comments on what it filed and, moments later, updates
-// the suggested issue; judged at the older event's turn, the comment alone would read as an
+// another person's message on the suggested issue, written before the suggestion, is settle old at
+// a pass while the suggestion is not. The agent comments on what it filed and, moments later,
+// updates the suggested issue; judged at the older event's turn, the comment alone would read as an
 // override. Judged once it is settle old, the rules see both writes, and it is acted_on.
+//
+// A pass reads every age against now(), its transaction's start. The young pass's transaction
+// starts once the other person's message is settle old and before the suggestion is recorded, so
+// that pass reads the message as settled and the suggestion and the comment after it as younger
+// than settle, however long the writes and the safe horizon between take. It takes no transaction
+// id until the pass locks the cursor, so it holds back neither those writes nor that horizon.
 func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 	const settle = 2 * time.Second
 	ctx := context.Background()
@@ -198,28 +220,37 @@ func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 		t.Fatalf("clear the suggestions filing recorded: %v", err)
 	}
 
-	older := time.Now()
 	postOutcomeMessage(t, handler, target, "bob", "A note of my own on the target.")
-	time.Sleep(settle / 2)
+	older := lastEventID(t, database)
+	awaitEventSettled(t, database, older, settle)
+	pass, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the young pass's transaction: %v", err)
+	}
+	defer func() { _ = pass.Rollback(context.Background()) }()
 	seedWriteSuggestion(t, srv, "issue", source, "", "alice", "issue", target, target)
-	recorded := time.Now()
 	time.Sleep(10 * time.Millisecond) // the events must postdate the suggestion row
 	postOutcomeMessage(t, handler, source, "alice", "Looking into this here first.")
 
-	// bob's message is settle old now; the suggestion is not.
-	time.Sleep(time.Until(older.Add(settle + 200*time.Millisecond)))
-	if age := time.Since(recorded); age >= settle {
-		t.Fatalf("the suggestion is already %v old; the test needs it younger than %v here", age, settle)
+	safe := safeHorizon(t, srv)
+	if _, _, err := judgeSuggestionPage(ctx, pass, safe, suggestionOutcomePage, settle); err != nil {
+		t.Fatalf("judge a page while the suggestion is young: %v", err)
 	}
-	if _, err := sweepSuggestionOutcomePages(ctx, database.Pool, safeHorizon(t, srv), suggestionOutcomePage, settle); err != nil {
-		t.Fatalf("sweep while the suggestion is young: %v", err)
+	if err := pass.Commit(ctx); err != nil {
+		t.Fatalf("commit the young pass: %v", err)
+	}
+	switch cursor := outcomeCursor(t, database); {
+	case cursor == nil:
+		t.Fatalf("the cursor is unset after the young pass; want it at event %d, bob's message", older)
+	case *cursor != older:
+		t.Fatalf("cursor = %d after the young pass; want %d: the page carries bob's message, settle old, and stops at alice's younger comment", *cursor, older)
 	}
 	if row := readSuggestionOutcome(t, srv, source, target); row.Outcome != "ignored" {
 		t.Fatalf("outcome = %+v while the suggestion is younger than settle; want ignored until it is settle old", row)
 	}
 
 	postOutcomeMessage(t, handler, target, "alice", "Adding the new detail here instead.")
-	time.Sleep(settle + 200*time.Millisecond)
+	awaitEventSettled(t, database, lastEventID(t, database), settle)
 	if _, err := sweepSuggestionOutcomePages(ctx, database.Pool, safeHorizon(t, srv), suggestionOutcomePage, settle); err != nil {
 		t.Fatalf("sweep once the suggestion is settle old: %v", err)
 	}
