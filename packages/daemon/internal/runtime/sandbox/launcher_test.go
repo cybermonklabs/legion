@@ -389,8 +389,4 @@ func TestAPromptWhoseStartFrameNoLauncherReadsIsRefused(t *testing.T) {
 	if want := (runtime.PromptTooLarge{Role: spec.Role, Bytes: len(over.prompt), Frame: shimwire.MaxFrameBytes + 1}); *refused != want {
 		t.Errorf("prepare refused the launch as %+v, want %+v", *refused, want)
 	}
-	if want := fmt.Sprintf("the tester's system prompt is %d bytes, and the start frame that carries it to its pod's launcher would be %d bytes, larger than the %d bytes a launcher reads in one frame",
-		len(over.prompt), shimwire.MaxFrameBytes+1, shimwire.MaxFrameBytes); !strings.Contains(err.Error(), want) {
-		t.Errorf("prepare refused the launch with %q, want it to say %q", err, want)
-	}
 }

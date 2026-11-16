@@ -600,12 +600,11 @@ same text from the same files. The prompt reaches the pod's launcher in one fram
 most 1048576 bytes. The daemon logs the error `supervise: the role's system prompt is too large
 to launch; failing the claim, charging no launch failure`; the claim's `failure` carries the cause
 word `launch_refused` (`died` where the refused launch was the relaunch of a process that died)
-and a `detail` reading `launch refused, charged no launch failure: sandbox launch <claim>: the
-<role>'s system prompt is <N> bytes, and the start frame that carries it to its pod's launcher
-would be <F> bytes, larger than the 1048576 bytes a launcher reads in one frame` (`launch <claim>:
-start through its authenticated launcher: the <role>'s …` when the start measured is the one sent
-to a pod already running), and its `lastStartFailure` carries the same sentence, both read with
-`read_state`. Cut the prompt: the deployment's instructions, the role's
+and a `detail` reading `launch refused, charged no launch failure: …: the <role>'s system prompt is
+<N> bytes, and the start frame that carries it to its pod's launcher would be <F> bytes, larger
+than the 1048576 bytes a launcher reads in one frame`, the part before the sentence naming the
+claim and the launch step that measured the frame, and its `lastStartFailure` carries the same
+sentence, both read with `read_state`. Cut the prompt: the deployment's instructions, the role's
 prompt, or an experiment arm's instructions.
 
 Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The

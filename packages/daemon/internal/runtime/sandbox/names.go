@@ -462,14 +462,14 @@ func generationDir(generation uint64) string {
 const claudeMCPFile = "claude-mcp.json"
 
 // systemPromptPath is where a generation's agent reads the launch's system prompt:
-// runtime.SystemPromptFile in generationDir, which the launcher writes 0600 from the start
-// command's Files (launcherCommand) before the child starts and removes with the rest of the
-// directory when the generation ends. The agent's argv names this path as the value of Oh My Pi's
+// runtime.SystemPromptFile in generationDir, which the launcher writes 0600, with every entry of
+// the start command's Files (launcherCommand), into the 0700 directory it makes for the generation,
+// before the child starts, and removes with the rest of that directory when the generation ends
+// (internal/launcher's writeFiles). The agent's argv names this path as the value of Oh My Pi's
 // `--append-system-prompt` or Claude Code's `--append-system-prompt-file` (agentArgv, claudeArgv;
 // runtime.SystemPromptFile says why it is a file). The directory is on the role's own
-// memory-backed private volume, which in an
-// issue pod only that role's namespace binds back at LauncherPrivateDir (RolesDir, role-init), so
-// no other role's process can read or change the file.
+// memory-backed private volume, which in an issue pod only that role's namespace binds back at
+// LauncherPrivateDir (RolesDir, role-init), so no other role's process can read or change the file.
 func systemPromptPath(generation uint64) string {
 	return generationDir(generation) + "/" + runtime.SystemPromptFile
 }

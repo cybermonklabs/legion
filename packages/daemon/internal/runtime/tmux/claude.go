@@ -61,8 +61,7 @@ func writeClaudeMCPConfig(configDir string, launch ClaudeLaunch) (string, error)
 
 // claudeInnerCommand is the command the shim runs for a Claude Code role: the agent command
 // claudelaunch.Argv builds from the pane's boot-resolved paths, ending in
-// `--append-system-prompt-file` on promptFile, the file launch wrote the claim's composed prompt
-// to (runtime.SystemPromptPath), every word quoted for the pane's shell.
+// `--append-system-prompt-file` on promptFile, every word quoted for the pane's shell.
 func claudeInnerCommand(legion string, launch ClaudeLaunch, mcpConfig, session string, resume bool, promptFile string) string {
 	paths := claudelaunch.Paths{Legion: legion, Claude: launch.Binary, PluginDir: launch.PluginDir}
 	return shellprefix.Command(claudelaunch.Argv(paths, mcpConfig, session, resume, promptFile))
@@ -90,10 +89,9 @@ func (claudeLauncher) SessionsDir(spec runtime.SpawnSpec, host Host, _ map[strin
 }
 
 // Launch is the inner command and the extra -e pairs of a Claude Code launch: the claim's
-// directory made, its MCP configuration written, the session it starts or continues, and the
-// claim's prompt file under host's state directory (runtime.SystemPromptPath), the one launch
-// writes before the pane opens.
-func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host) (inner string, pairs []string, err error) {
+// directory made, its MCP configuration written, the session it starts or continues, and
+// promptFile as the system prompt.
+func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host, promptFile string) (inner string, pairs []string, err error) {
 	configDir := ClaudeConfigDir(host.StateDir, spec.Claim)
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return "", nil, fmt.Errorf("spawn %s: the Claude Code directory: %w", spec.Claim, err)
@@ -111,6 +109,6 @@ func (l claudeLauncher) Launch(spec runtime.SpawnSpec, host Host) (inner string,
 	if err != nil {
 		return "", nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, runtime.SystemPromptPath(host.StateDir, spec.Claim)),
+	return claudeInnerCommand(host.Legion, l.launch, mcpConfig, session, resume, promptFile),
 		claudeEnvironment(configDir), nil
 }

@@ -880,7 +880,7 @@ func TestRealTmuxLifecycle(t *testing.T) {
 	// it the whole composed prompt, the addressing text literal.
 	report := readReport(t, r.workspace(spec.Issue), omp)
 	args, _ := report["systemPromptArgs"].([]any)
-	if promptFile := runtime.SystemPromptPath(r.stateDir, spec.Claim); len(args) != 1 || args[0] != promptFile {
+	if promptFile := filepath.Join(r.stateDir, "secrets", string(spec.Claim)+"-system-prompt.md"); len(args) != 1 || args[0] != promptFile {
 		t.Errorf("OMP's --append-system-prompt values = %q, want exactly one: the claim's prompt file %s", args, promptFile)
 	}
 	prompts, _ := report["systemPrompt"].([]any)
@@ -1680,7 +1680,7 @@ func TestRealTmuxVerifiesAPaneByItsConfiguredHarnessesMarkers(t *testing.T) {
 // markedLauncher launches nothing; its marker is the string itself.
 type markedLauncher string
 
-func (m markedLauncher) Launch(runtime.SpawnSpec, Host) (string, []string, error) {
+func (m markedLauncher) Launch(runtime.SpawnSpec, Host, string) (string, []string, error) {
 	return "", nil, errors.New("markedLauncher launches nothing")
 }
 

@@ -71,8 +71,8 @@ func TestWriteSystemPromptWritesTheClaimsOwnFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := filepath.Join(state, "secrets", "legion-legion-legion-42-tester-system-prompt.md")
-	if path != want || SystemPromptPath(state, "legion-legion-legion-42-tester") != want {
-		t.Fatalf("WriteSystemPrompt wrote %s, want %s, the path SystemPromptPath names", path, want)
+	if path != want {
+		t.Fatalf("WriteSystemPrompt wrote %s, want %s", path, want)
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "the prompt" {
 		t.Fatalf("the prompt file holds %q, %v; want the prompt", got, err)

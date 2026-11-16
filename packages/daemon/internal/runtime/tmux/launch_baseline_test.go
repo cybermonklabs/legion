@@ -86,12 +86,10 @@ func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 }
 
 // launchBaseline is what the golden records for one role: the values a launch hands the pane's Oh
-// My Pi — its PI_CONFIG_FILES, its one --append-system-prompt word, and the text of the file that
-// word names.
+// My Pi — its PI_CONFIG_FILES and its one --append-system-prompt word.
 type launchBaseline struct {
 	PiConfigFiles      string `json:"PI_CONFIG_FILES"`
 	AppendSystemPrompt string `json:"--append-system-prompt"`
-	SystemPrompt       string `json:"system-prompt.md"`
 }
 
 // pairValue is the value of the pane variable named, out of the NAME=value pairs of panePairs or
@@ -107,19 +105,18 @@ func pairValue(variables []string, name string) (string, bool) {
 
 // The launch bytes a deployment with no experiment of its own and no `memory` block produces
 // today, whose memory arms name no file, for every role Legion launches in a pane: the golden
-// pins three values per role — the pane's PI_CONFIG_FILES, the operator's own overlays first and
-// then the role's own; the one --append-system-prompt word of the pane's command, the claim's
-// prompt file under the state directory; and the text launch writes to that file, the role prompt,
-// then the addressing, then the deployment instructions.
-// All three are kept non-empty for all seven roles by the fixture (baselineOperatorOverlay,
-// baselineRoleFiles and baselineSpec), so a later change that drops an overlay, reorders the list,
-// moves the prompt file, or moves a prompt fragment shows here as a diff to read.
+// pins two values per role — the pane's PI_CONFIG_FILES, the operator's own overlays first and
+// then the role's own; and the one --append-system-prompt word of the pane's command, the path
+// runtime.WriteSystemPrompt wrote the claim's prompt to under the state directory, written as
+// /state. Both are kept non-empty for all seven roles by the fixture (baselineOperatorOverlay,
+// baselineRoleFiles and baselineSpec), so a later change that drops an overlay, reorders the list
+// or moves the prompt file shows here as a diff to read. What the file holds is a real spawn's
+// (TestAPromptOver131072BytesLaunchesInAPaneAsAPath, and the real-tmux lifecycle test).
 //
 // The pairs are read from panePairs, the pane's own -e pairs, and are proven to be what
 // PaneVariables tells a caller that runs Oh My Pi under the pane's environment itself; the prompt
 // word is read from the command the Oh My Pi launcher gives the shim (ompLauncher.Launch,
-// innerCommand), and the text is runtime.ComposePrompt's, the one call launch writes the file from.
-// Nothing here starts tmux, so the capture runs on a host that has no tmux binary.
+// innerCommand). Nothing here starts tmux, so the capture runs on a host that has no tmux binary.
 func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 	launcher := NewOmpLauncher(nil, baselineInvocation)
 	baseline := map[string]launchBaseline{}
@@ -147,7 +144,15 @@ func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 		if got, ok := pairValue(variables, "PI_CONFIG_FILES"); !ok || got != told {
 			t.Fatalf("PaneVariables tells the %s PI_CONFIG_FILES = %q (set %v), want the pane's own %q", role, got, ok, told)
 		}
-		inner, _, err := launcher.Launch(spec, Host{StateDir: baselineStateDir, Legion: "/opt/legion/legion"})
+		prompt, err := runtime.ComposePrompt(spec.Prompt)
+		if err != nil {
+			t.Fatalf("the %s's system prompt: %v", role, err)
+		}
+		promptFile, err := runtime.WriteSystemPrompt(stateDir, string(spec.Claim), prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner, _, err := launcher.Launch(spec, Host{StateDir: stateDir, Legion: "/opt/legion/legion"}, promptFile)
 		if err != nil {
 			t.Fatalf("the %s's pane command: %v", role, err)
 		}
@@ -155,11 +160,7 @@ func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 		if !ok || word == "" {
 			t.Fatalf("the %s's pane command names no --append-system-prompt word:\n%s", role, inner)
 		}
-		text, err := runtime.ComposePrompt(spec.Prompt)
-		if err != nil || text == "" {
-			t.Fatalf("the %s's system prompt = %q, %v", role, text, err)
-		}
-		baseline[string(role)] = launchBaseline{PiConfigFiles: told, AppendSystemPrompt: word, SystemPrompt: text}
+		baseline[string(role)] = launchBaseline{PiConfigFiles: told, AppendSystemPrompt: strings.Replace(word, stateDir, baselineStateDir, 1)}
 	}
 	if len(baseline) != len(baselineRoles()) {
 		t.Fatalf("the baseline holds %d roles, want %d", len(baseline), len(baselineRoles()))

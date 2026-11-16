@@ -60,8 +60,8 @@ func TestThePinnedOhMyPiRefusesToResumeAClaudeCodeTranscript(t *testing.T) {
 		t.Helper()
 		spec := runtime.SpawnSpec{Claim: "legion-omp-legion-43-tester", ResumeSessionFile: resume, Prompt: runtime.PromptParts{RolePromptPaths: []string{filepath.Join(dir, "role.md")}}}
 		host := Host{StateDir: dir}
-		writeLaunchPrompt(t, spec, host)
-		inner, pairs, err := NewOmpLauncher(nil, shellprefix.Word(omp)).Launch(spec, host)
+		promptFile := writeLaunchPrompt(t, spec, host)
+		inner, pairs, err := NewOmpLauncher(nil, shellprefix.Word(omp)).Launch(spec, host, promptFile)
 		if err != nil || pairs != nil {
 			t.Fatalf("Launch = %v, %v", pairs, err)
 		}

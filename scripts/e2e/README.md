@@ -3707,7 +3707,7 @@ Each item below names an observation, then what it judges; an item that names no
   No git runs: git reads `~/.netrc`, `~/.gitconfig`, the repository's own `.git/config`, any scratch repository's and the `GIT_*` variables, all of which the agent's uid can write while the check runs;
   the request is Python's `urllib`, which reads none of them.
   What `as-role.py` prints is one JSON object, kept as `second-owner-probe.raw`; it never holds an argument's or an environment variable's value or a token.
-  The agent runs with `--append-system-prompt <the composed prompt, the deployment's own instructions>`, so its cmdline appears only as `argv0`, `argc` and a sha256 of the whole `/proc/<pid>/cmdline`.
+  The agent runs with `--append-system-prompt <the path of its prompt file>`, and an agent of an older daemon ran with the composed prompt itself as that argument, so its cmdline appears only as `argv0`, `argc` and a sha256 of the whole `/proc/<pid>/cmdline`.
   The check trusts the root-owned image (`/opt/legion/bin`, the CA store, `python3` on the exec's `PATH`);
   it does not defend against an agent that can kill its own shim or ptrace the prober, which no check run beside it in the same container can.
 

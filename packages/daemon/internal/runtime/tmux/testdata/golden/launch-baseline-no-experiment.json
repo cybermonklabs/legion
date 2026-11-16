@@ -1,37 +1,30 @@
 {
   "architect": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/architect.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-architect-system-prompt.md",
-    "system-prompt.md": "You are the architect.\n\nLegion addressing: your role topic is `notifications.role.legion-omp-legion-43-architect`.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-architect-system-prompt.md"
   },
   "controller": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/controller.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-controller-system-prompt.md",
-    "system-prompt.md": "You are the controller.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-controller-system-prompt.md"
   },
   "implementer": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/implementer.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-implementer-system-prompt.md",
-    "system-prompt.md": "You are the implementer.\n\nLegion addressing: your role topic is `notifications.role.legion-omp-legion-43-implementer`.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-implementer-system-prompt.md"
   },
   "merger": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/merger.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-merger-system-prompt.md",
-    "system-prompt.md": "You are the merger.\n\nLegion addressing: your role topic is `notifications.role.legion-omp-legion-43-merger`.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-merger-system-prompt.md"
   },
   "planner": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/planner.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-planner-system-prompt.md",
-    "system-prompt.md": "You are the planner.\n\nLegion addressing: your role topic is `notifications.role.legion-omp-legion-43-planner`.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-planner-system-prompt.md"
   },
   "reviewer": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/reviewer.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-reviewer-system-prompt.md",
-    "system-prompt.md": "You are the reviewer.\n\nLegion addressing: your role topic is `notifications.role.legion-omp-legion-43-reviewer`.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-reviewer-system-prompt.md"
   },
   "tester": {
     "PI_CONFIG_FILES": "/etc/legion-operator/overlay.yml:/etc/legion-operator/fallback.yml:/etc/legion-operator/tester.yml",
-    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-tester-system-prompt.md",
-    "system-prompt.md": "You are the tester.\n\nLegion addressing: your role topic is `notifications.role.legion-omp-legion-43-tester`.\n\n# Deployment instructions\n\nRun the checks."
+    "--append-system-prompt": "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
   }
 }

@@ -7,17 +7,20 @@ import (
 )
 
 // writeLaunchPrompt writes spec's composed system prompt to the claim's prompt file under host's
-// state directory, as launch does before the pane opens, for a test that runs a launcher's command
-// itself: Oh My Pi handed a path it cannot open would take the path's text for its prompt.
-func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) {
+// state directory, as launch does before the pane opens, and returns its path, for a test that runs
+// a launcher's command itself: Oh My Pi handed a path it cannot open would take the path's text for
+// its prompt.
+func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) string {
 	t.Helper()
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.WriteSystemPrompt(host.StateDir, spec.Claim, prompt); err != nil {
+	promptFile, err := runtime.WriteSystemPrompt(host.StateDir, string(spec.Claim), prompt)
+	if err != nil {
 		t.Fatal(err)
 	}
+	return promptFile
 }
 
 // The OMP command inside the shim, as runtime-tmux.ts:430 builds it: prefix and invocation,

@@ -368,6 +368,13 @@ if [ "$1" = models ]; then
 fi
 [ -f "$GH_CONFIG_DIR/hosts.yml" ] && cp "$GH_CONFIG_DIR/hosts.yml" %[1]s/hosts-at-start
 %[3]s
+if [ -n "$LEGION_TEST_HOLD" ]; then
+  : >%[1]s/held
+  i=0
+  while [ "$i" -lt 1200 ] && [ ! -e "$LEGION_TEST_HOLD" ]; do i=$((i + 1)); sleep 0.1; done
+  [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
+  exit 0
+fi
 if [ "$1" = --append-system-prompt ]; then cp "$2" %[1]s/system-prompt; stat -c %%a "$2" >%[1]s/system-prompt-mode; fi
 for a in "$@"; do printf '%%s\0' "$a"; done >%[1]s/argv
 readlink /proc/self/fd/0 >%[1]s/stdin
@@ -704,13 +711,17 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	if err != nil {
 		t.Fatalf("read the deployment instructions: %v", err)
 	}
-	// The one value of --append-system-prompt is the controller's own prompt file under the
-	// secrets directory, never the text. The start message travels as
-	// LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
-	promptFile := filepath.Join(c.defaultDir, "secrets", "legion-demo-controller-system-prompt.md")
-	wantArgv := []string{"--append-system-prompt", promptFile, "/legion-controller-start"}
-	if got := c.argv(); !slices.Equal(got, wantArgv) {
-		t.Fatalf("Oh My Pi's argv = %q\nwant %q", got, wantArgv)
+	// The one value of --append-system-prompt is this run's own prompt file under the secrets
+	// directory, never the text. The start message travels as LEGION_CONTROLLER_START_MESSAGE;
+	// argv ends with the command that sends it.
+	argv := c.argv()
+	if len(argv) != 3 || argv[0] != "--append-system-prompt" || argv[2] != "/legion-controller-start" {
+		t.Fatalf("Oh My Pi's argv = %q, want --append-system-prompt <file> /legion-controller-start", argv)
+	}
+	promptFile := argv[1]
+	if dir, name := filepath.Split(promptFile); dir != filepath.Join(c.defaultDir, "secrets")+"/" ||
+		!strings.HasPrefix(name, "legion-demo-controller-") || !strings.HasSuffix(name, "-system-prompt.md") {
+		t.Fatalf("the prompt file is %s, want legion-demo-controller-<run>-system-prompt.md under %s", promptFile, filepath.Join(c.defaultDir, "secrets"))
 	}
 	// Each file's trailing newlines are dropped where the parts join.
 	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. The project's repositories are acme/widgets.\n\n" +
@@ -799,6 +810,50 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	wantLog := fmt.Sprintf("[legion] starting the controller for demo against %s; state in %s\n", d.url, c.defaultDir)
 	if errb != wantProbe+wantNoApp+wantLog {
 		t.Errorf("stderr = %q, want %q", errb, wantProbe+wantNoApp+wantLog)
+	}
+}
+
+// Two runs of the command overlap, as they do when the operator starts it again while an earlier
+// controller still runs (the new capability revokes the old), and each run's Oh My Pi reads the
+// prompt file it was handed: one run's exit removes its own file and no other run's. The held run's
+// Oh My Pi waits (LEGION_TEST_HOLD) until a second run has written its prompt, launched and
+// exited, and only then reads its own file.
+func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	release := filepath.Join(t.TempDir(), "release")
+	t.Setenv("LEGION_TEST_HOLD", release)
+	held := make(chan int, 1)
+	go func() {
+		code, _, _ := c.run()
+		held <- code
+	}()
+	testwait.Eventually(t, "the held run's Oh My Pi to start and wait", func() bool {
+		_, err := os.Stat(filepath.Join(c.record, "held"))
+		return err == nil
+	})
+	t.Setenv("LEGION_TEST_HOLD", "")
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("the second run of legion controller start = %d, stderr %q", code, errb)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-held:
+		if code != 0 {
+			t.Fatalf("the held run of legion controller start = %d", code)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("the held run of legion controller start never ended")
+	}
+	got, err := os.ReadFile(filepath.Join(c.record, "held-prompt"))
+	if err != nil || !strings.Contains(string(got), "Design gate steps: `spec`.") {
+		t.Fatalf("the held run's Oh My Pi read %q (%v) from the prompt file it was handed, want the controller prompt: the other run's exit removed it", got, err)
+	}
+	left, err := filepath.Glob(filepath.Join(c.defaultDir, "secrets", "*-system-prompt.md"))
+	if err != nil || len(left) != 0 {
+		t.Errorf("prompt files left once both runs ended: %q (%v), want none", left, err)
 	}
 }
 

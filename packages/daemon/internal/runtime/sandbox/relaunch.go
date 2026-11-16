@@ -289,7 +289,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
 	command := launcherCommand(l, r)
 	if err := l.checkStartFrame(command); err != nil {
-		return fail("start through its authenticated launcher", err)
+		return fail("measure its start frame", err)
 	}
 	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))

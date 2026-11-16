@@ -107,7 +107,7 @@ type paneRequest struct {
 	GHPath string `json:"ghPath"`
 	// SystemPrompt asks for the pane's system prompt, composed from the role prompts the daemon
 	// module embeds and written to the claim's prompt file under StateDir, as a pane's launch
-	// writes it (runtime.SystemPromptPath).
+	// writes it (runtime.WriteSystemPrompt).
 	SystemPrompt bool `json:"systemPrompt"`
 }
 

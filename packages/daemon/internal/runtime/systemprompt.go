@@ -75,19 +75,15 @@ func (e *PromptTooLarge) Error() string {
 		e.Role, e.Bytes, e.Frame, shimwire.MaxFrameBytes)
 }
 
-// SystemPromptPath is where a tmux launch, and `legion controller start`, write a claim's system
-// prompt: `<state_dir>/secrets/<claim>-system-prompt.md`, named for the claim token, so the daemon
-// prunes it with the claim's other files (SecretsDir), and rewritten by every launch of the claim
-// once its previous process is gone.
-func SystemPromptPath(stateDir string, token claim.Token) string {
-	return SecretFilePath(stateDir, string(token)+"-"+SystemPromptFile)
-}
-
-// WriteSystemPrompt writes text, the claim's composed system prompt, to SystemPromptPath as every
-// secret file under stateDir is written (WriteSecretFile: 0600 in the 0700 secrets directory,
-// replaced whole), and returns the path. It is written before the command that names it runs:
-// Oh My Pi reads a value with no newline as a file once, at startup, and takes one it cannot open
-// as the prompt's text itself, saying nothing.
-func WriteSystemPrompt(stateDir string, token claim.Token, text string) (string, error) {
-	return WriteSecretFile(stateDir, string(token)+"-"+SystemPromptFile, "system prompt", text)
+// WriteSystemPrompt writes text, a composed system prompt, to `<state_dir>/secrets/<owner>-system-prompt.md`
+// as every secret file under stateDir is written (WriteSecretFile: 0600 in the 0700 secrets
+// directory, replaced whole), and returns that path, the one the caller hands the agent. A tmux
+// launch names the file for its claim token, so the daemon prunes it with the claim's other files
+// (SecretsDir) and every launch of the claim rewrites it once its previous process is gone;
+// `legion controller start` names it for its run (controllerStart), since two runs of it may
+// overlap. It is written before the command that names it runs: Oh My Pi reads a value with no
+// newline as a file once, at startup, and takes one it cannot open as the prompt's text itself,
+// saying nothing.
+func WriteSystemPrompt(stateDir, owner, text string) (string, error) {
+	return WriteSecretFile(stateDir, owner+"-"+SystemPromptFile, "system prompt", text)
 }

@@ -26,7 +26,7 @@
 //     the process the locator recorded exactly as it is there.
 //   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
 //     prompt file as a pane's does: the prompt composed (runtime.ComposePrompt) and written to
-//     runtime.SystemPromptPath, and that path as the one `--append-system-prompt` value.
+//     runtime.WriteSystemPrompt under the claim's name, and that path as the one `--append-system-prompt` value.
 //   - No GitHub credential is minted and no `gh` bundle is written: the pane of this proof pushes
 //     nothing, so its spec carries no repository and PaneInputs names no owners directory, which
 //     is the same pane a runtime with no GitHubCredential function opens.
@@ -332,7 +332,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, spec.Claim, prompt)
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}

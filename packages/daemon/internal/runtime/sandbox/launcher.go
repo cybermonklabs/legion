@@ -768,13 +768,9 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
 // continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
-// whose path the agent's argv names (systemPromptPath), Oh My Pi's and Claude Code's alike: the
-// launcher writes each Files entry 0600 into the 0700 directory it makes for the generation on
-// the role's own memory-backed private volume before the child starts, and removes the directory
-// when the child ends (internal/launcher's writeFiles). In an issue pod each role's namespace
-// binds only its own private volume back at LauncherPrivateDir (role-init), so no other role's
-// process can read or change the prompt, and it exists before the agent that names it starts
-// (runtime.WriteSystemPrompt says why that matters).
+// which the launcher writes before the child starts and whose path the agent's argv names, Oh My
+// Pi's and Claude Code's alike (systemPromptPath says where it is and who can read it;
+// runtime.SystemPromptFile why it is a file).
 //
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after

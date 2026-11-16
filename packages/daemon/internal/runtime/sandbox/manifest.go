@@ -279,13 +279,8 @@ type launch struct {
 	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured.
 	secrets map[string]string
 	// prompt is the launch's composed system prompt (runtime.ComposePrompt), which reaches the agent
-	// as a file and never as an argv string: launcherCommand carries it in the start command's
-	// Files as runtime.SystemPromptFile, the launcher writes it 0600 into the generation's 0700
-	// directory on the role's own memory-backed private volume before the child starts and removes
-	// it when the child ends (internal/launcher's writeFiles), and the agent's argv names that
-	// file's path (systemPromptPath). In an issue pod each role's namespace binds only its own
-	// private volume back at LauncherPrivateDir (role-init), so no other role's process can read or
-	// change the file.
+	// as a file and never as an argv string: launcherCommand carries it in the start command's Files
+	// (systemPromptPath says where the launcher writes it and who can read it).
 	prompt string
 	// cacheURL is the address of the issue's repository's cache (cacheURL, set by
 	// issuePod.provision), which its fetch container is told (fetchEnvironment).

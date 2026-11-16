@@ -5751,9 +5751,9 @@ Every one of those is a boot refusal before anything is spawned.
 Four prerequisites and caveats the configuration cannot check for you:
 
 - **The `instructions` file must hold no secret.**
-  Under tmux it is read by the pane through `$(cat …)` on the daemon host;
-  under Kubernetes the daemon inlines its text into the pod's `--append-system-prompt` argument, so it travels in the pod spec's argv
-  — visible to anyone who can `get pods -o yaml` in the namespace, and recorded in the API server's audit log.
+  Its text is part of every role's system prompt, which the daemon composes and writes to a file only that role's process reads: under tmux `<state_dir>/secrets/<claim>-system-prompt.md` on the daemon host, 0600 in a 0700 directory;
+  under Kubernetes a 0600 file of the role's own generation directory, which the launcher writes from the start command ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
+  It is in no argv and no pod spec, but every agent of the deployment reads it, and an agent can repeat what it reads.
   Provider keys and tokens belong in the providers Secret only.
 
 - **The daemon host still needs the tmux runtime's toolchain.**
@@ -6413,12 +6413,10 @@ Containers, in order:
 
 2. **Main container `worker`** runs `legion worker-shim --connect tcp://<host of daemon_url>:<worker_stream_port>
    --boot-token-file /var/run/legion/boot/LEGION_BOOT_TOKEN --provider-env-dir /var/run/legion/providers
-   -- omp [--resume=<session file>] --mode rpc --append-system-prompt <role prompt, addressing text,
-   and deployment instructions joined by blank lines>`.
-   The prompt texts are passed inline (the daemon has them;
-   the image may be built from another commit) and, exactly as on tmux, in **one** `--append-system-prompt` argument
+   -- omp [--resume=<session file>] --mode rpc --append-system-prompt <path of the role's prompt file>`.
+   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text and deployment instructions joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
    — OMP's flag is last-wins, so several flags would hand the model only the last text.
-   A joined value over 128 KiB (Linux `MAX_ARG_STRLEN`) is refused at spawn.
+   No argument grows with the prompt; a prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
@@ -6735,7 +6733,7 @@ In order, and keeping nothing until the daemon has answered, the command:
    Before step 3 the command finds the real gh its session's `gh` wrapper runs:
    the operator's `LEGION_GH_PATH`, or the first `gh` on its PATH that is not the state directory's own wrapper, and refuses to start with neither (`gh is not on PATH`) or when that first `gh` is a script, a `gh` wrapper of the operator's machine that would answer in place of the review App;
 
-6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one `--append-system-prompt` naming the file `<state_dir>/secrets/<controller claim>-system-prompt.md`, which the command writes first and which holds the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
+6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one `--append-system-prompt` naming the file `<state_dir>/secrets/<controller claim>-<run>-system-prompt.md`, this run's own, which the command writes first and removes when Oh My Pi exits, and which holds the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
    it sends it once the controller is registered, right before the role claim and the live wake subscription, so the controller's first turn runs its start procedure deterministically, with nothing typed, rather than racing a card or a wake for the session's one first-turn slot
    — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, `PERSON_SIGNIN_TRADE=off` (the controller's own broker credentials trade this machine, never its operator's sign-in), and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED_FILE` (the controller is pane-side, and never gets the daemon's seed) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
 

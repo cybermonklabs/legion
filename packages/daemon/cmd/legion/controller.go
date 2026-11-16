@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,8 +116,8 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // Pi exits or the daemon says the capability is no longer current
 // (controllerCredentialSuperseded); then run Oh My Pi interactive — the launch prefix and the
 // resolved invocation with one `--append-system-prompt` naming the file the joined controller
-// prompt is written to (`<state_dir>/secrets/<controller claim>-system-prompt.md`, removed when
-// Oh My Pi exits), and the one
+// prompt is written to (`<state_dir>/secrets/<controller claim>-<run>-system-prompt.md`, this
+// run's own, removed when Oh My Pi exits), and the one
 // positional word daemon.ControllerStartCommand, no `--resume`, no `--mode rpc`, and
 // daemon.ControllerStartMessage as LEGION_CONTROLLER_START_MESSAGE in its environment for that
 // pi-legion command to send as the first turn — in the foreground with the same environment, and
@@ -311,9 +312,12 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 		return 0, fmt.Errorf("compose the controller's system prompt: %w", err)
 	}
 	// The prompt rides a file (runtime.SystemPromptFile), written before Oh My Pi starts. Oh My Pi
-	// reads it once, at startup, and the file is the controller's alone, so it goes when this
-	// command ends.
-	promptFile, err := runtime.WriteSystemPrompt(stateDir, legionclaim.Token(token), prompt)
+	// reads it once, at startup, so the file goes when this command ends. It is this run's own,
+	// named for the run: the command is run again while an earlier controller still runs (the new
+	// capability revokes the old), and a file both runs shared would be removed by the earlier
+	// run's exit, maybe before the later run's Oh My Pi had read it, which would then start with
+	// the path as its prompt and say nothing.
+	promptFile, err := runtime.WriteSystemPrompt(stateDir, token+"-"+rand.Text(), prompt)
 	if err != nil {
 		return 0, err
 	}

@@ -552,7 +552,8 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := runtime.WriteSecretFiles(r.stateDir, files); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	if _, err := runtime.WriteSystemPrompt(r.stateDir, spec.Claim, prompt); err != nil {
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
+	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	ghDefault, err := r.writeGitHubCredential(spec, credential)
@@ -564,7 +565,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		path = spec.Env["PATH"]
 	}
 	path = workerbin.Path(path, r.stateDir)
-	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion})
+	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
 	if err != nil {
 		return runtime.Locator{}, err
 	}

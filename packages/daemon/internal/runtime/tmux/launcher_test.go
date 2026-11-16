@@ -20,18 +20,14 @@ func ompOnly(invocation string) map[runtime.Backend]Launcher {
 }
 
 // The Oh My Pi launcher's command is innerCommand's, byte for byte (TestInnerCommand pins those
-// bytes), on the claim's prompt file under the host's state directory, and its pane carries no
-// pairs of its own.
+// bytes), on the prompt file the launch hands it, and its pane carries no pairs of its own.
 func TestOmpLauncherLaunchIsInnerCommand(t *testing.T) {
 	spec := testSpec()
 	const promptFile = "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
-	if got := runtime.SystemPromptPath("/state", spec.Claim); got != promptFile {
-		t.Fatalf("the claim's prompt file = %s, want %s", got, promptFile)
-	}
 	prefix := []string{"env", "K=v", "--"}
 	for _, resume := range []string{"", "/state/trees/x/.omp/s 1.jsonl"} {
 		spec.ResumeSessionFile = resume
-		inner, pairs, err := NewOmpLauncher(prefix, "/opt/oh-my-pi/18.0.3/omp").Launch(spec, Host{StateDir: "/state", Legion: "/opt/legion"})
+		inner, pairs, err := NewOmpLauncher(prefix, "/opt/oh-my-pi/18.0.3/omp").Launch(spec, Host{StateDir: "/state", Legion: "/opt/legion"}, promptFile)
 		if err != nil || pairs != nil {
 			t.Fatalf("Launch = %v, %q", err, pairs)
 		}

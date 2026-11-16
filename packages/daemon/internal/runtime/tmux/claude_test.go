@@ -117,19 +117,19 @@ func TestClaudeEnvironment(t *testing.T) {
 }
 
 // A Claude Code launch resuming a recorded Oh My Pi session is refused before anything is written;
-// a fresh one writes its claim's directory and runs the bridge, its prompt flag naming the claim's
-// prompt file under the state directory, the one launch writes before the pane opens.
+// a fresh one writes its claim's directory and runs the bridge, its prompt flag naming the prompt
+// file the launch hands it.
 func TestClaudeLauncherLaunch(t *testing.T) {
 	spec := testSpec()
 	spec.Backend = runtime.BackendClaude
 	host := Host{StateDir: t.TempDir(), Legion: "/opt/legion/legion"}
 	launcher := NewClaudeLauncher(testClaude)
 	spec.ResumeSessionFile = "/state/trees/x/.omp/session.jsonl"
-	if _, _, err := launcher.Launch(spec, host); err == nil || !strings.Contains(err.Error(), "the role's backend changed") {
+	if _, _, err := launcher.Launch(spec, host, "/state/p.md"); err == nil || !strings.Contains(err.Error(), "the role's backend changed") {
 		t.Errorf("an Oh My Pi session: %v", err)
 	}
 	spec.ResumeSessionFile = ""
-	inner, pairs, err := launcher.Launch(spec, host)
+	inner, pairs, err := launcher.Launch(spec, host, "/state/secrets/c-system-prompt.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestClaudeLauncherLaunch(t *testing.T) {
 		!strings.Contains(strings.Join(pairs, " "), "CLAUDE_CONFIG_DIR="+configDir) {
 		t.Errorf("Launch = %s, %q", inner, pairs)
 	}
-	if want := " --append-system-prompt-file " + runtime.SystemPromptPath(host.StateDir, spec.Claim); !strings.HasSuffix(inner, want) {
+	if want := " --append-system-prompt-file /state/secrets/c-system-prompt.md"; !strings.HasSuffix(inner, want) {
 		t.Errorf("Launch = %s, want it to end %s", inner, want)
 	}
 }

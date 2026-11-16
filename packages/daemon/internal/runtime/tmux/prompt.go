@@ -7,9 +7,8 @@ import (
 
 // innerCommand is the OMP command the shim runs: the launch prefix and invocation, `--model
 // @default`, `--resume` on the recorded session file when resuming, RPC mode
-// (runtime-tmux.ts:414-431), and `--append-system-prompt` on promptFile, the file launch wrote the
-// claim's composed prompt to (runtime.SystemPromptPath), which Oh My Pi reads and appends to its
-// own system prompt.
+// (runtime-tmux.ts:414-431), and `--append-system-prompt` on promptFile, which Oh My Pi reads and
+// appends to its own system prompt.
 //
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
 // for the `default` model role, which the settings of the profile the pane launches under set -
