@@ -160,10 +160,13 @@ A run killed outright - SIGKILL, an out-of-memory kill, a runner that crashes - 
 and what it started stops all the same: each harness, and each run's stack Postgres, hands
 what it starts to a reaper (`Reaper`, `e2e/local-instance-support.ts`), which ends it once the
 process that started it is gone: every process group of the harness, each stack's container
-by the id `docker run` printed, and each cluster of the binaries provider by its data
-directory. `e2e/__tests__/harness-orphans.test.ts` kills the parent of each with SIGKILL and
-finds nothing left: the listeners in every run, and a stack's Postgres where the run names a
-provider (`DISPATCH_E2E_PG_IMAGE` or `DISPATCH_E2E_PG_BIN`).
+by the name the harness gives it, unique to the run, and each cluster of the binaries provider
+by its data directory. A container and a cluster are handed over before `docker run` or
+`pg_ctl start` begins, so a run killed while one starts leaves nothing the reaper cannot name,
+and the reaper removes again while a start of that name or data directory still runs.
+`e2e/__tests__/harness-orphans.test.ts` kills the parent of each with SIGKILL and finds
+nothing left: the listeners and an interrupted start in every run, and a stack's real Postgres
+where the run names a provider (`DISPATCH_E2E_PG_IMAGE` or `DISPATCH_E2E_PG_BIN`).
 
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session

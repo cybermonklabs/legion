@@ -8,7 +8,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // An issue's design gates are the documents the Legion deployment's gate records on that issue,
@@ -112,6 +114,10 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		documents[index] = gate.ArtifactID
 	}
 
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -119,7 +125,8 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	// The issue is read in the write's own transaction, under the key-share lock the rows'
-	// foreign key takes anyway, so the refusal and the write decide on the same row. The code is
+	// foreign key takes anyway, so the refusal and the write decide on the same row, and as the
+	// caller reads it: an issue of a project it does not see is one no row holds. The code is
 	// written here rather than taken from loadIssue, which answers the package's plain
 	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
 	// does not serve this route at all, and that one answers the router's own
@@ -129,8 +136,8 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// dropped as a refusal no retry repairs.
 	var issue string
 	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for key share
-	`, r.PathValue("key")).Scan(&issue); err != nil {
+		select key from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+` for key share
+	`, r.PathValue("key"), refs.VisibilityArg(who)).Scan(&issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return

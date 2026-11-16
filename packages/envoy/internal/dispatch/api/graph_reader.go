@@ -103,16 +103,6 @@ func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Ac
 	return actor, true
 }
 
-// readerIf is readerAs for a write that reads as its writer only in some requests (reads): one that
-// reads nothing resolves nothing, so the write costs no read of its own, and answers actor as it
-// is, which no read of that request binds.
-func (s *server) readerIf(w http.ResponseWriter, r *http.Request, actor model.Actor, reads bool) (model.Actor, bool) {
-	if !reads {
-		return actor, true
-	}
-	return s.readerAs(w, r, actor)
-}
-
 // everyReader is who a read of the graph answers for when what it reads is kept or sent where
 // many readers read it rather than answered to the one person whose request made it: the server's
 // own viewer (model.ServerViewer), which sees every project and every party and proves no author,

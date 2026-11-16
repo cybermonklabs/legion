@@ -146,16 +146,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs the moment that project is settled —
 	// read from the body above, or from the repository the external ref names — and so before
-	// the ref is resolved to an issue already imported: a scoped caller naming one imported
-	// into another project is refused rather than answered that project's issue, which
-	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
-	// is written before this point.
-	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
-	// blocked_by target's project is no part of this address.
-	callerProject, scoped := s.callerProject(r)
-	if scoped && callerProject != input.Project {
-		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
+	// the ref is resolved to an issue already imported: a caller whose credential lists other
+	// projects naming one imported into another project is refused rather than answered that
+	// project's issue, which respondWithExistingExternalIssue would also record a related-check
+	// outcome on. Nothing is written before this point. A credential that lists none is refused
+	// nothing here; a project it does not see is the project read's missing row below.
+	if s.refuseOutsideCallerProjects(w, r, input.Project) {
 		return
 	}
 	if input.External != "" {
@@ -291,15 +287,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. Only the
 	// blockers can name another project, since a parent is of the issue's own project.
 	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, who, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
 	var parentAssignee *string
 	if parentKey != "" {
+		// As the creator reads it: a parent of a project it does not see is a key no issue holds.
 		var parentProject string
-		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
+		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), parentKey, refs.VisibilityArg(who)).Scan(&parentProject, &parentAssignee)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "PARENT_INPUT", http.StatusBadRequest, fmt.Sprintf("parent issue %s not found", parentKey))
 			return
@@ -388,7 +386,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
+	if err := writeBlockedBy(r.Context(), tx, key, who, blockers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

@@ -10,7 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // results_retract.go retracts one recorded result. A retraction is a record of its own
@@ -69,6 +71,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a second one (store/pool.go): inside the transaction every person would read as holding
 	// no scope, which is the refusal this route must not make.
 	person := s.callerHoldsScope(r, model.ScopePerson)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -81,7 +87,7 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 	// a second retraction that waited here reads the first one as soon as that one commits. No
 	// writer of a result ever holds this lock — nothing updates a check_results row — and the
 	// record route takes its issue rows before it inserts, so the two cannot deadlock.
-	result, err := lockRetractedResult(r.Context(), tx, resultID)
+	result, err := lockRetractedResult(r.Context(), tx, who, resultID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -183,15 +189,16 @@ func claimingSession(ctx context.Context, q queryer, key string) (string, error)
 	return holder, nil
 }
 
-// lockRetractedResult reads the result a retraction names and locks its row for the length of
-// the write, so two retractions of one result are taken one after the other.
-func lockRetractedResult(ctx context.Context, tx pgx.Tx, id string) (retractedResult, error) {
+// lockRetractedResult reads the result a retraction names, as who reads the issue it was recorded
+// on, and locks its row for the length of the write, so two retractions of one result are taken
+// one after the other. A result of an issue who does not see is a result no row holds.
+func lockRetractedResult(ctx context.Context, tx pgx.Tx, who model.Actor, id string) (retractedResult, error) {
 	var result retractedResult
 	err := tx.QueryRow(ctx, `
 		select issue_key, check_issue_key, check_block_id, commit_sha, session
-		from check_results where id = $1
+		from check_results where id = $1 and `+access.IssueProjectClause("check_results.issue_key", "$2")+`
 		for update
-	`, id).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
+	`, id, refs.VisibilityArg(who)).Scan(&result.IssueKey, &result.CheckIssueKey, &result.CheckBlockID,
 		&result.CommitSHA, &result.Session)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return retractedResult{}, errorf(http.StatusNotFound, "RESULT_NOT_FOUND", "result not found")

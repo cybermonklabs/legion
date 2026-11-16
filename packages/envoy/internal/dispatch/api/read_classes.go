@@ -49,12 +49,14 @@ const (
 	probeLivePause       probeObject = "live-pause"       // a live-write pause point a test hook arms
 )
 
-// probeObjects is every probeObject.
+// probeObjects is every probeObject: the read rows' and the write rows' (write_probes.go).
 var probeObjects = []probeObject{
 	probeProject, probeIssue, probeDocument, probeDocumentSlug, probeDocumentVersion, probeBlock,
 	probeAsk, probeComment, probeMessage, probeHandoff, probeHandoffPhase, probeSession, probePerson,
 	probePriority, probeDeliveryRun, probeBroadcast, probeGoingRun, probeRepositoryOwner,
 	probeRepositoryName, probeLivePause,
+	probeResult, probeThread, probeAttempt, probeEmail, probeGroup, probeAgentToken, probeSessionGroup,
+	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin,
 }
 
 // reads is one entry of readClasses.

@@ -124,6 +124,12 @@ func resolveThenLock[R, T any](
 // gone are "no live session <id>", the text comment_delivery.go tests the prefix of and the
 // dashboard prints verbatim. Every other failure takes the error path, so an unreachable
 // listener never reads as an ended session.
+//
+// A session the request's reader may not see (sessionHiddenFromReader) is "no live session <id>"
+// before the listener is asked, exactly as a session the listener holds no record of, so a
+// restricted member or a credential that lists projects reaches no session outside what it sees
+// and learns nothing of whether one is live. A role whose holder that reader may not see is
+// answered as a role no session claims (dispatchenvoy.NoRoleHolder), in the listener's words.
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText
@@ -132,7 +138,23 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	var err error
 	if route.Kind == "role" {
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
+		if err == nil {
+			hidden, hiddenErr := s.sessionHiddenFromReader(ctx, target.SessionID)
+			if hiddenErr != nil {
+				return "", "", hiddenErr.Error()
+			}
+			if hidden {
+				target, err = dispatchenvoy.Session{}, dispatchenvoy.NoRoleHolder(route.ID)
+			}
+		}
 	} else {
+		hidden, hiddenErr := s.sessionHiddenFromReader(ctx, route.ID)
+		if hiddenErr != nil {
+			return "", "", hiddenErr.Error()
+		}
+		if hidden {
+			return route.ID, "", "no live session " + route.ID
+		}
 		target, err = s.deps.Envoy.SessionIncludingStopped(ctx, route.ID)
 		if errors.Is(err, dispatchenvoy.ErrNotFound) {
 			return route.ID, "", "no live session " + route.ID

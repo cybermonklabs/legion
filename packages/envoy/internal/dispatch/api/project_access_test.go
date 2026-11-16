@@ -119,6 +119,30 @@ func TestOnlyTheOwnerChangesTheAccessList(t *testing.T) {
 		http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", "the shared token", "GET ACC's access")
 }
 
+// TestAHiddenProjectsAccessListAnswersAsAnUnknownKey: GET /api/v1/projects/{key}/access answers a
+// project the caller does not see exactly as a key no project holds, the same status and the same
+// bytes, for alice, alice's token that lists PRIV and carol's token that lists none; bob and carol,
+// who see PRIV, read its list. The control is the read made without the caller's viewer: alice then
+// reads PRIV's list, and the test fails naming her.
+func TestAHiddenProjectsAccessListAnswersAsAnUnknownKey(t *testing.T) {
+	seed := seedPrivateProject(t)
+	for _, caller := range []privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken} {
+		hidden := seed.request(t, caller, http.MethodGet, "/api/v1/projects/"+seedPrivate+"/access", nil)
+		missing := seed.request(t, caller, http.MethodGet, "/api/v1/projects/NOPE/access", nil)
+		if want := strings.ReplaceAll(missing.Body.String(), "NOPE", seedPrivate); hidden.Code != missing.Code ||
+			hidden.Body.String() != want || missing.Code != http.StatusNotFound {
+			t.Errorf("%s: GET PRIV's access = %d %s, and a key no project holds %d %s, want both 404 PROJECT_NOT_FOUND alike",
+				caller, hidden.Code, strings.TrimSpace(hidden.Body.String()), missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+	}
+	for _, caller := range []privateCaller{callerBob, callerCarol} {
+		read := seed.request(t, caller, http.MethodGet, "/api/v1/projects/"+seedPrivate+"/access", nil)
+		if read.Code != http.StatusOK || decodeBody[model.ProjectAccess](t, read).Owner != seedCarol {
+			t.Errorf("%s: GET PRIV's access = %d %s, want 200 and carol its owner", caller, read.Code, read.Body.String())
+		}
+	}
+}
+
 // TestTheOwnerGivesTheProjectToAFullMember: the owner gives the project to another full member at
 // any time, and from then on only that person changes its access; a restricted member or a login
 // nobody has signed in with cannot be given it.

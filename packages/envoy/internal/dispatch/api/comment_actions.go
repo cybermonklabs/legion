@@ -49,7 +49,7 @@ func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, who model.Ac
 	if err != nil {
 		return false, err
 	}
-	_, open, err := ownerStatus(ctx, tx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), ownerRowLock)
+	_, open, err := ownerStatus(ctx, tx, who, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), ownerRowLock)
 	return open, err
 }
 

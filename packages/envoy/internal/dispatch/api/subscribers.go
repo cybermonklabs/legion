@@ -229,12 +229,23 @@ func (s *server) seenSessions(ctx context.Context, viewer any, subscribers []sub
 	return seen, nil
 }
 
+// unsubscribeIssueSession removes a session from an issue's topics. The issue is read first as
+// the caller reads it, as unsubscribeArtifactSession reads its document: an issue of a project the
+// caller does not see is a key no issue holds, before the listener is asked anything.
 func (s *server) unsubscribeIssueSession(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
+	if _, _, err := issueStatus(r.Context(), s.deps.Store.Pool, who, key, ""); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	s.unsubscribeSession(w, r, actor, issueOwner(key), issueSubscriberBase(key))
 }
 

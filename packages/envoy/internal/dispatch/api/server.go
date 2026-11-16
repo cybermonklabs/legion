@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -44,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -728,9 +730,10 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}
 	routes := s.routes()
 	if undecidable := s.undecidableWrites(routes); len(undecidable) > 0 {
-		// A mutating row the project check cannot decide would serve a project-scoped caller a
-		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
-		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
+		// A mutating row nothing decides - no class, or a project's write the hidden-object walk
+		// has no probe for - would serve a write nothing judged, so the table is refused rather
+		// than mounted (project_scope.go).
+		panic("api.Register: the route table holds a mutating row nothing decides: " + strings.Join(undecidable, "; "))
 	}
 	if undecided := undecidedReads(routes, readClasses); len(undecided) > 0 {
 		// A GET row with no read class is a read nothing decided who may see, and a class for a
@@ -1666,19 +1669,25 @@ func (s *server) readyPool() (*store.Pool, error) {
 
 // lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
 // lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
-// still takes: a message, its deliveries and the agent's reply to one.
+// still takes on a message already read: its deliveries and the agent's reply to one. It decides
+// nothing about who may write: its callers read the message as its writer reads it first, or
+// deliver as the server.
 func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	status, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	var status string
+	err := tx.QueryRow(ctx, `select status from issues where key = $1`+ownerRowLock, key).Scan(&status)
 	return status, err
 }
 
 // issueStatus reads an issue's lifecycle status, and whether it is open, through q under
-// lock. It refuses nothing: each write that a closed issue refuses decides that from open.
-func issueStatus(ctx context.Context, q queryer, key, lock string) (string, bool, error) {
+// lock, as who reads it: an issue of a project who does not see is pgx.ErrNoRows, as a key no
+// issue holds is. It refuses nothing: each write that a closed issue refuses decides that from
+// open.
+func issueStatus(ctx context.Context, q queryer, who model.Actor, key, lock string) (string, bool, error) {
 	var status string
 	var open bool
 	if err := q.QueryRow(ctx, `
-		select status, closed_at is null from issues where key = $1`+lock, key).Scan(&status, &open); err != nil {
+		select status, closed_at is null from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+lock,
+		key, refs.VisibilityArg(who)).Scan(&status, &open); err != nil {
 		return "", false, err
 	}
 	return status, open, nil

@@ -410,10 +410,9 @@ func TestAWriteRouteThatParsesNoIDActsOnTheResolvedItem(t *testing.T) {
 }
 
 // TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk: a credential scoped to one project
-// is refused another project's ask. By its whole id the project check behind the prefix layer
-// refuses it, and the refusal names both projects. By its prefix the layer itself finds nothing:
-// a credential that lists one project sees no other (refs' project clause), so another project's
-// ask is no candidate, and the prefix answers exactly what a prefix nobody holds answers.
+// sees no other (refs' project clause), so another project's ask is one it does not see: by its
+// whole id the ask's loader answers it exactly as an id nobody holds, and by its prefix the prefix
+// layer finds no candidate and answers exactly what a prefix nobody holds answers.
 func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -428,15 +427,11 @@ func TestAProjectScopedTokenIsRefusedAPrefixOfAnotherProjectsAsk(t *testing.T) {
 
 	body := map[string]any{"kind": "resolved", "reason": "Answered elsewhere."}
 	refused := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+id+"/resolve", token, body))
-	if refused.Code != http.StatusForbidden {
-		t.Fatalf("the whole id: status=%d body=%s, want 403", refused.Code, refused.Body.String())
-	}
-	refusal := decodeBody[refusalAnswer](t, refused)
-	if refusal.Code != codeProjectScope {
-		t.Fatalf("the whole id: refusal = %+v, want %s", refusal, codeProjectScope)
-	}
-	if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, other.key) {
-		t.Fatalf("the whole id: refusal %q names neither %s nor %s", refusal.Error, brokerTestProject, other.key)
+	nobodysID := chosenID("b00000fe", 1)
+	missingID := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+nobodysID+"/resolve", token, body))
+	if refused.Code != http.StatusNotFound || strings.ReplaceAll(refused.Body.String(), id, nobodysID) != missingID.Body.String() {
+		t.Fatalf("the whole id: status=%d body=%s, want what an id nobody holds answers: status=%d body=%s",
+			refused.Code, refused.Body.String(), missingID.Code, missingID.Body.String())
 	}
 
 	hidden := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/asks/"+prefix+"/resolve", token, body))

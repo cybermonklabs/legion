@@ -38,12 +38,21 @@ func (s *server) parseIssueAssignee(ctx context.Context, raw json.RawMessage) (a
 	return &canonical, true, nil
 }
 
-// allowedLogin canonicalises login and checks that it names a person who has signed in.
+// allowedLogin canonicalises login and checks that it names a person who has signed in and whom the
+// request's reader may see (access.PersonClause, with the reader the request's check put in ctx):
+// a person a restricted member or a credential that lists projects may not see is refused exactly
+// as one who has not signed in. Without a reader in ctx - work the server does for itself - every
+// person who has signed in is one.
 func (s *server) allowedLogin(ctx context.Context, login string) (string, error) {
 	canonical := model.CanonicalLogin(login)
 	var known bool
 	if canonical != "" {
-		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1)`, canonical).Scan(&known); err != nil {
+		viewer := refs.VisibilityArg(model.Actor{Viewer: model.ServerViewer})
+		if reader, ok := readerFromContext(ctx); ok {
+			viewer = refs.VisibilityArg(reader)
+		}
+		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1 and `+
+			access.PersonClause("people.email", "$2")+`)`, canonical, viewer).Scan(&known); err != nil {
 			return "", fmt.Errorf("read person %q: %w", canonical, err)
 		}
 	}

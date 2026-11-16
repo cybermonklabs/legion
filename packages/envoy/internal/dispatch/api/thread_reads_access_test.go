@@ -41,7 +41,7 @@ func seedThreads(t *testing.T) threadSeed {
 		threads.message[project] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+key+"/messages",
 			map[string]any{"body": "The message of " + project + "."}))
 	}
-	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+	createdID(t, seed.request(t, callerCarolPrivToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "s1 works on PRIV.", "actor": map[string]any{"kind": "session", "id": "s1"}}))
 	threads.aliceDirect = createdID(t, postAgentMessage(t, seed.handler, "s1",
 		map[string]any{"body": "alice asks s1 something.", "delivery": "aside"}, seedAlice))
@@ -315,7 +315,9 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		what   string
 		events func(caller privateCaller, login string) []privateLogRow
 	}{
-		{"event log", func(caller privateCaller, _ string) []privateLogRow { return eventLogOf(t, threads.privateSeed, caller) }},
+		{"event log", func(caller privateCaller, _ string) []privateLogRow {
+			return eventLogOf(t, threads.privateSeed, caller)
+		}},
 		{"live socket", socketEvents},
 	} {
 		if got := countCarols(read.events(callerCarol, seedCarol)); got["user_thread_state.updated"] != 1 || got["user_state.updated"] != 2 {

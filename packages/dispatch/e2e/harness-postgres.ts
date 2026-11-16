@@ -29,6 +29,7 @@
  *  measured with them applied cost 5.7-6.2 s at 2 stacks and 7.7-8.7 s at 4 — more than it saves,
  *  since the 1.0 s of migrations it takes out of a stack's boot runs in every stack at once. */
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
@@ -243,8 +244,9 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
 }
 
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
- *  it serves on. Returns or throws with no postmaster of `data` left running. The cluster that
- *  starts is handed to `reaper`, which stops it should this process die before its own stop. */
+ *  it serves on. Returns or throws with no postmaster of `data` left running. The cluster is
+ *  handed to `reaper` before `pg_ctl` starts it, since its data directory is known first, so a
+ *  process killed while the server starts leaves none the reaper does not stop. */
 async function startCluster(
   bin: string,
   data: string,
@@ -255,6 +257,8 @@ async function startCluster(
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
+  const reaped = { cluster: { data, pgCtl: join(bin, "pg_ctl") } };
+  reaper.watch(reaped);
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
     const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
@@ -269,7 +273,6 @@ async function startCluster(
         "-w",
         "start",
       ]);
-      reaper.watch({ cluster: { data, pgCtl: join(bin, "pg_ctl") } });
       return port;
     } catch (error) {
       last = error instanceof Error ? error.message : String(error);
@@ -284,6 +287,7 @@ async function startCluster(
       );
     }
   }
+  reaper.forget(reaped);
   throw new Error(
     `The Dispatch e2e harness cannot start: ${what} did not start on any of ${bindAttempts} ` +
       `ports (${join(dir, "postgres.log")}): ${last}`
@@ -406,6 +410,10 @@ function imageProvider(
   env: NodeJS.ProcessEnv,
   reaper: Reaper
 ): StackPostgres {
+  // Each container's name is the reaper's handle on it, given before `docker run` makes it, so it
+  // must be this run's alone: the run's id and a random part, which no other run on the machine
+  // repeats, whatever ids two runs' processes happen to share.
+  const unique = randomBytes(4).toString("hex");
   return {
     name: `the Postgres image ${image}`,
     start: (index, signal) =>
@@ -416,16 +424,20 @@ function imageProvider(
         for (let attempt = 1; attempt <= bindAttempts; attempt++) {
           // The name carries the attempt: a container whose port was taken keeps its name until it
           // is removed, and the run removes it with the stack.
-          const container = `dispatch-e2e-pg-${run}-${index}-${attempt}`;
+          const container = `dispatch-e2e-pg-${run}-${unique}-${index}-${attempt}`;
           const port = await freePort();
+          // The reaper holds the container before `docker run` makes it: a process killed while
+          // the image starts leaves no container the reaper cannot name.
+          const reaped = { container };
+          reaper.watch(reaped);
           const remove = async (): Promise<void> => {
             await execFileAsync("docker", ["rm", "--force", "--volumes", container]).catch(
               () => {}
             );
+            reaper.forget(reaped);
           };
-          let id: string;
           try {
-            ({ stdout: id } = await execFileAsync("docker", [
+            await execFileAsync("docker", [
               "run",
               "--detach",
               "--name",
@@ -447,7 +459,7 @@ function imageProvider(
               // (docker-library/postgres#1259).
               image,
               ...started.flatMap((setting) => ["-c", setting]),
-            ]));
+            ]);
           } catch (error) {
             // `docker run` publishes the port itself, so this is the port another listener took
             // between `freePort` and here, which is what another port answers.
@@ -455,11 +467,6 @@ function imageProvider(
             await remove();
             continue;
           }
-          // The id `docker run` printed is the one this container answers to, whatever else
-          // comes to share its name: the reaper removes exactly it should this process die
-          // before its stack's stop.
-          const reaped = { container: id.trim() };
-          reaper.watch(reaped);
           const url = `postgres://postgres:dispatch@127.0.0.1:${port}/${databaseName}?sslmode=disable`;
           try {
             await ready(url, what, signal);
@@ -472,7 +479,6 @@ function imageProvider(
             // ports. Its own last lines are read before it is removed.
             const said = await containerLog(container);
             await remove();
-            reaper.forget(reaped);
             throw new Error(
               `The Dispatch e2e harness cannot start: ${what} came up from ${image} on port ` +
                 `${port} and then ${error instanceof Error ? error.message : String(error)}; ` +
@@ -483,7 +489,7 @@ function imageProvider(
             port,
             url,
             stop: async () => {
-              await execFileAsync("docker", ["rm", "--force", "--volumes", reaped.container]);
+              await execFileAsync("docker", ["rm", "--force", "--volumes", container]);
               reaper.forget(reaped);
             },
           };

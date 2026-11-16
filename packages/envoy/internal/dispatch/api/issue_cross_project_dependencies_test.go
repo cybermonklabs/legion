@@ -289,7 +289,7 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		[]dependencyEdge{{alpha[6], beta[5]}, {beta[6], alpha[7]}},
 		[]dependencyEdge{{beta[5], beta[6]}, {alpha[7], alpha[6]}})
 
-	t.Run("a credential that names one project is refused a target outside it", func(t *testing.T) {
+	t.Run("a credential that names one project is refused a target outside it as a key nobody holds", func(t *testing.T) {
 		rig := newBrokerTokenRig(t)
 		caller := newBrokerCaller(t)
 		const token = "a-token-linking-across-projects"
@@ -317,19 +317,17 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		sibling := createIssue(brokerTestProject, "Another issue of its own project")
 		outside := createIssue("OTH", "An issue of another project")
 
+		// A credential that lists one project sees no other, so a target outside it is refused
+		// exactly as a key no issue holds, naming nothing of the project it belongs to.
 		refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
 			"blocked_by": []string{outside},
 		}))
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
-		}
-		refusal := decodeBody[refusalAnswer](t, refused)
-		if refusal.Code != codeProjectScope {
-			t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
-		}
-		if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
-			t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the target's (OTH)",
-				refusal.Error, brokerTestProject)
+		missing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+			"blocked_by": []string{"NOPE-1"},
+		}))
+		if refused.Code != http.StatusBadRequest || refused.Body.String() != strings.ReplaceAll(missing.Body.String(), "NOPE-1", outside) {
+			t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want what a key nobody holds answers: status=%d body=%s",
+				refused.Code, refused.Body.String(), missing.Code, missing.Body.String())
 		}
 		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
 		if got := decodeBody[model.Issue](t, read).BlockedBy; len(got) != 0 {

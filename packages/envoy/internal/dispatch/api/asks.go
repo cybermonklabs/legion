@@ -196,7 +196,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, owner)
+	status, err := s.requireOpenOwnerStatus(r.Context(), tx, who, owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -480,7 +480,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.requireOpenOwner(documentCtx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
+	if err := s.requireOpenOwner(documentCtx, tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

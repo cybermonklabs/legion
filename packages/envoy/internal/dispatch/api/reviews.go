@@ -413,7 +413,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "only documents are reviewed")
 		return
 	}
-	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
+	if err := s.requireOpenOwner(r.Context(), tx, who, ownerForArtifact(artifact)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -612,7 +612,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	// so it is refused before the refusals that name another route: the answer names the real
 	// blocker rather than a command that would be refused too.
 	owner := ownerForArtifact(artifact)
-	if err := s.requireOpenOwner(r.Context(), tx, owner); err != nil {
+	if err := s.requireOpenOwner(r.Context(), tx, who, owner); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1094,7 +1094,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 			"only an issue's plan document (plan.md) is approved by a plan review")
 		return
 	}
-	if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
+	if err := s.requireOpenOwner(r.Context(), tx, who, ownerForArtifact(artifact)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

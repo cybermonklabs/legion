@@ -38,8 +38,9 @@ type writeScope string
 const (
 	// scopeProject is a write to an object that belongs to one project: the issue-key rows, the
 	// project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the
-	// message rows that carry an issue. A caller whose credential names another project is
-	// refused, naming both projects.
+	// message rows that carry an issue. The handler reads the object as the caller reads it, so
+	// one of a project the caller does not see answers as an object nobody holds
+	// (TestNoWriteReachesAHiddenObject, which writeProbes lets call every such row).
 	scopeProject writeScope = "project"
 	// scopeSession is a write that belongs to the calling session rather than to any project:
 	// an agent conversation's own artifact, messages and stream frames, the two routes a
@@ -48,7 +49,8 @@ const (
 	//
 	//   - The rows whose path names a session — the `agents/{session_id}` writes and
 	//     `PUT /api/v1/me/agents/{session_id}/state` — are held to it by withinSessionScope,
-	//     which refuses a credential that proved another session (project_scope.go). Only a
+	//     which refuses a credential that proved another session, and answers a session the
+	//     caller may not see as one nobody holds (project_scope.go). Only a
 	//     broker-issued token proves one; `POST /api/v1/agents/{session_id}/messages`, the
 	//     stream publish and the `me` state row need the `person` scope besides, since a person
 	//     writing to a session is writing to someone else's conversation by design, and that
@@ -60,16 +62,15 @@ const (
 	//   - The `me` token rows name no session at all: they are the calling person's, read and
 	//     written by a credential holding the `person` scope and keyed on that person.
 	scopeSession writeScope = "session"
-	// scopeDeployment is a write that belongs to the deployment rather than to any project: a
-	// credential that may write one project may not create another or change a deployment-wide
-	// setting, so a project-scoped caller is refused these by name.
+	// scopeDeployment is a write that belongs to the deployment rather than to any project, so a
+	// viewer that is not open - a restricted member, or a credential that lists projects - is
+	// refused these by name (withinProjectScope).
 	scopeDeployment writeScope = "deployment"
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
 	// than its path: the issue create, whose project comes from the body, or from the
-	// repository an external ref names. There is no object to resolve before the handler runs,
-	// so createIssue makes the check itself once that project is settled
-	// (refuseWriteOutsideProjectScope), and withinProjectScope passes the row through by this
-	// class rather than by a name it compares.
+	// repository an external ref names, and the going request. A credential that lists projects
+	// is refused a project outside its list by the handler once that project is settled
+	// (refuseOutsideCallerProjects).
 	scopeProjectInBody writeScope = "project-in-body"
 	// scopeNoWrite is a row that writes nothing and reads no row: its answer is computed from
 	// its own body alone. There is no object whose project could be resolved and no session the
@@ -107,7 +108,7 @@ var writeClasses = map[string]writeScope{
 	"PUT /api/v1/issues/{key}/design-gates":                scopeProject,
 
 	// A result's retraction: the row belongs to the project of the issue the result was
-	// recorded on, one hop through check_results (projectOfCheckResult).
+	// recorded on, one hop through check_results (lockRetractedResult).
 	"POST /api/v1/results/{id}/retract": scopeProject,
 
 	"POST /api/v1/projects/{key}/artifacts":                 scopeProject,
@@ -681,7 +682,7 @@ func (s *server) routes() []apiRoute {
 		{http.MethodDelete, "/api/v1/me/agent-tokens/{id}", authAny, "Revoke a personal agent token.", s.revokeAgentToken},
 		{http.MethodGet, "/api/v1/users", authAny, "Everyone who has signed in, by lowercase email: the assignee picker's options. Only the people of the projects the caller sees, for a restricted member or a credential that lists projects.", s.listUsers},
 		{http.MethodGet, "/api/v1/people/{login}/nodes", authAny, "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets; so is a person the caller may not see, or none of whose writes it may see, except the caller's own login.", s.listPersonNodes},
-		{http.MethodGet, "/api/v1/whoami", authAny, "Who the server takes the caller for: {kind: user, login, projects, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, projects, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is). projects is the list of projects the credential may use, sorted, in either shape, absent when it lists none; project is deprecated, and is the one key of a one-key list, null otherwise. scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.", s.whoami},
+		{http.MethodGet, "/api/v1/whoami", authAny, "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. Either shape also carries projects, the list of projects the credential may use, sorted, absent when it lists none; project is deprecated, and for a credential with a list is its one key when the list holds one, null otherwise. member_kind is restricted for a restricted member, and absent for everyone else; a member kind that cannot be read is 503 IDENTITY_UNAVAILABLE.", s.whoami},
 		{http.MethodGet, "/api/v1/dashboard/builds", authAny, "Which dashboard builds are served: {serving, live}, serving the entry chunk (/assets/index-*.js) of the build this process serves (empty when none), live the distinct entry chunks of the builds every live server process serves, sorted. A tab offers its reload notice only when live holds exactly one entry and it is not the tab's own.", s.getDashboardBuilds},
 		{http.MethodGet, "/api/v1/priorities", authAny, fmt.Sprintf("Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest %d rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment: an open viewer reads it, the shared token every pod carries included, and a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED. Each count counts only the work of the projects the caller sees. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.", priorityFaultRows), s.listPriorities},
 		{http.MethodPost, "/api/v1/priorities", authAny, fmt.Sprintf("Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over %d characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over %d characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.", contracts.IssueTitleMax, priorityIDMax), s.createPriority},

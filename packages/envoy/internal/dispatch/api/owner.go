@@ -92,16 +92,16 @@ func (s *server) loadProject(ctx context.Context, q queryer, who model.Actor, ke
 	return project, nil
 }
 
-// requireOpenOwner locks the owner before its collaboration rows are changed.
-func (s *server) requireOpenOwner(ctx context.Context, tx pgx.Tx, owner owner) error {
-	_, err := s.requireOpenOwnerStatus(ctx, tx, owner)
+// requireOpenOwner locks the owner before its collaboration rows are changed, as who reads it.
+func (s *server) requireOpenOwner(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner) error {
+	_, err := s.requireOpenOwnerStatus(ctx, tx, who, owner)
 	return err
 }
 
 // requireOpenOwnerStatus also returns the lifecycle status for an issue owner.
 // Project documents have no issue status and return nil.
-func (s *server) requireOpenOwnerStatus(ctx context.Context, tx pgx.Tx, owner owner) (*string, error) {
-	status, open, err := ownerStatus(ctx, tx, owner, ownerRowLock)
+func (s *server) requireOpenOwnerStatus(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner) (*string, error) {
+	status, open, err := ownerStatus(ctx, tx, who, owner, ownerRowLock)
 	if err != nil {
 		return nil, err
 	}
@@ -121,20 +121,24 @@ const ownerRowLock = " for no key update"
 // open - a project document is always open - and leaves refusing a closed issue to each write
 // that does. q is the transaction whose lock the read takes, or the pool for a read made before
 // any transaction opens; lock is that lock's clause, empty for the unlocked read.
-func ownerStatus(ctx context.Context, q queryer, owner owner, lock string) (*string, bool, error) {
+//
+// The owner is read as who reads it - the writer, with the viewer of its request (readerOf) - so
+// an owner of a project the writer does not see is the missing owner, and the write answers it
+// as it answers an owner no row holds.
+func ownerStatus(ctx context.Context, q queryer, who model.Actor, owner owner, lock string) (*string, bool, error) {
 	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
 		return nil, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	if owner.IssueKey != nil {
-		status, open, err := issueStatus(ctx, q, *owner.IssueKey, lock)
+		status, open, err := issueStatus(ctx, q, who, *owner.IssueKey, lock)
 		if err != nil {
 			return nil, false, err
 		}
 		return &status, open, nil
 	}
 	if err := q.QueryRow(ctx, `
-		select true from artifacts where id = $1 and issue_key is null`+lock,
-		*owner.ArtifactID).Scan(new(bool)); err != nil {
+		select true from artifacts where id = $1 and issue_key is null and `+documentClause("artifacts", "$2")+lock,
+		*owner.ArtifactID, refs.VisibilityArg(who)).Scan(new(bool)); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
 		}
@@ -152,11 +156,11 @@ func ownerStatus(ctx context.Context, q queryer, owner owner, lock string) (*str
 // (refuseUploadToAClosedIssue). The locked check still decides; this one only spares the work,
 // and takes no lock of its own so a write on a busy owner waits for that lock once rather than
 // twice.
-func (s *server) refuseOwnerBeforeResolving(ctx context.Context, owner owner, write closedWrite) error {
+func (s *server) refuseOwnerBeforeResolving(ctx context.Context, who model.Actor, owner owner, write closedWrite) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	_, open, err := ownerStatus(ctx, s.deps.Store.Pool, owner, "")
+	_, open, err := ownerStatus(ctx, s.deps.Store.Pool, who, owner, "")
 	if err != nil {
 		return err
 	}

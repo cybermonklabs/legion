@@ -44,14 +44,18 @@ export interface PipedRunning extends Running {
  *
  *  - `group <pgid>`: a process group, ended as `Supervisor.stop` ends one: SIGTERM, then SIGKILL to
  *    whatever still runs ten seconds later;
- *  - `container <id>`: a container, removed with its volumes by the id `docker run` printed;
+ *  - `container <name>`: a container, removed with its volumes by the name its starter gave it
+ *    before it ran `docker run`, which is unique to the run;
  *  - `cluster <pg_ctl>` TAB `<data directory>`: a Postgres cluster, stopped `immediate`;
  *  - `forget <line>`: one of those its starter already ended itself;
  *  - `end`: its starter stopped everything, and it exits.
  *
  *  End of input with no `end` is that process gone without a stop - killed, crashed, out of
  *  memory - and it ends everything it holds. Each line names exactly one thing its starter made,
- *  by the id it recorded, never a pattern. */
+ *  by the name it recorded before making it, never a pattern. A start the kill interrupted - a
+ *  `docker run --name <name>`, a `pg_ctl -D <data> start` - outlives its starter and can make its
+ *  container or its server after the reaper's first removal, so the reaper removes again while a
+ *  process naming that container or that data directory still runs, for at most a minute. */
 const reaperProgram = `held=
 while IFS= read -r line; do
   case "$line" in
@@ -66,6 +70,27 @@ while IFS= read -r line; do
     *) held+="$line"$'\\n' ;;
   esac
 done
+end_container() {
+  local tries=0
+  while [ "$tries" -lt 120 ]; do
+    docker rm --force --volumes "$1" >/dev/null 2>&1
+    if ! pgrep -f -- "--name $1( |$)" >/dev/null 2>&1 &&
+      ! docker container inspect "$1" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+}
+end_cluster() {
+  local tries=0
+  while [ "$tries" -lt 120 ]; do
+    "$1" -D "$2" -m immediate -w stop >/dev/null 2>&1
+    pgrep -f -- "-D \${2//./\\\\.}( |$)" >/dev/null 2>&1 || return
+    sleep 0.5
+    tries=$((tries + 1))
+  done
+}
 groups=()
 while IFS= read -r item; do
   case "$item" in
@@ -73,10 +98,10 @@ while IFS= read -r item; do
       groups+=("\${item#group }")
       kill -TERM -- "-\${item#group }" 2>/dev/null ;;
     "container "*)
-      docker rm --force --volumes "\${item#container }" >/dev/null 2>&1 & ;;
+      end_container "\${item#container }" & ;;
     "cluster "*)
       rest=\${item#cluster }
-      "\${rest%%$'\\t'*}" -D "\${rest#*$'\\t'}" -m immediate -w stop >/dev/null 2>&1 & ;;
+      end_cluster "\${rest%%$'\\t'*}" "\${rest#*$'\\t'}" & ;;
   esac
 done <<< "$held"
 waited=0
@@ -91,7 +116,9 @@ for group in "\${groups[@]}"; do kill -KILL -- "-$group" 2>/dev/null; done
 wait`;
 
 /** One thing a reaper ends when its starter dies without ending it: a process group, a container
- *  by its id, or a Postgres cluster by its `pg_ctl` and its data directory. */
+ *  by the name its starter gave it, or a Postgres cluster by its `pg_ctl` and its data directory.
+ *  A container and a cluster are handed over before they are started, so a starter killed while
+ *  one starts leaves nothing the reaper does not know of. */
 export type Reaped =
   | { readonly group: number }
   | { readonly container: string }
