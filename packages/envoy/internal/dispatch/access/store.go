@@ -136,8 +136,22 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*str
 	return owner, nil
 }
 
-// ReadProject answers who may see project key and who changes that.
-func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAccess, error) {
+// ReadProject answers who may see project key and who changes that, as viewer reads it: viewer is
+// the visibility argument every read binds (refs.VisibilityArg), and a project it does not see
+// answers ErrProjectNotFound, exactly as a key no project holds.
+func ReadProject(ctx context.Context, q Querier, key string, viewer any) (model.ProjectAccess, error) {
+	return readProject(ctx, q, key, `p.key = $1 and `+ProjectClause("p.key", "$2"), key, viewer)
+}
+
+// readProjectWritten is ReadProject for an access write's own answer: it runs inside the write,
+// after the owner's check under the project's lock, and answers what the write left whoever may
+// see the project now, so a writer who gave the project away is still told what they wrote.
+func readProjectWritten(ctx context.Context, q Querier, key string) (model.ProjectAccess, error) {
+	return readProject(ctx, q, key, `p.key = $1`, key)
+}
+
+// readProject reads the access of the one project where names, with args, or ErrProjectNotFound.
+func readProject(ctx context.Context, q Querier, key, where string, args ...any) (model.ProjectAccess, error) {
 	var access model.ProjectAccess
 	err := q.QueryRow(ctx, `
 		select p.key, coalesce(p.owner, ''), p.visibility,
@@ -149,8 +163,7 @@ func ReadProject(ctx context.Context, q Querier, key string) (model.ProjectAcces
 					and not exists (select 1 from people where email = listed.principal)
 				order by listed.principal collate "C")
 		from projects p
-		where p.key = $1
-	`, key).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels, &access.NotSignedIn)
+		where `+where, args...).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels, &access.NotSignedIn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -353,7 +366,7 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 // appendProjectChange reads project key's access as tx left it and appends the event naming the
 // change.
 func appendProjectChange(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, change, principal string, by model.Actor) (model.ProjectAccess, model.Event, error) {
-	access, err := ReadProject(ctx, tx, key)
+	access, err := readProjectWritten(ctx, tx, key)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
@@ -530,7 +543,7 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 	slices.Sort(projects)
 	changes := make([]model.Event, 0, len(projects)+1)
 	for _, project := range projects {
-		access, err := ReadProject(ctx, tx, project)
+		access, err := readProjectWritten(ctx, tx, project)
 		if err != nil {
 			return nil, err
 		}

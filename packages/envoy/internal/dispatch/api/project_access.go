@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // A project's access is who may see it and who changes that (internal/dispatch/access): its one
@@ -31,9 +34,14 @@ type projectAccessInput struct {
 	SlackChannels *[]string `json:"slack_channels,omitempty"`
 }
 
-// getProjectAccess answers who may see project key and who changes that.
+// getProjectAccess answers who may see project key and who changes that, as the caller reads it:
+// a project the caller does not see answers as a key no project holds.
 func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
 		return
 	}
 	pool, err := s.readyPool()
@@ -41,7 +49,7 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	answer, err := access.ReadProject(r.Context(), pool, r.PathValue("key"))
+	answer, err := access.ReadProject(r.Context(), pool, r.PathValue("key"), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeAccessError(w, err)
 		return
@@ -138,9 +146,14 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // and is the project's owner as projects.owner reads in the write's own transaction, under the
 // locks access.LockForAccessWrite takes in the one order every access write takes them (group,
 // the group the write names, or "" for none), so an owner change committed meanwhile is read
-// rather than raced and a delete of the group is ordered against the write. Anyone else is 403
-// PROJECT_OWNER_REQUIRED before anything is written. It publishes what the write appended once it
-// commits, and answers the project's access as the write left it.
+// rather than raced and a delete of the group is ordered against the write. It publishes what the
+// write appended once it commits, and answers the project's access as the write left it.
+//
+// The caller's viewer is read first: a project the caller does not see answers 404
+// PROJECT_NOT_FOUND exactly as a key no project holds, before the owner is read. Only a caller who
+// sees the project, and so may read its access list, is then told it is not the owner, by the 403
+// PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
+// to anyone who guessed its key.
 func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
 	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor) (model.ProjectAccess, []model.Event, error)) {
 	actor, ok := s.actingPerson(w, r)
@@ -148,6 +161,14 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		return
 	}
 	key := r.PathValue("key")
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if !who.Viewer.All && !slices.Contains(who.Viewer.Sees, key) {
+		s.writeAccessError(w, fmt.Errorf("%w: %s", access.ErrProjectNotFound, key))
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

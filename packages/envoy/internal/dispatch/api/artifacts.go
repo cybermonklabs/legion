@@ -187,7 +187,14 @@ func (s *server) refuseUploadToAClosedIssue(handler http.HandlerFunc) http.Handl
 		}
 		// The caller is resolved once a request: the key layer and the handler read this.
 		r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human}))
-		refusal := s.refuseOwnerBeforeResolving(r.Context(), issueOwner(r.PathValue("key")), refusedWhenClosed)
+		// The reader withinProjectScope resolved in front of this check: an issue the caller does
+		// not see is refused here as a key no issue holds.
+		who, err := s.resolveReader(r)
+		if err != nil {
+			handler(w, r)
+			return
+		}
+		refusal := s.refuseOwnerBeforeResolving(r.Context(), who, issueOwner(r.PathValue("key")), refusedWhenClosed)
 		if refusal == nil {
 			handler(w, r)
 			return
@@ -497,7 +504,7 @@ func (s *server) storeArtifact(
 			return
 		}
 	case target.IssueKey != nil:
-		issueStatus, err = s.requireOpenOwnerStatus(r.Context(), tx, issueOwner(*target.IssueKey))
+		issueStatus, err = s.requireOpenOwnerStatus(r.Context(), tx, who, issueOwner(*target.IssueKey))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -605,7 +612,7 @@ func (s *server) storeArtifact(
 	// document write has taken the room. Without this line the upload would run room -> owner
 	// against a settlement's owner -> room, and Postgres would break the cycle with a 500.
 	if target.IssueKey == nil && target.Session == "" && !created {
-		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
+		if err := s.requireOpenOwner(r.Context(), tx, who, ownerForArtifact(artifact)); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1231,7 +1238,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	eventOwner := ownerForArtifact(artifact)
-	if err := s.requireOpenOwner(r.Context(), tx, eventOwner); err != nil {
+	if err := s.requireOpenOwner(r.Context(), tx, who, eventOwner); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1341,7 +1348,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	eventOwner := ownerForArtifact(artifact)
-	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
+	status, err := s.requireOpenOwnerStatus(r.Context(), tx, who, eventOwner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -2368,7 +2375,7 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request, who 
 	switch {
 	case artifact.IssueKey != nil:
 		target = artifactTarget{IssueKey: artifact.IssueKey}
-		if _, err := s.requireOpenOwnerStatus(ctx, tx, issueOwner(*artifact.IssueKey)); err != nil {
+		if _, err := s.requireOpenOwnerStatus(ctx, tx, who, issueOwner(*artifact.IssueKey)); err != nil {
 			return refused(err)
 		}
 	case artifact.Project != "":

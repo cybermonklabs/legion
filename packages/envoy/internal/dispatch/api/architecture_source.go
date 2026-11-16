@@ -144,7 +144,14 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "SOURCE_INPUT", http.StatusBadRequest, "branch is required")
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1", key).Scan(new(string)); err != nil {
+	// The project as the caller reads it, before GitHub is asked anything: a project it does not
+	// see is a key no project holds, whatever the repository's access would answer.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1 and "+
+		access.ProjectClause("key", "$2"), key, refs.VisibilityArg(who)).Scan(new(string)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

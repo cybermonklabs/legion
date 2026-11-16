@@ -555,7 +555,7 @@ func (s *server) transitionAskTx(ctx context.Context, tx pgx.Tx, who model.Actor
 	if err != nil {
 		return model.Ask{}, err
 	}
-	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
+	if err := s.requireOpenOwner(ctx, tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		return model.Ask{}, err
 	}
 	ask, err := s.lockAskForTransition(ctx, tx, id)

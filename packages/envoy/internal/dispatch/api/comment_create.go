@@ -559,14 +559,14 @@ func (s *server) readCommentRoutes(ctx context.Context, owner owner, askID *stri
 // route the listener resolved is still the one the locked issue row carries. A route that
 // moved in between leaves the resolution unusable, so the write is resolved once more rather
 // than suppressing the wrong session's fan-out.
-func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved commentResolution, write closedWrite) (commentWrite, error) {
+func (s *server) beginCommentWrite(ctx context.Context, who model.Actor, owner owner, resolved commentResolution, write closedWrite) (commentWrite, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return commentWrite{}, err
 	}
 	// The transaction is the caller's on success only, so every refusal unwinds here: a later
 	// check that forgot its own rollback would hold a pooled connection for the process's life.
-	status, err := s.lockCommentOwner(ctx, tx, owner, resolved.route, write)
+	status, err := s.lockCommentOwner(ctx, tx, who, owner, resolved.route, write)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return commentWrite{}, err
@@ -579,9 +579,9 @@ func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved co
 // route the resolution was taken for. A closed issue still takes a comment - issue-level, a
 // reply, a reply on an ask, one anchored to a document's quote - but not a suggestion: that is
 // a proposed document edit, and accepting it, its only outcome, is refused on a closed issue,
-// which is what write says (refuseClosed).
-func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, route commentRoute, write closedWrite) (*string, error) {
-	status, open, err := ownerStatus(ctx, tx, owner, ownerRowLock)
+// which is what write says (refuseClosed). The owner is read as who reads it (ownerStatus).
+func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner, route commentRoute, write closedWrite) (*string, error) {
+	status, open, err := ownerStatus(ctx, tx, who, owner, ownerRowLock)
 	if err != nil {
 		return nil, err
 	}
@@ -657,7 +657,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		write = refusedWhenClosed
 	}
 	if len(mentionTargets) > 0 {
-		if err := s.refuseOwnerBeforeResolving(r.Context(), owner, write); err != nil {
+		if err := s.refuseOwnerBeforeResolving(r.Context(), reader, owner, write); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -667,7 +667,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
-			return s.beginCommentWrite(ctx, owner, resolved, write)
+			return s.beginCommentWrite(ctx, reader, owner, resolved, write)
 		},
 		errorf(http.StatusConflict, "ROUTE_CHANGED",
 			"the issue's delivery route changed while this comment was being written; post it again"),

@@ -82,7 +82,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.requireOpenOwner(r.Context(), tx, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
+	if err := s.requireOpenOwner(r.Context(), tx, who, ownerOf(unlockedAsk.IssueKey, unlockedAsk.ArtifactID)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

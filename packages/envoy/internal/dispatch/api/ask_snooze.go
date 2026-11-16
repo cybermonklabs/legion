@@ -7,7 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // Snoozing an Inbox row is a human's own view state, like the Agents page's Clear: the ask
@@ -49,6 +51,10 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	askID, err := parseAskID(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -73,9 +79,10 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	// process's host keeps its own clock, and the Inbox compares a snooze with now when it reads
 	// it. The bound allows no skew: the Inbox's presets are its own to keep clear of it, and the
 	// one that can land near midnight keeps a few seconds of today in hand rather than naming a
-	// moment this could refuse. The ask is selected rather than its id inserted, so an unknown ask
-	// stores nothing and reads as absent - a 404 - instead of the foreign key's 500; a past moment
-	// is refused first, whatever ask it names. previous is read from the statement's own snapshot,
+	// moment this could refuse. The ask is selected rather than its id inserted, as the caller
+	// reads it (access.ItemOwnerClause), so an unknown ask and an ask the caller does not see store
+	// nothing and read as absent - a 404 - instead of the foreign key's 500; a past moment is
+	// refused first, whatever ask it names. previous is read from the statement's own snapshot,
 	// before the write, so a snooze to the moment the row already holds is known to move nothing.
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -90,12 +97,13 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 			select snoozed_until from user_ask_snooze where login = $1 and ask_id = $2
 		), snoozed as (
 			insert into user_ask_snooze (login, ask_id, snoozed_until)
-			select $1, id, $3::timestamptz from asks where id = $2 and $3::timestamptz > now()
+			select $1, id, $3::timestamptz from asks
+			where id = $2 and $3::timestamptz > now() and `+access.ItemOwnerClause("asks.issue_key", "asks.artifact_id", "$4")+`
 			on conflict (login, ask_id) do update set snoozed_until = excluded.snoozed_until
 			returning snoozed_until
 		)
 		select $3::timestamptz > now(), (select snoozed_until from snoozed), (select snoozed_until from previous)
-	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil).Scan(&future, &stored, &previous); err != nil {
+	`, model.CanonicalLogin(actor.ID), askID, snoozedUntil, refs.VisibilityArg(who)).Scan(&future, &stored, &previous); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -124,13 +132,19 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	askID, err := parseAskID(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// Un-snoozing a row that is not snoozed is the state the caller asked for, so it answers
-	// the same 204 rather than a 404 the reader could do nothing with, and announces nothing.
+	// the same 204 rather than a 404 the reader could do nothing with, and announces nothing. An
+	// ask the caller does not see is such a row (access.ItemOwnerClause): a snooze kept from
+	// before stays, read by nothing, and no event of the ask's project is appended.
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -139,7 +153,8 @@ func (s *server) deleteAskSnooze(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	removed, err := tx.Exec(r.Context(), `
 		delete from user_ask_snooze where login = $1 and ask_id = $2
-	`, model.CanonicalLogin(actor.ID), askID)
+			and exists (select 1 from asks where asks.id = $2 and `+access.ItemOwnerClause("asks.issue_key", "asks.artifact_id", "$3")+`)
+	`, model.CanonicalLogin(actor.ID), askID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

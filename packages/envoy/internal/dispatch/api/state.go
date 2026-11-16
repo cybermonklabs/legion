@@ -11,7 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 type userIssueState struct {
@@ -22,7 +24,9 @@ type userIssueState struct {
 }
 
 // userState is the body GET /api/v1/me/state answers: the caller's state for each issue it
-// holds one for, by issue key.
+// holds one for, by issue key. An issue of a project the caller does not see is left out, as an
+// issue no row holds would be: a state kept from before its project was hidden stays, read by
+// nothing.
 type userState map[string]userIssueState
 
 func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
@@ -30,10 +34,16 @@ func (s *server) getUserState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select issue_key, pinned, last_read_seq, dismissed, seq
-		from user_issue_state where login = $1 order by issue_key
-	`, actor.ID)
+		select state.issue_key, state.pinned, state.last_read_seq, state.dismissed, state.seq
+		from user_issue_state state join issues on issues.key = state.issue_key
+		where state.login = $1 and `+access.ProjectClause("issues.project_key", "$2")+`
+		order by state.issue_key
+	`, actor.ID, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -100,6 +110,10 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_STATE", http.StatusBadRequest, "last_read_seq must be non-negative")
 		return
 	}
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	key := r.PathValue("key")
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -107,6 +121,15 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The issue is read as the caller reads it before its state row is written: an issue of a
+	// project the caller does not see answers 404 exactly as a key no issue holds, and stores
+	// nothing, so no state of it is kept and no event of its project is appended.
+	var project string
+	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1 and `+
+		access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&project); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if _, err := tx.Exec(r.Context(), `
 		insert into user_issue_state (login, issue_key) values ($1, $2)
 		on conflict (login, issue_key) do nothing
@@ -158,11 +181,6 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		set pinned = $3, last_read_seq = $4, dismissed = $5, seq = $6
 		where login = $1 and issue_key = $2
 	`, actor.ID, key, value.Pinned, value.LastReadSeq, encodedDismissed, value.Seq); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var project string
-	if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

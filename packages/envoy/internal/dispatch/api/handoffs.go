@@ -94,7 +94,11 @@ func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "HANDOFF_INPUT", http.StatusBadRequest, "body is not one JSON object: a handoff body is a JSON object")
 		return
 	}
-	handoff, err := s.recordHandoff(r.Context(), r.PathValue("key"), phase, *input.Body, actor)
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	handoff, err := s.recordHandoff(r.Context(), who, r.PathValue("key"), phase, *input.Body, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -103,8 +107,9 @@ func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordHandoff writes the handoff as the next version of the issue's phase and appends its
-// handoff.recorded, in one transaction that first locks the open issue.
-func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string, actor model.Actor) (model.HandoffSummary, error) {
+// handoff.recorded, in one transaction that first locks the open issue, as who reads it: an issue
+// of a project who does not see is a key no issue holds.
+func (s *server) recordHandoff(ctx context.Context, who model.Actor, issueKey, phase, body string, actor model.Actor) (model.HandoffSummary, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
 		return model.HandoffSummary{}, err
@@ -114,7 +119,7 @@ func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string
 		return model.HandoffSummary{}, err
 	}
 	defer tx.Rollback(ctx)
-	if err := s.requireOpenOwner(ctx, tx, issueOwner(issueKey)); err != nil {
+	if err := s.requireOpenOwner(ctx, tx, who, issueOwner(issueKey)); err != nil {
 		return model.HandoffSummary{}, err
 	}
 	handoff, err := scanHandoff(tx.QueryRow(ctx, `

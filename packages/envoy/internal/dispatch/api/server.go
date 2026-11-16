@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -44,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -1652,19 +1654,25 @@ func (s *server) readyPool() (*store.Pool, error) {
 
 // lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
 // lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
-// still takes: a message, its deliveries and the agent's reply to one.
+// still takes on a message already read: its deliveries and the agent's reply to one. It decides
+// nothing about who may write: its callers read the message as its writer reads it first, or
+// deliver as the server.
 func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	status, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	var status string
+	err := tx.QueryRow(ctx, `select status from issues where key = $1`+ownerRowLock, key).Scan(&status)
 	return status, err
 }
 
 // issueStatus reads an issue's lifecycle status, and whether it is open, through q under
-// lock. It refuses nothing: each write that a closed issue refuses decides that from open.
-func issueStatus(ctx context.Context, q queryer, key, lock string) (string, bool, error) {
+// lock, as who reads it: an issue of a project who does not see is pgx.ErrNoRows, as a key no
+// issue holds is. It refuses nothing: each write that a closed issue refuses decides that from
+// open.
+func issueStatus(ctx context.Context, q queryer, who model.Actor, key, lock string) (string, bool, error) {
 	var status string
 	var open bool
 	if err := q.QueryRow(ctx, `
-		select status, closed_at is null from issues where key = $1`+lock, key).Scan(&status, &open); err != nil {
+		select status, closed_at is null from issues where key = $1 and `+access.ProjectClause("project_key", "$2")+lock,
+		key, refs.VisibilityArg(who)).Scan(&status, &open); err != nil {
 		return "", false, err
 	}
 	return status, open, nil

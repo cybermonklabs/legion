@@ -69,7 +69,7 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader, ok := s.readerIf(w, r, actor, input.InReplyToBlock != nil)
+	reader, ok := s.readerAs(w, r, actor)
 	if !ok {
 		return
 	}
@@ -124,7 +124,7 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	reader, ok := s.readerIf(w, r, actor, input.InReplyToBlock != nil)
+	reader, ok := s.readerAs(w, r, actor)
 	if !ok {
 		return
 	}
@@ -314,8 +314,8 @@ func writeMessageNode(
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
 // request's connected_only, which only the agents route takes
 // (createAgentMessageInput.ConnectedOnly). actor is the writer the message records, and reader is
-// that writer as the reply block it names is read (readerAs), which a caller resolves before this
-// opens its transaction; a message that names no block reads nothing as it.
+// that writer as a read binds it (readerAs), which a caller resolves before this opens its
+// transaction: the issue the message is on, and the reply block it names, are read as it.
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
@@ -330,10 +330,11 @@ func (s *server) createStoredMessage(
 	}
 	defer tx.Rollback(ctx)
 	// The issue row is locked first, the order recordPendingMessageDelivery states, without the
-	// closed refusal: a closed issue still takes a message.
+	// closed refusal: a closed issue still takes a message. An issue of a project the writer does
+	// not see is a key no issue holds (issueStatus).
 	var status string
 	if issueKey != nil {
-		status, err = s.lockIssue(ctx, tx, *issueKey)
+		status, _, err = issueStatus(ctx, tx, reader, *issueKey, ownerRowLock)
 		if err != nil {
 			return model.Message{}, nil, err
 		}

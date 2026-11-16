@@ -12,8 +12,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // issueUpdatedNow is the value every write that stamps an issue's updated_at itself sets it to:
@@ -167,7 +169,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	closes := input.Status != nil && status == "done"
 	if closes {
 		// Before the transaction, which settlement's own would queue behind on the issue's row.
-		s.settleIssueBeforeClose(outlivingTheClient(r), key)
+		s.settleIssueBeforeClose(outlivingTheClient(r), who, key)
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -181,18 +183,17 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 
 	dependencyWrite := input.BlockedBy != nil || parentProvided
-	// A credential that names one project is refused a target outside it where a target's
-	// project is read, since this route's own address names no target (project_scope.go): the
-	// lock step refuses it before any lock, and writeBlockedBy again under them.
-	callerProject, _ := s.callerProject(r)
 	if dependencyWrite || input.Rank != nil {
+		// The issue's project as the caller reads it: an issue of a project it does not see is
+		// the missing row loadIssue answers below, and takes no lock of that project first.
 		var project string
-		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
+		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1 and `+
+			access.ProjectClause("project_key", "$2"), key, refs.VisibilityArg(who)).Scan(&project); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		if dependencyWrite {
-			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, who, blockers); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -376,7 +377,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
+		if err := writeBlockedBy(r.Context(), tx, key, who, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

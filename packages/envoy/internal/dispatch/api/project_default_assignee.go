@@ -119,6 +119,10 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -131,12 +135,12 @@ func (s *server) putProjectDefaultAssignee(w http.ResponseWriter, r *http.Reques
 	// key update`, which serialises this write against the other writers of the row and still
 	// lets a foreign key take its key share, as the room lock's rule requires of every lock on
 	// projects (TestNoForUpdateOnOwnerTables, docs/persistence.go's lockDocumentRoom). An
-	// unknown project is 404 NOT_FOUND here (pgx.ErrNoRows, writeHandlerError), before anything
-	// is written.
+	// unknown project, and one the caller does not see, is 404 NOT_FOUND here (pgx.ErrNoRows,
+	// writeHandlerError), before anything is written.
 	var previous string
 	if err := tx.QueryRow(r.Context(), `
-		select default_assignee from projects where key = $1 for no key update
-	`, key).Scan(&previous); err != nil {
+		select default_assignee from projects where key = $1 and `+access.ProjectClause("key", "$2")+` for no key update
+	`, key, refs.VisibilityArg(who)).Scan(&previous); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

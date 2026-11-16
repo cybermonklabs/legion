@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -162,8 +164,7 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
 // dependency lock (lockDeploymentIssueDependencies). The number, rank and row locks follow, as
 // they did before. project is the issue's own project, targets are its blocked_by targets, and
-// caller is the one project the request's credential may write, empty for a credential that
-// names none.
+// who is the writer as a read binds it (readerOf).
 //
 // The project locks are taken in lock id order, not key order, because the lock id is what
 // Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
@@ -175,22 +176,14 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // The one read it makes runs with no lock held, and nothing that read says decides which locks
 // are taken: the projects it names are locked on top of the issue's own, and the deployment lock
 // is taken exclusively whatever it said. Reading a target's project unlocked is sound because no
-// route moves an issue between projects (project_scope.go's file doc), and a key created between
-// that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
-//
-// A caller whose credential names one project is refused a target outside it here, before any
-// lock is taken: the pre-handler check reads the project of the object the path names and no key
-// of the body (project_scope.go), so this is the first point at which a target's project is
-// known, and a caller that may not write at all would otherwise take the deployment-wide lock
-// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
-// both word it through refuseBlockedByOutsideCallerProject.
-func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
-	foreign, err := foreignTargets(ctx, tx, project, targets)
+// route moves an issue between projects, and a key created between that read and the lock is
+// still refused by writeBlockedBy's own read inside the transaction. A target of a project who
+// does not see is a target that read does not find, and writeBlockedBy refuses it as a key no
+// issue holds.
+func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project string, who model.Actor, targets []string) error {
+	foreign, err := foreignTargets(ctx, tx, project, who, targets)
 	if err != nil {
 		return err
-	}
-	if caller != "" && len(foreign) > 0 {
-		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
 	}
 	projects := make([]string, 0, len(foreign)+1)
 	projects = append(projects, project)
@@ -213,17 +206,18 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 // it belongs to.
 type foreignTarget struct{ key, project string }
 
-// foreignTargets is every target belonging to a project other than project, in key order, which
-// is the order writeBlockedBy reads its targets in, so a scoped caller is refused the same target
-// by both. A target with no row is left out: writeBlockedBy's own read refuses it inside the
-// transaction, which is where an unknown key is answered.
-func foreignTargets(ctx context.Context, q queryer, project string, targets []string) ([]foreignTarget, error) {
+// foreignTargets is every target who sees belonging to a project other than project, in key
+// order. A target with no row, or of a project who does not see, is left out: writeBlockedBy's
+// own read refuses it inside the transaction, which is where an unknown key is answered.
+func foreignTargets(ctx context.Context, q queryer, project string, who model.Actor, targets []string) ([]foreignTarget, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
 	rows, err := q.Query(ctx, `
-		select key, project_key from issues where key = any($1) and project_key <> $2 order by key
-	`, targets, project)
+		select key, project_key from issues
+		where key = any($1) and project_key <> $2 and `+access.ProjectClause("project_key", "$3")+`
+		order by key
+	`, targets, project, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}
@@ -231,16 +225,6 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 		var target foreignTarget
 		return target, row.Scan(&target.key, &target.project)
 	})
-}
-
-// refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
-// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
-// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
-// once and the two cannot drift.
-func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
-	return errorf(http.StatusForbidden, codeProjectScope,
-		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
-		caller, target, targetProject)
 }
 
 // lockIssueRows locks key and the rows in others `for no key update` in one key order, the order
@@ -430,25 +414,23 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // another project: an issue that waits on work tracked elsewhere has to be able to record that
 // wait, and the walk below is what refuses a ring, between projects as inside one.
 //
-// caller is the one project the request's credential may write, empty for a credential that
-// names none (callerProject). A target outside it is refused here, under the locks, which is the
-// authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
-// taken, and both word it through refuseBlockedByOutsideCallerProject.
-func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
+// Each target is read as who reads it (access.ProjectClause), under the locks: a target of a
+// project who does not see is refused exactly as a key no issue holds. A credential that lists
+// projects sees no project outside its list, so this is also what holds such a caller's targets
+// to its list.
+func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Actor, targets []string) error {
 	if slices.Contains(targets, issue) {
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
+	viewer := refs.VisibilityArg(who)
 	for _, target := range targets {
-		var targetProject string
-		err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, target).Scan(&targetProject)
+		err := tx.QueryRow(ctx, `select true from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+			target, viewer).Scan(new(bool))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
 		}
 		if err != nil {
 			return err
-		}
-		if targetProject != project && caller != "" {
-			return refuseBlockedByOutsideCallerProject(caller, target, targetProject)
 		}
 	}
 	from := make([]waitNode, len(targets))
