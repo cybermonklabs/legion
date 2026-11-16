@@ -3,8 +3,8 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { gitBinary } from "@legion/pi-shared/test/omp-harness";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the

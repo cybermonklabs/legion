@@ -3,9 +3,9 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { captureEnvironment } from "@legion/test-fixtures/environment";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { gitBinary, jjBinary } from "./omp-harness";
+import { captureEnvironment } from "./environment";
+import { skipWithout } from "./host-tools";
+import { gitBinary, jjBinary } from "./version-control-tools";
 
 // jjBinary and gitBinary answer the binary the first `jj` and `git` on PATH run, read from the
 // running process's executable in /proc, and the first one on PATH itself where there is no /proc
@@ -20,7 +20,7 @@ afterEach(async () => {
 });
 
 async function scratch(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "test-omp-harness-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "test-version-control-tools-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -34,13 +34,13 @@ async function wrapperFirst(dir: string, name: string, target: string): Promise<
   const quoted = `'${target.replaceAll("'", `'\\''`)}'`;
   await writeFile(wrapper, `#!/bin/sh\nexec ${quoted} "$@"\n`, { mode: 0o755 });
   cleanup.push(captureEnvironment(["PATH"]));
-  process.env.PATH = `${bin}:${process.env.PATH ?? ""}`;
+  process.env["PATH"] = `${bin}:${process.env["PATH"] ?? ""}`;
   return wrapper;
 }
 
 /** The first `name` on this process's PATH as it is now (`Bun.which` alone reads the PATH the
  *  process started with). */
-const firstOnPath = (name: string) => Bun.which(name, { PATH: process.env.PATH ?? "" });
+const firstOnPath = (name: string) => Bun.which(name, { PATH: process.env["PATH"] ?? "" });
 
 const tools = [
   ["jj", jjBinary],

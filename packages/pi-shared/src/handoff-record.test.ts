@@ -14,7 +14,7 @@ import {
   versionControlIdentity,
   versionControlNames,
 } from "@legion/test-fixtures/version-control-environment";
-import { gitBinary, jjBinary, runTool } from "../test/omp-harness";
+import { gitBinary, jjBinary, runTool } from "@legion/test-fixtures/version-control-tools";
 import {
   findHandoffReport,
   findPushedBranchHead,

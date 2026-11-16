@@ -37,6 +37,10 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./version-control-tools": {
+      "types": "./src/version-control-tools.ts",
+      "bun": "./src/version-control-tools.ts"
     }
   },
   "scripts": {

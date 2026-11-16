@@ -9,7 +9,6 @@ import {
   call,
   deliveryFor,
   isSelfCheck,
-  jjBinary,
   messageStream,
   ompNatsGuard,
   ompRoot,
@@ -19,6 +18,7 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { jjBinary } from "@legion/test-fixtures/version-control-tools";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
 // commit carries the two trailers of the pane: `Omp-Session` with the session of the pane, and

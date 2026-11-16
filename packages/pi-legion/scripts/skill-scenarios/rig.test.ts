@@ -9,9 +9,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { gitBinary } from "@legion/pi-shared/test/omp-harness";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { gitBinary } from "@legion/test-fixtures/version-control-tools";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test

@@ -4,16 +4,15 @@ import * as path from "node:path";
 import {
   type Cleanup,
   call,
-  jjBinary,
   type LegionPane,
   ompNatsGuard,
   type Reply,
   runLegionPane,
-  runTool,
   type ToolResult,
   toolResultsIn,
 } from "@legion/pi-shared/test/omp-harness";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+import { jjBinary, runTool } from "@legion/test-fixtures/version-control-tools";
 
 // Acceptance 1 of LEGION-630, and LEGION-631's deletion of the tool_call hook, on the real Oh My
 // Pi: no Legion role is refused a tool, and nothing a pane runs is refused. A root architect runs

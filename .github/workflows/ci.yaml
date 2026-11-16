@@ -2057,13 +2057,15 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
             # The shared test fixtures every other Bun package's tests import: its own sources and
-            # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
-            # Biome, whose root config packages/test-fixtures/biome.json extends.
+            # tests (it imports nothing outside itself), the Bun install, the Bun it runs and
+            # Biome, whose root config packages/test-fixtures/biome.json extends, and the jj
+            # .github/actions/install-jj installs for src/version-control-tools.test.ts.
             test_fixtures:
               - *ci_router
               - '.github/workflows/ci-job-test-fixtures.yaml'
               - *bun_install
               - 'packages/test-fixtures/**'
+              - *jj_install
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.

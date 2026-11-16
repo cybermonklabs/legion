@@ -36,6 +36,9 @@ jobs:
       - name: Typecheck the shared test fixtures
         run: bun run typecheck
         working-directory: packages/test-fixtures
+      # src/version-control-tools.test.ts resolves the jj and git binaries the first `jj` and
+      # `git` on PATH run, and skips without them.
+      - uses: ./.github/actions/install-jj
       - name: Test the shared test fixtures
         run: bun run test
         working-directory: packages/test-fixtures

@@ -48,10 +48,10 @@ related_issues:
   `apply_patch` is pinned by the unit matrix only, and the PR body says so.
 - The harness pins the pane's `PATH` to `<bin>:/usr/local/bin:/usr/bin:/bin`; symlink into the
   pane's `bin` the jj binary the test process's `jj` runs (`jjBinary` in
-  `packages/pi-shared/test/omp-harness.ts`), since CI's jj lives in `~/.local/bin`. Never link
-  `Bun.which("jj")` itself: on a dev box that can be a wrapper (a mise shim, the dotfiles jj shim)
-  that finds no jj under the pane's own HOME and PATH. Make the pane's workspace a jj repository
-  with one described commit before the run (`jj git init`, `jj describe -m …`, with
+  `packages/test-fixtures/src/version-control-tools.ts`), since CI's jj lives in `~/.local/bin`.
+  Never link `Bun.which("jj")` itself: on a dev box that can be a wrapper (a mise shim, the dotfiles
+  jj shim) that finds no jj under the pane's own HOME and PATH. Make the pane's workspace a jj
+  repository with one described commit before the run (`jj git init`, `jj describe -m …`, with
   `JJ_USER`/`JJ_EMAIL` on the spawn), so `jj log` has something to print.
 - A phase-worker pane whose run settles without a `handoff_complete` gets the phase stall's
   follow-up turn; end the scripted replies with a text starting `WAITING:` so the run ends on the

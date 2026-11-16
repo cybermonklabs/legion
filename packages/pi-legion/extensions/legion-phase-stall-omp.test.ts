@@ -5,17 +5,15 @@ import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
   call,
-  gitBinary,
-  jjBinary,
   type LegionPane,
   type LegionPaneOptions,
   ompNatsGuard,
   type Reply,
   type Request,
   runLegionPane,
-  runTool,
 } from "@legion/pi-shared/test/omp-harness";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+import { gitBinary, jjBinary, runTool } from "@legion/test-fixtures/version-control-tools";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
