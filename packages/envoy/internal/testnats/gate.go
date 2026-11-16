@@ -5,11 +5,14 @@ import (
 	"math/rand/v2"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Gate is one TCP address a test holds for its whole life, which relays to srv while it is open
@@ -41,15 +44,20 @@ type Gate struct {
 // let the test the gate serves pass while testing nothing. The port is never free all the same:
 // from StartGate to the test's end the gate holds it twice over (holdGatePort).
 //
-//   - A reservation: a socket bound to the gate's address with SO_REUSEADDR that never listens.
-//     A dial of it is refused, and the gate's listener binds beside it at each Open, since Go's
-//     listeners set SO_REUSEADDR too and Linux refuses a bind beside a socket with SO_REUSEADDR
-//     only when that socket listens (net/ipv4/inet_connection_sock.c, inet_bind_conflict). A
-//     program that binds the port without SO_REUSEADDR is refused, closed gate or open.
+//   - A reservation: a socket bound to the gate's address with SO_REUSEADDR that never listens
+//     (testport.Reserve). A dial of it is refused, and the gate's listener binds beside it at each
+//     Open, since Go's listeners set SO_REUSEADDR too. A program that binds the port without
+//     SO_REUSEADDR is refused, closed gate or open.
 //   - A claim: the abstract unix socket gateClaim(port), which one socket of the machine's network
 //     namespace can hold at a time. Every gate's own sockets set SO_REUSEADDR, so the reservation
 //     alone would let a second gate bind beside a closed one; the claim keeps every other gate off
 //     the port.
+//
+// Both hold only on Linux. The reservation rests on Linux's bind rules (testport.Reserve), and a
+// unix socket name that starts with @ is abstract only on Linux: elsewhere it is a file in the
+// current directory that nothing unlinks. So StartGate refuses to run on any other system. Every
+// place a Gate runs today is Linux: CI's ubuntu-24.04 runners, the development boxes, and Legion's
+// worker pods, whose gVisor sandbox presents the Linux interface.
 //
 // What neither stops is another program that picks the number itself and binds it with
 // SO_REUSEADDR. Docker does that for a container's published random host port inside the
@@ -95,9 +103,14 @@ func gatePorts(text string) (first, count int, err error) {
 
 // StartGate opens a gate on a port of the band gatePorts chooses from this machine's ephemeral
 // range that no other gate and no listener holds, relaying to srv, and closes it and gives up the
-// port when the test ends.
+// port when the test ends. It fails the test on a system other than Linux, before it claims
+// anything (the comment above ephemeralRangePath).
 func StartGate(t testing.TB, srv *Server) *Gate {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Fatalf("testnats: a gate holds its port with Linux's bind rules and an abstract unix socket, and this system is %s", runtime.GOOS)
+		return nil
+	}
 	// An unreadable file is empty text, which gatePorts reads as the fallback range.
 	text, _ := os.ReadFile(ephemeralRangePath)
 	first, count, err := gatePorts(string(text))
@@ -142,28 +155,12 @@ func holdGatePort(port int) (net.Listener, int, error) {
 	if err != nil {
 		return nil, -1, fmt.Errorf("claim port %d: %w", port, err)
 	}
-	// Close-on-exec, under ForkLock as package net opens its sockets where SOCK_CLOEXEC is missing,
-	// so no process a test starts inherits the reservation.
-	syscall.ForkLock.RLock()
-	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
-	if err == nil {
-		syscall.CloseOnExec(fd)
-	}
-	syscall.ForkLock.RUnlock()
-	if err == nil {
-		err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-		if err == nil {
-			err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
-		}
-		if err != nil {
-			_ = syscall.Close(fd)
-		}
-	}
+	reservation, _, err := testport.Reserve(&syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
 	if err != nil {
 		_ = claim.Close()
 		return nil, -1, fmt.Errorf("reserve 127.0.0.1:%d: %w", port, err)
 	}
-	return claim, fd, nil
+	return claim, reservation, nil
 }
 
 // release gives up the gate's port: its reservation and its claim.

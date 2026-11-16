@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -578,26 +579,17 @@ func requireNoAutobindReuse(t *testing.T) {
 		"net.ipv4.ip_autobind_reuse must be 0 for a reserved port to be given to no other socket (see reservePorts)")
 }
 
-// reservePort reserves one port, as reservePorts describes, and returns it.
+// reservePort reserves one port, as reservePorts describes, and returns it: a reservation
+// (testport.Reserve) on :: with IPV6_V6ONLY off, so it holds the port on every IPv4 address too,
+// at a port the kernel chooses, held until the test ends.
 func reservePort(t *testing.T) int {
 	t.Helper()
-	// Close-on-exec, under ForkLock as package net opens its sockets where SOCK_CLOEXEC is
-	// missing, so no process the test starts inherits a reservation and keeps it past the test.
-	syscall.ForkLock.RLock()
-	fd, err := syscall.Socket(syscall.AF_INET6, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
-	if err == nil {
-		syscall.CloseOnExec(fd)
-	}
-	syscall.ForkLock.RUnlock()
-	require.NoError(t, err, "open a socket to reserve a port")
+	fd, port, err := testport.Reserve(&syscall.SockaddrInet6{}, func(fd int) error {
+		return syscall.SetsockoptInt(fd, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 0)
+	})
+	require.NoError(t, err, "reserve a port the kernel chooses on every address")
 	t.Cleanup(func() { _ = syscall.Close(fd) })
-	// IPV6_V6ONLY off, so the socket bound to :: holds the port on every IPv4 address too.
-	require.NoError(t, syscall.SetsockoptInt(fd, syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 0))
-	require.NoError(t, syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1))
-	require.NoError(t, syscall.Bind(fd, &syscall.SockaddrInet6{}), "bind a reservation to a port the kernel chooses")
-	addr, err := syscall.Getsockname(fd)
-	require.NoError(t, err)
-	return addr.(*syscall.SockaddrInet6).Port
+	return port
 }
 
 // A reserved port refuses a program that binds it without SO_REUSEADDR, on 127.0.0.1 and on ::

@@ -37,10 +37,11 @@ multiple of the worst value you saw.
   closed.** Docker picks a container's published random host port in that range itself and binds
   it with `SO_REUSEADDR`, so it can take the gate's address while the gate is closed
   (`testnats.StartGate` picks from the 1000 ports below the machine's range, `gatePorts`). A
-  closed gate keeps its port with a socket bound to it with `SO_REUSEADDR` that never listens, so
-  a dial is still refused and no program that binds without `SO_REUSEADDR` can take it, and with
-  an abstract unix socket per port, so no other gate can (`holdGatePort`,
-  `TestAClosedGateKeepsItsPort`).
+  closed gate keeps its port with a socket bound to it with `SO_REUSEADDR` that never listens
+  (`testport.Reserve`), so a dial is still refused and no program that binds without
+  `SO_REUSEADDR` can take it, and with an abstract unix socket per port, so no other gate can
+  (`holdGatePort`, `TestAClosedGateKeepsItsPort`). Both hold only on Linux, so `StartGate` refuses
+  to run anywhere else.
 - **An ordered KV consumer reports its stream gone only after two missed 5 s idle heartbeats.** It
   was measured at about 10 s, and at 18.81 s twice, against nats-server v2.11.4. A 5 s
   `eventually` can never see a `kvwatch` watcher stop, so give that wait its own budget
