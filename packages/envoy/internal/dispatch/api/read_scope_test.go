@@ -1,0 +1,91 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+)
+
+// TestADeploymentReadIsRefusedToAViewerThatIsNotOpen walks every GET row the table classes as a
+// read of the deployment. bob, a restricted member, is refused each one 403 DEPLOYMENT_READ_REFUSED
+// before its handler runs, the refusal naming the row; alice, a full member no list names, and the
+// shared token, both open viewers, are not. A wildcard is filled with a value no row holds, since
+// the refusal comes before any row is read.
+func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
+	seed := seedPrivateProject(t)
+	var walked []string
+	for _, route := range seed.server.routes() {
+		if route.Method != http.MethodGet || !slices.Contains(route.Reads, readclass.Deployment) {
+			continue
+		}
+		walked = append(walked, route.Pattern)
+		target := patternWildcard.ReplaceAllString(route.Pattern, "1")
+		refused := seed.request(t, callerBob, http.MethodGet, target, nil)
+		var refusal struct{ Code, Error string }
+		_ = json.Unmarshal(refused.Body.Bytes(), &refusal)
+		if refused.Code != http.StatusForbidden || refusal.Code != "DEPLOYMENT_READ_REFUSED" || !strings.Contains(refusal.Error, "GET "+route.Pattern) {
+			t.Errorf("bob read GET %s as %d %s, want 403 DEPLOYMENT_READ_REFUSED naming the row", route.Pattern, refused.Code, refused.Body.String())
+		}
+		for _, open := range []privateCaller{callerAlice, callerSharedToken} {
+			if answered := seed.request(t, open, http.MethodGet, target, nil); strings.Contains(answered.Body.String(), "DEPLOYMENT_READ_REFUSED") {
+				t.Errorf("%s, an open viewer, read GET %s as %d %s", open, route.Pattern, answered.Code, answered.Body.String())
+			}
+		}
+	}
+	if !slices.Contains(walked, "/api/v1/priorities") {
+		t.Fatalf("the walk read the deployment's rows %q, without GET /api/v1/priorities", walked)
+	}
+}
+
+// TestTheReadScopePutsTheReaderInTheRequest: a GET row whose classes need the viewer runs its
+// handler with the reader withinReadScope resolved in the request's context, the one readerOf
+// answers; a row that needs none runs it with none, and resolves nothing.
+func TestTheReadScopePutsTheReaderInTheRequest(t *testing.T) {
+	seed := seedPrivateProject(t)
+	for _, test := range []struct {
+		classes []readclass.Class
+		wants   bool
+	}{
+		{[]readclass.Class{readclass.Project}, true},
+		{[]readclass.Class{readclass.Graph}, true},
+		{[]readclass.Class{readclass.People}, true},
+		{[]readclass.Class{readclass.Agents}, true},
+		{[]readclass.Class{readclass.Deployment, readclass.Project}, true},
+		{[]readclass.Class{readclass.Caller, readclass.Project}, true},
+		{[]readclass.Class{readclass.None}, false},
+		{[]readclass.Class{readclass.Caller}, false},
+		{[]readclass.Class{readclass.TestHook}, false},
+	} {
+		route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets"}, Reads: test.classes}
+		var held bool
+		var seen []string
+		handler := seed.server.withinReadScope(route, func(w http.ResponseWriter, r *http.Request) {
+			reader, ok := readerFromContext(r.Context())
+			held = ok
+			if ok && reader.Viewer != nil {
+				seen = reader.Viewer.Sees
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})
+		recorder := httptest.NewRecorder()
+		handler(recorder, seed.readerRequest(t, callerBob))
+		if recorder.Code == http.StatusForbidden {
+			// bob is a restricted member, so a deployment row is refused him before its handler.
+			if !slices.Contains(test.classes, readclass.Deployment) {
+				t.Errorf("a row of %q refused bob: %s", test.classes, recorder.Body.String())
+			}
+			continue
+		}
+		if held != test.wants {
+			t.Errorf("a row of %q ran its handler with a reader in the request: %t, want %t", test.classes, held, test.wants)
+		}
+		if test.wants && !slices.Equal(seen, []string{seedPrivate}) {
+			t.Errorf("a row of %q handed its handler bob's viewer seeing %q, want [%s]", test.classes, seen, seedPrivate)
+		}
+	}
+}

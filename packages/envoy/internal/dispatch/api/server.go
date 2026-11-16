@@ -779,6 +779,12 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// prefix into is the value the project check resolves and the value the handler
 		// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
 		handler = s.resolveIDPrefixes(route, handler)
+		if route.Method == http.MethodGet {
+			// Outside resolveIDPrefixes, so the reader it resolves is in the request's context
+			// before any read of the row's binds one (readerOf); inside the parameter check and
+			// the scope gate, so a request either refuses is refused before anything is read.
+			handler = s.withinReadScope(route, handler)
+		}
 		handler = s.refuseUnstorableParameters(route.Pattern, handler)
 		if len(route.OAuthScopes) > 0 {
 			// Ahead of the keyed layer and the project and session checks, so the row's own
