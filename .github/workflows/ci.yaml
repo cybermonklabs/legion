@@ -1447,6 +1447,12 @@ jobs:
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/test/**'
+              # e2e/read-token-live.ts:37 imports @legion/envoy-client/broker-credential, whose
+              # src/broker-credential.ts:21-34 imports @legion/broker-client/*, so the dashboard's
+              # tsc program compiles broker-client's sources too, and check-ts-filters.sh holds
+              # this filter to them. Nothing this job runs loads them: the script is a live proof
+              # run by hand against a running broker and Dispatch, and no suite imports it.
+              - 'packages/broker-client/src/**'
             envoy_go:
               - '.github/workflows/ci.yaml'
               - *bun_install
