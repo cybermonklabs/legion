@@ -773,6 +773,7 @@ type scriptedResults struct {
 func (r scriptedResults) Exec() (pgconn.CommandTag, error) { return pgconn.CommandTag{}, r.err }
 func (r scriptedResults) Query() (pgx.Rows, error)         { return nil, errors.New("not scripted") }
 func (r scriptedResults) Close() error                     { return r.err }
+func (r scriptedResults) Tx() pgx.Tx                       { return nil }
 
 func (r scriptedResults) QueryRow() pgx.Row {
 	return scanRow(func(dest ...any) error {
