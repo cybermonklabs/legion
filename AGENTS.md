@@ -18,7 +18,7 @@ A measurement outranks any line here.
   When a feature is hard to build over the model, the model is the defect.
 
 - **One source of truth for each fact.**
-  A copy drifts, so read the fact from the system that writes it.
+  A copy drifts, so a copy never overrules the system that writes the fact.
 
 - **The daemon is a state machine, not a gateway.**
 
@@ -62,8 +62,8 @@ A measurement outranks any line here.
 - **Make invalid input impossible to represent.**
   Typing is your friend.
 
-- **Each interface has one declared contract, and a service keeps answering the older clients it supports.**
-  A hand-written copy of a schema drifts, and no rollout updates both sides at once.
+- **Change a contract so the clients already deployed can still read it.**
+  No rollout updates both sides at once.
 
 * **There are no rules, there are only reasons.**
   Explain what is not obvious, but do not turn that into law.
