@@ -19,7 +19,7 @@ const (
 	// ArchitectFreshTreeLabel is in the task of a tree nobody has architected.
 	ArchitectFreshTreeLabel = "its tree is open at generation"
 	// ArchitectCarriedPhaseLabel is in the task of a root a hand-over carried in.
-	ArchitectCarriedPhaseLabel = "the phase a hand-over carried it in at"
+	ArchitectCarriedPhaseLabel = "in the run a hand-over carried it into"
 	// ArchitectGateRowsLabel is in the task of a root that holds design gate rows while its gate
 	// is not open.
 	ArchitectGateRowsLabel = "its design gate already stands part way"
@@ -47,14 +47,23 @@ type ArchitectStart struct {
 	// is open at, the phase it stands in and whether its run has stood in a phase of its own
 	// (record.Issue.TakenBack).
 	Root record.Issue
-	// Carried says a hand-over carried the root in at the phase it stands in, which the hand-over
-	// row of the root's generation says (ArchitectCarried). The derivation reads it for a root
-	// past phase.Admitted alone, so the reader reads that row for such a root alone.
+	// Carried says a hand-over carried the root in at the generation it stands at, which the
+	// hand-over row of that generation says (ArchitectCarried): the root stands in the run that
+	// hand-over carried it into, in the phase that came with it or in one it has moved to since,
+	// which the record does not tell apart (ArchitectAtWork says why). The derivation reads it for
+	// a root past phase.Admitted alone, so the reader reads that row for such a root alone.
 	Carried bool
+	// GateCarried says the hand-over that carried the root in brought its design gate with it
+	// (record.HandedOverRoot.GateCarried), which it does where the tree it left had one. A tree
+	// whose root was reopened in its linger has its gate cleared, so its children are handed over
+	// with none, and their architects register their own steps
+	// (internal/prompts/roles/architect-root.md). The reader reads it with Carried.
+	GateCarried bool
 	// PhaseFinished says the phase a carried root stands in is over by its own terminating fact
-	// (PhaseFinished): it stands in merging and its pull request has merged, so the promotion that
-	// opens its tree starts no worker of that phase (admit's startMidPhaseMembers). The reader
-	// reads it for a carried root alone, the one root whose task names that phase's worker.
+	// (PhaseFinished): it stands in merging and its pull request has merged, so the daemon starts
+	// no worker of that phase again: the promotion that opens its tree passes it over (admit's
+	// startMidPhaseMembers). The reader reads it for a carried root alone, the one root whose task
+	// names that phase's worker.
 	PhaseFinished bool
 	// Gate is the steps the deployment gates and the design gate rows the root holds now
 	// (record.Store.GatesOf). The zero value is a root that has registered nothing.
@@ -82,11 +91,12 @@ type ArchitectStart struct {
 
 // ArchitectStartOf reads from the record what the first task of root's architect is derived from
 // (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
-// (ArchitectCarried) and, for such a root, whether its phase is over by its own terminating fact
-// (PhaseFinished), the design gate rows it holds under steps, the design-gate steps the deployment
-// gates, the run and the phase entry its tree's architect claim last served, and, for a root at
-// phase.Admitted, whether a member of its tree runs. It is the one reader of them, which every
-// derivation of a root architect's task reads them through.
+// and whether it brought a design gate with it (ArchitectCarried) and, for such a root, whether
+// its phase is over by its own terminating fact (PhaseFinished), the design gate rows it holds
+// under steps, the design-gate steps the deployment gates, the run and the phase entry its tree's
+// architect claim last served, and, for a root at phase.Admitted, whether a member of its tree
+// runs. It is the one reader of them, which every derivation of a root architect's task reads
+// them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
 // A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
@@ -97,7 +107,7 @@ type ArchitectStart struct {
 //
 // The hand-over row is read only for a root past phase.Admitted, the one root the derivation
 // reads Carried for (its first rule). At admission's promotion that row already stands for a root
-// a hand-over carried in at its phase: the re-admission that carried it (admit's readmit) writes
+// a hand-over carried in with its phase: the re-admission that carried it (admit's readmit) writes
 // it at the generation it opens, in the promotion's own pass or one before it, and nothing raises
 // a queued root's generation before its promotion. A root whose mark says it left another tree
 // without its run (record.Issue.HandedOverFrom) holds no row, and it stands at phase.Admitted,
@@ -132,10 +142,12 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 		}
 		return start, nil
 	}
-	if start.Carried, err = ArchitectCarried(ctx, tx, store, root); err != nil {
+	handed, err := ArchitectCarried(ctx, tx, store, root)
+	if err != nil {
 		return ArchitectStart{}, err
 	}
-	if start.Carried {
+	if handed != nil {
+		start.Carried, start.GateCarried = true, handed.GateCarried
 		if start.PhaseFinished, err = PhaseFinished(ctx, store, tx, root); err != nil {
 			return ArchitectStart{}, err
 		}
@@ -159,14 +171,17 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // stating the tree.
 //
 // The derivation serves two roots: one standing at phase.Admitted, which is where every tree the
-// workflow opens stands, and one a hand-over carried in at the phase that came with it. It gives
-// every other root nothing. Which of five shapes a root it serves gets is read here rather than
-// by each caller. The first rule that holds wins:
+// workflow opens stands, and one a hand-over carried in, past phase.Admitted in the run that
+// hand-over carried it into. It gives every other root nothing. Which of five shapes a root it
+// serves gets is read here rather than by each caller. The first rule that holds wins:
 //
-//  1. A hand-over carried the root in (Carried) and it is past phase.Admitted. It came with that
-//     phase and the design gate it brought, so it is told to take that phase up and that it
-//     decomposes nothing (internal/prompts/roles/architect-root.md, "decompose nothing and
-//     release no child"). It is asked for no spec.
+//  1. A hand-over carried the root in (Carried) and it is past phase.Admitted. It came into that
+//     run with its phase records, its pull request and, where the row says so, its design gate
+//     (GateCarried), so it is told to take up the phase it stands in and that it decomposes
+//     nothing (internal/prompts/roles/architect-root.md, "decompose nothing and release no
+//     child"). It is asked for no spec. The phase it stands in is the phase that came with it or
+//     one it has moved to since, which the record does not tell apart, so the task says what
+//     holds of either (writeCarriedPhase).
 //  2. The root is past phase.Admitted under its own power. It stands in a working phase, waits on
 //     a person, or stands in accepting, and its work is told by that phase's own role, by the
 //     resume the daemon composes when a person answers, or by the notice that moved it. A
@@ -241,8 +256,9 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 // while no member of its tree runs: it holds no gate row, so no person has a step of it to review,
 // and a child released under its closed gate waits for that gate (api's WaveReleaseResponse). A
 // fresh tree whose member runs is told instead that its own first phase waits for its gate. A
-// carried root is told whether the promotion that opens its tree starts its phase's worker
-// (admit's startMidPhaseMembers): it does, except where the phase is the architect's own, no role
+// carried root is told whether the daemon starts the worker of the phase it stands in
+// (admit's startMidPhaseMembers for the phase that came with it, the transition that moved it for
+// any phase after): it does, except where the phase is the architect's own, no role
 // works it, or its merge has ended it. A root whose gate stands part way hears a person's review
 // of a registered step as a notice. A root whose gate is open has its first phase started by the
 // daemon. A tree that ran at an earlier generation has its members that stood mid-phase started
@@ -299,22 +315,34 @@ func writeFreshTree(task *strings.Builder, start ArchitectStart) {
 	task.WriteString(closing)
 }
 
-// writeCarriedPhase writes the task of a root a hand-over carried in. It stands in the phase that
-// came with it, and its workers already run from the phase records the carry brought, so it is
-// asked for no spec and no decomposition (internal/prompts/roles/architect-root.md). What its
-// closing sentence says turns on that phase. A phase its own terminating fact has already ended
-// (PhaseFinished: merging, its pull request merged) starts no worker, since the promotion that
-// opens the root's tree passes it over (admit's startMidPhaseMembers), and the root stands in it
-// until the rest of its tree has left the workflow, when the daemon closes it (closeMerged,
-// closeAwaitingMerge). Otherwise it turns on the role that works the phase (phase.RoleFor): the
-// worker of a phase a worker works is started by that promotion, accepting is the architect's own
-// phase, and a phase no role works, which is held for a carried root, starts no worker until the
-// architect retries it.
+// writeCarriedPhase writes the task of a root a hand-over carried in. It stands in the run that
+// hand-over carried it into, with the phase records and the pull request the carry brought and,
+// where the hand-over row says so, the design gate (GateCarried), so it is asked for no spec and
+// no decomposition (internal/prompts/roles/architect-root.md).
+//
+// The phase it names is the phase the root stands in now, which is the phase that came with it
+// until the root moves on and one of that same run after. The record does not tell the two apart
+// — the hand-over row names no phase, and nothing else the promotion writes says the root still
+// stands where the carry put it (ArchitectAtWork says what was read) — so every clause here holds
+// of either. What its closing sentence says turns on that phase. A phase its own terminating fact
+// has already ended (PhaseFinished: merging, its pull request merged) starts no worker: the
+// promotion that opens the root's tree passes it over (admit's startMidPhaseMembers) and the merge
+// ended the work, and the root stands in it until the rest of its tree has left the workflow,
+// when the daemon closes it (closeMerged, closeAwaitingMerge). Otherwise it turns on the role
+// that works the phase (phase.RoleFor): the worker of a phase a worker works is started by the
+// daemon — by that promotion where the carry put the root there, by the transition that moved it
+// where it moved on — accepting is the architect's own phase, and a phase no role works, which is
+// held or a wait on a person, starts no worker until the architect retries it or the person
+// answers.
 func writeCarriedPhase(task *strings.Builder, start ArchitectStart) {
-	fmt.Fprintf(task, "%s is yours and stands in %s, %s, with the design gate it brought. "+
+	gate := ", which brought no design gate"
+	if start.GateCarried {
+		gate = ", with the design gate that hand-over brought"
+	}
+	fmt.Fprintf(task, "%s is yours and stands in %s, %s%s. "+
 		"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. "+
 		"Decompose nothing and release no child.",
-		start.Root.Key, start.Root.Phase, ArchitectCarriedPhaseLabel)
+		start.Root.Key, start.Root.Phase, ArchitectCarriedPhaseLabel, gate)
 	if start.PhaseFinished {
 		task.WriteString(" Its pull request has merged, so the daemon starts no worker for that phase, and the root stands " +
 			"there until the rest of its tree has left the workflow, when the daemon closes it.")

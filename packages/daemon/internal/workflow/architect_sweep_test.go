@@ -17,10 +17,10 @@ import (
 // (ArchitectAtWork). It is wider than record.AtWork at admitted — a root whose design gate has
 // opened is still a root whose own architect is the only role of its tree at work — and it is no
 // wider than the work the rule has to send: a root past admitted under its own power has a phase
-// role that owns its work, the hand-over row of this generation is what says the phase a root
-// stands in came with it (record.Store.HandedOverRoot), and the one entry such a root's architect
-// is owed past admitted is a resume's its claim was not given, which the admission pass that
-// resumed the root can have promoted past admitted.
+// role that owns its work, the hand-over row of this generation is what says a root stands in the
+// run a hand-over carried it into (record.Store.HandedOverRoot), and the one entry such a root's
+// architect is owed past admitted is a resume's its claim was not given, which the admission
+// pass that resumed the root can have promoted past admitted.
 //
 // The design gate is read by none of it, which the two admitted cases below hold: one with no
 // gate row at all and one whose gate stands open are both inside the rule.
@@ -73,9 +73,9 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 			}(), why: "a child's own sub-architect claim is outside the rule: no daemon start creates one",
 		},
 		{
-			name:  "a root a hand-over carried in at the phase that came with it",
+			name:  "a root a hand-over carried in, in the phase that came with it",
 			issue: root("LEGION-804", phase.Implementing, 2), handedOver: 2, reaches: true,
-			why: "the hand-over row of this generation says the phase it stands in came with it, and its architect has still to take the tree up",
+			why: "the hand-over row of this generation says it stands in the run that hand-over carried it into, and its architect has still to take the tree up",
 		},
 		{
 			name: "a root a hand-over carried into accepting", issue: root("LEGION-805", phase.Accepting, 2), handedOver: 2, reaches: true,
@@ -149,49 +149,101 @@ func TestArchitectSweepReachReadsTheRecordAlone(t *testing.T) {
 }
 
 // What stops the sweep writing a second start for a root architect (ArchitectStartPending). It
-// is owed, the daemon's own reading of a start a role has not taken, with one arm taken off: a
-// tree with no architect claim at all is the tree the sweep writes the start for, so "has no
-// claim yet" is not a reason to hold the row back, while a start still queued for that same tree
-// is.
+// is owed, the daemon's own reading of a start a role has not taken, with one arm taken off and
+// one read narrower: a tree with no architect claim at all is the tree the sweep writes the start
+// for, so "has no claim yet" is not a reason to hold the row back, while a start still queued for
+// that same tree is; and a task the claim holds unconfirmed holds the row back only while the
+// root's own record has not superseded it (supervise's Delivery.SupersededBy). The root of every
+// case stands at generation 2, and its architect's row names entry 3 (rowEntry) where the case
+// does not say it names none.
 func TestArchitectSweepStartPendingHoldsTheRowBackWhileOneIsOnItsWay(t *testing.T) {
+	const rowEntry = 3
 	queued := []record.QueuedSupervise{{ID: 7, Request: record.SuperviseRequest{Op: "start", Role: claim.RoleArchitect}}}
+	holding := func(state supervise.ClaimState, task supervise.Delivery) *record.RoleClaim {
+		return &record.RoleClaim{State: state, Pending: &task}
+	}
+	root := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Phase: phase.Admitted, Generation: 2}
 	for _, tc := range []struct {
 		name    string
 		run     record.RoleRun
+		entry   int64
 		pending bool
 		why     string
 	}{
 		{
-			name: "no claim and no queued start", run: record.RoleRun{},
+			name: "no claim and no queued start", run: record.RoleRun{}, entry: rowEntry,
 			why: "nothing is on its way, and this tree is exactly the one the rule writes the start for",
 		},
 		{
-			name: "no claim and a start still queued", run: record.RoleRun{Queued: queued}, pending: true,
+			name: "no claim and a start still queued", run: record.RoleRun{Queued: queued}, entry: rowEntry, pending: true,
 			why: "that row is the start, and a second would start two architects of one tree",
 		},
 		{
-			name: "a claim still starting", run: record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateLaunching}}, pending: true,
-			why: "the start that created it is running now, and its delivery carries the entry's task",
+			name: "a claim still starting", run: record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateLaunching}}, entry: rowEntry,
+			pending: true, why: "the start that created it is running now, and its delivery carries the entry's task",
 		},
 		{
-			name:    "a claim that has not confirmed its task",
-			run:     record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateReady, Pending: &supervise.Delivery{Task: "take the tree up"}}},
+			name: "a claim that has not confirmed the task of the row's entry", entry: rowEntry,
+			run:     record.RoleRun{Claim: holding(supervise.StateReady, supervise.Delivery{Task: "take the tree up", Generation: 2, Entry: rowEntry})},
 			pending: true, why: "a task in the claim's hands is not owed again",
 		},
 		{
-			name: "a live claim holding a task it confirmed",
-			run: record.RoleRun{Claim: &record.RoleClaim{State: supervise.StateIdle,
-				Pending: &supervise.Delivery{Task: "take the tree up", ConfirmedAt: seededRaisedAt}}},
-			why: "it took the work of an earlier entry and holds none of this one's: the claim this rule exists to reach",
+			name: "a claim that has not confirmed a task of no run", entry: rowEntry,
+			run:     record.RoleRun{Claim: holding(supervise.StateReady, supervise.Delivery{Task: "look at the failing check"})},
+			pending: true, why: "a task of no run, an operator's own, is one no start of the root's run takes the place of",
+		},
+		{
+			name: "the row names no entry, and the claim has not confirmed a task of the root's run", entry: 0,
+			run:     record.RoleRun{Claim: holding(supervise.StateReady, supervise.Delivery{Task: "take the tree up", Generation: 2})},
+			pending: true, why: "a task of the root's own run at no entry is below no entry the row names",
+		},
+		{
+			name: "a claim that has not confirmed the task of the run before", entry: rowEntry,
+			run: record.RoleRun{Claim: holding(supervise.StateSuspended, supervise.Delivery{Task: "take the tree up", Generation: 1, Entry: 1})},
+			why: "re-admission ended that run, so its task is no start on its way: the start of the row's entry takes its place in the claim's hands",
+		},
+		{
+			name: "a claim that has not confirmed the task of an entry below the row's", entry: rowEntry,
+			run: record.RoleRun{Claim: holding(supervise.StateIdle, supervise.Delivery{Task: "take the tree up", Generation: 2, Entry: rowEntry - 1})},
+			why: "the row has moved past that entry, so its task is no start of the row's entry on its way",
+		},
+		{
+			name: "the row names no entry, and the claim has not confirmed the task of the run before", entry: 0,
+			run: record.RoleRun{Claim: holding(supervise.StateIdle, supervise.Delivery{Task: "take the tree up", Generation: 1, Entry: 4})},
+			why: "a task of an earlier run is superseded whatever entry it carries, and the raise's start carries the root's run",
+		},
+		{
+			name: "a claim still starting that holds the task of the run before", entry: rowEntry,
+			run:     record.RoleRun{Claim: holding(supervise.StateLaunching, supervise.Delivery{Task: "take the tree up", Generation: 1, Entry: 1})},
+			pending: true, why: "the claim is still starting, which holds the row back whatever task it holds",
+		},
+		{
+			name: "a start still queued beside the claim's task of the run before", entry: rowEntry,
+			run: record.RoleRun{Queued: queued,
+				Claim: holding(supervise.StateSuspended, supervise.Delivery{Task: "take the tree up", Generation: 1, Entry: 1})},
+			pending: true, why: "that row is the start of the row's entry, already on its way",
+		},
+		{
+			name: "a live claim holding a task it confirmed", entry: rowEntry,
+			run: record.RoleRun{Claim: holding(supervise.StateIdle,
+				supervise.Delivery{Task: "take the tree up", Generation: 2, Entry: rowEntry, ConfirmedAt: seededRaisedAt})},
+			why: "it took that work and holds nothing it has not taken: the claim this rule exists to reach once its row moves on",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, pending := ArchitectStartPending(tc.run)
+			var task *supervise.Delivery
+			if tc.run.Claim != nil {
+				task = tc.run.Claim.Pending
+			}
+			reason, pending := ArchitectStartPending(root, tc.entry, tc.run)
 			if pending != tc.pending {
 				t.Fatalf("ArchitectStartPending = %t (%q), want %t: %s", pending, reason, tc.pending, tc.why)
 			}
 			if pending && reason == "" {
 				t.Fatalf("ArchitectStartPending holds the row back with no reason: the log line names it")
+			}
+			if tc.run.Claim != nil && tc.run.Claim.Pending != task {
+				t.Fatalf("ArchitectStartPending changed the task of the claim it was handed: the caller reads that claim again for the stall arms")
 			}
 		})
 	}

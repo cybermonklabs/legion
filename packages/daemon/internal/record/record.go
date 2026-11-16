@@ -2062,13 +2062,15 @@ type QueuedSupervise struct {
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
 // it was last given work of (given_entry), the moment its agent last said it was ready
-// (last_ready), the moment its agent last stepped (step_at, turn_started_at), what its own session
-// last reported it was doing (activity_at, activity_background, activity_next_reminder_at), and
-// the task it holds, nil for none, with the task's delivery id, generation, phase, entry, the
-// moments it was queued and confirmed, and whether a let-go took it back from a turn
-// (interrupted). The id is what says the task is the daemon's own delivery of a relaunch's record
-// (supervise.Delivery.Relaunch), which a reader of a run reads as no work of the claim's
-// (supervise.HoldsTask: workflow's owed and readyWorkerTask).
+// (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
+// handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
+// stepped (step_at, turn_started_at), what its own session last reported it was doing
+// (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
+// none, with the task's delivery id, generation, phase, entry, the moments it was queued and
+// confirmed, and whether a let-go took it back from a turn (interrupted). The id is what says the
+// task is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch), which a
+// reader of a run reads as no work of the claim's (supervise.HoldsTask: workflow's owed and
+// readyWorkerTask).
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -2135,6 +2137,16 @@ type RoleClaim struct {
 	// relaunched agent, so the arm counts that task from the later of its queueing and this
 	// moment.
 	LastReady time.Time
+	// Handshake is the claim's handshake of the last entry it was queued a task of
+	// (supervise.Claim.Handshake): that entry, the run its task was of, when a task of it was
+	// first queued to the claim and when a turn first confirmed one, the zero value where the
+	// claim was queued no task carrying an entry. The claim's machine writes the queued moment
+	// at the first queue of an entry and keeps it through every later task of the same entry and
+	// run, a re-send after an unconfirmed retirement among them (supervise's EntryHandshake
+	// queued), where the task's own QueuedAt is that later task's. Its reader is the first stall
+	// arm (admit's architectTookNothing), which counts the task of an entry from when that entry
+	// was first queued, as R7 says (dispatch://INFRA-2614).
+	Handshake supervise.EntryHandshake
 	Pending   *supervise.Delivery
 }
 

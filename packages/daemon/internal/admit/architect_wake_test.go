@@ -46,8 +46,8 @@ type architectWakeFixture struct {
 	status string
 	// awaiting is the wait of a root that stands in awaiting_person, nil for every other.
 	awaiting *record.Awaiting
-	// carried records a hand-over row at the root's generation, which is what says the phase it
-	// stands in came with it (record.Store.HandedOverRoot).
+	// carried records a hand-over row at the root's generation, which is what says the root
+	// stands in the run a hand-over carried it into (record.Store.HandedOverRoot).
 	carried bool
 	// registered gives the root a design-gate row its architect registered, which is what the
 	// gate arm reads the absence of.
@@ -67,11 +67,17 @@ type architectWakeFixture struct {
 	lastReady time.Time
 	// task gives that claim the delivery of entry, queued at queuedAt, confirmed where confirmed
 	// is set and marked as a task a let-go took back from a turn where interrupted is set: the
-	// handshake the first arm reads.
-	task        bool
-	queuedAt    time.Time
-	confirmed   bool
-	interrupted bool
+	// handshake the first arm reads. taskGeneration and taskEntry give that delivery a run and an
+	// entry of their own, where they are not 0: the task of a run or an entry the row has moved
+	// past. firstQueuedAt records the claim's handshake of the task's entry and run as first
+	// queued then (claims.handshake_queued_at), none where it is the zero time.
+	task           bool
+	queuedAt       time.Time
+	confirmed      bool
+	interrupted    bool
+	taskGeneration uint64
+	taskEntry      int64
+	firstQueuedAt  time.Time
 }
 
 // architectWakeRoot is the base fixture: the root the reading raises no arm for.
@@ -121,7 +127,20 @@ func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixt
 		}
 	}
 	if f.task {
-		putArchitectTask(t, pool, token, f.generation, f.entry, f.queuedAt, f.confirmed, f.interrupted)
+		generation, entry := f.generation, f.entry
+		if f.taskGeneration != 0 {
+			generation = f.taskGeneration
+		}
+		if f.taskEntry != 0 {
+			entry = f.taskEntry
+		}
+		putArchitectTask(t, pool, token, generation, entry, f.queuedAt, f.confirmed, f.interrupted)
+		if !f.firstQueuedAt.IsZero() {
+			if _, err := pool.Exec(ctx, `update claims set handshake_entry = $2, handshake_generation = $3, handshake_queued_at = $4
+				where token = $1`, string(token), entry, int64(generation), f.firstQueuedAt); err != nil {
+				t.Fatalf("record the handshake of entry %d of the claim %s as first queued at %s: %v", entry, token, f.firstQueuedAt, err)
+			}
+		}
 	}
 }
 
@@ -335,26 +354,71 @@ func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
 	}
 }
 
-// The first arm reads the roots the sweep's rule reaches (dispatch://INFRA-2614 R7, "the root is
-// one the rule of R5 reaches"), and that reach keeps a root past admitted under its own power while
-// its architect's row names an entry a resume raised that its claim was not given
-// (workflow.ArchitectAtWork). So a root in planning whose architect's row stands at such an entry,
-// above the entry its claim was given, while the claim still holds that given entry's task queued
-// past the bound with no turn confirming it, raises the arm: the sweep writes no start of the
-// resume's entry while that task stands (workflow.ArchitectStartPending), so the wake is the one
-// thing left. The control is the same row whose entry the derivation raised, which the reach
-// leaves out past admitted, so nothing is named.
-func TestTheTookNothingArchitectWakeReadsARootPastAdmittedOwedAResumesEntry(t *testing.T) {
+// A claim that still holds a task its root's own record has superseded raises no took-nothing
+// wake, and the pass that reads it writes the start of the entry the architect's row names
+// (dispatch://INFRA-2614 R4, R5, R7). Such a task is of a run before the root's generation, or of
+// the root's run at an entry below the row's: the work of a run re-admission ended, or of an entry
+// the row has moved past. It is no start on its way, so the sweep passes over it
+// (workflow.ArchitectStartPending) and the start it writes takes the task's place in the claim's
+// hands (supervise.Delivery.SupersededBy). Nor is it the task of the row's entry, R7's "its
+// entry's task", so the first arm reads nothing of it. The arms are read after the pass's sends,
+// so an arm that read the task the claim was given would tell the controller, in the pass that
+// writes the start, that the daemon writes no second start. Each task here was queued past the
+// bound and no turn confirmed it:
+//
+//   - a root at admitted, re-admitted at generation 2, its row at the entry the re-admission's
+//     promotion raised, whose claim was given the entry before and still holds that entry's task
+//     of generation 1: the start of the row's entry is written, derived again from the record;
+//   - a root in planning whose row stands at an entry a resume raised, whose claim still holds
+//     the task of the entry before, of the same run: the start of the resume's entry is written,
+//     carrying the resume's own text;
+//   - the control, a root whose claim holds the task of the row's own entry, which it was given:
+//     the sweep writes nothing for it, and the arm names it;
+//   - a root in planning whose row stands at an entry the derivation raised: the reach leaves it
+//     out past admitted, so nothing is written and nothing is named.
+func TestATaskItsRowSupersededRaisesNoTookNothingWakeAndTheRowsEntryIsSent(t *testing.T) {
+	const resumed = "A person answered your ask ask-q; read it."
 	for _, tc := range []struct {
-		name     string
-		verbatim bool
-		want     []record.ArchitectStallArm
-		why      string
+		name   string
+		change func(*architectWakeFixture)
+		// resume raises the architect's row to entry seededEntry+1 carrying the resume's text,
+		// marked to be sent as written where verbatim is set.
+		resume, verbatim bool
+		want             []record.ArchitectStallArm
+		// sent is the entry of the one start the passes write, 0 for none, and task the text it
+		// carries where the case names one.
+		sent int64
+		task string
+		why  string
 	}{
-		{name: "the row names an entry a resume raised", verbatim: true, want: []record.ArchitectStallArm{record.ArchitectTookNothing},
-			why: "the resume's entry keeps the root in the reach past admitted until its claim is given it, and the claim took nothing it was sent"},
-		{name: "the row names an entry the derivation raised",
-			why: "a root past admitted under its own power is outside the reach when no resume's entry is owed, so no task of it was the sweep's to send"},
+		{
+			name: "the task of the run before the root's re-admission",
+			change: func(f *architectWakeFixture) {
+				f.entry, f.given = seededEntry+1, seededEntry
+				f.taskGeneration, f.taskEntry = architectWakeGeneration-1, seededEntry
+			},
+			sent: seededEntry + 1,
+			why: "re-admission ended the run that task is of, so the start of the row's entry takes its place, and the claim was " +
+				"never queued the row's entry to take",
+		},
+		{
+			name: "the task of the entry below a resume's entry", resume: true, verbatim: true,
+			change: func(f *architectWakeFixture) { f.stands = phase.Planning },
+			sent:   seededEntry + 1, task: resumed,
+			why: "the resume's entry keeps the root in the reach past admitted until its claim is given it, and the task of the " +
+				"entry before is one that entry has moved past",
+		},
+		{
+			name: "the task of the row's own entry", change: func(*architectWakeFixture) {},
+			want: []record.ArchitectStallArm{record.ArchitectTookNothing},
+			why:  "the claim was given the row's entry and took nothing of it, so the sweep writes nothing and the wake is the one thing left",
+		},
+		{
+			name: "a root past admitted whose row's entry the derivation raised", resume: true,
+			change: func(f *architectWakeFixture) { f.stands = phase.Planning },
+			why: "a root past admitted under its own power is outside the reach when no resume's entry is owed, so no task of it " +
+				"was the sweep's to send",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -362,25 +426,41 @@ func TestTheTookNothingArchitectWakeReadsARootPastAdmittedOwedAResumesEntry(t *t
 			admission := quiet(t, 1)
 			const root = "LEGION-826"
 			fixture := architectWakeRoot(root)
-			fixture.stands = phase.Planning
 			fixture.queuedAt, fixture.confirmed = fixedNow.Add(-pastTheHandshake), false
+			tc.change(&fixture)
 			seedArchitectWakeRoot(t, pool, fixture)
-			inTx(t, pool, func(tx pgx.Tx) {
-				if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
-					Claim: architectToken(t, root), Entry: seededEntry + 1, EntryTask: "A person answered your ask ask-q; read it.",
-					EntryVerbatim: tc.verbatim, EntryRaisedAt: fixedNow.Add(-pastTheHandshake)}); err != nil {
-					t.Fatalf("raise the architect's entry of %s above the entry its claim was given: %v", root, err)
-				}
-			})
+			if tc.resume {
+				inTx(t, pool, func(tx pgx.Tx) {
+					if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
+						Claim: architectToken(t, root), Entry: seededEntry + 1, EntryTask: resumed,
+						EntryVerbatim: tc.verbatim, EntryRaisedAt: fixedNow.Add(-pastTheHandshake)}); err != nil {
+						t.Fatalf("raise the architect's entry of %s above the entry its claim was given: %v", root, err)
+					}
+				})
+			}
 
 			if arms := architectStallArmsOf(t, pool, admission, root); !slices.Equal(arms, tc.want) {
 				t.Fatalf("the state's reading of %s names the arms %v, want %v: %s", root, arms, tc.want, tc.why)
 			}
-			applySweep(t, pool, admission, "past-admitted-1")
-			applySweep(t, pool, admission, "past-admitted-2")
+			applySweep(t, pool, admission, "superseded-1")
+			applySweep(t, pool, admission, "superseded-2")
 			assertArchitectWakes(t, pool, root, tc.want, tc.why)
-			if starts := architectStartsOf(t, pool, root); len(starts) != 0 {
-				t.Fatalf("the architect starts of %s = %+v, want none: the claim still holds a task it has not confirmed", root, starts)
+
+			starts := architectStartsOf(t, pool, root)
+			if tc.sent == 0 {
+				if len(starts) != 0 {
+					t.Fatalf("the architect starts of %s = %+v, want none: %s", root, starts, tc.why)
+				}
+				return
+			}
+			if len(starts) != 1 {
+				t.Fatalf("the architect starts of %s after two passes = %+v, want the one start of entry %d: %s", root, starts, tc.sent, tc.why)
+			}
+			start := starts[0]
+			if start.Entry != tc.sent || start.Generation != architectWakeGeneration || start.Task == "" ||
+				(tc.task != "" && start.Task != tc.task) {
+				t.Fatalf("the architect start of %s = entry %d of generation %d carrying %q, want the work of entry %d of generation %d: %s",
+					root, start.Entry, start.Generation, start.Task, tc.sent, architectWakeGeneration, tc.why)
 			}
 		})
 	}
@@ -522,6 +602,64 @@ func TestTheTookNothingArchitectWakeCountsATakenBackTaskFromTheRelaunchedAgentsR
 			if ready := tc.lastReady.UTC().Format(time.RFC3339); !strings.Contains(architectWakes(t, pool, root)[0], ready) {
 				t.Fatalf("the wake of %s = %q, want it to name %s, the relaunched agent's ready the arm counted from",
 					root, architectWakes(t, pool, root)[0], ready)
+			}
+		})
+	}
+}
+
+// The first arm counts the task of an entry from when a task of that entry was first queued to the
+// claim, as R7 says ("its entry's task was first queued more than 10 minutes ago",
+// dispatch://INFRA-2614), which the claim's own handshake keeps (supervise.Claim.Handshake,
+// record.RoleClaim.Handshake), and not from the queueing of the delivery the claim holds now. A
+// task retired unconfirmed puts its entry back, and the sweep sends that entry again as a new
+// delivery queued at that send, while the handshake keeps the first queueing through it. Each case
+// is a root whose claim holds such a task of the entry its row names, queued again five minutes
+// ago and confirmed by no turn, beside the handshake of that entry:
+//   - first queued fifteen minutes ago: past the bound, so the arm names it, and its reason gives
+//     that first moment;
+//   - first queued nine minutes ago: inside the bound, so nothing is named.
+func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.T) {
+	resent := fixedNow.Add(-5 * time.Minute)
+	for _, tc := range []struct {
+		name  string
+		first time.Time
+		want  []record.ArchitectStallArm
+		why   string
+	}{
+		{
+			name: "an entry first queued fifteen minutes ago", first: fixedNow.Add(-15 * time.Minute),
+			want: []record.ArchitectStallArm{record.ArchitectTookNothing},
+			why:  "the entry's task was first queued past the bound and no turn has confirmed a task of it since",
+		},
+		{
+			name: "an entry first queued nine minutes ago", first: fixedNow.Add(-9 * time.Minute),
+			why: "the entry's task was first queued inside the bound",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			registerController(t, pool)
+			admission := quiet(t, 1)
+			const root = "LEGION-830"
+			fixture := architectWakeRoot(root)
+			fixture.queuedAt, fixture.confirmed, fixture.firstQueuedAt = resent, false, tc.first
+			seedArchitectWakeRoot(t, pool, fixture)
+
+			if arms := architectStallArmsOf(t, pool, admission, root); !slices.Equal(arms, tc.want) {
+				t.Fatalf("the state's reading of %s names the arms %v, want %v: %s", root, arms, tc.want, tc.why)
+			}
+			applySweep(t, pool, admission, "first-queued-1")
+			applySweep(t, pool, admission, "first-queued-2")
+			assertArchitectWakes(t, pool, root, tc.want, tc.why)
+			if starts := architectStartsOf(t, pool, root); len(starts) != 0 {
+				t.Fatalf("the architect starts of %s = %+v, want none: its claim was given the entry its row names", root, starts)
+			}
+			if len(tc.want) == 0 {
+				return
+			}
+			reason := architectWakes(t, pool, root)[0]
+			if first := tc.first.UTC().Format(time.RFC3339); !strings.Contains(reason, "first queued to the architect's claim of "+root+" at "+first) {
+				t.Fatalf("the wake of %s = %q, want it to name %s, when the entry's task was first queued", root, reason, first)
 			}
 		})
 	}
@@ -821,10 +959,10 @@ func TestTheArchitectWakeBoundStartsAgainWhenARootIsReadmitted(t *testing.T) {
 	}
 }
 
-// A root a hand-over carried in raises the gate arm not at all. It stands in the phase that came
-// with it, where its tree's work already runs under a phase worker, and that arm reads a root
-// standing at admitted. The sweep's architect reach does serve such a root, so the quiet is the
-// arm's own reading and not a root the pass never looked at.
+// A root a hand-over carried in raises the gate arm not at all. It stands in a phase of the run
+// that carried it, where its tree's work already runs under a phase worker, and that arm reads a
+// root standing at admitted. The sweep's architect reach does serve such a root, so the quiet is
+// the arm's own reading and not a root the pass never looked at.
 func TestTheGateArchitectWakeIsNotRaisedForARootAHandoverCarriedIn(t *testing.T) {
 	pool := migratedPool(t)
 	registerController(t, pool)
@@ -882,11 +1020,11 @@ func TestTheGateArchitectWakeReadsTheLaterOfTheAdmissionAndTheEntryRaised(t *tes
 
 // The entry sweep's gate opens for an arm no wake has told yet, and the wake the sweep's pass
 // then sends is what closes it. A root whose architect took nothing is owed nothing the pass
-// sends — its task stands unconfirmed, so the pass writes no second start
-// (workflow.ArchitectStartPending) — so a gate that asked only whether a role is owed its entry's
-// work would answer no, and in a quiet project the controller would hear of the stall only at the
-// next fact. A root beside it that is moving along raises nothing, so it holds the gate open
-// neither before the wake nor after it.
+// sends — its claim was given the entry its row names and holds that entry's task unconfirmed, so
+// the pass writes no second start (workflow.OwedEntry) — so a gate that asked only whether a role
+// is owed its entry's work would answer no, and in a quiet project the controller would hear of
+// the stall only at the next fact. A root beside it that is moving along raises nothing, so it
+// holds the gate open neither before the wake nor after it.
 func TestTheArchitectWakeOpensTheEntrySweepsGateUntilItIsTold(t *testing.T) {
 	pool := migratedPool(t)
 	registerController(t, pool)

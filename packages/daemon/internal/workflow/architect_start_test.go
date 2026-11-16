@@ -127,40 +127,56 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		{
 			name: "a root a hand-over carried in",
 			start: ArchitectStart{Root: rootAt(phase.Implementing),
+				Carried: true, GateCarried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in implementing, in the run a hand-over carried it into, with the design gate that hand-over brought. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
+				"Decompose nothing and release no child." + carriedClosing,
+		},
+		{
+			name: "a root a hand-over carried in that brought no design gate",
+			start: ArchitectStart{Root: rootAt(phase.Implementing),
 				Carried: true, Gate: record.TreeGate{Steps: specGated}},
-			want: "LEGION-208 is yours and stands in implementing, the phase a hand-over carried it in at, with the design gate it brought. " +
+			want: "LEGION-208 is yours and stands in implementing, in the run a hand-over carried it into, which brought no design gate. " +
+				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
+				"Decompose nothing and release no child." + carriedClosing,
+		},
+		{
+			name: "a root a hand-over carried in that has moved on to a phase of that run",
+			start: ArchitectStart{Root: rootAt(phase.Testing),
+				Carried: true, GateCarried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in testing, in the run a hand-over carried it into, with the design gate that hand-over brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + carriedClosing,
 		},
 		{
 			name: "a root a hand-over carried into accepting, the architect's own phase",
 			start: ArchitectStart{Root: rootAt(phase.Accepting),
-				Carried: true, Gate: record.TreeGate{Steps: specGated}},
-			want: "LEGION-208 is yours and stands in accepting, the phase a hand-over carried it in at, with the design gate it brought. " +
+				Carried: true, GateCarried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in accepting, in the run a hand-over carried it into, with the design gate that hand-over brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + carriedOwnClosing,
 		},
 		{
 			name: "a root a hand-over carried in held",
 			start: ArchitectStart{Root: rootAt(phase.Held),
-				Carried: true, Gate: record.TreeGate{Steps: specGated}},
-			want: "LEGION-208 is yours and stands in held, the phase a hand-over carried it in at, with the design gate it brought. " +
+				Carried: true, GateCarried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in held, in the run a hand-over carried it into, with the design gate that hand-over brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + carriedHeldClosing,
 		},
 		{
 			name: "a root a hand-over carried into merging whose pull request has merged",
 			start: ArchitectStart{Root: rootAt(phase.Merging),
-				Carried: true, PhaseFinished: true, Gate: record.TreeGate{Steps: specGated}},
-			want: "LEGION-208 is yours and stands in merging, the phase a hand-over carried it in at, with the design gate it brought. " +
+				Carried: true, GateCarried: true, PhaseFinished: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in merging, in the run a hand-over carried it into, with the design gate that hand-over brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + carriedMergedClosing,
 		},
 		{
 			name: "a root a hand-over carried into merging whose pull request has not merged",
 			start: ArchitectStart{Root: rootAt(phase.Merging),
-				Carried: true, Gate: record.TreeGate{Steps: specGated}},
-			want: "LEGION-208 is yours and stands in merging, the phase a hand-over carried it in at, with the design gate it brought. " +
+				Carried: true, GateCarried: true, Gate: record.TreeGate{Steps: specGated}},
+			want: "LEGION-208 is yours and stands in merging, in the run a hand-over carried it into, with the design gate that hand-over brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + carriedClosing,
 		},
@@ -315,7 +331,7 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 // task of the root's own generation after an entry of an earlier one; a root re-admitted while a
 // member of its tree runs ran at an earlier generation though its claim served nothing, and the
 // same member at generation 1 leaves the tree one nobody has architected, told nothing that
-// member makes false; a root a hand-over carried in stands in the phase that came with it
+// member makes false; a root a hand-over carried in past admitted takes the carried shape
 // whatever its gate rows say; a carried root that never left admitted has no phase of its own to
 // take up, so it reads as any other root standing there; and a root whose gate rows open its gate
 // reads apart from one whose rows stand part way, since the daemon starts its first phase itself.
@@ -612,6 +628,71 @@ func TestTheArchitectTaskOfACarriedRootInMergingReadsWhetherItsPullRequestMerged
 			}
 			if task := ArchitectStartTask(start); !strings.HasSuffix(task, tc.closing) {
 				t.Fatalf("the architect's start task = %q, want it to end %q", task, tc.closing)
+			}
+		})
+	}
+}
+
+// What a carried root's task says of the phase it stands in and of its design gate, read from the
+// record (ArchitectStartOf). The hand-over row names the issue, its generation and whether a gate
+// came with it, and no phase, so it does not say whether the root still stands in the phase that
+// came with it: the task names the phase it stands in now and the run the hand-over carried it
+// into, which holds of a root still in its carried phase and of one that has moved on in that
+// same run (dispatch://INFRA-2614 R3, R5). The gate clause is the row's own
+// (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
+// its linger comes with none, and a task that said a gate came with it would be false of it.
+func TestTheArchitectTaskOfACarriedRootNamesThePhaseItStandsInAndItsGate(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		stands      phase.Phase
+		gateCarried bool
+		says        string
+	}{
+		{
+			name: "the phase that came with it", stands: phase.Implementing, gateCarried: true,
+			says: "LEGION-208 is yours and stands in implementing, in the run a hand-over carried it into, " +
+				"with the design gate that hand-over brought.",
+		},
+		{
+			name: "a phase of that run it has moved on to", stands: phase.Testing, gateCarried: true,
+			says: "LEGION-208 is yours and stands in testing, in the run a hand-over carried it into, " +
+				"with the design gate that hand-over brought.",
+		},
+		{
+			name: "a hand-over that brought no design gate", stands: phase.Testing,
+			says: "LEGION-208 is yours and stands in testing, in the run a hand-over carried it into, " +
+				"which brought no design gate.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			pool := migratedPool(t)
+			root := architectEntryRoot()
+			root.Phase, root.Generation = tc.stands, 2
+			seedIssue(t, pool, root)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: root.Key,
+					Generation: root.Generation, GateCarried: tc.gateCarried})
+			})
+			var start ArchitectStart
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+				return err
+			}); err != nil {
+				t.Fatalf("read what the architect's first task is derived from: %v", err)
+			}
+			if !start.Carried || start.GateCarried != tc.gateCarried {
+				t.Fatalf("the carried root's start = carried %t, gate carried %t; want carried, gate carried %t",
+					start.Carried, start.GateCarried, tc.gateCarried)
+			}
+			task := ArchitectStartTask(start)
+			if !strings.HasPrefix(task, tc.says) {
+				t.Fatalf("the architect's start task = %q, want it to begin %q", task, tc.says)
+			}
+			if strings.Contains(task, "the phase a hand-over carried it in at") {
+				t.Fatalf("the architect's start task = %q; it names the phase it stands in as the phase the hand-over carried it "+
+					"in at, which the record does not say", task)
 			}
 		})
 	}

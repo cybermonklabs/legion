@@ -173,10 +173,12 @@ each tree: the next movement of that tree is what lets it tell you again.
 A root whose own architect is not taking the work the daemon states it is owed.
 `reason` begins with the arm that raised it, and one root raises each arm once per run, so two wakes of one root are two different facts:
 
-- "the architect took nothing": the task of the architect's phase entry was queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
+- "the architect took nothing": the task of the entry the architect's `phases` row names was first queued to its claim more than ten minutes ago and no turn of that claim confirmed it.
+  The claim keeps when each entry's task was first queued, so a task the daemon sent again for the same entry is counted from that first queueing and not from the send.
   A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
-  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than its queueing, so the relaunch of an architect that was working its task raises no wake.
-  The daemon writes no second start while that task stands, so this wake is the one thing left.
+  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than that first queueing, so the relaunch of an architect that was working its task raises no wake.
+  The daemon writes no second start of that entry while its task stands, so this wake is the one thing left.
+  A task the root's own record has superseded — one of a run before its generation, or of an entry the row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.
 
 - "the architect's claim cannot be reached": the claim is failed or retired and no start of the root's run is the daemon's next move for it, or the root has no architect claim at all, no start of one was queued in the last ten minutes, and the work of its entry has stood that same bound.
   A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.

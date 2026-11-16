@@ -19,8 +19,8 @@ import (
 )
 
 // architectSweepGeneration is the generation every root of this file stands at. A hand-over row
-// is written at that same generation for a carried root, which is what says the phase it stands
-// in came with it (record.Store.HandedOverRoot).
+// is written at that same generation for a carried root, which is what says the root stands in
+// the run a hand-over carried it into (record.Store.HandedOverRoot).
 const architectSweepGeneration = 2
 
 // architectSweepFixture is one root the sweep is asked about. The base shape, which every case
@@ -37,9 +37,11 @@ type architectSweepFixture struct {
 	status string
 	// lingers records the root as a park left it: a linger deadline ahead of it.
 	lingers bool
-	// carried records a hand-over row at generation, which is what says the phase the root
-	// stands in came with it.
-	carried bool
+	// carried records a hand-over row at generation, which is what says the root stands in the
+	// run a hand-over carried it into, and gateCarried marks that row as one whose hand-over
+	// brought the old root's design gate (record.HandedOverRoot.GateCarried).
+	carried     bool
+	gateCarried bool
 	// gateOpened registers an approved design gate of the root, which is the root record.AtWork
 	// answers false for and this rule reaches.
 	gateOpened bool
@@ -50,13 +52,17 @@ type architectSweepFixture struct {
 	entry int64
 	// claimed records an architect claim in state, suspended by suspendedBy, given the entry
 	// given and holding a delivery of its own where holdsTask is set. A fixture without one is a
-	// tree whose architect claim does not exist, which the rule's own start creates.
+	// tree whose architect claim does not exist, which the rule's own start creates. The delivery
+	// is of the root's run at no entry, at taskEntry where that is set, and of no run at all, an
+	// operator's own task, where taskOfNoRun is set.
 	claimed     bool
 	state       supervise.ClaimState
 	suspendedBy supervise.SuspendSource
 	given       int64
 	holdsTask   bool
 	confirmed   bool
+	taskEntry   int64
+	taskOfNoRun bool
 }
 
 // architectSweepRoot is the base fixture: the shape the rule sends the work of its entry to.
@@ -93,7 +99,8 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		if f.carried {
-			if err := records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: f.key, Generation: architectSweepGeneration}); err != nil {
+			if err := records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: f.key,
+				Generation: architectSweepGeneration, GateCarried: f.gateCarried}); err != nil {
 				t.Fatalf("record %s as a root a hand-over created: %v", f.key, err)
 			}
 		}
@@ -117,6 +124,14 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 	}
 	if f.holdsTask {
 		putWorkerTask(t, pool, token, architectSweepGeneration, "", f.confirmed)
+		generation := int64(architectSweepGeneration)
+		if f.taskOfNoRun {
+			generation = 0
+		}
+		if _, err := pool.Exec(ctx, `update pending_task_deliveries set entry = $2, generation = $3 where claim_token = $1`,
+			string(token), f.taskEntry, generation); err != nil {
+			t.Fatalf("give the task the architect claim of %s holds entry %d of generation %d: %v", f.key, f.taskEntry, generation, err)
+		}
 	}
 }
 
@@ -140,7 +155,9 @@ func architectSweepStarts(t *testing.T, pool *pgxpool.Pool, root string) []conve
 //
 // The second is the measured defect (dispatch://INFRA-2614): record.AtWork answers false for a
 // root at admitted whose design gate has opened, while the root's own architect is the only role
-// of the tree at work.
+// of the tree at work. The fourth is the first root again, its claim holding the task of the entry
+// before unconfirmed: a task the row has moved past is no start on its way, so it holds nothing
+// back (dispatch://INFRA-2614 R4).
 func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -162,12 +179,21 @@ func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testin
 			why:   "the children do the work after that opening, and the root's own architect is still the role at work here",
 		},
 		{
-			name: "a root a hand-over carried in at the phase that came with it",
+			name: "a root a hand-over carried in, in the phase that came with it",
 			change: func(f *architectSweepFixture) {
 				f.stands, f.carried = phase.Implementing, true
 			},
 			label: workflow.ArchitectCarriedPhaseLabel,
 			why:   "the carry put it in that phase, and its architect has still to be told the tree is its own",
+		},
+		{
+			name: "a root whose architect holds the unconfirmed task of the entry before",
+			change: func(f *architectSweepFixture) {
+				f.state, f.holdsTask, f.taskEntry = supervise.StateReady, true, seededEntry-1
+			},
+			label: workflow.ArchitectFreshTreeLabel,
+			why: "the row has moved past the entry that task is of, so it is no start on its way, and the start of the row's " +
+				"entry takes its place in the claim's hands (workflow.ArchitectStartPending, supervise.Delivery.SupersededBy)",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,11 +265,12 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 			why: "a retired claim was stopped, and a start here would hand the operator back the worker they stopped",
 		},
 		{
-			name: "a root whose architect holds a task it has not confirmed",
+			name: "a root whose architect holds a task of no run it has not confirmed",
 			change: func(f *architectSweepFixture) {
-				f.state, f.holdsTask = supervise.StateReady, true
+				f.state, f.holdsTask, f.taskOfNoRun = supervise.StateReady, true, true
 			},
-			why: "a task in the claim's hands is not owed again (workflow.ArchitectStartPending)",
+			why: "a task of no run, an operator's own, is one no start of the root's run takes the place of, so a task in the " +
+				"claim's hands is not owed again (workflow.ArchitectStartPending)",
 		},
 		{
 			name: "a root whose architect claim was given this entry", change: func(f *architectSweepFixture) { f.given = seededEntry },
@@ -539,6 +566,61 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 	})
 }
 
+// A root a hand-over carried in is inside the reach in every phase of the run that carried it,
+// and the task the sweep sends it names the phase it stands in now and the run that hand-over
+// carried it into (dispatch://INFRA-2614 R3, R5). The record holds no fact that says the root
+// still stands in the phase that came with it — the hand-over row names no phase
+// (workflow.ArchitectCarried) — so the task says what holds of a root in its carried phase and
+// of one that has moved on in that same run, and never that the phase it stands in is the one
+// the carry put it in. The gate clause is the hand-over row's own
+// (record.HandedOverRoot.GateCarried): a child handed over from a tree whose root was reopened in
+// its linger comes with no gate.
+func TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		stands      phase.Phase
+		gateCarried bool
+		says        string
+	}{
+		{
+			name: "the phase that came with it", stands: phase.Implementing, gateCarried: true,
+			says: "stands in implementing, in the run a hand-over carried it into, with the design gate that hand-over brought.",
+		},
+		{
+			name: "a phase of that run it has moved on to", stands: phase.Testing, gateCarried: true,
+			says: "stands in testing, in the run a hand-over carried it into, with the design gate that hand-over brought.",
+		},
+		{
+			name: "a phase of that run it has moved on to, with no gate carried", stands: phase.Testing,
+			says: "stands in testing, in the run a hand-over carried it into, which brought no design gate.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := quiet(t, 1)
+			const root = "LEGION-816"
+			fixture := architectSweepRoot(root)
+			fixture.stands, fixture.carried, fixture.gateCarried = tc.stands, true, tc.gateCarried
+			seedArchitectSweepRoot(t, pool, fixture)
+
+			applySweep(t, pool, admission, "carried-phase")
+
+			starts := architectSweepStarts(t, pool, root)
+			if len(starts) != 1 || starts[0].entry != seededEntry {
+				t.Fatalf("the architect starts of %s = %+v, want the one carrying the work of entry %d: a carried root is inside "+
+					"the reach in every phase of the run that carried it", root, starts, seededEntry)
+			}
+			if !strings.Contains(starts[0].task, tc.says) {
+				t.Fatalf("the task sent to %s = %q, want it to say %q", root, starts[0].task, tc.says)
+			}
+			if strings.Contains(starts[0].task, "the phase a hand-over carried it in at") {
+				t.Fatalf("the task sent to %s = %q; it names the phase it stands in as the phase the hand-over carried it in at, "+
+					"which the record does not say", root, starts[0].task)
+			}
+		})
+	}
+}
+
 // Every role of the daemon is inside the rule, read from claim.Roles so that a role added to the
 // daemon fails this test until somebody decides where it stands. Five of them are reached as the
 // role of the phase their issue stands in (workflow.RoleFor, record.AtWork); the architect is
@@ -546,7 +628,8 @@ func TestTheArchitectSweepSendsTheEntryAResumeRaisedWhenItsStartWasLost(t *testi
 // (workflow.ArchitectAtWork):
 //
 //   - the architect is reached on a root standing at admitted, whatever its design gate, on a
-//     root a hand-over carried in while it stands in the phase that came with it, and on a root
+//     root a hand-over carried in, in every phase of the run that carried it
+//     (TestTheArchitectSweepTellsACarriedRootThePhaseItStandsInNow), and on a root
 //     past admitted whose architect was not given the entry a resume raised
 //     (TestTheArchitectSweepResendsALostResumeOfARootTheAnswerPromotedPastAdmitted);
 //   - the one claim that reach leaves out is a child's own sub-architect, which no daemon start
@@ -614,7 +697,7 @@ func TestTheArchitectSweepRoleTotalityCoversEveryRoleOfClaimRoles(t *testing.T) 
 	}
 	for _, root := range []string{atAdmitted, carried} {
 		if starts := architectSweepStarts(t, pool, root); len(starts) != 1 || starts[0].entry != seededEntry {
-			t.Fatalf("the architect starts of %s = %+v, want the one carrying entry %d: the architect's reach is a root at admitted and a carried root in its carried phase",
+			t.Fatalf("the architect starts of %s = %+v, want the one carrying entry %d: the architect's reach is a root at admitted and a root a hand-over carried in",
 				root, starts, seededEntry)
 		}
 	}

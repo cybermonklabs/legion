@@ -25,7 +25,7 @@ func TestTheArchitectStalledWakeIsOneOfTheControllerOnlyNoticeKinds(t *testing.T
 		t.Fatalf("the %s kind is on the architect's own list, so an architect would be told a wake meant for the controller", ArchitectStalledNotice)
 	}
 	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
-	reason := ArchitectTookNothing.Words() + ": the task of phase entry 3 was queued to the architect's claim of LEGION-208"
+	reason := ArchitectTookNothing.Words() + ": the task of phase entry 3 was first queued to the architect's claim of LEGION-208"
 	if _, err := NewOutboxRow("LEGION-208", ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect, Reason: reason}, at); err != nil {
 		t.Fatalf("the wake the daemon writes is refused: %v", err)
 	}

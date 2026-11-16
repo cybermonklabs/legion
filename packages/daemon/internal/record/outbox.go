@@ -679,12 +679,17 @@ const (
 // Store.TellArchitectsStalled), and the first words of the notice's reason, so a controller that
 // reads two wakes of one root reads two different facts:
 //
-//   - ArchitectTookNothing: the task of the architect's phase entry was queued to its claim more
-//     than workflow.StrandedReleaseWake ago and no turn of that claim confirmed it. A task a
-//     let-go of the claim's process took back from a turn is counted only while the claim is
-//     ready, working or idle, from the later of its queueing and the relaunched agent's ready.
-//     The daemon writes no second start while that task stands (workflow.ArchitectStartPending),
-//     so the wake is the one thing left.
+//   - ArchitectTookNothing: the task of the entry the architect's phases row names was first
+//     queued to its claim more than workflow.StrandedReleaseWake ago and no turn of that claim
+//     confirmed it. It is counted from the first queueing of that entry, which the claim's
+//     handshake keeps (supervise.Claim.Handshake), however many times the daemon queued that
+//     entry's task again. A task a let-go of the claim's process took back from a turn is counted
+//     only while the claim is ready, working or idle, from the later of that first queueing and
+//     the relaunched agent's ready. The daemon writes no second start of that entry while its task
+//     stands (workflow.OwedEntry), so the wake is the one thing left. A task the root's own record
+//     has superseded — of a run before its generation, or of an entry the row has moved past — is
+//     no such task: the sweep writes the start of the row's entry and that start's task takes its
+//     place (workflow.ArchitectStartPending, supervise.Delivery.SupersededBy).
 //   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
 //     architect claim at all and the work of its entry has stood that same bound, and in either
 //     case no start of the root's run is the daemon's next move for it, which

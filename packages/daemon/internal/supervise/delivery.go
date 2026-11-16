@@ -209,6 +209,22 @@ func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState
 	return d.Generation == generation && d.Phase == p && (d.ConfirmedAt.IsZero() || state == StateWorking)
 }
 
+// SupersededBy is whether a task of the run generation at entry takes d's place in a tree root
+// architect's hands: d is a task of an earlier run, or of the same run at a lower entry. A task of
+// no run (generation 0), an operator's own and the daemon's delivery of a relaunch's record among
+// them, is superseded by nothing. It is the one statement of that comparison, and two readers
+// make it: the claim's machine, before it puts a newer task in the place of the one the claim
+// holds unconfirmed (Machine.supersedes), and the admission sweep, which writes the start of the
+// entry a root architect's phases row names unless the claim holds a task that start would not
+// replace (workflow.ArchitectStartPending). So the sweep and the machine agree on which held task
+// a start of the root's run at that entry replaces.
+func (d Delivery) SupersededBy(generation uint64, entry int64) bool {
+	if d.Generation == 0 {
+		return false
+	}
+	return d.Generation < generation || (d.Generation == generation && d.Entry < entry)
+}
+
 // sentences is which of the claim's two untold records a prompt carries the sentence of: the
 // session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
 // process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
@@ -526,11 +542,12 @@ func (m *Machine) given(request RequestDeliver) bool {
 // has not confirmed, by the rule only a tree's root architect is held to (queue): request carries
 // a run and an entry, is no resend of an entry (RequestDeliver.ResendEntry) and is no work the
 // claim was given already (given, which queues nothing and so takes nobody's place), and p is a
-// task of a run that is either earlier than request's or the same run at a lower entry. A task of
-// no run, an operator's own and the daemon's delivery of a relaunch's record among them, is never
-// superseded, and a request of no entry supersedes nothing. Two places read it, so the rule is
-// decided once: queue, which retires p and queues request in its place, and StartedBy, which does
-// not send p first when the start's own task is such a request.
+// task of a run that is either earlier than request's or the same run at a lower entry
+// (Delivery.SupersededBy). A task of no run, an operator's own and the daemon's delivery of a
+// relaunch's record among them, is never superseded, and a request of no entry supersedes nothing.
+// Two places read it, so the rule is decided once: queue, which retires p and queues request in
+// its place, and StartedBy, which does not send p first when the start's own task is such a
+// request.
 //
 // It answers false while anything of p is in the agent's hands: a send of it in flight
 // (Machine.send), or a prompt of it Oh My Pi acknowledged that still waits on its result
@@ -541,10 +558,10 @@ func (m *Machine) supersedes(p Delivery, request RequestDeliver) bool {
 	if !m.claim.treeRoot() || !p.ConfirmedAt.IsZero() || m.send != nil || m.awaitsResult() {
 		return false
 	}
-	if request.Entry <= 0 || request.ResendEntry || request.Generation == 0 || p.Generation == 0 || m.given(request) {
+	if request.Entry <= 0 || request.ResendEntry || request.Generation == 0 || m.given(request) {
 		return false
 	}
-	return p.Generation < request.Generation || (p.Generation == request.Generation && p.Entry < request.Entry)
+	return p.SupersededBy(request.Generation, request.Entry)
 }
 
 // answeredOpenRound is the hold an open update round puts on its claim: the round is open and

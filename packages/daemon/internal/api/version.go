@@ -1937,10 +1937,13 @@ package api
 // task of the entry, which is the root whose architect took nothing.
 // A tree's own root carries `architectStalls` too: every arm of INFRA-2614's architect-stalled
 // reading that holds for its architect at that read, as `record.ArchitectStallArm`'s values —
-// `took-nothing` (the task of its entry was queued to its claim more than ten minutes ago and no
-// turn confirmed it; a task whose turn ended with the claim's process, at a death or at a
-// replacement the daemon made, counts only while the claim is ready, working or idle, and from
-// the relaunched agent's ready where that is later), `claim-unreachable` (the claim is failed or
+// `took-nothing` (the task of the entry its `phases` row names was first queued to its claim more
+// than ten minutes ago and no turn confirmed it, counted from that first queueing however many
+// times the daemon sent that entry's task again; a task whose turn ended with the claim's process,
+// at a death or at a replacement the daemon made, counts only while the claim is ready, working or
+// idle, and from the relaunched agent's ready where that is later; and a task the root's own
+// record has superseded, one of a run before its generation or of an entry the row has moved past,
+// raises the arm not at all), `claim-unreachable` (the claim is failed or
 // retired and no start of the root's run is the daemon's next move for it: a start the outbox is
 // running is, and so is a start queued in the last ten minutes unless it has already run against
 // the claim and left it failed or retired, after which the outbox only runs it again on its

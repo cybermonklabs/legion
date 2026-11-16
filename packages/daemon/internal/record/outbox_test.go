@@ -49,7 +49,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			Reason: "6 turns in a row on claude-opus-4-8 ended in the provider's reasoning_extraction content filter"},
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect,
-			Reason: ArchitectTookNothing.Words() + ": the task of phase entry 1 was queued to the architect's claim of LEGION-208"},
+			Reason: ArchitectTookNothing.Words() + ": the task of phase entry 1 was first queued to the architect's claim of LEGION-208"},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},

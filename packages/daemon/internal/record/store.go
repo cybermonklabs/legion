@@ -3122,12 +3122,16 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // The task is read as the entry it is of, the two moments of its handshake — queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it — and whether a let-go
 // took it back from a turn (interrupted), with the moment the claim's agent last said it was ready
-// (last_ready). Those are what say an architect took nothing — a task of the entry its claim was
-// given, standing unconfirmed, counted for a task a let-go took back from the relaunched agent's
-// ready — which the admission pass reads of every root it weighs (admit's architectStalls).
+// (last_ready) and the claim's own handshake of the last entry it was queued a task of
+// (handshake_*), whose queued moment is when that entry's task was first queued, however many
+// times it was queued again. Those are what say an architect took nothing — the task of the entry
+// its row names, standing unconfirmed, counted from that entry's first queueing, and for a task a
+// let-go took back from the relaunched agent's ready where that is later — which the admission
+// pass reads of every root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
-		c.last_ready, c.update_round, c.step_at, c.turn_started_at,
+		c.last_ready, c.handshake_entry, c.handshake_generation, c.handshake_queued_at, c.handshake_confirmed_at,
+		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at,
 		coalesce(d.interrupted, false)
@@ -3145,6 +3149,10 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// last_ready is nullable (migration 20261029121000_claim_death_and_start_causes): a claim
 		// whose agent has never said it was ready has none, and the zero time is what says so.
 		var ready *time.Time
+		// Both handshake moments are nullable (migration 20261114020537_claim_entry_handshake): a
+		// claim queued no task of an entry has neither, and one no turn confirmed such a task of
+		// has no confirmed moment. The zero time left in each is what says so.
+		var handshakeQueued, handshakeConfirmed *time.Time
 		// Both step columns are nullable (migration 20261107052815_claim_step_record): a claim
 		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
 		// in the step record is what says so to its reader (supervise.StepRecord.LastStep).
@@ -3155,12 +3163,19 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.GivenEntry, &ready, &held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
+			&held.GivenEntry, &ready, &held.Handshake.Entry, &held.Handshake.Generation, &handshakeQueued, &handshakeConfirmed,
+			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.ID, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed, &task.Interrupted); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if ready != nil {
 			held.LastReady = ready.UTC()
+		}
+		if handshakeQueued != nil {
+			held.Handshake.QueuedAt = handshakeQueued.UTC()
+		}
+		if handshakeConfirmed != nil {
+			held.Handshake.ConfirmedAt = handshakeConfirmed.UTC()
 		}
 		if stepped != nil {
 			held.Step.At = *stepped

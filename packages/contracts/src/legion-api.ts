@@ -796,10 +796,13 @@ const legionIssue = z.object({
   entryConfirmedAt: timestamp.optional(),
   /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
    * architect at this read, in the order the controller is told them (contract 146):
-   * `took-nothing`, the task of its entry was queued to its claim more than ten minutes ago and no
-   * turn confirmed it, where a task whose turn ended with the claim's process (a death, or a
-   * replacement the daemon made) counts only while the claim is ready, working or idle, and from
-   * the relaunched agent's ready where that is later; `claim-unreachable`, the claim is failed or
+   * `took-nothing`, the task of the entry its `phases` row names was first queued to its claim more
+   * than ten minutes ago and no turn confirmed it, counted from that first queueing however many
+   * times the daemon sent that entry's task again, where a task whose turn ended with the claim's
+   * process (a death, or a replacement the daemon made) counts only while the claim is ready,
+   * working or idle, and from the relaunched agent's ready where that is later, and where a task
+   * the root's own record has superseded — one of a run before its generation, or of an entry the
+   * row has moved past — raises the arm not at all; `claim-unreachable`, the claim is failed or
    * retired and no start of the root's run is the daemon's next move for it (a start the outbox is
    * running is, and so is a start queued in the last ten minutes unless it has already run against
    * the claim and left it failed or retired, after which the outbox only runs it again on its
