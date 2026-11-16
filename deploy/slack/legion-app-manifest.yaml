@@ -7,7 +7,7 @@
 #   - set the listener's ENVOY_SLACK_SIGNING_SECRET to the app's signing secret (Basic Information)
 #     and list `slack` in its ENVOY_WEBHOOKS;
 #   - store the Bot User OAuth Token (xoxb-…) in the secrets broker as LEGION_SLACK_BOT_TOKEN, owner
-#     legion-daemon, tier agent;
+#     shared, tier agent;
 #   - invite the app to every channel a project's slack_channels names (`/invite @Legion`).
 #
 # The controller reads the thread of a mention posted inside one, with Slack's
@@ -15,8 +15,9 @@
 # groups:history in a private one. An app made before these two scopes were listed here does not
 # hold them: an operator adds them to the app's bot scopes and reinstalls the app to the
 # workspace, and Slack answers the read missing_scope until they do. The broker gives the bot
-# token to every pod of the legion-daemon service, every issue pod as well as the controller's, so
-# each of them can read the history of every channel the app is in.
+# token to every session enrolled with it, every Legion pod as well as the controller's and every
+# agent session on a machine logged in to it, so each of them can read the history of every
+# channel the app is in.
 display_information:
   name: Legion
   description: Ask the project's Legion controller from its Slack channel.

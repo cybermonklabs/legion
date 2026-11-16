@@ -8,11 +8,15 @@ import type { DispatchEvent } from "../dispatch-read";
 import {
   changesAfterAskOf,
   idsInFiles,
+  jaccardOf,
+  nearDuplicatesOf,
   readTrees,
+  shinglesOf,
   TREES_FILE,
   type TreeChecks,
   type TreeGroup,
   TreeLog,
+  type TreeOutcome,
   treeGroupingOf,
   treeOutcomeOf,
 } from "../trees";
@@ -264,10 +268,136 @@ describe("the files the claim reads", () => {
 
   test("a case on an issue the trees do not name stops the claim", () => {
     const trees = { version: 1, throughEventId: 9, groups: [treeOf([AFTER])] };
-    expect(() => treeGroupingOf([caseRow(ASK_ONE, "INFRA-77", PICKED)], trees, NONE)).toThrow(
-      CorpusError
-    );
-    const grouping = treeGroupingOf([caseRow(ASK_ONE, PICKED, PICKED)], trees, NONE);
+    const row = caseRow(ASK_ONE, "INFRA-77", PICKED);
+    expect(() => treeGroupingOf([row], trees, NONE, evidenceOf([row]))).toThrow(CorpusError);
+    const named = caseRow(ASK_ONE, PICKED, PICKED);
+    const grouping = treeGroupingOf([named], trees, NONE, evidenceOf([named]));
     expect(grouping.outcomes.get(`tree:${PICKED}`)).toBe("eligible");
+  });
+});
+
+/** Each row's shingles, over `texts[i]` where given and the row's own question otherwise. */
+function evidenceOf(
+  rows: readonly CaseRow[],
+  texts: readonly string[] = []
+): Map<string, number[]> {
+  return new Map(rows.map((row, at) => [row.caseId, shinglesOf(texts[at] ?? row.question ?? "")]));
+}
+
+/** `count` distinct words joined by spaces, so a text of n words has n − 4 distinct 5-grams. */
+function wordsOf(count: number, from = 0, last: string | null = null): string {
+  const words = Array.from({ length: count }, (_, at) => `w${from + at}`);
+  if (last !== null) words[count - 1] = last;
+  return words.join(" ");
+}
+
+describe('near-duplicate grouping (dispatch://INFRA-3189 v8, "Grouping")', () => {
+  /** A second tree, under a root the rule does not pick, whose one ask opened before the cut. */
+  const EARLIER: TreeGroup = {
+    key: NOT_PICKED,
+    issues: [NOT_PICKED],
+    asks: [
+      {
+        ...AFTER,
+        askId: ASK_TWO,
+        issueKey: NOT_PICKED,
+        eventId: 5,
+        openedAt: "2026-11-15T12:00:00Z",
+      },
+    ],
+    parentChanges: [],
+  };
+  const trees = { version: 1, throughEventId: 9, groups: [treeOf([AFTER]), EARLIER] };
+  const rows = [caseRow(ASK_ONE, PICKED, PICKED), caseRow(ASK_TWO, NOT_PICKED, NOT_PICKED)];
+  const [own, earlier] = rows as [CaseRow, CaseRow];
+
+  test("shingles are word 5-grams that neither case nor punctuation changes", () => {
+    expect(shinglesOf("Approve spec.md, version 2? Yes: approve it.")).toEqual(
+      shinglesOf("approve SPEC md version 2 yes approve it")
+    );
+    expect(shinglesOf(wordsOf(12))).toHaveLength(8);
+    expect(shinglesOf("Approve it?")).toHaveLength(1);
+    expect(shinglesOf("Approve it?")).toEqual(shinglesOf("approve, it"));
+    expect(shinglesOf("— ?")).toEqual([]);
+  });
+
+  test("two cases join at a Jaccard similarity of 0.9 and not below it", () => {
+    // 9 shingles inside 10, then 9 and 9 sharing 8.
+    expect(jaccardOf(shinglesOf(wordsOf(13)), shinglesOf(wordsOf(14)))).toBe(0.9);
+    expect(jaccardOf(shinglesOf(wordsOf(13)), shinglesOf(wordsOf(13, 0, "x")))).toBe(0.8);
+    const at = treeGroupingOf(rows, trees, NONE, evidenceOf(rows, [wordsOf(13), wordsOf(14)]));
+    expect(at.joins).toHaveLength(1);
+    const below = treeGroupingOf(
+      rows,
+      trees,
+      NONE,
+      evidenceOf(rows, [wordsOf(13), wordsOf(13, 0, "x")])
+    );
+    expect(below.joins).toEqual([]);
+  });
+
+  test("the size bound drops no pair at its own threshold, and `apart` drops what the caller skips", () => {
+    // 7 inside 25 is 0.28 exactly, where 0.28 * 25 rounds above 7.
+    const sets = new Map([
+      ["small", [1, 2, 3, 4, 5, 6, 7]],
+      ["large", Array.from({ length: 25 }, (_, at) => at + 1)],
+    ]);
+    expect(nearDuplicatesOf(sets, undefined, 0.28).map((pair) => pair.cases)).toEqual([
+      ["large", "small"],
+    ]);
+    expect(nearDuplicatesOf(sets, () => false, 0.28)).toEqual([]);
+  });
+
+  test("a near-duplicate of a case in a tree with an ask before the cut takes its own tree out of every slice", () => {
+    const joined = treeGroupingOf(
+      rows,
+      trees,
+      NONE,
+      evidenceOf(rows, [wordsOf(100), wordsOf(100, 0, "x")])
+    );
+    expect(joined.groupOf(own)).toBe(joined.groupOf(earlier));
+    expect(joined.outcomes.get(joined.groupOf(own))).toBe("ask-before-cut");
+    expect(joined.groups.get(joined.groupOf(own))?.asks.map((ask) => ask.askId)).toEqual([
+      ASK_TWO,
+      ASK_ONE,
+    ]);
+    // Each join names its cases, the lesser id first, and the group each was in before it.
+    expect(joined.joins.map((join) => [join.cases, join.groups])).toEqual([
+      [
+        [own.caseId, earlier.caseId],
+        [`tree:${PICKED}`, `tree:${NOT_PICKED}`],
+      ],
+    ]);
+    expect(joined.joins[0]?.jaccard).toBeGreaterThanOrEqual(0.9);
+    const apart = treeGroupingOf(
+      rows,
+      trees,
+      NONE,
+      evidenceOf(rows, [wordsOf(100), wordsOf(100, 1000)])
+    );
+    expect(apart.joins).toEqual([]);
+    expect(apart.outcomes.get(apart.groupOf(own))).toBe("eligible");
+    expect(apart.outcomes.get(apart.groupOf(earlier))).toBe("ask-before-cut");
+  });
+
+  test("a case on no issue is under item 6 (a) by its own ask's opening", () => {
+    const before: CaseRow = {
+      ...caseRow(ASK_TWO, PICKED, null),
+      issueKey: null,
+      askCreatedAt: "2026-11-15T23:59:59Z",
+    };
+    const cases: Array<[CaseRow, TreeOutcome]> = [
+      [before, "ask-before-cut"],
+      [{ ...before, askCreatedAt: null }, "ask-before-cut"],
+      [{ ...before, askCreatedAt: "2026-11-16T00:00:00Z" }, "not-held-at-opening"],
+    ];
+    for (const [row, outcome] of cases) {
+      const grouping = treeGroupingOf([row], trees, NONE, evidenceOf([row]));
+      expect(grouping.outcomes.get(`ask:${ASK_TWO}`)).toBe(outcome);
+    }
+  });
+
+  test("a case with no shingles stops the claim", () => {
+    expect(() => treeGroupingOf([own], trees, NONE, new Map())).toThrow(CorpusError);
   });
 });

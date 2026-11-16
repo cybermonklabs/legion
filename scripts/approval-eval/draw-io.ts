@@ -4,7 +4,7 @@ import type { CaseKind } from "./build-corpus";
 import { CorpusError, listOf, recordOf, stringOf } from "./corpus-io";
 import type { ExcludedCase, SliceTargets, UndrawableKind } from "./draw";
 import type { IssueFacts } from "./never-decide";
-import type { ParentChange, TreeOutcome } from "./trees";
+import type { NearDuplicateJoin, ParentChange, TreeOutcome } from "./trees";
 
 /**
  * The two files one draw writes that are read back, each with one owner: `draw.json`, the
@@ -127,6 +127,12 @@ export interface FinalTestDraw {
    * made after the tree's first ask opened, with the actor that made it (item 6).
    */
   parentChanges: Array<{ group: string; outcome: TreeOutcome; changes: ParentChange[] }>;
+  /**
+   * The near-duplicate joins the claim grouped by (dispatch://INFRA-3189 v8, "Grouping"): every
+   * pair of cases of the corpus, from two groups, whose evidence has a Jaccard similarity of word
+   * 5-grams at or above `threshold`, with the groups each case was in before the join.
+   */
+  nearDuplicates: { threshold: number; joins: NearDuplicateJoin[] };
 }
 
 /**

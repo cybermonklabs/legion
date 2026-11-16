@@ -39,13 +39,15 @@ import {
   neverDecide,
   neverDecideDefinition,
 } from "./never-decide";
-import { type RenderGuard, renderChecked, renderDocument } from "./render";
+import { type RenderGuard, renderCase, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
 import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
 import {
   changesAfterAskOf,
   idsInFiles,
+  NEAR_DUPLICATE_JACCARD,
   readTrees,
+  shinglesOf,
   TREE_OUTCOMES,
   type TreeGrouping,
   type TreeOutcome,
@@ -82,17 +84,19 @@ import {
  * reserve's version 2 (`reserve.ts`, dispatch://INFRA/artifact/infra-2897-final-test-reserve-md)
  * says which groups it may take. A draw over a corpus read under a registered read of the reserve
  * is the claim's: it groups the cases by issue tree over every parent link the log recorded
- * (`trees.json`, `trees.ts`) instead of by issue, and puts each group under item 6, over every
- * case of the corpus in it and not only the drawn ones. A group in which any ask of anyone opened
- * before the reserve's cut (a) gives no case to any slice. A group holding a case the reserve does
- * not hold, or one whose root at its ask's opening the rule does not pick (b), one with an ask a
- * scorer's record names (c, `--scorer-records`), or one with an ask a session of the claim's round
- * opened (d, `--round-sessions`), goes to a development slice whole, and the reserved cases it
- * holds are named there. Only the other groups may go into report, and they try it first.
- * `draw.json` counts the groups under each outcome and lists, for each group with any, the parent
- * changes made after its first ask opened, with the actor that made each. A draw that reads no
- * reserve groups by issue as before, and `draw.json` records that its report slice is no final
- * test.
+ * (`trees.json`, `trees.ts`) instead of by issue, joins two groups wherever a case of each has
+ * near-duplicate evidence (a Jaccard similarity of word 5-grams of 0.9 or more,
+ * dispatch://INFRA-3189 v8, "Grouping"), and puts each group under item 6, over every case of the
+ * corpus in it and not only the drawn ones. A group in which any ask of anyone opened before the
+ * reserve's cut (a) gives no case to any slice. A group holding a case the reserve does not hold,
+ * or one whose root at its ask's opening the rule does not pick (b), one with an ask a scorer's
+ * record names (c, `--scorer-records`), or one with an ask a session of the claim's round opened
+ * (d, `--round-sessions`), goes to a development slice whole, and the reserved cases it holds are
+ * named there. Only the other groups may go into report, and they try it first. `draw.json` counts
+ * the groups under each outcome, lists each near-duplicate join, and lists, for each group with
+ * any, the parent changes made after its first ask opened, with the actor that made each. A draw
+ * that reads no reserve groups by issue as before, and `draw.json` records that its report slice
+ * is no final test.
  *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
@@ -167,7 +171,10 @@ export const KINDS: readonly CaseKind[] = ["approval", "question"];
 /** What a case is grouped by, which `draw.json` records and a later reading of it reads. */
 export const GROUP_KEY = "issue";
 
-/** What a draw under a read of the reserve groups by: the issue tree over every parent link. */
+/**
+ * What a draw under a read of the reserve groups by: the issue tree over every parent link,
+ * joined over near-duplicate evidence.
+ */
 export const TREE_GROUP_KEY = "tree";
 
 /** How many option a question must offer to be judged as a choice at all. */
@@ -310,10 +317,10 @@ export interface Draw {
 
 /**
  * What a draw under a registered read of the reserve is given: the read's reference, which cases
- * the reserve holds, the trees item 6 groups the cases by, each with its outcome, and the
- * post-cut cases the command left out before rendering because their tree had an ask before the
- * cut (item 6 a), so no model or document read touched them. Only an eligible group may go into
- * report.
+ * the reserve holds, the groups item 6 puts the cases in, each with its outcome, and the post-cut
+ * cases the command left out before putting any case to the rule because their group had an ask
+ * before the cut (item 6 a): no model read them, and their documents were read only into the
+ * shingles the near-duplicate joins compare. Only an eligible group may go into report.
  */
 export interface FinalTestSource {
   reference: string;
@@ -347,10 +354,11 @@ function shuffled<T>(items: readonly T[], seed: number): T[] {
 
 /**
  * The group a case belongs to. Under a read of the reserve it is the case's issue tree over every
- * parent link the log recorded (`trees.ts`). Otherwise it is its issue, whether it is an approval
- * request or a question: a document belongs to one issue, so this key holds together every case
- * one document held together and the cases of two documents of one issue besides. A case naming
- * no issue is its own group, since nothing else is known to share it.
+ * parent link the log recorded, joined over near-duplicate evidence (`trees.ts`). Otherwise it is
+ * its issue, whether it is an approval request or a question: a document belongs to one issue, so
+ * this key holds together every case one document held together and the cases of two documents
+ * of one issue besides. A case naming no issue is its own group, since nothing else is known to
+ * share it.
  */
 function groupKeyOf(row: CaseRow, finalTest: FinalTestSource | null): string {
   if (finalTest !== null) return finalTest.grouping.groupOf(row);
@@ -397,12 +405,13 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * first slice its whole size still fits.
  *
  * Under `finalTest`, a draw over a registered read of the reserve, the groups are the issue trees
- * and each carries its outcome under item 6, read over every case of the corpus in it. A group
- * whose outcome is `ask-before-cut` gives no case to any slice: its cases are named in
- * `finalTest.beforeCut`. Only an `eligible` group tries report, and it tries report first; every
- * other group skips it. The reserved cases that went to another slice are named in
- * `finalTest.heldOutsideReport`, and each group's parent changes after its first ask opened in
- * `finalTest.parentChanges`.
+ * joined over near-duplicate evidence, and each carries its outcome under item 6, read over every
+ * case of the corpus in it. A group whose outcome is `ask-before-cut` gives no case to any slice:
+ * its cases are named in `finalTest.beforeCut`. Only an `eligible` group tries report, and it
+ * tries report first; every other group skips it. The reserved cases that went to another slice
+ * are named in `finalTest.heldOutsideReport`, each group's parent changes after its first ask
+ * opened in `finalTest.parentChanges`, and each near-duplicate join in
+ * `finalTest.nearDuplicates`.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
  * read wrongly rather than a case to leave out.
@@ -560,6 +569,7 @@ export function drawSlices(
       beforeCut: { total: beforeCut.length, cases: beforeCut },
       heldOutsideReport: { total: heldOutsideReport.length, cases: heldOutsideReport },
       parentChanges,
+      nearDuplicates: { threshold: NEAR_DUPLICATE_JACCARD, joins: finalTest.grouping.joins },
     };
   }
   return draw;
@@ -726,6 +736,33 @@ async function drawCasesOf(
   return { cases, unread, checks: [...checks].sort() };
 }
 
+/**
+ * The shingles of every case's evidence, which the claim joins near-duplicate cases by
+ * (`treeGroupingOf`): `renderCase` over the documents `replayCase` reads, the text the rule and
+ * every arm are shown, before and after the cut alike, since a near-duplicate of an earlier case
+ * shares what it holds. The text goes into numbers at once and is never written or put to a
+ * model. A document that cannot be read would leave a case's evidence short and could hide a
+ * near-duplicate, so it stops the draw.
+ */
+async function evidenceShinglesOf(
+  rows: readonly CaseRow[],
+  config: DispatchConfig
+): Promise<Map<string, number[]>> {
+  const shingles = new Map<string, number[]>();
+  await pool(rows, RENDER_CONCURRENCY, async (row) => {
+    const documents = row.kind === "approval" ? (await replayCase(row, config)).documents : [];
+    const unread = documents.find((document) => document.refusal !== null);
+    if (unread !== undefined) {
+      throw new DrawError(
+        `a document of ${row.caseId} could not be read (${unread.refusal}), so the claim cannot ` +
+          'join that case\'s near-duplicates (dispatch://INFRA-3189 v8, "Grouping")'
+      );
+    }
+    shingles.set(row.caseId, shinglesOf(renderCase(row, documents)));
+  });
+  return shingles;
+}
+
 function readFlags(argv: readonly string[]): Flags {
   let values: {
     corpus?: string;
@@ -827,11 +864,13 @@ async function draw(flags: Flags): Promise<number> {
   const post = corpus.rows.filter((row) => answeredTime(row) >= cut);
   const seed = flags.seed ?? newSeed();
   // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
-  // claim's: it groups by tree, and its report slice is the final test item 6 allows. The trees
-  // and the scorers' and round's records are read before any case is rendered, so a corpus or a
-  // file the claim cannot check stops the draw before it spends a model call, and the cases of a
-  // tree with an ask before the cut (item 6 a) are left out before any document or model reads
-  // them: their held cases stay held until the reserve ends.
+  // claim's: it groups by tree joined over near-duplicate evidence, and its report slice is the
+  // final test item 6 allows. The trees, the scorers' and round's records and every case's
+  // evidence are read before any case is put to the rule, so a corpus or a file the claim cannot
+  // check stops the draw before it spends a model call, and the cases of a group with an ask
+  // before the cut (item 6 a) are left out before any model reads them: their held cases stay
+  // held until the reserve ends. Their evidence is read only into shingles, which are numbers held
+  // in memory and never written.
   let finalTest: FinalTestSource | null = null;
   let toRender = post;
   if (corpus.reserve.readUnder !== null) {
@@ -843,13 +882,18 @@ async function draw(flags: Flags): Promise<number> {
       );
     }
     const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
-    const grouping = treeGroupingOf(corpus.rows, trees, {
-      holds,
-      readAskIds: await idsInFiles(flags.scorerRecords),
-      roundSessions: await idsInFiles(
-        flags.roundSessions === undefined ? [] : [flags.roundSessions]
-      ),
-    });
+    const grouping = treeGroupingOf(
+      corpus.rows,
+      trees,
+      {
+        holds,
+        readAskIds: await idsInFiles(flags.scorerRecords),
+        roundSessions: await idsInFiles(
+          flags.roundSessions === undefined ? [] : [flags.roundSessions]
+        ),
+      },
+      await evidenceShinglesOf(corpus.rows, config)
+    );
     const beforeCut = post.filter(
       (row) => grouping.outcomes.get(grouping.groupOf(row)) === "ask-before-cut"
     );
@@ -927,6 +971,11 @@ async function draw(flags: Flags): Promise<number> {
     }
     console.log(
       `  trees with a parent change after an ask opened  ${drawn.finalTest.parentChanges.length}`
+    );
+    console.log(
+      `  near-duplicate joins of two groups  ${drawn.finalTest.nearDuplicates.joins.length} ` +
+        `(Jaccard of word 5-grams of the evidence at or above ` +
+        `${drawn.finalTest.nearDuplicates.threshold})`
     );
   }
   console.log("");
