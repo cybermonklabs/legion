@@ -948,7 +948,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		attempts = append(attempts, attempt)
 		claims = append(claims, claimed)
 	}
-	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, s.deps.ServerURL, comment.CreatedAt)
+	referenceChanges, err := refs.ReplaceCountedItem(r.Context(), tx, refs.ItemComment, comment.ID, comment.Body, s.deps.Origins, comment.CreatedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

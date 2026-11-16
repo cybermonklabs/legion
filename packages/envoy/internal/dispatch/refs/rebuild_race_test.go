@@ -199,7 +199,7 @@ func (g *readGate) rebuild(t *testing.T, ctx context.Context, database *store.St
 	}}
 	rebuilt := make(chan error, 1)
 	go func() {
-		_, err := RebuildAll(ctx, gated, resolverServer)
+		_, err := RebuildAll(ctx, gated, text.NewOrigins(resolverServer))
 		rebuilt <- err
 	}()
 	select {
@@ -277,7 +277,7 @@ func editText(t *testing.T, ctx context.Context, tx pgx.Tx, sql, kind, id, body 
 // writeEdges stores the edges of one text, as every writer does after it writes.
 func writeEdges(t *testing.T, ctx context.Context, tx pgx.Tx, kind, id, body string) {
 	t.Helper()
-	located := NewReader(ctx, tx, kind, id, resolverServer).Mentions(body)
+	located := NewReader(ctx, tx, kind, id, text.NewOrigins(resolverServer)).Mentions(body)
 	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), nil); err != nil {
 		t.Fatalf("write the edges of the edited text: %v", err)
 	}

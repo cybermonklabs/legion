@@ -831,7 +831,7 @@ func nonNilStrings(values []string) []string {
 // issue or of the check's issue, named by their dispatch:// reference and read as who reads them.
 func (s *server) refuseResultScreenshots(ctx context.Context, q queryer, who model.Actor, issueKey, checkIssueKey string, screenshots []string) error {
 	for _, screenshot := range screenshots {
-		ref, ok := text.ParseRef(screenshot, "")
+		ref, ok := text.ParseRef(screenshot, text.Origins{})
 		if !ok || ref.Kind != "artifact" || ref.IssueKey == "" ||
 			(ref.IssueKey != issueKey && ref.IssueKey != checkIssueKey) {
 			return errorf(http.StatusBadRequest, "RESULT_INPUT",

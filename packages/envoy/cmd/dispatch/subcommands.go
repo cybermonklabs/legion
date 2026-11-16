@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // subcommand is an argument envoy-dispatch takes in place of serving. run gets the arguments
@@ -435,7 +436,7 @@ func rebuildRefs(ctx context.Context, databaseURL, serverURL string, out io.Writ
 	defer database.Pool.Close()
 	// rebuild-refs opens a transaction per source, so it marks its context like the other
 	// commands: a read taken inside one is refused rather than left to deadlock the pool.
-	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, serverURL)
+	report, err := refs.RebuildAll(store.WithTransactionTracking(ctx), database.Pool, text.NewOrigins(serverURL))
 	if err != nil {
 		fmt.Fprintf(out, "rebuild-refs: %v\n", err)
 		return 1

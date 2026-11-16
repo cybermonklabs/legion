@@ -119,10 +119,11 @@ func ReplaceCountedItem(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
-	itemID, body, serverURL string,
+	itemID, body string,
+	origins text.Origins,
 	at time.Time,
 ) (model.ReferenceChanges, error) {
-	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
+	located := NewReader(ctx, tx, string(kind), itemID, origins).Mentions(body)
 	changed, err := replaceItemRefs(ctx, tx, kind, itemID, body, at, located, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -141,11 +142,12 @@ func ReplaceCountedItemEdit(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind ItemKind,
-	itemID, previous, body, serverURL string,
+	itemID, previous, body string,
+	origins text.Origins,
 	at time.Time,
 	carried *CarriedEdit,
 ) (model.ReferenceChanges, error) {
-	located := NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
+	located := NewReader(ctx, tx, string(kind), itemID, origins).Mentions(body)
 	changed, err := replaceItemRefs(ctx, tx, kind, itemID, body, at, located, carried)
 	if err != nil {
 		return model.ReferenceChanges{}, err
@@ -797,7 +799,7 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // already appended an event for. A block mention takes the source_seq of the item's own refs row
 // for its target at the item's first indexing (indexItemBlocks) and none otherwise, and no
 // ?since= read lists a row with none until a later write of the item stamps it (Stamp).
-func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, serverURL string) (bool, error) {
+func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, origins text.Origins) (bool, error) {
 	tables, err := item.Kind.tables()
 	if err != nil {
 		return false, err
@@ -810,7 +812,7 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 	if found, err := lockItem(ctx, tx, item.Kind, tables, item.ID); err != nil || !found {
 		return false, err
 	}
-	indexed, err := IndexItemIfOwed(ctx, tx, item.Kind, item.ID, serverURL)
+	indexed, err := IndexItemIfOwed(ctx, tx, item.Kind, item.ID, origins)
 	if err != nil {
 		return false, err
 	}

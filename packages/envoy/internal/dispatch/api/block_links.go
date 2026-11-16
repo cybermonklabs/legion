@@ -41,7 +41,7 @@ func (s *server) getBlockLinks(w http.ResponseWriter, r *http.Request) {
 // does not exist is 404 NOT_FOUND.
 func (s *server) blockLinksDocument(r *http.Request, who model.Actor, param string) (model.GraphNode, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(param))
-	ref, ok := text.ParseRef(raw, s.deps.ServerURL)
+	ref, ok := text.ParseRef(raw, s.deps.Origins)
 	if !ok || ref.Kind != "artifact" || ref.Session != "" {
 		return model.GraphNode{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%s must name a document: dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>", param)
 	}

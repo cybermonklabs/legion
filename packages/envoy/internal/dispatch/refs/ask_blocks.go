@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The type of each part of an ask, its ask_blocks.type and the salt of its identity hash
@@ -271,7 +272,7 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // which is when its state row is missing (a build older than the part index wrote the ask),
 // owed (owed_at set by such a build's write, or by rebuild-refs), or indexed from other parts
 // than the ask holds now. The caller holds the ask row.
-func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID, serverURL string) (bool, error) {
+func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID string, origins text.Origins) (bool, error) {
 	var stated, owed bool
 	var sum *string
 	ask, writtenAt, err := scanAskForParts(tx.QueryRow(ctx, `
@@ -287,7 +288,7 @@ func indexAskIfOwed(ctx context.Context, tx pgx.Tx, askID, serverURL string) (bo
 	if stated && !owed && sum != nil && *sum == partsSum {
 		return false, nil
 	}
-	resolve := NewReader(ctx, tx, string(ItemAsk), askID, serverURL)
+	resolve := NewReader(ctx, tx, string(ItemAsk), askID, origins)
 	if _, err := indexAskParts(ctx, tx, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return false, fmt.Errorf("index the parts of ask %s: %w", askID, err)
 	}

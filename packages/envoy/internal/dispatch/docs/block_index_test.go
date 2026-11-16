@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -1013,7 +1014,7 @@ func TestTheBlockIndexReindexesItemsRebuildRefsOwed(t *testing.T) {
 		t.Fatalf("first tick = %#v, want the comment indexed", tick)
 	}
 	before := itemBlocksOf(t, database, "comment", comment)
-	report, err := refs.RebuildAll(ctx, database.Pool, "https://dispatch.example")
+	report, err := refs.RebuildAll(ctx, database.Pool, text.NewOrigins("https://dispatch.example"))
 	if err != nil {
 		t.Fatalf("rebuild refs: %v", err)
 	}

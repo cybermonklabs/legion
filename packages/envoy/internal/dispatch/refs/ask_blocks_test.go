@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const askPartServer = "https://dispatch.example"
@@ -91,7 +92,7 @@ func writeAskAnswer(t *testing.T, tx pgx.Tx, ask *model.Ask, user string, select
 func indexAskPartsAt(t *testing.T, tx pgx.Tx, ask model.Ask, index int) []Target {
 	t.Helper()
 	at := time.Date(2026, 10, 30, 12, 0, index, 0, time.UTC)
-	moved, err := IndexAskParts(context.Background(), tx, NewReader(context.Background(), tx, "ask", ask.ID, askPartServer), ask, at)
+	moved, err := IndexAskParts(context.Background(), tx, NewReader(context.Background(), tx, "ask", ask.ID, text.NewOrigins(askPartServer)), ask, at)
 	if err != nil {
 		t.Fatalf("index the parts of ask %s: %v", ask.ID, err)
 	}
@@ -482,7 +483,7 @@ func TestTheReconciliationIndexesAnAskOwedItsParts(t *testing.T) {
 	if want := []OwedItemBlock{{Kind: ItemAsk, ID: askID}}; !slices.Equal(owed, want) {
 		t.Fatalf("the items owed a block index = %v, want %v", owed, want)
 	}
-	indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], askPartServer)
+	indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], text.NewOrigins(askPartServer))
 	if err != nil || !indexed {
 		t.Fatalf("index the owed ask = %v, %v; want it indexed", indexed, err)
 	}
@@ -493,7 +494,7 @@ func TestTheReconciliationIndexesAnAskOwedItsParts(t *testing.T) {
 	if again, err := OwedItemBlocks(ctx, database.Pool, 10); err != nil || len(again) != 0 {
 		t.Fatalf("the items owed after the index = %v, %v; want none", again, err)
 	}
-	if indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], askPartServer); err != nil || indexed {
+	if indexed, err := IndexOwedItemBlocks(ctx, database.Pool, owed[0], text.NewOrigins(askPartServer)); err != nil || indexed {
 		t.Fatalf("index the ask again = %v, %v; want nothing indexed", indexed, err)
 	}
 }
@@ -547,7 +548,7 @@ func TestAnAskWriteReadsItsQuestionsOnce(t *testing.T) {
 	ask := insertAsk(t, tx.Tx, "ACME-1", "Does #q1 still hold?", model.AskOption{Label: "Yes, as #q1 says"})
 
 	tx.queries = nil
-	reader := NewReader(ctx, tx, "ask", ask.ID, askPartServer)
+	reader := NewReader(ctx, tx, "ask", ask.ID, text.NewOrigins(askPartServer))
 	if _, err := ReplaceCounted(ctx, tx, reader, ask.Question); err != nil {
 		t.Fatalf("index the ask's question: %v", err)
 	}

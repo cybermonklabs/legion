@@ -24,11 +24,11 @@ import (
 // items through it (IndexOwedItemBlocks). The caller holds the item's owner row (the
 // reconciliation holds none) and the item row; the index takes the state row after them. It
 // reports whether the item was owed and so indexed.
-func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serverURL string) (bool, error) {
+func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID string, origins text.Origins) (bool, error) {
 	var query string
 	switch kind {
 	case ItemAsk:
-		return indexAskIfOwed(ctx, tx, itemID, serverURL)
+		return indexAskIfOwed(ctx, tx, itemID, origins)
 	case ItemComment:
 		query = `
 			select c.body, coalesce(c.edited_at, c.created_at), true,
@@ -56,7 +56,7 @@ func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serv
 	}
 	var located []text.Located
 	if mentions {
-		located = NewReader(ctx, tx, string(kind), itemID, serverURL).Mentions(body)
+		located = NewReader(ctx, tx, string(kind), itemID, origins).Mentions(body)
 	}
 	if _, err := IndexItem(ctx, tx, kind, itemID, body, writtenAt, located, nil); err != nil {
 		return false, fmt.Errorf("index the blocks of %s %s: %w", kind, itemID, err)

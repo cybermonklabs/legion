@@ -279,7 +279,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	// The question and the parts of this write through one reader: its parts hold its question,
 	// so the database answers once per kind for both.
-	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.ServerURL)
+	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.Origins)
 	askChanges, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -584,7 +584,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	reader := refs.NewReader(documentCtx, tx, "ask", ask.ID, s.deps.ServerURL)
+	reader := refs.NewReader(documentCtx, tx, "ask", ask.ID, s.deps.Origins)
 	askChanges, err := refs.ReplaceCountedEdit(documentCtx, tx, reader, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)

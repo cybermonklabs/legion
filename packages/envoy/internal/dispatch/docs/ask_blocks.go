@@ -430,7 +430,7 @@ func (s *Service) reconcileAskBlocks(
 			reconciled.indexedAskBlocks = append(reconciled.indexedAskBlocks, block.id)
 			// The question and the parts through one reader: the ask's parts hold its question,
 			// so the database answers once per kind for the write (refs.NewReader).
-			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
+			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.origins)
 			changes, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index new ask block: %w", err)
@@ -465,7 +465,7 @@ func (s *Service) reconcileAskBlocks(
 			// The restoration writes state, answer and resolution back: the answer it brings
 			// back is a part again, and the event names what that moved.
 			restoredAt := refs.AskPartsAt(ask)
-			changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL),
+			changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.origins),
 				ask, restoredAt, model.ReferenceChanges{})
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index the parts of restored ask %s: %w", ask.ID, err)
@@ -518,7 +518,7 @@ func (s *Service) reconcileAskBlocks(
 			ask.Multiple = block.multiple
 			ask.Urgency = block.urgency
 			ask.EditedAt = askTimestamp(&editedAt)
-			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.serverURL)
+			reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.origins)
 			changes, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
 			if err != nil {
 				return settlementReconciliation{}, fmt.Errorf("index reconciled ask: %w", err)

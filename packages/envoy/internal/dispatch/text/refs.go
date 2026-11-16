@@ -91,14 +91,14 @@ type Located struct {
 	Offset int
 }
 
-// Extract parses Dispatch links from body. Links outside serverURL stay URL
-// references so a post never loses an ordinary external link. It reads what text cites, which the
-// graph indexes, so a reference past the bounds the index keys (inBound) names nothing there: a
-// `dispatch://` one is dropped, a dashboard page whose block is past them names its document
-// (pageInBound), and one whose document or item is past them is the URL it is, as one that names
-// no page is.
-func Extract(body, serverURL string) []Ref {
-	return Refs(ExtractAt(body, serverURL))
+// Extract parses Dispatch links from body. A dashboard URL of any of origins is the reference its
+// page names; links outside them stay URL references so a post never loses an ordinary external
+// link. It reads what text cites, which the graph indexes, so a reference past the bounds the
+// index keys (inBound) names nothing there: a `dispatch://` one is dropped, a dashboard page whose
+// block is past them names its document (pageInBound), and one whose document or item is past them
+// is the URL it is, as one that names no page is.
+func Extract(body string, origins Origins) []Ref {
+	return Refs(ExtractAt(body, origins))
 }
 
 // Refs is the references of located, without their offsets.
@@ -112,8 +112,8 @@ func Refs(located []Located) []Ref {
 
 // ExtractAt is Extract with each reference's byte offset into body, so a caller can find the
 // block a mention sits in. Trailing punctuation the grammar trims never moves the start.
-func ExtractAt(body, serverURL string) []Located {
-	return extractAt(body, serverURL, true)
+func ExtractAt(body string, origins Origins) []Located {
+	return extractAt(body, origins, true)
 }
 
 // ParseRef reads value, the one reference a request names - an API route's `?to=` or `?from=`, or
@@ -122,8 +122,8 @@ func ExtractAt(body, serverURL string) []Located {
 // whatever the length of its id, is read by its own reference (a block no index keys is simply
 // no node). value names a reference when it starts with one and holds no other, as Extract would
 // find it in text; an external URL or a dashboard URL that names no page is none.
-func ParseRef(value, serverURL string) (Ref, bool) {
-	located := extractAt(value, serverURL, false)
+func ParseRef(value string, origins Origins) (Ref, bool) {
+	located := extractAt(value, origins, false)
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind == "url" {
 		return Ref{}, false
 	}
@@ -132,17 +132,15 @@ func ParseRef(value, serverURL string) (Ref, bool) {
 
 // extractAt is ExtractAt, holding what each reference names to the bounds the index keys when
 // bounded (Extract's reading of text, inBound) and not when not (ParseRef's of a request).
-func extractAt(body, serverURL string, bounded bool) []Located {
-	return extractSpans(body, serverURL, referencePattern.FindAllStringIndex(body, -1), bounded)
+func extractAt(body string, origins Origins, bounded bool) []Located {
+	return extractSpans(body, origins, referencePattern.FindAllStringIndex(body, -1), bounded)
 }
 
 // extractSpans is extractAt over spans, body's reference spans (referencePattern) already found,
 // so a reader that walks the gaps between them as well - Mentions, reading what a text writes
 // bare - scans body for them once.
-func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located {
+func extractSpans(body string, origins Origins, spans [][]int, bounded bool) []Located {
 	refs := []Located{}
-	var base *url.URL
-	baseParsed := false
 	for _, span := range spans {
 		raw := trimReference(body[span[0]:span[1]])
 		if raw == "" {
@@ -154,11 +152,7 @@ func extractSpans(body, serverURL string, spans [][]int, bounded bool) []Located
 			}
 			continue
 		}
-		if !baseParsed {
-			base, _ = url.Parse(serverURL)
-			baseParsed = true
-		}
-		if ref, ok := parseServer(raw, base); ok {
+		if ref, ok := parseServer(raw, origins); ok {
 			if bounded {
 				ref, ok = pageInBound(ref)
 			}
@@ -428,13 +422,13 @@ func FormatBlockRef(ref Ref) (string, bool) {
 
 // CanonicalBlockRef reads value as one block of a document written exactly as FormatBlockRef
 // writes it - the one way a typed block's `block[]` attribute holds a pointer: value is the one
-// reference text would cite there (ExtractAt with no server URL, so a dashboard URL is never one),
+// reference text would cite there (ExtractAt with no origins, so a dashboard URL is never one),
 // it starts at value's first byte, it is a block, and FormatBlockRef writes it back as value. That
 // last check refuses what the reader alone accepts: lower-case or needless percent-encoding, an
 // issue's primary document spelled `artifact/spec`, anything trailing the reference, and a block
 // of a comment or a message.
 func CanonicalBlockRef(value string) (Ref, bool) {
-	located := ExtractAt(value, "")
+	located := ExtractAt(value, Origins{})
 	if len(located) != 1 || located[0].Offset != 0 || located[0].Kind != "block" {
 		return Ref{}, false
 	}
@@ -524,20 +518,22 @@ func decodeItemID(value string) (string, bool) {
 	return decoded, err == nil && utf8.ValidString(decoded) && !hasControl(decoded)
 }
 
-// parseServer reads a dashboard URL against its parsed server URL as the dashboard's
-// `referenceRouteFromHref` reads it: the key and the path's item id as written, the query as
-// `searchParams` reads it, a version a positive decimal, and a `#b-` fragment on a document page
-// as documentPage reads it and on an issue ask's, comment's or message's page as pageBlock reads
-// it. A URL holding a control character names nothing; net/url refuses only the ASCII ones.
-func parseServer(raw string, base *url.URL) (Ref, bool) {
-	if base == nil || base.Scheme == "" || base.Host == "" {
-		return Ref{}, false
-	}
-	if hasControl(raw) {
+// parseServer reads a dashboard URL of one of origins, against that origin with its own base path,
+// as the dashboard's `referenceRouteFromHref` reads it: the key and the path's item id as written,
+// the query as `searchParams` reads it, a version a positive decimal, and a `#b-` fragment on a
+// document page as documentPage reads it and on an issue ask's, comment's or message's page as
+// pageBlock reads it. A URL holding a control character, or of no origin's scheme and host, names
+// nothing; net/url refuses only the ASCII control characters.
+func parseServer(raw string, origins Origins) (Ref, bool) {
+	if len(origins.urls) == 0 || hasControl(raw) {
 		return Ref{}, false
 	}
 	value, err := url.Parse(raw)
-	if err != nil || value.Scheme != base.Scheme || value.Host != base.Host {
+	if err != nil {
+		return Ref{}, false
+	}
+	base := origins.base(value)
+	if base == nil {
 		return Ref{}, false
 	}
 	basePath := strings.TrimSuffix(base.EscapedPath(), "/")

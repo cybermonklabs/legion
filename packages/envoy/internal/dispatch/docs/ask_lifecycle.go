@@ -431,7 +431,7 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	// a closed issue's version. No stored version says which wrote it, so the move reads it as a
 	// settlement's and keeps the person's turn where that settlement's own version write would
 	// have kept it.
-	moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.serverURL)
+	moved, err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.origins)
 	if err != nil {
 		return nil, err
 	}

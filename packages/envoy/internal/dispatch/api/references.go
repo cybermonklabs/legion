@@ -36,7 +36,7 @@ func (s *server) indexAskParts(
 	at time.Time,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.Origins), ask, at, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -84,7 +84,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
+	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.Origins)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -483,12 +483,12 @@ var blockPin = regexp.MustCompile(`@v[0-9]+$`)
 
 // pinsAMessageBlock reports whether raw, a reference text.ParseRef refused, is a block of a
 // message pinned to a revision: the grammar reads none, since a message never changes.
-func pinsAMessageBlock(raw, serverURL string) bool {
+func pinsAMessageBlock(raw string, origins text.Origins) bool {
 	unpinned := blockPin.ReplaceAllString(raw, "")
 	if unpinned == raw {
 		return false
 	}
-	ref, ok := text.ParseRef(unpinned, serverURL)
+	ref, ok := text.ParseRef(unpinned, origins)
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
@@ -499,7 +499,7 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 // is read by text.ParseRef, so a node is read whatever the length of its name: the target bound
 // decides only what text indexes, and a node no index holds an edge to simply has fewer edges.
 // It returns apart the ?kind= values that are no edge kind of this build.
-func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, []string, error) {
+func parseReferencesQuery(r *http.Request, origins text.Origins) (refs.Query, text.Ref, []string, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
 	if (to == "") == (from == "") {
@@ -509,9 +509,9 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, ok := text.ParseRef(raw, serverURL)
+	ref, ok := text.ParseRef(raw, origins)
 	if !ok {
-		if pinsAMessageBlock(raw, serverURL) {
+		if pinsAMessageBlock(raw, origins) {
 			return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
 		}
 		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)

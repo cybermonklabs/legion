@@ -86,8 +86,11 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
-	Docs            docs.API
+	// Origins is the server's web origins, canonical first (text.NewOrigins of DepsInput.ServerURL
+	// and DepsInput.OutsideOrigin): a dashboard URL of either that a text or a request writes is
+	// read as the reference its page names.
+	Origins text.Origins
+	Docs    docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
@@ -208,7 +211,10 @@ type DepsInput struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	ServerURL       string
-	EnvoyURL        string
+	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
+	// none), which Deps.Origins reads dashboard URLs of beside ServerURL's.
+	OutsideOrigin string
+	EnvoyURL      string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -289,10 +295,11 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}
 	if input.Docs == nil {
 		input.Docs = docs.New(docs.Deps{
-			Store:     input.Store,
-			Events:    input.Events,
-			Identity:  input.Identity,
-			ServerURL: input.ServerURL,
+			Store:         input.Store,
+			Events:        input.Events,
+			Identity:      input.Identity,
+			ServerURL:     input.ServerURL,
+			OutsideOrigin: input.OutsideOrigin,
 		})
 	}
 	var envoyClient *envoy.Client
@@ -328,7 +335,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
+		Origins:                text.NewOrigins(strings.TrimSuffix(input.ServerURL, "/"), input.OutsideOrigin),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,

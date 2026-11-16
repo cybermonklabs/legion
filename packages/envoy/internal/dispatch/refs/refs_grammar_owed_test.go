@@ -61,7 +61,7 @@ func TestAWriteLeavesNothingOwed(t *testing.T) {
 		t.Fatalf("the comment's own write owes %v, want the comment alone", owed)
 	}
 
-	if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", comment, refsGrammarServer), "Blocked on CORE-1."); err != nil {
+	if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "comment", comment, text.NewOrigins(refsGrammarServer)), "Blocked on CORE-1."); err != nil {
 		t.Fatalf("index the comment: %v", err)
 	}
 
@@ -101,7 +101,7 @@ func TestADocumentVersionLeavesItsScopeOwed(t *testing.T) {
 		t.Fatalf("the version's write owes %v, want %v", owed, wantOwed)
 	}
 
-	reader := NewReader(ctx, tx, "artifact", document, refsGrammarServer)
+	reader := NewReader(ctx, tx, "artifact", document, text.NewOrigins(refsGrammarServer))
 	if _, err := ReplaceDocumentCounted(ctx, tx, document, 1, versionAt,
 		text.Refs(reader.Mentions("Blocked on CORE-1.")), nil, nil); err != nil {
 		t.Fatalf("index the version: %v", err)
@@ -140,7 +140,7 @@ func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
 		t.Fatalf("move the comment's enqueued_at: %v", err)
 	}
 
-	indexed, err := ReindexOwed(ctx, database.Pool, listed[0], refsGrammarServer)
+	indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer))
 	if err != nil {
 		t.Fatalf("re-index the comment: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list what is owed again: %v", err)
 	}
-	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], refsGrammarServer); err != nil || !indexed {
+	if indexed, err := ReindexOwed(ctx, database.Pool, listed[0], text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
 		t.Fatalf("re-index the comment on the next pass = %v (%v), want it indexed", indexed, err)
 	}
 	if owed := owedRows(t, database.Pool); len(owed) != 0 {
@@ -215,14 +215,14 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	indexed, err := ReindexScopeSource(bounded, database.Pool, "comment", quiet, refsGrammarServer)
+	indexed, err := ReindexScopeSource(bounded, database.Pool, "comment", quiet, text.NewOrigins(refsGrammarServer))
 
 	if err != nil || indexed {
 		t.Fatalf("the scope drain of a comment an edit holds = %v (%v), want it passed over without waiting", indexed, err)
 	}
 	// A text that writes a `#id` is still read under its own row and re-indexed from what that
 	// read answers: the unlocked read decides only whether to open the transaction.
-	if indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", citing, refsGrammarServer); err != nil || !indexed {
+	if indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", citing, text.NewOrigins(refsGrammarServer)); err != nil || !indexed {
 		t.Fatalf("the scope drain of a comment that writes a `#id` = %v (%v), want it re-indexed", indexed, err)
 	}
 }

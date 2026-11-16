@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A human's answer to a decision block carries his approval forward. He approved the document at
@@ -176,7 +177,7 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 			return nil, err
 		}
 		if review != nil {
-			return writeCarriedReview(ctx, tx, s.events, artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL)
+			return writeCarriedReview(ctx, tx, s.events, artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.origins)
 		}
 	}
 	restored, err := restoresVersionText(ctx, tx, artifactID, newest.Version, rendered.markdown)
@@ -184,9 +185,9 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 		return nil, err
 	}
 	if restored {
-		return writeCarriedReview(ctx, tx, s.events, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), s.serverURL)
+		return writeCarriedReview(ctx, tx, s.events, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), s.origins)
 	}
-	return reopenedApproval(ctx, tx, s.events, artifactID, number, rendered.tree, blocks, newest, s.serverURL)
+	return reopenedApproval(ctx, tx, s.events, artifactID, number, rendered.tree, blocks, newest, s.origins)
 }
 
 // CarryRestoredApproval is the restore alone, for the route that writes a document version itself
@@ -200,7 +201,7 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // approved version showed open, answered by someone since, comes back in the same bytes while its
 // row holds a decision nobody approved, which settlement then writes into the next version. It
 // returns the events it appended, as carryApproval does.
-func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) ([]model.Event, error) {
+func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, origins text.Origins) ([]model.Event, error) {
 	newest, err := NewestReview(ctx, tx, artifactID)
 	if err != nil || newest == nil || newest.State != "approved" {
 		return nil, err
@@ -217,7 +218,7 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	if _, known, err := versionBlocks(ctx, tx, artifactID, tree); err != nil || !known {
 		return nil, err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, *newest, fmt.Sprintf(restoreReason, newest.Version), serverURL)
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, *newest, fmt.Sprintf(restoreReason, newest.Version), origins)
 }
 
 // versionBlocks is every ask block of a version, tree, as its row, the row of artifactID that
@@ -246,7 +247,7 @@ func versionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdo
 // (withOpenBlocksResolved), is byte for byte A's stored text (restoresVersionText); it appends
 // nothing otherwise. The rows are decided first, from the asks' events: a version write whose open
 // blocks hold any other ask renders nothing more.
-func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
+func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, origins text.Origins) ([]model.Event, error) {
 	var opened []string
 	for _, ask := range blocks {
 		if ask.State == "open" {
@@ -266,7 +267,7 @@ func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, art
 	if rendersApproved, err := restoresVersionText(ctx, tx, artifactID, newest.Version, closed); err != nil || !rendersApproved {
 		return nil, err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(reopenReason, newest.Version), serverURL)
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(reopenReason, newest.Version), origins)
 }
 
 // reopenRestoredSince reports whether every ask of asks, the open rows of a version's blocks, is
@@ -351,7 +352,7 @@ func withOpenBlocksResolved(node *pmdoc.Node, blocks map[string]model.Ask) *pmdo
 // version (ReviewKindPlanReview). A row read from artifact_reviews always names its kind, and a
 // review that names none is a person's, as the column's default says. It returns those events in
 // that order.
-func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason, serverURL string) ([]model.Event, error) {
+func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason string, origins text.Origins) ([]model.Event, error) {
 	var appended []model.Event
 	var askID *string
 	open, err := OpenApprovalAsk(ctx, tx, artifactID)
@@ -374,7 +375,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 			return nil, err
 		}
 		if closes {
-			answered, err := answerApprovalAsk(ctx, tx, broker, open, review.Actor, reason, serverURL)
+			answered, err := answerApprovalAsk(ctx, tx, broker, open, review.Actor, reason, origins)
 			if err != nil {
 				return nil, err
 			}
@@ -717,7 +718,7 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 // the transaction's now(), as the answer route's is: each process's host keeps its own clock, and
 // this one is the created_at of the ask.answered event appended here and of the review the carry
 // writes beside it, and the time the answer's part is written at (IndexAskPartsCounted below).
-func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ask *model.Ask, actor model.Actor, reason, serverURL string) (model.Event, error) {
+func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ask *model.Ask, actor model.Actor, reason string, origins text.Origins) (model.Event, error) {
 	var answeredAt time.Time
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&answeredAt); err != nil {
 		return model.Event{}, fmt.Errorf("read the approval answer's time: %w", err)
@@ -738,7 +739,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, as
 	ask.Answer = &answer
 	// The answer is a part of the request, so its text reaches the graph with it, and the
 	// ask.answered below names what it moved.
-	changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, serverURL),
+	changes, err := refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, origins),
 		*ask, answer.At, model.ReferenceChanges{})
 	if err != nil {
 		return model.Event{}, fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)

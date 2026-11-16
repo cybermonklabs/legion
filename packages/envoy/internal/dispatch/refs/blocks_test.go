@@ -168,7 +168,7 @@ func TestAWindowRecordsTheBlocksItCovers(t *testing.T) {
 	}
 
 	ask := insertAsk(t, tx, "WIND-1", "Which region?", model.AskOption{Label: "eu", Description: "for latency"})
-	reader := NewReader(ctx, tx, "ask", ask.ID, windowServer)
+	reader := NewReader(ctx, tx, "ask", ask.ID, text.NewOrigins(windowServer))
 	if _, err := IndexAskParts(ctx, tx, reader, ask, time.Now()); err != nil {
 		t.Fatalf("index the ask's parts: %v", err)
 	}

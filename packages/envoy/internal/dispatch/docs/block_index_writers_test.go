@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // deferredItems is a bullet list of more items than a write indexes in its own request: one
@@ -410,7 +411,7 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 	for _, table := range projected {
 		before[table] = tableFingerprint(t, database, table)
 	}
-	report, err := refs.RebuildAll(ctx, database.Pool, "https://dispatch.example")
+	report, err := refs.RebuildAll(ctx, database.Pool, text.NewOrigins("https://dispatch.example"))
 	if err != nil {
 		t.Fatalf("rebuild every reference: %v", err)
 	}

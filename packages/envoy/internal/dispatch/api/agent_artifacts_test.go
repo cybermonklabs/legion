@@ -110,7 +110,7 @@ func TestEveryArtifactSlugReadsBackAsItsArtifact(t *testing.T) {
 			"![" + name + "](dispatch://CORE-1/artifact/" + slug + "@v1)",
 			"![" + name + "](dispatch://agent/" + agentSession + "/artifact/" + slug + "@v1)",
 		} {
-			refs := text.Extract(reference, "")
+			refs := text.Extract(reference, text.NewOrigins(""))
 			if len(refs) != 1 || refs[0].Kind != "artifact" || refs[0].ID != slug {
 				t.Errorf("artifactSlug(%q) = %q, and %s reads as %#v; want that artifact", name, slug, reference, refs)
 			}

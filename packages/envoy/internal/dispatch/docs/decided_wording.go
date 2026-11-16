@@ -236,7 +236,7 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 	for _, wording := range restored {
 		// The question and the parts of the restored ask through one reader, which holds what
 		// the database answered for the first of them.
-		reader := refs.NewReader(ctx, tx, "ask", wording.ask, s.serverURL)
+		reader := refs.NewReader(ctx, tx, "ask", wording.ask, s.origins)
 		if _, err := refs.ReplaceCounted(ctx, tx, reader, wording.wording.Question); err != nil {
 			return nil, fmt.Errorf("index the restored question of ask %s: %w", wording.ask, err)
 		}

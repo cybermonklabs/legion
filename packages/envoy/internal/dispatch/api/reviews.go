@@ -821,7 +821,7 @@ func (s *server) openApprovalAsk(
 	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval).Scan(&ask.CreatedAt); err != nil {
 		return nil, model.Event{}, err
 	}
-	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
+	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.Origins)
 	askChanges, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
 	if err != nil {
 		return nil, model.Event{}, err
@@ -903,7 +903,7 @@ func (s *server) renewApprovalAsk(
 			open.Question)
 	case waitingOn == "agent":
 		if changed {
-			edited, err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.ServerURL)
+			edited, err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.Origins)
 			if err != nil {
 				return nil, err
 			}

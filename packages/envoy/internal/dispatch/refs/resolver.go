@@ -12,8 +12,8 @@ import (
 
 // Reader is the database one write reads every text of its source through, over the pool or
 // transaction that write runs in and for the one source whose text it is: its kind and id decide
-// the document a `#id` resolves against, and the server URL is the one the mentions are read
-// with. It is one write's object, not a cache: a caller builds it, reads every text of that
+// the document a `#id` resolves against, and the server's origins are the ones the mentions are
+// read with. It is one write's object, not a cache: a caller builds it, reads every text of that
 // source through it - a comment's body, an ask's question and each of its parts - and drops it,
 // so the database answers once per kind for a write however many texts it holds, and what it
 // answered is the one transaction's view. It is the text.Resolver every write of a text passes
@@ -32,10 +32,10 @@ import (
 type Reader struct {
 	// ctx is the write's context, held because text.Resolver's methods take none: the reader
 	// lives for one write and is never stored.
-	ctx       context.Context
-	q         Queryer
-	kind, id  string
-	serverURL string
+	ctx      context.Context
+	q        Queryer
+	kind, id string
+	origins  text.Origins
 
 	// issues is every key this reader was asked about, to whether it names an issue, so the
 	// parts of one ask ask about a repeated key once.
@@ -59,9 +59,10 @@ type prefixKey struct {
 }
 
 // NewReader is the Reader of one write of the text of the source fromKind/fromID, over q, the
-// pool or transaction that write runs in, with serverURL the server its mentions are read with.
-func NewReader(ctx context.Context, q Queryer, fromKind, fromID, serverURL string) *Reader {
-	return &Reader{ctx: ctx, q: q, kind: fromKind, id: fromID, serverURL: serverURL}
+// pool or transaction that write runs in, with origins the server's, whose dashboard URLs its
+// mentions are read as.
+func NewReader(ctx context.Context, q Queryer, fromKind, fromID string, origins text.Origins) *Reader {
+	return &Reader{ctx: ctx, q: q, kind: fromKind, id: fromID, origins: origins}
 }
 
 // Mentions is the references body writes, read with the whole grammar (text.Mentions): the
@@ -80,13 +81,13 @@ func NewReader(ctx context.Context, q Queryer, fromKind, fromID, serverURL strin
 // the write's own transaction aborts that transaction, so the write fails at its next statement
 // whatever this answers.
 func (r *Reader) Mentions(body string) []text.Located {
-	located, err := text.Mentions(body, r.serverURL, r)
+	located, err := text.Mentions(body, r.origins, r)
 	if err != nil {
 		// Unreachable: r answers every failure as nothing resolved and returns none. A build
 		// that gives it a reason to fail must still not fail the write, so the text is indexed
 		// as the grammar alone reads it.
 		r.failed("resolve the references of a text", err)
-		return text.ExtractAt(body, r.serverURL)
+		return text.ExtractAt(body, r.origins)
 	}
 	return located
 }

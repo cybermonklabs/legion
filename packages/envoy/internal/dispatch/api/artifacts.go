@@ -710,7 +710,7 @@ func (s *server) storeArtifact(
 		// upload is no settlement's version, so the request moves to its agent whatever text it
 		// stores (docs.MoveApprovalAsk).
 		movedEvents, err = docs.MoveApprovalAsk(
-			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.Origins,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -720,7 +720,7 @@ func (s *server) storeArtifact(
 		// its decision blocks are as their rows have them, as every version the document service
 		// writes does (docs.carryApproval): an exact undo uploaded is the approved document.
 		carried, err := docs.CarryRestoredApproval(
-			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.Origins,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)

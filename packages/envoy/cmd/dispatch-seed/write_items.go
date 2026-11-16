@@ -127,7 +127,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				answerJSON, resolution, ask.CreatedAt, blockID, blockArtifact); err != nil {
 				return fmt.Errorf("ask %s: %w", ask.ID, err)
 			}
-			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, serverURL)), ask.CreatedAt)
+			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, seedOrigins)), ask.CreatedAt)
 			if index < r.sizes.AskFollowers {
 				followers = append(followers, []any{ask.ID, ask.Follower, ask.CreatedAt})
 				if _, written := followed[ask.Follower]; !written {
@@ -161,7 +161,7 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// created_at)), so a re-index of it would date its parts as this one did.
 			stored := opening
 			stored.State, stored.Answer = ask.State, answer
-			reader := refs.NewReader(ctx, tx, "ask", stored.ID, serverURL)
+			reader := refs.NewReader(ctx, tx, "ask", stored.ID, seedOrigins)
 			if _, err := refs.IndexAskParts(ctx, tx, reader, stored, ask.CreatedAt); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
 			}
@@ -364,7 +364,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
 				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
-					comment.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
+					comment.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
 				}
 			}
@@ -372,7 +372,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if comment.Edited {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
-			located := text.ExtractAt(body, serverURL)
+			located := text.ExtractAt(body, seedOrigins)
 			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
@@ -475,11 +475,11 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
 				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
-					message.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
+					message.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
 				}
 			}
-			located := text.ExtractAt(body, serverURL)
+			located := text.ExtractAt(body, seedOrigins)
 			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)

@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 var (
@@ -73,11 +74,15 @@ const (
 // connection caps (cmd/dispatch's DISPATCH_MAX_LIVE_ROOMS and DISPATCH_MAX_DOC_CONNECTIONS); zero
 // is the default, 1,000 each.
 type Deps struct {
-	Store             *store.Store
-	Persistence       VersionedStore
-	Events            *events.Broker
-	Identity          identity.Identity
+	Store       *store.Store
+	Persistence VersionedStore
+	Events      *events.Broker
+	Identity    identity.Identity
+	// ServerURL is the canonical origin (DISPATCH_SERVER_URL), and OutsideOrigin the other one the
+	// server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for none): a dashboard URL of either that a
+	// text writes is read as the reference its page names (text.Origins).
 	ServerURL         string
+	OutsideOrigin     string
 	Settle            time.Duration
 	MarkWait          time.Duration
 	UnrecordedMarkTTL time.Duration
@@ -143,7 +148,7 @@ type Service struct {
 	persistence       VersionedStore
 	events            *events.Broker
 	identity          identity.Identity
-	serverURL         string
+	origins           text.Origins
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration
@@ -852,7 +857,7 @@ func New(deps Deps) *Service {
 		processID:         processID,
 		events:            deps.Events,
 		identity:          deps.Identity,
-		serverURL:         strings.TrimSuffix(deps.ServerURL, "/"),
+		origins:           text.NewOrigins(deps.ServerURL, deps.OutsideOrigin),
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,

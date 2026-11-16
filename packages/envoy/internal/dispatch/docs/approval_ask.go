@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // ApprovalDocumentsJSONPath is the artifact ids of every document an approval names, over the
@@ -77,8 +78,8 @@ func OpenApprovalAskForDocuments(ctx context.Context, tx pgx.Tx, artifactIDs []s
 // every move did before the rule: the Legion daemon answers an agent's gate wait with such a
 // version's artifact.version, telling the agent the request is back on its turn, which this keeps
 // true.
-func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, serverURL string) ([]model.Event, error) {
-	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, serverURL)
+func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, bySettlement bool, origins text.Origins) ([]model.Event, error) {
+	return moveApprovalAsk(ctx, tx, broker, artifactID, version, markdown, mover, nil, bySettlement, origins)
 }
 
 // moveApprovalAsk is MoveApprovalAsk with keptEditor, the editor a settlement on the document's
@@ -90,7 +91,7 @@ func MoveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // to hold that editor's text; no stored version says whose text each added, so a version the close
 // alone produced, or one a settlement wrote for another edit, is read the same way. A request that
 // names the version this one follows moves over this version's text alone, in mover's name.
-func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, serverURL string) ([]model.Event, error) {
+func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, version model.Version, markdown string, mover model.Actor, keptEditor *model.Actor, bySettlement bool, origins text.Origins) ([]model.Event, error) {
 	ask, err := OpenApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
 		return nil, err
@@ -125,7 +126,7 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 		}
 	}
 	quiet := keepsTurn || ApprovalAwaitsHandBack(ask.Approval.Documents)
-	event, err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, serverURL, quiet)
+	event, err := rewriteApprovalAsk(ctx, tx, broker, ask, mover, documents, summary, origins, quiet)
 	if err != nil {
 		return nil, err
 	}
@@ -150,10 +151,11 @@ func RewriteApprovalAsk(
 	ask *model.Ask,
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
-	summary, serverURL string,
+	summary string,
+	origins text.Origins,
 ) (model.Event, error) {
 	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
-	return rewriteApprovalAsk(ctx, tx, broker, ask, actor, documents, summary, serverURL, quiet)
+	return rewriteApprovalAsk(ctx, tx, broker, ask, actor, documents, summary, origins, quiet)
 }
 
 // rewriteApprovalAsk is the rewording RewriteApprovalAsk and MoveApprovalAsk share. Each caller
@@ -165,7 +167,8 @@ func rewriteApprovalAsk(
 	ask *model.Ask,
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
-	summary, serverURL string,
+	summary string,
+	origins text.Origins,
 	quiet bool,
 ) (model.Event, error) {
 	previous := model.NewAskEditPrevious(*ask)
@@ -185,7 +188,7 @@ func rewriteApprovalAsk(
 		return model.Event{}, fmt.Errorf("rewrite approval ask: %w", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	reader := refs.NewReader(ctx, tx, "ask", ask.ID, serverURL)
+	reader := refs.NewReader(ctx, tx, "ask", ask.ID, origins)
 	changes, err := refs.ReplaceCountedEdit(ctx, tx, reader, previous.Question, ask.Question)
 	if err != nil {
 		return model.Event{}, fmt.Errorf("index approval ask: %w", err)

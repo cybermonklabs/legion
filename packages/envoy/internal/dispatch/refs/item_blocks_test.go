@@ -29,7 +29,7 @@ func TestItemBlockPairsStartAtTheBlockHoldingEachMention(t *testing.T) {
 		t.Fatalf("Split = %+v, want three blocks", next)
 	}
 	ids := []string{"b1", "b4", "b2"}
-	pairs := itemBlockPairs(next, ids, text.ExtractAt(body, "https://dispatch.example"))
+	pairs := itemBlockPairs(next, ids, text.ExtractAt(body, text.NewOrigins("https://dispatch.example")))
 	got := make([]string, len(pairs))
 	for i, pair := range pairs {
 		got[i] = pair.blockID + "->" + pair.target.Kind + ":" + pair.target.ID

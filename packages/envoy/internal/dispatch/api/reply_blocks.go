@@ -44,7 +44,7 @@ type namedBlock struct {
 func (s *server) replyBlockOf(
 	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field, code string,
 ) (*namedBlock, error) {
-	if _, err := refs.IndexItemIfOwed(ctx, tx, kind, itemID, s.deps.ServerURL); err != nil {
+	if _, err := refs.IndexItemIfOwed(ctx, tx, kind, itemID, s.deps.Origins); err != nil {
 		return nil, err
 	}
 	node, excerpt, found, err := refs.CurrentItemBlock(ctx, tx, who, kind, itemID, blockID)

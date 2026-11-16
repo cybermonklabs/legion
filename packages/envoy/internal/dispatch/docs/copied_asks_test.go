@@ -595,7 +595,7 @@ func rewordAsAnEarlierRelease(t *testing.T, service *Service, document string, a
 		t.Fatalf("reword the decided ask's row: %v", err)
 	}
 	ask.EditedAt = askTimestamp(&editedAt)
-	changes, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.serverURL), ask.Question)
+	changes, err := refs.ReplaceCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, service.origins), ask.Question)
 	if err != nil {
 		t.Fatalf("index the reworded question: %v", err)
 	}

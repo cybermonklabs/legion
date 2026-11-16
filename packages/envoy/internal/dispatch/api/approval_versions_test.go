@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // An approval request remains one conversation across document versions. A version move keeps its
@@ -848,7 +849,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			t.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		moved, err := docs.MoveApprovalAsk(ctx, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, "")
+		moved, err := docs.MoveApprovalAsk(ctx, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, text.NewOrigins(""))
 		if err != nil {
 			t.Fatalf("move with no known writer: %v", err)
 		}
