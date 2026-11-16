@@ -938,16 +938,23 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 	if opts.AgentSecrets == nil || opts.AgentSecrets.URL != "https://s" || opts.AgentSecrets.Audience != "agent-secrets" || opts.AgentSecrets.TokenExpiry != time.Hour {
 		t.Fatalf("AgentSecrets = %+v, want only the URL, audience and token lifetime the pod's own client needs", opts.AgentSecrets)
 	}
-	enroller, client := newSecretsLogin(cfg, quietLogger())
+	enroller, registrar, client := newSecretsLogin(cfg, quietLogger())
 	if enroller == nil || client == nil {
 		t.Fatalf("enroller %v, client %v; want both", enroller, client)
+	}
+	if registrar != nil {
+		t.Fatalf("registrar %v with no exchange_audience, want none: no pod session is registered without the key", registrar)
 	}
 	if client.URL != "https://s" || client.TokenFile != cfg.Runtime.Kubernetes.AgentSecrets.TokenFile {
 		t.Fatalf("client = %+v, want only the configured URL and token file, never a key or a bearer", client)
 	}
+	cfg.Runtime.Kubernetes.AgentSecrets.ExchangeAudience = "legion-broker-exchange"
+	if _, registrar, client := newSecretsLogin(cfg, quietLogger()); registrar == nil || client == nil {
+		t.Fatalf("with exchange_audience: registrar %v, client %v; want both", registrar, client)
+	}
 	cfg.Runtime.Kubernetes.AgentSecrets = nil
-	if enroller, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || client != nil {
-		t.Fatalf("without the block: %v, %v; want nil, nil", enroller, client)
+	if enroller, registrar, client := newSecretsLogin(cfg, quietLogger()); enroller != nil || registrar != nil || client != nil {
+		t.Fatalf("without the block: %v, %v, %v; want nil, nil, nil", enroller, registrar, client)
 	}
 }
 
@@ -982,7 +989,7 @@ func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 		URL: server.URL, TokenFile: tokenFile, Audience: "agent-secrets", TokenExpirySeconds: 3600,
 	}
 	var logged lockedBuffer
-	enroller, client := newSecretsLogin(cfg, slog.New(slog.NewJSONHandler(&logged, nil)))
+	enroller, _, client := newSecretsLogin(cfg, slog.New(slog.NewJSONHandler(&logged, nil)))
 	if enroller == nil || client == nil {
 		t.Fatal("want an enroller and a client")
 	}
