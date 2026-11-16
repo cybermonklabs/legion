@@ -84,8 +84,8 @@ func TestSetSlackChannelsStoresASortedList(t *testing.T) {
 		t.Fatalf("channels = %v (stored %v), want %v sorted and deduplicated", answer.SlackChannels, slackChannelsOf(t, database.Pool, "PUB"), want)
 	}
 	payload, ok := event.Payload.(model.ProjectAccessEventPayload)
-	if event.Type != "project.access_changed" || !ok || payload.Change != model.AccessSlackChannelsChanged || !slices.Equal(payload.SlackChannels, want) {
-		t.Fatalf("appended %s %+v, want project.access_changed with change %s carrying the list", event.Type, event.Payload, model.AccessSlackChannelsChanged)
+	if want := (model.ProjectAccessEventPayload{Project: "PUB", Change: model.AccessSlackChannelsChanged}); event.Type != "project.access_changed" || !ok || payload != want {
+		t.Fatalf("appended %s %+v, want project.access_changed carrying %+v alone, no channel id", event.Type, event.Payload, want)
 	}
 
 	seventeen := make([]string, 17)

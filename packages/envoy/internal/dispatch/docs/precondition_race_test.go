@@ -204,7 +204,7 @@ func browserStyleWrite(service *Service, artifactID string, edit func(*pmdoc.Nod
 
 func documentTokenForTest(t *testing.T, service *Service, artifactID, markdown string) string {
 	t.Helper()
-	read, token, err := service.TextWithToken(context.Background(), artifactID)
+	read, token, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read document token: %v", err)
 	}

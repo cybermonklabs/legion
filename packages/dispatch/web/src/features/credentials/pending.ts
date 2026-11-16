@@ -2,6 +2,7 @@ import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/
 
 import { api, isDeploymentReadRefused } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -62,9 +63,14 @@ export interface CredentialRequests {
 
 /** The one reading of the credential-request list. The section that lists the requests, the
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
- *  request another does not show. */
+ *  request another does not show. The list is the deployment's, which Dispatch refuses a
+ *  restricted member (`useRestrictedMember`): such a person is never asked for it, and holds it
+ *  as listed and empty, as a Dispatch with no broker does, so their Inbox can say that nothing
+ *  needs them. */
 export function useCredentialRequests(): CredentialRequests {
-  const pending = useQuery(credentialPendingQuery());
+  const restricted = useRestrictedMember();
+  const pending = useQuery({ ...credentialPendingQuery(), enabled: !restricted && holdsList });
+  if (restricted) return { requests: [], status: "listed" };
   if (pending.isPending) return { requests: [], status: "loading" };
   if (pending.isLoadingError) {
     return isDeploymentReadRefused(pending.error)

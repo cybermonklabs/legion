@@ -628,7 +628,7 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	if state == myRepliesStateDismissed && limit != nil && len(rows) == *limit {
 		response.NextCursor = myRepliesCursorOf(rows[len(rows)-1])
 	}
-	if err := nameAgentSessions(r.Context(), tx, rows); err != nil {
+	if err := nameAgentSessions(r.Context(), tx, who, rows); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

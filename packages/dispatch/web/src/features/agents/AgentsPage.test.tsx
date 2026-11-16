@@ -24,6 +24,7 @@ import {
 } from "../../api/client";
 import type {
   Agent,
+  AuthenticatedUser,
   BroadcastCreated,
   CreateBroadcastInput,
   InboxRow,
@@ -192,6 +193,7 @@ function renderAgents({
   listedAgents = agents,
   issues = [],
   messages = [],
+  user = { event_head: "0", kind: "user", login: "alice" },
 }: {
   agentState?: UserAgentStates;
   inboxRows?: InboxRow[];
@@ -199,12 +201,9 @@ function renderAgents({
   listedAgents?: Agent[];
   issues?: IssueSummary[];
   messages?: MessageRead[];
+  user?: AuthenticatedUser;
 } = {}) {
-  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(user);
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(inboxRows);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue(listedAgents);
   const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue(messages);
@@ -412,6 +411,40 @@ test("Agents lists live session activity and capability-aware actions", async ()
   } finally {
     page.view.unmount();
     page.restore();
+  }
+});
+
+// The broadcasts are the deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED), and their pages answer them Page not found: a restricted member's
+// Agents page links to no Broadcasts. A full member's page keeps the link.
+test("a restricted member's Agents page links to no Broadcasts", async () => {
+  const restricted = renderAgents({
+    user: {
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    },
+  });
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(screen.getByRole("link", { name: "Machines" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Broadcasts" })).toBeNull();
+  } finally {
+    restricted.view.unmount();
+    restricted.restore();
+  }
+
+  const full = renderAgents();
+  try {
+    await screen.findByRole("heading", { name: "Agents" });
+    expect(screen.getByRole("link", { name: "Broadcasts" })).toHaveAttribute(
+      "href",
+      "/agents/broadcasts"
+    );
+  } finally {
+    full.view.unmount();
+    full.restore();
   }
 });
 

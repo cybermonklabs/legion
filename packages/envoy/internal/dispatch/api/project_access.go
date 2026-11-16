@@ -232,6 +232,7 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrGroupFull, "GROUP_FULL", http.StatusConflict},
 		{access.ErrSlackChannelInput, "INVALID_SLACK_CHANNEL", http.StatusBadRequest},
 		{access.ErrSlackChannelsFull, "CAP_EXCEEDED", http.StatusBadRequest},
+		{access.ErrGroupsPerOwnerFull, "CAP_EXCEEDED", http.StatusBadRequest},
 	} {
 		if errors.Is(err, refusal.match) {
 			writeError(w, refusal.code, refusal.status, err.Error())

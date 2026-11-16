@@ -1239,6 +1239,43 @@ test("a restricted member's Priorities, Delivery and Pipeline addresses answer P
   }
 });
 
+// The broadcasts and the machine logins are the deployment's own rows, which Dispatch refuses a
+// restricted member (403 DEPLOYMENT_READ_REFUSED), and a machine login is decided by a
+// deployment write: those pages are no page of theirs either, and answer Page not found without
+// a read. A full member's Broadcasts page reads the broadcasts, as it always did.
+test("a restricted member's Broadcasts and machine-login addresses answer Page not found", async () => {
+  const reads = [
+    spyOn(api, "listBroadcasts").mockResolvedValue([]),
+    spyOn(api, "getBroadcast").mockRejectedValue(new Error("no broadcast read is expected")),
+    spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] }),
+    spyOn(api, "getCredentialCapabilities").mockResolvedValue({ machine_code_page: true }),
+  ];
+  try {
+    for (const path of ["/agents/broadcasts", "/agents/broadcasts/b-1", "/credentials/machine"]) {
+      const { teardown } = renderShellAt(BOB_RESTRICTED, path);
+      try {
+        expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+        for (const read of reads) expect(read).not.toHaveBeenCalled();
+      } finally {
+        teardown();
+      }
+    }
+
+    const { teardown } = renderShellAt(
+      { event_head: "0", kind: "user", login: "alice" },
+      "/agents/broadcasts"
+    );
+    try {
+      await waitFor(() => expect(reads[0]).toHaveBeenCalled());
+      expect(screen.queryByRole("heading", { name: "Page not found" })).toBeNull();
+    } finally {
+      teardown();
+    }
+  } finally {
+    for (const read of reads) read.mockRestore();
+  }
+});
+
 // The phone header's Peek is the rail's Peek where the rail is a sheet, and `i` is the key that
 // opens the same drawer: a restricted member is offered neither. A full member's header keeps its
 // Peek.

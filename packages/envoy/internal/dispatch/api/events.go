@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -67,6 +68,12 @@ func eventReadableSQL(eventAlias, viewerParam string) string {
 				or (` + access.OpenClause(viewerParam) + ` and ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
 		else ` + access.OpenClause(viewerParam) + `
 	end)`
+}
+
+// readableEvents is eventReadableSQL for who as the events and delivery packages' statements bind
+// a read rule (events.Readable): over the events row named events, the viewer at $2.
+func readableEvents(who model.Actor) events.Readable {
+	return events.Readable{Where: eventReadableSQL("events", "$2"), Viewer: refs.VisibilityArg(who)}
 }
 
 // listIssueEvents answers an issue's activity feed under an ETag of metadata alone: every append

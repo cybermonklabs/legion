@@ -930,7 +930,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 // that asked for none, which pays for none of that rendering.
 func (s *server) artifactTextBody(r *http.Request, who model.Actor, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
 	if r.URL.Query().Get("blocks") != "true" {
-		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), who, artifactID)
 		return markdown, token, nil, err
 	}
 	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
@@ -985,7 +985,7 @@ func (s *server) describeBlocks(ctx context.Context, who model.Actor, artifactID
 	if err != nil {
 		return err
 	}
-	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, refs.DocumentWindowKind, artifactID)
+	embedding, err := refs.BlockEmbeddingStates(ctx, s.deps.Store.Pool, who, refs.DocumentWindowKind, artifactID)
 	if err != nil {
 		return err
 	}

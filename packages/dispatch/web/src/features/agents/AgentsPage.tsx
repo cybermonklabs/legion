@@ -37,6 +37,7 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -1407,6 +1408,10 @@ export function AgentsPage(): ReactNode {
   const inbox = useQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
+  // The broadcasts are the deployment's, which Dispatch refuses a restricted member, and their
+  // pages answer such a person Page not found (`DeploymentPages`, app.tsx): the page links them
+  // to none.
+  const restricted = useRestrictedMember();
   // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
   // the viewer's agent state and writes them to Dispatch, so a pin made here is in the rail and
   // in the person's other browsers at once.
@@ -1692,9 +1697,11 @@ export function AgentsPage(): ReactNode {
         </h1>
         <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm ${textMutedOnCanvas}`}>
           <span>Live Envoy sessions and their Dispatch activity.</span>
-          <Link className={`${linkText} ${linkHoverText}`} to="/agents/broadcasts">
-            Broadcasts
-          </Link>
+          {restricted ? null : (
+            <Link className={`${linkText} ${linkHoverText}`} to="/agents/broadcasts">
+              Broadcasts
+            </Link>
+          )}
           <Link className={`${linkText} ${linkHoverText}`} to="/machines">
             Machines
           </Link>

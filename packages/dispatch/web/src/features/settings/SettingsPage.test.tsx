@@ -4,11 +4,16 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
+import type { AuthenticatedUser } from "../../api/types";
 import { SettingsPage } from "./SettingsPage";
 
-function renderPage() {
+/** The page, signed in as `user` through the identity the shell already read, or with no
+ *  identity read yet when none is given. */
+function renderPage(user?: AuthenticatedUser) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (user !== undefined) queryClient.setQueryData(whoAmIQuery().queryKey, user);
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
@@ -255,6 +260,122 @@ test("lists every group under Groups, right after Projects", async () => {
   } finally {
     cleanup();
     getCredentialPending.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+/** The page's section headings, in the order it draws them. */
+function sectionHeadings(): (string | null)[] {
+  return screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent);
+}
+
+// A full member's Settings is the one it was before member kinds existed: every section, each
+// with its own read, the credential list among them deciding whether the two broker sections
+// are drawn.
+test("a full member's Settings draws every section from the reads it always made", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+
+  try {
+    renderPage({ event_head: "0", kind: "user", login: "alice" });
+
+    expect(await screen.findByText("Sign-ins")).toBeDefined();
+    await waitFor(() => expect(unrelated.getDeliverySettings).toHaveBeenCalled());
+    expect(sectionHeadings()).toEqual([
+      "Projects",
+      "Groups",
+      "Agent tokens",
+      "Live grants",
+      "Sign-ins",
+      "Repositories → Projects",
+      "Architecture sources",
+      "Delivery timeline",
+    ]);
+    expect(getCredentialPending).toHaveBeenCalled();
+    expect(unrelated.listAccessGroups).toHaveBeenCalled();
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
+    getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A restricted member reads only the projects that name them, and Dispatch refuses them every
+// read of the deployment's own rows (403 DEPLOYMENT_READ_REFUSED): the groups, the delivery
+// settings and the credential list. Their Settings asks for none of them and draws no Groups and
+// no Delivery timeline. Their own grants and sign-ins are theirs to read, so those two sections
+// stand on the grants read itself, which answers wherever this Dispatch has a secrets broker.
+test("a restricted member's Settings asks no deployment read, and keeps their own grants and sign-ins", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({ grants: [] });
+
+  try {
+    renderPage({
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+
+    expect(await screen.findByText("Sign-ins")).toBeDefined();
+    expect(await screen.findByText("Architecture sources")).toBeDefined();
+    expect(sectionHeadings()).toEqual([
+      "Projects",
+      "Agent tokens",
+      "Live grants",
+      "Sign-ins",
+      "Repositories → Projects",
+      "Architecture sources",
+    ]);
+    expect(getCredentialPending).not.toHaveBeenCalled();
+    expect(unrelated.listAccessGroups).not.toHaveBeenCalled();
+    expect(unrelated.getDeliverySettings).not.toHaveBeenCalled();
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
+    getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// On a Dispatch with no secrets broker the grants read answers 404 FEATURE_OFF, which is how a
+// restricted member's Settings learns there is nothing to list: neither broker section is drawn,
+// and no failure is shown for a feature the deployment does not have.
+test("a restricted member's Settings on a Dispatch with no broker draws neither broker section", async () => {
+  const unrelated = stubUnrelatedQueries();
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockRejectedValue(
+    new ApiError(404, { code: "FEATURE_OFF", error: "this Dispatch has no secrets broker" })
+  );
+
+  try {
+    renderPage({
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+
+    await waitFor(() => expect(getCredentialGrants).toHaveBeenCalled());
+    expect(await screen.findByText("Architecture sources")).toBeDefined();
+    await waitFor(() => expect(screen.queryByText("Live grants")).not.toBeInTheDocument());
+    expect(screen.queryByText("Sign-ins")).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't load live grants.")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    getCredentialGrants.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

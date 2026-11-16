@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // attachAskStates sets Ask, in place, on every ask hit of a search page: the ask's state, its
@@ -14,7 +16,7 @@ import (
 // that document settlement retracted while it was answered keeps its answer nowhere else; those
 // events are read only when the page holds a resolved ask. One query reads every ask hit's row,
 // and a page with no ask hit reads nothing. An ask removed after the search ran has no row left
-// and keeps Ask nil.
+// and keeps Ask nil, as does one who may not read (access.ItemOwnerClause).
 func (s *server) attachAskStates(ctx context.Context, q queryer, who model.Actor, results []model.SearchResult, reader *displayTreeReader) error {
 	indexByID := map[string]int{}
 	var askIDs []string
@@ -28,7 +30,8 @@ func (s *server) attachAskStates(ctx context.Context, q queryer, who model.Actor
 		return nil
 	}
 
-	rows, err := q.Query(ctx, `select `+docs.AskColumns+` from asks a where a.id = any($1::uuid[])`, askIDs)
+	rows, err := q.Query(ctx, `select `+docs.AskColumns+` from asks a where a.id = any($1::uuid[]) and `+
+		access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2"), askIDs, refs.VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load search ask states: %w", err)
 	}

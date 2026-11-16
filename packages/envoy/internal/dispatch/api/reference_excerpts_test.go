@@ -27,9 +27,9 @@ func (d *readCountingDocs) Text(ctx context.Context, artifactID string) (string,
 	return d.API.Text(ctx, artifactID)
 }
 
-func (d *readCountingDocs) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
+func (d *readCountingDocs) TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error) {
 	d.reads.Add(1)
-	return d.API.TextWithToken(ctx, artifactID)
+	return d.API.TextWithToken(ctx, who, artifactID)
 }
 
 func (d *readCountingDocs) Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {

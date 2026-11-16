@@ -1,11 +1,12 @@
-/** A restricted member's rail and the pages it leaves out, read over a recording of what
- *  Dispatch answers that member (packages/dispatch/AGENTS.md, "The stubbed layer").
+/** A restricted member's rail, the pages it leaves out, and their Inbox, read over a recording of
+ *  what Dispatch answers that member (packages/dispatch/AGENTS.md, "The stubbed layer").
  *
  *  The recording is bob's: `/auth/whoami` carries `member_kind: "restricted"`, and the project
- *  list is the one PRIV, whose access list names him. What the row asserts is what the page does
- *  with those answers - the rows the rail draws, the pages the router answers as not found, and
- *  the priorities it never reads - which is a rule the page applies itself. That the server lists
- *  bob no project his access does not reach is the real-stack row's claim, in
+ *  list is the one PRIV, whose access list names him. What the rows assert is what the page does
+ *  with those answers - the rows the rail draws, the pages the router answers as not found, the
+ *  deployment's rows it never reads, and the Inbox that says so when nothing needs him - which is
+ *  a rule the page applies itself. That the server lists bob no project his access does not reach,
+ *  and that no page of his draws a refusal from it, is the real-stack rows' claim, in
  *  `restricted-member.e2e.ts`, which runs on the full lane.
  */
 import { expect, type Page } from "@playwright/test";
@@ -65,4 +66,25 @@ test("a restricted member's rail draws Inbox, Agents, their projects and Setting
     await expect(page).toHaveTitle("Not found · Dispatch");
   }
   expect(priorityReads).toBe(0);
+});
+
+// The credential list is the deployment's, which Dispatch refuses a restricted member (403
+// DEPLOYMENT_READ_REFUSED): bob's Inbox never asks for it, and with nothing waiting on him it
+// says so, rather than that a list failed to load.
+test("a restricted member's empty Inbox says Nothing needs you and asks for no credential list @pr", async ({
+  page,
+  scene,
+}) => {
+  const credentialReads: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/api/v1/credential-requests")) credentialReads.push(path);
+  });
+
+  await page.goto("/");
+  // The rail is bob's: it lists his one project.
+  await expect.poll(() => railTargets(page)).toContain(`/projects/${scene.project}`);
+  await expect(page.getByText("Nothing needs you")).toBeVisible();
+  await expect(page.getByText("Couldn't load credential requests.")).toHaveCount(0);
+  expect(credentialReads).toEqual([]);
 });

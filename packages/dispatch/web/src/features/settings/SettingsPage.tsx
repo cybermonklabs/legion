@@ -2,10 +2,11 @@ import { canonicalRepo } from "@legion/contracts/repo";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isCredentialFeatureOff } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderDefault,
   dangerHoverText,
@@ -18,6 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { GrantsSection } from "../credentials/GrantsSection";
+import { credentialGrantsQuery } from "../credentials/grants";
 import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
@@ -74,8 +76,19 @@ export function SettingsPage(): ReactNode {
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const mappings = useQuery({ queryKey: ["repo-projects"], queryFn: () => api.listRepoProjects() });
   const projects = useQuery(projectsQuery());
-  // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
-  const credentialsAvailable = useQuery(credentialPendingQuery());
+  // A restricted member reads none of the deployment's own rows (`useRestrictedMember`): no
+  // group list, no delivery settings and no credential list, so their Settings draws no Groups
+  // and no Delivery timeline. Their own grants and sign-ins are theirs to read.
+  const restricted = useRestrictedMember();
+  // Whether this Dispatch has a secrets broker, without which Live grants and Sign-ins have
+  // nothing to list: the credential list answers `null` where it has none. A restricted member
+  // may not read that list, so their page asks the grants list instead, which they may read and
+  // which answers 404 FEATURE_OFF where there is no broker.
+  const credentialsAvailable = useQuery({ ...credentialPendingQuery(), enabled: !restricted });
+  const grants = useQuery({ ...credentialGrantsQuery(), enabled: restricted });
+  const brokered = restricted
+    ? !grants.isPending && !isCredentialFeatureOff(grants.error)
+    : !credentialsAvailable.isPending && credentialsAvailable.data !== null;
   // Both mapping writes show their refusal on the row they changed.
   const putMapping = useKeyedWrite<
     RepoProject,
@@ -183,14 +196,14 @@ export function SettingsPage(): ReactNode {
       </header>
       <div className={settingsSectionGap}>
         <ProjectsSection />
-        <GroupsSection />
+        {restricted ? null : <GroupsSection />}
         <AgentTokensSection />
-        {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
+        {brokered ? (
           <>
             <GrantsSection />
             <SignInsSection />
           </>
-        )}
+        ) : null}
         <section aria-labelledby="repository-projects-heading">
           <h2
             className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
@@ -342,19 +355,21 @@ export function SettingsPage(): ReactNode {
           ) : null}
         </section>
         <ArchitectureSourcesSection />
-        <section aria-labelledby="delivery-timeline-heading">
-          <h2
-            className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
-            id="delivery-timeline-heading"
-          >
-            Delivery timeline
-          </h2>
-          <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Which repository deploys, and whose merged pull requests the Delivery page counts.
-            Saving verifies the Dispatch GitHub App can read the deploy repository.
-          </p>
-          <DeliverySettingsForm />
-        </section>
+        {restricted ? null : (
+          <section aria-labelledby="delivery-timeline-heading">
+            <h2
+              className={`text-xl font-semibold ${textPrimaryOnCanvas}`}
+              id="delivery-timeline-heading"
+            >
+              Delivery timeline
+            </h2>
+            <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
+              Which repository deploys, and whose merged pull requests the Delivery page counts.
+              Saving verifies the Dispatch GitHub App can read the deploy repository.
+            </p>
+            <DeliverySettingsForm />
+          </section>
+        )}
       </div>
     </section>
   );

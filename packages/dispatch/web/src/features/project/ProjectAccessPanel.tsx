@@ -13,6 +13,7 @@ import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/qu
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderDefault,
   card,
@@ -232,7 +233,11 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
   const [groupDraft, setGroupDraft] = useState("");
   const [channelsDraft, setChannelsDraft] = useState<string | null>(null);
   const access = useQuery(projectAccessQuery(project));
-  const groups = useQuery(accessGroupsQuery());
+  // The groups are only the owner's to add, and the list is the deployment's, which Dispatch
+  // refuses a restricted member (`useRestrictedMember`); an owner is a full member, so such a
+  // reader is never offered a group and never asked for the list.
+  const restricted = useRestrictedMember();
+  const groups = useQuery({ ...accessGroupsQuery(), enabled: !restricted });
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // A landed change lets go of the draft it was made from, and of no newer one.
   const write = useAccessWrite(project, (change) => {

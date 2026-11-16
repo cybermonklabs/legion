@@ -158,7 +158,7 @@ func TestAPanickedWriteLeavesNoForkForTheTransactionsLaterWrites(t *testing.T) {
 			for _, number := range versions {
 				requireVersionIsTheCommittedDocument(t, service, artifactID, number)
 			}
-			room, _, err := service.TextWithToken(context.Background(), artifactID)
+			room, _, err := service.TextWithToken(context.Background(), serverReader, artifactID)
 			if err != nil {
 				t.Fatalf("read the room: %v", err)
 			}

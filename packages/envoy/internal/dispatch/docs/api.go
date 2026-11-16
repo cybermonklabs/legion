@@ -24,7 +24,7 @@ type API interface {
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
 	InjectUnknownElementForTest(ctx context.Context, artifactID string) error
 	Text(ctx context.Context, artifactID string) (string, error)
-	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
+	TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error)
 	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)
 	TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error)
 	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)

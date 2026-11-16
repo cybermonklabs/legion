@@ -296,10 +296,11 @@ func (s *Service) recheckAccess(ctx context.Context) {
 // readableRoomsStatement reads which of the documents $1 the reader bound at $2 may read.
 var readableRoomsStatement = `select a.id::text from artifacts a where a.id = any($1::uuid[]) and ` + documentReadable("a", "$2")
 
-// readableRooms is the rooms of admissions, all person's sockets, that person may read now.
+// readableRooms is the rooms of admissions, all person's sockets, that person may read now, as the
+// person's browser sees them (model.BrowserActor): every document socket is a cookie's.
 func (s *Service) readableRooms(ctx context.Context, person string, admissions []*schemaAdmission) (map[string]bool, error) {
 	who := model.Actor{Kind: "user", ID: person}
-	viewer, err := access.Resolve(ctx, s.store.Pool, who)
+	viewer, err := access.Resolve(ctx, s.store.Pool, model.BrowserActor(person))
 	if err != nil {
 		return nil, err
 	}

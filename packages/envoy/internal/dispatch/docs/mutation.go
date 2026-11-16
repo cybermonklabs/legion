@@ -1067,12 +1067,12 @@ func (s *Service) Text(ctx context.Context, artifactID string) (string, error) {
 }
 
 // TextWithToken returns canonical markdown and a token over its full Proof tree,
-// including inline marks that canonical Markdown does not render. It answers the markdown and
-// the token the document's latest version stored, without reading the document, where that
-// version is still the document's state (storedText); otherwise it reads the document and
-// renders it.
-func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
-	markdown, token, served, err := s.storedText(ctx, artifactID)
+// including inline marks that canonical Markdown does not render, as who reads it: a document who
+// may not read is pgx.ErrNoRows (storedText). It answers the markdown and the token the document's
+// latest version stored, without reading the document, where that version is still the document's
+// state (storedText); otherwise it reads the document and renders it.
+func (s *Service) TextWithToken(ctx context.Context, who model.Actor, artifactID string) (string, string, error) {
+	markdown, token, served, err := s.storedText(ctx, who, artifactID)
 	if err != nil || served {
 		return markdown, token, err
 	}

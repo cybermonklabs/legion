@@ -798,17 +798,20 @@ func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, 
 
 // loadBroadcastRecipients reads every message the broadcast sent in the sender's requested
 // order, each reply's block read for who, and only the replies who may read
-// (keepReadableBroadcastReplies). Messages created before positions existed, or by an
-// old server during a rolling deploy, have no position; their request order was never stored, so
-// they retain the created_at and id fallback order. created_at cannot order one current broadcast
-// because all of its rows share the one transaction's now().
+// (keepReadableBroadcastReplies). The copies are read under the broadcast's own rule
+// (broadcastVisibleSQL): a broadcast who may not read sent who nothing. Messages created before
+// positions existed, or by an old server during a rolling deploy, have no position; their request
+// order was never stored, so they retain the created_at and id fallback order. created_at cannot
+// order one current broadcast because all of its rows share the one transaction's now().
 func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+messageColumns+`
 		from messages
-		where broadcast_id = $1
+		where broadcast_id = $1 and exists (
+			select 1 from broadcasts sent where sent.id = $1 and `+broadcastVisibleSQL("sent", "$2")+`
+			offset 0)
 		order by broadcast_position nulls last, created_at, id
-	`, broadcastID)
+	`, broadcastID, refs.VisibilityArg(who))
 	if err != nil {
 		return nil, err
 	}

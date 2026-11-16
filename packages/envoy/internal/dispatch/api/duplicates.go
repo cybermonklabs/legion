@@ -392,7 +392,7 @@ func (s *server) readDuplicateCandidates(
 		return nil, err
 	}
 	// The new issue does not exist yet, so nothing of it is left out of the word statistics.
-	picked, err := s.pickRelatedTerms(ctx, tx, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
+	picked, err := s.pickRelatedTerms(ctx, tx, who, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
 	if err != nil {
 		return nil, err
 	}

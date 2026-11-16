@@ -66,10 +66,13 @@ func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
 		t.Fatalf("the seed numbered its issues %v, the listener names %v", seed.issue, listener.keys)
 	}
 	handoffs := map[string]string{}
-	for project, writer := range map[string]privateCaller{seedPublic: callerCarolToken, seedPrivate: callerCarolPrivToken} {
+	for _, project := range []string{seedPublic, seedPrivate} {
 		key := seed.issue[project]
-		recorded := seed.mustRequest(t, writer, http.MethodPost, "/api/v1/issues/"+key+"/handoffs/plan", map[string]any{
-			"body": `{"plan":"the issue of ` + project + `"}`, "actor": map[string]string{"kind": "session", "id": issueSubscriberSession(project)},
+		// The issue's session writes its handoff under a credential that proves it, which makes it
+		// one of the project's agents, so a viewer who sees the project reads it among the
+		// subscribers.
+		recorded := seed.asSession(t, issueSubscriberSession(project), project, http.MethodPost, "/api/v1/issues/"+key+"/handoffs/plan", map[string]any{
+			"body": `{"plan":"the issue of ` + project + `"}`,
 		}, http.StatusCreated)
 		handoffs[project] = decodeBody[struct {
 			ID string `json:"id"`

@@ -6,6 +6,7 @@ import { Link } from "react-router-dom";
 import { apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import type { Issue, PriorityRow } from "../../api/types";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   dangerText,
   dismissButtonText,
@@ -53,6 +54,11 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
  * the issue is read again so the next press carries the revision it holds now. The list of
  * priorities to choose from is read only once the line has an entry to name or the control is
  * open, as the components line reads the architecture tree only while its picker is open.
+ *
+ * The priorities are the deployment's, which Dispatch refuses a restricted member
+ * (`useRestrictedMember`), and their pages answer such a person Page not found: their issue
+ * draws no line at all, so it reads no priority, links to no page of theirs and offers no
+ * control over a list they cannot read.
  */
 export function IssuePriorityLine({
   disabled,
@@ -67,9 +73,10 @@ export function IssuePriorityLine({
   const [picked, setPicked] = useState("");
   const selectId = useId();
   const queryClient = useQueryClient();
+  const restricted = useRestrictedMember();
   const priorities = useQuery({
     ...prioritiesQuery(),
-    enabled: adding || advances.length > 0,
+    enabled: !restricted && (adding || advances.length > 0),
   });
   const rows = useMemo(() => priorities.data?.priorities ?? [], [priorities.data]);
   const labels = useMemo(() => priorityLabels(rows), [rows]);
@@ -107,6 +114,8 @@ export function IssuePriorityLine({
     setPicked("");
     setAdding(false);
   };
+
+  if (restricted) return null;
 
   return (
     <div

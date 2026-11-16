@@ -148,3 +148,20 @@ var writeProbes = map[string]writeProbe{
 	"POST /api/v1/machine-logins/{id}/revoke":       {readProbe{"id": probeMachineLogin}, ""},
 	"POST /api/v1/signins/{id}/revoke":              {readProbe{"id": probeSignin}, ""},
 }
+
+// noProjectWrite is a write row whose pattern names an object that belongs to no project: why it
+// belongs to none, and the JSON body a driver sends when it holds the row to its write class's
+// refusal, "" for none.
+type noProjectWrite struct {
+	Reason string
+	Body   string
+}
+
+// noProjectWrites is every write row whose pattern names an object no project owns, so there is
+// no object of a private project for it to reach and writeProbes holds no entry for it. Its class
+// is scopeDeployment, which refuses every caller that is not open, and the acceptance driver holds
+// each row to that refusal for every such caller (RouteProbe.NoProject).
+var noProjectWrites = map[string]noProjectWrite{
+	"PUT /api/v1/access-groups/{name}":    {"an access group is the deployment's, which no project owns", `{"members":[]}`},
+	"DELETE /api/v1/access-groups/{name}": {"an access group is the deployment's, which no project owns", ""},
+}

@@ -219,10 +219,13 @@ function IssuePageFallback(): ReactNode {
   );
 }
 
-/** The views over every project - Priorities, Delivery and Pipeline. A restricted member reads
+/** The pages that show only the deployment's own rows - Priorities, Delivery and Pipeline, the
+ *  broadcasts, and the machine-login page - which Dispatch refuses a restricted member (403
+ *  DEPLOYMENT_READ_REFUSED, `readclass.Deployment` in `api/read_classes.go`). Such a person reads
  *  only the projects that name them (dispatch://INFRA-3862/spec#b-r-cross-project-reads), so
- *  these are no page of theirs, and their addresses answer as an unknown one does. */
-function OverEveryProject({ restricted }: { restricted: boolean }): ReactNode {
+ *  these are no page of theirs, and their addresses answer as an unknown one does, before any
+ *  read. */
+function DeploymentPages({ restricted }: { restricted: boolean }): ReactNode {
   return restricted ? <NotFoundPage /> : <Outlet />;
 }
 
@@ -583,8 +586,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const [helpSnapshot, setHelpSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const routeProject = routeProjectOf(location.pathname);
-  // A restricted member is offered none of the views over every project (`OverEveryProject`),
-  // and no Peek either: in the rail (`Sidebar`), in the phone header or by its key.
+  // A restricted member is offered none of the deployment's own pages (`DeploymentPages`), and
+  // no Peek either: in the rail (`Sidebar`), in the phone header or by its key.
   const restricted = user.member_kind === "restricted";
   useKeymap("global", [
     {
@@ -934,18 +937,19 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                   path="/replies"
                 />
                 <Route element={<AgentsPage />} path="/agents" />
-                <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
-                <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
                 <Route element={<LiveViewRoute />} path={AGENT_LIVE_PATH} />
                 <Route element={<AgentArtifactPage />} path={AGENT_ARTIFACT_PATH} />
                 <Route element={<MachinesPage />} path="/machines" />
                 <Route element={<MachinePage />} path="/machines/:machine" />
                 <Route element={<IssuePage />} path="/issues/:key/*" />
-                <Route element={<OverEveryProject restricted={restricted} />}>
+                <Route element={<DeploymentPages restricted={restricted} />}>
                   <Route element={<PrioritiesPage />} path="/priorities" />
                   <Route element={<PriorityPage />} path="/priorities/:id" />
                   <Route element={<DeliveryPage />} path="/delivery" />
                   <Route element={<PipelinePage />} path="/pipeline" />
+                  <Route element={<BroadcastsPage />} path="/agents/broadcasts" />
+                  <Route element={<BroadcastPage />} path="/agents/broadcasts/:id" />
+                  <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 </Route>
                 <Route element={<ProjectPage />} path="/projects/:key" />
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
@@ -954,7 +958,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/access" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
-                <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />

@@ -127,9 +127,9 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 		// 2026-11-12. Every read of the graph answers only what the acting person may see, so
 		// every read binds at least one predicate. The rule is the read's and not each
 		// statement's, because a read may filter one statement's rows by another's:
-		// BlockLinks lists its links out of block_refs with no predicate and keeps only those
-		// whose two blocks the block loader, which binds the block predicate, resolves for the
-		// viewer.
+		// BlockLinks lists its links out of block_refs under its two documents' predicates
+		// alone and keeps only those whose two blocks the block loader, which binds the block
+		// predicate, resolves for the viewer.
 		if marks == 0 || tests == 0 {
 			t.Errorf("the %s read binds %d predicate of the registry's and makes %d test of `visibility` in all of its %d statements: a read of the graph that binds no visibility rule answers every node to everyone\n%s",
 				read.call, marks, tests, len(read.statements), strings.Join(read.statements, "\n----\n"))
@@ -176,7 +176,6 @@ const (
 var readsWithoutAViewer = map[string]string{
 	"AskPartIDs":           nodeDetail,
 	"BlockChanges":         nodeDetail,
-	"BlockEmbeddingStates": nodeDetail,
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
 	"CanonicalRepo":        noNode,
@@ -396,6 +395,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := QuestionMap(ctx, recorder, who, "00000000-0000-4000-8000-000000000001")
 		return err
 	})
+	// A document's windows are keyed by its uuid, an item's by `<kind>/<uuid>`; each binds the
+	// predicate of its owner's kind.
+	for _, owner := range []struct{ kind, key string }{
+		{DocumentWindowKind, "00000000-0000-4000-8000-000000000001"},
+		{ItemComment.WindowKind(), ItemComment.WindowOwnerKey("00000000-0000-4000-8000-000000000002")},
+		{ItemAsk.WindowKind(), ItemAsk.WindowOwnerKey("00000000-0000-4000-8000-000000000003")},
+		{ItemMessage.WindowKind(), ItemMessage.WindowOwnerKey("00000000-0000-4000-8000-000000000004")},
+	} {
+		record("BlockEmbeddingStates", "BlockEmbeddingStates of "+owner.key, func() error {
+			_, err := BlockEmbeddingStates(ctx, recorder, who, owner.kind, owner.key)
+			return err
+		})
+	}
 	record("StoredExcerpts", "StoredExcerpts of CORE-1", func() error {
 		_, err := StoredExcerpts(ctx, recorder, who, "issue", "CORE-1")
 		return err
@@ -418,10 +430,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 }
 
 // seedBlockLink indexes one document whose first block links to its second, and answers the
-// document's id. BlockLinks reads its links out of block_refs, a statement that binds no
-// predicate, and resolves the two blocks of each through the block loader, which binds the
-// block predicate: with no link to list it never reaches the loader, and the census would read
-// only the statement that binds none.
+// document's id. BlockLinks reads its links out of block_refs under the predicates of its two
+// documents, and resolves the two blocks of each through the block loader, which binds the block
+// predicate: with no link to list it never reaches the loader, and the census would read only the
+// statement that binds the documents' predicates.
 func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) string {
 	t.Helper()
 	tx, err := database.Pool.Begin(ctx)

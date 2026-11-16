@@ -608,30 +608,39 @@ func sightMovedSQL(eventAlias, viewerParam string) string {
 //   - an owner change that took the project from the viewer's person (its principal, SetOwner);
 //   - the project turned private, to a viewer that read it while it was public: an open viewer,
 //     which reads every public project, and a credential whose own list names it (Viewer.Lists).
+//
+// Who a change named, and the visibility it left, are the server's own record of the event
+// (project_access_changes, access.recordProjectChanges), never the payload, which names the project
+// and the change alone.
 func lostSightSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
-	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and (
-		(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
-			and ` + e + `.payload->>'principal' = ` + viewerParam + `::jsonb->>'person')
-		or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and ` + e + `.payload->>'visibility' = '` + model.ProjectPrivate + `'
-			and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `))))`
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and exists (
+		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and (
+			(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
+				and recorded.principal = ` + viewerParam + `::jsonb->>'person')
+			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPrivate + `'
+				and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `)))
+		offset 0))`
 }
 
 // gainedSightSQL is whether the event eventAlias names is a change of the access of a project the
 // viewer bound at viewerParam sees now, that may have given the viewer the project: its own person
 // added to the project's list, or made its owner; a group added to the list that holds the viewer's
 // person; or the project turned public, to a viewer that reads every public project it may (an
-// open viewer, or a credential whose list names it).
+// open viewer, or a credential whose list names it). It reads the server's record of the event, as
+// lostSightSQL does.
 func gainedSightSQL(eventAlias, viewerParam string) string {
 	e, person := eventAlias, viewerParam+`::jsonb->>'person'`
-	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and (
-		(` + e + `.payload->>'change' = '` + model.AccessPersonAdded + `' and ` + e + `.payload->>'principal' = ` + person + `)
-		or (` + e + `.payload->>'change' = '` + model.AccessOwnerChanged + `' and ` + e + `.payload->>'owner' = ` + person + `)
-		or (` + e + `.payload->>'change' = '` + model.AccessGroupAdded + `' and exists (
-			select 1 from access_group_members gained where gained.group_name = ` + e + `.payload->>'principal' and gained.person = ` + person + `
-			offset 0))
-		or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and ` + e + `.payload->>'visibility' = '` + model.ProjectPublic + `'
-			and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `))))`
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and exists (
+		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and (
+			(` + e + `.payload->>'change' = '` + model.AccessPersonAdded + `' and recorded.principal = ` + person + `)
+			or (` + e + `.payload->>'change' = '` + model.AccessOwnerChanged + `' and recorded.owner = ` + person + `)
+			or (` + e + `.payload->>'change' = '` + model.AccessGroupAdded + `' and exists (
+				select 1 from access_group_members gained where gained.group_name = recorded.principal and gained.person = ` + person + `
+				offset 0))
+			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPublic + `'
+				and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `)))
+		offset 0))`
 }
 
 // listsProjectSQL is whether the credential of the viewer bound at viewerParam lists the project

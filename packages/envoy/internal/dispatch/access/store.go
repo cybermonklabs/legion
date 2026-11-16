@@ -28,6 +28,7 @@ var (
 	ErrGroupFull             = fmt.Errorf("a group holds at most %d members", MaxGroupMembers)
 	ErrSlackChannelInput     = errors.New("a Slack channel is named by its id, such as C0123456789")
 	ErrSlackChannelsFull     = fmt.Errorf("a project names at most %d Slack channels", MaxSlackChannels)
+	ErrGroupsPerOwnerFull    = fmt.Errorf("an owner holds at most %d groups", model.MaxGroupsPerOwner)
 )
 
 // The bounds of an access list and of a group.
@@ -173,12 +174,29 @@ func readProject(ctx context.Context, q Querier, key, where string, args ...any)
 	return access, nil
 }
 
+// OwnerAllowed answers owner's stored form, the canonical login, when owner may own a project or a
+// group: a full member who has signed in. Anyone else - a restricted member, or a login nobody has
+// signed in with - is ErrOwnerNotAllowed. Every write that names an owner holds it to this: a
+// transfer (SetOwner), a group's write (PutGroup) and a create that takes its default assignee as
+// owner (api.createProject).
+func OwnerAllowed(ctx context.Context, q Querier, owner string) (string, error) {
+	login := model.CanonicalLogin(owner)
+	kind, err := MemberKind(ctx, q, login)
+	if err != nil {
+		return "", err
+	}
+	if kind != model.MemberFull {
+		return "", OwnerNotAllowed(login)
+	}
+	return login, nil
+}
+
 // SetOwner gives project key to owner, a full member who has signed in, at any time, whoever owned
 // it before. It appends project.access_changed in tx, whose principal is the person the project was
 // taken from, when that is another: a reader that held the project's rows through its ownership
 // alone learns from it that it no longer reads them (api: eventGapSQL).
 func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.ProjectAccess, model.Event, error) {
-	login, err := fullMemberOwner(ctx, tx, owner)
+	login, err := OwnerAllowed(ctx, tx, owner)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
@@ -193,20 +211,6 @@ func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner stri
 		previous = ""
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, previous, by)
-}
-
-// fullMemberOwner answers the stored form of owner when a full member who has signed in holds it,
-// the one kind of person who may own a project or a group, and ErrOwnerNotAllowed for anyone else.
-func fullMemberOwner(ctx context.Context, q Querier, owner string) (string, error) {
-	login := model.CanonicalLogin(owner)
-	kind, err := MemberKind(ctx, q, login)
-	if err != nil {
-		return "", err
-	}
-	if kind != model.MemberFull {
-		return "", OwnerNotAllowed(login)
-	}
-	return login, nil
 }
 
 // OwnerNotAllowed is the refusal of login as an owner: one who is no full member who has signed in,
@@ -369,16 +373,21 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	return appendProjectChange(ctx, tx, ev, key, change, name, by)
 }
 
-// appendProjectChange reads project key's access as tx left it and appends the event naming the
-// change.
+// appendProjectChange appends the event naming change on project key, records beside it what the
+// change named (recordProjectChanges), and reads the project's access as tx left it, which the
+// write answers. principal is the person or group a list change added or removed, the person an
+// owner change took the project from (empty when it had none), and empty for any other change.
 func appendProjectChange(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, change, principal string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	access, err := readProjectWritten(ctx, tx, key)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
-	event, err := ev.Append(ctx, tx, projectChangeEvent(access, change, principal, by))
+	event, err := ev.Append(ctx, tx, projectChangeEvent(key, change, by))
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("append project.access_changed: %w", err)
+	}
+	if err := recordProjectChanges(ctx, tx, []int64{event.ID}, principal); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
 	}
 	if err := announceChange(ctx, tx); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
@@ -386,12 +395,30 @@ func appendProjectChange(ctx context.Context, tx pgx.Tx, ev *events.Broker, key,
 	return access, event, nil
 }
 
-func projectChangeEvent(access model.ProjectAccess, change, principal string, by model.Actor) model.Event {
-	key := access.Project
+// projectChangeEvent is the project.access_changed of one write of project key's access: the
+// project and the change alone (model.ProjectAccessEventPayload).
+func projectChangeEvent(key, change string, by model.Actor) model.Event {
 	return model.Event{
 		ProjectKey: &key, Type: "project.access_changed", Actor: by.Recorded(),
-		Payload: model.ProjectAccessEventPayload{ProjectAccess: access, Change: change, Principal: principal},
+		Payload: model.ProjectAccessEventPayload{Project: key, Change: change},
 	}
+}
+
+// recordProjectChanges writes, in tx, the server's own record of each project.access_changed of
+// eventIDs (project_access_changes): principal, which the change named, and the owner and visibility
+// of the event's project as tx left them. The payload names none of these, since every reader of the
+// project's events reads it; a live resume reads this record to tell whether a change in its gap
+// moved what its caller sees (api: lostSightSQL, gainedSightSQL), and no route serves it.
+func recordProjectChanges(ctx context.Context, tx pgx.Tx, eventIDs []int64, principal string) error {
+	if _, err := tx.Exec(ctx, `
+		insert into project_access_changes (event_id, principal, owner, visibility)
+		select e.id, $2, coalesce(p.owner, ''), p.visibility
+		from events e join projects p on p.key = e.project_key
+		where e.id = any($1)
+	`, eventIDs, principal); err != nil {
+		return fmt.Errorf("record the access changes %v: %w", eventIDs, err)
+	}
+	return nil
 }
 
 // groupMembersSQL selects group g's members and the members nobody has signed in as yet, each
@@ -418,15 +445,19 @@ func ReadGroup(ctx context.Context, q Querier, name string) (model.AccessGroup, 
 	return group, nil
 }
 
-// ListGroups answers every group, by name, and the empty list for none.
-func ListGroups(ctx context.Context, q Querier) ([]model.AccessGroup, error) {
+// ListGroups answers one page of the groups, in name order: at most limit of them whose names come
+// after after ("" for the first page), and Next, the last name of the page, when another group
+// follows it.
+func ListGroups(ctx context.Context, q Querier, after string, limit int) (model.AccessGroupPage, error) {
 	rows, err := q.Query(ctx, `
 		select g.name, g.owner, `+groupMembersSQL+`
 		from access_groups g
+		where g.name collate "C" > $1
 		order by g.name collate "C"
-	`)
+		limit $2
+	`, after, limit+1)
 	if err != nil {
-		return nil, fmt.Errorf("list groups: %w", err)
+		return model.AccessGroupPage{}, fmt.Errorf("list groups: %w", err)
 	}
 	groups, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.AccessGroup, error) {
 		var group model.AccessGroup
@@ -434,17 +465,24 @@ func ListGroups(ctx context.Context, q Querier) ([]model.AccessGroup, error) {
 		return group, err
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list groups: %w", err)
+		return model.AccessGroupPage{}, fmt.Errorf("list groups: %w", err)
 	}
-	if groups == nil {
-		groups = []model.AccessGroup{}
+	page := model.AccessGroupPage{Groups: groups}
+	if len(groups) > limit {
+		page.Groups = groups[:limit]
+		page.Next = page.Groups[limit-1].Name
 	}
-	return groups, nil
+	if page.Groups == nil {
+		page.Groups = []model.AccessGroup{}
+	}
+	return page, nil
 }
 
 // PutGroup makes group name, or writes it again: its owner, a full member, and exactly members,
 // each a person who is not a restricted member. It appends access_group.changed in tx. Who may
-// write the group is the caller's to decide first.
+// write the group is the caller's to decide first. A write that makes the group, or gives it to
+// another owner, is refused with ErrGroupsPerOwnerFull when that owner holds
+// model.MaxGroupsPerOwner groups already (roomForAGroup); a write that keeps the owner is not.
 func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner string, members []string, by model.Actor) (model.AccessGroup, model.Event, error) {
 	if !ValidGroupName(name) {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %q is no group name", ErrPrincipalInput, name)
@@ -452,7 +490,7 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	if err := LockGroupName(ctx, tx, name); err != nil {
 		return model.AccessGroup{}, model.Event{}, err
 	}
-	ownerLogin, err := fullMemberOwner(ctx, tx, owner)
+	ownerLogin, err := OwnerAllowed(ctx, tx, owner)
 	if err != nil {
 		return model.AccessGroup{}, model.Event{}, err
 	}
@@ -477,6 +515,17 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	}
 	if len(restricted) > 0 {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %s", ErrGroupMemberRestricted, strings.Join(restricted, ", "))
+	}
+	var held string
+	switch err := tx.QueryRow(ctx, `select owner from access_groups where name = $1`, name).Scan(&held); {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return model.AccessGroup{}, model.Event{}, fmt.Errorf("read the owner of group %s: %w", name, err)
+	}
+	if held != ownerLogin {
+		if err := roomForAGroup(ctx, tx, ownerLogin); err != nil {
+			return model.AccessGroup{}, model.Event{}, err
+		}
 	}
 	var created bool
 	if err := tx.QueryRow(ctx, `
@@ -514,6 +563,26 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	return group, event, nil
 }
 
+// roomForAGroup answers nil when owner may hold one more group, and ErrGroupsPerOwnerFull when they
+// hold model.MaxGroupsPerOwner already. It first takes, for the rest of tx, the owner's lock, so two
+// writes that each give owner a group are ordered and the second counts the first's once it
+// commits; the count is a statement of its own after that lock, so it reads what committed while
+// the lock was waited for. Every write takes a group's name lock (LockGroupName) and then one owner
+// lock, so no two writes wait on each other in a cycle.
+func roomForAGroup(ctx context.Context, tx pgx.Tx, owner string) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-group-owner'), hashtext($1))`, owner); err != nil {
+		return fmt.Errorf("lock the groups of %s: %w", owner, err)
+	}
+	var held int
+	if err := tx.QueryRow(ctx, `select count(*) from access_groups where owner = $1`, owner).Scan(&held); err != nil {
+		return fmt.Errorf("count the groups of %s: %w", owner, err)
+	}
+	if held >= model.MaxGroupsPerOwner {
+		return fmt.Errorf("%w: %s holds %d", ErrGroupsPerOwnerFull, owner, held)
+	}
+	return nil
+}
+
 func groupChangeEvent(name, change string, by model.Actor) model.Event {
 	return model.Event{
 		Type: "access_group.changed", Actor: by.Recorded(),
@@ -549,16 +618,19 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 	slices.Sort(projects)
 	changes := make([]model.Event, 0, len(projects)+1)
 	for _, project := range projects {
-		access, err := readProjectWritten(ctx, tx, project)
-		if err != nil {
-			return nil, err
-		}
-		changes = append(changes, projectChangeEvent(access, model.AccessGroupRemoved, name, by))
+		changes = append(changes, projectChangeEvent(project, model.AccessGroupRemoved, by))
 	}
 	changes = append(changes, groupChangeEvent(name, model.AccessGroupDeleted, by))
 	appended, err := ev.AppendAll(ctx, tx, changes)
 	if err != nil {
 		return nil, fmt.Errorf("append the events of group %s's delete: %w", name, err)
+	}
+	projectEvents := make([]int64, 0, len(projects))
+	for _, event := range appended[:len(projects)] {
+		projectEvents = append(projectEvents, event.ID)
+	}
+	if err := recordProjectChanges(ctx, tx, projectEvents, name); err != nil {
+		return nil, err
 	}
 	if err := announceChange(ctx, tx); err != nil {
 		return nil, err

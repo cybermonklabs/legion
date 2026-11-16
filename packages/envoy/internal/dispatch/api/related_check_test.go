@@ -984,7 +984,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	}
 	fill := func(ctx context.Context) (model.Suggestions, map[string]map[string]json.RawMessage) {
 		suggestions := model.Suggestions{}
-		fixture.srv.fillRelatedItems(ctx, relatedInput{project: "PARTIAL"}, slices.Clone(results), &suggestions)
+		fixture.srv.fillRelatedItems(ctx, relatedInput{who: everyReader, project: "PARTIAL"}, slices.Clone(results), &suggestions)
 		encoded, err := json.Marshal(suggestions)
 		if err != nil {
 			t.Fatalf("encode the related items: %v", err)

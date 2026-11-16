@@ -56,4 +56,6 @@ export const movedRowNotes: Record<string, string> = {
     "not moved: a new row (dispatch://INFRA-3882), written in this layer because the pull-request lane's real-stack rows are at their budget. What Dispatch answers each reader of a cut list is `TestABrowserIsToldItsTokenListsProjectsItCannotSee` in packages/envoy's `api` package",
   "restricted-member.stub.e2e.ts › a restricted member's rail draws Inbox, Agents, their projects and Settings, and the views over every project answer Page not found @pr":
     "not moved: a new row (dispatch://INFRA-3882), written in this layer because the pull-request lane's real-stack rows are at their budget. Its real-stack counterpart, where the server lists bob PRIV and not the public CORE, is `restricted-member.e2e.ts`'s untagged row on the full lane",
+  "restricted-member.stub.e2e.ts › a restricted member's empty Inbox says Nothing needs you and asks for no credential list @pr":
+    "not moved: a new row (dispatch://INFRA-3882), written in this layer because the pull-request lane's real-stack rows are at their budget. Its real-stack counterpart, where no page of bob's draws a refusal from Dispatch, is `restricted-member.e2e.ts`'s second untagged row on the full lane",
 };
