@@ -26,7 +26,11 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // The stand-in processes are copies of two real programs, so a host without them has nothing to
 // start and every row here is skipped.
 // The gate is given both names: it walks each one and names the missing ones in its warning.
-// `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
+// `found` is the run's own walk, whose real binaries the stand-ins below are copies of. An agent
+// stand-in, which runs under env -i, is the Bun running this file instead ($BUN), which every host
+// that runs these rows has: a program found on the host's PATH can be a wrapper that needs the
+// environment env -i clears, as a mise shim with no version set is, which runs the next program of
+// its name on PATH and finds none when there is no PATH.
 const found = new Map(["bash", "sleep"].map((name) => [name, hostTool(name)] as const));
 const skip = skipWithout("bash", "sleep");
 function tool(name: string): string {
@@ -56,11 +60,11 @@ beforeAll(() => {
 });
 
 // run runs BODY after the guards, with the rig's globals set, a scratch directory of its own in
-// $scratch, and two helpers. spawn ARGS… starts ARGS in the background, its output away from the
-// test's pipes, and sets pid to its process. await_child EXE sets child to pid's first child once
-// that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child carries
-// its parent's command line until it execs, and a guard asked about it then answers for the parent.
-// Every process either names is killed when BODY ends.
+// $scratch, the Bun running this file in $BUN, and two helpers. spawn ARGS… starts ARGS in the
+// background, its output away from the test's pipes, and sets pid to its process. await_child EXE
+// sets child to pid's first child once that child is running EXE (its /proc/<pid>/exe), not merely
+// once it exists: a forked child carries its parent's command line until it execs, and a guard
+// asked about it then answers for the parent. Every process either names is killed when BODY ends.
 function run(body: string) {
   const prelude = `set -Eeuo pipefail
 ${guards}
@@ -93,7 +97,13 @@ await_child() {
 `;
   const result = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
     cwd,
-    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir },
+    env: {
+      PATH: process.env.PATH ?? "",
+      WORK: work,
+      CLAUDE: claude,
+      SCRATCH: dir,
+      BUN: process.execPath,
+    },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
@@ -177,10 +187,11 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
     "ENVOY_URL=http://127.0.0.1:2",
     "ENVOY_NATS_URL=nats://127.0.0.1:3",
   ];
-  // agent ENV… starts an agent stand-in, sleep under env -i with exactly ENV, and checks it once its
-  // environment is the one it was given, failing the run when it never is.
+  // agent ENV… starts an agent stand-in, the Bun running this file under env -i with exactly ENV,
+  // alive until the run kills it, and checks it once its environment is the one it was given,
+  // failing the run when it never is.
   const agent = (env: string[]) => `
-spawn env -i ${env.join(" ")} "$(command -v sleep)" 600
+spawn env -i ${env.join(" ")} "$BUN" -e 'setTimeout(() => {}, 600_000)'
 ready=
 for i in $(seq 1 200); do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; sleep 0.05; done
 [ -n "$ready" ] || { echo "the agent stand-in $pid never carried its environment" >&2; exit 1; }
@@ -217,22 +228,31 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
-      // owned by root, so its own user can no longer read its environment. The stand-in writes its
-      // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
-      // run asserts it is still running, not a zombie, on both sides of the check.
+      // owned by root, so its own user can no longer read its environment. The stand-in is the Bun
+      // running this file, as every agent stand-in here is, and calls prctl through bun:ffi in
+      // libc.so.6, the C library that Bun is itself linked against. It writes its ready file only
+      // once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the run asserts it
+      // is still running, not a zombie, on both sides of the check.
       const r = run(`
 ready=$scratch/ready err=$scratch/stderr
-env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$(command -v python3)" -c '
-import ctypes, os, sys, time
-libc = ctypes.CDLL(None, use_errno=True)
-if libc.prctl(4, 0, 0, 0, 0) != 0:
-    sys.exit("prctl(PR_SET_DUMPABLE, 0) failed: errno %d" % ctypes.get_errno())
-if libc.prctl(3, 0, 0, 0, 0) != 0:
-    sys.exit("PR_GET_DUMPABLE is not 0 after PR_SET_DUMPABLE 0")
-with open(sys.argv[1] + ".tmp", "w") as f:
-    f.write("not dumpable\\n")
-os.rename(sys.argv[1] + ".tmp", sys.argv[1])
-time.sleep(600)
+env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$BUN" -e '
+import { dlopen } from "bun:ffi";
+import { renameSync, writeFileSync } from "node:fs";
+const { prctl } = dlopen("libc.so.6", {
+  prctl: { args: ["i32", "u64", "u64", "u64", "u64"], returns: "i32" },
+}).symbols;
+const fail = (why) => {
+  console.error(why);
+  process.exit(1);
+};
+const set = prctl(4, 0, 0, 0, 0);
+if (set !== 0) fail("prctl(PR_SET_DUMPABLE, 0) returned " + set);
+if (prctl(3, 0, 0, 0, 0) !== 0) fail("PR_GET_DUMPABLE is not 0 after PR_SET_DUMPABLE 0");
+const ready = process.argv.at(-1);
+writeFileSync(ready + ".tmp", "not dumpable\\n");
+renameSync(ready + ".tmp", ready);
+// Only keeps the stand-in alive, as the agent it stands for is; the run kills it when BODY ends.
+setTimeout(() => {}, 600_000);
 ' "$ready" </dev/null >/dev/null 2>"$err" &
 pid=$!
 started+=("$pid")
