@@ -4819,7 +4819,12 @@ describe("executeDispatchTool", () => {
     expect(person.text).toContain("It may use project OPS and no other.");
 
     const none = await whoami({ ...agent, project: null });
-    expect(none.details).toEqual({ session: "session-1", owner: "alice", service: null, project: null });
+    expect(none.details).toEqual({
+      session: "session-1",
+      owner: "alice",
+      service: null,
+      project: null,
+    });
     expect(none.text).not.toContain("It may use");
   });
 
