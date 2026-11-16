@@ -3401,11 +3401,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the reason is null with every other status.
 
 - The Dispatch API describes itself.
-  `internal/dispatch/api/routes_table.go` is the one list of `/api/v1` routes (`apiRoute{routeRow, Scope}`:
-  the five columns a row declares — `Method`, `Pattern`, `Auth` one of `public`, `any`, `human`, `bearer`, `Description` and `Handler` — embedded, and beside them `Scope`, the write class the row takes from `writeClasses`, empty on a `GET` row.
-  The class stands outside the row because Go leaves no field out of a positional composite literal and a `GET` row declares no class);
+  `internal/dispatch/api/routes_table.go` is the one list of `/api/v1` routes (`apiRoute{routeRow, Scope, OAuthScopes, Reads}`:
+  the five columns a row declares — `Method`, `Pattern`, `Auth` one of `public`, `any`, `human`, `bearer`, `Description` and `Handler` — embedded, and beside them `Scope`, the write class the row takes from `writeClasses`, empty on a `GET` row, and `Reads`, the read classes a `GET` row takes from `readClasses` (`api/read_classes.go`), empty on a mutating row.
+  The classes stand outside the row because Go leaves no field out of a positional composite literal);
   `Register` mounts that table and public `GET /api/v1` serves it as `{routes: [{method, path, auth, description}], docs: "skills/dispatch/SKILL.md"}` sorted by path then method.
-  A new route is a new row (and a bumped pin in `routes_table_test.go`), and a mutating one is a new line in `writeClasses` or it is not served at all (Security, the project check).
+  A new route is a new row (and a bumped pin in `routes_table_test.go`), a mutating one a new line in `writeClasses` and a `GET` one a new entry in `readClasses`, or it is not served at all (Security, the project check).
+  Every other pattern the server mounts goes through `readclass.Handle`, which takes its read classes; `readclass`'s `TestEveryMountedPatternHasAReadClass` refuses a direct `mux.Handle` or `mux.HandleFunc` anywhere else in the server.
   An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is `404 {"code":"NOT_FOUND","error":"no route for GET /v1/issues","hint":"GET /api/v1 lists every route"}` from `routes/router.go`, decided before any dashboard lookup, so an API caller never receives the SPA shell.
   `GET /api/v1/agents` is readable by any authenticated caller (a session picks a message target by the `capabilities` it advertises);
   the issue-less `POST /api/v1/agents/{session_id}/messages` and `GET /api/v1/agents/{session_id}/messages` need the `person` scope, since a person writing to a session is writing to someone else's conversation.
@@ -3918,7 +3919,7 @@ without that test an agent its person narrowed to `person` alone could carry an 
 
 A credential that names one project writes that project and nothing else, and every write is decided in one place.
 Each mutating row of the route table declares what its write belongs to (`api/routes_table.go`'s `writeClasses`, stamped onto `apiRoute.Scope`;
-a `GET` row declares nothing, and a mutating row that declares nothing fails `TestEveryMutatingRouteIsClassed` and panics `Register` rather than being served unjudged).
+a `GET` row declares what it reads instead (`readClasses`, `api/read_classes.go`), and a mutating row that declares nothing fails `TestEveryMutatingRouteIsClassed` and panics `Register` rather than being served unjudged).
 The four classes are *a project's* (the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue), *a project the body names* (the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled), *the calling session's* (an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows) and *the deployment's* (the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions).
 `Register` wraps every mutating route in `api.withinProjectScope`, `api.withinSessionScope` and `api.writeNeedsASignedInPerson` (`api/project_scope.go`), which run after the caller is resolved and before the handler, outside the keyed-write layer and the upload's spool, so a refused write claims no idempotency key and costs no body.
 
