@@ -267,10 +267,10 @@ marked with tags or annotations:
   (`BROKER_SERVICE_ACCOUNT_SECRETS`). A secret with a kind must have a current value.
 - **`github-owners`** is required on a `github-app` secret, and read on no other kind. It lists
   the GitHub accounts the broker mints installation tokens for, separated by spaces
-  (`acme-org ada`) and compared without regard to case, a form both stores hold. A comma, or an
-  entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds
-  anything but ASCII letters, digits and hyphens, is over 39 characters, or is the word `none`), is
-  refused `github-owners-malformed`. A public App can be installed by any account, so an
+  (`acme-org ada`) and compared without regard to case, a form both stores hold.
+  A comma, or an entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and underscores, is over 39 characters, or is the word `none`), is refused `github-owners-malformed`.
+  An entry may hold an underscore, which GitHub's sign-up form refuses, because a managed user's login ends in `_<shortcode>` (`mona-cat_octo`).
+  A public App can be installed by any account, so an
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
