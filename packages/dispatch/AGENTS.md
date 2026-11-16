@@ -748,7 +748,7 @@ The `Children` tab (`features/issue/ChildrenTab.tsx`) lists the issue's direct c
 
 An issue's own progress (`features/issue/ProgressChips.tsx`) is the `progress` object every issue read and list row carries (LEGION-542): `tasks`, the task-list items (`- [ ]` / `- [x]`, nested lists and callouts included) of its primary document's latest version, read from its markdown for the checkboxes alone (`pmdoc.CountTasksMarkdown`), so a spec holding a table the Proof schema refuses is still counted; stored on the issue with the version it was counted from by every version write (`docs.RecordTaskProgress`) and counted again once when the server starts, for every row whose stored version is not the document's latest - the rows the migration found, a version a build predating LEGION-542 wrote, and a row another writer held, retried briefly (`docs.Service.RunTaskProgressReconciliation`); and `children`, its direct children, every status, done being `status = 'done'`, computed from the children's statuses on each read. Each is `null` when the issue has none, and the component renders nothing for a null, or for a response with no `progress` at all (an older server during a deploy's overlap), so a list of plain issues stays quiet. The issue header shows each as a thin bar filled to done/total beside `3/7 tasks` (the `bar` prop; a count of one reads `1/1 task`, `0/1 child`), in the wrapping state row with the status, priority and claim, since the metadata rail below clips; a List row and a Board card show each as a `label` pill beside the claim chip. The bar's fill is `progressBarFill` in `theme/classes.ts`. The Children tab's per-child `D/N done` is a different count — that child's whole subtree — and stays.
 
-The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`) for the `EventBody` fallback.
+The `Artifacts` tab carries the number of rows it lists as a `Pill` after the label (accessible name `Artifacts 2`, the words the tab shows, so a voice user can say them; plain `Artifacts` at zero), computed in `IssuePage.tsx` from the issue's `artifacts` - all of them, the issue's own primary document included, since that document is one of the rows. Counting only the uploads beside it put `1` above a list of two. `components/Tabs.tsx` owns the shape: a `TabDefinition.count` renders the pill; every label stays on one line (`whitespace-nowrap`); compact tabs sit tighter on phones (`px-1.5`, no gap), and the issue's nine tabs, one of them carrying a count pill, no longer fit a 390 px viewport: there the tablist scrolls sideways, as it already did at 360 px (a default Android width), and `revealTab` scrolls a tab focused from the keyboard or selected fully into view rather than leaving it clipped, so every tab stays reachable and keeps its 44 px touch target. No label is shortened to buy the room. In the Activity tab, an upload is a line (`<author> added <name>` for `artifact.created`, `<author> saved <name> vN` for `artifact.version`, text from `features/activity/activity-model.ts`'s `activityDescription`) whose artifact name `features/activity/ActivityLine.tsx` renders as a link to the artifact (the saved version's link pins `?v=N`; the `artifact.version` payload has no slug, so the line resolves it from the issue query and stays plain text until that loads). `features/issue/event-description.ts` names the artifact the same way (`Added <name>`, `Saved <name> vN`, `Approved <name> vN`, `Changes requested on <name> vN`) for the `EventBody` fallback.
 
 Project pages keep their name, linked project key, project tabs, and, on issue routes, the keyboard-reachable List/Board control in a dense responsive header. At `md` and above these controls form one strip; on smaller screens the name, key, and blocker pill form the first row, with tabs and the view control below. When an open ask waits on the viewer, the header's `Blocked on you · N` pill links to the Inbox; it is absent when no asks are waiting.
 
@@ -1429,7 +1429,8 @@ with `downloadRequest` set, and then leaves the reader on the page, so it does n
 Chromium, `shell.e2e.ts` follows one and then fails a chunk, and the page reloads. Playwright's
 Firefox follows it with a second `navigate` to the same URL and no `downloadRequest`, so the first
 navigation to another document after a download does not count either when it goes to the
-download's URL (`DeploymentResilience.test.tsx` has the sequence; no e2e row runs it in Firefox).
+download's URL (`DeploymentResilience.test.tsx` has the sequence, and the
+`firefox-download-navigation` project runs that `shell.e2e.ts` row in Firefox).
 The page counts as staying again once it is shown (`pageshow`, or the tab turning
 visible) or pressed (a pointer or a key), since a navigation cancelled at a leave prompt, stopped,
 or answered by the server with a download fires no event of its own.
@@ -2032,8 +2033,9 @@ reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
-The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
-tests and build, beside the proof editor's, and runs no browser row.
+The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's typecheck, unit tests
+and build, beside the proof editor's typecheck and unit tests, and runs no browser row and no
+lint: Biome checks the whole tree once, in the `lint` job.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
@@ -2690,7 +2692,12 @@ alone, and CI's `dispatch-two-builds` job runs `cross-build.multiprocess` twice,
 then the first-rollout release's, the newest release before the one that registers its schema
 numbers (`e2e/cross-build.multiprocess.e2e.ts`: each direction's page against the other build's
 server, writable or read-only as the live registry's numbers admit it, and, with both processes on
-this tree, a document holding newer content).
+this tree, a document holding newer content). The second run also sets
+`DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` to the job's `FIRST_ROLLOUT_COMMIT`, which holds that run to
+the first-rollout build's commit and to a registry that reads version 0 while B is live: each
+direction fails when B's `COMMIT` is another commit or the live registry's lowest schema version
+is not 0 (`e2e/first-rollout.ts`, `firstRolloutRefusal`), and a run that sets the variable
+without `DISPATCH_E2E_BINARY_B` fails before any row starts.
 Two-process mode starts its own servers, so the Playwright config refuses it with
 `PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
 
@@ -2786,10 +2793,10 @@ and a restart close sets the attempt counter back to 0.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,
-`e2e/heavy-streamed-turn.e2e.ts`, `e2e/keyboard-agents-picker.e2e.ts`,
+`e2e/download-names.e2e.ts`, `e2e/heavy-streamed-turn.e2e.ts`, `e2e/keyboard-agents-picker.e2e.ts`,
 `e2e/keyboard-session-pickers.e2e.ts`, `e2e/keyed-send.e2e.ts`, `e2e/keyed-writes.e2e.ts`,
 `e2e/doc-reload-line.e2e.ts`, `e2e/live-socket.e2e.ts`, `e2e/mermaid.e2e.ts` and
-`e2e/offline-edits.e2e.ts`, 40 rows; the comment
+`e2e/offline-edits.e2e.ts`, 46 rows; the comment
 above the project names each engine behaviour and the rows that exercise it, and a comment above
 each tagged row names which. Every row of the live-socket spec runs in `chromium`, and its one-socket
 row also runs in `firefox`, `webkit` and `webkit-iphone`: a tab holds one live socket in every
@@ -2875,16 +2882,16 @@ The `webkit-iphone` project runs, in WebKit with the iPhone 13 profile, four row
 No Playwright hook asserts what a project's title `grep` selected, so that guard is a one-time manual check: rename one selected test in a scratch copy and confirm `bunx playwright test --config e2e/playwright.config.ts --project=webkit-iphone --list` drops it (the count falls by one, with no error), then restore it. Repeat it whenever the `grep` or the titles change.
 
 The `firefox` Playwright project runs the rows tagged `@firefox` (`firefoxTagged` in
-`e2e/playwright.config.ts`), 39 rows: the same rows of the same specs as `webkit` but
+`e2e/playwright.config.ts`), 45 rows: the same rows of the same specs as `webkit` but
 `e2e/collab-cursor.e2e.ts`'s and the two `webkit` alone carries, and the rows of `e2e/code-line-replace.e2e.ts` and
 `e2e/picture-link-click.e2e.ts`. Firefox's native editing puts text
 typed over a code block's last line before that line's newline, and deletes a paragraph's hard break
 along with the text after it, which Chromium and WebKit never do, so that spec is the one that needs
-a second engine; the picker, deep-link, keyed, live-socket, offline-edits, mermaid and streamed-turn
-rows run for the reasons given under `webkit` above and in the comment above the project; and a
-click on a link inside the editor meets the engine's focus rule — Firefox focuses the editing host,
-not the link — so the picture view's fallback link is clicked there too. CI installs Firefox beside
-Chromium for them (`bun run e2e:install` does the same locally).
+a second engine; the picker, deep-link, download-name, keyed, live-socket, offline-edits, mermaid
+and streamed-turn rows run for the reasons given under `webkit` above and in the comment above the
+project; and a click on a link inside the editor meets the engine's focus rule — Firefox focuses
+the editing host, not the link — so the picture view's fallback link is clicked there too.
+CI installs Firefox beside Chromium for them (`bun run e2e:install` does the same locally).
 
 The `chromium-plain-http` project runs `e2e/plain-http-origin.e2e.ts` and
 `e2e/plain-http-proxy.e2e.ts`, selected by file name: Chromium maps `dispatch-e2e.test` to
@@ -2940,7 +2947,7 @@ before, for the reasons given under `webkit` and `firefox` above.
 No project above them runs those three files, so each row runs once.
 Each of the three sets `default: false`, which leaves it out of a run that names no project and
 takes nothing from a run that names one, so the commands at the top of this section name them
-and a bare `bun run e2e` holds none of their 54 rows (a listing of the three at this head: 54
+and a bare `bun run e2e` holds none of their 51 rows (a listing of the three at this head: 51
 tests in 3 files).
 Until dispatch://INFRA-1280 each named every project before it in `dependencies` instead, which
 ordered the run and also pulled the whole suite in behind any command naming one of the three

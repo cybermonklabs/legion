@@ -39,8 +39,9 @@ section can use the words without stopping to explain them.
 ## Several repositories
 
 One Legion deployment can work issues across several GitHub repositories, under several owners,
-with exactly one repository per issue — never two. A change that spans repositories is a parent
-issue with one child per repository, each child's own `--repo` fixed when the daemon records it.
+with exactly one repository per issue — never two.
+A change that spans repositories uses child issues, each in one repository.
+Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
 Every pane and pod holds a write token, minted from the role's GitHub App, for its own issue's
 repository alone, and read-only tokens for every other repository the project maps. Its gh bundle
 holds one directory per owner, one more per owner a configured rename moved a repository away
@@ -100,13 +101,19 @@ admission to close. The architect:
 2. extends your issue's spec in place, writing each open question as a decision block for you to
    answer;
 3. asks you to approve the spec (the [design gate](#the-design-gate));
-4. splits large work into child issues and releases them in waves, when one pull request would be
-   too much;
+4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
 6. accepts the issue once the reviewer approves it, reading the tester's and the implementer's evidence, or sends it back; the merge then closes it.
 
 The architect writes no code. A child issue runs the same phases as its root, with a pull request
 of its own, inside the same tree.
+
+Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+It can also conflict with the default branch.
+Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+They can conflict with each other, and dependent slices run in sequence.
+A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 
 **The children do the work first.** An issue starts no phase of its own while Dispatch shows an
 open child under it, a child the architect has filed and not released yet included; the architect

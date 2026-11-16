@@ -32,9 +32,10 @@ import (
 // otherwise be accounted for by a root that deletes none of it (a role's work under $TMPDIR,
 // which the trimmer may not touch and which therefore still fills the volume) or by one that
 // deletes all of it (a child of the cache home a role cannot afford to lose, as the browser
-// registry and the Claude npm cache cannot be). The same narrowness is why reclaim_doc_test.go
-// reads docs/kubernetes.md's two lists as lists rather than as prose: a check that accepts a
-// mention anywhere cannot fail where it matters.
+// registry and the Claude npm cache cannot be). The same narrowness is why the reclaim guard
+// reads the two lists as lists rather than as prose: reclaim_doc_test.go here reads them from
+// reclaim_doc_extract.txt, and internal/textcheck holds that copy to docs/kubernetes.md's own
+// lists, so a check that accepts a mention anywhere cannot stand in for either.
 //
 // A path both lists name is a contradiction and fails too: the trimmer would delete entries of a
 // root it is told at the same line never to write to, and which of the two the code follows is

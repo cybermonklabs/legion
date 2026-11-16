@@ -89,7 +89,8 @@ plugin, reads. A change to any of these surfaces bumps the field and the
 daemon's `DaemonAPIVersion` (`internal/api/version.go`, whose doc comment is the contract's
 history) in the same commit: `packages/contracts/fixtures/daemon-api/version.json`, written by the
 daemon's golden test, is what `src/daemon-api-version.test.ts` pins the field to, so neither
-side bumps alone, and the number is re-read against `main` at every rebase. Contract 12 renamed the
+side bumps alone; the number is in every file the root `AGENTS.md` names, and it is re-read
+against `main` at every rebase. Contract 12 renamed the
 field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-daemon client
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
@@ -105,10 +106,12 @@ plugin parses moves), after contract 141's experiment assignments
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
 the key as optional, because a caller from a pod whose claims record a contract under 141 is
 served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 137's session
-service account (INFRA-3621: a pod's `legion launcher` may be told
-`--session-impersonate-service-account <email>`, which the daemon renders only where
-`runtime.kubernetes.session_database.impersonate_service_account` is set, and no shape the plugin
-parses moves), after contract 133's merge
+proxy account (dispatch://INFRA-3621: a pod's `legion launcher` may be told
+`--session-impersonate-service-account <email>`, which the daemon renders only when
+`runtime.kubernetes.session_database.impersonate_service_account` is set; a launcher built before
+137 exits 2 on the unknown flag, so the image probe refuses such an image at boot; no shape the
+plugin parses moves, so a caller from a pod below 137 is served the state as before), after
+contract 133's merge
 wait (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on
 GitHub's answer about merging the pull request's head carries `mergeWait`, the head the round
 waits on, the merge state the record holds for that head, when that state was last read, when
@@ -754,15 +757,23 @@ block, Oh My Pi's name for it; `assistantRanTool` also takes Claude Code's `tool
 daemon's assignment, an Envoy delivery. At `LEGION_STALL_ARCHITECT_AFTER` the session tells the
 architect that owns the issue over Envoy (its own while its architect claim is live, else the
 tree's), once per run of reminders: the notice carries the issue, role, phase, the count and the
-head of the
-worker's last message under one idempotency key, minted at the first attempt and kept until the
-count resets, so a listener that holds no architect session yet is tried again by the next
-reminder. A reminder is dropped when the daemon's record says this role no longer works this phase
-or that the daemon has failed this role's claim (the `read_record` state, bounded at 5 s and
-failing open otherwise, since an unreachable daemon is exactly when a stalled worker must still be
-nudged). A worker the daemon relaunched into an open phase is
-reminded from a timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would
-wake it.
+head of the worker's last message under one idempotency key, minted at the first attempt and kept
+until the count resets. The notice sends no `keep` field, so when no live session holds the
+architect role, the listener keeps the notice on the role's kept lane for one hour and answers 202
+kept. A kept answer does not mean that the architect was told, so the next reminder publishes the
+notice again. When the answer names `kept_until`, that publish uses the same key: the listener
+answers it with the copy it still holds, or keeps a new copy once that copy has been forwarded or
+its hour has ended. A listener of an earlier release names no `kept_until` and answers a repeated
+key as the first copy for 72 hours, so such an answer clears the key, and the next attempt mints
+a new one. The stall watch's notice of a stuck tool call (`src/stall-evidence.ts`), to the
+architect or, for a root architect's own call, to the controller, also sends no `keep` field, and
+a kept answer reports that no owner was told. A kept notice that no session takes in its hour
+comes back to this worker's session as a dead letter, an Envoy card that names it, unless Envoy
+drops it more than an hour late. A reminder is dropped when the daemon's record says this role no
+longer works this phase or that the daemon has failed this role's claim (the `read_record` state,
+bounded at 5 s and failing open otherwise, since an unreachable daemon is exactly when a stalled
+worker must still be nudged). A worker the daemon relaunched into an open phase is reminded from a
+timer `LEGION_STALL_RESUME_MS` after its claim boots, since nothing else would wake it.
 
 A turn the provider refused earns no reminder at all, neither the continuation nor a timer's.
 `session_stop` classifies the settling message (`turnEndOf`): a reply Oh My Pi stopped at `error`
