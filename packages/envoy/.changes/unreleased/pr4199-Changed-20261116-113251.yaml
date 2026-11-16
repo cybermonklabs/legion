@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Every route Dispatch serves needs a credential but `GET /auth/start`, `GET /auth/callback`,
+  `/healthz`, `/livez` and the dashboard's own files, and none answers a caller differently for
+  its network address or a forwarded-address or tailnet header. `GET /api/v1` and
+  `GET /api/v1/schema/blocks` now answer `401` to a caller with no credential. `GET /metrics` is a
+  route of the API's table: any caller that sees every public project reads it, the
+  deployment's shared agent token included, a restricted member or a credential that lists its
+  projects is `403 DEPLOYMENT_READ_REFUSED`, and a caller with no credential is `401`. A scraper
+  of `/metrics` sends the shared token; a readiness probe asks `/healthz`, as before.
+time: 2026-11-16T11:32:51.593887956Z
+custom:
+    Issue: pr4199

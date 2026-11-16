@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `AuthenticatedUser` carries an optional `origins`: the origins a Dispatch answers at, the
+  canonical one first. `GET /auth/whoami` names them only where the deployment answers at a second
+  origin (`DISPATCH_OUTSIDE_ORIGIN`), and a deployment that answers at one origin answers no such
+  key.
+time: 2026-11-16T05:37:06.565467737Z
+custom:
+    Issue: pr4199
