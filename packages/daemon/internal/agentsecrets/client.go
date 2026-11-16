@@ -192,9 +192,9 @@ func (e *APIError) RegistrarNotListed() bool {
 }
 
 // IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
-// (*APIError), or a registration the broker answered for another pod (*PodMismatchError). A
-// transport failure, a 5xx, a 429, an expired pod token and a daemon with no credential yet are
-// all transient.
+// (*APIError), a registration the broker answered for another pod or key (*AnswerMismatchError),
+// or one named with no key (*MissingThumbprintError). A transport failure, a 5xx, a 429, an
+// expired pod token and a daemon with no credential yet are all transient.
 func IsPermanent(err error) bool {
 	var permanent interface{ Permanent() bool }
 	return errors.As(err, &permanent) && permanent.Permanent()
@@ -485,31 +485,41 @@ func (c *Client) Revoke(ctx context.Context, id string) error {
 }
 
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's body: the pod's own projected token for
-// the broker's audience, which names the pod (its account and uid), and the session name that pod
-// may trade under.
+// the broker's audience, which names the pod (its account and uid), the session name that pod may
+// trade under, and the RFC 7638 thumbprint of the role's own key, which binds the registration to
+// that key: the broker refuses a trade for the session proved with any other.
 type podSessionBody struct {
-	PodToken string `json:"pod_token"`
-	Session  string `json:"session"`
+	PodToken   string `json:"pod_token"`
+	Session    string `json:"session"`
+	Thumbprint string `json:"thumbprint,omitempty"`
 }
 
 // RegisterPodSession is POST /v1/oauth/exchange/pod-sessions: it records at the broker that the pod
-// podToken names — podUID, by the daemon's own record of the process — may trade under session,
-// and answers when the broker stops honouring that registration unless it is written again
-// (expires_at). The route's class is the broker's serviceAuth, which verifies the Authorization
-// bearer with the token login's own check (serviceCaller, MachineLogin.VerifyServiceToken), so
-// the call carries the daemon's own projected ServiceAccount token as that bearer, read from
-// TokenFile at each call as a login reads it, and no launcher proof; it needs no won launcher
-// credential. A token file it cannot read sends nothing. The broker answers the pod uid it read
-// from the token (pod_uid); an answer naming another pod than podUID is a *PodMismatchError,
-// permanent, since the token presented was not that pod's. Any other answer than 200 is an
-// *APIError carrying the broker's code (Permanent says which a retry can change), and a transport
-// failure is a plain error; none repeats a token.
-func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, session string) (time.Time, error) {
+// podToken names — podUID, by the daemon's own record of the process — may trade under session
+// with the key thumbprint names, the role's own, and answers when the broker stops honouring that
+// registration unless it is written again (expires_at). The route's class is the broker's
+// serviceAuth, which verifies the Authorization bearer with the token login's own check
+// (serviceCaller, MachineLogin.VerifyServiceToken), so the call carries the daemon's own projected
+// ServiceAccount token as that bearer, read from TokenFile at each call as a login reads it, and
+// no launcher proof; it needs no won launcher credential.
+//
+// It sends nothing for an empty thumbprint — a registration with none would leave the session to
+// every role of the pod — and answers a *MissingThumbprintError, permanent; nor for a token file it
+// cannot read. The broker answers the registration as it stands after the write: the pod uid it
+// read from the token (pod_uid) and the key the row is bound to (thumbprint). An answer naming
+// another pod than podUID, or another key than thumbprint, is an *AnswerMismatchError, permanent,
+// since the token presented was not that pod's or the broker did not bind the role's key. Any
+// other answer than 200 is an *APIError carrying the broker's code (Permanent says which a retry
+// can change), and a transport failure is a plain error; none repeats a token.
+func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, session, thumbprint string) (time.Time, error) {
+	if thumbprint == "" {
+		return time.Time{}, &MissingThumbprintError{Session: session}
+	}
 	token, err := c.serviceToken()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
 	}
-	status, raw, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session}, func(req *http.Request) {
+	status, raw, err := c.do(ctx, http.MethodPost, "/v1/oauth/exchange/pod-sessions", podSessionBody{PodToken: podToken, Session: session, Thumbprint: thumbprint}, func(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	})
 	if err != nil {
@@ -519,14 +529,18 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 		return time.Time{}, refusal(status, raw)
 	}
 	var answer struct {
-		PodUID    string    `json:"pod_uid"`
-		ExpiresAt time.Time `json:"expires_at"`
+		PodUID     string    `json:"pod_uid"`
+		Thumbprint string    `json:"thumbprint"`
+		ExpiresAt  time.Time `json:"expires_at"`
 	}
 	if err := json.Unmarshal(raw, &answer); err != nil {
 		return time.Time{}, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
 	}
 	if answer.PodUID != podUID {
-		return time.Time{}, &PodMismatchError{Session: session, Registered: podUID, Answered: answer.PodUID}
+		return time.Time{}, &AnswerMismatchError{Field: "pod_uid", Pod: podUID, Session: session, Sent: podUID, Answered: answer.PodUID}
+	}
+	if answer.Thumbprint != thumbprint {
+		return time.Time{}, &AnswerMismatchError{Field: "thumbprint", Pod: podUID, Session: session, Sent: thumbprint, Answered: answer.Thumbprint}
 	}
 	if answer.ExpiresAt.IsZero() {
 		return time.Time{}, fmt.Errorf("broker answered %d with no expires_at", status)
@@ -534,19 +548,31 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 	return answer.ExpiresAt, nil
 }
 
-// PodMismatchError is a registration the broker answered for another pod (Answered, the uid it
-// read from the token presented) than the one the daemon registered (Registered) under Session.
-// Its message names the session and both uids, never a token.
-type PodMismatchError struct {
-	Session, Registered, Answered string
+// AnswerMismatchError is a registration the broker answered otherwise than the daemon wrote it:
+// for Pod under Session, the answer's Field (pod_uid, the pod the broker read from the token
+// presented, or thumbprint, the key the row is bound to) is Answered where the daemon sent Sent.
+// Its message names the pod, the session and both values, never a token.
+type AnswerMismatchError struct {
+	Field, Pod, Session, Sent, Answered string
 }
 
-func (e *PodMismatchError) Error() string {
-	return fmt.Sprintf("the broker registered pod %q for session %s, where the daemon registered pod %q", e.Answered, e.Session, e.Registered)
+func (e *AnswerMismatchError) Error() string {
+	return fmt.Sprintf("the broker answered the registration of pod %s for session %s with %s %q, where the daemon sent %q", e.Pod, e.Session, e.Field, e.Answered, e.Sent)
 }
 
-// Permanent is true: no later write presenting the same pod's token can be taken for that pod.
-func (*PodMismatchError) Permanent() bool { return true }
+// Permanent is true: no later write of the same registration presents another token or key.
+func (*AnswerMismatchError) Permanent() bool { return true }
+
+// MissingThumbprintError is a registration of Session named with no thumbprint, which
+// RegisterPodSession never sends.
+type MissingThumbprintError struct{ Session string }
+
+func (e *MissingThumbprintError) Error() string {
+	return fmt.Sprintf("the registration of session %s names no thumbprint of the role's own key; a registration is never sent without one", e.Session)
+}
+
+// Permanent is true: the registration names no key, however often it is tried.
+func (*MissingThumbprintError) Permanent() bool { return true }
 
 // doProof signs a launcher proof over this call with the held credential's key and sends it as
 // the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes

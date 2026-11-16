@@ -1,0 +1,228 @@
+package supervise
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+)
+
+// holdingBroker is POST /v1/oauth/exchange/pod-sessions as a server serves it, with the pod
+// and session the test registers: each write is committed, its thumbprint becoming the row's
+// binding, and then answered. When holdNext is set, the next write is held open until release
+// closes, and committed then — whether or not the caller is still waiting, as a server that
+// received a write commits it — and committed closes once it has been.
+type holdingBroker struct {
+	t         *testing.T
+	pod       string
+	held      chan struct{}
+	release   chan struct{}
+	committed chan struct{}
+
+	mu       sync.Mutex
+	holdNext bool
+	events   []string
+	row      string
+}
+
+func (b *holdingBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Session, Thumbprint string
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		b.t.Errorf("the registration's body does not decode: %v", err)
+	}
+	b.mu.Lock()
+	hold := b.holdNext
+	b.holdNext = false
+	b.events = append(b.events, "received "+body.Thumbprint)
+	b.mu.Unlock()
+	if hold {
+		close(b.held)
+		<-b.release
+	}
+	b.mu.Lock()
+	b.row = body.Thumbprint
+	b.events = append(b.events, "answered "+body.Thumbprint)
+	b.mu.Unlock()
+	if hold {
+		close(b.committed)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"pod_uid": b.pod, "session": body.Session, "thumbprint": body.Thumbprint, "expires_at": epoch.Add(24 * time.Hour),
+	})
+}
+
+func (b *holdingBroker) seen() ([]string, string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.events), b.row
+}
+
+// renewalTimers is the clock the registrations renew by, fired by hand: the machine's own clock
+// moves nothing here, so only the renewal the test fires runs.
+type renewalTimers struct {
+	mu      sync.Mutex
+	pending []*renewalTimer
+}
+
+type renewalTimer struct {
+	f    func()
+	done bool
+}
+
+func (r *renewalTimers) after(_ time.Duration, f func()) func() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	timer := &renewalTimer{f: f}
+	r.pending = append(r.pending, timer)
+	return func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		stopped := !timer.done
+		timer.done = true
+		return stopped
+	}
+}
+
+// fire runs the oldest timer neither fired nor stopped.
+func (r *renewalTimers) fire() {
+	r.mu.Lock()
+	var next *renewalTimer
+	for _, timer := range r.pending {
+		if !timer.done {
+			next = timer
+			break
+		}
+	}
+	if next != nil {
+		next.done = true
+	}
+	r.mu.Unlock()
+	if next != nil {
+		next.f()
+	}
+}
+
+// clientRegistrar is the daemon's Registrar over the agent-secrets client's own renewer, as the
+// daemon's adapter wires it, on the test's renewal timers.
+type clientRegistrar struct {
+	client *agentsecrets.Client
+	timers *renewalTimers
+}
+
+func (c clientRegistrar) KeepPodSession(ctx context.Context, s PodSession) (func(), error) {
+	return c.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
+		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Token: s.Token, After: c.timers.after, Bound: s.Bound,
+	})
+}
+
+// TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite: a role relaunched in its pod (a new
+// generation, so a new incarnation, with a new key) registers its session again with the new
+// hello's thumbprint. The old incarnation's renewal may be in flight when the old process is let
+// go: its write is not cancelled but waited for, so the broker answers it before the new
+// incarnation's first write is sent, and the row ends bound to the new key. Were the old write
+// only cancelled, the server would still commit it when it got to it, after the new write, and
+// put the old key back on the row until the next renewal six hours on.
+func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
+	const (
+		pod    = "pod-uid-9"
+		oldKey = "old-incarnation-key-thumbprint-aaaaaaaaaaaa"
+		newKey = "new-incarnation-key-thumbprint-bbbbbbbbbbbb"
+	)
+	broker := &holdingBroker{t: t, pod: pod, held: make(chan struct{}), release: make(chan struct{}), committed: make(chan struct{})}
+	server := httptest.NewServer(broker)
+	defer server.Close()
+	released := sync.OnceFunc(func() { close(broker.release) })
+	defer released()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("the-daemon's-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHarness(t)
+	h.withSecrets()
+	timers := &renewalTimers{}
+	h.deps.Registrar = clientRegistrar{client: &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile}, timers: timers}
+	h.start(h.store.load(h.token))
+	h.conn.SetAgentSecretsToken(testIdentity.PodToken)
+	inPod := func(generation uint64) fake.SpawnResult {
+		return fake.SpawnResult{Locator: runtime.Locator{
+			Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: runtime.SandboxIncarnation(pod, generation),
+			Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: generation},
+		}}
+	}
+	hello := func(thumbprint string) error {
+		h.conns.Register(h.token, h.conn)
+		return h.handle(StreamHello{Claim: h.token, Generation: h.generation(), AgentSecrets: &AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: testIdentity.PodToken}})
+	}
+
+	h.rt.ScriptSpawn(inPod(1))
+	h.launch()
+	if err := hello(oldKey); err != nil {
+		t.Fatal(err)
+	}
+	h.register()
+	h.ready()
+	if events, row := broker.seen(); row != oldKey {
+		t.Fatalf("after the first incarnation registered, the broker saw %v and binds %q, want %q", events, row, oldKey)
+	}
+
+	broker.mu.Lock()
+	broker.holdNext = true
+	broker.mu.Unlock()
+	go timers.fire()
+	<-broker.held
+
+	h.rt.ScriptResume(inPod(2))
+	relaunched := make(chan error, 1)
+	go func() {
+		if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}); err != nil {
+			relaunched <- err
+			return
+		}
+		if err := h.handle(RequestResume{Claim: h.token}); err != nil {
+			relaunched <- err
+			return
+		}
+		relaunched <- hello(newKey)
+	}()
+	for wait := time.Now().Add(2 * time.Second); time.Now().Before(wait); time.Sleep(10 * time.Millisecond) {
+		if events, _ := broker.seen(); slices.Contains(events, "received "+newKey) {
+			break
+		}
+	}
+	released()
+	if err := <-relaunched; err != nil {
+		t.Fatalf("the relaunch: %v", err)
+	}
+	<-broker.committed
+
+	events, row := broker.seen()
+	lastOld := -1
+	for i, event := range events {
+		if event == "answered "+oldKey {
+			lastOld = i
+		}
+	}
+	switch first := slices.Index(events, "received "+newKey); {
+	case first == -1:
+		t.Fatalf("the broker saw %v: the new incarnation wrote nothing", events)
+	case first < lastOld:
+		t.Errorf("the broker saw %v: the new incarnation's first write arrived before the old incarnation's last write was answered", events)
+	}
+	if row != newKey {
+		t.Fatalf("the broker's row of %s for %s ends bound to %q, want the new incarnation's key, %q (events %v)", pod, session, row, newKey, events)
+	}
+}
