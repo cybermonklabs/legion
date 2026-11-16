@@ -178,10 +178,10 @@ test("a Reply while the tab has a send out is refused and leaves the thread wher
   }
 });
 
-// Back and Escape with the thread composer's refusal on screen drop it, its draft with it, as
-// they drop the card's own reply's: the composer leaves with its reply, rather than staying
-// mounted, hidden, to bring the refusal back when the thread opens again.
-test("Back with the thread composer's refusal showing drops the refusal and ends its reply", async () => {
+// Back and Escape are the host's moves, so the thread composer's refusal on screen stays held for
+// its comment, its draft and its reply with it: the composer stays mounted, hidden, and that
+// comment's Reply brings it back where it was.
+test("Back with the thread composer's refusal showing keeps the refusal and its reply for the comment's Reply", async () => {
   const { queryClient, view } = renderPhoneThread();
 
   try {
@@ -192,9 +192,15 @@ test("Back with the thread composer's refusal showing drops the refusal and ends
 
     act(() => view.result.current.leave());
     expect(view.result.current.id).toBeUndefined();
-    expect(heldSends(queryClient).get(view.result.current.composerKey)).toBeUndefined();
-    expect(view.result.current.replyTo).toBeNull();
-    expect(view.result.current.holds("comment-1")).toBe(false);
+    expect(heldSends(queryClient).get(view.result.current.composerKey)?.status).toBe("refused");
+    expect(view.result.current.replyTo).toBe(reply);
+    expect(view.result.current.holds("comment-1")).toBe(true);
+
+    act(() => {
+      expect(view.result.current.beginReply(reply)).toBe(true);
+    });
+    expect(view.result.current.id).toBe("comment-1");
+    expect(heldSends(queryClient).get(view.result.current.composerKey)?.status).toBe("refused");
   } finally {
     view.unmount();
   }

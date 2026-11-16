@@ -582,9 +582,10 @@ interface MentionComposerProps {
    *  Conversation's note that a phone thread reply the reader cancelled over this composer's own
    *  draft is kept, and how to go on with it (`usePhoneThread`'s `parked`). */
   readonly notice?: ReactNode;
-  /** Ends the reply, handed the draft the field holds as the reader ends it. An inline reply's
-   *  Cancel reply also drops its draft, and a refusal with it, as the thread it answers closes:
-   *  the reply composer that mounts when the thread opens again would otherwise show it. */
+  /** Ends the reply, handed the draft the field holds as the reader ends it. Cancel reply drops
+   *  nothing itself: an inline reply's draft stays under its send name - typed, as a standing
+   *  box's does, and refused or stopped, in its held send - so the reply composer that mounts
+   *  when the thread opens again shows it, and the host decides where the reader goes. */
   readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
@@ -650,11 +651,14 @@ export function MentionComposer({
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : hashKey(mutationKey);
-  /** Where a standing box keeps the draft the reader has not sent: under its send name. */
-  const unsentName = standing ? composerName : undefined;
+  /** Where a standing box, and an inline reply, keep the draft the reader has not sent: under
+   *  the send name, for the composer that mounts there next. An inline reply's composer leaves
+   *  the page with its thread - Cancel reply, another thread, a phone thread's Back - and the
+   *  draft is that thread's until the reader sends or drops it. */
+  const unsentName = standing || inline ? composerName : undefined;
   const unsent = useUnsentDrafts();
   // Only the mount reads it, so it is computed once rather than on every keystroke: the held
-  // send's draft, else the unsent draft a standing box kept, else what the channel seeds.
+  // send's draft, else the unsent draft kept under the send name, else what the channel seeds.
   const [initial] = useState(() => {
     const held = outgoing.held?.draft;
     if (held !== undefined) {
@@ -691,7 +695,7 @@ export function MentionComposer({
     { before: string; inputType: string; range: TextEditRange } | undefined
   >(undefined);
   const previousReply = useRef<string | undefined>(undefined);
-  // Whether this mount took a draft - a held send's, or the unsent one a standing box kept -
+  // Whether this mount took a draft - a held send's, or the unsent one kept under its send name -
   // which the reply prefill must not replace.
   const mountedHeld = useRef(initial.taken);
   const [body, setBody] = useState(initial.body);
@@ -923,13 +927,11 @@ export function MentionComposer({
   /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
    *  address with the composer's own control, which the draft goes with (`ownMoves`). */
   const [cancels, setCancels] = useState(0);
-  /** Ends the reply, handing the host the draft as the field holds it; an inline reply's draft
-   *  and refusal end with it (`onCancelReply`). */
+  /** Ends the reply, handing the host the draft as the field holds it. The draft stays where it
+   *  is kept - the field, the unsent draft under the send name, the held send - so nothing the
+   *  reader wrote goes with no word: the host moves the reader, and an own move carries the
+   *  draft's send with it (`ownMoves`). */
   const cancelReply = () => {
-    if (inline) {
-      clearDraft();
-      outgoing.discard();
-    }
     setCancels((count) => count + 1);
     onCancelReply?.({ body, mentions, replacement });
   };
@@ -978,9 +980,9 @@ export function MentionComposer({
     window.addEventListener("pagehide", keepNow);
     return () => window.removeEventListener("pagehide", keepNow);
   }, []);
-  // A standing box's unsent draft is written under its send name while no send of its own holds
-  // the draft. From Send on the held send keeps it, so Send drops the unsent copy in its own task
-  // (`send`): a box drawn after that send landed must not bring back words already sent.
+  // The unsent draft is written under its send name while no send of its own holds the draft.
+  // From Send on the held send keeps it, so Send drops the unsent copy in its own task (`send`): a
+  // composer drawn after that send landed must not bring back words already sent.
   useEffect(() => {
     if (unsentName === undefined || holdsSend) return;
     unsent.write(
@@ -1403,8 +1405,8 @@ export function MentionComposer({
   /** Sends the draft as it stands, its whole request frozen here (`sentRequest`), so nothing done
    *  after this call can change where it goes. Until the server answers, one fieldset holds every
    *  control that could change or discard the draft; the held send covers that hold in this task
-   *  before React can disable the fieldset. From here on the held send keeps the draft, so a
-   *  standing box's unsent copy goes. */
+   *  before React can disable the fieldset. From here on the held send keeps the draft, so the
+   *  unsent copy under the send name goes. */
   const send = () =>
     outgoing.send((refused) => {
       setConfirmingDiscard(false);
@@ -1509,15 +1511,19 @@ export function MentionComposer({
             to={replyTo.to}
           />
           {/* The reply is part of the message's address, fixed once the send is out, so the
-              composer's control fieldset holds it with every other draft control. */}
-          <button
-            aria-label="Cancel reply"
-            className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
-            onClick={cancelReply}
-            type="button"
-          >
-            ×
-          </button>
+              composer's control fieldset holds it with every other draft control. A standing
+              box's reply is the box's own address, which nothing ends, so it offers no Cancel
+              reply: the control would do nothing there, and the draft stays in the field. */}
+          {standing ? null : (
+            <button
+              aria-label="Cancel reply"
+              className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-lg leading-none disabled:cursor-not-allowed disabled:opacity-50 md:min-h-8 md:min-w-8 ${textMutedOnSurfaceMuted}`}
+              onClick={cancelReply}
+              type="button"
+            >
+              ×
+            </button>
+          )}
         </div>
       )}
       {compact || anchor === undefined ? null : (
@@ -1882,8 +1888,12 @@ export function MentionComposer({
           {/* A kind the closed issue refuses takes no Retry, and neither does a draft written for
               another address than the composer shows, so the refusal's own way out is to drop
               the draft it handed back, once the reader has it; a send the reader stopped offers
-              both ways. */}
-          {refusedKind || elsewhere !== undefined || refusal instanceof SendStoppedError ? (
+              both ways, and so does an inline reply's refusal, which its Cancel reply keeps for
+              the thread rather than dropping. */}
+          {refusedKind ||
+          elsewhere !== undefined ||
+          refusal instanceof SendStoppedError ||
+          inline ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={discard}

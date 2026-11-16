@@ -1,20 +1,26 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
+import { heldSends } from "../conversation/held-sends";
+import type { SentRequest } from "../conversation/send-request";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError } from "../writes/keyed-write";
+import { marginReplySendKey } from "./margin-context";
 import { ThreadCard } from "./ThreadCard";
 import type { Thread } from "./useMarginItems";
 
@@ -405,6 +411,153 @@ test("Escape with an empty inline reply collapses the thread", async () => {
     view.unmount();
   }
 });
+
+/** A card its host opens and closes as the margin's list does: its toggle flips `expanded`. */
+function ToggledCard(props: Omit<EditableCardProps, "expanded" | "onToggle">) {
+  const [expanded, setExpanded] = useState(true);
+  return (
+    <EditableCard {...props} expanded={expanded} onToggle={() => setExpanded((open) => !open)} />
+  );
+}
+
+/** The thread's reply send name, as the margin names it. */
+const replyKey = marginReplySendKey(root.id);
+
+/** What a refusal Dispatch gave says in the reply composer. */
+const refusedText = "Couldn't send — the server is down";
+
+/** What a send the reader stopped says in its composer at its own address: Dispatch has not
+ *  confirmed it, and its Retry asks again under its own key. */
+const stoppedText = new SendStoppedError().message;
+
+/** Sends `body` as the thread's reply through the held-send store, as its composer's Send does,
+ *  to a server that is down, and stops it once it is late, as the reader's Stop trying does: the
+ *  write may have been delivered, and the store holds it stopped under its key, `stopped-send`.
+ *  `createComment` answers its attempts. */
+async function stopReply(
+  queryClient: QueryClient,
+  createComment: Mock<typeof api.createComment>,
+  body: string
+): Promise<void> {
+  createComment.mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const request: SentRequest = {
+    anchor: undefined,
+    ask: { multiple: false, options: [], urgency: "med" },
+    draft: { body, mentions: [], replacement: "" },
+    edit: undefined,
+    kind: "comment",
+    owner: { issueKey: "CORE-1", kind: "issue" },
+    plainDelivery: "steer",
+    replyTo: { actor: root.author, excerpt: "", id: root.id, parentKind: "comment" },
+    sendKey: "stopped-send",
+  };
+  jest.useFakeTimers();
+  try {
+    act(() => {
+      heldSends(queryClient).send(replyKey, request);
+    });
+    await stopTheLateWrite(queryClient);
+  } finally {
+    realClock();
+  }
+}
+
+/** How each kept draft is named in a row's title. */
+const keptWords = {
+  refused: "Dispatch refused",
+  stopped: "the reader stopped",
+  typed: "never sent",
+} as const;
+
+// Cancel reply is the reader's own move, and a margin thread has no other composer to take the
+// reply to: the reply is kept under its own send name, the card says so until the reader goes on
+// with it, and the card's Reply puts it back in the field - its text, a refusal's note, and a
+// stopped send's note that it may have been delivered. Nothing is sent until the reader presses:
+// a refusal's Retry then goes under a key of its own, and a stopped send's under the key it went
+// out under, at the address it went to.
+for (const kept of ["typed", "refused", "stopped"] as const) {
+  test(`Cancel reply keeps a margin reply ${keptWords[kept]}, the card says so, and its Reply brings it back`, async () => {
+    const user = userEvent.setup();
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+    });
+    const createComment = spyOn(api, "createComment");
+    const body = `Reply ${keptWords[kept]}, then Cancel reply`;
+    if (kept === "stopped") await stopReply(queryClient, createComment, body);
+    createComment.mockResolvedValue({ ...reply, body, id: "reply-2" });
+    if (kept === "refused") {
+      createComment.mockRejectedValueOnce(
+        new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+      );
+    }
+    const view = render(
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ToggledCard
+            actionFailure={undefined}
+            artifactSlug="spec"
+            hovered={false}
+            isClosed={false}
+            onAction={() => {}}
+            onEdit={async () => undefined}
+            onRetryAction={() => {}}
+            owner={{ key: "CORE-1", kind: "issue" }}
+            pendingAction={false}
+            replyMutationKey={replyKey}
+            thread={thread()}
+            viewerLogin="alice"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+
+    try {
+      if (kept === "stopped") {
+        expect(within(card).getByText(stoppedText)).toBeTruthy();
+      } else {
+        await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+        await user.paste(body);
+        if (kept === "refused") {
+          await user.click(within(card).getByRole("button", { name: "Send" }));
+          await within(card).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+
+      await user.click(within(card).getByRole("button", { name: "Cancel reply" }));
+      expect(card).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+      expect(within(card).getByRole("status").textContent).toBe(
+        "Your reply to the comment by alice is kept. Press Reply to go on with it."
+      );
+      expect(createComment).toHaveBeenCalledTimes(sent);
+
+      await user.click(within(card).getByRole("button", { name: "Reply" }));
+      expect(card).toHaveAttribute("aria-expanded", "true");
+      // The text and the note in one comparison, so a row that fails says which of them is gone.
+      expect({
+        refusal: within(card).queryByText(refusedText) !== null,
+        stopped: within(card).queryByText(stoppedText) !== null,
+        text: within(card).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value,
+      }).toEqual({ refusal: kept === "refused", stopped: kept === "stopped", text: body });
+      expect(within(card).queryByText(/is kept/)).not.toBeInTheDocument();
+      expect(createComment).toHaveBeenCalledTimes(sent);
+
+      if (kept === "typed") return;
+      await user.click(within(card).getByRole("button", { name: "Retry" }));
+      await waitFor(() => expect(createComment).toHaveBeenCalledTimes(sent + 1));
+      const keys = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+      if (kept === "refused") expect(keys[1]).not.toBe(keys[0]);
+      if (kept === "stopped") expect(keys.at(-1)).toBe("stopped-send");
+    } finally {
+      view.unmount();
+      createComment.mockRestore();
+    }
+  });
+}
 
 test("a terminal suggestion shows its disposition and has no Reopen control", () => {
   const accepted = comment("root-1", "Suggested replacement.", "2026-09-10T00:00:00Z", {

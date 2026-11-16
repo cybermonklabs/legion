@@ -782,6 +782,9 @@ function CommentTurn({
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
         pulseOrphanBlock={false}
+        // A reply the card keeps while its thread is closed comes back with Expand thread: the
+        // turn's Reply answers through another composer.
+        reopenControl="Expand thread"
         replyMutationKey={replySendKey}
         showReference={false}
         renderDeliveries={(comment) => (

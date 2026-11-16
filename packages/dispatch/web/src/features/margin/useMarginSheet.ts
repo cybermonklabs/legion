@@ -141,13 +141,13 @@ export function useMarginSheet(): MarginSheetModel {
     sheetReplyKey,
     { untilDeadline: true }
   );
+  // Back is the host's move, so the thread's reply stays held for its thread, whatever it holds:
+  // typed and never sent (`MentionComposer`'s `inline`), refused, or stopped. Opening the thread
+  // again brings it back, and the list's card says it is kept meanwhile (`ThreadCard`).
   const closeThread = useCallback(() => {
     if (sheetReplySendingNow()) return;
     setSheetThreadKey(undefined);
-    // Back drops a refusal the thread's reply holds, its draft with it, as a Conversation phone
-    // thread's does; a send still out past the deadline stays held for the thread's return.
-    if (sheetThreadKey !== undefined) store.discard(marginReplySendKey(sheetThreadKey));
-  }, [sheetReplySendingNow, sheetThreadKey, store]);
+  }, [sheetReplySendingNow]);
   const marginRef = useRef<HTMLElement>(null);
   const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   const viewer = useQuery(whoAmIQuery());

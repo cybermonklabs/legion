@@ -114,7 +114,18 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   file went, and a refused upload's Retry uploads to the owner the file was pasted for, since the
   press carries it, and adds its reference to the message the composer writes now.
   A move of the host's - another row, another thread, a Reply on a message, a newer message in an
-  Inbox agent thread - carries nothing: the text stays with the address it was written for.
+  Inbox agent thread, a phone thread's Back and Escape - carries nothing: the text stays with the
+  address it was written for, and is there when the reader comes back to it.
+  Neither move lets what the reader wrote go with no word. A composer whose own controls have no
+  other composer to carry the draft to keeps it under its own send name: an inline reply's Cancel
+  reply (and Escape in its field) ends the reply and drops nothing, so its text waits as a standing
+  box's does (below) and a refused or stopped send stays held, and the thread card, closed, says so
+  (`Your reply to the comment by <author> is kept. Press Reply to go on with it.`, `keptReply` on
+  `ThreadCard`, which names the host's own control instead where it draws one, `reopenControl`:
+  the Conversation's Expand thread); the card's Reply, or that control, brings it back with its
+  refusal, and nothing is sent until the reader presses. An inline reply's refusal offers Discard
+  draft beside Retry, since its Cancel reply no longer drops it. An Inbox thread box is the
+  thread's standing reply, so its Cancel reply and Escape leave its draft in the field.
   A surface keyed by its subject gets that from its key (the Inbox's thread boxes, below); one
   instance whose address a prop changes holds what it made there.
   `HeldSends.send` refuses a request whose owner, anchor, reply or edited comment is not where the
@@ -141,18 +152,20 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   and message boxes do, and show only the session's sends that answer that thread (`thread` on
   `AgentMessageComposer`), so a reply refused in one thread is never shown, or retried, in another
   thread of the same session.
-  What the reader types into a standing box and does not send waits in that box, by its send name
-  (`features/conversation/unsent-drafts.ts`, a draft store of the kind the ask's answer and reply
-  drafts are kept in): the box drawn when the column comes back to that thread shows it again, no
-  other thread's box shows it, and Send drops it, since from then on the held send keeps the draft.
+  What the reader types into a standing box, or into an inline reply, and does not send waits by
+  its send name (`features/conversation/unsent-drafts.ts`, a draft store of the kind the ask's
+  answer and reply drafts are kept in): the composer drawn when the column, or the thread, comes
+  back to it shows it again, no other thread's composer shows it, and Send drops it, since from
+  then on the held send keeps the draft.
   On a phone, a comment's thread opens full-screen over the Conversation. The docked composer stays
   mounted under it, hidden, and a comment's Reply answers in the thread by a composer of its own,
   with its own reply and its own send name beneath the tab's, which the thread view keeps mounted,
   hidden, across Back and another comment's thread until the reply is sent or cancelled; so a
   thread opened or left while a send is out leaves that send's composer, its draft and its refusal
-  where the reader finds them. A refusal the thread shows is the reader's to leave: Back, Escape
-  and Collapse thread drop it, its draft with it - the card's reply's, and the thread composer's,
-  whose reply ends with it (`usePhoneThread`'s `leave`). The thread composer's Cancel reply, and
+  where the reader finds them. Back, Escape and Collapse thread are the host's moves, so they drop
+  nothing: the card's reply and the thread composer's stay held for their thread, typed, refused or
+  stopped, and opening the thread again, or that comment's Reply, brings each back as it was
+  (`usePhoneThread`'s `leave`). The thread composer's Cancel reply, and
   Escape in its field, are the reader's own move to the issue's address, so its draft does as the
   docked composer's does: the text, and a refused or stopped send with it, go to the docked
   composer (`usePhoneThread`'s `cancelReply`, `HeldSends.carryInto`, `MentionComposer`'s
@@ -981,10 +994,19 @@ margin's rail, a move between the open and resolved lists, another document or a
 Coming back to a document opens a thread whose reply is held there. A thread whose reply the
 store holds also stays in the list it was in, open or resolved, whoever resolves or reopens it,
 the reader's own Resolve included (`held` on `useMarginItems`), so the card the reader was in
-stays on screen. An inline reply's Cancel reply drops the draft and any refusal with it. On a
-phone the thread fills the screen instead, and its Back and Escape wait for its reply until the
-send's deadline, as a Conversation phone thread's do; past it they leave the thread and the reply
-keeps its send, and otherwise they drop the reply, draft and refusal with it.
+stays on screen. What the reader typed into the reply and has not sent is the thread's too, kept
+under the same name (`MentionComposer`'s `inline`, `unsent-drafts.ts`). The margin has no other
+composer to take a reply to, so an inline reply's Cancel reply, and Escape in its field, close the
+thread and keep its draft, typed, refused or stopped: the closed card says `Your reply to the
+comment by <author> is kept. Press Reply to go on with it.` beside a Reply of its own, which opens
+the thread with the draft in the field, a refusal's note, or a stopped send's, which still goes
+only under its own key, and nothing is sent until the reader presses (`keptReply` on
+`ThreadCard`). Discard draft beside the refusal is how the reader drops it. On a phone the thread
+fills the screen instead, and its Back and Escape wait for its reply until the send's deadline,
+as a Conversation phone thread's do; past it they leave the thread and the reply keeps its send.
+Back is the host's move, so it drops nothing: the reply, typed, refused or stopped, is held for
+its thread, the list's card says it is kept, and opening the thread brings it back
+(`useMarginSheet`'s `closeThread`).
 
 The composer a selection-bar action opens is anchored to the provisional mark the editor wrote, and
 the margin owns that mark from then on (`margin-context.tsx`): its Comment / Suggest / Ask switch

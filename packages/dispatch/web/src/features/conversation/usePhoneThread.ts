@@ -64,10 +64,10 @@ export interface PhoneThread {
    *  `onClose`): a refusal it still holds goes too. */
   readonly endReply: () => void;
   /** The reader leaves the thread - Back, Escape, Collapse thread: refused while the open
-   *  thread's card has its reply out, until the send's deadline. Past it they leave and the reply
-   *  keeps its send; otherwise a refusal the thread shows - the card's reply's, or the thread
-   *  composer's, which ends its reply - goes with the thread, its draft with it. A thread
-   *  composer put away shows nothing there, and keeps what it holds. */
+   *  thread's card has its reply out, until the send's deadline. Leaving is the host's move, so
+   *  it carries nothing and drops nothing: the card's reply and the thread composer's stay held
+   *  for their thread, typed, out, refused or stopped, and opening the thread again, or that
+   *  comment's Reply, brings each back where it was. */
   readonly leave: () => void;
   /** Hides the thread once a decision on its comment lands, and leaves every send the store holds
    *  where it is: a refused reply and the comment it answers stay, as above the phone layout. */
@@ -167,13 +167,6 @@ export function usePhoneThread({
     id: isPhoneViewport || outlived || cardReplySending || replySending ? openId : undefined,
     leave: () => {
       if (cardReplySendingNow()) return;
-      // A send still out past the deadline stays held for the thread's return, and so does a
-      // thread composer's refusal while another comment's thread hides it, or while it is put
-      // away.
-      if (openId !== undefined) {
-        store.discard(threadReplySendKey(sendKey, openId));
-        if (replyTo?.id === openId && !parked && store.discard(composerKey)) setReplyTo(null);
-      }
       hide();
     },
     open: setOpenId,

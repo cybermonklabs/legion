@@ -417,10 +417,10 @@ test("on a phone, a thread's Reply over its card's refused reply keeps that draf
   }
 });
 
-// The thread composer's refusal is the thread's while it shows: Back, Escape from the thread and
-// Escape in the composer's field each drop it, its draft with it, as they drop the card's own
-// reply's, so neither the thread opened again nor the next Reply brings it back.
-test("on a phone, Back and Escape from a thread reply's refusal drop its draft and refusal @phone", async ({
+// Back and Escape from the thread are the host's moves, so the thread composer's refusal is held
+// for its comment: the draft and the refusal are there each time the thread opens again. Escape in
+// the composer's field is the reader's own Cancel reply, which takes them to the docked composer.
+test("on a phone, Back and Escape from a thread reply's refusal keep its draft and refusal for the thread's return @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -438,42 +438,37 @@ test("on a phone, Back and Escape from a thread reply's refusal drop its draft a
     const refusal = thread.getByText(WRITE_REFUSED_TEXT);
     const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     refuse();
-    const sendRefused = async (draft: string) => {
-      await expect(field).toHaveValue("");
-      await field.fill(draft);
-      await threadForm.getByRole("button", { exact: true, name: "Send" }).click();
-      await expect(refusal).toBeVisible();
+    const draft = "Refused, then Back";
+    const expectHeld = async () => {
       await expect(field).toHaveValue(draft);
-    };
-    const expectDropped = async () => {
-      await expect(field).toHaveCount(0);
-      await expect(refusal).toHaveCount(0);
-      await expect(threadForm.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+      await expect(refusal).toBeVisible();
     };
 
     await commentTurn(page, earlier.id).getByRole("button", { exact: true, name: "Reply" }).click();
-    await sendRefused("Refused, then Back");
+    await expect(field).toHaveValue("");
+    await field.fill(draft);
+    await threadForm.getByRole("button", { exact: true, name: "Send" }).click();
+    await expectHeld();
     await leaveThread(page);
     await openThread(page, earlier.id);
-    await expectDropped();
+    await expectHeld();
 
-    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
-    await sendRefused("Refused, then Escape");
     // Escape from outside the composer is the thread dialog's own close.
     await thread.getByRole("button", { name: /^Copy reference/ }).focus();
     await page.keyboard.press("Escape");
     await expect(threadView(page)).toHaveCount(0);
     await openThread(page, earlier.id);
-    await expectDropped();
+    await expectHeld();
 
-    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
-    await sendRefused("Refused, then Escape in the field");
     await field.press("Escape");
     await expect(thread).toBeVisible();
-    await expectDropped();
-    await thread.getByRole("button", { exact: true, name: "Reply" }).click();
-    await expect(field).toHaveValue("");
+    await expect(field).toHaveCount(0);
     await expect(refusal).toHaveCount(0);
+    await expect(threadForm.getByRole("textbox", { name: "Reply" })).toHaveValue("");
+    await leaveThread(page);
+    const docked = page.getByRole("form", { name: "Comment composer" });
+    await expect(docked.getByRole("textbox", { name: "Comment" })).toHaveValue(draft);
+    await expect(docked.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
   } finally {
     await alice.close();
   }

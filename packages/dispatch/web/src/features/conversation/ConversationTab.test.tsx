@@ -1,12 +1,12 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { jump } from "../../__tests__/fake-clock";
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
@@ -16,6 +16,7 @@ import {
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
@@ -41,9 +42,13 @@ import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
+import { heldSends } from "./held-sends";
+import type { SentRequest } from "./send-request";
+import { threadReplySendKey } from "./usePhoneThread";
 
 const alice: Actor = { id: "alice", kind: "user" };
 
@@ -1638,12 +1643,15 @@ test("a reply the docked composer holds refused is posted as a new comment after
 
 /** The Conversation at a phone width over one comment, `Comment A`, whose comment writes
  *  `createComment` answers. */
-function phoneOverCommentA(createComment: Mock<typeof api.createComment>) {
+function phoneOverCommentA(
+  createComment: Mock<typeof api.createComment>,
+  queryClient = newQueryClient()
+) {
   const restoreViewport = stubMatchMedia(true);
   const stub = stubLists({
     comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
   });
-  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
   return {
     restore: () => {
       view.unmount();
@@ -1793,6 +1801,161 @@ test("on a phone, Cancel reply over a docked draft of its own keeps both, and th
     phone.restore();
   }
 });
+
+/** What a send the reader stopped says in its composer at its own address: Dispatch has not
+ *  confirmed it, and its Retry asks again under its own key. */
+const stoppedText = new SendStoppedError().message;
+
+/** The phone thread composer's send name, and the one of `Comment A`'s thread card's own reply. */
+const threadComposerKey: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
+const cardReplyKey = threadReplySendKey(["conversation-composer", "CORE-1"], "comment-a");
+
+/** Sends `body` as a reply to `Comment A` under `mutationKey` through the held-send store, as
+ *  that composer's Send does, to a server that is down, and stops it once it is late, as the
+ *  reader's Stop trying does: the write may have been delivered, and the store holds it stopped
+ *  under its own key. `createComment` answers its attempts. */
+async function stopReplyToCommentA(
+  queryClient: QueryClient,
+  createComment: Mock<typeof api.createComment>,
+  mutationKey: MutationKey,
+  body: string
+): Promise<void> {
+  createComment.mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const request: SentRequest = {
+    anchor: undefined,
+    ask: { multiple: false, options: [], urgency: "med" },
+    draft: { body, mentions: [], replacement: "" },
+    edit: undefined,
+    kind: "comment",
+    owner: { issueKey: "CORE-1", kind: "issue" },
+    plainDelivery: "steer",
+    replyTo: { actor: alice, excerpt: "Comment A", id: "comment-a", parentKind: "comment" },
+    sendKey: "stopped-send",
+  };
+  jest.useFakeTimers();
+  try {
+    act(() => {
+      heldSends(queryClient).send(mutationKey, request);
+    });
+    await stopTheLateWrite(queryClient);
+  } finally {
+    realClock();
+  }
+}
+
+/** How each held draft is named in a row's title. */
+const heldWords = {
+  refused: "Dispatch refused",
+  stopped: "the reader stopped",
+  typed: "never sent",
+} as const;
+
+// Back is a move of the host's, not one the reader makes with the composer's own controls, so it
+// carries the thread composer's draft nowhere: the draft is held for the comment it answers, and
+// that comment's Reply brings it back - its text, a refusal's note, and a stopped send's note
+// that it may have been delivered. Nothing is sent meanwhile.
+for (const held of ["typed", "refused", "stopped"] as const) {
+  test(`on a phone, a thread reply ${heldWords[held]} comes back with the comment's Reply after Back`, async () => {
+    const user = userEvent.setup();
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+    );
+    const queryClient = newQueryClient();
+    const body = `Reply ${heldWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplyToCommentA(queryClient, createComment, threadComposerKey, body);
+    }
+    const phone = phoneOverCommentA(createComment, queryClient);
+    const reply = async () => {
+      await user.click(within(phone.turn()).getByRole("button", { name: "Reply" }));
+      return screen.findByRole("dialog", { name: "Thread" });
+    };
+
+    try {
+      await screen.findByText("Comment A");
+      let dialog: HTMLElement;
+      if (held === "stopped") {
+        dialog = await reply();
+        expect(within(dialog).getByText(stoppedText)).toBeTruthy();
+      } else {
+        dialog = await writeInThread(user, phone.turn(), body);
+        if (held === "refused") {
+          await user.click(within(dialog).getByRole("button", { name: "Send" }));
+          await within(dialog).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+      await user.click(within(dialog).getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+
+      dialog = await reply();
+      // The text and the note in one comparison, so a row that fails says which of them is gone.
+      expect({
+        refusal: within(dialog).queryByText(refusedText) !== null,
+        stopped: within(dialog).queryByText(stoppedText) !== null,
+        text: within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value,
+      }).toEqual({ refusal: held === "refused", stopped: held === "stopped", text: body });
+      expect(createComment).toHaveBeenCalledTimes(sent);
+    } finally {
+      phone.restore();
+    }
+  });
+}
+
+// The thread card's own reply lives in the thread view, which Back takes off the page: Back is the
+// host's move all the same, so the card's draft is held for its thread, and opening the thread
+// again brings it back, with a refusal's note or a stopped send's.
+for (const held of ["typed", "refused", "stopped"] as const) {
+  test(`on a phone, the thread card's own reply ${heldWords[held]} comes back in its thread after Back`, async () => {
+    const user = userEvent.setup();
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+    );
+    const queryClient = newQueryClient();
+    const body = `Card reply ${heldWords[held]}, then Back`;
+    if (held === "stopped") {
+      await stopReplyToCommentA(queryClient, createComment, cardReplyKey, body);
+    }
+    const phone = phoneOverCommentA(createComment, queryClient);
+    const openThread = async () => {
+      await user.click(within(phone.turn()).getByRole("button", { name: "Expand thread" }));
+      return screen.findByRole("dialog", { name: "Thread" });
+    };
+
+    try {
+      await screen.findByText("Comment A");
+      let dialog = await openThread();
+      const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+      if (held === "stopped") {
+        expect(within(dialog).getByText(stoppedText)).toBeTruthy();
+      } else {
+        await user.click(field);
+        await user.paste(body);
+        if (held === "refused") {
+          const form = field.closest("form");
+          if (form === null) throw new Error("expected the card's reply form");
+          await user.click(within(form).getByRole("button", { name: "Send" }));
+          await within(dialog).findByText(refusedText);
+        }
+      }
+      const sent = createComment.mock.calls.length;
+      await user.click(within(dialog).getByRole("button", { name: "Back" }));
+      expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+
+      dialog = await openThread();
+      expect({
+        refusal: within(dialog).queryByText(refusedText) !== null,
+        stopped: within(dialog).queryByText(stoppedText) !== null,
+        text: within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value,
+      }).toEqual({ refusal: held === "refused", stopped: held === "stopped", text: body });
+      expect(createComment).toHaveBeenCalledTimes(sent);
+    } finally {
+      phone.restore();
+    }
+  });
+}
 
 test(
   "shows Jump to latest until the reader returns to the top",
