@@ -119,7 +119,7 @@ type dispatchInput struct {
 // DispatchArgs itself.
 func dispatchClusterOnlyRefusals() []dispatchInput {
 	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
-		{"sharedHostname", func(a *gcp.DispatchArgs) { a.SharedHostname = dispatchSharedHostname }},
+		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
 		{"envoyImage", func(a *gcp.DispatchArgs) { a.EnvoyImage = dispatchEnvoyImage }},
 		{"cloudSqlProxyImage", func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = dispatchProxyImage }},

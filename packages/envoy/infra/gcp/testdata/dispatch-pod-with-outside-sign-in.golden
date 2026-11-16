@@ -91,8 +91,8 @@
             "value": "https://example-dispatch.example-tailnet.ts.net"
           },
           {
-            "name": "DISPATCH_SHARED_ORIGIN",
-            "value": "https://dispatch-shared.example-tailnet.ts.net"
+            "name": "DISPATCH_OUTSIDE_ORIGIN",
+            "value": "https://dispatch-outside.example.com"
           },
           {
             "name": "DISPATCH_LISTEN_HOST",
