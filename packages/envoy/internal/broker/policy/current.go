@@ -114,6 +114,10 @@ type valueOutcome struct {
 // failed load and writes nothing.
 func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Current, error) {
 	c := &Current{loader: loader, mu: make(chan struct{}, 1), recent: map[string]time.Time{}, values: map[string]*valueState{}, now: time.Now}
+	// The loader weighs a secret waiting for its value by c's clock, which PendingValue reads too,
+	// so the two never answer differently. Load and LoadOne run under the writer lock, which SetNow
+	// holds while it changes the clock.
+	c.loader.now = func() time.Time { return c.now() }
 	if err := c.Refresh(ctx); err != nil {
 		return nil, err
 	}
@@ -325,17 +329,17 @@ func (c *Current) CheckName(name string) error {
 func (c *Current) storeID(name string) string { return c.loader.Prefix + slugOf(name) }
 
 // PendingValue reports whether set holds the secret a session asks for as name waiting for its
-// first value (Set.Pending, ReasonPendingValue), not served, and created less than
-// PendingValueWindow ago by c's clock: a request for it is refused ErrPendingValue rather than
-// ErrUnknownSecret. The age is checked here, not only at load, so a set no load or reread has
-// replaced since (a reread the miss-path limit refused, or one that failed) stops answering
-// pending at the window, as the policy's own reason would.
+// first value (Set.Pending, ReasonPendingValue), not served, and still waiting by c's clock
+// (pendingAt), which c's loads and rereads weigh it by too (NewCurrent): a request for it is refused
+// ErrPendingValue rather than ErrUnknownSecret. The age is checked here, not only at load, so a set
+// no load or reread has replaced since (a reread the miss-path limit refused, or one that failed)
+// stops answering pending at the window, as the policy's own reason would.
 func (c *Current) PendingValue(set *Set, name string) bool {
 	if _, served := set.Secrets[name]; served || c.CheckName(name) != nil {
 		return false
 	}
 	waiting, ok := set.Pending[c.storeID(name)]
-	return ok && !waiting.Created.IsZero() && c.now().Sub(waiting.Created) < PendingValueWindow
+	return ok && pendingAt(waiting.Created, c.now())
 }
 
 // merge sets name, whose whole name in the store is id, in set's maps as lk found it: the served

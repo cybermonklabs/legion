@@ -206,3 +206,33 @@ func TestAPendingAnswerEndsAtTenMinutesWithoutAReload(t *testing.T) {
 		}
 	})
 }
+
+// TestTheLoadAndThePendingAnswerReadOneClock: the ten-minute rule is one rule on one clock,
+// Current's: a load, a reread and the PENDING_VALUE answer all read the age of a secret waiting for
+// its value by it. Moved ten minutes past the secret's creation, it makes the load and the reread
+// refuse the secret no-current-value and the answer say it is no longer pending, though the wall
+// clock has not moved.
+func TestTheLoadAndThePendingAnswerReadOneClock(t *testing.T) {
+	created := time.Now()
+	store := secrets.NewLocal(createdWithoutValue("WAITING_KEY", created))
+	cur := policytest.Current(t, store)
+	id := policytest.ID("WAITING_KEY")
+	if _, waits := cur.Get().Pending[id]; !waits {
+		t.Fatalf("pending %+v; want WAITING_KEY pending at its creation", cur.Get().Pending)
+	}
+	policy.SetNow(cur, func() time.Time { return created.Add(10 * time.Minute) })
+	ctx := context.Background()
+	if err := cur.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	set := cur.Get()
+	if refusal := set.Refused[id]; refusal.Reason != policy.ReasonNoCurrentValue || len(set.Pending) != 0 {
+		t.Fatalf("a load at ten minutes by Current's clock: refused %+v, pending %+v; want WAITING_KEY refused no-current-value", set.Refused, set.Pending)
+	}
+	if lk, err := cur.RefreshOne(ctx, "WAITING_KEY"); err != nil || lk.Reason != policy.ReasonNoCurrentValue {
+		t.Fatalf("a reread at ten minutes by Current's clock = %+v, %v; want no-current-value", lk, err)
+	}
+	if cur.PendingValue(set, "WAITING_KEY") {
+		t.Fatal("at ten minutes by Current's clock: PendingValue = true, want false")
+	}
+}

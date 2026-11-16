@@ -42,6 +42,15 @@ const PendingMessage = "agent secret policy waiting for a value"
 // has given up on, and none waits past the create that made it.
 const PendingValueWindow = 10 * time.Minute
 
+// pendingAt is the one statement of the window: whether a secret the store created at created,
+// made before its value, still waits for it at now. A secret whose creation time the store did
+// not name waits for nothing. Load and LoadOne weigh it at the loader's clock (Loader.clock), and
+// Current.PendingValue at Current's, which NewCurrent makes the loader's, so the load, the reread
+// and the PENDING_VALUE answer read one clock.
+func pendingAt(created, now time.Time) bool {
+	return !created.IsZero() && now.Sub(created) < PendingValueWindow
+}
+
 // LoadFailedMessage is written, at ERROR, by the reload NewCurrent runs every interval, on the
 // first reload of a run that fails while its context is live; the previous policy stays in force,
 // and the reloads of the run after it write nothing until one loads again (LoadRecoveredMessage).
@@ -212,14 +221,27 @@ type Loader struct {
 	// all the same. In production: NewStoreReads on the registry the metrics port serves. A nil
 	// counter counts nothing, which is every Loader a test builds that is not about the count.
 	StoreReads *metrics.Counter
+	// now is the clock the loader weighs a secret waiting for its value by (pendingAt): Current's
+	// own, which NewCurrent sets, and time.Now while it is nil, for a Loader no Current holds.
+	now func() time.Time
+}
+
+// clock is the time by l's clock (Loader.now).
+func (l Loader) clock() time.Time {
+	if l.now == nil {
+		return time.Now()
+	}
+	return l.now()
 }
 
 // Load reads the namespace into a Set: each secret it serves, each it refuses with why
-// (Set.Refused, refusalOf), each waiting for its value (Set.Pending), and the version of each
-// served kind secret's value as the listing names it, which Current decodes. It writes no line
-// and reads no value: Current, which keeps the set before, writes the lines a change of state
-// calls for, and reads the values. A failed store call fails the whole load.
+// (Set.Refused, refusalOf), each waiting for its value (Set.Pending) by the loader's clock
+// (pendingAt), and the version of each served kind secret's value as the listing names it, which
+// Current decodes. It writes no line and reads no value: Current, which keeps the set before,
+// writes the lines a change of state calls for, and reads the values. A failed store call fails
+// the whole load.
 func (l Loader) Load(ctx context.Context) (*Set, error) {
+	now := l.clock()
 	l.StoreReads.Inc(readList)
 	listings, err := l.Store.List(ctx, l.Prefix)
 	if err != nil {
@@ -233,7 +255,7 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 		if !ok {
 			continue
 		}
-		secret, reason, err := l.secret(ctx, slug, ls)
+		secret, reason, err := l.secret(ctx, slug, ls, now)
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +353,7 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	case err != nil:
 		return Lookup{}, err
 	}
-	secret, reason, err := l.secret(ctx, slug, ls)
+	secret, reason, err := l.secret(ctx, slug, ls, l.clock())
 	if err != nil {
 		return Lookup{}, err
 	}
@@ -346,10 +368,10 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	return lk, nil
 }
 
-// secret reads one secret under the prefix, answering the reason it is refused when it is. It asks
-// the store whether the secret is on the agent-secrets key only after every tag check, so a secret
-// refused for its name or tags costs no key lookup; a failed lookup is an error.
-func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Secret, string, error) {
+// secret reads one secret under the prefix at now, answering the reason it is refused when it is.
+// It asks the store whether the secret is on the agent-secrets key only after every tag check, so
+// a secret refused for its name or tags costs no key lookup; a failed lookup is an error.
+func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now time.Time) (Secret, string, error) {
 	if !slugPattern.MatchString(slug) {
 		return Secret{}, ReasonNameMalformed, nil
 	}
@@ -447,9 +469,9 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing) (Se
 	if !ls.HasCurrentValue {
 		// A secret `agent-secrets secret create` made before its value (Unfilled: the create label,
 		// no version) is a create waiting for that value, until the create's own prompt ends, at
-		// PendingValueWindow, when the create discards it. Any other secret without a value, and
-		// one whose creation time the store did not name, is refused at once.
-		if ls.Unfilled && !ls.Created.IsZero() && time.Since(ls.Created) < PendingValueWindow {
+		// PendingValueWindow, when the create discards it (pendingAt). Any other secret without a
+		// value, and one whose creation time the store did not name, is refused at once.
+		if ls.Unfilled && pendingAt(ls.Created, now) {
 			return Secret{}, ReasonPendingValue, nil
 		}
 		return Secret{}, ReasonNoCurrentValue, nil
