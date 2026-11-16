@@ -1155,13 +1155,12 @@ server starts and says so.
 Every image must be pinned by SHA-256 digest. Verify an `envoyImage` digest from
 `ghcr.io/cybermonklabs/legion/envoy` before pinning it, with the `gh attestation verify` command
 [Running Dispatch](https://cybermonklabs.github.io/legion/dispatch/running-dispatch/) gives. The
-component refuses invalid hostnames, and a `hostname` with `--` as its third and fourth characters
-(RFC 5890 section 2.3.1's reserved form) other than an `xn--` label the IDNA lookup profile
-takes: the front door puts `<hostname>.<tailnetDnsName>` on a certificate, public certificate
-authorities refuse to issue for the form's labels that do not begin with `xn--`, and an `xn--`
-label that profile refuses is a Fake A-label. It is refused in every mode, so a stack in the
-cluster-only mode or the sandbox keeps a hostname a front door can later serve. It refuses invalid
-tailnet DNS names, tags, image references, sign-in domains,
+component refuses invalid hostnames, and holds `hostname` to the rule the `outsideOrigin`
+paragraph above states for each label of that origin's host, since the front door puts
+`<hostname>.<tailnetDnsName>` on a certificate. It refuses a hostname that breaks that rule in
+every mode, so a stack in the cluster-only mode or the sandbox keeps a hostname a front door can
+later serve, and before any resource registers. The component also refuses invalid tailnet DNS
+names, tags, image references, sign-in domains,
 namespaces, allowed namespaces, an `appCpu`, `appMemory`, `proxyCpu`, `proxyMemory`,
 `appEphemeralStorage` or `proxyEphemeralStorage` outside
 Autopilot's bounds for the app pod (above), a `pprofPort` outside 1-65535 or on a port the app pod
