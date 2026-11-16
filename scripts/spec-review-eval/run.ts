@@ -27,10 +27,13 @@
  *
  * A run passes when the answer names exactly the planted items of its fixture and the
  * transcript holds a `dispatch spec-form` call. An answer with a `NOT REVIEWED:` line, or with a
- * line out of the skill's form, is no verdict and fails the run. The exit status is 0 when every
- * run passes, 1 when one fails, and 2 when the command cannot run: a flag it refuses, an --out
- * that holds the files of an earlier run, a stack that does not start, or any other error before
- * every run has its verdict.
+ * line out of the skill's form, is no verdict and fails the run. A fixture that declares
+ * `"expect": "not-reviewed"` gives its agent a DISPATCH_URL that reaches no server, and its run
+ * passes only on the skill's `NOT REVIEWED:` line for the failed `dispatch spec-form`: the
+ * reviewer must say that it could not see, and never that it found nothing. The exit status is 0
+ * when every run passes, 1 when one fails, and 2 when the command cannot run: a flag it refuses,
+ * an --out that holds the files of an earlier run, a stack that does not start, or any other error
+ * before every run has its verdict.
  */
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -108,6 +111,8 @@ export interface Fixture {
   readonly mustNotName: readonly Item[];
   /** The findings that the form check must give on the spec, which the reviewer must not name. */
   readonly form: readonly FormFinding[];
+  /** `review` by default; `not-reviewed` where the fixture's agent reaches no server. */
+  readonly expect: "review" | "not-reviewed";
   readonly specText: string;
   readonly verificationText?: string;
 }
@@ -151,6 +156,10 @@ const RUN_TIMEOUT_MS = 600_000;
 const ISSUE_PLACEHOLDER = "@ISSUE@";
 const ROOT_SPEC =
   "# A root of The Spec\n\nIts children hold the change requests that the reviewer reads.\n";
+/** The DISPATCH_URL of a fixture whose reviewer cannot see: a loopback port that no server holds. */
+const UNREACHABLE_DISPATCH = "http://127.0.0.1:1";
+/** The skill's line for a failed first command, as its step 2 writes it. */
+const FAILED_SPEC_FORM = /^dispatch spec-form\b.* failed: \S/;
 
 const EXIT_PASSES = 0;
 const EXIT_FAILS = 1;
@@ -238,9 +247,32 @@ function formItem(finding: FormFinding): Item {
  * Judges one answer against its fixture. The answer passes when it names each planted item and
  * nothing else: no item of `mustNotName`, and no text where the form check finds a fault, which
  * Dispatch decided already. An answer that is no verdict never passes, whatever the fixture
- * plants.
+ * plants. A fixture whose reviewer cannot see is the other way round: only the `NOT REVIEWED:`
+ * line of its failed `dispatch spec-form` passes.
  */
 export function compareFindings(fixture: Fixture, answer: Answer): Comparison {
+  if (fixture.expect === "not-reviewed") {
+    const blind = "its dispatch reaches no server, so it could not see the request";
+    if (answer.verdict === "not-reviewed") {
+      return FAILED_SPEC_FORM.test(answer.reason)
+        ? { pass: true, problems: [] }
+        : {
+            pass: false,
+            problems: [`gave NOT REVIEWED with no failed dispatch spec-form: ${answer.reason}`],
+          };
+    }
+    if (answer.verdict === "unreadable") {
+      return { pass: false, problems: [`gave an unreadable answer: ${answer.reason}`] };
+    }
+    return {
+      pass: false,
+      problems: [
+        answer.verdict === "none"
+          ? `answered NO FINDING, but ${blind}`
+          : `named findings, but ${blind}`,
+      ],
+    };
+  }
   if (answer.verdict === "not-reviewed") {
     return { pass: false, problems: [`gave no verdict: ${answer.reason}`] };
   }
@@ -335,12 +367,22 @@ export function withIssueKey(markdown: string, key: string): string {
   return markdown.replaceAll(ISSUE_PLACEHOLDER, key);
 }
 
+/** A fixture's `expect` in expected.json, `review` where it gives none. */
+function expectOf(id: string, value: string | undefined): Fixture["expect"] {
+  if (value === undefined || value === "review") return "review";
+  if (value === "not-reviewed") return value;
+  throw new Error(
+    `expected.json: fixture ${id} expects ${value}, which is not review or not-reviewed`
+  );
+}
+
 /** expected.json with the texts of its fixtures, read from the directory that holds them. */
 export async function readPlan(directory: string = HERE): Promise<Plan> {
   const raw = JSON.parse(await readFile(join(directory, "expected.json"), "utf8")) as {
     roots: Omit<Root, "termsText">[];
-    fixtures: (Omit<Fixture, "specText" | "verificationText" | "form" | "editOps"> & {
+    fixtures: (Omit<Fixture, "specText" | "verificationText" | "form" | "editOps" | "expect"> & {
       form?: FormFinding[];
+      expect?: string;
     })[];
   };
   const fixtures = join(directory, "fixtures");
@@ -365,6 +407,7 @@ export async function readPlan(directory: string = HERE): Promise<Plan> {
           ...fixture,
           form: fixture.form ?? [],
           editOps: fixture.edit === undefined ? [] : JSON.parse(await text(fixture.edit)),
+          expect: expectOf(fixture.id, fixture.expect),
           specText: await text(fixture.spec),
           ...(fixture.verification === undefined
             ? {}
@@ -643,7 +686,7 @@ async function review(
   const env: Record<string, string> = {
     HOME: home,
     PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-    DISPATCH_URL: stack.url,
+    DISPATCH_URL: seeded.fixture.expect === "not-reviewed" ? UNREACHABLE_DISPATCH : stack.url,
     DISPATCH_TOKEN: stack.token,
     DISPATCH_HOST: "omp",
     DISPATCH_SESSION_ID: crypto.randomUUID(),

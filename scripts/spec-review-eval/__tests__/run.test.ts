@@ -222,17 +222,51 @@ describe("compareFindings", () => {
     });
   });
 
-  test("never passes an answer that holds only a NOT REVIEWED line, even where nothing is planted", () => {
+  test("never passes an answer that holds only a NOT REVIEWED line where a fixture expects a review, even with nothing planted", () => {
     const answer = parseFindings(
       "NOT REVIEWED: dispatch spec-form --issue ACME-4 --artifact spec.md --terms failed: unknown flag"
     );
-    for (const one of plan.fixtures) {
+    const reviewed = plan.fixtures.filter((one) => one.expect === "review");
+    expect(reviewed.length).toBe(plan.fixtures.length - 1);
+    for (const one of reviewed) {
       const result = compareFindings(one, answer);
       expect(result.pass).toBe(false);
       expect(result.problems).toEqual([
         "gave no verdict: dispatch spec-form --issue ACME-4 --artifact spec.md --terms failed: unknown flag",
       ]);
     }
+  });
+
+  // Fixture 11 declares that the reviewer cannot see: its agent's dispatch reaches no server. The
+  // skill's answer then is NOT REVIEWED with the failed command, and NO FINDING or a finding would
+  // tell the author a false thing.
+  describe("where the fixture declares that the reviewer cannot see", () => {
+    const blind = fixture("11-command-fails");
+
+    test("passes a NOT REVIEWED line that names the failed dispatch spec-form", () => {
+      const answer = parseFindings(
+        "NOT REVIEWED: dispatch spec-form --issue ACME-14 --artifact spec.md failed: Dispatch at http://127.0.0.1:1 is unreachable: ECONNREFUSED"
+      );
+      expect(compareFindings(blind, answer)).toEqual({ pass: true, problems: [] });
+    });
+
+    test("fails NO FINDING, a finding, and a NOT REVIEWED line that names no failed dispatch spec-form", () => {
+      expect(compareFindings(blind, { verdict: "none" }).problems).toEqual([
+        "answered NO FINDING, but its dispatch reaches no server, so it could not see the request",
+      ]);
+      expect(
+        compareFindings(
+          blind,
+          parseFindings("FINDING undefined-noun daily-digest digest: Nothing defines digest.")
+        ).problems
+      ).toEqual([
+        "named findings, but its dispatch reaches no server, so it could not see the request",
+      ]);
+      expect(
+        compareFindings(blind, parseFindings("NOT REVIEWED: the request is too long")).problems
+      ).toEqual(["gave NOT REVIEWED with no failed dispatch spec-form: the request is too long"]);
+      expect(compareFindings(blind, parseFindings("All good.")).pass).toBe(false);
+    });
   });
 
   test("never passes an unreadable answer", () => {
@@ -365,7 +399,7 @@ describe("formProblems", () => {
 });
 
 describe("the fixtures", () => {
-  test("hold ten change requests under the three roots", () => {
+  test("hold eleven change requests under the three roots", () => {
     expect(plan.fixtures.map((one) => one.id)).toEqual([
       "1-principle",
       "2-undefined-noun",
@@ -377,8 +411,19 @@ describe("the fixtures", () => {
       "8-check-shape-passing",
       "9-form-findings",
       "10-entry-lines",
+      "11-command-fails",
     ]);
     expect(plan.roots.map((root) => root.key)).toEqual(["ACME-1", "ACME-2", "ACME-3"]);
+  });
+
+  test("fixture 11 alone declares that its reviewer cannot see, on fixture 2's request with nothing planted", () => {
+    const blind = fixture("11-command-fails");
+    expect(blind.expect).toBe("not-reviewed");
+    expect(blind.specText).toBe(fixture("2-undefined-noun").specText);
+    expect(blind.planted).toEqual([]);
+    expect(plan.fixtures.filter((one) => one.expect !== "review").map((one) => one.id)).toEqual([
+      "11-command-fails",
+    ]);
   });
 
   // The Spec's own documents write each statement as an entry line, and its how-to puts the terms

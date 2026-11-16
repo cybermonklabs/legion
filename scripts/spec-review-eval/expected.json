@@ -140,6 +140,14 @@
         { "node": "inbox-overdue-first" },
         { "node": "terms", "subject": "overdue ask" }
       ]
+    },
+    {
+      "id": "11-command-fails",
+      "root": "without",
+      "spec": "2-undefined-noun.md",
+      "expect": "not-reviewed",
+      "planted": [],
+      "mustNotName": []
     }
   ]
 }
