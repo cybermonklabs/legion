@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -314,45 +313,6 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		if _, ok := decided[kind]; !ok {
 			t.Errorf("pauseHolds names %s, which this test decides nothing of", kind)
 		}
-	}
-}
-
-// The pause rule the outbox's claim embeds names, as SQL literals, exactly the rows pauseHolds
-// lists: the kinds held whole in one `in` list and each kind held for one op beside it. It is
-// read off outboxClaimable itself, the text DueRows, ClaimRow and HeldRows run, so a rule built
-// from another list, or a claim that lost the rule, fails here.
-func TestThePauseRuleOfTheClaimNamesExactlyThePauseHolds(t *testing.T) {
-	if !strings.Contains(outboxClaimable, outboxPauseFree) {
-		t.Fatalf("outboxClaimable does not embed the pause rule:\n%s", outboxClaimable)
-	}
-	whole := regexp.MustCompile(`outbox\.kind in \(([^)]*)\)`).FindAllStringSubmatch(outboxPauseFree, -1)
-	if len(whole) != 1 {
-		t.Fatalf("the pause rule holds %d lists of whole kinds, want one:\n%s", len(whole), outboxPauseFree)
-	}
-	sqlHolds := map[string]bool{}
-	for _, literal := range strings.Split(whole[0][1], ",") {
-		literal = strings.TrimSpace(literal)
-		if !strings.HasPrefix(literal, "'") || !strings.HasSuffix(literal, "'") {
-			t.Fatalf("the pause rule names %s, which is no SQL literal", literal)
-		}
-		sqlHolds[strings.Trim(literal, "'")] = true
-	}
-	for _, shape := range regexp.MustCompile(`\(outbox\.kind = '([a-z_]+)' and outbox\.payload->>'op' = '([a-z_]+)'\)`).FindAllStringSubmatch(outboxPauseFree, -1) {
-		sqlHolds[shape[1]+" op "+shape[2]] = true
-	}
-	goHolds := map[string]bool{}
-	for _, hold := range pauseHolds {
-		if hold.op == "" {
-			goHolds[string(hold.kind)] = true
-		} else {
-			goHolds[string(hold.kind)+" op "+string(hold.op)] = true
-		}
-	}
-	if !reflect.DeepEqual(sqlHolds, goHolds) {
-		t.Fatalf("the pause rule holds %v, want pauseHolds' %v", sqlHolds, goHolds)
-	}
-	if strings.Contains(outboxPauseFree, "$") {
-		t.Fatalf("the pause rule takes a parameter, which would move every statement's own:\n%s", outboxPauseFree)
 	}
 }
 

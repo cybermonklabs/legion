@@ -14,6 +14,12 @@ body: |-
   `runtime: tmux`, with `idle_minutes: 0` or with `worker_wakes_per_minute: 0` refuses a pause with
   `PAUSE_UNAVAILABLE`, and `legion start --check-config` prints `pause unavailable: <setting>`.
   While paused, the operations that would start a turn of another session answer `PROJECT_PAUSED`.
+  Three changes apply in every project, also when no pause is ever made. The stuck clock of a
+  resume starts when the wake pacing lets the launch out, not when the wake arrived, so a launch
+  that waited its turn in a long queue is not warned stuck for that wait. A `suspend` row that
+  takes over a released role cancels only that role's backstop, so another role of the pod, such
+  as a worker waiting on a deploy, keeps its own. Every wake's `start` row carries the wake's kind
+  (`wakeKind`), and the pause's `pause` where one held it.
   The daemon API contract is 153. Before a rollback to an earlier release, do three things in this
   order (docs/kubernetes.md, "Rolling back the project pause"). Resume the project. Resume one role
   of each pod that a pause still holds, because an earlier release reads no hold and deletes a held

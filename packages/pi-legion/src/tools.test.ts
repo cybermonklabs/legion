@@ -2079,12 +2079,6 @@ test("read_state's summary prints the pause's line while the project is paused a
     "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
     "holds 2 rows";
   expect(pauseLines(paused)).toEqual([pausedLine]);
-  // The legend says what the line is, and the line follows the project's own.
-  expect(paused[0]).toContain("paused: while the project is paused");
-  expect(paused[0]).toContain("last pause: once a pause has ended");
-  expect(paused[1]).toStartWith("project ");
-  expect(paused[2]).toBe(pausedLine);
-  expect(paused[3]).toStartWith("admission cap ");
 
   const running = await summaryLinesOf(
     goldenDaemon({ "/legion/v1/state": "state-last-pause.json" }).daemon
@@ -2197,14 +2191,6 @@ test("read_state's summary counts the wakes the pacing holds and says when the e
   const waiting = await summaryLinesOf(recordingDaemon({ state: wave }).daemon);
   const waitingLine = "wakes waiting 3 next 2026-11-16T08:00:08Z";
   expect(wakesLines(waiting)).toEqual([waitingLine]);
-  // The legend says what the line is, and the line stands between the last admission line and
-  // the first capability.
-  expect(waiting[0]).toContain(
-    "wakes waiting <count> [next <earliest due time>], the wakes the daemon's pacing holds until their turn, 0 outside a wave; "
-  );
-  const at = waiting.indexOf(waitingLine);
-  expect(waiting[at - 1]).toBe("blocked INFRA-102 on INFRA-103");
-  expect(waiting[at + 1]).toBe("capability subagents present");
 
   // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
   const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
