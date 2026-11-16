@@ -3,7 +3,11 @@ import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } fro
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { socketPathRefusal, socketRoot } from "@legion/test-fixtures/socket-root";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
@@ -11,8 +15,17 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
-// A short directory of its own: the keeper's unix socket lives here (docs/testing.md).
+// The listener binary and the port files: no socket goes here, so its length does not matter.
 const work = temporaryDirectory("held-port");
+// A keeper's unix socket goes in a directory of its own, made under TMPDIR when the longest
+// socket path fits there and under /tmp otherwise, which says so (`socketRoot`): a socket path
+// holds 107 bytes, and a long TMPDIR passes it. The maker names a directory <prefix>-XXXXXX.
+const socketPrefix = "held-port-sockets";
+const socketDirectory = temporaryDirectories(socketPrefix, {
+  root: socketRoot("held-port.test.ts's keeper sockets", (root) =>
+    socketPathRefusal(join(root, `${socketPrefix}-XXXXXX`, "missing-keeper.sock"))
+  ),
+});
 const listener = join(work, "envoy-listener");
 const O_CLOEXEC = 0o2000000;
 
@@ -378,7 +391,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
     // session would keep listening. The helper's own socket is gone the moment it exits, before
     // its inode can be read, so this run's is a keeper's, read while it listens and handed over:
     // once the keeper is gone too, a copy anything else still held would still listen.
-    const socket = join(work, "missing-keeper.sock");
+    const socket = join(socketDirectory(), "missing-keeper.sock");
     const keptFile = join(work, "missing-kept.port");
     const keeper = start("the keeper", [
       "python3",
@@ -408,7 +421,7 @@ describe.skipIf(skip)("held-port.py exec", () => {
 describe.skipIf(skip)("held-port.py keep", () => {
   test("two listeners started from one keeper serve its port, which stays held between them", async () => {
     const portFile = join(work, "kept.port");
-    const socket = join(work, "keeper.sock");
+    const socket = join(socketDirectory(), "keeper.sock");
     const keeper = start("the keeper", [
       "python3",
       helper,
