@@ -971,26 +971,9 @@ func (m *Machine) ExpirePending(ctx context.Context, now time.Time) (int, error)
 // 'expired' so Sweeper (this package's own Tick) can wake each one's owner once the transaction
 // has actually committed.
 func (m *Machine) expirePending(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
-	tx, err := m.Store.Pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-	end := store.RequestEnd{
+	return m.endPending(ctx, store.RequestsPastDeadline, now, store.RequestEnd{
 		State: "expired", Actor: "broker", DecidedAt: &now, Detail: "no answer before the request expired",
-	}
-	expired, err := store.EndPendingRequests(ctx, tx, store.RequestsPastDeadline, now, end)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	// One audit row was written per request this expired, so one line goes out per request.
-	for _, r := range expired {
-		store.LogGrantEvent(endedRequestLogEvent(end, r.EnrollmentID, r.ID))
-	}
-	return expired, nil
+	})
 }
 
 // SignInOffActor is what a request the sweep denied on a broker with BROKER_SIGNIN=off records as
@@ -1000,36 +983,77 @@ const SignInOffActor = "broker:signin-off"
 
 // denyUndecidable is the sweep's half of SignInOff: Create writes no request pending on a broker
 // that signs nobody in, but the database can hold ones a run with sign-in on wrote, before a
-// restart with it off or from a replica of a rolling change that still has it on. Each is denied
-// here, policy.ReasonSignInOff, with its record's denied event and its request.denied audit row
-// in one statement, rather than left on the approver's list behind a page that is gone until its
-// deadline. It returns the requests it denied, so the sweep wakes each one's session once the
-// transaction has committed, and nothing on a broker with sign-in on. A grant made before stays
-// as it was: off decides nothing new, it takes nothing back.
+// restart with it off or from a replica of a rolling change that still has it on. Each one this
+// broker would list for its approver (PendingForApprover: its signed request verifies for this
+// broker's own audience) is denied here, policy.ReasonSignInOff, with its record's denied event
+// and its request.denied audit row in one statement, rather than left on the approver's list
+// behind a page that is gone until its deadline. A request signed for another BROKER_PUBLIC_URL
+// is left alone: it belongs to another broker sharing this database, whose page may still be
+// served, and this broker lists it for nobody anyway. No clock bounds the selection, since none
+// is needed: a broker with sign-in off writes nothing pending, so every pending row it reads is
+// one to end, whatever the database's clock wrote as its created_at. It returns the requests it
+// denied, so the sweep wakes each one's session once the transaction has committed, and nothing
+// on a broker with sign-in on. A grant made before stays as it was: off decides nothing new, it
+// takes nothing back.
 func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
 	if !m.SignInOff {
 		return nil, nil
 	}
+	rows, err := m.Store.Pool.Query(ctx, pendingRecordsQuery)
+	if err != nil {
+		return nil, err
+	}
+	var ours []string
+	for rows.Next() {
+		var id, canonical string
+		var createdAt time.Time
+		if err := rows.Scan(&id, &canonical, &createdAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if _, err := m.requestedIdentifiers(canonical, createdAt); err == nil {
+			ours = append(ours, id)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ours) == 0 {
+		return nil, nil
+	}
+	actor := SignInOffActor
+	return m.endPending(ctx, store.RequestsByIDs, ours, store.RequestEnd{
+		State: "denied", Actor: actor, DecidedBy: &actor, DecidedAt: &now, Detail: policy.ReasonSignInOff,
+	})
+}
+
+// pendingRecordsQuery is every pending agent_secret request with its record's canonical body and
+// the time the record was written, which is what requestedIdentifiers verifies a record against.
+const pendingRecordsQuery = `select r.id::text, cr.body, cr.created_at from requests r
+	join credential_requests cr on cr.id = r.record_id where r.state = 'pending'`
+
+// endPending ends, as end says, every request scope and arg select that is still pending, in a
+// transaction of its own, and logs one grant-log line per request once that transaction has
+// committed, since one audit row was written per request. It answers the requests it ended, so
+// the sweep wakes each one's owner after the commit too. expirePending and denyUndecidable are
+// its callers.
+func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg any, end store.RequestEnd) ([]store.EndedRequest, error) {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	actor := SignInOffActor
-	end := store.RequestEnd{
-		State: "denied", Actor: actor, DecidedBy: &actor, DecidedAt: &now, Detail: policy.ReasonSignInOff,
-	}
-	denied, err := store.EndPendingRequests(ctx, tx, store.RequestsCreatedBefore, now, end)
+	ended, err := store.EndPendingRequests(ctx, tx, scope, arg, end)
 	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	for _, r := range denied {
+	for _, r := range ended {
 		store.LogGrantEvent(endedRequestLogEvent(end, r.EnrollmentID, r.ID))
 	}
-	return denied, nil
+	return ended, nil
 }
 
 // ApplyDecision decides a pending agent_secret record by login, the login of the person deciding

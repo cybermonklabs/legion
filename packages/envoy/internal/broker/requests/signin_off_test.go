@@ -126,14 +126,19 @@ func TestASignInOffBrokerGrantsWhatThePolicyGrantsAtOnce(t *testing.T) {
 	}
 }
 
+// anotherBroker is the public URL of a second broker sharing the fixture's database.
+const anotherBroker = "https://another-broker.internal.example"
+
 // TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending: a database a broker with
 // sign-in on wrote can hold requests still waiting for a person when the broker restarts with
 // sign-in off, or while one replica of a rolling change still has it on. Nobody can sign in to
 // decide them any more, so the sweep denies each of them at once, naming the setting, closes its
 // record with a denied event, writes its request.denied audit row and wakes its session, rather
-// than leaving a link to a page that is gone in the approver's Inbox until the deadline. A grant
-// a person approved before is left as it was. The control is the same sweep with sign-in on,
-// which leaves the same requests pending.
+// than leaving a link to a page that is gone in the approver's Inbox until the deadline. It does
+// so whatever the database's clock says the request was written at. A grant a person approved
+// before is left as it was, and so is a request signed for another broker sharing the database,
+// which that broker still lists. The control is the same sweep with sign-in on, which leaves
+// every request pending.
 func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
@@ -154,6 +159,15 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 	if err != nil || decided.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decided, err)
 	}
+	// A request another broker sharing this database wrote, signed for its own public URL: that
+	// broker still serves its approval page, so this one's sweep must leave it alone.
+	third, thirdKey := newEnrollment(t, m.Store, "session", "box-c-"+t.Name(), new(fixtureOperator), nil)
+	m.Audience = anotherBroker
+	foreign, err := m.Create(ctx, third, signRequest(t, m, thirdKey, "asked of the other broker", "DEEL_API_KEY"), "", nil)
+	m.Audience = testAudience
+	if err != nil || foreign.State != "pending" || foreign.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) for another broker = %+v, %v; want it pending", foreign, err)
+	}
 
 	var woken []wakeCall
 	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: m.Store}, Machine: m, MachineLogins: &machine.Service{Store: m.Store}, OAuth: oauthstore.New(m.Store.Pool), Interval: time.Hour,
@@ -161,7 +175,7 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 			woken = append(woken, wakeCall{enrollmentID, requestID, state})
 		}}
 	sweeper.Tick(ctx)
-	for _, req := range []Request{owned, shared} {
+	for _, req := range []Request{owned, shared, foreign} {
 		if got, err := m.Get(ctx, req.ID); err != nil || got.State != "pending" {
 			t.Fatalf("with sign-in on, request %s after a sweep = %+v, %v; want still pending", req.ID, got, err)
 		}
@@ -170,6 +184,11 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 		t.Fatalf("with sign-in on, the sweep woke %+v; want no one", woken)
 	}
 
+	// The broker's clock and the database's need not agree: a request row whose created_at, the
+	// database's own time, is an hour ahead of the sweep's clock is denied all the same.
+	if _, err := m.Store.Pool.Exec(ctx, `update requests set created_at = now() + interval '1 hour' where id = $1`, owned.ID); err != nil {
+		t.Fatalf("move %s's created_at ahead: %v", owned.ID, err)
+	}
 	m.SignInOff = true
 	sweeper.Tick(ctx)
 	for _, req := range []Request{owned, shared} {
@@ -190,13 +209,23 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 		}
 	}
 	wantWoken := map[string]string{owned.ID: enr, shared.ID: other}
-	if len(woken) != len(wantWoken) {
-		t.Fatalf("the sweep woke %+v; want each of the two requests' sessions once", woken)
-	}
 	for _, w := range woken {
-		if w.state != "denied" || wantWoken[w.requestID] != w.enrollmentID {
-			t.Fatalf("the sweep woke %+v; want each of %v once, denied", woken, wantWoken)
+		if want, ok := wantWoken[w.requestID]; !ok || w.state != "denied" || w.enrollmentID != want {
+			t.Fatalf("the sweep woke %+v; want each of %v once, denied, and nothing else", woken, map[string]string{owned.ID: enr, shared.ID: other})
 		}
+		delete(wantWoken, w.requestID)
+	}
+	if len(wantWoken) != 0 {
+		t.Fatalf("the sweep woke %+v; it never woke %v", woken, wantWoken)
+	}
+	if got, err := m.Get(ctx, foreign.ID); err != nil || got.State != "pending" {
+		t.Fatalf("the request signed for another broker on this database = %+v, %v; want it left pending for that broker", got, err)
+	}
+	m.Audience = anotherBroker
+	listed, err := m.PendingForApprover(ctx, approver)
+	m.Audience = testAudience
+	if err != nil || len(listed) != 1 || listed[0].RecordID != *foreign.RecordID {
+		t.Fatalf("the other broker's list for %s = %+v, %v; want its own record %s still there to decide", approver, listed, err, *foreign.RecordID)
 	}
 	if pending, err := m.PendingForApprover(ctx, approver); err != nil || len(pending) != 0 {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want nothing left to decide", approver, pending, err)

@@ -576,7 +576,8 @@ pods as any broker does and approves nothing:
   next sweep, within `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads
   `was denied: a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and
   the request records `broker:signin-off` as having decided it. A grant a person approved
-  before stays until it ends as any grant does.
+  before stays until it ends as any grant does, and a request signed for another broker sharing
+  the database, at another `BROKER_PUBLIC_URL`, is left to that broker.
 - `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off.
 
 `off` is the one value it takes: any other, `OFF` or `disabled` among them, refuses to start

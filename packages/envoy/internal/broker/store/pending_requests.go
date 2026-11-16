@@ -20,16 +20,15 @@ const (
 	// RequestsPastDeadline is every request whose pending_expires_at is before the argument, a
 	// time.Time.
 	RequestsPastDeadline
-	// RequestsCreatedBefore is every request created before the argument, a time.Time: on a
-	// broker with BROKER_SIGNIN=off, every pending request, since none is written pending there.
-	RequestsCreatedBefore
+	// RequestsByIDs is every request whose id is in the argument, a []string of request ids.
+	RequestsByIDs
 )
 
 var pendingScopeWhere = [...]string{
-	RequestByID:           "id = $1",
-	RequestsOfEnrollment:  "enrollment_id = $1",
-	RequestsPastDeadline:  "pending_expires_at < $1",
-	RequestsCreatedBefore: "created_at < $1",
+	RequestByID:          "id = $1",
+	RequestsOfEnrollment: "enrollment_id = $1",
+	RequestsPastDeadline: "pending_expires_at < $1",
+	RequestsByIDs:        "id = any($1::uuid[])",
 }
 
 // RequestEnd is how EndPendingRequests ends each request it selects.
