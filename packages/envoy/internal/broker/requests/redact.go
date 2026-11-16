@@ -47,6 +47,7 @@ var credentialTokens = []credentialToken{
 	{`github_pat_`, `[A-Za-z0-9_]`, 22}, // GitHub fine-grained personal tokens
 	{`(?:AKIA|ASIA)`, `[A-Z0-9]`, 16},   // AWS access key ids, long-term and temporary
 	{`ya29\.`, `[A-Za-z0-9_.\-]`, 1},    // Google OAuth access tokens
+	{`xoxd-`, `[A-Za-z0-9%/+=-]`, 1},    // Slack d cookies, whose base64 body a -b d=… argument often carries URL-encoded
 	{`xox[a-z]-`, `[A-Za-z0-9-]`, 1},    // Slack tokens, every xox prefix: xoxa, xoxb, xoxc, xoxd, xoxe, xoxp, xoxr, xoxs
 }
 

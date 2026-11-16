@@ -33,6 +33,9 @@ func TestACommandHoldingAKnownCredentialShapeIsRedacted(t *testing.T) {
 	slackRefresh := shaped("xo", "xe-", "1-NotASecret0000")
 	slackClient := shaped("xo", "xc-", "NotASecret-0000")
 	slackCookie := shaped("xo", "xd-", "NotASecret0000")
+	// A Slack d cookie's body is base64, which a -b d=… argument usually carries URL-encoded.
+	cookieEncoded := shaped("xo", "xd-", "NotASecret%2BNotA%2FSecret%3D%3D")
+	cookieDecoded := shaped("xo", "xd-", "NotASecret+NotA/Secret==")
 	pem := shaped("-----BEGIN ", "RSA PRIVATE KEY-----\n", "NotASecret\n", "-----END RSA PRIVATE KEY-----")
 	pemCut := shaped("-----BEGIN ", "PRIVATE KEY-----\n", "NotASecret")
 	for _, row := range []struct {
@@ -48,6 +51,10 @@ func TestACommandHoldingAKnownCredentialShapeIsRedacted(t *testing.T) {
 		{"a Slack refresh token", []string{"slack", "--refresh", slackRefresh}, []string{"slack", "--refresh", "[redacted]"}},
 		{"a Slack client token and cookie", []string{"curl", "-H", "Authorization: Bearer " + slackClient, "-b", "d=" + slackCookie},
 			[]string{"curl", "-H", "Authorization: Bearer [redacted]", "-b", "d=[redacted]"}},
+		{"an encoded Slack cookie", []string{"curl", "-b", "d=" + cookieEncoded}, []string{"curl", "-b", "d=[redacted]"}},
+		{"a decoded Slack cookie", []string{"curl", "-b", "d=" + cookieDecoded + "; x=1"}, []string{"curl", "-b", "d=[redacted]; x=1"}},
+		{"an encoded Slack cookie the cut ran through", []string{"echo", strings.Repeat("a", 240) + cookieEncoded[:16]}, []string{"echo", strings.Repeat("a", 240) + "[redacted]"}},
+		{"a decoded Slack cookie the cut ran through", []string{"echo", strings.Repeat("a", 240) + cookieDecoded[:17]}, []string{"echo", strings.Repeat("a", 240) + "[redacted]"}},
 		{"a PEM private key", []string{"sh", "-c", "key=" + pem + " tail"}, []string{"sh", "-c", "key=[redacted] tail"}},
 		{"a PEM private key the cut ran through", []string{"printf", pemCut}, []string{"printf", "[redacted]"}},
 		{"a GitHub token the cut ran through", []string{"echo", strings.Repeat("a", 250) + classic[:6]}, []string{"echo", strings.Repeat("a", 250) + "[redac"}},

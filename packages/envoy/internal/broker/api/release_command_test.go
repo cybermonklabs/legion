@@ -38,9 +38,9 @@ func lastRelease(t *testing.T, capture *logtest.Recorder, grantID string) map[st
 // TestAReleaseBodyNamesTheCommandItStarts: POST /v1/grants/{id}/values takes the command the
 // release starts as "command", beside a github_app narrowing or alone, and the reason the
 // session's own call gave as "reason", and the broker logs both with the reason the grant's
-// request gave, every value the release handed out replaced by "[redacted]". A command that is
-// not a list of strings refuses the whole body, as any field of the wrong shape does, and
-// releases nothing.
+// request gave, every value of 8 bytes or more the release handed out replaced by "[redacted]".
+// A command that is not a list of strings refuses the whole body, as any field of the wrong shape
+// does, and releases nothing.
 func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
