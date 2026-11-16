@@ -18,7 +18,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"golang.org/x/sys/unix"
 )
 
 // fakeCgroup is a container's memory cgroup directory of either version, written in place as the
@@ -364,31 +363,10 @@ func (h *guestHarness) tickAfter(extra time.Duration) {
 func (h *guestHarness) tickReadingStatus(pod *fakePod, pid int, status string, between func()) {
 	h.t.Helper()
 	path := filepath.Join(pod.proc, strconv.Itoa(pid), "status")
-	if err := os.Remove(path); err != nil {
-		h.t.Fatal(err)
-	}
-	if err := unix.Mkfifo(path, 0o644); err != nil {
-		h.t.Fatal(err)
-	}
-	type opened struct {
-		pipe *os.File
-		err  error
-	}
-	open := make(chan opened, 1)
-	go func() {
-		pipe, err := os.OpenFile(path, os.O_WRONLY, 0)
-		open <- opened{pipe, err}
-	}()
-	h.t.Cleanup(func() {
-		// The writer waits in its open until a reader opens the pipe; one that does not wait lets
-		// it go where no pass read the pipe.
-		if r, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
-			_ = r.Close()
-		}
-	})
+	open := pod.namedPipe(path, nil)
 	w := h.pending
 	w.fire <- h.clock.advance(w.d)
-	var o opened
+	var o openedPipe
 	select {
 	case o = <-open:
 	case <-time.After(testwait.Bounded(h.t, time.Minute, time.Second)):
@@ -398,10 +376,10 @@ func (h *guestHarness) tickReadingStatus(pod *fakePod, pid int, status string, b
 		h.t.Fatal(o.err)
 	}
 	// A test that fails in between still lets the pass's read of the pipe end.
-	h.t.Cleanup(func() { _ = o.pipe.Close() })
+	h.t.Cleanup(func() { _ = o.writer.Close() })
 	between()
-	_, err := o.pipe.WriteString(status)
-	if err := errors.Join(err, o.pipe.Close()); err != nil {
+	_, err := o.writer.WriteString(status)
+	if err := errors.Join(err, o.writer.Close()); err != nil {
 		h.t.Fatal(err)
 	}
 	pod.writeWhole(path, status)
@@ -868,6 +846,61 @@ func TestGuestNamesAProcessThatShowsTheKillAfterTheRiseAtItsSizeBefore(t *testin
 	h.tickAfter(guestKillWait)
 	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
 		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+}
+
+// A victim is named at its size at the last scan before the pass that showed its kill, though
+// kills were pending through every scan before it: in a burst the kernel's next victim is often a
+// process that grew after the first kill. The kernel kills the tester's cc1, whose parent reaps it
+// at once, so no process shows that kill and it stays pending. The tester's python3 then grows
+// from 40 MiB to 1500 MiB and node from 100 MiB to 900 MiB over five scans, and the next two rises
+// of the wait kill python3, then node, each showing the kill at the scan of its rise with its
+// memory freed. python3 is named at 1500 MiB and node at 900 MiB, each to the tester, and cc1's
+// kill has its unnamed line once the wait ends.
+func TestGuestNamesAVictimAtItsSizeAtTheLastScanBeforeThePassThatShowedItsKill(t *testing.T) {
+	const cc1, python, node = 990, 991, 992
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(command(cc1, 9900, "cc1", 1400, 300*mib), command(python, 9910, "python3", 1300, 40*mib),
+		command(node, 9920, "node", 1200, 100*mib))
+	classes[cc1], classes[python], classes[node] = Class{Role: "tester"}, Class{Role: "tester"}, Class{Role: "tester"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills cc1, and its parent reaps it at once.
+	pod.remove(cc1)
+	cgroup.setKills(1)
+	h.tick()
+	// python3 and node grow over five scans.
+	for _, size := range []struct{ python, node uint64 }{{300, 260}, {600, 420}, {900, 580}, {1200, 740}, {1500, 900}} {
+		grownPython := command(python, 9910, "python3", 1300+int(size.python/4), size.python*mib)
+		grownNode := command(node, 9920, "node", 1200+int(size.node/4), size.node*mib)
+		grownPython.adj, grownNode.adj = raisedScore, raisedScore
+		pod.addGuest(grownPython, grownNode)
+		h.tick()
+	}
+	// The kernel kills python3, then node, each still in /proc while its memory is freed.
+	reaped(pod, python, 9910, "python3")
+	cgroup.setKills(2)
+	h.tick()
+	reaped(pod, node, 9920, "node")
+	cgroup.setKills(3)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 2 || kills[0].PID != python || kills[0].Role != "tester" || kills[0].Sequence != 1 || kills[0].SizeBytes != 1500*mib ||
+		kills[1].PID != node || kills[1].Role != "tester" || kills[1].Sequence != 2 || kills[1].SizeBytes != 900*mib {
+		t.Fatalf("the sink took %+v, want python3 (%d) at %d bytes, then node (%d) at %d bytes, each at its size at the scan before it showed the kill; the log:\n%s",
+			kills, python, 1500*mib, node, 900*mib, h.logged())
+	}
+	ended := h.log.with("ended ")
+	if len(ended) != 2 || !strings.Contains(ended[0], fmt.Sprintf("ended pid=%d role=tester size=%d ", python, 1500*mib)) ||
+		!strings.Contains(ended[1], fmt.Sprintf("ended pid=%d role=tester size=%d ", node, 900*mib)) {
+		t.Fatalf("the kill lines are %q, want python3's at %d bytes, then node's at %d; the log:\n%s", ended, 1500*mib, 900*mib, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 3, 700*mib, gib, 16*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
 	}
 }
 
@@ -1349,13 +1382,14 @@ func TestGuestNamesARolesZombieAgentAndTakesTheZombieForNoDepartureUntilItsShimR
 // A pass that sees a session process leave /proc only after its status reads cannot order that
 // departure against a SIGKILL those reads saw: on the stop path role-init sends kill(-1) as soon as
 // it has reaped the shim, and the shim's finish ends the renewer through exec's Cancel once it has
-// reaped the agent, each just after a departure. So such a pass names nothing and leaves what it
-// read to the next pass, which reads the role's session as ended. The kernel kills the tester's
-// python3, whose parent reaps it at once. While the pass at the next scan waits on the status of
-// the tester's rg, the tester's agent and shim leave /proc, and then rg's status shows SIGKILL
-// pending. rg is named at no pass, the tester is told nothing, and the kill has its unnamed line
-// once the wait ends. The same departures before that scan name nothing either.
-func TestGuestNamesNothingAtAPassThatSeesASessionLeaveAfterItsStatusReads(t *testing.T) {
+// reaped the agent, each just after a departure. So such a pass records the departure, which ends
+// the role's session at that same pass, and sets aside each process of the role that shows the
+// kill. The kernel kills the tester's python3, whose parent reaps it at once. While the pass at the
+// next scan waits on the status of the tester's rg, the tester's agent and shim leave /proc, and
+// then rg's status shows SIGKILL pending. rg is named at no pass, the tester is told nothing, and
+// the kill has its unnamed line once the wait ends. The same departures before that scan name
+// nothing either.
+func TestGuestNamesNoProcessOfARoleWhoseSessionLeavesWhileThePassReadsStatuses(t *testing.T) {
 	const python, rg = 936, 937
 	for _, tc := range []struct {
 		name   string
@@ -1401,6 +1435,60 @@ func TestGuestNamesNothingAtAPassThatSeesASessionLeaveAfterItsStatusReads(t *tes
 				t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
 			}
 		})
+	}
+}
+
+// A departure that a pass sees only after its status reads ends its own role's session alone:
+// role-init's kill(-1), the renewer's Cancel and the warm-up's WaitDelay, which it can come just
+// before, each reach the processes of that role and no other. The kernel kills the tester's agent,
+// which shows the kill while its memory is freed. While the pass at the next scan waits on the
+// status of the reviewer's cargo, the reviewer's shim leaves /proc, and then cargo's status shows
+// the SIGKILL of the reviewer's role-init. That pass sets cargo aside and names the agent, to the
+// tester, with the kernel's protected cause, at its size before the kill; the tester's shim then
+// reaps the agent before the next pass, which leaves the kill named. The reviewer is told nothing,
+// and no kill is left unnamed.
+func TestGuestNamesAnotherRolesKillAtAPassThatSeesASessionLeaveAfterItsStatusReads(t *testing.T) {
+	const legion = "/usr/local/bin/legion"
+	const reviewerShim, cargo = 960, 961
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	classes := guestTree(pod, 0)
+	pod.addGuest(
+		guestProcess{fakeProcess: fakeProcess{pid: reviewerShim, ppid: 1, start: 9600, exe: legion, args: []string{"legion", "worker-shim"}, resident: 30 * mib}, score: 3},
+		guestProcess{fakeProcess: fakeProcess{pid: cargo, ppid: reviewerShim, start: 9610, args: []string{"cargo"}, resident: 900 * mib}, score: 1380},
+	)
+	classes[reviewerShim], classes[cargo] = Class{Role: "reviewer", Protected: true, Session: true}, Class{Role: "reviewer"}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	// The kernel kills the tester's agent, which shows the kill while its memory is freed.
+	showKill(pod, guestAgent, "omp", false)
+	cgroup.setKills(1)
+	// The reviewer's shim leaves, and the reviewer's role-init kills what the role left running.
+	h.tickReadingStatus(pod, cargo, killedStatus(cargo, "cargo", false), func() { pod.remove(reviewerShim) })
+	cargoAtThatPass := unshown
+	if w := h.g.known[procKey{pid: cargo, start: 9610}]; w != nil {
+		cargoAtThatPass = w.evidence
+	}
+	// The tester's shim reaps the agent before the next pass.
+	pod.remove(guestAgent)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	kills := h.reported()
+	if len(kills) != 1 || kills[0].PID != guestAgent || kills[0].Role != "tester" || kills[0].Sequence != 1 ||
+		kills[0].Cause != shimwire.MemoryKillCauseKernelProtected || kills[0].SizeBytes != 2*gib {
+		t.Fatalf("the sink took %+v, want the one kill of the tester's agent (%d) with the protected cause at its %d bytes before the kill: the reviewer's departure ends the reviewer's session alone; the log:\n%s",
+			kills, guestAgent, 2*gib, h.logged())
+	}
+	if ended := h.log.with("ended "); len(ended) != 1 || !strings.HasSuffix(ended[0], `executable="omp"`) {
+		t.Fatalf("the kill lines are %q, want the agent's alone; the log:\n%s", ended, h.logged())
+	}
+	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {
+		t.Fatalf("the watch logged %q, want no unnamed kill", unnamed)
+	}
+	if cargoAtThatPass != settled {
+		t.Fatalf("cargo (%d) was %d after the pass that saw the reviewer's shim leave, want set aside at that pass (%d): its SIGKILL can be the reviewer's role-init's",
+			cargo, cargoAtThatPass, settled)
 	}
 }
 
@@ -1704,9 +1792,7 @@ func TestGuestReadsTheCounterAgainWhereMoreProcessesShowTheKillThanArePending(t 
 				pid  int
 				name string
 			}{{cc1, "cc1"}, {ld, "ld"}} {
-				failed = append(failed, os.WriteFile(filepath.Join(pod.proc, strconv.Itoa(p.pid), "status"), fmt.Appendf(nil,
-					"Name:\t%s\nState:\tR (running)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000100\nShdPnd:\t0000000000000100\n",
-					p.name, p.pid, p.pid), 0o644))
+				failed = append(failed, os.WriteFile(filepath.Join(pod.proc, strconv.Itoa(p.pid), "status"), []byte(killedStatus(p.pid, p.name, false)), 0o644))
 			}
 			failed = append(failed, os.WriteFile(cgroup.path("memory.events"),
 				[]byte("low 0\nhigh 0\nmax 41\noom 3\noom_kill 2\noom_group_kill 0\n"), 0o644))
@@ -1752,13 +1838,13 @@ func TestGuestReadsTheCounterAgainWhereMoreProcessesShowTheKillThanArePending(t 
 }
 
 // The same at a scan, whose snapshot comes after its pass: that snapshot keeps what the pass left
-// to the next, a zombie the scan leaves out among them, and reads no size again while kills are
-// pending. The kernel kills the tester's cc1, a zombie its parent has not reaped, and the counter
+// to the next, a zombie the scan leaves out among them, and reads no size again of a process a pass
+// has shown. The kernel kills the tester's cc1, a zombie its parent has not reaped, and the counter
 // reads one. While the pass at the next scan waits on the status of the tester's ld, whose memory
 // the kernel has freed, the kernel kills ld too: the counter reads two, and ld's status shows
 // SIGKILL pending. That pass reads two processes against one kill, reads the counter again, finds
 // two, and names neither; the pass at the scan after it names both, cc1 then ld, each at its size
-// from before the first rise, and no kill is left unnamed.
+// at the last scan before the pass that showed its kill, and no kill is left unnamed.
 func TestGuestKeepsWhatAPassLeftAtARiseThroughTheScansSnapshot(t *testing.T) {
 	const cc1, ld = 944, 945
 	pod := newFakePod(t)
@@ -1788,7 +1874,7 @@ func TestGuestKeepsWhatAPassLeftAtARiseThroughTheScansSnapshot(t *testing.T) {
 	kills := h.reported()
 	if len(kills) != 2 || kills[0].PID != cc1 || kills[0].Sequence != 1 || kills[0].SizeBytes != 300*mib ||
 		kills[1].PID != ld || kills[1].Sequence != 2 || kills[1].SizeBytes != 900*mib {
-		t.Fatalf("the sink took %+v, want cc1 (%d) then ld (%d), each at its size before the first rise; the log:\n%s", kills, cc1, ld, h.logged())
+		t.Fatalf("the sink took %+v, want cc1 (%d) then ld (%d), each at its size before the kill; the log:\n%s", kills, cc1, ld, h.logged())
 	}
 	h.tickAfter(guestKillWait)
 	if unnamed := h.lines("killed unnamed"); len(unnamed) != 0 {

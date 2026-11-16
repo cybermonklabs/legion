@@ -288,34 +288,60 @@ func (p *fakePod) exitAsItsCmdlineIsRead(pid int) {
 	if err != nil {
 		p.t.Fatal(err)
 	}
-	if err := os.Remove(cmdline); err != nil {
-		p.t.Fatal(err)
-	}
-	if err := unix.Mkfifo(cmdline, 0o644); err != nil {
-		p.t.Fatal(err)
-	}
 	done := make(chan error, 1)
-	go func() {
-		w, err := os.OpenFile(cmdline, os.O_WRONLY, 0)
-		if err != nil {
-			done <- err
-			return
-		}
-		renamed := os.Rename(zombie, stat)
-		_, written := w.Write(args)
-		done <- errors.Join(renamed, written, w.Close())
-	}()
-	p.t.Cleanup(func() {
-		// The writer waits in its open until a reader opens the pipe; one that does not wait lets
-		// it go where no scan read the pipe.
-		r, err := os.OpenFile(cmdline, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-		if err == nil {
-			defer r.Close()
-		}
+	opened := p.namedPipe(cmdline, func() {
 		if err := <-done; err != nil {
 			p.t.Errorf("the exit of pid %d as its cmdline was read: %v", pid, err)
 		}
 	})
+	go func() {
+		o := <-opened
+		if o.err != nil {
+			done <- o.err
+			return
+		}
+		renamed := os.Rename(zombie, stat)
+		_, written := o.writer.Write(args)
+		done <- errors.Join(renamed, written, o.writer.Close())
+	}()
+}
+
+// openedPipe is the writer of a named pipe (namedPipe), opened once a reader has opened the pipe,
+// or the error of its open.
+type openedPipe struct {
+	writer *os.File
+	err    error
+}
+
+// namedPipe replaces the file at path with a named pipe and answers the channel that takes its
+// writer, opened on a goroutine of its own once a reader has opened the pipe; the caller writes and
+// closes it. The writer waits in its open until a reader opens the pipe, so the test's cleanup lets
+// go one that no reader met, with a reader that does not wait, which it holds open while await,
+// where not nil, waits for what the caller does with the writer: what the caller writes then still
+// has a reader.
+func (p *fakePod) namedPipe(path string, await func()) <-chan openedPipe {
+	p.t.Helper()
+	if err := os.Remove(path); err != nil {
+		p.t.Fatal(err)
+	}
+	if err := unix.Mkfifo(path, 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	opened := make(chan openedPipe, 1)
+	go func() {
+		writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+		opened <- openedPipe{writer, err}
+	}()
+	p.t.Cleanup(func() {
+		r, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		if err == nil {
+			defer r.Close()
+		}
+		if await != nil {
+			await()
+		}
+	})
+	return opened
 }
 
 // writeWhole writes a process's file through a rename, so the guard's hourly scan, which reads

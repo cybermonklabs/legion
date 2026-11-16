@@ -33,7 +33,8 @@ var newGuest = memoryguard.NewGuest
 // the drain's end up to one poll and one reapNamespace pass late, and then sends kill(-1, SIGKILL)
 // (runRoleShim, roleinit_linux.go). That lands milliseconds past the drain; the rest of the second
 // is a margin for role-init running late under the memory pressure that raises the counter. A
-// wider bound costs only a kill of the role's next generation left unnamed in its first seconds.
+// wider bound costs only kills of that role left unnamed in a burst that starts within it after
+// the departure, never a wrong name (memoryguard.Guest).
 const guestSessionDrain = roleNamespaceDrain + time.Second
 
 // containerInit is whether this launcher is its container's first process, PID 1 of the

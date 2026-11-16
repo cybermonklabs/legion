@@ -38,15 +38,15 @@ import (
 // v2, memory.oom_control in v1), and a killed grandchild's exit goes to its parent, not to the
 // launcher. So each scan reads the counter after it reads the processes, and keeps every process
 // it read, by pid and start time, with what the classifier said of it (Class), its name and its
-// resident size (stat's rss). While kills are pending a scan reads neither again for a process it
-// already holds, so each keeps its read from before the burst's first rise, its size before the
-// kernel freed it (a process first read during the burst keeps that first read). A process is
-// named as killed only on the evidence the kernel's kill leaves, read after the counter rose: the
-// out-of-memory kill raises the counter, then sends SIGKILL to the victim's thread group, and that
-// SIGKILL stays pending in the victim's ShdPnd, the signals pending for its whole thread group,
-// while its memory is freed, through its exit and while it is a zombie, until its parent reaps
-// it. SigPnd, a thread's own, is no evidence: the kernel adds SIGKILL to it in each thread of a
-// process that any fatal signal is ending, such as the SIGTERM of role-init's drain
+// resident size (stat's rss). The watch reads the Class and the size again at each scan until a
+// pass has read SIGKILL pending in the process (snapshot), so a victim is reported with its reads
+// from the last scan before the pass that showed its kill, its size before the kernel freed it. A
+// process is named as killed only on the evidence the kernel's kill leaves, read after the counter
+// rose: the out-of-memory kill raises the counter, then sends SIGKILL to the victim's thread
+// group, and that SIGKILL stays pending in the victim's ShdPnd, the signals pending for its whole
+// thread group, while its memory is freed, through its exit and while it is a zombie, until its
+// parent reaps it. SigPnd, a thread's own, is no evidence: the kernel adds SIGKILL to it in each
+// thread of a process that any fatal signal is ending, such as the SIGTERM of role-init's drain
 // (sigkillPending).
 //
 // So while kills are pending, each evidence pass (attribute) reads the status of every process
@@ -55,18 +55,20 @@ import (
 // watch holds, has shown it. Its status is never read again, and it is a candidate of every pass
 // until one settles it, by naming it or setting it aside; a settled process is evidence for no
 // kill while the watch holds it, so a victim still freeing its memory, or a zombie, is evidence
-// for one kill alone. The rule of every pass is one: a pass that sees something it cannot order
-// against the evidence names nothing, settles nothing and leaves every candidate, and every read
-// of it, to the next pass, so a delay may leave a kill unnamed but never names a wrong process.
-// That is a session process that left /proc while the pass read the statuses (below), and a rise
-// of the counter that the pass reads again where the candidates are more than the kills pending:
-// the kernel has killed again since the last read, and the next pass judges them against the
-// larger count. Otherwise the pass sets aside the candidates of a role whose session has ended
-// (below); names the rest, in pid order, one kill each, where they are no more than the kills
-// pending; and, where they are more, sets them all aside, since the evidence does not say which
-// of them the kernel killed. A pass that does not carry so settles every candidate, and a burst
-// never ends with one left. A process is never named because it left /proc, or because it ranked
-// first before the rise: a command that exits by itself in that second leaves as well.
+// for one kill alone. The rule of every pass is one: it names a process only on the evidence that
+// process shows, so a delay may leave a kill unnamed but never names a wrong process. Each pass
+// first sets aside the candidates of a role whose session has ended (below), and names the rest,
+// in pid order, one kill each, where they are no more than the kills pending. Where they are
+// more, it reads the counter again. Where that read rose, the kernel has killed again since the
+// last read: the pass names and settles none of the rest, and leaves them, with every read of
+// them, to the next pass, which judges them against the larger count. That is the one case where
+// a pass carries, and it carries after it has set aside the candidates of a role whose session
+// has ended, which the next pass would set aside as well: a role's session that has ended stays
+// ended for the burst (sessionEnded). Where that read did not rise, the evidence does not say
+// which of them the kernel killed, and the pass sets them all aside. A pass that does not carry
+// so settles every candidate, and a burst never ends with one left. A process is never named
+// because it left /proc, or because it ranked first before the rise: a command that exits by
+// itself in that second leaves as well.
 //
 // A role's session ends with a SIGKILL its role-init sends: once the role's shim has exited,
 // role-init sends SIGTERM over the role's namespace, waits up to its drain for the role's
@@ -75,19 +77,23 @@ import (
 // watch keeps, for each role, the time it last saw a session process of that role (Class.Session)
 // leave /proc (leftAt): its stat gone or back with another start time (gone), where a zombie has
 // not left. Every such SIGKILL comes after a session process of its role has left, so each pass
-// reads the session processes it holds before its status reads, and again after them: a
-// departure that the second read sees first can have come before a SIGKILL the status reads saw,
-// so the pass records it and carries. A scan lets go of a session process it no longer holds only
-// once it has left, and records the departure then; it keeps a zombie. A role whose session
-// process left no earlier than GuestConfig.SessionDrain before the burst's first rise, or during
-// its wait, names nothing for the rest of the burst (sessionEnded): each of its candidates is set
-// aside, and the kills stay pending, to end unnamed. The launcher sets SessionDrain to 3 s,
-// role-init's 2 s drain and a second more for its kill to land. The launcher's classifier counts
-// every direct child of the shim as a session process, since it cannot tell the agent from the
-// shim's other children (the secrets renewer, the working copy's adoption, the CodeGraph
-// warm-up), which costs only kills left unnamed, never a wrong name. A session process that shows
-// the kill before it leaves, as an agent the kernel killed does while it is a zombie its shim has
-// not reaped, is named as any process is.
+// reads the session processes it holds before its status reads, and again after them, and
+// records each departure either read sees before it judges any candidate: a departure that the
+// second read sees first can have come before a SIGKILL the status reads saw, and it ends the
+// role's session at that same pass. Each such SIGKILL reaches the role's own processes alone, so
+// the pass judges every other role's candidates as ever. A scan lets go of a session process it
+// no longer holds only once it has left, and records the departure then; it keeps a zombie. A
+// role whose session process left no earlier than GuestConfig.SessionDrain before the burst's
+// first rise, or during its wait, names nothing for the rest of the burst (sessionEnded): each of
+// its candidates is set aside, and the kills stay pending, to end unnamed. The launcher sets
+// SessionDrain to 3 s, role-init's 2 s drain and a second more for its kill to land. The
+// launcher's classifier counts every direct child of the shim as a session process, since it
+// cannot tell the agent from the shim's other children (the secrets renewer, the working copy's
+// adoption, the CodeGraph warm-up), which costs only kills left unnamed, never a wrong name. A
+// session process that shows the kill before it leaves, as an agent the kernel killed does while
+// it is a zombie its shim has not reaped, is named as any process is, unless the watch sees a
+// session process of its role leave, itself among them, before the pass that settles it has read
+// the session processes a second time: that departure sets it aside, a kill left unnamed.
 //
 // The kernel shows that evidence only while it reaps the victim, 51 to 85 ms for a 1.5 GiB
 // process its parent reaps at once, and a scan every guestInterval alone named such a victim 3
@@ -126,11 +132,12 @@ import (
 // child of the shim, so a session process, named with the protected cause with no departure to
 // set it aside. And a victim that its parent reaps before a pass reads it shows nothing, and its
 // kill has the unnamed line. Each killed process has the guard's own endedLine, with its resident
-// size from before the burst's first rise and the pod's memory at that rise, and a Kill to the
-// sink with its role, "" for a process of no role, the watch's id and its own sequence from 1, as
-// the guard's kills have (writeKill), and Cause shimwire.MemoryKillCauseKernel, or
-// shimwire.MemoryKillCauseKernelProtected for a process the classifier protected: one of the
-// processes that run the role's session, whose end the role is told of in its own words.
+// size at the last scan before the pass that showed its kill and the pod's memory at the burst's
+// first rise, and a Kill to the sink with its role, "" for a process of no role, the watch's id
+// and its own sequence from 1, as the guard's kills have (writeKill), and Cause
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process the
+// classifier protected: one of the processes that run the role's session, whose end the role is
+// told of in its own words.
 //
 // The hour. Each hour from its start, one line gives the cgroup's usage, its working set (the usage
 // less the inactive file pages, cAdvisor's figure), each with its high and when, memory.stat's
@@ -612,10 +619,13 @@ func (g *Guest) count(now time.Time) {
 
 // snapshot takes t into known, after the scan's evidence pass (tick). Each process t holds that
 // the watch had not read is read: its name, its Class and its resident size. Each it holds that the
-// watch had is read again only while no kill is pending and no pass has read SIGKILL pending in
-// it, so a process is named with its reads from before the burst's first rise, its size before
-// the kernel freed it (a process first read during the burst with that first read), and one that
-// a pass has settled keeps the reads it was settled by. Each process the watch had that t no
+// watch had is read again, its Class and its size, until a pass has read SIGKILL pending in it, so
+// a process is named with its reads from the last scan before the pass that showed its kill, and
+// one that a pass has settled keeps the reads it was settled by. That is its size before the
+// kernel freed it: the kernel raises the counter before it sends that SIGKILL and frees the memory
+// only after it, and the scan reads t before the counter (count) and the pass reads the statuses
+// after both, so a process that t holds as its memory is freed has shown its kill at this scan's
+// pass, or has been reaped and is named for no kill. Each process the watch had that t no
 // longer holds (exited, a zombie, or a pid another process took) is let go, but for a pid whose
 // stat the scan could not read, since nothing says it is gone; for a candidate of the evidence
 // passes (shown), which a pass that carried leaves to the next, a zombie among them; and for a
@@ -628,7 +638,7 @@ func (g *Guest) snapshot(now time.Time, t *Table, classes map[int]Class) {
 		if w == nil {
 			w = &watched{key: key, executable: processName(p)}
 			g.known[key] = w
-		} else if g.pending > 0 || w.evidence != unshown {
+		} else if w.evidence != unshown {
 			continue
 		}
 		w.class = classes[pid]
@@ -660,17 +670,18 @@ func (g *Guest) snapshot(now time.Time, t *Table, classes map[int]Class) {
 // has left /proc (departed); then it reads the status of each process the watch knows that has not
 // shown SIGKILL pending, and marks each that shows it now (showsKill) as shown; then it reads the
 // session processes again. A departure that second read sees first can have come before a SIGKILL
-// the status reads saw, so the pass then names nothing and settles nothing, and leaves every
-// candidate to the next pass, which reads that role's session as ended. Otherwise the candidates
-// are every shown process no pass has settled, this pass's and those a pass before it carried.
-// The pass sets aside those of a role whose session has ended (sessionEnded), since their SIGKILL
-// can be the role-init's. Where the rest are no more than the kills pending, it names each of
-// them, in pid order, for one kill. Where they are more, it reads the counter again (count): where
-// it rose, the kernel has killed again since the last read, and the pass names and settles none of
-// them and leaves them to the next pass, which judges them against the larger count; where it did
-// not, the evidence does not say which of them the kernel killed, so it sets them all aside, and
-// their kills stay pending. So every pass that does not carry settles every candidate. Once the
-// wait has passed (deadline), the kills still pending have one unnamed line.
+// the status reads saw; it is recorded as the first read records one, and since now is no earlier
+// than the burst's first rise, it ends the role's session at this pass (sessionEnded). The
+// candidates are then every shown process no pass has settled, this pass's and those a pass before
+// it carried. The pass sets aside those of a role whose session has ended, since their SIGKILL can
+// be the role-init's, which reaches the role's own processes alone. Where the rest are no more than
+// the kills pending, it names each of them, in pid order, for one kill. Where they are more, it
+// reads the counter again (count): where it rose, the kernel has killed again since the last read,
+// and the pass names and settles none of them and leaves them to the next pass, which judges them
+// against the larger count, the one case where a pass carries; where it did not, the evidence does
+// not say which of them the kernel killed, so it sets them all aside, and their kills stay pending.
+// So every pass that does not carry settles every candidate. Once the wait has passed (deadline),
+// the kills still pending have one unnamed line.
 func (g *Guest) attribute(now time.Time) {
 	g.departed(now)
 	for _, w := range g.known {
@@ -678,9 +689,7 @@ func (g *Guest) attribute(now time.Time) {
 			w.evidence = shown
 		}
 	}
-	if g.departed(now) {
-		return
-	}
+	g.departed(now)
 	var candidates []*watched
 	for _, w := range g.known {
 		if w.evidence != shown {
@@ -715,29 +724,22 @@ func (g *Guest) attribute(now time.Time) {
 }
 
 // departed reads whether each session process the watch holds, of a role whose session has not
-// ended for the burst (sessionEnded), has left /proc (gone), records each one that has (leftAt),
-// and answers whether one had.
-func (g *Guest) departed(now time.Time) bool {
-	left := false
+// ended for the burst (sessionEnded), has left /proc (gone), and records each one that has
+// (leftAt).
+func (g *Guest) departed(now time.Time) {
 	for _, w := range g.known {
 		if w.session() && !g.sessionEnded(w.class.Role) && g.gone(w) {
 			g.leftAt(w, now)
-			left = true
 		}
 	}
-	return left
 }
 
 // session is whether w runs its role's session (Class.Session): no process of no role does.
 func (w *watched) session() bool { return w.class.Session && w.class.Role != "" }
 
-// leftAt records that w, which the watch held, had left /proc by at, where it is a session process
-// of a role (sessionLeft): the latest such time of each role is the one kept.
-func (g *Guest) leftAt(w *watched, at time.Time) {
-	if w.session() {
-		g.sessionLeft[w.class.Role] = at
-	}
-}
+// leftAt records that w, which the watch held, had left /proc by at (sessionLeft): the latest such
+// time of each role is the one kept. Its caller has checked that w is a session process (session).
+func (g *Guest) leftAt(w *watched, at time.Time) { g.sessionLeft[w.class.Role] = at }
 
 // sessionEnded is whether role's session has ended for the burst: the watch saw a session process
 // of it leave /proc no earlier than sessionDrain before the burst's first rise (riseAt), which
