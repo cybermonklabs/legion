@@ -115,13 +115,12 @@ func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
 					at, target)
 			}
 			for _, statement := range own {
-				for passage := range readsOfNoProject {
-					if strings.Contains(statement, passage) {
-						matched[passage] = true
-					}
+				if passage, named := readOfNoProject(statement); named {
+					matched[passage] = true
+					continue
 				}
 				table := projectOwnedTableOf(statement)
-				if table == "" || bindsAFragment(statement) || namedReadOfNoProject(statement) {
+				if table == "" || bindsAFragment(statement) {
 					continue
 				}
 				found, seen := unbound[statement]
@@ -181,14 +180,14 @@ func bindsAFragment(statement string) bool {
 	return strings.Contains(statement, access.Marker) || strings.Contains(statement, refs.VisibilityMarker)
 }
 
-// namedReadOfNoProject reports whether readsOfNoProject names a statement.
-func namedReadOfNoProject(statement string) bool {
+// readOfNoProject is the passage of readsOfNoProject a statement holds, if it holds one.
+func readOfNoProject(statement string) (string, bool) {
 	for passage := range readsOfNoProject {
 		if strings.Contains(statement, passage) {
-			return true
+			return passage, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // oneLine is a statement's SQL with its whitespace run together, as a failure prints it.
@@ -250,6 +249,8 @@ func (o censusObjects) fill(t *testing.T, pattern string, probe readProbe) strin
 			probeDocumentVersion: "1", probeBlock: o.block, probeAsk: o.ask, probeComment: o.comment,
 			probeMessage: o.message, probeHandoff: o.handoff, probeHandoffPhase: "plan", probeSession: o.session,
 			probePerson: o.person, probePriority: o.priority, probeBroadcast: o.broadcast, probeGoingRun: o.goingRun,
+			// The repository seedDocumentObjects maps to the project.
+			probeRepositoryOwner: "acme", probeRepositoryName: strings.ToLower(o.project) + "-app",
 		}[object]
 		if value == "" {
 			t.Fatalf("%s: the census seeds no %q for %s", pattern, object, match)
@@ -337,6 +338,7 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 	github := &fakeGitHubApp{installations: map[string]string{}, repos: map[string]*fakeArchitectureRepo{}}
 	for _, project := range []string{seedPublic, seedPrivate} {
 		github.installations[architectureRepo(project)] = "read"
+		github.installations["acme/"+strings.ToLower(project)+"-app"] = "read"
 		github.repos[architectureRepo(project)] = &fakeArchitectureRepo{commit: shaOne, files: archFiles()}
 	}
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
