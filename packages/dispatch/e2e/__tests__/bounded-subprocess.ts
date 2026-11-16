@@ -11,8 +11,9 @@
  *
  * When a child ends, or its bound passes, `stopTree` kills every process the child started, and
  * a kill whose token match is inverted takes every other process of the pod, so a plant in
- * `treeOf`, `stopTree` or the table it reads (`processTable`, `listedOf`, `statFields`) runs
- * against the scripted rows of `bounded-subprocess.test.ts` alone, through a `-t` filter.
+ * `treeOf`, `stopTree` or the table it reads (`processTable`, `procText`, `listedOf`,
+ * `statFields`) runs against the scripted rows of `bounded-subprocess.test.ts` alone, through a
+ * `-t` filter.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
  * would kill a process its row is still using: the probe the seven driven rows of
@@ -436,11 +437,12 @@ interface Collaborators {
  *  unknown process that started before the child, or that this kill signalled, ends them at once,
  *  as a process started since the child that reads whole without the token does; and one that
  *  stays unknown ends them at `maxReads`. Others hold what is taken: a running child through
- *  `child.kill` alone and what it started by parent pid, an ended child by its token alone, the
- *  one read where `/proc` is missing, this process never, and a walk that ends where the table
- *  lists a loop of parents. The row whose child leaves a `setsid sleep` behind does not hold the
- *  second read: a kill without it misses that sleep only where the sleep is caught in its exec,
- *  which was 2 of the 500 runs above.
+ *  `child.kill` alone, with SIGKILL, and what it started by parent pid, a process whose tokens
+ *  hold the child's first, last or in the middle, an ended child by its token alone, the one read
+ *  where `/proc` is missing, this process never, and a walk that ends where the table lists a
+ *  loop of parents. The row whose child leaves a `setsid sleep` behind does not hold the second
+ *  read: a kill without it misses that sleep only where the sleep is caught in its exec, which
+ *  was 2 of the 500 runs above.
  *
  *  Nothing is stopped with SIGSTOP first. A child shares this process's group, and where that
  *  group is orphaned - no member's parent stands in another group of the same session, as under
@@ -466,7 +468,7 @@ interface Collaborators {
  *
  *  The second argument is for those rows, which are why this is exported, and no other caller
  *  passes it: each of its fields defaults to the real one (`Collaborators`). `child.kill` is the
- *  child's own, so the rows hand a stand-in child, whose `kill` only records. */
+ *  child's own, so the rows hand a stand-in child, whose `kill` only records its signal. */
 export function stopTree(
   { child, start, token }: Running,
   {

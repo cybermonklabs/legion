@@ -181,6 +181,16 @@ test.skipIf(!existsSync("/proc/self/stat"))(
  *  which a kill never takes. */
 const scriptedChild = { pid: process.pid + 1, start: 5_000, token: "the-scripted-child's-token" };
 
+/** The tokens of three other bounded children, which a scripted process carries beside the
+ *  child's or in its place. `runBounded` writes a child's tokens the outermost first, so the
+ *  outer child's, of a bounded child the scripted child runs inside, comes before the child's;
+ *  the inner child's, of a bounded child the scripted child started, comes after it; and the
+ *  sibling's, of another bounded child the outer child started, comes after the outer child's,
+ *  where the child's would stand. */
+const outerToken = "an-outer-child's-token";
+const innerToken = "an-inner-child's-token";
+const siblingToken = "a-sibling-child's-token";
+
 /** How the child stands when a scripted kill runs, as a `Subprocess` reports it. */
 type ChildState = Pick<Subprocess, "exitCode" | "signalCode">;
 
@@ -193,19 +203,35 @@ const exitedByCode: ChildState = { exitCode: 0, signalCode: null };
 /** A child a signal ended. */
 const endedBySignal: ChildState = { exitCode: null, signalCode: "SIGTERM" };
 
-/** A process every scripted table lists beside the processes the row is about: pid 1, which
- *  carries no token and whose environment reads whole. */
+/** A process every scripted table read from `/proc` lists beside `sibling` and the processes the
+ *  row is about: pid 1, which carries no token and whose environment reads whole. A table lists
+ *  its processes in no set order, and across the rows the process a row is about stands first,
+ *  last and between others, so a kill that read only one end of a table fails a row. */
 const init: Listed = { pid: 1, ppid: 0, start: 1, tokens: [], unknown: false };
+
+/** A process of the sibling, which every scripted table read from `/proc` lists beside `init`:
+ *  it started since the child, its environment reads whole, and it carries the outer child's
+ *  token and the sibling's but not the child's. No kill of the child takes it, a kill that took
+ *  every process with a token would, and it is no reason to read again. */
+const sibling: Listed = {
+  pid: process.pid + 5,
+  ppid: 1,
+  start: scriptedChild.start + 1,
+  tokens: [outerToken, siblingToken],
+  unknown: false,
+};
 
 /** `stopTree` of `scriptedChild`, standing as `child` says, driven over `tables`, a scripted
  *  process table: read n answers `tables[n - 1]`, and each read after the last answers the last
  *  again. `procfs` tells the kill whether its table comes from `/proc`, so a row runs either path
  *  whatever this machine has, and the signal of a pid in `gone` throws, as `process.kill` throws
- *  for a process that has ended. It answers what the kill did, in order: each `read`, each
- *  `pause`, each `signal <pid>`, and each `child.kill`. No clock runs and no process is started
- *  or signalled: the pause, the signal and `child.kill` only record. Its loop is synchronous, so
- *  a loop that lost its `maxReads` bound would spin past every row clock; a read past `maxReads`
- *  throws instead. */
+ *  for a process that has ended. It answers what the kill did, in order: each call of `read`,
+ *  `pause`, `signal` and `child.kill`, written as the stand-in's name and then every argument it
+ *  was given. So `read` and `pause`, which are given none, write their name alone, a signal
+ *  writes `signal <pid>`, and the kill of a running child writes `child.kill SIGKILL`. No clock
+ *  runs and no process is started or signalled: the pause, the signal and `child.kill` only
+ *  record, and act on no process. Its loop is synchronous, so a loop that lost its `maxReads`
+ *  bound would spin past every row clock; a read past `maxReads` throws instead. */
 function scriptedKill(
   tables: readonly (readonly Listed[] | undefined)[],
   {
@@ -215,34 +241,34 @@ function scriptedKill(
   }: { child?: ChildState; gone?: readonly number[]; procfs?: boolean } = {}
 ): string[] {
   const did: string[] = [];
+  // A call of the stand-in `name`, given `args`: its name, then each argument.
+  const record = (name: string, args: readonly unknown[]): void => {
+    did.push([name, ...args].map(String).join(" "));
+  };
   let reads = 0;
   stopTree(
     {
       child: {
         ...child,
-        kill: () => {
-          did.push("child.kill");
-        },
+        kill: (...args: unknown[]) => record("child.kill", args),
         pid: scriptedChild.pid,
       },
       start: scriptedChild.start,
       token: scriptedChild.token,
     },
     {
-      pause: () => {
-        did.push("pause");
-      },
+      pause: (...args: unknown[]) => record("pause", args),
       procfs,
-      read: () => {
+      read: (...args: unknown[]) => {
         reads += 1;
         if (reads > maxReads) {
           throw new Error(`the kill read the table ${reads} times, past maxReads of ${maxReads}`);
         }
-        did.push("read");
+        record("read", args);
         return tables[Math.min(reads, tables.length) - 1];
       },
-      signal: (pid) => {
-        did.push(`signal ${pid}`);
+      signal: (pid: number, ...more: unknown[]) => {
+        record("signal", [pid, ...more]);
         if (gone.includes(pid)) {
           throw Object.assign(new Error(`kill ${pid}: no such process`), { code: "ESRCH" });
         }
@@ -255,25 +281,21 @@ function scriptedKill(
 test("a kill reads again, after a pause, while a process started since the child reads unknown", () => {
   // One of the child's processes, started in the child's own clock tick, which `start` counts as
   // since the child, and caught in its exec at read 1, its environment read empty; carrying the
-  // child's token at read 2, once the exec has loaded; and still listed at read 3, killed
-  // already, beside nothing new. Beside it at every read stands a process started since the
-  // child whose environment reads whole and carries no token: no process of the child's, and no
-  // reason to read again.
+  // child's token at read 2, once the exec has loaded, after the outer child's, as the processes
+  // of a child started inside another bounded child do; and still listed at read 3, killed
+  // already, beside nothing new. It stands between `sibling` and `init` at every read.
   const pid = process.pid + 2;
   const execing: Listed = { pid, ppid: 1, start: scriptedChild.start, tokens: [], unknown: true };
-  const loaded: Listed = { ...execing, tokens: [scriptedChild.token], unknown: false };
-  const unrelated: Listed = {
-    pid: process.pid + 3,
-    ppid: 1,
-    start: scriptedChild.start + 1,
-    tokens: [],
+  const loaded: Listed = {
+    ...execing,
+    tokens: [outerToken, scriptedChild.token],
     unknown: false,
   };
   expect(
     scriptedKill([
-      [init, execing, unrelated],
-      [init, loaded, unrelated],
-      [init, loaded, unrelated],
+      [sibling, execing, init],
+      [sibling, loaded, init],
+      [sibling, loaded, init],
     ])
   ).toEqual(["read", "pause", "read", `signal ${pid}`, "read"]);
 });
@@ -286,10 +308,14 @@ test("an unknown process that started before the child ends a kill at its first 
     tokens: [],
     unknown: true,
   };
-  expect(scriptedKill([[init, older]])).toEqual(["read"]);
+  expect(scriptedKill([[init, older, sibling]])).toEqual(["read"]);
 });
 
 test("a process started since the child that stays unknown ends a kill's reads at maxReads", () => {
+  // Beside it stands an unknown process that started before the child, which alone ends the
+  // reads at once (the row above): last in one table and first in the other, the stuck process
+  // at the other end. So a kill that read only one end of the table, or only its first or its
+  // last unknown process, ends at its first read. A pause follows every read, the last as well.
   const stuck: Listed = {
     pid: process.pid + 2,
     ppid: 1,
@@ -297,27 +323,33 @@ test("a process started since the child that stays unknown ends a kill's reads a
     tokens: [],
     unknown: true,
   };
-  const did = scriptedKill([[init, stuck]]);
-  expect(did.filter((step) => step === "read")).toHaveLength(maxReads);
-  expect(did.filter((step) => step !== "read" && step !== "pause")).toEqual([]);
+  const older: Listed = { ...stuck, pid: process.pid + 3, start: scriptedChild.start - 1 };
+  const everyRead = Array.from({ length: maxReads }, () => ["read", "pause"]).flat();
+  expect(scriptedKill([[stuck, init, sibling, older]]), "the stuck process first").toEqual(
+    everyRead
+  );
+  expect(scriptedKill([[older, sibling, init, stuck]]), "the stuck process last").toEqual(
+    everyRead
+  );
 });
 
 test("an unknown process the kill signalled already ends its reads", () => {
-  // One of the child's processes, carrying its token at read 1 and exiting at read 2, its memory
-  // gone, so its environment reads empty.
+  // A process of a bounded child that the child started, which carries at read 1 the child's
+  // token, then that inner child's own, and is exiting at read 2, its memory gone, so its
+  // environment reads empty.
   const pid = process.pid + 2;
   const carrying: Listed = {
     pid,
     ppid: 1,
     start: scriptedChild.start + 1,
-    tokens: [scriptedChild.token],
+    tokens: [scriptedChild.token, innerToken],
     unknown: false,
   };
   const exiting: Listed = { ...carrying, tokens: [], unknown: true };
   expect(
     scriptedKill([
-      [init, carrying],
-      [init, exiting],
+      [carrying, init, sibling],
+      [exiting, init, sibling],
     ])
   ).toEqual(["read", `signal ${pid}`, "read"]);
 });
@@ -325,8 +357,10 @@ test("an unknown process the kill signalled already ends its reads", () => {
 test("a kill takes a running child through child.kill, and what it started by parent pid", () => {
   // The child, caught in an exec at read 1, its environment read empty, and two processes it
   // started that took the tokens' variable out of their environment, as `env -u` does, so the
-  // child's pid alone finds each. Each is signalled, the one that ended already as well, and all
-  // three are gone at read 2.
+  // child's pid alone finds each: the first in the table, and the last, which ended already.
+  // Each is signalled, the one that ended as well, and all three are gone at read 2. The child
+  // gets SIGKILL, which no process can trap: the `bun --eval` of `e2e/global-setup.ts` that
+  // `second-global-setup.test.ts` bounds traps SIGTERM (`e2e/harness-pool.ts`) and would live on.
   const [left, ended] = [process.pid + 2, process.pid + 3];
   const child: Listed = {
     pid: scriptedChild.pid,
@@ -343,28 +377,33 @@ test("a kill takes a running child through child.kill, and what it started by pa
     unknown: false,
   });
   expect(
-    scriptedKill([[init, child, below(left), below(ended)], [init]], {
-      child: stillRunning,
-      gone: [ended],
-    })
-  ).toEqual(["read", "child.kill", `signal ${ended}`, `signal ${left}`, "read"]);
+    scriptedKill(
+      [
+        [below(left), init, child, sibling, below(ended)],
+        [init, sibling],
+      ],
+      { child: stillRunning, gone: [ended] }
+    )
+  ).toEqual(["read", "child.kill SIGKILL", `signal ${ended}`, `signal ${left}`, "read"]);
 });
 
 test("a child that has ended is found by its token alone, though a process holds its pid", () => {
   // Once the runtime reaped the child, one of the child's own processes took its pid; it carries
-  // the token, and the kill signals it as it would any other. The child itself gets nothing.
+  // the token, and the kill signals it as it would any other. The child itself gets nothing. The
+  // process belongs to a bounded child that the child started, where the child runs inside
+  // another, so its tokens hold the child's between the outer child's and the inner child's.
   const holder: Listed = {
     pid: scriptedChild.pid,
     ppid: 1,
     start: scriptedChild.start + 1,
-    tokens: [scriptedChild.token],
+    tokens: [outerToken, scriptedChild.token, innerToken],
     unknown: false,
   };
   for (const [child, how] of [
     [exitedByCode, "exited 0"],
     [endedBySignal, "ended by SIGTERM"],
   ] as const) {
-    expect(scriptedKill([[init, holder]], { child }), `a child that ${how}`).toEqual([
+    expect(scriptedKill([[init, sibling, holder]], { child }), `a child that ${how}`).toEqual([
       "read",
       `signal ${scriptedChild.pid}`,
       "read",
@@ -372,8 +411,37 @@ test("a child that has ended is found by its token alone, though a process holds
   }
 });
 
+test("a kill takes each process whose tokens hold the child's, first, last or in the middle", () => {
+  // `runBounded` writes the tokens of every bounded child a process runs inside, the outermost
+  // first, so the child's token stands anywhere in a list: last in the child's own processes
+  // where the child runs inside another bounded child, first in those of a bounded child the
+  // child started, and in the middle in those of that inner child where the child runs inside
+  // another. The table lists one of each, first, in the middle and last; `sibling`, which
+  // carries the outer child's token and not the child's, is not taken.
+  const [own, ofInner, ofBoth] = [process.pid + 2, process.pid + 3, process.pid + 4];
+  const carrying = (pid: number, tokens: readonly string[]): Listed => ({
+    pid,
+    ppid: 1,
+    start: scriptedChild.start + 1,
+    tokens,
+    unknown: false,
+  });
+  expect(
+    scriptedKill([
+      [
+        carrying(own, [outerToken, scriptedChild.token]),
+        init,
+        carrying(ofInner, [scriptedChild.token, innerToken]),
+        sibling,
+        carrying(ofBoth, [outerToken, scriptedChild.token, innerToken]),
+      ],
+    ])
+  ).toEqual(["read", `signal ${ofBoth}`, `signal ${ofInner}`, `signal ${own}`, "read"]);
+});
+
 test("where `/proc` is missing, a kill reads once, and not at all for a child that ended", () => {
-  // `ps` lists a pid and its parent, and no token, no start and nothing unknown.
+  // `ps` lists a pid and its parent, and no token, no start and nothing unknown. The process the
+  // child started stands between pid 1 and the child.
   const below = process.pid + 2;
   const psListed = (pid: number, ppid: number): Listed => ({
     pid,
@@ -384,18 +452,18 @@ test("where `/proc` is missing, a kill reads once, and not at all for a child th
   });
   const table = [
     psListed(1, 0),
-    psListed(scriptedChild.pid, process.pid),
     psListed(below, scriptedChild.pid),
+    psListed(scriptedChild.pid, process.pid),
   ];
   expect(scriptedKill([table], { child: stillRunning, procfs: false })).toEqual([
     "read",
-    "child.kill",
+    "child.kill SIGKILL",
     `signal ${below}`,
   ]);
   // A `ps` that fails lists nothing, and the running child is killed all the same.
   expect(scriptedKill([undefined], { child: stillRunning, procfs: false })).toEqual([
     "read",
-    "child.kill",
+    "child.kill SIGKILL",
   ]);
   expect(scriptedKill([table], { procfs: false })).toEqual([]);
 });
@@ -405,10 +473,10 @@ test("a kill never signals this process, even where its table reads it as one of
     pid: process.pid,
     ppid: 1,
     start: scriptedChild.start + 1,
-    tokens: [scriptedChild.token],
+    tokens: [outerToken, scriptedChild.token],
     unknown: false,
   };
-  expect(scriptedKill([[init, self]])).toEqual(["read"]);
+  expect(scriptedKill([[self, init, sibling]])).toEqual(["read"]);
 });
 
 /** The pid, parent and start time of the process the rows of `listedOf` below read. */
@@ -420,8 +488,8 @@ const ordinaryFlags = 0x00400100;
 
 /** The text Linux gives for the `/proc/<pid>/stat` of `readProcess`, named `name`, in `state`,
  *  with `flags`: its pid, its name in parentheses, and fields 3 to 52 of proc(5), each 0 but the
- *  state, the parent, the flags and the start time. So a field read one place off reads 0, or
- *  the state, and not what `readProcess` holds. */
+ *  state, the parent, the flags and the start time. So each of the four, read one place off,
+ *  reads a neighbour (0, the state or the parent) and not its own value. */
 function statText({ flags = ordinaryFlags, name = "sleep", state = "R" } = {}): string {
   const fields: Record<number, string> = {
     1: String(readProcess.pid),
@@ -437,6 +505,12 @@ function statText({ flags = ordinaryFlags, name = "sleep", state = "R" } = {}): 
 /** The text of a `/proc/<pid>/environ` holding `variables`, each one ended by a NUL. */
 function environText(...variables: string[]): string {
   return variables.map((variable) => `${variable}\0`).join("");
+}
+
+/** What the table lists of `readProcess`, in state R and no kernel thread, whose environment
+ *  holds `variables`. */
+function listedWith(...variables: string[]): Listed | undefined {
+  return listedOf(readProcess.pid, statText(), environText(...variables));
 }
 
 test("the table lists a process whose environment reads empty, in state R and no kernel thread, as unknown", () => {
@@ -467,35 +541,34 @@ test("the table lists a kernel thread, told by its flags, whose environment read
   });
 });
 
-test("the table lists the tokens of a process's environment, split on spaces", () => {
-  const carrying = (tokens: string) =>
-    environText("HOME=/root", `DISPATCH_E2E_BOUNDED_TOKENS=${tokens}`, "PATH=/usr/bin");
-  expect(listedOf(readProcess.pid, statText(), carrying("outer"))).toEqual({
-    ...readProcess,
-    tokens: ["outer"],
-    unknown: false,
-  });
-  // A child started inside another bounded child carries the outer token, then its own.
-  expect(listedOf(readProcess.pid, statText(), carrying("outer inner"))).toEqual({
-    ...readProcess,
-    tokens: ["outer", "inner"],
-    unknown: false,
+test("the table lists the tokens of a process's environment in their order, split on spaces", () => {
+  // A child started inside another bounded child carries the outer token, then its own, and one
+  // started two deep carries three, the outermost first; the list keeps that order. The tokens'
+  // variable stands first, in the middle and last among the variables.
+  const tokens = (value: string) => `DISPATCH_E2E_BOUNDED_TOKENS=${value}`;
+  expect({
+    first: listedWith(tokens("outer inner"), "HOME=/root", "PATH=/usr/bin"),
+    middle: listedWith("HOME=/root", tokens("outer middle inner"), "PATH=/usr/bin"),
+    last: listedWith("HOME=/root", "PATH=/usr/bin", tokens("outer inner")),
+  }).toEqual({
+    first: { ...readProcess, tokens: ["outer", "inner"], unknown: false },
+    middle: { ...readProcess, tokens: ["outer", "middle", "inner"], unknown: false },
+    last: { ...readProcess, tokens: ["outer", "inner"], unknown: false },
   });
 });
 
 test("the table lists no token for an environment whose variables only hold the tokens' name", () => {
   // One variable's value holds the tokens' variable and its `=`, and another's name starts with
-  // that variable's: neither is the entry for it.
-  const environ = environText(
-    "HOME=/root",
-    "NOTE=DISPATCH_E2E_BOUNDED_TOKENS=outer",
-    "DISPATCH_E2E_BOUNDED_TOKENS_SAVED=inner"
-  );
-  expect(listedOf(readProcess.pid, statText(), environ)).toEqual({
-    ...readProcess,
-    tokens: [],
-    unknown: false,
-  });
+  // that variable's: neither is the entry for it. Each stands first, in the middle and last.
+  const note = "NOTE=DISPATCH_E2E_BOUNDED_TOKENS=outer";
+  const saved = "DISPATCH_E2E_BOUNDED_TOKENS_SAVED=inner";
+  const home = "HOME=/root";
+  const none = { ...readProcess, tokens: [], unknown: false };
+  expect([
+    listedWith(note, saved, home),
+    listedWith(saved, home, note),
+    listedWith(home, note, saved),
+  ]).toEqual([none, none, none]);
 });
 
 test("the table lists a process whose environment could not be read with no token, and not as unknown", () => {
@@ -536,9 +609,10 @@ test("a kill's walk by parent pid ends where its table lists two processes as ea
       pid: one,
       ppid: other,
       start: scriptedChild.start + 1,
-      tokens: [scriptedChild.token],
+      tokens: [scriptedChild.token, innerToken],
       unknown: false,
     },
+    sibling,
     { pid: other, ppid: one, start: scriptedChild.start + 2, tokens: [], unknown: false },
   ];
   expect(scriptedKill([table])).toEqual(["read", `signal ${one}`, `signal ${other}`, "read"]);
