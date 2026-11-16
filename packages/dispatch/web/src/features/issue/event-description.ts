@@ -131,9 +131,9 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "artifact.removed":
       return `Removed ${event.payload.artifact.name}`;
     case "artifact.approved":
-      return `Approved v${event.payload.version}`;
+      return `Approved ${event.payload.name} v${event.payload.version}`;
     case "artifact.changes_requested":
-      return `Changes requested on v${event.payload.version}`;
+      return `Changes requested on ${event.payload.name} v${event.payload.version}`;
     case "artifact.version":
       return `Saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":

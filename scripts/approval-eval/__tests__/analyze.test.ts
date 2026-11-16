@@ -131,10 +131,13 @@ function judgementRow(
 ): JudgementRow {
   const faulted = options.fault === true;
   const endpoint = options.endpoint ?? "claude";
+  const model = options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5");
   return {
     arm,
     recipe: options.recipe ?? "bare",
-    model: options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5"),
+    model,
+    // The model the gateway answers under, which is the asked one, as a round now records it.
+    servedModel: model,
     endpoint,
     caseId,
     slice: options.slice ?? "report",
@@ -199,6 +202,7 @@ function corpusOf(rows: readonly CaseRow[]): Corpus {
       keptEvents: 1,
       readStartedAt: "2026-11-11T00:00:00Z",
       readFinishedAt: "2026-11-11T01:00:00Z",
+      reserve: null,
     },
     rows: [...rows],
     byCaseId: new Map(rows.map((row) => [row.caseId, row])),

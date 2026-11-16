@@ -926,7 +926,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `"other" is not an owner of this project`},
 		{[]string{"api", "repos/Other/thing"}, `"other" is not an owner of this project`},
 		{[]string{"pr", "view", "1", "--bogus"}, `"--bogus" is no option`},
-		{[]string{"issue", "view", "1"}, "cannot read `gh issue view`"},
+		{[]string{"issue", "lock", "1"}, "cannot read `gh issue lock`"},
 		{[]string{"co", "1"}, `"co" is a gh alias`},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)
@@ -1157,7 +1157,8 @@ func readRecord(t *testing.T, path string) string {
 // refuses are each exit 2 with the check's own report, and gh is never started. A call the check
 // clears reaches gh with its arguments untouched, and gh's own exit status comes back through
 // `legion gh` — the stand-in exits 7 and `legion gh` exits 7 — with the standard input the guard
-// buffered handed to gh in this process's place.
+// buffered handed to gh in this process's place. A call that writes nothing runs the check too,
+// with no visibility read (TestLegionGhChecksAReadAndReadsNoVisibility).
 //
 // Two calls pass unchecked. `legion gh auth git-credential` answers git as it always did, with
 // no check run at all, since reading its standard input would break git's protocol. And a
@@ -1165,9 +1166,10 @@ func readRecord(t *testing.T, path string) string {
 // when GitHub refuses its REST read for a spent rate limit) passes when it is exactly that read
 // for exactly the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names — without it a pod's gh,
 // which is this command, would call the check, whose own read would call it again, without end —
-// while the same variable with any other argv, and a variable naming no repository, are checked
-// like anything else. The shared check's own read this command answers itself, through the
-// guard's REST read, which reaches gh.
+// and is not logged, since the call it reads for logs it. The variable makes no other call one
+// of those reads: a write under it, another read under it, and the same read under a variable
+// naming no repository are each checked like anything else. The shared check's own read this
+// command answers itself, through the guard's REST read, which reaches gh.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1268,7 +1270,8 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 
 	t.Run("unchecked: the shared check's own visibility read", func(t *testing.T) {
 		visibility := []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".visibility"}
-		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion"}, visibility...)
+		state := t.TempDir()
+		code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion", "XDG_STATE_HOME": state}, visibility...)
 		if code != 0 || stdout != "public\n" {
 			t.Errorf("the check's own visibility read = exit %d, stdout %q, stderr %q; want exit 0 and the visibility", code, stdout, stderr)
 		}
@@ -1277,6 +1280,9 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		}
 		if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion"), " ") + "\n"; ghRan != want {
 			t.Errorf("gh recorded %q, want the guard's REST read, %q", ghRan, want)
+		}
+		if log := readRecord(t, filepath.Join(state, "legion-gh", "calls.log")); log != "" {
+			t.Errorf("the check's own visibility read was logged as a call of its own: %q", log)
 		}
 	})
 
@@ -1299,6 +1305,7 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		slug string
 		args []string
 	}{
+		{"a write under the same variable", "sjawhar/legion", []string{"api", "--method", "PATCH", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".visibility"}},
 		{"another argv under the same variable", "sjawhar/legion", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".name"}},
 		{"a variable naming no repository", "sjawhar/legion/pulls", []string{"api", "--hostname", "github.com", "repos/sjawhar/legion/pulls", "--jq", ".visibility"}},
 		{"the GraphQL read of another repository under the variable", "sjawhar/legion", leakguard.VisibilityGraphQLArgs("sjawhar/other")},
@@ -1697,8 +1704,11 @@ func TestAppendGhCallLogKeepsConcurrentLinesThatFit(t *testing.T) {
 	}
 }
 
-// The rate-limit endpoint is a read with no repository content, so it bypasses the guard; a
-// method that writes or another endpoint still reaches the guard.
+// The rate-limit endpoint is a read with no repository content, so it bypasses the guard: no
+// check runs and no visibility is read. A GET of another endpoint writes nothing, so it runs the
+// check, and a check that refuses it refuses it, but it reads no visibility: where the visibility
+// read fails, as it does in an hour whose REST limit is spent, the GET still reaches gh. A write
+// to the same repository still reads its visibility, and is refused when that read fails.
 func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git on this machine")
@@ -1728,9 +1738,11 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 		wantCode  int
 		wantReads int
 	}{
-		{"the GET", []string{"api", "rate_limit"}, ghCheckPasses, 0, 0},
+		{"the GET, under a check that would refuse it", []string{"api", "rate_limit"}, ghCheckRefuses, 0, 0},
 		{"a POST", []string{"api", "rate_limit", "--method", "POST"}, ghCheckRefuses, 2, 0},
-		{"another endpoint", []string{"api", "user"}, ghCheckRefuses, 2, 0},
+		{"another endpoint's GET under a check that refuses it", []string{"api", "user"}, ghCheckRefuses, 2, 0},
+		{"another endpoint's GET while the visibility read fails", []string{"api", "repos/acme/widgets/pulls"}, ghCheckPasses, 0, 0},
+		{"another endpoint's write while the visibility read fails", []string{"api", "repos/acme/widgets/issues", "--method", "POST"}, ghCheckPasses, 2, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := filepath.Join(t.TempDir(), "gh")
@@ -1739,7 +1751,8 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 				"GH_STANDIN_RECORD":    record,
 				"LEGION_GH_OWNERS_DIR": root,
 				"LEGION_GH_PATH":       stub,
-				"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), tc.check),
+				"PUBLIC_LEAK_CHECK":    ghCheckAt(t, tc.check),
+				testProvenCheckEnv:     ghProvenProgramSHA256,
 			}
 			if code, _, stderr := legionGhIn(t, repository, env, "", tc.args...); code != tc.wantCode {
 				t.Fatalf("legion gh %q = exit %d, stderr %q; want exit %d", tc.args, code, stderr, tc.wantCode)

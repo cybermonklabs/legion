@@ -594,6 +594,19 @@ listing alone. What follows the colon says where to look:
   verify or move the check into place on the pod's disk. The sentence on the claim is the whole
   record, because the launcher writes no log line for a refusal.
 
+**A pod launch whose system prompt is too large for one start frame** is refused before anything
+starts, and its claim fails at once, charged no launch failure, since every try would compose the
+same text from the same files. The prompt reaches the pod's launcher in one frame, which holds at
+most 1048576 bytes. The daemon logs the error `supervise: the role's system prompt is too large
+to launch; failing the claim, charging no launch failure`; the claim's `failure` carries the cause
+word `launch_refused` (`died` where the refused launch was the relaunch of a process that died)
+and a `detail` reading `launch refused, charged no launch failure: …: the <role>'s system prompt is
+<N> bytes, and the start frame that carries it to its pod's launcher would be <F> bytes, larger
+than the 1048576 bytes a launcher reads in one frame`, the part before the sentence naming the
+claim and the launch step that measured the frame, and its `lastStartFailure` carries the same
+sentence, both read with `read_state`. Cut the prompt: the deployment's instructions, the role's
+prompt, or an experiment arm's instructions.
+
 Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The
 daemon launches a claim that has not failed yet again on its own, after the backoff below.
 
@@ -991,7 +1004,7 @@ Nothing adds the two lines to these commits:
 - A `git commit` when the git whose version `legion git` reads is older than 2.32, the first git with `git commit --trailer`: the real git in a pod, and under tmux the first git on `PATH` after `bin/` that is a compiled program.
   A host's git wrapper script that runs another git older than 2.32 makes the commit fail on the two `--trailer` options instead (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
 
-- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (anthropics/claude-code#46696).
+- Under Claude Code, a jj commit from a subagent's shell that lacks the session's environment file (Claude Code issue 46696).
   That subagent's `git commit` still gets the `Legion-Role` line.
 
 **The git author and committer name no role.**
@@ -1188,6 +1201,10 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
   the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
   that write and the reports it carried, as a stop between a decision and its write always has.
+  A write the daemon's own stop cut short writes the same line at Info, with `owed=true` and a
+  `context canceled` error: the database refused nothing, and the next boot takes the claim up
+  from its row, as it does every decision the stop ends. A write that ran out its own deadline
+  while the daemon stopped did wait on the database, and stays at Warn.
   The line comes again with `owed=true` at each decision whose repair fails again. With
   `owed=false` a repair's write reached the server, which judged the statement and would judge it
   the same way again, so the owed write and the reports it carried are dropped and the row stays
@@ -1224,8 +1241,9 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   decision whose write landed, except one of a generation the claim has left (`supervise: an owed
   report is dropped; the claim has left the generation it was owed at`, at Info with its `state=`
   and `generation=`). A claim whose last `owed=true` line has no such line after it is still
-  behind, and its next decision will try again; one whose last line is `owed=false` has dropped
-  the write, and nothing tries it again.
+  behind: while that daemon runs, the claim's next decision tries the write again, and a daemon
+  that stopped since lost the mark, so its next boot takes the claim up from its row. One whose
+  last line is `owed=false` has dropped the write, and nothing tries it again.
 - **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
   and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
   turn that started from one the daemon never saw, and a turn that ended from one still running.

@@ -46,6 +46,7 @@ dev-broker: starting broker...
 {"time":"2026-11-14T02:26:30.105447105Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:46052"}
 {"time":"2026-11-14T02:26:30.105572274Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:22691"}
 {"time":"2026-11-14T02:26:30.10560447Z","severity":"INFO","message":"model judge","state":"off","detail":"none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"}
+{"time":"2026-11-14T02:26:30.109201447Z","severity":"INFO","message":"project access check","state":"off","detail":"BROKER_PROJECT_ACCESS_URL is unset, so a token naming no project is minted as before and a person's trade naming one is refused"}
 {"time":"2026-11-14T02:26:30.109245773Z","severity":"INFO","message":"token exchange","state":"on","kubernetes":true,"github":false,"accounts":1,"workflows":0,"machines":0}
 {"time":"2026-11-14T02:26:30.109626677Z","severity":"INFO","message":"machine login device grant","state":"on","verification_uri":"http://127.0.0.1/credentials/machine"}
 {"time":"2026-11-14T02:26:30.153657152Z","severity":"INFO","message":"broker reread rate","replicas":2,"every":"1s","burst":10}
@@ -72,6 +73,7 @@ dev-broker: ready.
   export DEV_BROKER_GITHUB_OWNER=acme-org
   export DEV_BROKER_GITHUB_CASE_SECRET=DEMO_GITHUB_APP_CASE_PAIR
   export DEV_BROKER_GITHUB_CASE_OWNER=ada
+  export DEV_BROKER_GITHUB_HUMAN_SECRET=DEMO_GITHUB_APP_HUMAN
   export PATH=/tmp/agent-secrets-dev.UMaoms/bin:$PATH
 ...
 ```
@@ -119,21 +121,27 @@ An account `BROKER_API_ACCOUNTS` does not list at all is `403 ACCOUNT_NOT_LISTED
 entry naming a caller the broker does not know refuses the boot, naming that name and the names it
 knows, so a typo never becomes a caller that reaches nothing.
 
-The fake secrets file holds two secrets of `ada@example.com`'s, under the namespace
+The fake secrets file holds three secrets of `ada@example.com`'s, under the namespace
 `example/agent-secrets/` and on its example key: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
 own sessions ([the kinds of session](/legion/broker/concepts/#sessions-and-enrollment)) get without
-asking, and `DEMO_API_KEY`, tagged `tier=human`, which she approves. Three more are the
-registered service's own, each tagged `owner=legion-daemon tier=agent`: a pod session enrolled
-under that service gets each without asking, and no person's session sees any of them at all.
+asking, and `DEMO_API_KEY` and `DEMO_GITHUB_APP_HUMAN`, tagged `tier=human`, which she approves.
+The last of those is a `github-app` secret whose `github-owners` tag names `acme-org`, and it is
+the one GitHub App secret of this stack a request for reaches a person: a secret the registered
+service owns is granted to that service's own sessions and denied to every other, and put to
+nobody. Three more are the registered service's own, each tagged
+`owner=legion-daemon tier=agent`: a pod session enrolled under that service gets each without
+asking, and no person's session sees any of them at all.
 They are `DEMO_SERVICE_TOKEN`, a stored value, and two `github-app` secrets minted at the GitHub
 stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acme-org`, and
 `DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which that stand's App is installed twice
 under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
-installations and `agent-secrets --github-token` refuses it. The exports name both secrets, the
-stand's address, the route that reads back every call it was sent, and the route that sets what
-it answers each token request from then on: `ordinary`, `refuse`, `widen`, or `fail-once`, which
-answers the next one `503` and the rest as `ordinary`, so the broker's minter retries that one.
-They also name the broker's metrics address (`DEV_BROKER_METRICS_URL`), and the pod and
+installations and `agent-secrets --github-token` refuses it. The exports name all three
+`github-app` secrets, the stand's address, the route that reads back every call it was sent, and
+the route that sets what it answers each token request from then on: `ordinary`, `refuse`,
+`refuse-repository`, `refuse-permissions`, `widen`, or `fail-once`, which answers the next one
+`503` and the rest as `ordinary`, so the broker's minter retries that one; `repository` names the
+repository `refuse-repository` refuses. They also name the broker's metrics address
+(`DEV_BROKER_METRICS_URL`), and the pod and
 the registered service of the enrolment command the banner prints (`DEV_BROKER_POD_UID` and
 `DEV_BROKER_SERVICE`), so a script enrols that same session from the exports alone. A grant lasts
 for the `--ttl` its request names; with none, 15 minutes when any secret it names is human tier
@@ -357,7 +365,7 @@ form). Here the `listener` token, which may do that and nothing else:
 
 ```console
 $ curl -s -H "Authorization: Bearer $(cat "$DEV_BROKER_DIR/listener-token")" -d "token=<access token>" "$AGENT_SECRETS_URL/v1/oauth/introspect"
-{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","project":"EXAMPLE","exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
+{"active":true,"session":"example-worker-session","person":"ada@example.com","project_scope":"named","projects":["EXAMPLE"],"exp":1793320811,"client_id":"dispatch-token-exchange","jkt":"oufCNV-MCX2NLGXXB5yj7Pdnwumhbp1dGcxoxpSTyWk"}
 ```
 
 `POST /v1/oauth/revoke` (RFC 7009) ends one before its expiry, and is the only thing that can: an
@@ -417,7 +425,7 @@ after one release of `DEMO_GITHUB_APP` to the pod session the banner's enrolment
 
 ```console
 $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
-{"mode":"fail-once"}
+{"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s characters, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 20 characters, starting ghs

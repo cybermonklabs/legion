@@ -56,11 +56,15 @@ The unit is written by then, so a later run without the flag changes nothing: on
 end, or to restart it anyway, re-run with `--restart-with-sessions`, which restarts the running
 helper whether or not the unit changed. A
 helper with no sessions refuses new ones from the moment `install` checks until it restarts, so
-none starts in between. A running helper from a release before that refusal (`drain`) cannot
-hold new sessions off, so `install` never restarts it on its own: it lists its sessions and
-prints `not restarted: the running agent-secrets-helper predates drain, …`. Re-run with
-`--restart-with-sessions` at a quiet moment. If the restart itself fails, `install` lets the
-helper take sessions again and exits with systemd's error.
+none starts in between; if no restart comes within a minute, the helper takes sessions again by
+itself and logs `drain ended by itself`. A running helper from a release before that refusal
+(`drain`) cannot hold new sessions off, so `install` never restarts it on its own: it lists its
+sessions and prints `not restarted: the running agent-secrets-helper predates drain, …`. Re-run
+with `--restart-with-sessions` at a quiet moment. If the restart fails, takes more than 30
+seconds, or leaves the unit's main process the same, `install` lets the helper take sessions again
+and exits with an error that says which; while systemd still holds a job for the unit, as after a
+restart that took too long, it leaves the helper draining until that restart lands or the minute
+passes, and says so.
 
 A helper that answers on the socket but that the unit does not run (one started by hand) makes
 `install` stop before it writes anything, even when the unit file already matches: it lists that helper's sessions and exits 2 with `an

@@ -284,7 +284,14 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), launcherCommand(l, r)); err != nil {
+	// The start sent carries what this launch learned from the cluster since prepare measured it,
+	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
+	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
+	command := launcherCommand(l, r)
+	if err := l.checkStartFrame(command); err != nil {
+		return fail("measure its start frame", err)
+	}
+	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.join(loc)

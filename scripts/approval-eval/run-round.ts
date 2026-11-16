@@ -52,6 +52,7 @@ import {
   readEvidenceCache,
   readRows,
   rowsPath,
+  servedModelFaultOf,
 } from "./round-io";
 
 /**
@@ -227,6 +228,8 @@ export interface ProbeRecord {
   endpoint: Endpoint;
   arm: string;
   model: string;
+  /** The model the probe's answer says served it, and null where it named none. */
+  servedModel: string | null;
   caseId: string;
   promptBytes: number;
   /** What came back: the labels chosen, and whether the endpoint reported its own numbers. */
@@ -399,7 +402,11 @@ export class RowStore {
     return store;
   }
 
-  /** Whether this judgement has a row that answered, which is the one a resume skips. */
+  /**
+   * Whether this judgement has a row that answered, which is the one a resume skips. A row read
+   * back with no served model, or with another model than its arm's, reads as the `model`
+   * fault (`rowOf` in `round-io.ts`), so a resume asks it again.
+   */
   answered(key: string): boolean {
     const row = this.rows.get(key);
     return row !== undefined && row.fault === null;
@@ -615,7 +622,12 @@ async function askArm(
   });
 }
 
-/** One judgement's row, with its fault detail scrubbed before it is written. */
+/**
+ * One judgement's row, with its served model read (`servedFieldsOf`) and its fault detail
+ * scrubbed before it is written. The row keeps the labels the answer chose, whatever the fault:
+ * a Jev answer that named no model keeps its choice beside the `model` fault, while `askClaude`
+ * reads no label from an answer another model gave, so such a gateway row holds none.
+ */
 function rowOfAnswer(
   arm: Arm,
   scored: ScoredCase,
@@ -625,10 +637,12 @@ function rowOfAnswer(
   answer: ModelAnswer,
   at: number
 ): JudgementRow {
+  const served = servedFieldsOf(arm, answer);
   return {
     arm: arm.name,
     recipe: arm.recipe,
     model: arm.model,
+    servedModel: served.servedModel,
     endpoint: arm.endpoint,
     caseId: scored.row.caseId,
     slice: scored.slice,
@@ -647,9 +661,31 @@ function rowOfAnswer(
     examples: prompt.record.examples,
     excluded: prompt.record.excluded,
     promptBytes: prompt.record.bytes,
-    fault: answer.fault,
-    faultDetail: answer.faultDetail === null ? null : scrubSecrets(answer.faultDetail),
+    fault: served.fault,
+    faultDetail: served.faultDetail,
     at: new Date(at).toISOString(),
+  };
+}
+
+/**
+ * An answer's served model, and its fault and scrubbed detail once the served model is read: an
+ * answer without a fault whose served model is not its arm's (`servedModelFaultOf`) is the
+ * `model` fault, whatever asking function gave it.
+ */
+function servedFieldsOf(
+  arm: Arm,
+  answer: ModelAnswer
+): { servedModel: string | null; fault: FaultKind | null; faultDetail: string | null } {
+  const servedModel = answer.servedModel ?? null;
+  const unserved =
+    answer.fault === null
+      ? servedModelFaultOf({ endpoint: arm.endpoint, model: arm.model, servedModel })
+      : null;
+  const detail = unserved ?? answer.faultDetail;
+  return {
+    servedModel,
+    fault: unserved === null ? answer.fault : "model",
+    faultDetail: detail === null ? null : scrubSecrets(detail),
   };
 }
 
@@ -740,10 +776,12 @@ async function probeEndpoint(
   const seed = seedOf(scored.row.caseId, arm.name, 0);
   const prompt = await promptOf(arm, scored, evidence, seed, plan.distillationPath);
   const answer = await askArm(arm, scored.row, prompt, deps);
+  const served = servedFieldsOf(arm, answer);
   return {
     endpoint: arm.endpoint,
     arm: arm.name,
     model: arm.model,
+    servedModel: served.servedModel,
     caseId: scored.row.caseId,
     promptBytes: prompt.record.bytes,
     chosen: answer.chosen,
@@ -754,8 +792,8 @@ async function probeEndpoint(
     latencyMs: answer.latencyMs,
     attempts: answer.attempts,
     stateCut: answer.stateCut,
-    fault: answer.fault,
-    faultDetail: answer.faultDetail === null ? null : scrubSecrets(answer.faultDetail),
+    fault: served.fault,
+    faultDetail: served.faultDetail,
   };
 }
 

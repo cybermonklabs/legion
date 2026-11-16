@@ -79,18 +79,20 @@ var (
 	// a Google login that needs a new sign-in or a GitHub App GitHub refuses. Its returned error
 	// carries the minter's own message, which never holds the stored value or a token.
 	ErrMintFailed = errors.New("the broker could not mint a token from this secret")
-	// ErrNarrowingNotApplicable: a release asked to narrow a GitHub App token, and the grant holds
-	// no github-app secret, so nothing it releases could be narrowed; it releases nothing rather
-	// than every value whole.
+	// ErrNarrowingNotApplicable: a request or a release asked to narrow a GitHub App token, and
+	// the names it covers hold no github-app secret, so nothing it releases could be narrowed.
+	// Create refuses the request before anybody is asked to approve it, and Values refuses the
+	// release of a grant; either way nothing is released rather than every value whole.
 	ErrNarrowingNotApplicable = errors.New("this grant holds no github-app secret to narrow")
-	// ErrNarrowingOwnerNotListed: a release asked to narrow a GitHub App token to an account that a
-	// github-app secret of the grant does not list in its github-owners tag; it releases nothing,
-	// and no minter runs, since the caller's input, not the App, is at fault.
+	// ErrNarrowingOwnerNotListed: a request or a release asked to narrow a GitHub App token to an
+	// account that a github-app secret of it does not list in its github-owners tag. Create
+	// refuses the request and Values the release; nothing is released, and no minter runs, since
+	// the caller's input, not the App, is at fault.
 	ErrNarrowingOwnerNotListed = errors.New("the narrowing names an account a github-app secret of this grant does not serve")
-	// ErrNarrowingBehindAirlock: a release asked to narrow a GitHub App token while the airlock
-	// holds back one of the grant's names. It releases nothing, and no minter runs. The broker
-	// cannot apply such a narrowing and say so truthfully: the names behind the airlock are
-	// spent through the proxy, which mints its own values once per grant per pod and would go
+	// ErrNarrowingBehindAirlock: a request or a release asked to narrow a GitHub App token while
+	// the airlock holds back one of its names. Nothing is released, and no minter runs. The
+	// broker cannot apply such a narrowing and say so truthfully: the names behind the airlock
+	// are spent through the proxy, which mints its own values once per grant per pod and would go
 	// on swapping in the owner-wide token. Its returned error names the name the airlock holds.
 	ErrNarrowingBehindAirlock = errors.New("this grant holds a name behind the airlock, which takes no narrowing")
 	// ErrRequestPending means this session already has a person deciding one of the requested
@@ -255,6 +257,16 @@ type Machine struct {
 	// MissRereads bounds, per enrollment, the single-name policy rereads Create makes for names the
 	// live policy does not serve (rereadMissing); nil means DefaultMissRereads.
 	MissRereads *ratelimit.Limit
+	// NarrowingCheckBudget bounds the whole check Create makes of a request's GitHub App
+	// narrowing before it asks a person (narrowing_check.go), and NarrowingCheckMint one mint of
+	// that check and that mint's revoke; zero means DefaultNarrowingCheckBudget and
+	// DefaultNarrowingCheckMint.
+	NarrowingCheckBudget time.Duration
+	NarrowingCheckMint   time.Duration
+	// NarrowingChecks bounds, per enrollment, the checks of that narrowing that reach GitHub;
+	// nil means DefaultNarrowingChecks. An enrollment past the bound has the GitHub part of its
+	// check skipped and its request goes to its approver, as it did before the check existed.
+	NarrowingChecks *ratelimit.Limit
 	// ServicesByAccount are the registered services' accounts (BROKER_SERVICES): for each account,
 	// the service a pod whose projected token proved it runs as that account proves, when its
 	// launcher's service is that one (requester).
@@ -293,6 +305,16 @@ type Machine struct {
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
+	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use
+	// (narrowingCheckLimiter).
+	narrowingChecks     *ratelimit.Keyed
+	narrowingChecksOnce sync.Once
+	// leftOut is, by record id, each pending record PendingForApprover has logged as left out of
+	// a list because it does not verify for this broker, with when to forget it: the later of the
+	// record's expiry and leftOutRetention after the last list that left it out. It is logged once
+	// rather than on every poll (leaveOut).
+	leftOutMu sync.Mutex
+	leftOut   map[string]time.Time
 	// testAdoptionHook, when set, runs in applyDecisionAttempt between the read that locks the
 	// requesting enrollment and the read that locks the request. It exists only so a test can
 	// deterministically move the request to another enrollment in that window, which is where an
@@ -303,13 +325,20 @@ type Machine struct {
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
 func (m *Machine) missRereadLimiter() *ratelimit.Keyed {
 	m.missRereadsOnce.Do(func() {
-		limit := DefaultMissRereads
-		if m.MissRereads != nil {
-			limit = *m.MissRereads
-		}
-		m.missRereads = ratelimit.NewKeyed(limit)
+		m.missRereads = ratelimit.NewKeyed(limitOr(m.MissRereads, DefaultMissRereads))
 	})
 	return m.missRereads
+}
+
+// limitOr is what a limiter field of this Machine bounds its load at: the limit the field names,
+// or fallback, the package's default, for the nil field every caller that sets none leaves. Each
+// limiter keeps its own sync.Once and its own buckets; this is the one rule they share
+// (missRereadLimiter above, narrowingCheckLimiter in narrowing_check.go).
+func limitOr(limit *ratelimit.Limit, fallback ratelimit.Limit) ratelimit.Limit {
+	if limit != nil {
+		return *limit
+	}
+	return fallback
 }
 
 // NewChainVerifier builds the record.ChainVerifier VerifyChain uses, scoped to agent_secret
@@ -351,6 +380,10 @@ type enrollmentRow struct {
 // its lease's end. A caller that decides
 // for the session reads it after locking the session's row, which RevokeByApprover holds while it
 // withholds, so a withhold either committed before the read or waits for the caller.
+// Create's check of a narrowing is the one caller that reads it on the pool under no lock
+// (checkNarrowing): it decides only whether that request would reach a person and so whether to
+// ask GitHub about the narrowing, never what the request is given, so a withhold that commits
+// beside it changes nothing but whether one check runs.
 // The withheld names are read by the enrollment's own id, and an adoption carries a session's
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
@@ -398,7 +431,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 //
 // A request it writes pending is handed to Machine.Judge once the transaction has committed, and
 // one it coalesced onto a pending request is not, so the model judge sees each record once.
-func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
+//
+// narrowing is the GitHub App narrowing the caller will release this request's grant with, nil
+// when it asks for none. A later step of Create checks it before the request reaches a person, so
+// a narrowing the broker would refuse costs nobody an approval.
+func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string, narrowing *secrets.GitHubNarrowing) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
 	}
@@ -442,6 +479,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	// A secret `agent-secrets secret create` made and has not yet filled is refused as such, never
+	// as unknown, which a caller takes as final: no request row, record or approver for it.
+	for _, name := range names {
+		if m.Policy.PendingValue(set, name) {
+			return Request{}, fmt.Errorf("%s %w", name, policy.ErrPendingValue)
+		}
+	}
 	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	for _, name := range names {
 		if limit, over := overMaxGrant(set, name, lifetime); over {
@@ -452,6 +496,14 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	} else if ok {
 		return existing, nil
+	}
+	if narrowing != nil {
+		// The verdict on the narrowing, before a row is written and before anybody is asked
+		// (checkNarrowing, narrowing_check.go): a refusal returns here, so the approval a
+		// narrowing the broker cannot serve would have spent is never asked for.
+		if err := m.checkNarrowing(ctx, enr, names, set, obj.Reason, narrowing); err != nil {
+			return Request{}, err
+		}
 	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {

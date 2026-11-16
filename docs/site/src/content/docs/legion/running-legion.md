@@ -346,8 +346,8 @@ What each part is for:
   optional `slack_channels` lists Slack channel ids (`C…` or `G…`) whose
   mentions of the Legion Slack app reach the project's controller, which answers in the thread. It
   needs `controller: daemon` and `runtime.kubernetes.agent_secrets`, and the loader refuses it
-  otherwise: the controller replies with the Slack bot token the secrets broker grants only to the
-  Legion daemon service's own pods
+  otherwise: the controller replies with the Slack bot token, which the secrets broker grants it
+  only once the daemon enrolls it with the broker
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
@@ -457,7 +457,7 @@ What each part is for:
   the control the others are measured against.
   A role of a drawn unit names each arm's `config_files` in its `PI_CONFIG_FILES` after the
   operator's own and the role's own, in the order the project's file declares the experiments, and
-  ends its one `--append-system-prompt` value with each arm's `instructions` in that same order.
+  ends its system prompt with each arm's `instructions` in that same order.
   The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
   and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.

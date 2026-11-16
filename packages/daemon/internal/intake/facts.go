@@ -267,10 +267,12 @@ func (DispatchArtifact) isFact() {}
 
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
 // in a person's name when their answer to a decision block was the whole change since the version
-// they approved, or when a later version's text is the text of the version they approved
-// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason and restoreReason, whose
-// format is "Carried forward from the approval of version %d: ..."). The daemon cannot import that
-// package, so it holds the prefix before the version number as a literal of its own.
+// they approved, when a later version's text is the text of the version they approved, or when a
+// later version's text is that text with the questions a reopen opened again
+// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason, restoreReason and
+// reopenReason, whose format is "Carried forward from the approval of version %d: ..."). The
+// daemon cannot import that package, so it holds the prefix before the version number as a
+// literal of its own.
 const CarriedApprovalReasonPrefix = "Carried forward from the approval of version"
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
@@ -758,11 +760,13 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) isFact() {}
 
-// PullRequestMerged records GitHub's terminal merged observation.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
+// the head the pull request merged at, "" when the observation names none.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
+	HeadSHA  string
 }
 
 func (PullRequestMerged) isFact() {}
@@ -825,7 +829,8 @@ func (PullRequestMissing) isFact() {}
 type Push struct {
 	Repo   string
 	Branch string
-	// Before is the head the push replaced, After the head it left.
+	// Before is the head the push replaced, After the head it left. A push that deleted the branch
+	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
 	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).

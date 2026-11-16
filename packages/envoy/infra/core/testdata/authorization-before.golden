@@ -1,0 +1,16 @@
+# Rendered by envoy-infra from hub-shaped placeholder inputs.
+# Public keys only.
+authorization {
+  users: [
+    # example-hub
+    {"nkey": "UCVLUXHFBITELHZUNIQG35K5PGQJIP6RX4LUG32L5I22JL7VGXKJQ4BV", "permissions": {"publish": {"allow": ["notifications.>", "$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS"], "deny": ["notifications.envoy.deliver.>"]}, "subscribe": {"allow": ["_INBOX.>", "notifications.role.> notifications-role", "notifications.café.>"]}}}
+    # example-dispatch
+    {"nkey": "UAUK2YFQ7SM5YNV4VH6NPEKN3UZVY43S4JUE5767FR4CX76R7E7JTWYJ", "permissions": {"publish": {"allow": ["notifications.dispatch.>", "$JS.API.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    # example-daemon
+    {"nkey": "UBHS7ZOUV24G5LDHYM4H4PBRLBEYK62JIFJVBMFBRCY63D3XC45MCRKF", "permissions": {"publish": {"allow": ["$JS.API.CONSUMER.>", "$JS.ACK.ENVOY_NOTIFICATIONS.>"]}, "subscribe": {"allow": ["_INBOX.>"]}}}
+    # example-sessions
+    {"nkey": "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5", "permissions": {"publish": {"allow": ["notifications.agent.>"]}, "subscribe": {"allow": ["_INBOX.>", "notifications.envoy.deliver.*"]}}}
+  ]
+}
+# example-sessions: a client presenting no credential becomes this user
+no_auth_user: "UAZUULVPMGDGSEXFS26DBYEAMLBGWFX6HKOCQGIWTDBZARXTK3VRF5W5"
