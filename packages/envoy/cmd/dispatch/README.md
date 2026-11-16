@@ -1266,24 +1266,32 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Both builds' writers of one issue, document or project exclude each other, so a write of either build decides on what the other committed.
   Each process registers the owner lock protocol it serialises those writers by (`server_processes.owner_lock_protocol`, migration `20261115100924_server_processes_owner_lock_protocol`): a build that takes the owner's row first and holds it to its commit, as every build before that migration does, reads the column's default 0, and a build that takes the owner's advisory lock first (`store.LockOwner`) registers 1.
   A build at 1 names 1 in the `dashboard_builds` row its boot publishes too (migration `20261115200014_owner_lock_legacy_gate`), and an earlier build's row reads 0.
+  A build that changes how it serialises an owner's writers registers a new protocol and keeps taking what the protocols still live take, the same way.
+
+- **An earlier build in the fleet.**
   An earlier build is in the fleet while a row of it in `server_processes` has heartbeated within the last 10 minutes (`store.OwnerLockLegacyWindow`, the registry's prune age, `processes.PruneAge`), so until it is deregistered or pruned, or for an hour after it last arrived (`store.OwnerLockMarkWindow`).
   It arrives at its dashboard publish, the first thing its boot writes and before any write an owner lock guards: a publish that fails ends its boot, which serves nothing.
   An earlier build that serves no dashboard (its web dist holds no `index.html`, `dashboard.ErrNoBuild`) arrives at its registration instead, after its boot's repairs and background passes have begun writing; the image never runs that way, since it sets `DISPATCH_WEB_DIST` to the web app it ships (`packages/envoy/docker/Dockerfile`).
   The registration of an earlier build's process, and the return of its lapsed row, arrive too.
   Each arrival's insert, a row at 0, fires a trigger that takes the owner lock gate, a transaction advisory lock of its own (`store.OwnerLockGateNamespace`), exclusively, and stamps the arrival's time in `owner_lock_legacy_mark`: `owner_lock_legacy_arrival` on `dashboard_builds`, `owner_lock_legacy_registration` on `server_processes`.
   The migration stamps that mark too, at the newest earlier publish already in `dashboard_builds` when that is within the hour, so an earlier build whose publish committed before the migration ran, and which has not registered yet, is in the fleet as well; a database no build has published to gets no mark.
+
+- **A writer beside an earlier build.**
   While an earlier build is in the fleet, a build at 1 takes the owner's row too, right after the advisory lock and before the read the write decides on, and takes no gate.
   While none is, it tries the gate shared, without waiting, before its first owner lock, in the owner lock's own statement (`public.owner_lock`), reads the fleet again behind it, and takes the advisory lock alone.
   A try that fails, because an arrival holds the gate or waits for it (Postgres grants no conditional lock request that conflicts with one already waiting), runs that transaction as beside an earlier build: the advisory lock, then the owner's row.
   So an earlier build's arrival waits for every transaction of this build that holds the gate, every owner lock from the moment the arrival asks for the gate takes the owner's row, and every owner lock after the arrival commits reads the earlier build in the fleet.
-  What it costs:
-  a write never waits on the gate, and one that starts while an arrival holds or waits for it takes the owner's row, which gives its read phase a transaction id.
+
+- **What the owner lock gate costs.**
+  A write never waits on the gate, and one that starts while an arrival holds or waits for it takes the owner's row, which gives its read phase a transaction id.
   An arrival waits only for the transactions that already held the gate when it asked for it, and holds the gate from its grant until it commits.
   A publish waits as long as the earlier build lets it, and every earlier build gives up its publish at 60 seconds and exits; a first publish of a build holds the gate across the upload of its assets, which comes after the insert in every earlier build, and a publish of a build already stored uploads nothing.
   A registration holds the registry's lock while it waits, and every process's heartbeat takes that lock within a 2-second bound of its own, so its wait for the gate is bounded at 5 seconds (the function's `lock_timeout`), after which its insert fails with `55P03`.
   Every earlier build from `legion-envoy-v30.20.2` to `legion-envoy-v30.28.1` then ends a fresh registration's process, which exits 1 before it serves anything, and logs the failed return of a lapsed row as a failed heartbeat and tries it again at its next one; that return is bounded at 2 seconds by its heartbeat's own bound in any case.
   A 5-second hold of the registry's lock costs each process at most one heartbeat, well inside the 15-second live window, but registrations queue on that lock one at a time, so earlier processes that register at once, each with no dashboard, hold it 5 seconds each.
   After an earlier build's boot, a build at 1 takes the owner's row for an hour, as every write did before it moved to the advisory lock, even once the earlier build has stopped.
+
+- **What the fleet does not see.**
   Three cases are not seen.
   An earlier build whose boot takes more than an hour from its dashboard publish to its registration is not in the fleet from that hour's end until it registers: every step between the two is bounded at 30 to 60 seconds and its admission at 20, but the seed of the repository projects is not.
   A process of an earlier build silent past the prune age (10 minutes) - frozen, or cut from the database - has its row pruned and is not in the fleet until its next heartbeat's admission, whose insert is an arrival.
@@ -1291,8 +1299,9 @@ So for each surface the two builds share, this is what build N+1 may change whil
   A subcommand of an earlier build that an operator runs beside this one neither publishes nor registers, so it is never in the fleet.
   Of those subcommands, `rebuild-refs` takes issues' and documents' rows `for no key update` (from `legion-envoy-v30.21.1` on), and `backfill-block-ids` and `backfill-anchor-blocks` settle a document they open that owes a settlement, which takes its owner's row and appends its events: run those from a build that carries this change.
   The others write no owner's row: `census` reads in one read-only transaction, `stored-order` reads, `backfill-files` writes only file versions' bytes, `redeliver-webhooks` writes the shared GitHub rate limits and asks GitHub to deliver again to the serving processes, and `settings`, `routes` and `openapi` open no database.
-  The production deployment runs two of them as Jobs from the image its server runs (theorem-labs/agent-infra, `dispatch/main.go`): `census` before every apply changes the server, so a rollback runs the earlier build's census beside the later server, and `backfill-files` once the server has rolled out, when a file move or restore is set; neither writes an owner's row.
-  A build that changes how it serialises an owner's writers registers a new protocol and keeps taking what the protocols still live take, the same way.
+  The production deployment runs two of them as Jobs from the image its server is moving to (theorem-labs/agent-infra, `dispatch/main.go`), and neither writes an owner's row.
+  `census` runs before the server's Deployment moves to that image, and runs again only when the Job's template changes, a new image among them, or after a run that failed (`declareCensusJob`): so a roll forward runs the later build's census beside the earlier server, and a rollback the earlier build's census beside the later server.
+  `backfill-files` runs once the server has rolled out, and only when a file move or restore is set (`declareFileJob`).
 
 The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test -tags twobuild
 ./cmd/dispatch`, CI job `dispatch-two-builds`).

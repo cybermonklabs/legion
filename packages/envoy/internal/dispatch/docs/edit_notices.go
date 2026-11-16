@@ -104,8 +104,15 @@ func (s *Service) recordEditNotice(ctx context.Context, tx pgx.Tx, artifactID st
 		return fmt.Errorf("encode edit notice editors: %w", err)
 	}
 	if latest == nil || latest.Kind != "user" || !slices.Contains(editors, latest.ID) {
+		// The log names no person: editors and latest hold people's logins, which the request's
+		// identity header carried. It records how many people the version lists and what kind of
+		// sender its latest edit had ("" for none), which is what tells the cases apart.
+		latestKind := ""
+		if latest != nil {
+			latestKind = latest.Kind
+		}
 		slog.Info("dispatch: a version names no latest editor among the people it lists, so its edit notice names nobody new",
-			"artifact", artifactID, "version", version, "editors", editors, "latest", latest)
+			"artifact", artifactID, "version", version, "editors", len(editors), "latest_kind", latestKind)
 		return writeExec(ctx, tx, "hold edit notice", holdEditNotice, artifactID, version, editorsJSON, s.editNoticeQuiet)
 	}
 	lastJSON, err := json.Marshal(*latest)
