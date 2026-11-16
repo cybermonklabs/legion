@@ -25,6 +25,13 @@ const dir = temporaryDirectory("claude-backend-key-runner-test");
 
 const bin = join(dir, "bin");
 const scratch = join(dir, "tmp");
+// The proc root the run's process walks read: refuse_leftovers in prerequisites and run_processes
+// in cleanup read `${proc_root:-/proc}`. Over the host's /proc refuse_leftovers runs three commands
+// for each process the host has, so the row's time, held to the run's 60 s, was the host's process
+// count, and a process an earlier run of the proof left anywhere on the host failed the row. The
+// run starts no process those walks are to find before it stops, and no earlier run's process is
+// the row's, so its root is an empty directory of its own.
+const proc = join(dir, "proc");
 // Where the stand-in `secrets` records that it was asked.
 const asked = join(dir, "secrets-asked");
 const keyFile = join(dir, "anthropic-key");
@@ -106,6 +113,7 @@ beforeAll(() => {
   if (skip) return;
   mkdirSync(bin);
   mkdirSync(scratch);
+  mkdirSync(proc);
   // The stand-ins the prerequisites need only find: each prints nothing and exits 0.
   const quiet = ["go", "docker", "ss", "tmux", "mise", "gh", "jj", "pgrep", "claude", "python3"];
   for (const name of quiet) stub(name, "exit 0");
@@ -145,6 +153,7 @@ test.skipIf(skip)(
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,
+        proc_root: proc,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
         // The review App's key command, which prerequisites requires and has no default for

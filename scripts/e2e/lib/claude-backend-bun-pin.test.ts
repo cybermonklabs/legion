@@ -138,6 +138,13 @@ if (skip) {
   console.warn(`Skipped the test in ${import.meta.path} that runs the rig: ${reasons.join("; ")}.`);
 }
 const keyFile = join(dir, "model-key");
+// The proc root the run's process walks read: refuse_leftovers in prerequisites and run_processes
+// in cleanup read `${proc_root:-/proc}`. Over the host's /proc refuse_leftovers runs three commands
+// for each process the host has, so the row's time, held to the run's 60 s, was the host's process
+// count, and a process an earlier run of the proof left anywhere on the host made the first FAIL
+// line its own. The run starts no process those walks are to find before it stops, and no earlier
+// run's process is the row's, so its root is an empty directory of its own.
+const proc = join(dir, "proc");
 
 // The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module
 // scope and made by the hook that reservation registered, and a run that selects no row of this
@@ -145,6 +152,7 @@ const keyFile = join(dir, "model-key");
 beforeAll(() => {
   mkdirSync(bin);
   mkdirSync(scratch);
+  mkdirSync(proc);
   for (const [name, body] of stubs) stub(name, body);
   for (const [name, path] of found) {
     if (path !== null) symlinkSync(path, join(bin, name));
@@ -160,6 +168,7 @@ test.skipIf(skip)(
         HOME: dir,
         PATH: bin,
         TMPDIR: scratch,
+        proc_root: proc,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile,
         // The review App's key command, which prerequisites requires and has no default for

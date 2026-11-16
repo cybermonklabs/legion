@@ -555,7 +555,9 @@ wait_for_run_processes() {
 # by SIGKILL. A member is signalled only when it also carries that runtime directory in
 # OMP_DAEMON_RUNTIME_DIR or is one of the run's by run_processes's reading, so a session the kernel
 # later gave the same id is left alone. It finds nothing by working directory alone: what it misses,
-# a service whose broker did not end it among them, cleanup-is-complete's wait still names.
+# a service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
+# `${proc_root:-/proc}`, as run_processes does: the host's /proc, unless a test points proc_root at
+# a proc root of the processes it started.
 stop_agent_daemons() {
   local file dir real leader p stat sid line env_dir i alive
   local -a run=() targets=() environ=()
@@ -569,7 +571,7 @@ stop_agent_daemons() {
   done < <(find "$work" -name broker.pid -type f -print0 2>/dev/null || :)
   ((${#dirs[@]} > 0)) || return 0
   mapfile -t run < <(run_processes || true)
-  for p in /proc/[0-9]*; do
+  for p in "${proc_root:-/proc}"/[0-9]*; do
     { read -r stat <"$p/stat"; } 2>/dev/null || continue
     # The fields after the command, which may itself hold spaces or parentheses: state, ppid,
     # process group, session.
@@ -581,8 +583,8 @@ stop_agent_daemons() {
     for line in ${environ[@]+"${environ[@]}"}; do
       case $line in OMP_DAEMON_RUNTIME_DIR=*) env_dir=${line#*=} ;; esac
     done
-    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p#/proc/} "* ]]; then
-      targets+=("${p#/proc/}")
+    if { [ -n "$env_dir" ] && [[ " ${dirs[$sid]} " == *" $env_dir "* ]]; } || [[ " ${run[*]} " == *" ${p##*/} "* ]]; then
+      targets+=("${p##*/}")
     fi
   done
   ((${#targets[@]} > 0)) || return 0

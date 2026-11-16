@@ -5914,7 +5914,9 @@ Each item below names a function, then what it does.
 - `run_processes`
 
   prints every pid whose working directory or command line names `$work`.
-  It reads `/proc` in one `find` pass and runs no command for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
+  It reads `${proc_root:-/proc}` in one `find` pass and runs no command for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
+  That is the host's `/proc`, unless a test points `proc_root` at a proc root of the processes it started (links to their `/proc` entries), since a walk of the host's whole `/proc` holds the test to the host's process count.
+  `stop_agent_daemons` (`parked-decision-devbox.sh`) reads it the same way.
   A process whose working directory this user cannot read is another user's, so it is none of the run's
 
 - `real_bin_path DEST NAME…`
@@ -5929,8 +5931,9 @@ Each item below names a function, then what it does.
   Stage 1 prepends `real_bin_path "$work/realbin" tmux` to its daemon's PATH when its first tmux is a script or mise itself, and keeps a real tmux binary, such as CI's apt tmux, otherwise;
   Stage 2, the 4b.13b acceptance and the Claude Code backend proof, which do not call it, put a link to `mise which tmux` on their daemons' PATH the same way
 
-`lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
+`lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over a proc root of the test's own children, the three processes it starts among them, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
+A root without one of the three fails the row, naming it, and the root also holds one entry above the kernel's `pid_max` working in the run's directory, which `run_processes` names only when it reads that root, so a walk that went back to the host's `/proc` fails the row.
 
 ## lib/two-builds.sh
 
@@ -6034,6 +6037,8 @@ each container is named `<prefix>-<role>-<pid>`, and every process of the run ho
 The check fails, through the caller's `fail`, naming each container and process whose driver is no longer alive and the command that removes it (`docker rm -f -v <name>`, `kill <pid>`).
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
+It reads them from `${proc_root:-/proc}`, the host's `/proc` unless a test points `proc_root` at a proc root of its own:
+the Claude Code backend's prerequisites tests (`lib/claude-backend-app-secrets.test.ts`, `lib/claude-backend-bun-pin.test.ts`) give it an empty one, so neither the host's process count nor a process an earlier run left on the host decides their result.
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 
 ## lib/operator-dispatch.sh

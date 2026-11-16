@@ -29,7 +29,10 @@ leftover_owner() {
 }
 
 # refuse_leftovers PREFIX fails, naming each one and the command that removes it, when a container
-# or a process of an earlier PREFIX run outlived its driver. The caller's `fail` reports it.
+# or a process of an earlier PREFIX run outlived its driver. The caller's `fail` reports it. It
+# reads the processes of `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at
+# a proc root of its own (links to the /proc entries of the processes it started), since a walk of
+# the host's whole /proc holds the test to the host's processes, an earlier run's among them.
 refuse_leftovers() {
   local prefix=$1 name owner created p text since boot ticks
   local -a leftover_list=()
@@ -42,7 +45,7 @@ refuse_leftovers() {
     since=$((($(date -d "$created" +%s) - boot) * ticks))
     leftover_owner "$owner" "$since" || leftover_list+=("container $name (docker rm -f -v $name)")
   done < <(docker ps -a --filter "name=^$prefix-" --format '{{.Names}}')
-  for p in /proc/[0-9]*; do
+  for p in "${proc_root:-/proc}"/[0-9]*; do
     # A pid is its namespace's own: a process in another pid namespace (an agent box) names a
     # driver pid that means nothing here, and one of another user's reads as nothing.
     [ "$p/ns/pid" -ef /proc/self/ns/pid ] || continue
@@ -51,11 +54,11 @@ refuse_leftovers() {
     text="$(tr '\0' ' ' 2>/dev/null <"$p/cmdline" || true) $(readlink "$p/cwd" 2>/dev/null || true)/ $(tr '\0' ' ' 2>/dev/null <"$p/environ" || true)"
     [[ $text =~ /tmp/$prefix\.([0-9]+)\. ]] || continue
     owner=${BASH_REMATCH[1]}
-    since=$(leftover_started "${p#/proc/}") || continue
+    since=$(leftover_started "${p##*/}") || continue
     leftover_owner "$owner" "$since" && continue
     text=$(tr '\0' ' ' 2>/dev/null <"$p/cmdline" || true)
     text=${text% }
-    leftover_list+=("process ${p#/proc/}, ${text:0:100} (kill ${p#/proc/})")
+    leftover_list+=("process ${p##*/}, ${text:0:100} (kill ${p##*/})")
   done
   [ "${#leftover_list[@]}" -eq 0 ] && return 0
   fail "an earlier $prefix run whose driver is gone left these running: $(printf '%s; ' "${leftover_list[@]}")remove them and run again"
