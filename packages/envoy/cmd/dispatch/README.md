@@ -537,7 +537,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
-  With `DISPATCH_SIGNIN_OUTSIDE=1` beside the domain, a verified Google account outside it signs in too, as a restricted member (`people.member_kind`), while some project's owner is that email or some project's access list names it directly (`access.Listed`; a group on a list never admits such an account).
+- With `DISPATCH_SIGNIN_OUTSIDE=1` beside the domain, a verified Google account outside it signs in too, as a restricted member (`people.member_kind`), while some project's owner is that email or some project's access list names it directly (`access.Listed`; a group on a list never admits such an account).
   An address of the domain or a subdomain of it that is not the Workspace's (a personal Google account) is refused as not in the domain, else it would read every project that lists the employee.
   An account outside the domain that no list names gets a 403 page saying so and naming it.
   The hourly confirmation (below) runs the same rule, so an account no list names any more is signed out at its next request past the hour, and one the setting no longer admits too;
@@ -545,7 +545,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   The authorization request then names no `hd` on any origin, since `hd` narrows Google's account chooser to the domain and would hide an outside account; it never decides who signs in.
   The Google client's OAuth consent screen's audience must be External, which with the scopes Dispatch asks for (`openid`, `email`, `profile`) needs no test-user list and keeps refresh tokens past seven days in Testing status; the client lists `<DISPATCH_SERVER_URL>/auth/callback` and, with an outside origin, `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`.
 
-  Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
+- With either issuer, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:

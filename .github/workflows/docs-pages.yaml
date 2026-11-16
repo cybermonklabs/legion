@@ -207,6 +207,7 @@ on:
       - 'packages/envoy/internal/serverwait/*'
       - 'packages/envoy/internal/session/*'
       - 'packages/envoy/internal/store/*'
+      - 'packages/envoy/internal/weborigin/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
       # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
