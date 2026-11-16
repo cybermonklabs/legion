@@ -94,12 +94,13 @@ import (
 // The rule has two limits. A process that something other than the kernel, or than role-init's
 // drain, has sent SIGKILL, and that is still in /proc while kills are pending and the kernel's own
 // victim has already left it, is named in the victim's place. In a microVM pod the guard is off,
-// and the senders are a role's own kill -9, a timeout tool that sends SIGKILL, and three stops of
+// and the senders are a role's own kill -9, a timeout tool that sends SIGKILL, and four stops of
 // Legion's own, each a SIGKILL that shows in ShdPnd: procgroup's, which kills a command's process
-// group StopGrace after its SIGTERM (procgroup.Configure); the launcher's, which kills a role's
-// role-init at the end of its stop grace, and with it, by the kernel, every process of the role's
-// namespace (manager.endGeneration); and the Claude bridge's, which kills Claude Code its Grace
-// after its SIGTERM (claudebridge). And a victim that its parent reaps before a pass reads it
+// group StopGrace after its SIGTERM (procgroup.Configure); the shim's, which kills its agent its
+// grace after its SIGTERM (shim.terminate); the launcher's, which kills a role's role-init at the end
+// of its stop grace, and with it, by the kernel, every process of the role's namespace
+// (manager.endGeneration); and the Claude bridge's, which kills Claude Code its Grace after its
+// SIGTERM (claudebridge). And a victim that its parent reaps before a pass reads it
 // shows nothing, and its kill has the unnamed line. Each killed process has the guard's own
 // endedLine, with its resident size at the last scan before the pass that showed its kill and the
 // pod's memory at the burst's first rise, and a Kill to the sink with its role, "" for a process

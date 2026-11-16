@@ -3509,12 +3509,13 @@ When the wait ends, the kills that the watch named no process for have one `kill
   a role's own `kill -9`;
   a timeout tool that sends SIGKILL;
   `procgroup`'s stop, which sends SIGKILL to a command's process group a second (`StopGrace`) after its SIGTERM (`Configure`, `packages/daemon/internal/procgroup/procgroup.go`);
+  the shim's stop, which sends SIGKILL to its agent its grace after its SIGTERM (`terminate`, `packages/daemon/internal/shim/shim.go`);
   the launcher's stop, which sends SIGKILL to a role's `role-init` at the end of the stop grace, and the kernel then to every process of the role's namespace (`endGeneration`, `packages/daemon/internal/launcher/process.go`);
   and the Claude bridge's stop, which sends SIGKILL to Claude Code its grace after its SIGTERM (`end`, `packages/daemon/internal/claudebridge/bridge.go`).
 
 - A victim whose parent reaps it before the watch reads its `status`, at the wake or at the next scan, shows no sign, and its kill has the `killed unnamed` line.
-  How many kills a microVM pod's watch names, and how many it leaves unnamed, has not been measured.
-  dispatch://INFRA-3735's canary is the first pod where it can be read.
+  On a real kernel (runc, Linux 6.12, with a test counter raised in place just before a real SIGKILL), the watch named a 1 GiB process that its parent reaps at once 10 times of 10, and a `sleep` reaped at once 3 times of 5; with the wake off it named them 4 of 10 and 0 of 5 (pull request #4106, 2026-11-16).
+  A real out-of-memory kill in a microVM has not been measured; dispatch://INFRA-3735's canary is the first pod where it can be read.
 
 The kernel can also stop a process that the classifier protects ("The score", above), and the watch names it as it names a command.
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
