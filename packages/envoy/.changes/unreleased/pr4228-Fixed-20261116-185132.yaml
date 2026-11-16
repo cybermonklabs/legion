@@ -1,0 +1,5 @@
+kind: Fixed
+body: Two PUT /api/v1/issues/{key}/design-gates publications of one issue at the same time stored a mix of the two sets. The route now locks the issue row, so the stored set is always one whole set, the set of the publication that finishes last.
+time: 2026-11-16T18:51:32.796056741Z
+custom:
+    Issue: pr4228
