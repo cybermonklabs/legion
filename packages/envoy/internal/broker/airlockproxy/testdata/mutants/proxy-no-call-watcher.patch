@@ -7,7 +7,7 @@
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go
 +++ b/packages/envoy/internal/broker/airlockproxy/bound.go
-@@ -442,7 +442,10 @@
+@@ -447,7 +447,10 @@
  		// the connection the watcher ends, the command's side first (cutJoined).
  		end, message = func(*cutCall) { cutJoined(info.cut, decrypted) }, joinMessage
  	}
@@ -17,5 +17,5 @@
 +		go s.watchCarried(carried, info, r, chosen, id, message, end)
 +	}
  
- 	served := &statusWriter{ResponseWriter: w}
  	upstreamFailed := s.badGateway(info.host, r.URL.Path)
+ 	// refusedByCut is whether the watcher ended the call before its service answered, which

@@ -6,7 +6,7 @@
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go
 +++ b/packages/envoy/internal/broker/airlockproxy/bound.go
-@@ -465,6 +465,9 @@
+@@ -469,6 +469,9 @@
  				RawQuery: rawQuery,
  			}
  			pr.Out.Host = hostHeaderOf(info.target)

@@ -423,8 +423,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// upload - and no request is read on it again, so a watcher reads the grant for it every
 	// watch interval (watchCarried) and ends it once the grant stops carrying it. carried is
 	// the call's own context: the watcher cancels it with why, which ends the call at the
-	// service and at the command, and ServeHTTP's return cancels it too, which stops the
-	// watcher.
+	// service, and ServeHTTP's return cancels it too, which stops the watcher.
 	carried, cut := context.WithCancelCause(r.Context())
 	defer cut(nil)
 	// What ReverseProxy is handed: this request with the swap's headers and that context.
@@ -435,7 +434,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// would otherwise reach the service, and fail every call to one that speaks HTTP/2.
 	out := r.WithContext(carried)
 	out.Header = header
-	end, message := func(why *cutCall) { cut(why) }, cutMessage
+	served := &statusWriter{ResponseWriter: w}
+	// The command's side of the call, which the watcher ends too: the cancel above ends the
+	// call at the service, and a write of the service's answer that is waiting for the command
+	// to read - an HTTP/2 stream whose window the client keeps shut - waits on regardless.
+	toCommand := &commandSide{w: served}
+	defer toCommand.finish()
+	end, message := func(why *cutCall) { cut(why); toCommand.stop() }, cutMessage
 	if decrypted, ok := r.Context().Value(decryptedKey{}).(net.Conn); ok && upgrading(r) {
 		// An upgrade is the one request whose connection outlives it. ReverseProxy joins the
 		// two connections inside the call below and copies bytes until one end closes, so it is
@@ -444,7 +449,6 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	}
 	go s.watchCarried(carried, info, r, chosen, id, message, end)
 
-	served := &statusWriter{ResponseWriter: w}
 	upstreamFailed := s.badGateway(info.host, r.URL.Path)
 	// refusedByCut is whether the watcher ended the call before its service answered, which
 	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
@@ -468,9 +472,12 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// ReverseProxy drops the command's own Forwarded and X-Forwarded-* headers before
 			// Rewrite runs, for a proxy that writes its own; this one writes none and changes
 			// no header the entry does not name, so they go on as the command sent them, and
-			// as an AWS signature covered them.
+			// as an AWS signature covered them - all but one the command's Connection header
+			// names, which belongs to its connection to the proxy as every header named there
+			// does, and which ReverseProxy dropped for that reason.
 			for _, name := range forwardedHeaders {
-				if values, sent := pr.In.Header[name]; sent {
+				values, sent := pr.In.Header[name]
+				if sent && !httpguts.HeaderValuesContainsToken(r.Header["Connection"], name) {
 					pr.Out.Header[name] = values
 				}
 			}
@@ -480,6 +487,12 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// decompressed or changed, because this design changes no answer from an API service -
 		// what it guards is what leaves, not what comes back.
 		ModifyResponse: func(answer *http.Response) error {
+			if !toCommand.start() {
+				// The watcher ended the call between the service's answer and here, so
+				// nothing of that answer has reached the command: it is refused as one the
+				// service had not answered (ErrorHandler).
+				return context.Cause(carried)
+			}
 			served.whole.Store(answer.ContentLength == 0)
 			return nil
 		},
@@ -489,10 +502,10 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 				upstreamFailed(w, sent, err)
 				return
 			}
-			// The watcher ended this call before its service answered, so nothing of the
-			// service's answer has reached the command, and the answer is the refusal every
-			// call of this grant now gets, rather than a 502 that would read as a service out
-			// of reach. Its record is the call's one line, as every refusal's is.
+			// The watcher ended this call before its service's answer reached the command, so
+			// the answer is the refusal every call of this grant now gets, rather than a 502
+			// that would read as a service out of reach. Its record is the call's one line, as
+			// every refusal's is.
 			refusedByCut = true
 			s.refuse(w, r, info.callFor(chosen), why.status, why.code, why.why)
 		},
@@ -508,8 +521,62 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	s.log.Info(callMessage, s.callFields(id, info.callFor(chosen), r, served.status, "")...)
 }
 
+// commandSide is the command's side of one carried call, which the call's watcher ends as well
+// as the service's. Cancelling the call's context ends the read of the service's answer, but a
+// write of that answer to the command that is waiting for the command to read goes on waiting:
+// an HTTP/2 stream whose receive window the client keeps at zero holds the handler in that
+// write for as long as the client likes, and hands the client the answer's bytes when it opens
+// the window. So once the service's answer has begun reaching the command, the watcher's end
+// sets a write deadline in the past on it: on an HTTP/2 stream net/http resets that stream at
+// once (RST_STREAM) and leaves the connection's other streams alone, and on an HTTP/1.1
+// connection, which carries this call alone, the write fails and the connection closes. Before
+// the answer has begun the end sets nothing, so the refusal the call gets (ErrorHandler) still
+// reaches the command. The watcher runs on a goroutine of its own, so the three steps are taken
+// under one lock, and nothing is set once serveBound has returned and the writer is net/http's
+// again.
+type commandSide struct {
+	w       http.ResponseWriter
+	mu      sync.Mutex
+	started bool // the service's answer has begun reaching the command (start)
+	ended   bool // the watcher has ended the call (stop)
+	done    bool // serveBound has returned (finish)
+}
+
+// pastDeadline is the write deadline that ends a write at once: any instant before now.
+var pastDeadline = time.Unix(1, 0)
+
+// start marks the service's answer as about to be written to the command, and answers false
+// where the watcher has already ended the call, whose answer must then not be written.
+func (c *commandSide) start() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ended {
+		return false
+	}
+	c.started = true
+	return true
+}
+
+// stop ends the command's side of the call, where the service's answer has begun reaching it.
+func (c *commandSide) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ended = true
+	if c.started && !c.done {
+		_ = http.NewResponseController(c.w).SetWriteDeadline(pastDeadline)
+	}
+}
+
+// finish marks serveBound as returned, after which stop leaves the writer alone.
+func (c *commandSide) finish() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.done = true
+}
+
 // forwardedHeaders are the forwarding headers httputil.ReverseProxy drops from a request before
-// Rewrite runs, which serveBound sets back as the command sent them.
+// Rewrite runs, which serveBound sets back as the command sent them, each that the command's
+// Connection header does not name.
 var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
 
 // upgrading reports whether a request asks to leave HTTP behind: a Connection header naming the

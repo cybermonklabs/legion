@@ -147,6 +147,42 @@ func TestAHopByHopHeaderTheCommandNamesStopsAtTheProxy(t *testing.T) {
 	}
 }
 
+// TestAForwardingHeaderTheCommandNamesInConnectionStopsAtTheProxy: the command's own Forwarded
+// and X-Forwarded-* headers go on to the service as it sent them, since the proxy writes none of
+// its own, except one its Connection header names, which belongs to its connection to the proxy as
+// any other header named there does. The names are read without case, as the Connection header's
+// tokens are. X-Control, named beside them, is the control: an ordinary header the Connection
+// header names, which ReverseProxy itself drops. The named revert: the forwarding headers set back
+// whatever the Connection header names, which carries the three named ones to the service.
+func TestAForwardingHeaderTheCommandNamesInConnectionStopsAtTheProxy(t *testing.T) {
+	r := newRig(t, Options{})
+	// A client of HTTP/1.1, the only one that has a Connection header to send.
+	r.protocol = protocolHTTP1
+	answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things",
+		"Authorization", "Bearer "+workerPlaceholder,
+		"Connection", "forwarded, X-FORWARDED-FOR, x-forwarded-host, X-Control",
+		"Forwarded", "for=192.0.2.7",
+		"X-Forwarded-For", "192.0.2.7",
+		"X-Forwarded-Host", "other.example.org",
+		"X-Forwarded-Proto", "https",
+		"X-Control", "a header of the command's connection to the proxy")
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("the call is %d %q, want 200", answer.StatusCode, body)
+	}
+	seen := r.requests()
+	if len(seen) != 1 {
+		t.Fatalf("the service received %d requests, want 1", len(seen))
+	}
+	for _, name := range []string{"Connection", "X-Control", "Forwarded", "X-Forwarded-For", "X-Forwarded-Host"} {
+		if got, sent := seen[0].Header[name]; sent {
+			t.Errorf("the service received %s %q, which the command's Connection header names", name, got)
+		}
+	}
+	if got := seen[0].Header.Get("X-Forwarded-Proto"); got != "https" {
+		t.Errorf("the service received X-Forwarded-Proto %q, want the command's own https, which its Connection header does not name", got)
+	}
+}
+
 // grpcService is the gRPC service the stand-in below answers: gRPC's own health service, whose
 // Check is a call with one answer and whose Watch is a call whose answers stream.
 const grpcService = "grpc.health.v1.Health"
@@ -786,5 +822,205 @@ func TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn(t *testing.T) {
 		case len(seen) != before:
 			t.Errorf("%s: the service received %v, want nothing of a stream the proxy refused", row.name, seen[before:])
 		}
+	}
+}
+
+// send opens one stream of these header fields, its request ended with them, and answers its id;
+// the row reads the connection itself (readFrame).
+func (c *h2Conn) send(fields []hpack.HeaderField) uint32 {
+	c.t.Helper()
+	id := c.next
+	c.next += 2
+	c.block.Reset()
+	for _, field := range fields {
+		if err := c.encoder.WriteField(field); err != nil {
+			c.t.Fatalf("encode %s: %v", field.Name, err)
+		}
+	}
+	if err := c.framer.WriteHeaders(http2.HeadersFrameParam{StreamID: id, BlockFragment: c.block.Bytes(), EndStream: true, EndHeaders: true}); err != nil {
+		c.t.Fatalf("write stream %d: %v", id, err)
+	}
+	return id
+}
+
+// readFrame reads the connection's next frame that is not one of the connection's own -
+// SETTINGS, PING and WINDOW_UPDATE, answered here where they ask for an answer - waiting until
+// deadline, and answers nil when the deadline passed first. A GOAWAY fails the row: no row here
+// expects the proxy to close the connection.
+func (c *h2Conn) readFrame(deadline time.Time) http2.Frame {
+	c.t.Helper()
+	for {
+		if err := c.conn.SetReadDeadline(deadline); err != nil {
+			c.t.Fatalf("set the read deadline: %v", err)
+		}
+		frame, err := c.framer.ReadFrame()
+		var timeout interface{ Timeout() bool }
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			return nil
+		}
+		if err != nil {
+			c.t.Fatalf("read the connection: %v", err)
+		}
+		switch f := frame.(type) {
+		case *http2.SettingsFrame:
+			if !f.IsAck() {
+				if err := c.framer.WriteSettingsAck(); err != nil {
+					c.t.Fatalf("acknowledge SETTINGS: %v", err)
+				}
+			}
+		case *http2.PingFrame:
+			if !f.IsAck() {
+				if err := c.framer.WritePing(true, f.Data); err != nil {
+					c.t.Fatalf("answer PING: %v", err)
+				}
+			}
+		case *http2.WindowUpdateFrame:
+		case *http2.GoAwayFrame:
+			c.t.Fatalf("the proxy closed the connection (GOAWAY %v %q); want each stream ended on its own", f.ErrCode, f.DebugData())
+		default:
+			return frame
+		}
+	}
+}
+
+// TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings: a client that has stopped
+// reading one call - an HTTP/2 stream whose receive window it keeps at zero - leaves the proxy's
+// write of that call's answer waiting for window, where cancelling the call's context at the
+// service ends nothing at the command. So when the grant stops carrying such a call, the proxy
+// resets that stream itself: the command reads RST_STREAM on it within the watch interval, and no
+// byte of the service's answer once it opens its window again. The other stream of the same
+// connection, a call for another name of the grant that the grant still carries, goes on: once
+// its window opens it reads the service's answer, the connection is not closed, and its service
+// is still sending. The named revert: the watcher cancelling the call's context alone, as before
+// the reset (proxy-cut-leaves-command-open), which leaves the stream open and hands the command
+// the service's bytes when it opens the window.
+func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T) {
+	const (
+		betaName        = "BETA_TOKEN"
+		betaValue       = "the-real-beta-token"
+		betaPlaceholder = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe02"
+		workerPath      = "/v1/stream-worker"
+		betaPath        = "/v1/stream-beta"
+	)
+	r := newRig(t, Options{Watch: watchFast, Rules: airlock.Rules{Secrets: []airlock.SecretRule{
+		{Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
+		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
+	}}})
+	both := testConnection()
+	both.Names = map[string]requests.AirlockGrantName{
+		workerName: {Slots: map[string]string{requests.SlotValue: workerPlaceholder}},
+		betaName:   {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
+	}
+	r.grants.setConnection(workerPlaceholder, both)
+	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
+		workerName: {Slots: map[string]string{requests.SlotValue: workerValue}},
+		betaName:   {Slots: map[string]string{requests.SlotValue: betaValue}},
+	})
+	// The service streams a line every few milliseconds on each path until its call ends, and
+	// says on that path's channel how it ended.
+	ended := map[string]chan error{workerPath: make(chan error, 1), betaPath: make(chan error, 1)}
+	r.answerWith(func(w http.ResponseWriter, request *http.Request, seen airlocktest.Request) bool {
+		done, ok := ended[seen.Path]
+		if !ok {
+			return false
+		}
+		w.WriteHeader(http.StatusOK)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			_, _ = io.WriteString(w, "a line of the stream\n")
+			_ = http.NewResponseController(w).Flush()
+			select {
+			case <-request.Context().Done():
+				done <- request.Context().Err()
+				return true
+			case <-ticker.C:
+			}
+		}
+	})
+
+	c := h2Through(t, r)
+	// Every stream opens with no receive window: the command reads no byte of either answer
+	// until it says so.
+	if err := c.framer.WriteSettings(http2.Setting{ID: http2.SettingInitialWindowSize, Val: 0}); err != nil {
+		t.Fatalf("write SETTINGS: %v", err)
+	}
+	worker := c.send(h2Fields(http.MethodGet, "https", boundHost, workerPath,
+		hpack.HeaderField{Name: "authorization", Value: "Bearer " + workerPlaceholder}))
+	beta := c.send(h2Fields(http.MethodGet, "https", boundHost, betaPath,
+		hpack.HeaderField{Name: "x-beta", Value: "Token " + betaPlaceholder}))
+	answered := map[uint32]bool{}
+	for deadline := time.Now().Add(cutWait); !answered[worker] || !answered[beta]; {
+		frame := c.readFrame(deadline)
+		switch f := frame.(type) {
+		case nil:
+			t.Fatalf("the two streams' answers had not begun within %v (%v)", cutWait, answered)
+		case *http2.MetaHeadersFrame:
+			if f.PseudoValue("status") != "200" {
+				t.Fatalf("stream %d was answered %s, want the service's 200", f.StreamID, f.PseudoValue("status"))
+			}
+			answered[f.StreamID] = true
+		case *http2.DataFrame:
+			t.Fatalf("stream %d was sent %d bytes before its window opened", f.StreamID, len(f.Data()))
+		case *http2.RSTStreamFrame:
+			t.Fatalf("stream %d was reset (%v) while the grant carried it", f.StreamID, f.ErrCode)
+		}
+	}
+
+	// The operator withholds the worker name and keeps beta.
+	withheld := testConnection()
+	withheld.Names = map[string]requests.AirlockGrantName{betaName: both.Names[betaName]}
+	r.grants.setConnection(workerPlaceholder, withheld)
+	cut := time.Now()
+	switch f := c.readFrame(cut.Add(cutWait)).(type) {
+	case nil:
+		t.Fatalf("the worker stream was still open %v after its grant stopped carrying it, the watch interval being %v", cutWait, watchFast)
+	case *http2.RSTStreamFrame:
+		if f.StreamID != worker {
+			t.Fatalf("stream %d was reset (%v), want the worker stream %d, whose name the grant no longer carries", f.StreamID, f.ErrCode, worker)
+		}
+	default:
+		t.Fatalf("the first frame after the cut is %v, want RST_STREAM on the worker stream %d", f.Header(), worker)
+	}
+	select {
+	case err := <-ended[workerPath]:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the service's worker call ended with %v, want it cancelled", err)
+		}
+	case <-time.After(cutWait):
+		t.Fatal("the service went on sending the worker stream after the proxy reset it")
+	}
+
+	// Both windows open: the worker stream, reset, carries nothing, and beta reads the service's
+	// answer, which the grant still carries.
+	for _, id := range []uint32{worker, beta} {
+		if err := c.framer.WriteWindowUpdate(id, 1<<16); err != nil {
+			t.Fatalf("open stream %d's window: %v", id, err)
+		}
+	}
+	for deadline := time.Now().Add(cutWait); ; {
+		frame := c.readFrame(deadline)
+		if frame == nil {
+			t.Fatalf("the beta stream read nothing within %v of opening its window", cutWait)
+		}
+		data, ok := frame.(*http2.DataFrame)
+		if !ok {
+			continue
+		}
+		if data.StreamID == worker {
+			t.Fatalf("the reset worker stream was sent %q after the cut", data.Data())
+		}
+		if data.StreamID == beta && strings.Contains(string(data.Data()), "a line of the stream") {
+			break
+		}
+	}
+	select {
+	case err := <-ended[betaPath]:
+		t.Fatalf("the service's beta call ended (%v) with the worker stream's cut; want it carried on", err)
+	default:
+	}
+	cuts := r.logs.cuts()
+	if len(cuts) != 1 || cuts[0].fields["secret"] != workerName {
+		t.Fatalf("the proxy logged %v for the cut, want one line for %s", cuts, workerName)
 	}
 }
