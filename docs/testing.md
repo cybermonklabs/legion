@@ -166,13 +166,15 @@ itself, whose tests import its sources by relative path.
 
 ## Unix sockets in Go tests
 
-A unix socket path must be 107 bytes or shorter. Linux's `sun_path` holds 108 bytes with the
-terminating zero, and Go refuses a longer path with `invalid argument` at `bind`, `listen` or
-`dial`. A tmux server socket has the same limit (`Filename too long`). `t.TempDir()` puts the
-test's name, cut to 64 bytes, in its path, under `GOTMPDIR` or else `TMPDIR`. With a long test name
-and a socket under it, or under a directory made from it (an `XDG_RUNTIME_DIR`, `HOME` or state
-directory a test sets to `t.TempDir()`), a temporary directory of about 20 bytes is enough to pass
-the limit, as on a dev box whose `TMPDIR` is on a data disk.
+A unix socket path must be 107 bytes or shorter on Linux and 103 bytes or shorter on macOS: each
+system's `sun_path` holds the path with its terminating zero, 108 bytes on Linux (`UNIX_PATH_MAX`
+in the kernel's `include/uapi/linux/un.h`) and 104 on macOS (xnu's `bsd/sys/un.h`). Go refuses a
+longer path with `invalid argument` at `bind`, `listen` or `dial`, and a tmux server socket has the
+same limit (`Filename too long`). `t.TempDir()` puts the test's name, cut to 64 bytes, in its path,
+under `GOTMPDIR` or else `TMPDIR`. With a long test name and a socket under it, or under a
+directory made from it (an `XDG_RUNTIME_DIR`, `HOME` or state directory a test sets to
+`t.TempDir()`), a temporary directory of about 20 bytes is enough to pass the limit, as on a dev
+box whose `TMPDIR` is on a data disk.
 
 - Take a test's socket directory from the module's `internal/testtmp`, the one helper every test
   that binds a socket calls (`packages/daemon/internal/testtmp`, and the same file in
@@ -180,7 +182,8 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   when the test ends, where `longest` is the longest path the test puts inside it, written
   relative to the directory (`"g9/.s.PGSQL.5432"`); `testtmp.Socket(t, name)` is the path of a
   socket named `name` in such a directory. `Dir` makes the directory under `TMPDIR` and measures
-  what `longest` would come to there; only when that passes 107 bytes, or `TMPDIR` holds no
+  what `longest` would come to there; only when that passes the system's limit (`maxSocketPath`:
+  107 bytes on Linux, 103 on macOS and on any system it cites no header for), or `TMPDIR` holds no
   directory at all, does it fall back to `/tmp`, and it says so with `t.Logf` when it does. Each
   module's `internal/testtmp` keeps a test that fails a new `os.TempDir()`, or a new
   `os.MkdirTemp` whose first argument is a string literal naming a directory, anywhere in that
