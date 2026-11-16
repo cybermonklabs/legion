@@ -616,10 +616,11 @@ test("a read with no text that gives words takes out a list an older copy placed
   expect(await withSessionAnswers([...tools], requestOf(read, noBranch, session))).toBeUndefined();
 });
 
-// An older copy's list rendered from its cache names the read that failed. Over a placed list with
-// the same items it keeps the placed bytes, so that line leaves the request, and the failure it
-// names is told to `unshownFailure` instead, once, as this copy's own failed reads are. An older
-// copy's list with no read line names no failure, and tells nothing.
+// An older copy's list rendered from its cache names the read that failed. Kept behind placed
+// bytes that differ, that line leaves the request, and the failure it names is told to
+// `unshownFailure` instead, once, as this copy's own failed reads are. An older copy's list with
+// no read line names no failure and tells nothing. An older copy's failure line comes from a read
+// that failed, so unlike a list with no read line it lets no failure be told again.
 test("an older copy's list naming a failed read, kept behind the placed bytes, tells that failure once", async () => {
   const session = {};
   const told: string[] = [];
@@ -629,21 +630,30 @@ test("an older copy's list naming a failed read, kept behind the placed bytes, t
       told.push(reason);
     },
   };
-  expect(await withSessionAnswers([skill, ask], request)).toEqual([skill, ask, list]);
-  const turn = [skill, ask, readCall, readResult];
-  const kept = [skill, ask, list, readCall, readResult];
-  expect(await withSessionAnswers([...turn, list], request)).toEqual(kept);
-  expect(told).toEqual([]);
-  expect(await withSessionAnswers([...turn, cachedList], request)).toEqual(kept);
-  expect(told).toEqual(["Dispatch did not answer within 800 ms."]);
-  // The next such list keeps the placed bytes too, and is not told again.
-  const tools = [...turn, grepCall, grepResult];
-  expect(await withSessionAnswers([...tools, cachedList], request)).toEqual([
-    ...kept,
-    grepCall,
-    grepResult,
+  // The request carries the placed list's own failure, so nothing is told.
+  expect(await withSessionAnswers([skill, ask, waitingList], request)).toEqual([
+    skill,
+    ask,
+    waitingList,
   ]);
-  expect(told).toEqual(["Dispatch did not answer within 800 ms."]);
+  const turn = [skill, ask, readCall, readResult];
+  const kept = [skill, ask, waitingList, readCall, readResult];
+  // Kept, as it differs from the placed bytes only in their read line, and names no failure.
+  expect(await withSessionAnswers([...turn, list], request)).toEqual(kept);
+  expect(told).toStrictEqual([]);
+  expect(await withSessionAnswers([...turn, cachedList], request)).toEqual(kept);
+  expect(told).toStrictEqual(["Dispatch did not answer within 800 ms."]);
+  // The failure line moves, the cached list after it moves, and a failure kept behind that list
+  // is not told: no read has answered since the first was told.
+  const tools = [...turn, grepCall, grepResult];
+  expect(await withSessionAnswers([...tools, failureLine], request)).toEqual([
+    ...tools,
+    failureLine,
+  ]);
+  const tail = [...tools, reply];
+  expect(await withSessionAnswers([...tail, cachedList], request)).toEqual([...tail, cachedList]);
+  expect(await withSessionAnswers([...tail, waitingList], request)).toEqual([...tail, cachedList]);
+  expect(told).toStrictEqual(["Dispatch did not answer within 800 ms."]);
 });
 
 // Every renderer writes a list with no read line only for a read Dispatch answered, so an older

@@ -4204,10 +4204,11 @@ export default function envoyExtension(pi: PiApi): void {
         read: () => sessionAnswersText(context),
         // A failed read that gave the cached list, or a list an older copy of this extension
         // rendered from its cache, where the placed bytes stay: the model is not told of that
-        // failure (the kept bytes may name an earlier one), so the log is, on the first such
-        // request and not again until a read has answered, so a lasting failure logs once. The
-        // reason is this copy's read's own, as its failure line would carry it, or the sentence an
-        // older copy's read line names, which ends with the full stop that copy's renderer adds.
+        // failure (the kept bytes may name an earlier one), unless the kept bytes are that read's
+        // own text, which say it. So the log says it, on the first such request and not again
+        // until a read has answered, so a lasting failure logs once. The reason is this copy's
+        // read's own, as its failure line would carry it, or the sentence an older copy's read
+        // line names, as that copy's renderer wrote it, ending with a full stop, `?` or `!`.
         unshownFailure: (reason) =>
           logger.warn(
             `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`

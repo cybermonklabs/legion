@@ -1080,7 +1080,7 @@ one line beside that Dispatch's own notice. Nothing is logged when the placed by
 read's own text, which names its failure. A list an older copy rendered from its cache, placed
 after the last message, names its failed read on its second line (`As read at …; this read
 failed: …`); where it keeps the placed bytes, that line leaves the request, and `placedLegacy`
-hands its failure on as the reason (`failedRead`), the sentence with its full stop. An older
+hands its failure on as the reason (`failedRead`), the sentence as that copy wrote it. An older
 copy's list with no such line comes only from a read Dispatch answered, so it counts as an
 answered read, and that path is logged under the same rule. The state is each session's, by
 `sessionManager` and session id as the placements are (on `globalThis` under

@@ -207,8 +207,8 @@ conversionsGlobal[CONVERSIONS_KEY] = conversions;
  *  (`SessionAnswersRead.since`); when the read failed and gave the cached list instead, why it
  *  failed, from one of two sources: this copy's read gives `SessionAnswersRead.reason`, and a list
  *  an older copy rendered from its cache gives the sentence its read line names (`placedLegacy`),
- *  which ends with the full stop the renderer adds; and whether Dispatch answered the read
- *  (`source: "fresh"`). */
+ *  as that copy's renderer wrote it, ending with a full stop, `?` or `!`; and whether Dispatch
+ *  answered the read (`source: "fresh"`). */
 export interface CarriedAnswers {
   readonly text: string | undefined;
   readonly words?: readonly string[] | undefined;
@@ -284,9 +284,8 @@ function withoutReadLine(text: string): string {
 }
 
 /** Why the read that produced `text` failed, as the line naming that read (`READ_LINE_PREFIX`)
- *  says it: the sentence after `this read failed: `, with the full stop the renderer adds.
- *  Undefined when `text` has no such line: a list rendered from a read Dispatch answered, or the
- *  failure line. */
+ *  says it: the sentence after `this read failed: `, as the renderer wrote it. Undefined when
+ *  `text` has no such line: a list rendered from a read Dispatch answered, or the failure line. */
 function failedRead(text: string): string | undefined {
   const line = text.split("\n")[1];
   if (line?.startsWith(READ_LINE_PREFIX) !== true) return undefined;
@@ -408,17 +407,17 @@ function keptWithoutText(
  * changes from one request to the next on a loaded machine, and a changed byte inside the
  * conversation costs the whole request behind it a prompt-cache miss. So a kept list can name a
  * read older than this request's, and a failed read that gives the cached list says nothing of
- * its failure there: the request tells its `unshownFailure` why that read failed instead, which
- * the extension logs, on the first such request and then not until a read of the session has
- * answered (`unshown`). A kept list can also hold an item that has since aged out of the window.
- * The next item a person writes, edits or retracts, or a read that gives the failure line, takes
- * it out of that place and puts the new text after the last message; a retracted item that was
- * the last one inside the window takes it out of the request (`keptWithoutText`). A session with
- * no list placed yet, or whose list's message left the conversation (a compaction summarized it),
- * gets it after the last message again. While a compaction may be converting the conversation
- * (`compacting`) the list goes after the last message and places nothing: a remote compaction
- * keeps only as many messages of its whole conversion as its cut's conversion holds, so a list
- * before the cut would push one out.
+ * its failure there, unless the kept bytes are that read's own text, which say it: otherwise the
+ * request tells its `unshownFailure` why that read failed, which the extension logs, on the first
+ * such request and then not until a read of the session has answered (`unshown`). A kept list can
+ * also hold an item that has since aged out of the window. The next item a person writes, edits or
+ * retracts, or a read that gives the failure line, takes it out of that place and puts the new
+ * text after the last message; a retracted item that was the last one inside the window takes it
+ * out of the request (`keptWithoutText`). A session with no list placed yet, or whose list's
+ * message left the conversation (a compaction summarized it), gets it after the last message
+ * again. While a compaction may be converting the conversation (`compacting`) the list goes after
+ * the last message and places nothing: a remote compaction keeps only as many messages of its
+ * whole conversion as its cut's conversion holds, so a list before the cut would push one out.
  */
 function placeList(
   messages: readonly unknown[],
