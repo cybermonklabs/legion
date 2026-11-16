@@ -34,20 +34,23 @@ import { harnessProcessCount } from "./harness-processes";
 
 export type HarnessSignIn = "dev" | "oidc" | "google";
 
-/** Dispatch's confidential client at the dev OIDC issuer, the sign-in pool group the servers
- *  admit (`DISPATCH_SIGNIN_GROUP`), and the person the issuer signs in with none queued, a member
- *  of that group (`--sign-in-as`, `--sign-in-group`). */
+/** Dispatch's confidential client at the dev OIDC issuer, under either mode. */
+export const signInClientId = "dispatch-e2e";
+
+/** Dispatch's client at the dev OIDC issuer, the sign-in pool group the servers admit
+ *  (`DISPATCH_SIGNIN_GROUP`), and the person the issuer signs in with none queued, a member of
+ *  that group (`--sign-in-as`, `--sign-in-group`). */
 export const oidcSignIn = {
-  clientId: "dispatch-e2e",
+  clientId: signInClientId,
   group: "dispatch-e2e-people",
   person: "alice@example.com",
 } as const;
 
-/** Dispatch's confidential client at the dev OIDC issuer standing in for Google, the Workspace
- *  domain the servers admit (`DISPATCH_SIGNIN_DOMAIN`), and the host of the second origin each
- *  server answers at (`googleOutsideOrigin`). */
+/** Dispatch's client at the dev OIDC issuer standing in for Google, the Workspace domain the
+ *  servers admit (`DISPATCH_SIGNIN_DOMAIN`), and the host of the second origin each server
+ *  answers at (`googleOutsideOrigin`). */
 export const googleSignIn = {
-  clientId: "dispatch-e2e",
+  clientId: signInClientId,
   domain: "example.com",
   outsideHost: "localhost",
 } as const;
