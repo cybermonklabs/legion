@@ -162,8 +162,8 @@ refused with because the shared public leak check could not be installed, which 
 87 is served without), after contract 86
 (dispatch://INFRA-714: the phase vocabulary loses `awaiting_merge`, a pull request carries
 `mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries
-`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), and after contract
-85's `why` and the
+`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), and after
+contract 85's `why` and the
 `waitingLine` fields beside it
 (INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
 `holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`
