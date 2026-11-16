@@ -199,10 +199,19 @@ func everyArtifactIDColumn(t *testing.T, database *store.Store) []artifactColumn
 		`select count(*)::int `+where)
 }
 
+// censusExempt are the uuid columns named artifact_id whose value is no record of the document it
+// names, so the census reads past them. document_search_backfill.artifact_id is the search fill's
+// keyset cursor (migration 20261101182501): a position in the fill, the highest document id the
+// pass has covered, and not a record of that document. A removal leaves it where it is, because
+// the boot's fill reads that one row every time and the keyset goes on from an id whether or not
+// a document still has it (dispatch://INFRA-4018).
+var censusExempt = []artifactColumn{{table: "document_search_backfill", column: "artifact_id"}}
+
 // assertNoRowNamesTheDocument is the census: no row of the catalogue names the removed document.
 // It reads the catalogue twice - every foreign key to artifacts(id), and every uuid column whose
-// name ends in artifact_id - and then refs, where a row written from the document holds its uuid
-// in from_id under no key at all.
+// name ends in artifact_id but those censusExempt names - and then refs, where a row written from
+// the document holds its uuid in from_id under no key at all. An exempt column the catalogue no
+// longer holds fails the census, so the exemption cannot outlive the column it is for.
 func assertNoRowNamesTheDocument(t *testing.T, database *store.Store, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -212,7 +221,15 @@ func assertNoRowNamesTheDocument(t *testing.T, database *store.Store, artifactID
 		t.Fatalf("the census read %d foreign keys and %d uuid artifact_id columns; every key's column is one of those columns",
 			len(keys), len(columns))
 	}
+	for _, exempt := range censusExempt {
+		if !slices.Contains(columns, exempt) {
+			t.Fatalf("the census exempts %s, which is not one of the uuid artifact_id columns it read: %v", exempt, columns)
+		}
+	}
 	for _, column := range slices.Concat(keys, columns) {
+		if slices.Contains(censusExempt, column) {
+			continue
+		}
 		var held bool
 		if err := database.Pool.QueryRow(ctx,
 			`select exists(select 1 from `+column.table+` where `+column.column+` = $1)`, artifactID).Scan(&held); err != nil {
@@ -859,9 +876,12 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 //
 // The cursor is set rather than reached by a pass, since which document a pass ends on is the
 // order of random ids: a finished pass names its last document, and a running one the last
-// document of the batch it committed. Both states are cases here, each on a database of its own,
-// and each reads the row and then runs the fill, so a failure of the first still reports the
-// second.
+// document of the batch it committed. Both states are cases here, each on a database of its own.
+// Each reads the row, runs the census while the cursor still holds the removed id, and then runs
+// the fill; the row and the fill report with Errorf, so a failure of the first still reports the
+// last. The census is the removal's own (assertNoRowNamesTheDocument), and it holds every other
+// row to naming the document no more: only the cursor, which censusExempt says is a position in
+// the fill, may keep the removed id.
 func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
 	ctx := context.Background()
 	for _, pass := range []struct {
@@ -890,6 +910,7 @@ func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *
 				t.Errorf("the fill's progress is %d rows, cursor %s, done %v after the removal, want its one row as it was: cursor %s, done %v",
 					rows, cursor, done, document.ID, pass.done)
 			}
+			assertNoRowNamesTheDocument(t, database, document.ID)
 			if _, err := database.FillDocumentSearch(ctx); err != nil {
 				t.Errorf("the boot's fill after the removal of the document its cursor names: %v", err)
 			}
