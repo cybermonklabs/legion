@@ -682,7 +682,27 @@ describe("a run read back off a disk", () => {
     const refused = readRun(directory, "without");
     await expect(refused).rejects.toThrow(PoolError);
     await expect(refused).rejects.toThrow("holds 3 answers of the model fault, on 2 cases");
-    await expect(refused).rejects.toThrow("--answers resume");
+    await expect(refused).rejects.toThrow("on a copy of the run directory");
+  });
+
+  test("a run whose model-fault rows a resume has since answered is pooled", async () => {
+    const directory = await scratch();
+    // Each arm's case was first written before rows recorded the agent's own model, and then
+    // answered again by a resume: the held row of each is the later one, so the run pools.
+    const { modelChecked: _, ...old } = JSON.parse(row("with-skill", "case-a", false));
+    const { modelChecked: __, ...oldControl } = JSON.parse(row("no-skill", "case-a", false));
+    await writeFile(
+      join(directory, "answers-without.jsonl"),
+      `${[
+        JSON.stringify(oldControl),
+        JSON.stringify(old),
+        row("no-skill", "case-a", false),
+        row("with-skill", "case-a", true),
+      ].join("\n")}\n`,
+      "utf8"
+    );
+    const read = await readRun(directory, "without");
+    expect(read.cases.get("case-a")).toEqual({ skill: true, control: false });
   });
 
   test("a directory holding no answers of that shape is refused, naming the file", async () => {

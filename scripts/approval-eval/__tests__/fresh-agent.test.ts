@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ArmReading } from "../analyze";
+import { readRound } from "../analyze";
 import type { CaseRow, CaseVerdict } from "../build-corpus";
 import {
   type AgentAnswer,
@@ -738,72 +738,97 @@ describe("a run's record says how much of it this run measured", () => {
 });
 
 describe("the round's own numbers", () => {
-  // The round's many-shot and bare arms on the measured model, each over the same two cases.
-  const arms = [
-    { name: "many", recipe: "many-shot", agreed: [true, true] },
-    { name: "bare", recipe: "bare", agreed: [true, false] },
-  ].map(
-    ({ name, recipe, agreed }) =>
-      ({
-        name,
-        recipe,
-        model: "anthropic/claude-opus-5-5",
-        endpoint: "claude",
-        cases: agreed.map((one, at) => ({
-          caseId: `case-${at}`,
-          slice: "report",
-          kind: "approval",
-          agreed: one,
-        })),
-      }) as unknown as ArmReading
-  );
+  // The round's many-shot and bare arms on the measured model over two cases the person
+  // approved, three judgements each: the many-shot arm agrees on both, the bare arm on one.
   const caseIds = ["case-0", "case-1"];
+  const corpus = new Map(caseIds.map((caseId) => [caseId, caseRow(caseId)]));
+  const agrees = { many: [true, true], bare: [true, false] };
   // The pair's rows as a round writes them, read back by the one reader of rows.jsonl: written
   // before rows recorded their served model where `served` is undefined.
-  const rowsOf = (served: string | undefined, arm = "") =>
-    ["many", "bare"].flatMap((name) =>
-      caseIds.map(
-        (caseId) =>
-          rowOf(
-            JSON.stringify({
-              arm: arm || name,
-              caseId,
-              judgement: 0,
-              verdict: ["Approve"],
-              endpoint: "claude",
-              model: "anthropic/claude-opus-5-5",
-              servedModel: served,
-              fault: null,
-            })
-          ) as JudgementRow
+  const rowsOf = (served: string | undefined) =>
+    (["many", "bare"] as const).flatMap((arm) =>
+      caseIds.flatMap((caseId, at) =>
+        [0, 1, 2].map(
+          (judgement) =>
+            rowOf(
+              JSON.stringify({
+                arm,
+                recipe: arm === "many" ? "many-shot" : "bare",
+                caseId,
+                slice: "report",
+                kind: "approval",
+                judgement,
+                verdict: [agrees[arm][at] ? APPROVE : CHANGES],
+                endpoint: "claude",
+                model: "anthropic/claude-opus-5-5",
+                servedModel: served,
+                stateCut: false,
+                fault: null,
+              })
+            ) as JudgementRow
+        )
       )
     );
+  const numbersOver = (rows: JudgementRow[]) =>
+    roundNumbersOf(readRound(rows, corpus).arms, caseIds);
 
   test("are read from the pair's rows where each names the arm's model", () => {
-    const read = roundNumbersOf(arms, rowsOf("anthropic/claude-opus-5-5"), caseIds);
+    const read = numbersOver(rowsOf("anthropic/claude-opus-5-5"));
     expect(read.modelFaults).toBe(0);
     expect(read.numbers).toMatchObject({ skillAgreement: 1, controlAgreement: 0.5, gain: 0.5 });
   });
 
   test("are not read over a round written before rows recorded their served model", () => {
-    const read = roundNumbersOf(arms, rowsOf(undefined), caseIds);
-    expect(read).toEqual({ numbers: null, modelFaults: 4 });
+    expect(numbersOver(rowsOf(undefined))).toEqual({ numbers: null, modelFaults: 12 });
   });
 
   test("are read again once a resume has answered each judgement an old row faulted", () => {
     const resumed = [...rowsOf(undefined), ...rowsOf("anthropic/claude-opus-5-5")];
-    const read = roundNumbersOf(arms, resumed, caseIds);
-    expect(read.modelFaults).toBe(0);
-    expect(read.numbers?.gain).toBe(0.5);
+    expect(numbersOver(resumed).numbers?.gain).toBe(0.5);
     // And the other way about: a judgement whose last row is the fault is still not read.
     const refaulted = [...rowsOf("anthropic/claude-opus-5-5"), ...rowsOf(undefined)];
-    expect(roundNumbersOf(arms, refaulted, caseIds)).toEqual({ numbers: null, modelFaults: 4 });
+    expect(numbersOver(refaulted)).toEqual({ numbers: null, modelFaults: 12 });
   });
+});
 
-  test("count only the pair's own rows of the model fault", () => {
-    const rows = [...rowsOf("anthropic/claude-opus-5-5"), ...rowsOf(undefined, "other")];
-    const read = roundNumbersOf(arms, rows, caseIds);
-    expect(read.modelFaults).toBe(0);
-    expect(read.numbers?.gain).toBe(0.5);
+describe("a run holding an answer of the model fault", () => {
+  // Of 60 cases the skill arm alone agrees on 6 and the control alone on 1, which fails: the
+  // interval's lower end is -0.0048 (`mcnemarExact`). On case-30 both agree, unless the control's
+  // answer reports no model: counted as a miss, that is a seventh win for the skill arm alone,
+  // and 7 against 1 passes (lower end +0.0078).
+  const cases = Array.from({ length: 60 }, (_, at) => freshCase(`case-${at}`));
+  const runWith = async (controlModelOnCase30: string | null) =>
+    runFresh(
+      {
+        neighbours: "with",
+        cases,
+        out: await scratch(),
+        homes: { "with-skill": "/home-with", "no-skill": "/home-no" },
+        answers: "refuse",
+        round: null,
+        concurrency: 4,
+      },
+      fake(
+        (request) => {
+          const at = Number(request.caseId.slice("case-".length));
+          if (at < 6) return request.arm === "with-skill" ? APPROVE : CHANGES;
+          if (at === 6) return request.arm === "no-skill" ? APPROVE : CHANGES;
+          return APPROVE;
+        },
+        (request) =>
+          request.arm === "no-skill" && request.caseId === "case-30" ? controlModelOnCase30 : ASKED
+      )
+    );
+
+  test("reads no verdict, where counting the fault as a miss would pass the check", async () => {
+    const asked = await runWith(ASKED);
+    expect(asked.modelFaults).toBe(0);
+    expect(asked.verdict.passes).toBe(false);
+    const faulted = await runWith(null);
+    expect(faulted.paired.interval.lower).toBeGreaterThan(0);
+    expect(faulted.modelFaults).toBe(1);
+    expect(faulted.verdict.passes).toBe(false);
+    expect(faulted.verdict.line).toStartWith("no verdict: 1 answer of the model fault");
+    expect(faulted.verdict.line).toContain("on a copy of --out");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { labelsOf, noTextDetail, servedAsAsked, servedModelFault } from "../models";
+import { labelsOf, noTextDetail, servedModelFault } from "../models";
 
 /**
  * The reading of an answer, over hand-written bodies: nothing here calls an endpoint or reads a
@@ -118,39 +118,35 @@ describe("noTextDetail", () => {
   });
 });
 
-describe("servedAsAsked", () => {
-  const ASKED = "anthropic/claude-opus-5-5";
-
-  test("takes the asked id, as the gateway echoes it", () => {
-    expect(servedAsAsked(ASKED, ASKED)).toBe(true);
-    expect(servedAsAsked("claude-opus-5-5", "claude-opus-5-5")).toBe(true);
-  });
-
-  test("refuses the models a fallback ladder steps down to", () => {
-    expect(servedAsAsked(ASKED, "anthropic/claude-fable-5-2")).toBe(false);
-    expect(servedAsAsked(ASKED, "anthropic/claude-opus-5")).toBe(false);
-  });
-
-  test("refuses a dated snapshot, another provider's route, or the bare name of the asked id", () => {
-    expect(servedAsAsked(ASKED, "anthropic/claude-opus-5-5-20261015")).toBe(false);
-    expect(servedAsAsked(ASKED, "pbc/claude-opus-5-5")).toBe(false);
-    expect(servedAsAsked(ASKED, "claude-opus-5-5")).toBe(false);
-  });
-
-  test("refuses an answer that names no model, and an ask that names none", () => {
-    expect(servedAsAsked(ASKED, "")).toBe(false);
-    expect(servedAsAsked("", "")).toBe(false);
-  });
-});
-
 describe("servedModelFault", () => {
   const ASKED = "anthropic/claude-opus-5-5";
 
-  test("holds a gateway answer to the asked id, naming the model that answered instead", () => {
+  test("takes the asked id, as the gateway echoes it and the agent reports it", () => {
     expect(servedModelFault(ASKED, ASKED, true)).toBeNull();
+    expect(servedModelFault("claude-opus-5-5", "claude-opus-5-5", true)).toBeNull();
+  });
+
+  test("refuses the models a fallback ladder steps down to, naming the one that answered", () => {
     expect(servedModelFault(ASKED, "anthropic/claude-fable-5-2", true)).toBe(
       `asked ${ASKED}, and the answer came from anthropic/claude-fable-5-2`
     );
+    expect(servedModelFault(ASKED, "anthropic/claude-opus-5", true)).not.toBeNull();
+  });
+
+  test("refuses a dated snapshot, another provider's route, or the bare name of the asked id", () => {
+    for (const served of [
+      "anthropic/claude-opus-5-5-20261015",
+      "pbc/claude-opus-5-5",
+      "claude-opus-5-5",
+    ]) {
+      expect(servedModelFault(ASKED, served, true)).toBe(
+        `asked ${ASKED}, and the answer came from ${served}`
+      );
+    }
+  });
+
+  test("refuses every served id for an ask that names no model", () => {
+    expect(servedModelFault("", ASKED, true)).not.toBeNull();
   });
 
   test("holds a Jev answer, asked by an alias, to naming a model and not to the alias", () => {

@@ -675,4 +675,19 @@ describe("an answer the round cannot tie to its arm's model", () => {
       );
     }
   });
+
+  test("keeps the fault an answer came with, which names no served model either", async () => {
+    // A call that failed names no model, as `askClaude` returns it: its row keeps the fault the
+    // call gave, and is not turned into the model fault.
+    const out = await scratch();
+    const failed = (): ModelAnswer => ({
+      ...answer([], "status", "503 the endpoint was out"),
+      servedModel: undefined,
+    });
+    await runRound(planOf(out), fake(failed));
+    const rows = await rowsOf(out);
+    expect(rows).toHaveLength(30);
+    expect(rows.every((row) => row.fault === "status")).toBe(true);
+    expect(rows[0]?.faultDetail).toBe("503 the endpoint was out");
+  });
 });

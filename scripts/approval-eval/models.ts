@@ -104,7 +104,8 @@ const JEV_CUT_MARK = "\n\n[... the state was cut to the endpoint's budget ...]\n
 
 /**
  * Why no answer came, or why the answer that came could not be read. `model` is an answer that
- * another model than the asked one gave (`servedAsAsked`): its verdict is not the asked bundle's.
+ * names no served model, or another model than the asked one (`servedModelFault`): its verdict
+ * is not the asked bundle's.
  */
 export type FaultKind = "transport" | "status" | "unreadable" | "model";
 
@@ -474,24 +475,18 @@ export function labelsOf(text: string, labels: readonly string[]): string[] {
 }
 
 /**
- * Whether `served`, the model an answer says served the call, is the model `asked` named, by
- * exact id. The gateway answers `model` with the very name a call asked for
- * (`anthropic/claude-opus-5-5` asked, `anthropic/claude-opus-5-5` served, measured 2026-11-15),
- * and the agent reports the bare name it was started with, so an exact id is what each path
- * gives. Any other id, a dated snapshot or a provider prefix included, is another model or
- * another route, and a verdict it gave is not the asked bundle's: a served id other than the
- * bundle's makes the verdict an error.
- */
-export function servedAsAsked(asked: string, served: string): boolean {
-  return asked !== "" && served === asked;
-}
-
-/**
  * Why a verdict is not the asked model's, or null where it is: the answer names no served model,
- * or, where `exactId` holds, it names another id than the asked one (`servedAsAsked`). This is
- * the one rule every writer and reader of a verdict applies: `askClaude` with `exactId`, and a
- * round's rows by endpoint (`servedModelFaultOf`), where a Jev arm asks for an alias and so is
- * held to naming its served model, not to the asked id.
+ * or, where `exactId` holds, it names another id than the asked one. This is the one rule every
+ * writer and reader of a verdict applies: `askClaude` and the agent with `exactId`, and a round's
+ * rows by endpoint (`servedModelFaultOf`), where a Jev arm asks for an alias and so is held to
+ * naming its served model, not to the asked id.
+ *
+ * The exact id is what each path gives: the gateway answers `model` with the very name a call
+ * asked for (`anthropic/claude-opus-5-5` asked, `anthropic/claude-opus-5-5` served, measured
+ * 2026-11-15), and the agent reports the bare name it was started with. Any other id, a dated
+ * snapshot or a provider prefix included, is another model or another route, and a verdict it
+ * gave is not the asked bundle's: a served id other than the bundle's makes the verdict an
+ * error. An ask that names no model has no served id that matches it.
  */
 export function servedModelFault(
   asked: string,
@@ -499,7 +494,7 @@ export function servedModelFault(
   exactId: boolean
 ): string | null {
   if (served === null || served === "") return `asked ${asked}, and the answer names no model`;
-  if (!exactId || servedAsAsked(asked, served)) return null;
+  if (!exactId || (asked !== "" && served === asked)) return null;
   return `asked ${asked}, and the answer came from ${served}`;
 }
 
