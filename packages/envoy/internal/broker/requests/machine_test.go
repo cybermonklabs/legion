@@ -244,7 +244,7 @@ func TestValuesRefusesAGrantWhoseRowWasForged(t *testing.T) {
 		grantID, req.ID, enr); err != nil {
 		t.Fatalf("insert forged grant: %v", err)
 	}
-	if _, err := m.Values(ctx, grantID, enr, nil); !errors.Is(err, ErrGrantChainInvalid) {
+	if _, err := m.Values(ctx, grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
 		t.Fatalf("Values(forged grant) = %v, want ErrGrantChainInvalid", err)
 	}
 }
@@ -299,13 +299,13 @@ func TestValuesRefusesAChainTheBrokerDidNotWrite(t *testing.T) {
 			if err != nil || dec.GrantID == "" {
 				t.Fatalf("ApplyDecision: %+v %v", dec, err)
 			}
-			if _, err := m.Values(ctx, dec.GrantID, enr, nil); err != nil {
+			if _, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil {
 				t.Fatalf("Values before the write: %v", err)
 			}
 
 			tamper(t, m.Store, *req.RecordID)
 
-			if _, err := m.Values(ctx, dec.GrantID, enr, nil); !errors.Is(err, ErrGrantChainInvalid) {
+			if _, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) {
 				t.Fatalf("Values after %s = %v, want ErrGrantChainInvalid", name, err)
 			}
 			again, err := m.Create(ctx, enr, signRequest(t, m, key, "why, again", "DEEL_API_KEY"), "", nil)
@@ -410,11 +410,11 @@ func TestAServicesSecretGoesToItsOwnPodsAlone(t *testing.T) {
 	if err != nil || granted.State != "granted" || granted.GrantID == nil || granted.RecordID != nil {
 		t.Fatalf("Create(the service's pod) = %+v, %v; want granted at once, with a grant and no record", granted, err)
 	}
-	if release, err := m.Values(ctx, *granted.GrantID, pod, nil); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
+	if release, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
 		t.Fatalf("Values(the service's pod) = %v, %v; want SERVICE_KEY released", release.Values, err)
 	}
 	retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
-	if release, err := m.Values(ctx, *granted.GrantID, pod, nil); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
+	if release, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); err != nil || release.Values["SERVICE_KEY"] != "service-v1" {
 		t.Fatalf("Values(the service's pod) after the policy moved = %v, %v; want SERVICE_KEY still released", release.Values, err)
 	}
 	if again, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it again", "SERVICE_KEY"), "", nil); err != nil || again.ID != granted.ID {
@@ -483,6 +483,54 @@ func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
 	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "", nil)
 	if err != nil || req.State != "granted" || req.GrantID == nil {
 		t.Fatalf("Create(BRAND_NEW_KEY) = %+v, %v; want an automatic grant via the miss-path reread", req, err)
+	}
+}
+
+// TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands pins what a request meets while
+// `agent-secrets secret create` waits for the person to type the value of a secret it has made but
+// not filled (policy.ReasonPendingValue): the name is refused policy.ErrPendingValue (400
+// PENDING_VALUE), a refusal of its own that says the secret exists and waits for its first value,
+// never UNKNOWN_SECRET, which an agent takes as final; with no request, no record and no judge
+// call, so no approver is asked to approve a secret that holds nothing. Once the value lands, the
+// same name is served: the next request goes to its owner for approval, as any human-tier
+// secret's does, and the grant that approval mints releases the value.
+func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+	var judged []PendingRequest
+	m.Judge = func(p PendingRequest) { judged = append(judged, p) }
+	created := time.Now()
+	waiting := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "")
+	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.CreatedAt = &created
+	fixtureStore(m).Put(waiting)
+
+	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if !errors.Is(err, policy.ErrPendingValue) || errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), "TYPED_KEY") {
+		t.Fatalf("Create(TYPED_KEY) while it waits for its value = %v; want policy.ErrPendingValue naming TYPED_KEY, not ErrUnknownSecret", err)
+	}
+	if pending, waits := m.Policy.Get().Pending[policytest.ID("TYPED_KEY")]; !waits {
+		t.Fatalf("the policy holds TYPED_KEY as %+v; want it waiting for its value (pending-value), the reason the request was refused", pending)
+	}
+	var requests, records int
+	if err := m.Store.Pool.QueryRow(ctx, `select (select count(*) from requests where enrollment_id=$1), (select count(*) from credential_requests)`, enr).Scan(&requests, &records); err != nil || requests != 0 || records != 0 || len(judged) != 0 {
+		t.Fatalf("after the refusal: %d requests, %d records, %d judge calls, %v; want none of each, no approver asked", requests, records, len(judged), err)
+	}
+
+	filled := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "typed-v1")
+	filled.CreatedAt = &created
+	fixtureStore(m).Put(filled)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver || len(judged) != 1 {
+		t.Fatalf("Create(TYPED_KEY) once its value landed = %+v, %v, %d judge calls; want pending on %s's approval, judged once", req, err, len(judged), approver)
+	}
+	decision, err := m.ApplyDecision(ctx, *req.RecordID, true, approver)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("approve: %+v, %v; want a grant", decision, err)
+	}
+	release, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{})
+	if err != nil || release.Values["TYPED_KEY"] != "typed-v1" {
+		t.Fatalf("Values = %+v, %v; want TYPED_KEY released as typed-v1", release.Values, err)
 	}
 }
 
@@ -745,7 +793,7 @@ func TestOtherEnrollmentCannotUseGrant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create(pending): %v", err)
 	}
-	if _, err := m.Values(ctx, *granted.GrantID, enrB, nil); !errors.Is(err, ErrNotYours) {
+	if _, err := m.Values(ctx, *granted.GrantID, enrB, nil, ReleaseCall{}); !errors.Is(err, ErrNotYours) {
 		t.Fatalf("Values(other enrollment) = %v, want ErrNotYours", err)
 	}
 	if err := m.Cancel(ctx, pending.ID, enrB); !errors.Is(err, ErrNotYours) {
@@ -766,7 +814,7 @@ func TestRevokeStopsValues(t *testing.T) {
 	if err := m.RevokeGrant(ctx, *req.GrantID, enr); err != nil {
 		t.Fatalf("RevokeGrant: %v", err)
 	}
-	if _, err := m.Values(ctx, *req.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, *req.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values(after revoke) = %v, want ErrGrantNotLive", err)
 	}
 }
@@ -890,7 +938,7 @@ func TestValuesHoldsNoPooledConnectionWhileReadingSecrets(t *testing.T) {
 	m.Secrets = reader
 	done := make(chan error, 1)
 	go func() {
-		_, err := m.Values(ctx, *req.GrantID, enr, nil)
+		_, err := m.Values(ctx, *req.GrantID, enr, nil, ReleaseCall{})
 		done <- err
 	}()
 	awaitEntered(t, reader.entered, "the secret read")
@@ -945,7 +993,7 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 	if err := m.RevokeByApprover(ctx, *automatic.GrantID, "mallory", "human:mallory"); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("RevokeByApprover(mallory, not the operator) = %v, want ErrNotApprover", err)
 	}
-	if _, err := m.Values(ctx, *automatic.GrantID, enr, nil); err != nil {
+	if _, err := m.Values(ctx, *automatic.GrantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values after a refused revoke = %v, want the grant still live", err)
 	}
 	if err := m.RevokeByApprover(ctx, *automatic.GrantID, operator, record.HumanActor(operator)); err != nil {
@@ -965,7 +1013,7 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 	if err := m.RevokeByApprover(ctx, dec.GrantID, "mallory", "human:mallory"); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("RevokeByApprover(a login that is neither approver nor operator) = %v, want ErrNotApprover", err)
 	}
-	if _, err := m.Values(ctx, dec.GrantID, enr, nil); err != nil {
+	if _, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values after a refused revoke = %v, want the grant still live", err)
 	}
 	if err := m.RevokeByApprover(ctx, dec.GrantID, "Alice@Example.com", record.HumanActor(otherPerson)); err != nil {
@@ -1046,7 +1094,7 @@ func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
 				t.Fatalf("Create = %+v, %v, want an automatic grant", granted, err)
 			}
 			tighten(t, m)
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 				t.Fatalf("Values under the tightened policy = %v, want ErrGrantNotLive", err)
 			}
 			again, err := m.Create(ctx, enr, signRequest(t, m, key, "need it again", "AUTO_TOKEN"), "", nil)
@@ -1077,7 +1125,7 @@ func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
 			if m.Policy.Get().Version == before {
 				t.Fatalf("the edit left the policy version %s unchanged, so it re-checks nothing", before)
 			}
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); err != nil {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); err != nil {
 				t.Fatalf("Values = %v, want the grant still usable", err)
 			}
 			if again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", "AUTO_TOKEN"), "", nil); err != nil || again.ID != granted.ID {
@@ -1112,7 +1160,7 @@ func TestValuesNamesASecretDeletedBeforeTheNextRefresh(t *testing.T) {
 				t.Fatalf("Create = %+v, %v", granted, err)
 			}
 			remove(fixtureStore(m))
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); !errors.Is(err, ErrSecretNotInStore) || !strings.Contains(err.Error(), "AUTO_TOKEN") {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrSecretNotInStore) || !strings.Contains(err.Error(), "AUTO_TOKEN") {
 				t.Fatalf("Values = %v, want ErrSecretNotInStore naming AUTO_TOKEN", err)
 			}
 		})
@@ -1250,7 +1298,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err := m.Store.Pool.QueryRow(ctx, `select login from credential_request_events where record_id=$1 and event='approved'`, *req.RecordID).Scan(&login); err != nil || login != "bob@example.com" {
 		t.Fatalf("approved event login = %q, %v, want bob@example.com", login, err)
 	}
-	release, err := m.Values(ctx, dec.GrantID, enr, nil)
+	release, err := m.Values(ctx, dec.GrantID, enr, nil, ReleaseCall{})
 	if err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
 		t.Fatalf("Values = %v, %v, want SHARED_KEY released", release.Values, err)
 	}
@@ -1277,7 +1325,7 @@ func TestAServiceGrantStopsWhenItsServiceAccountChanges(t *testing.T) {
 		t.Fatalf("Create(the service's pod) = %+v, %v; want granted", granted, err)
 	}
 	m.ServicesByAccount = map[string]string{"system:serviceaccount:example:other-sa": fixtureService}
-	if release, err := m.Values(ctx, *granted.GrantID, pod, nil); !errors.Is(err, ErrGrantNotLive) {
+	if release, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values after the service's account changed = %v, %v; want ErrGrantNotLive", release.Values, err)
 	}
 	again, err := m.Create(ctx, pod, signRequest(t, m, podKey, "need it again", "SERVICE_KEY"), "", nil)

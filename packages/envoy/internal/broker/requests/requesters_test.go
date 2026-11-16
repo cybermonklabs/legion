@@ -113,7 +113,7 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 			if err != nil || granted.State != "granted" || granted.GrantID == nil {
 				t.Fatalf("Create(LISTED_KEY) = %+v, %v; want it granted at once to the person it lists", granted, err)
 			}
-			if released, err := m.Values(ctx, *granted.GrantID, enr, nil); err != nil || released.Values["LISTED_KEY"] != listedValue {
+			if released, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); err != nil || released.Values["LISTED_KEY"] != listedValue {
 				t.Fatalf("Values before the retag = %v, %v; want the value", released.Values, err)
 			}
 
@@ -122,7 +122,7 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 				listed = otherPerson
 			}
 			retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, listed))
-			released, err := m.Values(ctx, *granted.GrantID, enr, nil)
+			released, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{})
 			if !tc.drop {
 				if err != nil || released.Values["LISTED_KEY"] != listedValue {
 					t.Fatalf("Values after a retag that still lists the person = %v, %v; want the value", released.Values, err)
@@ -140,7 +140,7 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 			}
 
 			retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
-			if _, err := m.Values(ctx, *granted.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+			if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 				t.Fatalf("Values once the person is listed again = %v; want the grant still ended", err)
 			}
 			if by, audits := endedForGood(t, m, *granted.GrantID); by != GrantEndedActor || audits != 1 {
@@ -184,7 +184,7 @@ func TestRequestersTheNextRequestEndsTheGrantTheListDropped(t *testing.T) {
 	if by, audits := endedForGood(t, m, *granted.GrantID); by != GrantEndedActor || audits != 1 {
 		t.Fatalf("the reused grant's revoked_by = %q with %d grant.revoked rows by %s; want the reuse to have ended it once", by, audits, GrantEndedActor)
 	}
-	if _, err := m.Values(ctx, *granted.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of the grant the reuse ended = %v; want ErrGrantNotLive", err)
 	}
 }
@@ -221,7 +221,7 @@ func TestRequestersAnApprovalAfterTheDropIsRecordedAsADenial(t *testing.T) {
 				if decision.State != "granted" || decision.GrantID == "" || decision.Detail != "" {
 					t.Fatalf("ApplyDecision with the list unchanged = %+v; want it granted with no detail", decision)
 				}
-				if released, err := m.Values(ctx, decision.GrantID, enr, nil); err != nil || released.Values["LISTED_HUMAN_KEY"] != listedValue {
+				if released, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{}); err != nil || released.Values["LISTED_HUMAN_KEY"] != listedValue {
 					t.Fatalf("Values of the approved grant = %v, %v; want the value", released.Values, err)
 				}
 				return
@@ -273,7 +273,7 @@ func TestRequestersAListedSecretGrantsForNoLongerThanItsOwnMaxGrant(t *testing.T
 	if err != nil || granted.State != "granted" || granted.GrantID == nil {
 		t.Fatalf("Create(LISTED_KEY, 1h) = %+v, %v; want it granted", granted, err)
 	}
-	released, err := m.Values(ctx, *granted.GrantID, enr, nil)
+	released, err := m.Values(ctx, *granted.GrantID, enr, nil, ReleaseCall{})
 	if err != nil || released.Values["LISTED_KEY"] != listedValue {
 		t.Fatalf("Values = %v, %v; want the value", released.Values, err)
 	}
@@ -306,7 +306,7 @@ func TestRequestersAPodsGrantEndsWhenItsAccountStopsProvingItsService(t *testing
 			if err != nil || granted.State != "granted" || granted.GrantID == nil {
 				t.Fatalf("Create(LISTED_POD_KEY) = %+v, %v; want it granted at once to the pod the list names", granted, err)
 			}
-			if released, err := m.Values(ctx, *granted.GrantID, pod, nil); err != nil || released.Values["LISTED_POD_KEY"] != listedValue {
+			if released, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{}); err != nil || released.Values["LISTED_POD_KEY"] != listedValue {
 				t.Fatalf("Values while the account proves the service = %v, %v; want the value", released.Values, err)
 			}
 			version := m.Policy.Get().Version
@@ -314,7 +314,7 @@ func TestRequestersAPodsGrantEndsWhenItsAccountStopsProvingItsService(t *testing
 			if tc.unmap {
 				m.ServicesByAccount = map[string]string{}
 			}
-			released, err := m.Values(ctx, *granted.GrantID, pod, nil)
+			released, err := m.Values(ctx, *granted.GrantID, pod, nil, ReleaseCall{})
 			if now := m.Policy.Get().Version; now != version {
 				t.Fatalf("the policy moved from version %s to %s; this case turns on the version standing still", version, now)
 			}
@@ -445,7 +445,7 @@ func TestRequestersAWithheldNameTheListDropsIsDeniedRatherThanRefused(t *testing
 	if decision.State != "denied" || decision.GrantID != "" || decision.Detail != want {
 		t.Fatalf("ApplyDecision = %+v; want it denied with no grant and the detail %q", decision, want)
 	}
-	if _, err := m.Values(ctx, *auto.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, *auto.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of the withheld grant = %v; want it still ended", err)
 	}
 }

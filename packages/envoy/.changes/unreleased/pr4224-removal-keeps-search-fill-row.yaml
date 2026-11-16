@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  Removing the document that the search fill's cursor names no longer deletes the fill's progress row, which left every later Dispatch boot stopping at `read the document_search fill's progress: no rows in result set`.

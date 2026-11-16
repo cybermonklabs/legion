@@ -1163,7 +1163,7 @@ Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
 The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
-A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: `scripts/sessions-import-pods.sh` runs it in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
+A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
 ### Starting fresh when a session is lost or wedged
 
@@ -1241,7 +1241,7 @@ Resuming a suspended claim starts a fresh session with its pending task.
 
 ### Copying file sessions before turning it on
 
-This runbook, and `scripts/sessions-import-pods.sh`, copy only from the release before issue pods, `legion-v10.0.0`, whose every role runs in a Sandbox of its own and keeps its session on its tree's volume; the script refuses any other release by name.
+This runbook copies only from the release before issue pods, `legion-v10.0.0`, whose every role runs in a Sandbox of its own and keeps its session on its tree's volume.
 A deployment on `legion-v10.1.0` to `legion-v10.2.x`, which runs one pod per issue, has no copy path: its switch to `postgres` is a drain at a pushed boundary, every tree closed, and the sessions on those volumes are lost.
 There is no way back either, and nothing to go back to: this release has no second store, and nothing copies a row out to a file.
 
@@ -1273,19 +1273,24 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    `legion claims list --json --operator-token-file <file> > claims.json` (the daemon of any release prints the list this command reads), then scale the daemon to 0 straight away, so nothing launches, resumes, or cleans up a tree from here on.
 
 3. **Copy every tree.**
-   Where a tree's volume is mounted and the session database is reachable, run, for each tree the list names:
+   Copy one tree at a time, in the pod of [A shell on an issue's disk](#a-shell-on-an-issues-disk) with that tree's claim: a pod of the worker image, under gVisor, with the tree's volume read-only at `/legion` and nothing else mounted.
+   The import reads two more files, and both come from your machine after the pod is `Ready`.
+   `claims.json` from step 2 goes to the import's standard input (`--claims -`).
+   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a pod on the Legion pool can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
+   The URL goes into the pod on standard input, into a file of mode 0600 in a directory of mode 0700, so no command line holds it:
 
    ```sh
-   legion sessions import --dsn-file <url file> --claims claims.json --tree <ROOT ISSUE> --tree-volume /legion
+   kubectl -n legion apply -f legion-tree-shell.yaml    # its claimName is this tree's claim
+   kubectl -n legion wait --for=condition=Ready pod/legion-tree-shell --timeout=300s
+   kubectl -n legion exec -i legion-tree-shell -- sh -c 'umask 077 && mkdir /tmp/import && cat > /tmp/import/dsn' < <url file>
+   kubectl -n legion exec -i legion-tree-shell -- sh -c 'legion sessions import --dsn-file /tmp/import/dsn --claims - --tree <ROOT ISSUE> --tree-volume /legion; rc=$?; rm -rf /tmp/import; exit $rc' < claims.json
+   kubectl -n legion delete pod legion-tree-shell
    ```
 
-   `scripts/sessions-import-pods.sh <claims.json> <namespace> <worker image@sha256> <project> <url secret> <url key> [--context <context>]` runs it for every tree the list names: one pod of the worker image per tree, under gVisor, mounting the tree's volume read-only at `/legion` and the URL key, printing the import's lines, then deleted.
-   It finds each tree's volume and root Sandbox by `legion-v10.0.0`'s labels (`legion.dev/project`, `legion.dev/role=architect`, `legion.dev/tree` and `legion.dev/issue`), not by name, and schedules the pod as the root Sandbox's pods were: its pod template's node selector, tolerations and priority class.
-   The pod runs as the namespace's `default` ServiceAccount with no token (`automountServiceAccountToken: false`), never as the Sandbox's: it needs no identity, and a namespace admission policy may let only the agent-sandbox controller create pods as the worker ServiceAccount.
-   Before anything it refuses a project whose Sandboxes are issue pods (a later release), one with a Sandbox not `Suspended`, whose pod could still start, and one with a pod that has not ended (any phase but `Succeeded` or `Failed`): each would be a writer the copy misses.
-   It deletes a pod an interrupted run left before creating one, reports a pod that fails at once, exits 1 when any tree's import did, names a tree whose volume or root Sandbox is gone, and names every claim that records a session and belongs to no tree, the cleared controller's among them, which step 5 clears.
+   The second `exec` removes the URL's directory whatever the import's exit, and it exits with the import's own status.
+   The pod's own files go when the pod is deleted.
 
-   For each claim with a recorded session file it reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
+   For each claim with a recorded session file the import reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
    When `issue_close` already cleared a claim's resume path, the importer finds `*_<session>.jsonl` below the volume's sessions directory from the retained session id; exactly one match imports, none names the claim and session as missing, and several are refused by name.
    It creates the two tables with Oh My Pi's own statements when the database has none.
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
@@ -1338,6 +1343,10 @@ the daemon accepts a launcher connection only for that role, that pod and that t
 Each generation's boot token and launch credentials (the Envoy and Dispatch bearers, a spec's secrets) travel in the authenticated start command, and the launcher writes them owner-only and exclusively into a fresh `g<generation>` directory of its role's memory-backed private directory, removing anything already there without following it, and removes that directory when the generation ends:
 a role started in a running pod never waits on the kubelet to refresh a Secret, and no credential is in an argv, an environment value, a log or an error.
 The role's own agent sees only its own private directory, inside its namespaces, so it can read its own generation's credentials, as a pane can; it cannot read another role's.
+The generation's system prompt travels the same way: the daemon composes it (the role's prompt parts, its addressing, the deployment's `instructions` and each arm's) and sends it in that start command, the launcher writes it as `system-prompt.md` into the same `g<generation>` directory, and the agent's one `--append-system-prompt` (Claude Code's `--append-system-prompt-file`) names that file.
+No argument grows with the prompt, so a prompt longer than the 131,072 bytes Linux allows one argument (`MAX_ARG_STRLEN`) launches, and no other role's process can read or change the file, since it is in this role's private directory alone.
+A prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts: the claim fails at once with cause `launch_refused`, charged no launch failure, and its `lastStartFailure` and `failure.detail` name the role, the prompt's size and the limit.
+The daemon sets no bound of its own on a model's context, which it cannot read; Oh My Pi answers a request too large for its model.
 What the container mounts for the pod rather than for a role is every role's alike:
 the operator's providers Secret (`provider_keys`) and, under `runtime.kubernetes.agent_secrets`, the projected broker token.
 A role process is addressed by the pod's uid, its role and its generation (the incarnation `<pod uid>/<generation>`):
@@ -2354,13 +2363,133 @@ The commits already stamped keep their line: it is in their messages, which noth
 A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
 `phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
 An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
-Both keys are absent together for an issue whose current phase names no phase worker role — a root at `admitted` whose design gate has never opened — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+Both keys are absent together for an issue in a phase no role works — `awaiting_person`, `done` and `held` — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+A root at `admitted` carried neither key at contract 94, when `phase.RoleFor` named no role for that phase;
+from contract 146 that phase is the architect's, so such a root carries its architect's two numbers by the same rules, and the two times the next paragraph names by its own.
 A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/server.go`).
 Store migration 20261111225552_phase_entry adds the six columns, fills them from the assignment token the release before it minted at each phase change (a role that release had handed work stands at entry 1, with the task of the start row its issue still owes it), stamps that entry into the payload of each of those start rows, and drops the three columns that token was held in:
 `phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`.
 
-To roll this release back to contract 87, stop the daemon and run the eleven statements below, which leave the store at the earlier release's schema and at that release's own version, 20261112180548:
-the version the store reports is its highest recorded row (`schemaVersion` in `internal/store/store.go`), every database this release migrated records 20261112180548 above this migration's own 20261111225552, and the block deletes no row but that one.
+**A root's architect in the phase entry (daemon API contract 146).**
+A release at contract 146 gives a root's own architect a `phases` row, and each start that hands that architect work it was not on raises the row's entry and writes the entry's task, as a phase worker's start does.
+An issue of `GET /legion/v1/state` carries two more keys beside `phaseEntry` and `givenEntry`: `entryQueuedAt`, when a task of an entry was first queued to a claim, and `entryConfirmedAt`, when a turn of that claim's worker first confirmed one.
+Both are read from the claim's own record of its handshake of the last entry it was queued a task of (`internal/projection/project.go`), so both stay after the turn that confirmed the task has ended and the task is retired.
+A tree's own root carries its architect's handshake whatever phase it stands in, through `awaiting_person` and the phases a phase role works, where `phaseEntry` and `givenEntry` are that role's;
+any other issue carries the handshake of the role of its current phase.
+Both are absent where no entry was queued to that claim in the issue's current generation, so a root re-admitted carries neither until its new architect entry is queued, and `entryConfirmedAt` alone is absent while no turn has confirmed a task of the entry.
+A caller from a pod whose claims record a contract below 146 is served the issues without either time and without `architectStalls` (`withoutEntryTimes` in `internal/api/server.go`).
+The daemon wakes the project's controller with `architect-stalled on <KEY>` (`skill://legion-controller/references/wakes.md`), once for each arm in each run of the root:
+
+- the architect took nothing: the task of the entry its `phases` row names was first queued to its claim more than ten minutes ago, and no turn confirmed it.
+  The claim keeps one such moment, for the entry it was last queued a task of: when that entry's task was first queued (`claims.handshake_queued_at`), so a task the daemon sends again for that entry is counted from that first queueing and not from the send.
+  A process of the claim that dies or that the daemon replaces in the middle of a turn of that task — a crash, an out-of-memory kill, a relaunch onto the current plugin, a stalled turn the daemon ends — leaves the task to be sent again to the relaunched agent.
+  Such a task counts only while the claim is ready, working or idle, and from the moment the relaunched agent said it was ready where that is later than that first queueing, so the relaunch of an architect that was working its task raises no wake.
+  A task the root's own record has superseded — one that carries an entry, of a run before its generation or of an entry its `phases` row has moved past — raises this arm not at all: the daemon writes the start of the entry the row names instead, and that start's task takes the held task's place.
+  A task that carries no entry, such as the one a wake of the architect's released pod gives, raises it not at all either, and no start takes its place: the daemon sends it first, and sends the entry's task once a turn has taken it.
+
+- the architect's claim cannot be reached: the claim is failed or retired and no start of the root's run is the daemon's next move for it, or no architect claim stands, no start of one was queued in the last ten minutes, and the work of the entry has waited the same ten minutes.
+  A start the outbox is running is that next move, and so is a start queued in the last ten minutes unless it has already run against the claim and left it failed or retired.
+  A start that has run and left the claim failed or retired, which the outbox runs again on its backoff while every launch fails, holds no wake back, and neither does one that has stood owed past the ten minutes without running.
+  A root waiting on a person raises it as any root does, and its reason says the root waits, because the daemon queues the next start of its architect only when that wait is answered.
+
+- the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
+
+The daemon reads the three arms on every admission pass, and its sweep of each minute runs while an arm holds that no wake has told yet, so in a project where no other fact arrives the controller is woken within a minute of the arm holding.
+While no controller is registered for the project, the daemon marks no arm told and queues no wake, and its sweep does not run for an arm alone, so the first pass after a controller registers tells it.
+Each tree root of `GET /legion/v1/state` carries `architectStalls`, the arms that hold for its architect at that read (`took-nothing`, `claim-unreachable`, `slow-before-gate`), whether or not the controller was told of them.
+The daemon reads them by the same rules as the wake, and the plain `legion state` prints them, with each arm's words, on its line of the roots a wake names, which names a root for nothing else, whatever its two numbers say.
+
+Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
+Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, so the upgrade sends no running architect a first task.
+It marks the first and the third arm told for each root whose run has started, which is a root whose status is not `todo`, so the upgrade wakes the controller for none of them.
+The status is what says it, because a re-admission sets a root to `todo` and the promotion that starts its run sets it to `in_progress`, while the architect claim's generation counts its launches and not the root's runs.
+A root still waiting in the line at `todo` is marked for no arm, whether it was re-admitted before the upgrade or carried out of another tree with that tree's slot, so the arms of its next run wake the controller as any run's do.
+Store migration 20261114020537_claim_entry_handshake adds the four `claims.handshake_*` columns that hold a claim's handshake, at defaults that name no entry.
+The state of such a root carries its two numbers and neither time, since the upgrade queues no task and records no handshake.
+Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
+every row it finds takes the default, false, which the sweep derives again.
+The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
+
+To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
+A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
+Contract 144, cybermonklabs/legion#4021, is the release just before this one, and its own section above, "Rolling back below the release that guards an issue pod's memory", gives its way back: take `runtime.kubernetes.memory_guard` out of `legion.yaml` before the earlier image is pinned, since a release before it refuses the key by name, and run no SQL.
+It adds no store migration, so the block below has nothing of it to reverse, and the note its guard sends is a `role_message` outbox row, a kind a release before it already decodes.
+No release declares 142 or 143: the contract went from 141 to 144 in that one change, so a rollback from 144 to 141 crosses no other contract.
+Contract 141, cybermonklabs/legion#3575, has its own section below, which gives its way back: put `legion.yaml` back without `projects.<KEY>.experiments`, which a release before it refuses as a key it does not know, and run no SQL.
+Its one migration, `20261111045636_experiment_assignments.up.sql`, adds the table `experiment_assignments`, which a release before it names in no statement, so that release boots with the table and its rows in place, and the block below touches neither the table nor that migration's row.
+No release declares 138, 139 or 140: the contract went from 137 to 141 in that one change, so a rollback from 141 to 137 crosses no other contract.
+Contract 137, cybermonklabs/legion#4046, has no section of its own here: it adds no migration, and a daemon before it refuses `impersonate_service_account` as an unknown key, so a rollback below it takes back `legion.yaml`, the daemon and the worker image together, as [Selecting the store](#selecting-the-store) says.
+Contract 133, cybermonklabs/legion#3937, has no section of its own here either: its one migration, `20261112070503_pull_request_state_read_at.up.sql`, adds the column `pull_requests.state_read_at` at a default every row takes, which a release before it neither reads nor writes, since its pull request reads and its insert name each column they touch, and its header gives no step.
+Neither has cybermonklabs/legion#3983, which landed after it at the same contract: its one migration, `20261113082415_claim_ended_work.up.sql`, adds the nullable column `claims.ended_work`, which a release before it names in no statement, and its header gives no step.
+Contract 132, cybermonklabs/legion#3715, has no section of its own here either: its one migration, `20261111214351_issue_released_for_wait.up.sql`, adds the nullable column `issues.released_for_wait_at`, and its header gives no step, since migrations here are forward-only.
+Contract 123, cybermonklabs/legion#3793, has no section of its own here either: the header of its migration, `20261113090512_phase_entry_moved_back.up.sql`, gives its steps, which are none at the rollback and one statement, `update phases set entry_moved_back = true;`, before a roll-forward across it.
+To roll a release at contract 146 back to contract 144 instead, the release just before it, run the block below alone: that release keeps the six columns, and its sweep passes over every architect, since it chooses a role through `workflow.OpenPhaseRole`, which names none for an architect.
+The block below is the way back of those four migrations, and the header of each carries it:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases drop column if exists entry_verbatim;
+delete from schema_version where version = 20261114061900;
+alter table claims drop column if exists handshake_entry;
+alter table claims drop column if exists handshake_generation;
+alter table claims drop column if exists handshake_queued_at;
+alter table claims drop column if exists handshake_confirmed_at;
+delete from schema_version where version = 20261114020537;
+delete from schema_version where version = 20261113182000;
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'architect-stalled';
+drop table if exists architect_stalled_notices;
+delete from schema_version where version = 20261113181500;
+commit;
+SQL
+```
+
+It prints `BEGIN`, an `ALTER TABLE`, `DELETE 1`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE <n>` for the wakes it drops, `DROP TABLE`, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` that each of the five columns does not exist beside the same five `ALTER TABLE`s, `DELETE 0` four times, a `NOTICE` that the table does not exist, the same `DROP TABLE`, `DELETE 0` and `COMMIT`, and changes nothing.
+It runs first because the upgrade writes into three of the six columns the phase entry's block drops, which is the case that block's own text covers below.
+The first `alter table` and the first `delete` go together, and come first because the mark is the newest of the four migrations.
+The earlier release needs neither: its phases read and its phases write name each column they touch, so the column would stand unread, and every row that release inserts would take the default.
+Both are owed to the roll-forward: with the column dropped and the row deleted, `Migrate` adds the column again at its default.
+What the drop costs is the mark on each entry a resume raised before the rollback: after the roll-forward each such entry reads as one the derivation wrote.
+A resume whose start reached its claim costs nothing, since nothing sends that entry again;
+a resume whose start was lost, with the claim still behind its entry at the roll-forward, is sent the derivation's task for its root rather than the resume's own.
+The next four `alter table`s and the second `delete` go together, and come next because the claim handshake is the newest of the other three migrations.
+The earlier release needs neither: its claim read and its claim write name each column they touch, so the four columns would stand unread and unwritten.
+Both are owed to the roll-forward.
+The earlier release queues tasks and records no handshake, so a handshake left standing would name an entry that release has since replaced, and the state of a root still at the same generation would show the times of that older entry.
+With the columns dropped and the row deleted, `Migrate` adds the four columns again at their defaults, and every claim reads as having no handshake until its role's next start.
+The `delete` of 20261113182000's row re-arms the upgrade, so the roll-forward runs its fill again after the phase entry's fill and settles every root standing then.
+Without it, `Migrate` would not run that file again, every root architect would read entry 0 on its row and on its claim, and the first pass would hand every running architect a first task at once.
+The earlier release needs nothing of the upgrade taken away.
+The two numbers the upgrade wrote on each claim go with the columns the phase entry's block drops.
+The architect `phases` rows it wrote stand without their `entry` column, and the earlier release passes over them:
+it starts no architect from a row and clears no architect row, it refuses an architect's completion as it always has, and its state read shows a `phases` row only through the live claim the row names, which no row of the upgrade names.
+The roll-forward moves each of those rows from the 0 its re-added column holds back to 1.
+The outbox `delete` drops the `architect-stalled` wakes this release wrote and had not sent when the daemon stopped.
+A sent wake leaves no row, so these are the only ones standing, and the earlier release cannot send them:
+it refuses a controller notice of a kind it does not know (`record.DecodeOutboxPayload`, `unknown controller notice kind`), and its runner retries such a row on its backoff for ever.
+After the roll-forward no wake of the first or the third arm comes again for a root whose run has started, since the upgrade marks both arms for every such root it settles;
+a wake of the second arm comes again on the first pass for a root whose claim is still failed or retired with no start of its run that is the daemon's next move for it: none queued in the last ten minutes, or only one that has already run against the claim and left it failed or retired.
+The `drop table` and the last `delete` go together.
+The earlier release reads no such table, and the delete makes the store report that release's own version again.
+The drop is owed to the roll-forward, which cannot create the table again while it stands.
+`Migrate` makes the table again, empty, and the re-armed upgrade marks it again.
+The SQL was run on 2026-11-15 at 17:51Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own migration step (`store.apply`) took through 20261113181500, leaving 143 versions recorded, and that then held one root at `admitted` whose architect claim stood with no architect `phases` row.
+`Migrate` then applied the upgrade, the claim handshake, dispatch://INFRA-3274's 20261114031356_merge_queue_removal and the mark, and left 147 versions recorded, the highest 20261114061900, with the architect's row and claim at entry 1, the row unmarked, and two marks.
+After it the architect's claim was written given entry 2 with a handshake of that entry, queued and confirmed, the architect's row was written at entry 2 carrying a resume's task marked to be sent as written, and one unsent `architect-stalled` wake was written into the outbox.
+This block's first run printed `BEGIN`, `ALTER TABLE`, `DELETE 1`, four `ALTER TABLE`s, `DELETE 1`, `DELETE 1`, `DELETE 1`, `DROP TABLE`, `DELETE 1` and `COMMIT`.
+Its rerun printed `BEGIN`, `NOTICE:  column "entry_verbatim" of relation "phases" does not exist, skipping`, `ALTER TABLE`, `DELETE 0`, `NOTICE:  column "handshake_entry" of relation "claims" does not exist, skipping` and the same `NOTICE` for each of the other three handshake columns, each followed by `ALTER TABLE`, then `DELETE 0`, `DELETE 0`, `DELETE 0`, `NOTICE:  table "architect_stalled_notices" does not exist, skipping`, `DROP TABLE`, `DELETE 0` and `COMMIT`.
+The phase entry's block then printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 0`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and all three runs exited 0.
+After them the store reported 20261114031356 with 142 versions recorded: that is dispatch://INFRA-3274's 20261114031356_merge_queue_removal, the highest row neither block touches (`internal/admit`'s `TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward`).
+Neither `architect_stalled_notices` nor the wake stood, the claims table held no `handshake_` column, and the architect's `phases` row stood without `entry_verbatim` and the entry columns and its claim without `given_entry` and `served_entry`.
+Running `Migrate` again applied five migrations, 20261111225552, 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the store reported 20261114061900 with 147 versions recorded, the architect's row and claim at entry 1 again and the row unmarked, its two marks again at the root's generation, and its claim with no handshake.
+The counts are those of the 147 migrations the tree of that run carried.
+A migration added after it that neither block touches adds one to every count from the step that applies it, and the store reports it after the two blocks only where its version is above 20261114031356.
+
+To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
+On a store that a release at contract 146 migrated, run the contract 146 block above first.
+The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for the columns of later migrations that the list after the block leaves standing, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`), since neither block deletes a version row but its own:
+20261112180548, the earlier release's own version, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and 20261114031356, the highest row neither block deletes, on a store a release at contract 146 migrated.
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -2401,10 +2530,18 @@ The re-arm needs nothing of the other rows:
 What the block does need is that no migration recorded after this one builds on the six columns it drops.
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
-The one migration recorded above this one at this release, 20261112180548_claim_leak_check_cause, adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+Eleven migrations are recorded above this one at contract 146.
+20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+20261113082214_outbox_kinds_with_the_update_ask and 20261113110610_drop_claim_update_answer_marks, of cybermonklabs/legion#3982, and 20261114031356_merge_queue_removal, of dispatch://INFRA-3274, touch none of the six either, so the block holds over them too, and a rollback to a release before them reverses them by their own steps.
+20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
+20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
+20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
+20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses both first.
+20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
+20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
-The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 133 migrations and left 133 versions recorded, the highest 20261112180548, and holding four outbox rows:
+The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
 two supervise starts carrying `entry`, one of them `resendEntry` beside it, a supervise row carrying neither, and a `notice` row carrying an `entry` key of its own.
 The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the nine `NOTICE`s with their `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and the same `COMMIT`; both exited 0.
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
@@ -3919,9 +4056,7 @@ Nothing is saved first, because a shell on the old disk could carry nothing over
 **The one stopped disk still worth mounting: a tree volume of the release before issue pods.**
 That release's tree volume is its root Sandbox's, not a pod's, so it outlives every pod of the tree, and copying the sessions off it is the one procedure that still needs a stopped disk reachable:
 step 3 of [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on).
-`scripts/sessions-import-pods.sh` makes one such pod per tree itself;
-the pod below is that step run by hand for a single tree, with `legion sessions import --dsn-file <url file> --claims
-claims.json --tree <ROOT ISSUE> --tree-volume /legion` run inside it.
+The pod below is the one that step starts for each tree, and the step gives the commands that bring the database URL and the claims list into it and run the import there.
 The tree's claim is the one its labels name (`kubectl -n legion get pvc -l
 legion.dev/project=<project>,legion.dev/tree=<ROOT ISSUE>`).
 By that step of the runbook the tree's root Sandbox is `Suspended` with no pod of its own and the earlier release's daemon is stopped, so nothing launches a pod that would want the volume while yours holds it;
@@ -3958,9 +4093,10 @@ kubectl -n legion exec -it legion-tree-shell -- sh
 kubectl -n legion delete pod legion-tree-shell
 ```
 
-The pod carries no credential.
+The pod carries no credential of its own.
 An agent of that tree could plant git and jj configuration in a clone on the volume ([Trust model](#trust-model-the-provisioning-token)), which a `jj` run in this shell would obey, and the pod gives that configuration nothing to take.
-Run no command in it that holds a token.
+The session copy brings one credential in, the database URL, for the one command it runs there: `legion sessions import`, which reads the volume's session files as data, starts no `git`, `jj` or `omp`, and runs in the `exec` that removes the URL when it ends.
+Run no other command in the pod while the URL is in it, and no command that holds a token at any other time.
 
 ### Carrying unpushed work out of an issue's pod
 
@@ -5133,7 +5269,11 @@ The wakes are these:
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact: the daemon reads no check run of its own, and its own read of a pull request runs as the workflow runtime starts and once an agent's handoff has been recorded, on no timer).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
 
-- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon, one sent with `keep: false` included: that message is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
+- a message published to the role topic of a role of the pod, which the Envoy listener holds and reports to the daemon.
+  Envoy keeps it for one hour, until the `kept_until` its publish answers with, and it reaches the woken role if the role is back inside that hour.
+  If it is not, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
+  While it has at least 20 minutes of its hour left and no live session holds the role, the listener's sweep reports it again every five minutes.
+  One sent with `keep: false` is not kept, and it still wakes the role, so the sender's next try reaches a session that is running;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, or a person's answer, comment or message that a Dispatch claim routes to that session;
 
@@ -5747,9 +5887,9 @@ Every one of those is a boot refusal before anything is spawned.
 Four prerequisites and caveats the configuration cannot check for you:
 
 - **The `instructions` file must hold no secret.**
-  Under tmux it is read by the pane through `$(cat …)` on the daemon host;
-  under Kubernetes the daemon inlines its text into the pod's `--append-system-prompt` argument, so it travels in the pod spec's argv
-  — visible to anyone who can `get pods -o yaml` in the namespace, and recorded in the API server's audit log.
+  Its text is part of every role's system prompt, which the daemon composes and writes to a file only that role's process reads: under tmux `<state_dir>/secrets/<claim>-system-prompt.md` on the daemon host, 0600 in a 0700 directory;
+  under Kubernetes a 0600 file of the role's own generation directory, which the launcher writes from the start command ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
+  It is in no argv and no pod spec, but every agent of the deployment reads it, and an agent can repeat what it reads.
   Provider keys and tokens belong in the providers Secret only.
 
 - **The daemon host still needs the tmux runtime's toolchain.**
@@ -6001,7 +6141,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **What a memory-group role is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the project's memory overlays, which outrank both;
-  its one `--append-system-prompt` value ends with the memory instructions, after the deployment's own.
+  its system prompt, the file its one `--append-system-prompt` names, ends with the memory instructions, after the deployment's own.
   The controller is in no memory group whatever the mode says, since a memory group is a tree's and the controller runs in none;
   a role of a tree drawn `none` is told exactly what it was told before the block existed; and a block with no `instructions` appends nothing.
   The launch follows the record, not the mode:
@@ -6075,7 +6215,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **What a role of a drawn unit is given.**
   Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into, in the order the project's file declares the experiments, which outrank both.
-  Its one `--append-system-prompt` value ends with each such arm's `instructions`, in that same order, after the deployment's own.
+  Its system prompt, the file its one `--append-system-prompt` names, ends with each such arm's `instructions`, in that same order, after the deployment's own.
   The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
   The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
   An arm's overlays take part in everything `role_config_files` takes part in:
@@ -6246,10 +6386,14 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named` or `person`, which says what `project` means.
+- `project_scope` — `named` or `person`, which says what `projects` means.
 
-- `project` — the one project key a `named` token may write.
-  A `person` token carries none.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
+  A token whose trade named none, and a token that names a service and no person, carry none.
+
+- `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
+  No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
+  Every other token carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
@@ -6260,9 +6404,24 @@ A pod's token needs an entry for its service account, which gives the project an
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
-A machine login's token needs no entry at all: the person is the login's approver, the scope is `person`, and the token names no project (`Set.Machine`).
+A request under an entry may name that entry's project or nothing, and is refused when it names any other; a token that names no person is refused any project.
+A machine login's token needs no entry at all: the person is the login's approver and the scope is `person` (`Set.Machine`).
 A person's own Google identity token needs the machine's own as the actor token, of an account an entry lists (`Set.Person`):
 the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gives, the scope is `person`, and the token names that person and that machine.
+
+A `person` token names the projects its trade asks for (`projects`, keys separated by spaces, at most 16, each a project key; `AGENT_SECRETS_PROJECTS` is where a session's client reads them from).
+Before it mints, the broker asks Dispatch, with its own projected ServiceAccount token, whether the token's person may see each one (`BROKER_PROJECT_ACCESS_URL`, `BROKER_PROJECT_ACCESS_TOKEN_FILE`, `packages/envoy/internal/broker/projectaccess`), and refuses `invalid_request` naming the first it may not see, in the same words whether Dispatch holds that project or not.
+A trade that names no project is refused only for a person Dispatch calls a restricted member, who sees only the projects that name them;
+a person's sign-in is taken as a full member's and asks no member kind, since the broker checked its Workspace domain itself.
+An operator's entry is held to Dispatch the same way: a `named` token is refused when the entry's person may not see the entry's project.
+Dispatch's answers are kept 30 seconds, and the questions are asked before the exchange's database transaction begins.
+A broker with neither setting asks Dispatch nothing: it mints every token that names no project as before, mints an entry's token as before, and refuses a `person` trade that names a project.
+A broker whose Dispatch cannot be asked mints a token that names no project as before, logging one line naming each, and refuses every trade that names a project `temporarily_unavailable` for the client to ask again, an entry's token naming its project included.
+A Dispatch that answers 401 or 403 to the broker's own account token does not list the broker's account as one that may ask, or does not accept that token (one minted for another audience, say); a broker that cannot read that token from its file, and a Dispatch answering a member kind the broker does not know, are refused the same way: every trade that asks is refused `server_error`, saying so, and nothing is minted unchecked.
+A 404 is Dispatch holding no such project only with the code `PROJECT_NOT_FOUND`; any other 404 is a failure to ask.
+A `named` token naming a project fails until every broker replica, Dispatch and listener run the release that carries the list: this release's readers refuse an older broker's `project` answer, the broker also stores a named token's one project under `project` so an older replica answers it that way, and an older Dispatch refuses this release's named answers.
+The grant issues no refresh token, so each renewal is a fresh trade that Dispatch is asked about again.
+
 A session name belongs to one principal — the service account, the workflow, the Google account, or the person
 — and the broker refuses `invalid_grant` to another principal that names it (`claimSession`, `packages/envoy/internal/broker/oauth/exchange.go`).
 A claim holds the name for `oauthstore.SessionRetention`, 90 days, past the expiry of the token the claim was made for (`BindSession`, `packages/envoy/internal/broker/oauthstore/exchange.go`).
@@ -6281,8 +6440,8 @@ For the settings themselves, read the broker's generated configuration reference
 Nothing Legion runs presents such a token at this release.
 A pod, the daemon, a tmux pane and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes.
 An operator-launched controller presents the token its own file names.
-Dispatch accepts no broker token yet.
-`dispatch://INFRA-264` is where Dispatch accepts one and reads the session, the person and the project from it.
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person the token names, and holds a `named` token's writes to its one project (`packages/envoy/internal/dispatch/api/broker_token.go`).
+A `person` token's list of projects limits no Dispatch write at this release.
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and the daemon hands none out.
 
 #### Network shares
@@ -6409,12 +6568,10 @@ Containers, in order:
 
 2. **Main container `worker`** runs `legion worker-shim --connect tcp://<host of daemon_url>:<worker_stream_port>
    --boot-token-file /var/run/legion/boot/LEGION_BOOT_TOKEN --provider-env-dir /var/run/legion/providers
-   -- omp [--resume=<session file>] --mode rpc --append-system-prompt <role prompt, addressing text,
-   and deployment instructions joined by blank lines>`.
-   The prompt texts are passed inline (the daemon has them;
-   the image may be built from another commit) and, exactly as on tmux, in **one** `--append-system-prompt` argument
+   -- omp [--resume=<session file>] --mode rpc --append-system-prompt <path of the role's prompt file>`.
+   This subsection is the retired TypeScript daemon's; the Go daemon composes the prompt (role prompt, addressing text and deployment instructions joined by blank lines) and its launcher writes it to a file, which **one** `--append-system-prompt` names
    — OMP's flag is last-wins, so several flags would hand the model only the last text.
-   A joined value over 128 KiB (Linux `MAX_ARG_STRLEN`) is refused at spawn.
+   No argument grows with the prompt; a prompt whose start command would pass the 1 MiB a launcher reads in one frame is refused before anything starts ([Kubernetes runtime: the Go daemon on Agent Sandbox](#kubernetes-runtime-the-go-daemon-on-agent-sandbox), the role's launch credentials).
    The shim dials the daemon, sends its boot token in one `hello` line, and only after the daemon's `hello_ack` spawns OMP.
    Every assignment to this pod -- the first, and a live idle worker re-prompted after another role's pod has touched the shared working copy -- first adopts `@` for the assigned role:
    the daemon sends the shim an `adopt-working-copy` frame (`jjUser`, `jjEmail`, `timeoutMs` — never a command or a path), the shim runs the same `jj metaedit --update-author` in its own workspace (`LEGION_WORKSPACE`/`LEGION_ROOT_WORKSPACE`) and answers `adopt-working-copy-result`;
@@ -6731,7 +6888,7 @@ In order, and keeping nothing until the daemon has answered, the command:
    Before step 3 the command finds the real gh its session's `gh` wrapper runs:
    the operator's `LEGION_GH_PATH`, or the first `gh` on its PATH that is not the state directory's own wrapper, and refuses to start with neither (`gh is not on PATH`) or when that first `gh` is a script, a `gh` wrapper of the operator's machine that would answer in place of the review App;
 
-6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one joined `--append-system-prompt` holding the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
+6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one `--append-system-prompt` naming the file `<state_dir>/secrets/<controller claim>-<run>-system-prompt.md`, this run's own, which the command writes first and removes when Oh My Pi exits, and which holds the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
    it sends it once the controller is registered, right before the role claim and the live wake subscription, so the controller's first turn runs its start procedure deterministically, with nothing typed, rather than racing a card or a wake for the session's one first-turn slot
    — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, `PERSON_SIGNIN_TRADE=off` (the controller's own broker credentials trade this machine, never its operator's sign-in), and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED_FILE` (the controller is pane-side, and never gets the daemon's seed) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
 

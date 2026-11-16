@@ -43,9 +43,9 @@ alone. Read the whole thread before you decide what the person wants. The read i
 (`skill://agent-secrets`):
 
 ```sh
-agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- bash -c '
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @<(printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN") \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'
@@ -119,8 +119,12 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   says, so `admission.active` names some of a tree's waits as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
-  first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and
-  file nothing. Otherwise file one issue in the project:
+  first (`skill://dispatch-first`).
+  When the open issue that tracks it is one Legion runs, the request is that tree's work: pass it
+  to its architect as **Something an issue's architect owns** below says, since a reply naming the
+  issue reaches nobody.
+  When the issue that tracks it is nobody's tree, reply with that issue and file nothing.
+  Otherwise file one issue in the project:
 
   ```text
   dispatch issue --project <PROJECT> --title '<the request, as a title>' --spec-file - <<'EOF'

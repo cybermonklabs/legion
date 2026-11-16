@@ -68,7 +68,7 @@ func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.
 	}
 	environ := []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
 
-	pod := launch{prompt: "The test's system prompt."}.agentArgv([]string{omp})
+	pod := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	for _, root := range []struct{ image, test string }{{envoyPlugin, envoy}, {legionPlugin, plugin}} {
 		at := slices.Index(pod, root.image)
 		if at < 0 {

@@ -34,6 +34,7 @@ const DECIDED: NeverDecideAnswer = {
   answer: "none\nthe document asks for no act the agent never decides",
   source: "model",
   fault: null,
+  servedModel: "anthropic/claude-opus-5-5",
   inputTokens: 900,
   outputTokens: 30,
 };

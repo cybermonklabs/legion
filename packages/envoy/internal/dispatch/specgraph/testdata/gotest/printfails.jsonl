@@ -1,0 +1,10 @@
+{"Time":"2026-11-16T16:19:25.840606398Z","Action":"start","Package":"example.com/acme/gotest/printfails"}
+{"Time":"2026-11-16T16:19:25.860237727Z","Action":"run","Package":"example.com/acme/gotest/printfails","Test":"TestPrintsTheKillLineThenFails"}
+{"Time":"2026-11-16T16:19:25.860326991Z","Action":"output","Package":"example.com/acme/gotest/printfails","Test":"TestPrintsTheKillLineThenFails","Output":"=== RUN   TestPrintsTheKillLineThenFails\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:25.860360112Z","Action":"output","Package":"example.com/acme/gotest/printfails","Test":"TestPrintsTheKillLineThenFails","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:25.860374061Z","Action":"output","Package":"example.com/acme/gotest/printfails","Test":"TestPrintsTheKillLineThenFails","Output":"    printfails_test.go:12: fails for real\n","OutputType":"error"}
+{"Time":"2026-11-16T16:19:25.860380856Z","Action":"output","Package":"example.com/acme/gotest/printfails","Test":"TestPrintsTheKillLineThenFails","Output":"--- FAIL: TestPrintsTheKillLineThenFails (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:25.860387137Z","Action":"fail","Package":"example.com/acme/gotest/printfails","Test":"TestPrintsTheKillLineThenFails","Elapsed":0}
+{"Time":"2026-11-16T16:19:25.86039569Z","Action":"output","Package":"example.com/acme/gotest/printfails","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:25.862894511Z","Action":"output","Package":"example.com/acme/gotest/printfails","Output":"FAIL\texample.com/acme/gotest/printfails\t0.022s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:25.86295029Z","Action":"fail","Package":"example.com/acme/gotest/printfails","Elapsed":0.022}

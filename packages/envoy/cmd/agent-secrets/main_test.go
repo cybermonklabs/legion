@@ -56,13 +56,15 @@ func shortTempDir(t *testing.T) string {
 	return testtmp.Dir(t, filepath.Join("agent-secrets", "helper.sock"))
 }
 
-// brokerCounters records how many times fakeBroker served each route, so a test can assert on
-// call counts (e.g. "no second ask", "never entered the polling loop") instead of only on the
-// final observable outcome, plus (guarded by mu) the last session_id POST /v1/requests recorded
-// and the gate a test may hold the pending request's status polls behind.
+// brokerCounters records how many times fakeBroker served each route, and every call it answered
+// on any route (calls), so a test can assert on call counts (e.g. "no second ask", "never entered
+// the polling loop", "asked the broker nothing") instead of only on the final observable outcome,
+// plus (guarded by mu) the last session_id POST /v1/requests recorded and the gate a test may hold
+// the pending request's status polls behind.
 type brokerCounters struct {
 	createRequest int32
 	getRequest    int32
+	calls         int32
 
 	mu            sync.Mutex
 	lastSessionID string
@@ -272,6 +274,11 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 			// terminated) — this is the fixture for the writeVerbatim byte-exact test.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"request_id":"req-nonewline","state":"granted","secrets":[{"name":"NONEWLINE_ME","decision":"automatic"}],"grant_id":"grant-nonewline","record_id":null,"approver":null}`))
+		case "WAITING_ME":
+			// The broker's refusal of a secret `secret create` made and has not yet filled.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"code":"PENDING_VALUE","error":"WAITING_ME exists and awaits its first value; ask again after its owner stores it"}`))
 		default:
 			w.WriteHeader(http.StatusBadRequest)
 		}
@@ -361,7 +368,10 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		}
 		writeJSON(w, settings)
 	})
-	srv := httptest.NewServer(mux)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&counters.calls, 1)
+		mux.ServeHTTP(w, r)
+	}))
 	audience = srv.URL
 	return srv, counters
 }
@@ -768,6 +778,49 @@ func TestExecFormRefusesWhenNoNameIsGiven(t *testing.T) {
 	}
 	if strings.Contains(stdout, "ran-the-child") {
 		t.Fatalf("child ran with no NAME given: stdout=%q", stdout)
+	}
+}
+
+// TestExecFormRefusesAMissingCommandBeforeAskingTheBroker: a command that is not on PATH is
+// refused with the exit status and the line it always had (1, and `agent-secrets: ` before
+// exec.LookPath's own error), and the broker is asked nothing at all: no request is made, so none
+// waits on an approver for a command that could never run. PENDING_ME is a secret a person must
+// approve; before the command was looked up first, its request reached that person and the run
+// exited 75, still waiting.
+func TestExecFormRefusesAMissingCommandBeforeAskingTheBroker(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, counters := fakeBroker(t)
+	defer broker.Close()
+	keyDir := newKeyDir(t)
+	const missing = "agent-secrets-test-command-on-no-path"
+	_, lookErr := exec.LookPath(missing)
+	if lookErr == nil {
+		t.Fatalf("%s is on PATH; this test needs a command that is not", missing)
+	}
+	for _, name := range []string{"GRANT_ME", "PENDING_ME"} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, name, "--wait", "0s", "--", missing, "an-argument")
+		if exit != 1 {
+			t.Fatalf("%s: exit = %d, want 1: stdout=%q stderr=%q", name, exit, stdout, stderr)
+		}
+		if lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n"); len(lines) != 1 || !strings.HasPrefix(lines[0], "agent-secrets: ") || !strings.Contains(lines[0], missing) || stdout != "" {
+			t.Fatalf("%s: stdout=%q stderr=%q; want nothing on stdout and one agent-secrets line naming %s", name, stdout, stderr, missing)
+		}
+	}
+	if calls := atomic.LoadInt32(&counters.calls); calls != 0 {
+		t.Fatalf("the broker answered %d calls for a command that is not on PATH, want none", calls)
+	}
+}
+
+// TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing: the broker's PENDING_VALUE refusal,
+// for a secret `secret create` made and has not yet filled, ends the exec form with exit 1, its line
+// naming the code and saying to ask again, and the command never runs.
+func TestExecFormASecretWaitingForItsValueExitsOneAndRunsNothing(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	broker, _ := fakeBroker(t)
+	defer broker.Close()
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, newKeyDir(t), nil, "WAITING_ME", "--", "sh", "-c", "echo ran-the-child")
+	if exit != 1 || !strings.Contains(stderr, "(PENDING_VALUE)") || !strings.Contains(stderr, "ask again") || strings.Contains(stdout+stderr, "ran-the-child") {
+		t.Fatalf("exit = %d, stdout=%q stderr=%q; want 1, the PENDING_VALUE refusal saying to ask again, and no command run", exit, stdout, stderr)
 	}
 }
 
