@@ -81,7 +81,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The controller is an interactive OMP session the operator starts on their own machine with `legion controller start` (no `--mode rpc`, no shim), unless `legion.yaml` sets `controller: daemon`, where the daemon launches it in an Agent Sandbox pod of its own, whose one container runs the controller's `legion launcher`, or under `runtime: tmux` in a pane of its own `controller` window, and supervises it like a root architect (`docs/kubernetes.md`, "The controller";
   `docs/deployment.md`, "The `runtime.tmux` block").
 
-- **Skills** — guide the architect and sequential phase workers.
+- **Skills** — guide the architect and the phase workers.
   Each phase's handoff, a versioned record on its Dispatch issue (`dispatch handoff-write`, `dispatch handoff-read`), is the recovery source of truth.
 
 ## Tech Stack
@@ -775,7 +775,7 @@ Each item below names a task and where its code is, then notes on it.
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — nine jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess`, `dispatch-two-builds` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
   The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
-  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
+  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, to get a held-back job run at the head when a check of its issue names that job as its `ci_check`, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again, and the browser suite's full lane with them.
 

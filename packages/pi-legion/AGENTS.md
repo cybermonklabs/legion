@@ -641,8 +641,8 @@ sub-architect, an architect whose issue is not its tree), running it on the phas
 every harness shares (`executePhaseOp` in `@legion/pi-shared/legion-phase-ops`) and closing the
 phase (`onPhaseCompleted`) only once it succeeded. A file-backed phase (planning, implementing,
 testing, reviewing) ends with a handoff record on the Dispatch issue, which the worker writes with
-`dispatch handoff-write --issue <issue> --phase <word> --body-file <file>`, the body file under
-`$TMPDIR` rather than the workspace, whose every file jj snapshots; no handoff is a commit or a
+`dispatch handoff-write --issue <issue> --phase <word> --body-file -`, the body on standard input
+or in a file outside the workspace, whose every file jj snapshots; no handoff is a commit or a
 push. The operation finds
 what it reports in the pane first (`@legion/pi-shared/handoff-record`): the issue's phase from
 the daemon's state, the role from the session; for a file-backed phase the role works or, once

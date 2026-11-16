@@ -33,8 +33,11 @@ would put a commit above the head the reviewer approved.
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do
 not call `handoff_complete`. Report it with `envoy_publish` to the architect's
 topic in the `Legion addressing` line of your system prompt, with the command and its output. A
-check with no pass standing at the head goes back as step 1 says. The Dispatch message (step 5) is
-for a finished retro only.
+check with no pass standing at the head goes back as step 1 says. A defect you find in the work at
+any other step goes to the architect with its evidence, and you hold your completion until the
+architect answers: while retro holds the phase, `request_backward_move` is yours to make, and your
+`handoff_complete` moves the issue to `merging`, which takes that move from you. The Dispatch
+message (step 5) is for a finished retro only.
 
 ## Steps
 
