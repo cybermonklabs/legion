@@ -212,24 +212,9 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	if err := held.Close(); err != nil {
 		t.Fatalf("close the test's copy of the socket on %s: %v", addr, err)
 	}
-	if listensAs(t, inode) {
+	if cmdtest.SocketListens(t, inode) {
 		t.Fatalf("the socket on %s (inode %s) still listens once the test closed its copy: a process kept it", addr, inode)
 	}
-}
-
-// listensAs reports whether /proc/net/tcp lists a listening socket of inode, on any address.
-func listensAs(t *testing.T, inode string) bool {
-	t.Helper()
-	table, err := os.ReadFile("/proc/net/tcp")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for line := range strings.SplitSeq(string(table), "\n") {
-		if fields := strings.Fields(line); len(fields) > 9 && fields[3] == "0A" && fields[9] == inode {
-			return true
-		}
-	}
-	return false
 }
 
 // listeningInode returns the inode of the socket listening on 127.0.0.1:port, from /proc/net/tcp.

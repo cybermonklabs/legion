@@ -391,10 +391,7 @@ type Service struct {
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
 	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers map[uint64]*time.Timer
-	// self is the service held weakly, which is how a settlement timer's callback reaches it
-	// (scheduleSettleAfterLocked).
-	self       weak.Pointer[Service]
+	timers     map[uint64]*time.Timer
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -849,7 +846,6 @@ func New(deps Deps) *Service {
 		connectionCap:     connectionCap,
 		maxPendingItems:   maxUpdateItems,
 	}
-	service.self = weak.Make(service)
 	service.catchUps = newRoomCatchUps(service)
 	service.roomSyncSender = newRoomSyncSender(service)
 	service.awarenessRelay = newAwarenessRelay(service)
@@ -1389,7 +1385,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// leak check reports (service_leak_test.go). While the timer is armed both resolve: the
 	// service's owner holds the service, and the service keeps an armed room's state
 	// (unusedLocked).
-	owner, record := s.self, weak.Make(state)
+	owner, record := weak.Make(s), weak.Make(state)
 	timer := time.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
