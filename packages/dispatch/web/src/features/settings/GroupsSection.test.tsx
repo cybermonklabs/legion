@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pagedGroups } from "../../__tests__/paged-groups";
 import { ApiError, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup } from "../../api/types";
@@ -107,6 +108,31 @@ test("lists every group with its owner and its members, and says so when there i
     expect(await screen.findByText("No groups yet.")).toBeInTheDocument();
   } finally {
     empty.restore();
+  }
+});
+
+// The group list answers a page at a time, and the section lists every group of every page.
+test("lists the groups of every page the group list answers", async () => {
+  const pages = pagedGroups([[crew], [ops]]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <GroupsSection />
+    </QueryClientProvider>
+  );
+  try {
+    expect(await screen.findByRole("cell", { name: "ops" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "crew" })).toBeInTheDocument();
+    expect(pages.mock.calls).toEqual([[undefined], ["crew"]]);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    pages.mockRestore();
   }
 });
 

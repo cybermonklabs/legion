@@ -175,6 +175,16 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// A call that acts for nobody leaves the owner to the insert, which takes the default assignee
+	// (projects_owner_from_default), so that person is held to the rule every owner is: a full
+	// member, as a transfer holds one (access.OwnerAllowed), else 400 OWNER_NOT_ALLOWED. The default
+	// assignee keeps allowedLogin's rule.
+	if owner == nil {
+		if _, err := access.OwnerAllowed(r.Context(), s.deps.Store.Pool, projectDefault); err != nil {
+			s.writeAccessError(w, err)
+			return
+		}
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

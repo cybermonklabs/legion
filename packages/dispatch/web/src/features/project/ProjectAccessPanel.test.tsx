@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pagedGroups } from "../../__tests__/paged-groups";
 import { ApiError, api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
@@ -113,6 +114,37 @@ test("shows the owner, the visibility, and the people and groups the access list
     expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "ops"]);
   } finally {
     panel.restore();
+  }
+});
+
+// The group list answers a page at a time, and the picker offers the groups of every page.
+test("the group picker offers the groups of every page the group list answers", async () => {
+  const pages = pagedGroups([[crew], [ops]]);
+  const read = spyOn(api, "getProjectAccess").mockResolvedValue(access({ groups: [] }));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ProjectAccessPanel project="CORE" />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const picker = await screen.findByLabelText<HTMLSelectElement>("Add a group");
+    await waitFor(() =>
+      expect(Array.from(picker.options).map((option) => option.value)).toEqual(["", "crew", "ops"])
+    );
+    expect(pages.mock.calls).toEqual([[undefined], ["crew"]]);
+  } finally {
+    view.unmount();
+    queryClient.clear();
+    pages.mockRestore();
+    read.mockRestore();
   }
 });
 

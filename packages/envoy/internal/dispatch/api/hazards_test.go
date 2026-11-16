@@ -5,7 +5,9 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"net/http"
@@ -16,8 +18,11 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // TestATokenIsNeverReadAsABrowser: carol's dsp_ token holds the person scope and lists nothing,
@@ -74,7 +79,7 @@ var resolveCallers = map[string][]string{
 	"routes.repositoryHidden": {"BrowserActor"},
 }
 
-// TestEveryResolveTakesTheResolvedCredential reads every non-test Go file under internal/dispatch
+// TestEveryResolveTakesTheResolvedCredential reads every non-test Go file of the module
 // and holds each call of access.Resolve to resolveCallers: the function that makes it, and the
 // calls its actor argument comes from (actorSources). A call from any other function, or one whose
 // actor comes from anywhere else (a recorded actor, a field of the input, a literal), fails naming
@@ -82,7 +87,7 @@ var resolveCallers = map[string][]string{
 // cannot pass.
 func TestEveryResolveTakesTheResolvedCredential(t *testing.T) {
 	var functions []declaredFunction
-	for _, source := range moduleSources(t, "..") {
+	for _, source := range moduleSources(t) {
 		for _, declaration := range source.file.Decls {
 			if function, ok := declaration.(*ast.FuncDecl); ok && function.Body != nil {
 				functions = append(functions, declaredFunction{source: source, decl: function})
@@ -296,5 +301,243 @@ func TestARelatedCheckKeepsTheTokensList(t *testing.T) {
 	item := relatedAsk(t, issueSuggestions(t, "the PRIV token's issue", created), ask)
 	if item.Ask == nil || item.Ask.State != "resolved" || item.Ask.Answer == nil || item.Ask.Answer.Text == nil || *item.Ask.Answer.Text != "The steel hangar." {
 		t.Fatalf("PRIV's ask %s on the check of the PRIV token's issue carries %+v, want its retracted answer, which the token, listing PRIV, may read", ask, item.Ask)
+	}
+}
+
+// TestACreateCannotMakeARestrictedMemberTheOwner: a create by a credential that acts for nobody,
+// the deployment's shared token, takes the default_assignee it names as the project's owner, and
+// an owner is a full member, as R1's owner transfer holds one. Naming bob, a restricted member, is
+// 400 OWNER_NOT_ALLOWED and writes no project; naming carol, a full member, makes her the owner.
+func TestACreateCannotMakeARestrictedMemberTheOwner(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedPeople(t, database, accessCarol)
+	markRestricted(t, database, "bob")
+	create := func(key, assignee string) *httptest.ResponseRecorder {
+		return agentRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+			"key": key, "name": key, "default_assignee": assignee,
+			"actor": map[string]string{"kind": "session", "id": "ses_creator"},
+		}, "agent-token")
+	}
+	ownerOf := func(key string) []string {
+		t.Helper()
+		rows, err := database.Pool.Query(context.Background(), `select coalesce(owner, '') from projects where key = $1`, key)
+		if err != nil {
+			t.Fatalf("read %s's owner: %v", key, err)
+		}
+		defer rows.Close()
+		var owners []string
+		for rows.Next() {
+			var owner string
+			if err := rows.Scan(&owner); err != nil {
+				t.Fatalf("read %s's owner: %v", key, err)
+			}
+			owners = append(owners, owner)
+		}
+		return owners
+	}
+
+	refused := create("NEW", "bob")
+	if owners := ownerOf("NEW"); refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"OWNER_NOT_ALLOWED"`) || len(owners) != 0 {
+		t.Fatalf("the shared token creates NEW for bob, a restricted member: %d %s, and NEW's owner rows are %v; want 400 OWNER_NOT_ALLOWED and no project",
+			refused.Code, refused.Body.String(), owners)
+	}
+	if created := create("NEW", accessCarol); created.Code != http.StatusCreated || !slices.Equal(ownerOf("NEW"), []string{accessCarol}) {
+		t.Fatalf("the shared token creates NEW for carol: %d %s, owner %v; want 201 and carol the owner", created.Code, created.Body.String(), ownerOf("NEW"))
+	}
+}
+
+// seedGroups makes count groups of owner, named <prefix>000 on, straight in the table: the cap
+// counts rows, whoever wrote them.
+func seedGroups(t *testing.T, database *store.Store, owner, prefix string, count int) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into access_groups (name, owner)
+		select $2 || lpad(i::text, 3, '0'), $1 from generate_series(0, $3::int - 1) as i
+	`, owner, prefix, count); err != nil {
+		t.Fatalf("seed %d groups of %s: %v", count, owner, err)
+	}
+}
+
+// groupsOf counts the groups owner holds.
+func groupsOf(t *testing.T, database *store.Store, owner string) int64 {
+	t.Helper()
+	return countRows(t, database, `select count(*) from access_groups where owner = $1`, owner)
+}
+
+// putGroup writes group name as login, with body.
+func putGroup(t *testing.T, handler http.Handler, login, name string, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	return dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/"+name, body, login)
+}
+
+// TestAnOwnerHoldsAtMostMaxGroups: an owner holds at most model.MaxGroupsPerOwner groups. Each row
+// names itself on failure.
+//   - The cap: carol holds 100 groups, so her 101st create is 400 CAP_EXCEEDED, and a write to a
+//     group she holds already is still 200.
+//   - The transfer: dave holds 100 groups, so carol's PUT of her group naming dave its owner is 400
+//     CAP_EXCEEDED, and the group stays carol's.
+//   - The race: frank holds 99 groups and makes two more of different names at once. Each create is
+//     held at its commit by a deferred trigger until both are under way, so two creates that
+//     counted without the owner's lock would both find 99; with it, the second counts after the
+//     first commits. Exactly one answers 200 and the other 400 CAP_EXCEEDED.
+func TestAnOwnerHoldsAtMostMaxGroups(t *testing.T) {
+	const frank = "frank@example.com"
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedPeople(t, database, accessCarol, accessDave, frank)
+	empty := map[string]any{"members": []string{}}
+
+	seedGroups(t, database, accessCarol, "carol-", model.MaxGroupsPerOwner)
+	if over := putGroup(t, handler, accessCarol, "carol-more", empty); over.Code != http.StatusBadRequest || !strings.Contains(over.Body.String(), `"code":"CAP_EXCEEDED"`) {
+		t.Fatalf("the cap row: carol's 101st group = %d %s, want 400 CAP_EXCEEDED", over.Code, over.Body.String())
+	}
+	if held := groupsOf(t, database, accessCarol); held != model.MaxGroupsPerOwner {
+		t.Fatalf("the cap row: carol holds %d groups, want %d", held, model.MaxGroupsPerOwner)
+	}
+	if again := putGroup(t, handler, accessCarol, "carol-000", map[string]any{"members": []string{accessDave}}); again.Code != http.StatusOK {
+		t.Fatalf("the cap row: carol writes her first group again = %d %s, want 200", again.Code, again.Body.String())
+	}
+
+	seedGroups(t, database, accessDave, "dave-", model.MaxGroupsPerOwner)
+	if given := putGroup(t, handler, accessCarol, "carol-000", map[string]any{"members": []string{}, "owner": accessDave}); given.Code != http.StatusBadRequest ||
+		!strings.Contains(given.Body.String(), `"code":"CAP_EXCEEDED"`) || groupsOf(t, database, accessDave) != model.MaxGroupsPerOwner {
+		t.Fatalf("the transfer row: carol gives carol-000 to dave, who holds 100 = %d %s, dave now holds %d; want 400 CAP_EXCEEDED and dave's groups unchanged",
+			given.Code, given.Body.String(), groupsOf(t, database, accessDave))
+	}
+
+	seedGroups(t, database, frank, "frank-", model.MaxGroupsPerOwner-1)
+	statuses := raceTwoGroupCreates(t, handler, database, frank, empty)
+	slices.Sort(statuses)
+	if want := []int{http.StatusOK, http.StatusBadRequest}; !slices.Equal(statuses, want) || groupsOf(t, database, frank) != model.MaxGroupsPerOwner {
+		t.Fatalf("the race row: frank's two creates at 99 answered %v and frank holds %d; want one 200, one 400 CAP_EXCEEDED, and %d groups",
+			statuses, groupsOf(t, database, frank), model.MaxGroupsPerOwner)
+	}
+}
+
+// raceTwoGroupCreates runs two creates of owner's groups at once, each held at its commit by a
+// deferred constraint trigger on access_groups that waits for an advisory lock this test holds,
+// and releases them once two writes wait on a lock: either both at their commit, which only
+// creates that both counted before either committed reach, or one at its commit and the other on
+// the owner's lock. It answers both statuses.
+func raceTwoGroupCreates(t *testing.T, handler http.Handler, database *store.Store, owner string, body map[string]any) []int {
+	t.Helper()
+	ctx := context.Background()
+	const hold = 34034
+	if _, err := database.Pool.Exec(ctx, `
+		create function hold_group_commit() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(34034);
+			return null;
+		end $$;
+		create constraint trigger hold_group_commit after insert on access_groups
+			deferrable initially deferred for each row execute function hold_group_commit();
+	`); err != nil {
+		t.Fatalf("install the commit hold: %v", err)
+	}
+	held, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire the holding connection: %v", err)
+	}
+	defer held.Release()
+	if _, err := held.Exec(ctx, `select pg_advisory_lock($1)`, hold); err != nil {
+		t.Fatalf("take the commit hold: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			if _, err := held.Exec(ctx, `select pg_advisory_unlock($1)`, hold); err != nil {
+				t.Errorf("release the commit hold: %v", err)
+			}
+		}
+	}
+	defer release()
+
+	answers := make(chan int, 2)
+	for _, name := range []string{"race-a", "race-b"} {
+		go func() {
+			payload, _ := json.Marshal(body)
+			request := httptest.NewRequest(http.MethodPut, "/api/v1/access-groups/"+name, bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-Dispatch-User", owner)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			answers <- response.Code
+		}()
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for countRows(t, database, `
+		select count(*) from pg_stat_activity
+		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+	`) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the two creates never both waited on a lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	release()
+	statuses := make([]int, 0, 2)
+	for range 2 {
+		select {
+		case status := <-answers:
+			statuses = append(statuses, status)
+		case <-time.After(20 * time.Second):
+			t.Fatal("a racing create never answered")
+		}
+	}
+	return statuses
+}
+
+// TestTheGroupListPages: GET /api/v1/access-groups answers a page of at most limit groups after the
+// name after, in name order, with next naming where the next page starts, absent on the last page.
+// Five groups at limit=2 are three pages that answer the five names in order. A limit that is not
+// an integer from 1 to 100, and an after that is no group name, are 400 INVALID_QUERY naming the
+// parameter.
+func TestTheGroupListPages(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedPeople(t, database, accessCarol)
+	seedGroups(t, database, accessCarol, "g", 5)
+	read := func(query string) model.AccessGroupPage {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/access-groups"+query, nil, accessCarol)
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/access-groups%s = %d %s, want 200", query, response.Code, response.Body.String())
+		}
+		return decodeBody[model.AccessGroupPage](t, response)
+	}
+	var names []string
+	query := "?limit=2"
+	for page := 1; ; page++ {
+		answer := read(query)
+		if page < 3 && len(answer.Groups) != 2 || page == 3 && len(answer.Groups) != 1 || page > 3 {
+			t.Fatalf("page %d of five groups at limit=2 (%s) holds %d groups, next %q; want 2, 2 and then 1", page, query, len(answer.Groups), answer.Next)
+		}
+		for _, group := range answer.Groups {
+			names = append(names, group.Name)
+		}
+		if answer.Next == "" {
+			break
+		}
+		query = "?limit=2&after=" + answer.Next
+	}
+	if want := []string{"g000", "g001", "g002", "g003", "g004"}; !slices.Equal(names, want) {
+		t.Fatalf("the pages answered %v, want %v", names, want)
+	}
+	if whole := read(""); len(whole.Groups) != 5 || whole.Next != "" {
+		t.Fatalf("the default page holds %d groups, next %q; want all five and no next", len(whole.Groups), whole.Next)
+	}
+	if raw := dispatchRequest(t, handler, http.MethodGet, "/api/v1/access-groups?limit=5", nil, accessCarol).Body.String(); strings.Contains(raw, `"next"`) {
+		t.Fatalf("the last page = %s, want no next key", raw)
+	}
+	for _, refused := range []struct{ query, parameter string }{
+		{"?limit=0", "limit"}, {"?limit=101", "limit"}, {"?limit=x", "limit"}, {"?after=Bad%20Name", "after"},
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/access-groups"+refused.query, nil, accessCarol)
+		body := decodeBody[struct {
+			Code  string `json:"code"`
+			Error string `json:"error"`
+		}](t, response)
+		if response.Code != http.StatusBadRequest || body.Code != "INVALID_QUERY" || !strings.HasPrefix(body.Error, refused.parameter+" ") {
+			t.Errorf("GET /api/v1/access-groups%s = %d %+v, want 400 INVALID_QUERY naming %s", refused.query, response.Code, body, refused.parameter)
+		}
 	}
 }

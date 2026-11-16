@@ -366,6 +366,17 @@ type AccessGroup struct {
 	NotSignedIn []string `json:"not_signed_in"`
 }
 
+// MaxGroupsPerOwner is how many groups one owner holds at most: a write that would make, or give
+// them, one more is refused (access.PutGroup).
+const MaxGroupsPerOwner = 100
+
+// AccessGroupPage is one page of GET /api/v1/access-groups: the groups after the page before it,
+// in name order, and Next, the name the next page starts after, absent on the last page.
+type AccessGroupPage struct {
+	Groups []AccessGroup `json:"groups"`
+	Next   string        `json:"next,omitempty"`
+}
+
 // AccessAnswer is the membership answer the secrets broker reads (GET
 // /api/v1/access/projects/{key}?person=): one project's owner and visibility, the person's member
 // kind (MemberAnswerFull, MemberAnswerRestricted or MemberAnswerNone), whether the read rule lets

@@ -33,8 +33,8 @@ func TestTheReadsNameWhoHasNotSignedInYet(t *testing.T) {
 	if err != nil || !slices.Equal(group.NotSignedIn, []string{"newcomer@example.com"}) {
 		t.Fatalf("crew's not_signed_in = %v, %v, want newcomer@example.com alone", group.NotSignedIn, err)
 	}
-	groups, err := ListGroups(ctx, database.Pool)
-	if err != nil || len(groups) != 1 || !slices.Equal(groups[0].NotSignedIn, []string{"newcomer@example.com"}) {
-		t.Fatalf("ListGroups = %+v, %v, want crew naming newcomer@example.com as not signed in", groups, err)
+	page, err := ListGroups(ctx, database.Pool, "", model.MaxGroupsPerOwner)
+	if err != nil || len(page.Groups) != 1 || !slices.Equal(page.Groups[0].NotSignedIn, []string{"newcomer@example.com"}) {
+		t.Fatalf("ListGroups = %+v, %v, want crew naming newcomer@example.com as not signed in", page, err)
 	}
 }

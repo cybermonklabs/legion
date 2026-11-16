@@ -25,7 +25,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope. */
+    /** @description Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope. It pages, at most limit groups (1-100, default 100) after the name after, and next names where the next page starts. */
     get: operations["getApiV1AccessGroups"];
     put?: never;
     post?: never;
@@ -43,7 +43,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person scope. */
+    /** @description Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person scope. An owner holds at most 100 groups; one more is 400 CAP_EXCEEDED. */
     put: operations["putApiV1AccessGroupsByName"];
     post?: never;
     /** @description Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person scope. */
@@ -2351,7 +2351,7 @@ export interface paths {
     /** @description List the projects the caller sees; a private project carries visibility private, and a public one no visibility. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
     get: operations["getApiV1Projects"];
     put?: never;
-    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. A restricted member, or a credential acting for one, is 403 RESTRICTED_MEMBER. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. The project's owner is the person creating it, else the default_assignee the call names. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
+    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. A restricted member, or a credential acting for one, is 403 RESTRICTED_MEMBER. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. The project's owner is the person creating it, else the default_assignee the call names. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. The owner a create writes is a full member: a default_assignee who is not one is 400 OWNER_NOT_ALLOWED when no person creates the project. */
     post: operations["postApiV1Projects"];
     delete?: never;
     options?: never;
@@ -3136,6 +3136,10 @@ export interface components {
     AccessGroupInput: {
       members: string[] | null;
       owner?: string;
+    };
+    AccessGroupPage: {
+      groups: components["schemas"]["AccessGroup"][] | null;
+      next?: string;
     };
     Actor: {
       act?: components["schemas"]["ActorAct"];
@@ -6448,6 +6452,8 @@ export interface operations {
   getApiV1AccessGroups: {
     parameters: {
       query?: {
+        limit?: number;
+        after?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6463,7 +6469,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["AccessGroup"][];
+          "application/json": components["schemas"]["AccessGroupPage"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14261,6 +14267,7 @@ export type AcceptedMessageDelivery = components["schemas"]["AcceptedMessageDeli
 export type AccessAnswer = components["schemas"]["AccessAnswer"];
 export type AccessGroup = components["schemas"]["AccessGroup"];
 export type AccessGroupInput = components["schemas"]["AccessGroupInput"];
+export type AccessGroupPage = components["schemas"]["AccessGroupPage"];
 export type Actor = components["schemas"]["Actor"];
 export type ActorAct = components["schemas"]["ActorAct"];
 export type ActorInput = components["schemas"]["ActorInput"];

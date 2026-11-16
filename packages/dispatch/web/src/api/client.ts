@@ -34,6 +34,7 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
+  AccessGroup,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
@@ -1058,9 +1059,24 @@ export class DispatchApiClient {
     );
   }
 
-  /** Every group an access list can name, by name, each with its owner and its members' emails. */
-  listAccessGroups() {
-    return this.read("/api/v1/access-groups", {});
+  /** One page of the groups an access list can name, by name: at most 100 after the name `after`,
+   *  with `next` naming where the next page starts, absent on the last page. */
+  listAccessGroupsPage(after?: string) {
+    return this.read("/api/v1/access-groups", {}, after === undefined ? undefined : { after });
+  }
+
+  /** Every group an access list can name, by name, each with its owner and its members' emails:
+   *  every page of `listAccessGroupsPage`, read in turn. Settings → Groups and the Access tab's
+   *  group picker both read this whole list. */
+  async listAccessGroups(): Promise<AccessGroup[]> {
+    const groups: AccessGroup[] = [];
+    let after: string | undefined;
+    do {
+      const page = await this.listAccessGroupsPage(after);
+      groups.push(...(page.groups ?? []));
+      after = page.next;
+    } while (after !== undefined);
+    return groups;
   }
 
   /** Makes group `name` with its writer as owner, or writes its members again for its owner
