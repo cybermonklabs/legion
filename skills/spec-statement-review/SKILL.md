@@ -23,7 +23,7 @@ You judge what no program decides, and nothing else, so that one rule never gets
 2. Read the change request with `dispatch doc-read --issue <KEY> --artifact <document>`.
    A statement is a `:::requirement{#<id>}` block, and that id is its node.
    A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names the statements that it serves.
-   The terms of the request are the `- **<term>**: <definition>` lines under its `## Terms` heading.
+   The terms of the request are the lines under its `## Terms` heading that start with `-`, `*` or `+`, then `**<term>**: <definition>`.
    Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
    When those documents include `verification.md`, the issue keeps the checks of the request there.
    Then run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.
