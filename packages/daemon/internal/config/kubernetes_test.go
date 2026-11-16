@@ -42,6 +42,7 @@ runtime:
     namespace: legion
     image: ` + workerImage + `
     storage_class: gp2
+    leak_check_repository: example-org/example-repo
     session_store: postgres
     session_dsn_secret: SESSION_DSN
 `
@@ -134,6 +135,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		SessionStore:     ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Setup:            []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
 		SkillsRepository: ghrepo.MustParse("acme/agent-skills"),
+		// The required member kubernetesFile names.
+		LeakCheckRepository: ghrepo.MustParse("example-org/example-repo"),
 		Scheduling: Scheduling{
 			NodeSelector: map[string]string{"karpenter.k8s.aws/instance-family": "m7i", "zone": "4"},
 			Tolerations: []Toleration{
@@ -325,6 +328,7 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 		{"session_store", block.SessionStore, ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"}},
 		{"setup", block.Setup, []string(nil)},
 		{"skills_repository", block.SkillsRepository, ghrepo.Repository{}},
+		{"leak_check_repository", block.LeakCheckRepository, ghrepo.MustParse("example-org/example-repo")},
 		{"test_postgres", block.TestPostgres, false},
 		{"repository_cache", block.RepositoryCache, RepositoryCacheConfig{
 			Volume: "20Gi", RefreshMinutes: 10, RetainHours: 168,
@@ -619,6 +623,23 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			name: "storage_class absent",
 			body: kubernetesWith("    storage_class: gp2\n", ""),
 			want: "runtime.kubernetes.storage_class is required: the cluster has no default storage class for the issue volumes",
+		},
+		{
+			// Legion names no leak check repository of its own, so a block naming none is refused
+			// at load, saying what the key is.
+			name: "leak_check_repository absent",
+			body: kubernetesWith("    leak_check_repository: example-org/example-repo\n", ""),
+			want: "runtime.kubernetes.leak_check_repository is required: the repository the daemon reads the shared public leak check from, at the tag the worker image pins",
+		},
+		{
+			name: "leak_check_repository that is no owner/name",
+			body: kubernetesWith("    leak_check_repository: example-org/example-repo\n", "    leak_check_repository: example-repo\n"),
+			want: `runtime.kubernetes.leak_check_repository must be "owner/name" (got "example-repo"): the repository the daemon reads the shared public leak check from, at the tag the worker image pins`,
+		},
+		{
+			name: "leak_check_repository blank",
+			body: kubernetesWith("    leak_check_repository: example-org/example-repo\n", "    leak_check_repository: \"\"\n"),
+			want: "runtime.kubernetes.leak_check_repository must not be empty: the repository the daemon reads the shared public leak check from, at the tag the worker image pins",
 		},
 		{
 			name: "issue_volume not a quantity",
@@ -1636,6 +1657,7 @@ runtime:
     namespace: legion
     image: `+workerImage+`
     storage_class: gp2
+    leak_check_repository: example-org/example-repo
     session_store: postgres
     session_dsn_secret: SESSION_DSN
     kubeconfig: /home/ubuntu/.kube/legion-daemon-production

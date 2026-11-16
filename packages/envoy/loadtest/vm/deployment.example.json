@@ -1,8 +1,8 @@
 {
-  "project": "theorem-agent-infra",
+  "project": "example-project",
   "zone": "us-west1-a",
   "ssh_command": "ssh",
-  "login_service_account": "lt-oslogin@theorem-agent-infra.iam.gserviceaccount.com",
+  "login_service_account": "lt-oslogin@example-project.iam.gserviceaccount.com",
   "pprof_url": "http://10.138.0.21:6060",
   "pprof_tunnel_command": "ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes",
   "embed_tokens_per_minute": 1000000,
@@ -30,7 +30,7 @@
   },
   "cloudsql": {
     "instance": "lt-db",
-    "connection_name": "theorem-agent-infra:us-west1:lt-db",
+    "connection_name": "example-project:us-west1:lt-db",
     "host": "10.139.0.3",
     "port": 5432,
     "user": "dispatch",

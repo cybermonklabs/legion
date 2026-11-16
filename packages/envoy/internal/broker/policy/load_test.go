@@ -806,8 +806,8 @@ func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
 // the secret served.
 func TestRequestersLoad(t *testing.T) {
 	const (
-		sami   = "sami@theorem.dev"
-		jason  = "jason@theorem.dev"
+		sami   = "sami@example.com"
+		jason  = "jason@example.com"
 		daemon = "legion-daemon"
 	)
 	type refusal struct {
@@ -833,7 +833,7 @@ func TestRequestersLoad(t *testing.T) {
 		s.Tags[policy.TagRequesters] = "  "
 	})
 	refuse("CASED_EMAIL", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
-		s.Tags[policy.TagRequesters] = "Sami@Theorem.dev"
+		s.Tags[policy.TagRequesters] = "Sami@Example.com"
 	})
 	refuse("UNKNOWN_SERVICE", policy.ReasonRequestersMalformed, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagRequesters] = "dispatch"
@@ -903,8 +903,8 @@ func TestRequestersLoad(t *testing.T) {
 // account that is not one person's own dev-<name> one. The scopes tag is read on that kind alone.
 func TestAdminCap(t *testing.T) {
 	const (
-		sami         = "sami@theorem.dev"
-		jason        = "jason@theorem.dev"
+		sami         = "sami@example.com"
+		jason        = "jason@example.com"
 		daemon       = "legion-daemon"
 		fleetAccount = "releases@example-project.iam.gserviceaccount.com"
 		devAccount   = "dev-sami@theorem-agent-identities.iam.gserviceaccount.com"
@@ -1057,7 +1057,7 @@ func TestTagRulesRefusesAShapeThatIsNeitherWord(t *testing.T) {
 // arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets.
 func TestNewSetDigest(t *testing.T) {
 	const (
-		sami   = "sami@theorem.dev"
+		sami   = "sami@example.com"
 		daemon = "legion-daemon"
 	)
 	version := func(requesters string) string {

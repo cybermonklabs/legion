@@ -15,7 +15,7 @@ import (
 // credential the gateway bills and the person who owns the spend. Every test of the composition
 // starts from this value, so what the tests read is the shape an operator writes rather than one
 // invented here.
-const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
 
 // Every launch carries the operator's own spend attributes with its own issue and role written
 // after them (runtime.SpendResourceAttributes, roleOperatorEnv), whatever the launch runs: an Oh

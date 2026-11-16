@@ -33,7 +33,7 @@
 # every image, whatever a deployment's worker_backends names; jj; git at /usr/bin/git (>= 2.42, from the debian:trixie-slim runtime base — jj's
 # git backend requires it); gh; trixie's socat, which carries a connection over `kubectl exec` to a
 # loopback port inside the pod, and trixie's unzip, which model-gateway/apply_test.sh of
-# theorem-labs/agent-infra calls (the runtime-base stage says why for both); what the capability check
+# the deployment repository calls (the runtime-base stage says why for both); what the capability check
 # (packages/daemon/internal/capabilities, which `legion probe-image` runs) requires of the image: the Go
 # toolchain at go.work's version (go and gofmt, /opt/go) with trixie's gcc and libc6-dev, the C
 # compiler and headers Go's cgo and race detector need (cgo stays off by default), gopls,
@@ -86,12 +86,13 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
 ARG GH_TOOL=gh@2.98.0
 # The pin of the shared public leak check: the tag of the private repository whose leak-check
-# directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
-# daemon, which reads the check at it and pushes it to the launcher, and the launcher installs it
-# under the issue's scratch before any role's agent starts (packages/daemon/internal/leakguard's
-# Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
-# `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/theorem-labs/agent-infra/git/refs/tags` at 2026-11-09T23:45:49Z,
+# directory holds it, which the deployment names as runtime.kubernetes.leak_check_repository. The
+# image carries the pin alone. The pod's launcher names this tag to the daemon, which reads the
+# check at it and pushes it to the launcher, and the launcher installs it under the issue's scratch
+# before any role's agent starts (packages/daemon/internal/leakguard's Source and InstallServed).
+# R5 of dispatch://INFRA-1527 requires the newest `leak-check-v<n>` tag at the time the pin is
+# written, never a number a spec fixed: this is the newest, read with
+# `gh api repos/<owner>/<name>/git/refs/tags` of that repository at 2026-11-09T23:45:49Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it, so the version has this one home and no
 # copy of it lives in Go.
@@ -134,7 +135,7 @@ ARG AWS_CLI_SHA256=10ab32a95b27138d7cc1c1ac4ebb4d3acab60cd0a0df2fc37c4e2c440ed40
 # bump repeats both checks.
 ARG KUBECTL_VERSION=1.35.9
 ARG KUBECTL_SHA256=3cfeaf80be482b435b0aa214aff6e0b2c312ee23c0ff20810c75517b6004c6eb
-# mikefarah's yq, the YAML processor: model-gateway/apply_test.sh of theorem-labs/agent-infra, and
+# mikefarah's yq, the YAML processor: model-gateway/apply_test.sh of the deployment repository, and
 # the `apply` program it tests, call the bare name `yq` on PATH. A package runner does reach yq —
 # `go run github.com/mikefarah/yq/v4@v4.54.1` works with this image's Go — but it could supply that
 # bare name only through a file called `yq` on the role's own PATH, which
@@ -629,7 +630,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # virtual `dnsutils`, which trixie has no candidate for: apt resolves it to this single provider
 # today, and a second provider the day one appears would fail the build on a name that was never
 # the package.
-# unzip: model-gateway/apply_test.sh of theorem-labs/agent-infra calls `unzip`, and no package
+# unzip: model-gateway/apply_test.sh of the deployment repository calls `unzip`, and no package
 # runner in the image reaches it. A role cannot install it in the pod either: its /usr/local/bin and
 # /opt are read-only, and apt-get cannot take dpkg's lock.
 # gcc and libc6-dev: the C compiler and the libc headers and startup files Go's cgo builds with. Go

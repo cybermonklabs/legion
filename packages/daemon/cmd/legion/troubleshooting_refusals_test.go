@@ -37,6 +37,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{kubernetes: true, drop: []string{"image:"},
 			pod: "    image: ghcr.io/cybermonklabs/legion-worker:latest\n"}.refuse(t)
 	},
+	"runtime.kubernetes.leak_check_repository is required: the repository the daemon reads the shared public leak check from, at the tag the worker image pins": func(t *testing.T) string {
+		return refusalFile{kubernetes: true, drop: []string{"leak_check_repository:"}}.refuse(t)
+	},
 	"bind 127.0.0.1 is not an address a pod can reach, …": func(t *testing.T) string {
 		return refusalFile{kubernetes: true, drop: []string{"bind:"}, top: "bind: 127.0.0.1\n"}.refuse(t)
 	},

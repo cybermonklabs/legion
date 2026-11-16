@@ -1464,7 +1464,7 @@ say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/acc
 say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_READ_OAUTH" "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
 
 # The google-workspace skill's Bearer call to admin.googleapis.com.
-say "admin=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_ADMIN_OAUTH" "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
+say "admin=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_ADMIN_OAUTH" "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for

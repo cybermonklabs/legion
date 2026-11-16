@@ -69,6 +69,7 @@ runtime:
     namespace: legion
     image: %[5]s
     storage_class: standard
+    leak_check_repository: example-org/example-repo
     kubeconfig: %[6]s
     context: %[7]s
     session_store: postgres
@@ -105,7 +106,7 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	// The proof maps no repository and configures no rename, so the mapping's rule
 	// (repositories.serving) answers every provisioning token's repository as it is recorded.
 	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, "", &memoryGuardKills{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, "", k.LeakCheckRepository, &memoryGuardKills{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the

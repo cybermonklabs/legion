@@ -23,7 +23,7 @@ import (
 // (runtime.kubernetes.skills_repository).
 func testSkillsRepository(t *testing.T) ghrepo.Repository {
 	t.Helper()
-	repository, err := ghrepo.Parse("skills_repository", "theorem-labs/verification-skills")
+	repository, err := ghrepo.Parse("skills_repository", "example-org/verification-skills")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestASkillsRepositoryAddsTheSkillsInitContainer(t *testing.T) {
 		t.Fatalf("the issue pod's init containers are %q, want %q", names, want)
 	}
 	skills := containerNamed(t, pod, skillsContainer)
-	wantCommand := []string{r.tools.Legion, "workspace-init", "skills", "--repo", "theorem-labs/verification-skills", "--dir", SkillsDir}
+	wantCommand := []string{r.tools.Legion, "workspace-init", "skills", "--repo", "example-org/verification-skills", "--dir", SkillsDir}
 	if !slices.Equal(skills.Command, wantCommand) {
 		t.Errorf("%s runs %q, want %q", skillsContainer, skills.Command, wantCommand)
 	}
@@ -196,7 +196,7 @@ func TestARolesStartWrapperInstallsTheSkillsFromThePodsVolume(t *testing.T) {
 		}
 	}
 	// Nothing in it reaches GitHub: the whole point of the arrangement.
-	for _, never := range []string{"github.com", "marketplace add theorem-labs/", " git ", "git clone"} {
+	for _, never := range []string{"github.com", "marketplace add example-org/", " git ", "git clone"} {
 		if strings.Contains(script, never) {
 			t.Errorf("the start wrapper holds %q, which would fetch in the role's launch context:\n%s", never, script)
 		}

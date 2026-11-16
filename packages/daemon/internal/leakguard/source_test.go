@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -25,8 +26,12 @@ import (
 // requires of every read.
 const sourceToken = "ghs_leak_check_read"
 
+// checkRepository is the check's repository the tests' Source reads (Source.Repository), as a
+// deployment's runtime.kubernetes.leak_check_repository names one.
+var checkRepository = ghrepo.MustParse("example-org/example-repo")
+
 // tarballRoute is the path GitHub serves the check's repository's tarball under, a tag after it.
-const tarballRoute = "/repos/" + CheckSlug + "/tarball/"
+const tarballRoute = "/repos/example-org/example-repo/tarball/"
 
 // checkGitHub is a fake GitHub serving the tarball route of the check's repository, with a count
 // of the reads made at each tag. answer serves a read at tag; any other route fails the test.
@@ -74,7 +79,7 @@ func (f *checkGitHub) total() int {
 
 // sourceOver is a Source reading url, whose every mint is counted in mints.
 func sourceOver(url string, mints *atomic.Int32) *Source {
-	return &Source{API: url, Token: func(context.Context) (string, error) {
+	return &Source{Repository: checkRepository, API: url, Token: func(context.Context) (string, error) {
 		mints.Add(1)
 		return sourceToken, nil
 	}}
@@ -231,7 +236,7 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/example-repo at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -274,7 +279,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			source := sourceOver(fake.url, &mints)
 			source.Forget = func() { forgets.Add(1) }
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/example-repo at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -327,7 +332,7 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := RefusalPrefix + "the tarball of theorem-labs/agent-infra at " + theTag + " " + tc.want
+			want := RefusalPrefix + "the tarball of example-org/example-repo at " + theTag + " " + tc.want
 			if err == nil || err.Error() != want {
 				t.Fatalf("the tarball = %v, want %q", err, want)
 			}
@@ -348,8 +353,8 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 func TestAFailedMintIsRefusedWithItsSentenceAndNotKept(t *testing.T) {
 	fake := serveCheck(t, answerCheck(t))
 	var mints atomic.Int32
-	const sentence = "the daemon could not mint its read-only token for theorem-labs/agent-infra: the App has no installation on theorem-labs"
-	source := &Source{API: fake.url, Token: func(context.Context) (string, error) {
+	const sentence = "the daemon could not mint its read-only token for example-org/example-repo: the App has no installation on example-org"
+	source := &Source{Repository: checkRepository, API: fake.url, Token: func(context.Context) (string, error) {
 		if mints.Add(1) == 1 {
 			return "", errors.New(sentence)
 		}
@@ -376,7 +381,7 @@ func TestAReadThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
 	source := sourceOver(fake.url, &mints)
 	source.ReadBound = 50 * time.Millisecond
 	_, err := source.Get(bound(t), theTag)
-	want := RefusalPrefix + "the daemon's read of theorem-labs/agent-infra at " + theTag + " did not finish within 50ms"
+	want := RefusalPrefix + "the daemon's read of example-org/example-repo at " + theTag + " did not finish within 50ms"
 	if err == nil || err.Error() != want {
 		t.Fatalf("a read that does not answer = %v, want %q", err, want)
 	}
@@ -417,7 +422,7 @@ func TestACallerThatGivesUpDoesNotEndTheReadOthersWaitOn(t *testing.T) {
 	}()
 	giveUp()
 	err := <-first
-	want := RefusalPrefix + "the start stopped waiting for the daemon's read of theorem-labs/agent-infra at " + theTag + ": context canceled"
+	want := RefusalPrefix + "the start stopped waiting for the daemon's read of example-org/example-repo at " + theTag + ": context canceled"
 	if err == nil || err.Error() != want {
 		t.Fatalf("the caller that gave up = %v, want %q", err, want)
 	}
@@ -449,7 +454,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 				githubtest.Unexpected(t, w, r)
 				return
 			}
-			http.Redirect(w, r, "http://"+downloads+"/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/"+theTag, http.StatusFound)
+			http.Redirect(w, r, "http://"+downloads+"/example-org/example-repo/legacy.tar.gz/refs/tags/"+theTag, http.StatusFound)
 		}})
 	dialer := &net.Dialer{}
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {

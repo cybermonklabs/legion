@@ -638,6 +638,10 @@ What each part is for:
   with no image rebuild and no fetch in any role's launch. Each role then checks that the files Oh
   My Pi installed are the ones that commit holds, and fails its launch if they are not, so a pod
   can always say which commit its agents' skills came from.
+- **`runtime.kubernetes.leak_check_repository`** is required, as `owner/name`: the repository the
+  daemon reads the shared public leak check from, at the tag the worker image pins, and pushes to
+  each issue pod's launcher before any role of the pod starts. Legion names no such repository of
+  its own, so `legion start --check-config` and `legion probe-boot` refuse a file without it.
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).

@@ -105,6 +105,7 @@ runtime:
     namespace: legion
     image: %[4]s
     storage_class: standard
+    leak_check_repository: example-org/example-repo
     kubeconfig: %[5]s
     context: %[6]s
     session_store: postgres

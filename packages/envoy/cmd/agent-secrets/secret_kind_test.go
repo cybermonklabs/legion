@@ -864,7 +864,7 @@ func refusedKindValues(t *testing.T) []refusedKindValue {
 		{policy.KindGoogleLogin, "not an authorized_user credential", `{"type":"service_account","client_id":"client-id","client_secret":"` + leak + `","refresh_token":"refresh-not-a-secret"}`},
 		{policy.KindGoogleLogin, "no refresh_token", `{"type":"authorized_user","client_id":"client-id","client_secret":"` + leak + `"}`},
 		{policy.KindGoogleServiceAccount, "not a JSON object", leak},
-		{policy.KindGoogleServiceAccount, "a person's address", `{"service_account":"` + leak + `@theorem.dev"}`},
+		{policy.KindGoogleServiceAccount, "a person's address", `{"service_account":"` + leak + `@example.com"}`},
 		{policy.KindAzureLogin, "not a JSON object", leak},
 		{policy.KindAzureLogin, "no client_id", `{"tenant_id":"` + leak + `"}`},
 		{policy.KindAzureLogin, "a tenant_id of white space", `{"tenant_id":" ","client_id":"` + leak + `"}`},

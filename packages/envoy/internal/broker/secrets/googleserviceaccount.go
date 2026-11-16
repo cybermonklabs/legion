@@ -36,7 +36,7 @@ const googleServiceAccountLifetime = "3600s"
 // googleServiceAccountEmail is one service account of a project, the only value this kind mints
 // from: 6 to 30 of lowercase letters, digits and hyphens, then the project and the fixed
 // .iam.gserviceaccount.com domain, the rule Google's own account ids follow. It is anchored and
-// admits no comma, space or slash, so a person's address (aditya@theorem.dev), a list of accounts
+// admits no comma, space or slash, so a person's address (person@example.com), a list of accounts
 // and a value that would reach past the request's path all fail it.
 var googleServiceAccountEmail = regexp.MustCompile(`^[a-z0-9-]{6,30}@[a-z0-9-]+\.iam\.gserviceaccount\.com$`)
 

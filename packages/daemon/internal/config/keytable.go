@@ -565,6 +565,8 @@ var nestedKeys = []memberGroup{
 			Description: "The worker image every agent runs from, pinned by digest (`@sha256:…`) and never by a tag, which moves under a daemon that must know exactly what it probed."},
 		{Name: "storage_class", Default: "none: a block that names no class is refused, the cluster having no default for the issue volumes", RequiredBy: "yes",
 			Description: "The StorageClass each issue pod's own volume is provisioned from."},
+		{Name: "leak_check_repository", Default: "none: a block that names no repository is refused, Legion naming none of its own", RequiredBy: "yes",
+			Description: "The repository the daemon reads the shared public leak check from, as `owner/name`, at the tag the worker image pins, with a read-only token of its implement App's, and pushes to each issue pod's launcher before any role of the pod starts."},
 		{Name: "issue_volume", Default: "`50Gi`", RequiredBy: "no",
 			Description: "How large each issue pod's own volume is, the daemon-launched controller's pod included, as a Kubernetes quantity."},
 		{Name: "tree_volume", Default: "", RequiredBy: "no",

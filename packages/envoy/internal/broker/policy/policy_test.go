@@ -153,9 +153,9 @@ func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
 // @ and no service name may.)
 func TestRequesters(t *testing.T) {
 	const (
-		sami   = "sami@theorem.dev"
-		jason  = "jason@theorem.dev"
-		aditya = "aditya@theorem.dev"
+		sami   = "sami@example.com"
+		jason  = "jason@example.com"
+		aditya = "aditya@example.com"
 		daemon = "legion-daemon"
 	)
 	listed := func(name, owner, tier, requesters string) secrets.LocalSecret {

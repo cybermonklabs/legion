@@ -107,6 +107,15 @@ type Kubernetes struct {
 	// the file names no skills repository, in which case a pod runs two init containers and no
 	// role installs a skill.
 	SkillsRepository ghrepo.Repository
+	// LeakCheckRepository is `runtime.kubernetes.leak_check_repository`, required: the GitHub
+	// repository the daemon reads the shared public leak check from, at the tag the worker image
+	// pins (leakguard.TagVariable), with a read-only token of its implement App's on the
+	// repository's owner, and pushes to each issue pod's launcher before any role of the pod starts
+	// (leakguard.Source). Legion names no such repository of its own, so the loader refuses a block
+	// that names none, which `legion start --check-config` and `legion probe-boot` show before a
+	// roll rather than the first pod's start. `runtime: tmux` reads no such key: a pane is handed
+	// the check its machine carries (internal/runtime/tmux's resolveLeakCheck).
+	LeakCheckRepository ghrepo.Repository
 	// RepositoryCache is `runtime.kubernetes.repository_cache`, settled: the file's members where it
 	// sets them and the defaults (DefaultRepositoryCache) for the rest, field by field.
 	RepositoryCache RepositoryCacheConfig
@@ -577,6 +586,9 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		": the cluster has no default storage class for the issue volumes"); err != nil {
 		return nil, err
 	}
+	if block.LeakCheckRepository, err = readLeakCheckRepository(fields["leak_check_repository"]); err != nil {
+		return nil, err
+	}
 	issueVolume, err := readQuantity(fields["issue_volume"], kubernetesKey+".issue_volume")
 	if err != nil {
 		return nil, err
@@ -659,6 +671,29 @@ func readSkillsRepository(value *yaml.Node) (ghrepo.Repository, error) {
 		return ghrepo.Repository{}, err
 	}
 	return ghrepo.Parse(key, named)
+}
+
+// leakCheckRepositoryWhat is what `runtime.kubernetes.leak_check_repository` is, which each of its
+// refusals names after the key.
+const leakCheckRepositoryWhat = "the repository the daemon reads the shared public leak check from, at the tag the worker image pins"
+
+// readLeakCheckRepository reads `runtime.kubernetes.leak_check_repository`, which is required: the
+// GitHub repository (<owner>/<name>) the daemon reads the shared public leak check from, at the tag
+// the worker image pins. Legion names no such repository of its own, so a block that names none is
+// refused here rather than at the first pod's start, and every refusal says what the key is. It is
+// read with ghrepo.Parse, as every other repository the file names is, so an owner or a name
+// GitHub could not carry is refused at load too.
+func readLeakCheckRepository(value *yaml.Node) (ghrepo.Repository, error) {
+	const key = kubernetesKey + ".leak_check_repository"
+	named, err := requiredString(value, key, "")
+	var repository ghrepo.Repository
+	if err == nil {
+		repository, err = ghrepo.Parse(key, named)
+	}
+	if err != nil {
+		return ghrepo.Repository{}, fmt.Errorf("%w: %s", err, leakCheckRepositoryWhat)
+	}
+	return repository, nil
 }
 
 // readSetup reads `runtime.kubernetes.setup`, an argv of non-empty strings (readStrings), nil when

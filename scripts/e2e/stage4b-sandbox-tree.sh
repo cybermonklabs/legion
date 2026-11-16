@@ -63,6 +63,9 @@
 #   ~/.kube/legion-daemon-production) name the restricted identity the daemon runs as.
 # - LEGION_E2E_OPERATOR_CONTEXT (default production) names the admin context.
 # - LEGION_E2E_IMAGE (required) is the worker image, by digest.
+# - LEGION_E2E_LEAK_CHECK_REPOSITORY (required) is the repository, as owner/name, the daemon reads
+#   the shared public leak check from at the tag the worker image pins
+#   (runtime.kubernetes.leak_check_repository): Legion names none of its own.
 # - LEGION_E2E_MODEL_GATEWAY_URL (required) is the model gateway's Anthropic endpoint, the route the
 #   operator fixture's models.yml and the controller's profile name (lib/model-gateway-url.sh).
 # - LEGION_E2E_MODEL_GATEWAY_AUDIENCE (required) is the audience the operator's model gateway accepts
@@ -180,6 +183,7 @@ operator=${LEGION_E2E_OPERATOR_CONTEXT:-production}
 runtime_kubeconfig=${LEGION_E2E_RUNTIME_KUBECONFIG:-$HOME/.kube/legion-daemon-production}
 runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
+leak_check_repository=${LEGION_E2E_LEAK_CHECK_REPOSITORY:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
 dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
 envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
@@ -1500,6 +1504,7 @@ runtime:
     namespace: $namespace
     image: $image
     storage_class: gp2
+    leak_check_repository: $leak_check_repository
     issue_volume: 20Gi
     session_store: postgres
     session_dsn_secret: $session_dsn_key
@@ -3222,6 +3227,8 @@ note "$(jq --version) runs lib/stage4b-tools.jq"
 [ -n "$runtime_context" ] || fail "LEGION_E2E_RUNTIME_CONTEXT is unset: the daemon runs as the Legion daemon's restricted identity, never the operator's"
 [ -r "$runtime_kubeconfig" ] || fail "the runtime kubeconfig $runtime_kubeconfig is not readable"
 case "$image" in *@sha256:*) ;; *) fail "LEGION_E2E_IMAGE must be the worker image by digest (…@sha256:…), not '$image'" ;; esac
+[[ "$leak_check_repository" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] ||
+  fail "LEGION_E2E_LEAK_CHECK_REPOSITORY must name, as owner/name, the repository the daemon reads the shared public leak check from (runtime.kubernetes.leak_check_repository), not '$leak_check_repository'"
 [[ $project =~ ^[A-Z][A-Z0-9]{1,9}$ ]] ||
   fail "LEGION_E2E_PROJECT must be a Dispatch project key ([A-Z][A-Z0-9]{1,9}, projectKeyPattern in packages/envoy/internal/dispatch/api/server.go), not '$project'"
 case "$port_session_db" in

@@ -188,7 +188,7 @@ func TestServiceAccountBindingSettingIsRead(t *testing.T) {
 	for _, row := range []struct{ entry, want string }{
 		{"DEV_ADITYA", "must be <SECRET NAME>=<account email> entries"},
 		{"dev-aditya=" + dev, "not an agent secret name"},
-		{"DEV_ADITYA=aditya@theorem.dev", "user-managed Google service account"},
+		{"DEV_ADITYA=aditya@example.com", "user-managed Google service account"},
 		{"DEV_ADITYA=service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
 		{"DEV_ADITYA=" + admin, "names the secret DEV_ADITYA twice"},
 	} {

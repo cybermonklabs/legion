@@ -747,6 +747,7 @@ const kubernetesCheckRuntime = `runtime:
     namespace: legion
     image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     storage_class: gp2
+    leak_check_repository: example-org/example-repo
     session_store: postgres
     session_dsn_secret: SESSION_DSN
     kubeconfig: ./kubeconfig
@@ -1265,6 +1266,7 @@ runtime:
     namespace: legion
     image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     storage_class: gp2
+    leak_check_repository: example-org/example-repo
     session_store: postgres
     session_dsn_secret: SESSION_DSN
 %s`, filepath.Join(dir, "state"), command, command, tc.runtime)

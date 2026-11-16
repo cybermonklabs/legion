@@ -53,8 +53,8 @@ sjawhar/legion#2528 made thirteen inputs of `envoy-infra:gcp:Dispatch` optional 
 schema. In cybermonklabs/legion the three searches found no caller outside
 `packages/envoy/infra` itself: seven hits, every one a comment or a changelog fragment.
 
-The consumer is theorem-labs/agent-infra, read read-only with
-`gh api repos/theorem-labs/agent-infra/contents/<path> -H "Accept: application/vnd.github.raw"`.
+The consumer is the deployment repository, read read-only with
+`gh api repos/<deployment repo>/contents/<path> -H "Accept: application/vnd.github.raw"`.
 Its `dispatch/main.go` holds one `DispatchArgs` literal (lines 746-775) and one `NewDispatch` call
 (line 816). Compiled against an SDK generated from the plugin built at the head, that literal
 failed with exactly six errors and compiled clean once those six were wrapped in

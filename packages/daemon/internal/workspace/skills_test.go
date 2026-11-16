@@ -13,8 +13,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// testCatalog is a marketplace catalog of the shape every theorem-labs skills repository carries:
-// a name, an owner, and plugins whose sources are directories of the repository.
+// testCatalog is a marketplace catalog of the shape every skills repository of the company's
+// GitHub organisation carries: a name, an owner, and plugins whose sources are directories of the
+// repository.
 const testCatalog = `{
   "name": "verification-skills",
   "owner": {"name": "acme"},

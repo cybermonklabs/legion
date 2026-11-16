@@ -47,6 +47,7 @@ func kubernetesConfig(t *testing.T, server string) config.Config {
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Kubeconfig: writeKubeconfig(t, server, "test"),
 		Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+		LeakCheckRepository: ghrepo.MustParse("example-org/example-repo"),
 	}}
 	return cfg
 }
@@ -523,7 +524,7 @@ func TestKubernetesSkillsRepositoryReachesTheSandboxRuntime(t *testing.T) {
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 	}
-	k.SkillsRepository = ghrepo.MustParse("theorem-labs/verification-skills")
+	k.SkillsRepository = ghrepo.MustParse("example-org/verification-skills")
 	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
@@ -625,6 +626,7 @@ runtime:
     namespace: legion
     image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     storage_class: gp2
+    leak_check_repository: example-org/example-repo
     session_store: postgres
     session_dsn_secret: SESSION_DSN
     kubeconfig: ./kubeconfig

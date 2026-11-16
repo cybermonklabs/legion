@@ -12,7 +12,7 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 const makeDirectory = temporaryDirectories("dispatch-inbox");
 
-const VIEWER = "alice@theorem.dev";
+const VIEWER = "alice@example.com";
 const SNOOZED_ID = "33333333-3333-4333-8333-333333333333";
 
 /** A row of `GET /api/v1/inbox`, with the fields the summary reads; the thread and the rest of an
@@ -92,7 +92,7 @@ const PENDING = [
     identifiers: ["github/token", "aws/role"],
     requested_at: "2026-11-02T09:00:00Z",
     session: { request: "ses-7", enrollment: "ses-8" },
-    approve_url: "https://broker.theorem.dev/approve/rec-1",
+    approve_url: "https://broker.example.com/approve/rec-1",
   },
   {
     record_id: "rec-2",
@@ -127,7 +127,7 @@ function threadRows(now: number): Record<string, unknown>[] {
       reply: {
         id: "99999999-9999-4999-8999-999999999999",
         kind: "reply",
-        author: { kind: "user", id: "bob@theorem.dev" },
+        author: { kind: "user", id: "bob@example.com" },
         first_line: "I swapped the disk this morning.",
         created_at: ago(now, 5 * 60_000 + 30_000),
       },
@@ -269,11 +269,11 @@ describe("dispatch inbox", () => {
       `- DSP-3 · P3 · question · Does the export still need its nightly run? · dispatch://DSP-3/ask/${SNOOZED_ID}`,
       "",
       "Unread threads 2",
-      "- DSP-6 · comment · The staging box lost its disk again · user bob@theorem.dev · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
+      "- DSP-6 · comment · The staging box lost its disk again · user bob@example.com · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
       "- legion-implementer · agent · Can you take the migration next? · session ses-5 · 1h · /agents/ses-5/live",
       "",
       "Credential requests 2",
-      "- agent_secret · github/token, aws/role · 2026-11-02T09:00:00Z · session request=ses-7, enrollment=ses-8 · https://broker.theorem.dev/approve/rec-1",
+      "- agent_secret · github/token, aws/role · 2026-11-02T09:00:00Z · session request=ses-7, enrollment=ses-8 · https://broker.example.com/approve/rec-1",
       "- launcher_credential · runner-12 · 2026-11-02T10:00:00Z",
     ]);
     // The caller's own credential, on the four routes the Inbox page reads and no other.
@@ -356,7 +356,7 @@ describe("dispatch inbox", () => {
             reply: {
               id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
               kind: "reply",
-              author: { kind: "user", id: "bob@theorem.dev" },
+              author: { kind: "user", id: "bob@example.com" },
               first_line: "It is, until the new one runs.",
               created_at: ago(now, 2 * 24 * 60 * 60_000 + 60 * 60_000),
             },
@@ -392,7 +392,7 @@ describe("dispatch inbox", () => {
     expect(stdout).toContain(
       [
         "Unread threads 2",
-        "- design-notes · message · Is the nightly export still ours? · user bob@theorem.dev · 2d · /projects/CORE/documents/design-notes",
+        "- design-notes · message · Is the nightly export still ours? · user bob@example.com · 2d · /projects/CORE/documents/design-notes",
         "- legion-implementer · agent · Can you take the migration next? · session ses-5 · <1m · /agents/ses-5/live",
       ].join("\n")
     );

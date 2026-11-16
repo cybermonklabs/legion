@@ -405,7 +405,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
 	}
 	if d.leakCheck == nil {
-		return refuse("the daemon runs with no GitHub App, so it cannot read "+leakguard.CheckSlug, nil)
+		return refuse("the daemon runs with no GitHub App, so it cannot read the shared public leak check", nil)
 	}
 	served, err := d.leakCheck.Get(ctx, tag)
 	if err != nil {

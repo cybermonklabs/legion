@@ -23,7 +23,7 @@ interface Recorded {
 const requests: Recorded[] = [];
 const makeDirectory = temporaryDirectories("dispatch-priorities");
 
-const ana = { kind: "user", id: "ana@theorem.dev" };
+const ana = { kind: "user", id: "ana@example.com" };
 
 /** Every lifecycle status with no issue standing in it, as the server answers a priority's work:
  *  it writes each status and 0 where none stands there, so a reader adds the columns it draws. */
@@ -47,7 +47,7 @@ const recorded: Priorities = {
       id: "ship-the-daemon",
       title: "Ship the daemon",
       description: "Every tree runs under the daemon.",
-      owner: "ana@theorem.dev",
+      owner: "ana@example.com",
       rank: "m",
       state: "live",
       made_at: "2026-11-01T00:00:00Z",
@@ -87,7 +87,7 @@ const recorded: Priorities = {
         title: "Rotate the broker keys",
         project: "CORE",
         status: "in_progress",
-        assignee: "ana@theorem.dev",
+        assignee: "ana@example.com",
         claim: null,
         changed_at: "2026-11-10T08:00:00Z",
         advances: [],
@@ -369,16 +369,16 @@ describe("dispatch priorities", () => {
     expect(stdout).toContain(
       [
         "2 priorities.",
-        "ship-the-daemon · Ship the daemon · owner ana@theorem.dev",
+        "ship-the-daemon · Ship the daemon · owner ana@example.com",
         "  6 open (backlog 1, todo 2, in_progress 3) · 2 claimed · 1 open ask · 4 closed in the last 7 days · newest event 2026-11-11T09:00:00Z",
         "cut-the-latency · Cut the latency · owner nobody",
         "  no open issues · 0 claimed · 0 open asks · 0 closed in the last 7 days · no events",
         "",
         "Work under no priority (2: CORE 1, DSP 1; showing the newest 1):",
-        "- CORE-7 [in_progress] Rotate the broker keys · CORE · ana@theorem.dev · changed 2026-11-10T08:00:00Z",
+        "- CORE-7 [in_progress] Rotate the broker keys · CORE · ana@example.com · changed 2026-11-10T08:00:00Z",
         "",
         "Priority work parked (1: legion-first 1, ship-the-daemon 1):",
-        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · parked 2026-10-01T00:00:00Z by ana@theorem.dev · changed 2026-10-02T00:00:00Z",
+        "- DSP-9 [backlog] Backfill the index · DSP · advances legion-first (inherited), ship-the-daemon (own) · parked 2026-10-01T00:00:00Z by ana@example.com · changed 2026-10-02T00:00:00Z",
       ].join("\n")
     );
   });

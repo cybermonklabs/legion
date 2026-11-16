@@ -443,15 +443,15 @@ act as, by email address or unique id, which `generateIdToken` is called on; and
 `AGENT_SECRETS_MACHINE_AUDIENCE`, here the `aud` of the token that mint returns, the client id the
 broker checks against `BROKER_GOOGLE_OIDC_AUDIENCE`. A `pool` machine missing any of the four
 trades nothing and its helper restart-loops, as Azure dev boxes did for want of the token file
-(theorem-labs/agent-infra#2200). `AGENT_SECRETS_SESSION` names the session a trade writes under
-for a caller that acts as no session of its own — `agent-secrets`, the helper, a daemon — and is
-the only name such a caller has. A caller that is a session writes under its own session id and
-reads that variable for nothing: an agent session's id is minted when the session starts, and its
-token must name it, since the Envoy listener refuses a subscribe, an unsubscribe, a role claim or a
-send from a session whose token names another. So a fleet whose entry fixes a session, or whose
-pods write under registered names, is a fleet no agent session can trade at: the broker refuses
-the trade, naming what the entry writes as. For a person to sign in there, give the machine the
-device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
+(issue #2200 of the deployment repository). `AGENT_SECRETS_SESSION` names the session a trade
+writes under for a caller that acts as no session of its own — `agent-secrets`, the helper, a
+daemon — and is the only name such a caller has. A caller that is a session writes under its own
+session id and reads that variable for nothing: an agent session's id is minted when the session
+starts, and its token must name it, since the Envoy listener refuses a subscribe, an unsubscribe,
+a role claim or a send from a session whose token names another. So a fleet whose entry fixes a
+session, or whose pods write under registered names, is a fleet no agent session can trade at:
+the broker refuses the trade, naming what the entry writes as. For a person to sign in there,
+give the machine the device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
 `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, the client whose
 id is `BROKER_SIGNIN_DEVICE_AUDIENCE`. With `AGENT_SECRETS_MACHINE_IDENTITY` unset nothing trades
 and every machine works as it did, through a machine login a person approves.

@@ -195,8 +195,8 @@ func TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount(t *testing.
 		name  string
 		value string
 	}{
-		{"a person's email", `{"service_account":"aditya@theorem.dev"}`},
-		{"a person's email at the service account domain", `{"service_account":"aditya@theorem.dev.iam.gserviceaccount.com."}`},
+		{"a person's email", `{"service_account":"aditya@example.com"}`},
+		{"a person's email at the service account domain", `{"service_account":"aditya@example.com.iam.gserviceaccount.com."}`},
 		{"two accounts", `{"service_account":"dev-aditya@p.iam.gserviceaccount.com,dev-sami@p.iam.gserviceaccount.com"}`},
 		{"an empty field", `{"service_account":""}`},
 		{"a missing field", `{"project":"theorem-agent-identities"}`},

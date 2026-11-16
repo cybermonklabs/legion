@@ -196,11 +196,11 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 		want    string
 	}{
 		"the daemon holds no credential": {
-			want: leakguard.Cause("the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra", nil),
+			want: leakguard.Cause("the daemon runs with no GitHub App, so it cannot read the shared public leak check", nil),
 		},
 		"the daemon's read is refused": {
-			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of theorem-labs/agent-infra at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
-			want:   leakguard.Cause("GitHub answered the read of theorem-labs/agent-infra at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
+			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of example-org/example-repo at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
+			want:   leakguard.Cause("GitHub answered the read of example-org/example-repo at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
 		},
 		"the pod's launcher refuses the install": {
 			source:  servedLeakCheck(),

@@ -89,6 +89,9 @@
 # - LEGION_E2E_STORAGE_CLASS (required) is the StorageClass of the issue pod's disk, the pod's own
 #   generic ephemeral volume (runtime.kubernetes.storage_class): the cluster has no default to fall
 #   back on.
+# - LEGION_E2E_LEAK_CHECK_REPOSITORY (required) is the repository, as owner/name, the daemon reads
+#   the shared public leak check from at the tag the worker image pins
+#   (runtime.kubernetes.leak_check_repository): Legion names none of its own.
 # - LEGION_E2E_PRIORITY_CLASS (optional) names a PriorityClass of the cluster the run's pods take:
 #   the bridge pod's priorityClassName, and runtime.kubernetes.scheduling.priority_class in the run's
 #   legion.yaml, so the daemon gives it to the issue pod, the image probe and the repository cache.
@@ -217,6 +220,7 @@ runtime_kubeconfig=${LEGION_E2E_RUNTIME_KUBECONFIG:-$HOME/.kube/legion-daemon-pr
 runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
 storage_class=${LEGION_E2E_STORAGE_CLASS:-}
+leak_check_repository=${LEGION_E2E_LEAK_CHECK_REPOSITORY:-}
 priority_class=${LEGION_E2E_PRIORITY_CLASS:-}
 # lib/bridge-tunnel.sh's optional input: the bridge pod's priority class.
 bridge_priority_class=$priority_class
@@ -707,6 +711,7 @@ runtime:
     namespace: $namespace
     image: $image
     storage_class: $storage_class
+    leak_check_repository: $leak_check_repository
     issue_volume: 20Gi${priority_class:+
     scheduling:
       priority_class: $priority_class}
@@ -1159,6 +1164,8 @@ case "$image" in
 esac
 [ -n "$storage_class" ] ||
   fail "LEGION_E2E_STORAGE_CLASS is unset: name the StorageClass of the issue pod's disk (the cluster has no default to fall back on)"
+[[ "$leak_check_repository" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] ||
+  fail "LEGION_E2E_LEAK_CHECK_REPOSITORY must name, as owner/name, the repository the daemon reads the shared public leak check from (runtime.kubernetes.leak_check_repository), not '$leak_check_repository'"
 pod_service_account=$(bash "$root/scripts/e2e/lib/pod-service-account.sh") ||
   fail "LEGION_E2E_POD_SERVICE_ACCOUNT is not a ServiceAccount name the operator route's pod.yml can carry (the reason is above)"
 [ -z "$priority_class" ] || [[ "$priority_class" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ && ${#priority_class} -le 253 ]] ||

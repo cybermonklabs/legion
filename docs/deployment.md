@@ -222,6 +222,13 @@ own `Env` are told after the resolved one, and the last value of a name is what 
 Legion installs no check on a shared box.
 The pinned install is a pod's: the daemon reads the check at the tag the worker image carries and
 pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
+The repository it reads the check from is the deployment's `runtime.kubernetes.leak_check_repository`
+(`<owner>/<name>`), which a Kubernetes `legion.yaml` must set, since Legion names no such repository
+of its own, and which a tmux daemon never reads.
+A deployment adds the key in the same change that moves its daemon to the first release that reads
+it: a release before that one refuses the key as unknown, and a release from it on refuses a file
+without the key. Its value is the `<owner>/<name>` that every earlier release named in code, as
+`checkOwner` and `checkRepo` at lines 58-59 of `packages/daemon/internal/leakguard/install.go`.
 So a box that writes to public repositories carries the check through the check's own installer,
 run on the machine the daemon runs on.
 A daemon that resolves none logs one line per launch naming the pane, tells that pane no

@@ -53,14 +53,11 @@ const TagVariable = "LEGION_LEAK_CHECK_TAG"
 // Where the shared check is published: a tag of a private repository, whose `leak-check` directory
 // holds the launcher (checkName), the python file the launcher runs from beside itself, and the
 // fixtures its own self-test reads. The whole directory is what the daemon packs and the launcher
-// installs for that reason — a launcher without its neighbours is a check that cannot start.
-const (
-	checkOwner = "theorem-labs"
-	checkRepo  = "agent-infra"
-	// CheckSlug is the check's repository, which the daemon reads with a token of its own.
-	CheckSlug      = checkOwner + "/" + checkRepo
-	checkDirectory = "leak-check"
-)
+// installs for that reason — a launcher without its neighbours is a check that cannot start. Legion
+// names no such repository of its own: the deployment names it
+// (`runtime.kubernetes.leak_check_repository`, which the loader requires under `runtime:
+// kubernetes`), and the daemon's reader takes it from there (Source.Repository).
+const checkDirectory = "leak-check"
 
 // installWhat is what a failed read of the install is reported as, in the words a
 // *SetupFailure's What takes.
@@ -92,8 +89,8 @@ var errOverLimit = errors.New("over the read limit")
 // It refuses a member of that directory that is neither a directory nor a regular file, a member
 // whose path does not stay inside it, a tarball with no such directory, one whose directory holds
 // no regular file, a tarball over maxTarballBytes and a directory that packs over
-// maxPackedBytes. Each error is a predicate of the tarball, written to follow
-// `the tarball of <CheckSlug> at <tag> ` in the cause sentence the daemon builds of it (Cause).
+// maxPackedBytes. Each error is a predicate of the tarball, written to follow `the tarball of
+// <Source.Repository> at <tag> ` in the cause sentence the daemon builds of it (Cause).
 func PackTarball(r io.Reader) ([]byte, error) {
 	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}

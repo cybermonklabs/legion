@@ -82,7 +82,9 @@ It carries:
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints for theorem-labs/agent-infra alone (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The deployment names that repository as `runtime.kubernetes.leak_check_repository` (`<owner>/<name>`), which the loader requires under `runtime: kubernetes` because Legion names none of its own, so `legion start --check-config` and `legion probe-boot` refuse a file without it ([Operator configuration](#operator-configuration)).
+  A deployment adds the key in the same change that moves its daemon to the first release that reads it: a release before that one refuses the key as unknown, and a release from it on refuses a file without the key. Its value is the `<owner>/<name>` that every earlier release named in code, as `checkOwner` and `checkRepo` at lines 58-59 of `packages/daemon/internal/leakguard/install.go`.
+  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints on that repository's owner (`leakCheckToken`, `internal/daemon/kubernetes.go`).
   The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
   It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
   The launcher installs it once per launcher process, before any role starts:
@@ -113,7 +115,7 @@ It carries:
   A listener bound to `0.0.0.0` is also reachable on the pod IP from inside the cluster, unless the deployment's NetworkPolicy denies that ingress;
 
 - `unzip` from Debian trixie's archive, at `/usr/bin/unzip`:
-  `model-gateway/apply_test.sh` of theorem-labs/agent-infra calls it, and no package runner in the image reaches it.
+  `model-gateway/apply_test.sh` of the deployment repository calls it, and no package runner in the image reaches it.
   A role cannot install it in its pod either:
   the pod's `/usr/local/bin` and `/opt` are read-only, and `apt-get` cannot take dpkg's lock;
 
@@ -2719,6 +2721,7 @@ runtime:
     namespace: legion
     image: ghcr.io/cybermonklabs/legion-worker@sha256:<64 hex>   # digest only
     storage_class: gp2          # required: the issue volumes' class (the cluster has no default)
+    leak_check_repository: example-org/example-repo   # required: the repository (owner/name) the daemon reads the shared public leak check from, at the tag the worker image pins (Worker image, above)
     issue_volume: 50Gi          # default 50Gi; one volume per issue, and one for the controller's pod
     kubeconfig: /home/ubuntu/.kube/legion-daemon-production   # relative to legion.yaml's directory
     context: legion-daemon@example   # required when the kubeconfig sets no current context
@@ -2917,6 +2920,10 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 
 - a `skills_repository` that is not `<owner>/<name>` (`runtime.kubernetes.skills_repository must be
   "owner/name" (got "…")`), read as every other repository the file names is;
+
+- a missing `leak_check_repository` (`runtime.kubernetes.leak_check_repository is required: the
+  repository the daemon reads the shared public leak check from, at the tag the worker image
+  pins`), or one that is not `<owner>/<name>`: Legion names no such repository of its own;
 
 - a `session_store` that keeps sessions as files (`pvc`), and an omitted `session_store`, which settles to it and is the same refusal rather than a default;
   a `session_store` other than `pvc`, `postgres` or `cloudsql-iam`;

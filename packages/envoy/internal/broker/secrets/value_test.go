@@ -51,7 +51,7 @@ func refusedValues(t *testing.T) []refusedValue {
 		{"google-login", "not an authorized_user credential", `{"type":"service_account","client_id":"client-id","client_secret":"` + leak + `","refresh_token":"refresh-not-a-secret"}`, "Google login secret must be an authorized_user credential"},
 		{"google-login", "no refresh_token", `{"type":"authorized_user","client_id":"client-id","client_secret":"` + leak + `"}`, "Google login secret must be an authorized_user credential"},
 		{"google-service-account", "not a JSON object", leak, "decode Google service account secret: not a JSON object of its fields"},
-		{"google-service-account", "a person's address", `{"service_account":"` + leak + `@theorem.dev"}`, "Google service account secret must name one <id>@<project>.iam.gserviceaccount.com account in service_account"},
+		{"google-service-account", "a person's address", `{"service_account":"` + leak + `@example.com"}`, "Google service account secret must name one <id>@<project>.iam.gserviceaccount.com account in service_account"},
 		{"azure-login", "not a JSON object", leak, "Azure login secret must name tenant_id and client_id"},
 		{"azure-login", "no client_id", `{"tenant_id":"` + leak + `"}`, "Azure login secret must name tenant_id and client_id"},
 		{"azure-login", "a tenant_id of white space", `{"tenant_id":" ","client_id":"` + leak + `"}`, "Azure login secret must name tenant_id and client_id"},

@@ -125,6 +125,7 @@ runtime:
     namespace: legion
     image: ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     storage_class: gp3
+    leak_check_repository: example-org/example-repo
     issue_volume: 30Gi
     kubeconfig: /etc/legion/kubeconfig
     context: legion-daemon@fixture-cluster
@@ -500,7 +501,7 @@ func populatedState(t *testing.T) State {
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
 						PendingCause:   supervise.CauseDied,
-						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found",
+						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of example-org/example-repo at leak-check-v3 with HTTP 404: Not Found",
 					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no

@@ -104,7 +104,7 @@ type SkillsReport struct {
 
 // skillsCatalogFiles are the catalog paths inside a marketplace repository, in the order Oh My Pi
 // reads them (its marketplace source resolver): its own first, then the Claude-plugin spelling
-// every theorem-labs skills repository uses today.
+// every skills repository of the company's GitHub organisation uses today.
 var skillsCatalogFiles = []string{".omp-plugin/marketplace.json", ".claude-plugin/marketplace.json"}
 
 // CloneSkills clones repository shallow into the skills volume and writes the three records beside

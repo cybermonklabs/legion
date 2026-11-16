@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The daemon no longer names the repository it reads the shared public leak check from. A
+  deployment names it in `legion.yaml` as `runtime.kubernetes.leak_check_repository:
+  <owner>/<name>`, which is required under `runtime: kubernetes` and has no default: the loader
+  refuses a file without it, or with a value that is not `owner/name`, so `legion start
+  --check-config` and `legion probe-boot` refuse the file before a roll. `runtime: tmux` does not
+  read it. Add the key to the deployment's `legion.yaml` in the same change that moves the daemon
+  to this release: a release before this one refuses the key as unknown, and this release refuses
+  a file without it. Its value is the `<owner>/<name>` that earlier releases named in code, as
+  `checkOwner` and `checkRepo` at `packages/daemon/internal/leakguard/install.go:58-59`.
