@@ -708,9 +708,9 @@ the ask blocks the edited tree holds whose block id no ask block in the tree bef
 Beside it, `decision_block_checks` lists each block the edit added, in document order (`docs.EditOutcome.AddedAskBlocks`), as `{block_id, question, suggestions}`:
 the related-item check run on the block's question once the edit has committed (`decisionBlockChecks`), the first five checked at once under one 5 s allowance and each past them answered, and recorded, as not made; it is omitted when the edit added none.
 A conditional edit releases its document's edit gate at the commit, before those checks run, so they never hold the next conditional edit.
-A document write that stored a version replacing the one a person approved reports `superseded_approval` (`{approved_version, version, approved_by, design_gates}`), on an issue document's advice and in the document report of a project document's:
+A document write that stored a version replacing the one a person or a plan review approved reports `superseded_approval` (`{approved_version, version, approved_by, design_gates}`), on an issue document's advice and in the document report of a project document's:
 a document edit, and an upload that replaced an existing document, each read their transaction's newest review of the document after writing their own version and any approval carry it made (`supersededApprovalAdvice` over `docs.NewestReview`, in `docs.ReviewOrder`, behind a savepoint of its own that is always rolled back), and report only an approval of the version right below the one they stored.
-A document nobody approved, an approval that was already stale, a newer changes request, and a version the carry approved itself each report nothing, so the field names every write that made a person's approval stale, whatever the document is.
+A document nobody approved, an approval that was already stale, a newer changes request, and a version the carry approved itself each report nothing, so the field names every write that made a person's or a plan review's approval stale, whatever the document is.
 Whether that approval also held a Legion design gate open is `design_gates`, read in the same savepoint from `design_gates`, the record the daemon publishes through `PUT /api/v1/issues/{key}/design-gates` (`issue_design_gates.go`):
 one `{issue, step}` for each gate of that document that holds a READY back, and omitted when none does, which is what an issue the daemon has published no gate for reads as.
 Two things decide that, and the gate row says neither: the issue is in the workflow, which is every status but the four that take it out (`model.IssueStatusesOutOfWorkflow`, the daemon's own `record.OutOfWorkflow` written again on this side), since a closed tree and a tree parked in `backlog` or `icebox` refuse no READY and nothing clears a parked issue's gate rows; and the project's published list of gated steps (`projects.gated_steps`) names the row's step, since a daemon records a gate for a step it does not gate — with `gates.design: off` the registration records the `spec` step and approves it — and such a gate refuses nothing.
@@ -3352,6 +3352,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A supplied `payload` for `/v1/messages/publish` wins over the derived value.
 
 - Ghost Wispr only publishes `session_started`, `session_ended`, and `summary_ready`; other verified events should return 200, log the skip, and not publish.
+
+- A Ghost Wispr envelope's payload copies the body's `payload.started_at`, `ended_at`, `drive_folder_url` and `session_url` for every event type, beside `session_id` (`ghostWisprPayload`, `internal/contracts/normalize.go`).
+  A current unit sends no title or summary text, because the stream keeps an envelope for its whole retention window and no deletion on the unit can recall it, so a reader fetches the current text through those links.
+  A `summary_ready` payload also copies `status`, `summary_preset`, `summary_model`, `timestamp`, `version` and `payload_type`, and an older unit's `title` and `summary` (capped, with `body_truncated` when cut) still pass when present.
 
 - `ENVOY_GHOSTWISPR_SIGNING_SECRET` is optional for trusted Ghost Wispr deployments;
   when unset, skip signature verification explicitly rather than half-verifying missing headers.

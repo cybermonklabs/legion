@@ -14,9 +14,17 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant and the manifest field in the
-// same commit; `packages/contracts/fixtures/daemon-api/version.json`, written by this package's
-// golden test and read by the plugin's, holds the two together.
+// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
+// number in every other file that holds it: `legion.daemonApiVersion` in
+// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
+// and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
+// `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
+// the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
+// and the plugin's field together. The same commit also writes this bump into the contract
+// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
+// disagrees with this constant.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.

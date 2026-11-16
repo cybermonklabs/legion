@@ -90,6 +90,12 @@ export interface DispatchCliLive {
    * called it: every row of both files is about the line a write that went through printed.
    */
   docEdit(issue: string, artifact: string, sentence: string): Promise<string>;
+  /**
+   * A read of one of the issue's documents, run through the real CLI entry as `docEdit` is, and
+   * the summary it printed: the document's `Approval:` line among it. A refusal, or anything on
+   * standard error, fails the row that called it.
+   */
+  read(issue: string, artifact: string): Promise<string>;
 }
 
 /**
@@ -149,43 +155,43 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
   const upload = (issue: string, name: string, content: string): Promise<UploadedDocument> =>
     asPerson<UploadedDocument>("POST", `/api/v1/issues/${issue}/artifacts`, { name, content });
 
-  async function docEdit(issue: string, artifact: string, sentence: string): Promise<string> {
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        ENTRY,
-        "doc-edit",
-        "--issue",
-        issue,
-        "--artifact",
-        artifact,
-        "--ops-json",
-        JSON.stringify([{ op: "insert", markdown: sentence, after: "end" }]),
-      ],
-      {
-        env: {
-          PATH: SHELL_PATH,
-          HOME: directories.state,
-          DISPATCH_STATE_DIR: directories.state,
-          DISPATCH_HOST: "omp",
-          DISPATCH_SESSION_ID: session,
-          DISPATCH_URL: server().url,
-          DISPATCH_TOKEN: server().token,
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-      }
-    );
+  /** The real CLI entry run as an agent's shell runs it, `dispatch <command> --issue <issue>` and
+   *  `args`, and the output it printed. A refusal, or anything on standard error, throws. */
+  async function cli(command: string, issue: string, args: readonly string[]): Promise<string> {
+    const child = Bun.spawn([process.execPath, ENTRY, command, "--issue", issue, ...args], {
+      env: {
+        PATH: SHELL_PATH,
+        HOME: directories.state,
+        DISPATCH_STATE_DIR: directories.state,
+        DISPATCH_HOST: "omp",
+        DISPATCH_SESSION_ID: session,
+        DISPATCH_URL: server().url,
+        DISPATCH_TOKEN: server().token,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
     const [stdout, stderr, code] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
     if (code !== 0 || stderr !== "") {
-      throw new Error(`dispatch doc-edit on ${issue} exited ${code}: ${stderr}${stdout}`);
+      throw new Error(`dispatch ${command} on ${issue} exited ${code}: ${stderr}${stdout}`);
     }
     return stdout.trimEnd();
   }
 
-  return { asPerson, asMachine, createIssue, upload, docEdit };
+  const docEdit = (issue: string, artifact: string, sentence: string): Promise<string> =>
+    cli("doc-edit", issue, [
+      "--artifact",
+      artifact,
+      "--ops-json",
+      JSON.stringify([{ op: "insert", markdown: sentence, after: "end" }]),
+    ]);
+
+  const read = (issue: string, artifact: string): Promise<string> =>
+    cli("read", issue, ["--artifact", artifact]);
+
+  return { asPerson, asMachine, createIssue, upload, docEdit, read };
 }
