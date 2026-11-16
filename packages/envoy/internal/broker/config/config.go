@@ -474,13 +474,15 @@ type Config struct {
 	// token minted for a pod of the account holds only the OAuth scope read, the project scope
 	// none, the service and the session, and names no person and no project: Dispatch serves it
 	// on the routes its read list names and refuses it everywhere else, and every other service
-	// that reads the broker's tokens, the Envoy listener among them, refuses it. The session is
-	// everything after the second "=", so it alone may carry one. A namespace's default account
-	// is refused, as is a service that is not lowercase letters, digits and hyphens, at most 64,
-	// or is shared, an account listed twice, and an account BROKER_EXCHANGE_ACCOUNTS lists too.
-	// Needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods
-	// present. A broker of a build older than this setting does not read it, so it mints those
-	// accounts no token at all. Unset, no account exchanges for a read-only token.
+	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token
+	// reads the architecture of every project: no setting holds a read entry to some projects.
+	// The session is everything after the second "=", so it alone may carry one. A namespace's
+	// default account is refused, as is a service that is not lowercase letters, digits and
+	// hyphens, at most 64, or is shared, an account listed twice, and an account
+	// BROKER_EXCHANGE_ACCOUNTS lists too. Needs BROKER_K8S_OIDC_ISSUER and
+	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older
+	// than this setting does not read it, so it mints those accounts no token at all. Unset, no
+	// account exchanges for a read-only token.
 	ExchangeReadAccounts []exchange.ReadEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]

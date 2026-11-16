@@ -497,8 +497,8 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
-// that fixes a session are each refused, the last because the name such an entry writes under is
-// the configuration's and its pods need no registration at all. A caller maps those sentinels
+// that fixes a session are each refused, the last because the name such an entry's tokens carry
+// is the configuration's and its pods need no registration at all. A caller maps those sentinels
 // onto its own refusals; anything else is the store's.
 func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session string) (time.Time, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {

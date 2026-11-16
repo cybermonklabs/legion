@@ -73,7 +73,7 @@ var (
 	ErrNoActorToken      = errors.New("exchange: the person's token came with no machine acting for them")
 	ErrNoComputeEngine   = errors.New("exchange: the subject token carries no Compute Engine claims")
 	ErrMachineNotAllowed = errors.New("exchange: the machine is not one the entry allows")
-	ErrSessionFixed      = errors.New("exchange: the entry fixes the session name it writes under")
+	ErrSessionFixed      = errors.New("exchange: the entry fixes the session name its tokens carry")
 )
 
 // MaxSessionBytes is the longest session name a request may carry. A session name is written into
@@ -332,7 +332,7 @@ func (s ProjectScope) String() string {
 }
 
 // Claims are what an exchange writes into the Dispatch access token it mints, and the principal
-// the session name it writes under belongs to.
+// the session name it carries belongs to.
 type Claims struct {
 	// Session is who the token's writes are recorded as.
 	Session string
@@ -366,8 +366,8 @@ type Claims struct {
 	// token either: it is the pod uid a registration has to name for this exchange to be made
 	// (oauthstore.Store.PodSessionRegistered), and is empty for every caller no registration
 	// separates from the others of its principal — a pod whose entry fixes the session, which
-	// every read entry does, a workflow run, and a dev box session, each of which writes under a
-	// name its configuration or its person already decides.
+	// every read entry does, a workflow run, and a dev box session, each of which carries a name
+	// its configuration or its person already decides.
 	Instance string
 	// Fleet is the service a machine's Google account is listed for (GoogleEntry.Service),
 	// whether or not the token names it, and is empty for every other decision. Like Principal
@@ -692,8 +692,8 @@ func checkGrant(where, project, person, session string) error {
 // answers for an entry that fixes no session: the exchange mints nothing under that name unless a
 // registration its deployment made says that pod uid may use it, and a relaunch is a second pod
 // uid registered for the same name rather than a refusal. An entry that fixes a session answers
-// no Instance and needs no registration, because the name it writes under is the configuration's
-// and every pod of the account writes under it.
+// no Instance and needs no registration, because the name its tokens carry is the
+// configuration's, the same for every pod of the account.
 //
 // A read entry always fixes its session, so its pods are answered the same way, with the claims
 // of a token that writes nothing: the entry's service and session, ProjectScopeNone, and no
@@ -1066,15 +1066,16 @@ var sessionRule = fmt.Sprintf("a session name is printable, carries no whitespac
 
 // resolveSession answers the session claim for an entry whose fixed session is fixed and a request
 // that named named, where identity names who is asking. An entry that fixes a session answers it
-// and refuses a request that names another, rather than quietly writing under the fixed one; an
-// entry that fixes none has nothing to fall back on, so the request must name a usable session.
+// and refuses a request that names another, rather than quietly putting the fixed one in its
+// place; an entry that fixes none has nothing to fall back on, so the request must name a usable
+// session.
 //
 // A refused name is described and never repeated: it comes from the request, so its length and
 // its bytes are whatever the caller sent.
 func resolveSession(fixed, named, identity string) (string, error) {
 	if fixed != "" {
 		if named != "" && named != fixed {
-			return "", fmt.Errorf("%w: %s writes as %s", ErrSessionMismatch, identity, fixed)
+			return "", fmt.Errorf("%w: %s's tokens name the session %s", ErrSessionMismatch, identity, fixed)
 		}
 		return fixed, nil
 	}

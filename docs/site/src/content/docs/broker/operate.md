@@ -463,8 +463,8 @@ reads that variable for nothing: an agent session's id is minted when the sessio
 token must name it, since the Envoy listener refuses a subscribe, an unsubscribe, a role claim or a
 send from a session whose token names another. So a fleet whose entry fixes a session, or whose
 pods write under registered names, is a fleet no agent session can trade at: the broker refuses
-the trade, naming what the entry writes as. For a person to sign in there, give the machine the
-device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
+the trade, naming the session the entry's tokens carry. For a person to sign in there, give the
+machine the device-flow client as `AGENT_SECRETS_SIGNIN_CLIENT_ID` and
 `AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE`, the client whose
 id is `BROKER_SIGNIN_DEVICE_AUDIENCE`. With `AGENT_SECRETS_MACHINE_IDENTITY` unset nothing trades
 and every machine works as it did, through a machine login a person approves.

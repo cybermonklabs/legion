@@ -1014,7 +1014,7 @@ func expiryOf(token map[string]any) (time.Time, bool) {
 // a pod uid) that no registration names for the session the token would write under, reading
 // oauthstore.Store.PodSessionRegistered in the exchange's own transaction. An exchange whose
 // claims carry no instance is not gated: a fixed-session entry's pod, a workflow run and a dev box
-// each write under a name their configuration or their person decides, and nothing of theirs is
+// each carry a name their configuration or their person decides, and nothing of theirs is
 // registered.
 //
 // It is the second, independent rule beside the claim on the session name: the claim refuses
