@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -26,9 +27,11 @@ import (
 )
 
 // answeringBroker is POST /v1/oauth/exchange/pod-sessions answering every write at once, as the
-// registration stands after it.
+// registration stands after it. atWrite, when set, is called with the write's number (1 for the
+// first) as the write arrives, before it is answered.
 type answeringBroker struct {
-	pod string
+	pod     string
+	atWrite func(n int)
 
 	mu     sync.Mutex
 	writes int
@@ -39,7 +42,11 @@ func (b *answeringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	b.mu.Lock()
 	b.writes++
+	n := b.writes
 	b.mu.Unlock()
+	if b.atWrite != nil {
+		b.atWrite(n)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"pod_uid": b.pod, "session": body.Session, "thumbprint": body.Thumbprint, "expires_at": time.Now().Add(24 * time.Hour),
@@ -128,7 +135,21 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		// holds the lock, before it answers: long enough that the pump is parked on the lock.
 		hold = 300 * time.Millisecond
 	)
-	broker := &answeringBroker{pod: pod}
+	// The pump's state, which the broker reads as the renewal's write (the second) arrives:
+	// waitingOnStep is when the pump called Handle with the first tool step, and leftStep when
+	// that call returned; later steps change neither. parkedAtRenewal is whether, as the
+	// renewal's write reached the broker, the pump had called Handle and not yet left it — so the
+	// write landed while the stop held the lock the pump waited on. The stop waits for that
+	// write's answer while it holds the lock, so the pump cannot have left; unlike the moment the
+	// test reads after the stop returns, which Handle's deferred unlock precedes.
+	var waitingOnStep, leftStep atomic.Int64
+	var renewalArrived, parkedAtRenewal atomic.Bool
+	broker := &answeringBroker{pod: pod, atWrite: func(n int) {
+		if n == 2 {
+			parkedAtRenewal.Store(waitingOnStep.Load() != 0 && leftStep.Load() == 0)
+			renewalArrived.Store(true)
+		}
+	}}
 	server := httptest.NewServer(broker)
 	defer server.Close()
 	tokenFile := filepath.Join(t.TempDir(), "token")
@@ -182,9 +203,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 	}
 
 	// The pump: every stream event to the machine, through Handle itself, so a decision holding
-	// the machine's lock holds the pump too. waitingOnStep is when the pump called Handle with the
-	// first tool step, and leftStep when that call returned; later steps change neither.
-	var waitingOnStep, leftStep atomic.Int64
+	// the machine's lock holds the pump too. It records waitingOnStep and leftStep (above).
 	// helloHandled closes once the pump has handed the machine the shim's hello, which the agent's
 	// registration follows, as it does on a pod.
 	helloHandled := make(chan struct{})
@@ -218,13 +237,21 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 	}
 	t.Cleanup(func() { conn.Close() })
 	writer, lines := shimwire.NewWriter(conn), bufio.NewReader(conn)
+	// send is called from the shim's goroutine, which may outlive a failed test, so it never
+	// touches t: the first write error is kept for the test goroutine to report.
 	var writeMu sync.Mutex
+	var sendErr error
 	send := func(frame shimwire.Frame) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		if err := writer.WriteFrame(frame); err != nil {
-			t.Errorf("the shim's %s: %v", frame.FrameType(), err)
+		if err := writer.WriteFrame(frame); err != nil && sendErr == nil {
+			sendErr = fmt.Errorf("the shim's %s: %w", frame.FrameType(), err)
 		}
+	}
+	shimFailed := func() error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return sendErr
 	}
 	send(shimwire.Hello2{BootToken: bootToken, AgentSecrets: &shimwire.AgentSecretsHello{Thumbprint: thumbprint, PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.at-the-hello"}})
 	line, err := lines.ReadBytes('\n')
@@ -316,13 +343,19 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 	stopReturned := time.Now()
 	sinceAnswer := stopReturned.Sub(time.Unix(0, answeredAt.Load()))
 	t.Logf("the stop of %s waited %s in all, %s of it after the shim answered the token (RPC timeout %s)", session, waited, sinceAnswer, rpc)
+	if err := shimFailed(); err != nil {
+		t.Errorf("%v", err)
+	}
 
-	entered, left := waitingOnStep.Load(), leftStep.Load()
+	entered := waitingOnStep.Load()
 	if entered == 0 || entered > stopReturned.UnixNano() {
 		t.Fatalf("the pump never waited on the machine's lock with the tool step while the stop held it (entered %d, the stop returned %d): the test proves nothing", entered, stopReturned.UnixNano())
 	}
-	if left != 0 && left < stopReturned.UnixNano() {
-		t.Fatalf("the pump left Handle before the stop returned: the stop did not hold the lock the pump waited on")
+	// Not leftStep against stopReturned: Handle's deferred unlock frees the lock before the stop's
+	// Handle returns, so the parked pump may legally leave first. Whether the write in flight
+	// landed while the pump was parked is read at the write itself.
+	if renewalArrived.Load() && !parkedAtRenewal.Load() {
+		t.Errorf("the renewal's write of %s reached the broker when the pump was not parked on the lock the stop held (it had not called Handle, or had left it): the stop did not hold the lock while its write was in flight", session)
 	}
 	if sinceAnswer > rpc/5 {
 		t.Errorf("the stop of %s waited %s after the shim answered the token, against an RPC timeout of %s: the answer was stuck behind the lock the stop held", session, sinceAnswer, rpc)

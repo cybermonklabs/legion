@@ -233,8 +233,8 @@ func (b *foreignBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (newRegistrar's adapter over the agent-secrets client) from a machine whose claim is at
 // generation 1. When the broker answers the renewal at generation 9, above the claim's current
 // generation read from the machine (supervise.PodSession.Latest, through the adapter), the daemon
-// logs at Error a registration it never made, naming the pod, the session and the generations, and
-// writes it no more.
+// logs at Error an error saying it never made that registration, naming the pod, the session and
+// the generations, and writes it no more.
 func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 	const (
 		pod        = "pod-uid-foreign"
@@ -300,16 +300,17 @@ func TestTheDaemonLogsARegistrationItNeverMadeAsForeign(t *testing.T) {
 		clock.advance(agentsecrets.RegistrationRenewal)
 	}
 
+	const foreign = "at generation 9, above this claim's generation 1 (this write's was generation 1): a registration this daemon never made"
 	var line string
 	for _, l := range strings.Split(logged.String(), "\n") {
-		if strings.Contains(l, "never made") {
+		if strings.Contains(l, foreign) {
 			line = l
 		}
 	}
 	if line == "" {
-		t.Fatalf("logged %q, want the renewal answered at generation 9, above the claim's generation 1, logged as a registration this daemon never made", logged.String())
+		t.Fatalf("logged %q, want the renewal answered at generation 9, above the claim's generation 1, logged with %q", logged.String(), foreign)
 	}
-	for _, want := range []string{"level=ERROR", "pod=" + pod, "session=" + session, "generation 9", "generation 1"} {
+	for _, want := range []string{"level=ERROR", "pod=" + pod, "session=" + session} {
 		if !strings.Contains(line, want) {
 			t.Errorf("logged %q, want it to name %s", line, want)
 		}

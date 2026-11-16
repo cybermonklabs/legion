@@ -63,10 +63,11 @@ type PodSessionRenewal struct {
 // registrationRetryMax. Every write sends r.Thumbprint and r.Generation. A permanent refusal ends
 // it, and so do an answer the broker made for another pod or key than r's (AnswerMismatchError),
 // an answer at a later generation than r's (SupersededError: a later process of this claim's
-// registration, or, above the claim's current generation, one this daemon never made), and
-// a renewal named with no thumbprint (MissingThumbprintError): no later write of the same
-// registration could be taken. Each write's outcome is logged, naming the pod and the session and
-// never a token.
+// registration, or, above the claim's current generation, one this daemon never made, which the
+// error's own message names), and a renewal named with no thumbprint (MissingThumbprintError): no
+// later write of the same registration could be taken. Each write's outcome is logged, naming the
+// pod and the session and never a token; every permanent refusal is one Error line whose error
+// says which it is.
 //
 // It returns once the first write is made, with that write's error, having scheduled the next,
 // and a stop. The stop stops the write scheduled next and returns only once a write in flight, if
@@ -129,10 +130,6 @@ func (k *podSessionKeeper) write() error {
 		if errors.As(err, &superseded) && k.r.Latest != nil {
 			superseded.Latest = k.r.Latest()
 			superseded.Foreign = superseded.Answered > superseded.Latest
-		}
-		if superseded != nil && superseded.Foreign {
-			log.Error("agent-secrets: the broker holds this pod's session registration at a generation this claim never reached, a registration this daemon never made; not writing it again", "error", err)
-			return err
 		}
 		log.Error("agent-secrets: the pod's session registration cannot be written for this pod; not writing it again", "error", err)
 		return err

@@ -600,9 +600,11 @@ func TestALateRenewalOfAnEarlierProcessStopsOnceSuperseded(t *testing.T) {
 // write with a registration at a generation above the claim's current one — above every process
 // this daemon has launched for the claim — so no process of this claim wrote it: another claim
 // registered the session id, or another service login wrote the row (review round 4 of #4153,
-// R4-1, R4-2). That is a permanent failure like any superseded write, and it is logged at Error as
-// a registration this daemon never made, naming the pod, the session and both generations, never
-// as a later process of this claim.
+// R4-1, R4-2). That is a permanent failure like any superseded write, logged at Error with an error
+// that says so: the answered generation, above the claim's current one as Latest reads it, and a
+// registration this daemon never made, never a later process of this claim. The log line's prefix
+// is the one every permanent refusal shares (review round 5 of #4153, R5-M1): the case lives in
+// the error, which is what the caller gets back as well.
 func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *testing.T) {
 	const (
 		pod     = "pod-uid-10"
@@ -615,8 +617,8 @@ func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *test
 	stop, err := c.KeepPodSession(context.Background(), PodSessionRenewal{
 		PodUID: pod, Session: session, Thumbprint: testThumbprint, Generation: 2, Bound: time.Second, After: timers.after,
 		Token: func(context.Context) (string, error) { return testPodToken, nil },
-		// The claim's current generation is this process's own: no later process exists.
-		Latest: func() int64 { return 2 },
+		// The claim has moved on to generation 4, still below the 9 the broker will answer.
+		Latest: func() int64 { return 4 },
 	})
 	defer stop()
 	if err != nil {
@@ -628,18 +630,19 @@ func TestARegistrationAtAGenerationTheClaimNeverReachedIsLoggedAsForeign(t *test
 	broker.mu.Unlock()
 	timers.fire()
 	if n := timers.armed(); n != 0 {
-		t.Fatalf("the renewal of %s, answered at generation 9 above the claim's 2, scheduled %d more writes, want none", session, n)
+		t.Fatalf("the renewal of %s, answered at generation 9 above the claim's 4, scheduled %d more writes, want none", session, n)
 	}
+	const foreign = "at generation 9, above this claim's generation 4 (this write's was generation 2): a registration this daemon never made"
 	var line string
 	for _, l := range strings.Split(logged.String(), "\n") {
-		if strings.Contains(l, "never made") {
+		if strings.Contains(l, foreign) {
 			line = l
 		}
 	}
 	if line == "" {
-		t.Fatalf("logged %q, want the answer at generation 9, above the claim's generation 2, logged as a registration this daemon never made", logged.String())
+		t.Fatalf("logged %q, want the answer at generation 9, above the claim's generation 4, logged with %q", logged.String(), foreign)
 	}
-	for _, want := range []string{"level=ERROR", "pod=" + pod, "session=" + session, "generation 2", "generation 9"} {
+	for _, want := range []string{"level=ERROR", "pod=" + pod, "session=" + session} {
 		if !strings.Contains(line, want) {
 			t.Errorf("logged %q, want it to name %s", line, want)
 		}
