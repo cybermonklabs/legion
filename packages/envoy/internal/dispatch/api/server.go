@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -717,6 +718,12 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
 		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
 	}
+	if undecided := undecidedReads(routes, readClasses); len(undecided) > 0 {
+		// A GET row with no read class is a read nothing decided who may see, and a class for a
+		// row nothing serves is a row renamed or deleted and its entry left behind; the table is
+		// refused rather than mounted (read_classes.go).
+		panic("api.Register: the route table holds a GET row the read check cannot decide: " + strings.Join(undecided, "; "))
+	}
 	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
 		// A scope named on a route nothing serves is a scope nothing enforces — a row renamed or
 		// deleted and its entry left behind — so the table is refused rather than mounted
@@ -814,14 +821,19 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// and the frames after it are the socket's (compressAnswers).
 		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
 	}
+	// The two sockets are mounted beside the table, each with what it reads (readclass.Handle):
+	// a document room holds one document of a project, and the live socket carries events of
+	// projects, people's own state and the deployment's rows.
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
 	}); ok {
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
+		readclass.Handle(mux, []readclass.Class{readclass.Project}, "GET "+pattern,
+			accesslog.Handler(pattern, s.refuseUnlistedServiceAccount(s.whileCallerResolves(trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))))))
 	}
 	const livePattern = "/ws/live"
-	mux.Handle("GET "+livePattern, accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
+	readclass.Handle(mux, []readclass.Class{readclass.Project, readclass.People, readclass.Deployment}, "GET "+livePattern,
+		accesslog.Handler(livePattern, s.whileCallerResolves(s.decideBrokerToken(trackTransactions(s.refuseUnstorableParameters(livePattern, s.serveLiveSocket))))))
 	return s
 }
 

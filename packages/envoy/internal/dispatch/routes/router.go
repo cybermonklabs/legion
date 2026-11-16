@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -303,30 +304,43 @@ type router struct {
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
 // (api.RunMaintenanceSweep).
 func New(ctx *AppContext) (http.Handler, api.Background) {
+	r, mux, background := mount(ctx)
+	if ctx.devSignInHost == "" {
+		return r.enforceCookieOrigin(mux), background
+	}
+	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+}
+
+// mount builds the router and its mux with every route mounted, and answers the API server's
+// background work. Each pattern beside the API route table is mounted through readclass.Handle
+// with what it reads; api.Register mounts the table and the two sockets.
+func mount(ctx *AppContext) (*router, *http.ServeMux, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
 	mux := http.NewServeMux()
+	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	mux.HandleFunc("GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
-	mux.HandleFunc("POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
-	mux.HandleFunc("GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	mux.HandleFunc(githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
+	// The signed-in person's own login, member kind and the event log's head, which names no row.
+	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
+	// A repository's GitHub state, held to the projects its mapping names (apiGithubRest).
+	readclass.Handle(mux, []readclass.Class{readclass.Project}, githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
 	if r.eventHead == nil {
 		r.eventHead = background.EventHead
 	}
-	mux.HandleFunc("/", r.staticHandler)
-	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+	readclass.Handle(mux, none, "/", http.HandlerFunc(r.staticHandler))
+	if ctx.devSignInHost != "" {
+		readclass.Handle(mux, none, "GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
-	mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return r, mux, background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────
