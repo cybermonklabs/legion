@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/brokertest/podclient"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -60,7 +60,7 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 	if strings.Contains(boot, "agent secret policy refused") || strings.Contains(boot, policy.ReasonOwnerTagMalformed) {
 		t.Fatalf("boot log refuses the secret %s owns, which BROKER_SERVICES registers for two accounts:\n%s", service, boot)
 	}
-	broker := brokertest.Pods{T: t, Base: "http://" + addr, Token: brokertest.IssuerTokens(t, issuer, podKey, podAudience)}
+	broker := podclient.Pods{T: t, Base: "http://" + addr, Token: podclient.IssuerTokens(t, issuer, podKey, podAudience)}
 
 	t.Log("--- the service logs in once with its own token")
 	launcher := broker.LogIn(service, loginAccount)
@@ -68,7 +68,7 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 	t.Log("--- the one credential enrolls a pod as each of accounts A and B")
 	granted := []struct {
 		name string
-		pod  brokertest.Pod
+		pod  podclient.Pod
 	}{{"A", broker.Enroll(launcher, "pod-a", accountA)}, {"B", broker.Enroll(launcher, "pod-b", accountB)}}
 
 	for _, p := range granted {

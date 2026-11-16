@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/brokertest/podclient"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -59,7 +59,7 @@ func TestAnAccountProvesOnlyTheServiceItIsListedFor(t *testing.T) {
 	}})
 	addr := process.Addr
 	requireHealthy(t, addr)
-	broker := brokertest.Pods{T: t, Base: "http://" + addr, Token: brokertest.IssuerTokens(t, issuer, podKey, podAudience)}
+	broker := podclient.Pods{T: t, Base: "http://" + addr, Token: podclient.IssuerTokens(t, issuer, podKey, podAudience)}
 
 	exampleLauncher := broker.LogIn(service, loginAccount)
 	otherLauncher := broker.LogIn(otherService, otherLogin)
@@ -71,7 +71,7 @@ func TestAnAccountProvesOnlyTheServiceItIsListedFor(t *testing.T) {
 	}
 
 	for who, c := range map[string]struct {
-		by      brokertest.Launcher
+		by      podclient.Launcher
 		runtime string
 		account string
 	}{

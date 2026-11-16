@@ -1,4 +1,14 @@
-package brokertest
+// Package podclient speaks HTTP to a running broker binary as a service and its pods do (Pods),
+// for cmd/broker's tests and for internal/broker/brokertest/requestseed, the command Dispatch's
+// browser suite seeds its pending requests with.
+//
+// It is a package of its own, apart from internal/broker/brokertest, so that the command links no
+// testcontainers: that package's rig imports broker/store/storetest, which imports
+// internal/testpg, which imports testcontainers-go, and testcontainers-go's package init reads
+// every process on the machine at each start of a binary that links it. The browser suite starts
+// requestseed several times per row, so a row paid that read each time. This package therefore
+// imports nothing that reaches the rig or testcontainers, and nothing added here may.
+package podclient
 
 import (
 	"bytes"
@@ -14,7 +24,8 @@ import (
 )
 
 // TB is the part of testing.TB a Pods calls, so a command drives a running broker with the same
-// code a test does: Dispatch's browser suite seeds its pending requests through ./requestseed.
+// code a test does: Dispatch's browser suite seeds its pending requests through
+// internal/broker/brokertest/requestseed.
 type TB interface {
 	Helper()
 	Fatalf(format string, args ...any)
