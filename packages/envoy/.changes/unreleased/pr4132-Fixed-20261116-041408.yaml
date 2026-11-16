@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `envoy-infra:gcp:Dispatch`'s `hostname` refuses a name with `--` as its third and fourth
+  characters that is not a valid internationalised (`xn--`) label, such as `ab--cd` or `xn--a`,
+  before anything registers. The front door puts `<hostname>.<tailnetDnsName>` on a certificate,
+  and no public certificate authority issues for that reserved form (RFC 5891 section 4.2.3.1), so
+  the component accepted a name whose front door could serve no HTTPS. A valid internationalised
+  label, and a name whose `--` is elsewhere, are accepted as before.
+time: 2026-11-16T04:14:08Z
+custom:
+    Issue: pr4132
