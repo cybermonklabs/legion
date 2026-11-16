@@ -51,6 +51,7 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 	requireFrames(t, standIn.collect(t, len(acked), 5*time.Second), acked...)
 	awaitAcked(t, rig.consumers, sessionID, wrote)
 
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	var away []contracts.Envelope

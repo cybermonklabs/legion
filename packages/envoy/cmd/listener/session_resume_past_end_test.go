@@ -184,6 +184,7 @@ func TestASessionClampedOnceComesBackFromItsResumeRecordAndLosesNothing(t *testi
 	requireFrames(t, standIn.collect(t, len(taken), 5*time.Second), taken...)
 	awaitAcked(t, rig.consumers, sessionID, floor)
 
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	var away []contracts.Envelope
