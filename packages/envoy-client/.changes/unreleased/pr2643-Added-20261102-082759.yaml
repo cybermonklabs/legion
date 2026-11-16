@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  `send` answers `state` (`connected` or `stopped`), and a stopped target carries `lastSeen` as an
+  unresponsive one does; `publish` answers `recipients` and `recipientsConnected`. For a stopped
+  target `sendConfirmationText` reads
+  `queued <id> for <recipient>: the session is stopped (last seen <time>); if it runs again within 72 hours, it gets the message`,
+  and `publishConfirmationText` reads `published <id> to N other sessions (M running now)`, or
+  says that no other session subscribes when the count is zero. The send and publish tool
+  descriptions say what a stopped session and the two counts mean. The consumer delivery answers
+  the listener's connection probe, a message on the relay subject that carries `Envoy-Probe: 1`
+  (`RelayHeader.probe`), `done` before it decodes anything, so the probe reaches no host, ledger
+  or resume point and logs nothing. `dispatch send-to-agent` says of a queued first attempt that
+  the session is stopped and gets the message if it runs again within 72 hours.
+time: 2026-11-02T08:27:59.485941911Z
+custom:
+    Issue: pr2643

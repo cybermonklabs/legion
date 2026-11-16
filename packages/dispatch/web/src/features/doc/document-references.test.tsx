@@ -293,7 +293,6 @@ function renderVersion(markdown: string = TEXT) {
           <VersionView
             artifactId="artifact-1"
             asks={[]}
-            blockSchema={fake.runtime.blockSchema}
             createdAt="2026-09-09T00:00:00Z"
             highlight={undefined}
             owner={undefined}

@@ -19,21 +19,26 @@ import (
 // claimed were named again (DropCatchUps now keeps every row of a telling one of whose rows is
 // leased); 262 named one decision in two catch-ups of one launch, so a composer named what another
 // telling owned (UnclaimedKept now locks the rows before it reads them, and ClaimKeptDecisions
-// claims everything a row names or fails), and later, on a schedule where a lane's lease of a
-// catch-up committed while a composer's drop of the root's catch-ups was already reading it, the
-// drop deleted the row it had read unleased — the delete's lease check is a subquery over other
-// rows, which Postgres does not recheck against a concurrently committed lease — so the lane
-// published the dropped row, its re-held copy named the decision again beside the fresh catch-up,
-// and the architect was told it twice (DropCatchUps now locks the issue's catch-ups before it
-// reads their leases, record's TestDroppingCatchUpsLeavesTheRowALaneIsLeasing); 701 spent a catch-up's re-holds while
+// claims everything a row names or fails), and later told one decision twice on a schedule the
+// model itself made: its runTogether leased a catch-up only once another row of the step had
+// started, so the lease committed inside that row's drop of the root's catch-ups, while the drop's
+// DELETE was already reading the row, and the drop deleted the row it had read unleased — the
+// delete's lease check is a subquery over other rows, which Postgres does not recheck against a
+// concurrently committed lease — so the dropped row published, its re-held copy named the decision
+// again beside the fresh catch-up, and the architect was told it twice. That late lease stood for
+// a lane's claim until #2743 put the issue's lock in ClaimRow, which the drop takes too, so no lane
+// makes that schedule while its lease is live (record's
+// TestDroppingCatchUpsLeavesTheRowALaneIsLeasing guards the lock); the model now leases every row
+// of a step before any of them runs (runTogether), so it no longer makes that schedule either
+// (dispatch://INFRA-2836); 701 spent a catch-up's re-holds while
 // its architect held its launch, and the row's deletion left the decision with nothing to name it
 // (reholdNotice now hands it to a fresh catch-up, spentKept); 41 published a catch-up (row 112)
 // whose own telling write then failed, so the decision stood kept and a later catch-up (row 115)
 // named it again — the second telling the architect ruled acceptable
 // (https://github.com/sjawhar/legion/pull/2163#issuecomment-6542200410), which the oracle now
 // accepts once and only after such a failed write (keptRun.tell, afterFailedWrite). They run at
-// 300 steps because that is where each reaches it; 262 and 41 reach it only on some schedules of
-// their rows.
+// 300 steps because that is where each reaches it; 41 reaches its fault, and 262 its first, only
+// on some schedules of their rows.
 var keptLongRegressionSeeds = []int64{11, 41, 48, 69, 73, 96, 125, 262, 311, 363, 365, 366, 367, 388, 414, 427, 432, 459, 475, 479, 701}
 
 // keptShortRegressionSeeds are the seeds whose runs at the default length found faults earlier in

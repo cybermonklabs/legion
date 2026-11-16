@@ -54,9 +54,10 @@ func TestPostSendsJSONAndAnswersWithTheStatus(t *testing.T) {
 // RetryAfter reads GitHub's rate limit from the error a call returns, wrapped or not: an *Answer
 // for an answer other than 2xx. It names how long GitHub asks the caller to wait and the budget
 // the limit spent: a Retry-After, a limit that reports no primary budget spent, or one whose
-// message names the secondary limit, is GitHub's secondary limit, which every call of the token
-// meets; a primary limit spends the budget x-ratelimit-resource names, or the REST API's core
-// budget when it names none. Any other error is no limit.
+// message names the secondary limit, whatever x-ratelimit-remaining says, is GitHub's secondary
+// limit, which every call of the token meets; a primary limit spends the budget
+// x-ratelimit-resource names, or the REST API's core budget when it names none. Any other error is
+// no limit.
 func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
 	const limited = `{"message":"API rate limit exceeded"}`
@@ -75,6 +76,9 @@ func TestRetryAfterNamesTheBudgetALimitSpent(t *testing.T) {
 		{"a secondary limit's 429", http.StatusTooManyRequests, map[string]string{"Retry-After": "17"}, limited, BudgetSecondary, 17 * time.Second, 17 * time.Second},
 		{"a secondary limit named by its message", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "4321"},
 			`{"message":"You have exceeded a secondary rate limit."}`, BudgetSecondary, time.Minute, time.Minute},
+		{"a secondary limit named by its message, with no requests left", http.StatusForbidden,
+			map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "core"},
+			`{"message":"You have exceeded a secondary rate limit."}`, BudgetSecondary, 9 * time.Minute, 10 * time.Minute},
 		{"an installation refused", http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`, "", 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -245,5 +249,106 @@ func TestARateLimitsResetFarInTheFutureWaitsNoLongerThanAnHour(t *testing.T) {
 	}
 	if !answer.RateLimited || answer.RetryAfter != time.Hour {
 		t.Fatalf("a reset six hours out = rate limited %v, retry after %s; want true and an hour's cap", answer.RateLimited, answer.RetryAfter)
+	}
+}
+
+// Every answer other than 2xx carries its rate-limit headers as GitHub sent them, which decide
+// nothing: a 403 naming the primary limit in its body alone, with calls left in its headers, is no
+// rate limit to this client, as before, and still carries what GitHub said for its caller's log.
+func TestAnAnswerCarriesTheRateLimitHeadersGitHubSent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "15000")
+		w.Header().Set("X-RateLimit-Remaining", "14671")
+		w.Header().Set("X-RateLimit-Reset", "1700000000")
+		w.Header().Set("X-RateLimit-Resource", "core")
+		http.Error(w, `{"message":"API rate limit exceeded for installation ID 7."}`, http.StatusForbidden)
+	}))
+	defer server.Close()
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+
+	var answer *Answer
+	if err := client.Get(context.Background(), "", nil); !errors.As(err, &answer) {
+		t.Fatalf("Get = %v, want an *Answer", err)
+	}
+	if answer.RateLimited || answer.RetryAfter != 0 || answer.Budget != "" {
+		t.Fatalf("the answer = rate limited %v, retry after %s, budget %q; want no limit", answer.RateLimited, answer.RetryAfter, answer.Budget)
+	}
+	if want := (LimitHeaders{Limit: "15000", Remaining: "14671", Reset: "1700000000", Resource: "core"}); answer.Limit != want {
+		t.Fatalf("the answer's rate-limit headers = %+v, want %+v as GitHub sent them", answer.Limit, want)
+	}
+}
+
+// Limit reads an answer another client received as this client reads its own. Whether the answer
+// is GitHub's rate limit is RateLimited's rule: a 429, or a 403 with X-RateLimit-Remaining: 0, a
+// Retry-After, or a message naming the secondary limit (spelled "rate limit" or "rate-limit") or
+// GitHub's abuse detection mechanism. Which limit it is, is spent's rule, which never reads the
+// status: the secondary limit where the message names it, whatever X-RateLimit-Remaining says
+// (octokit's throttling plugin reads a message saying "secondary rate" before that header, and
+// this package reads the older "abuse detection mechanism" the same way), or where the answer has
+// a Retry-After or no X-RateLimit-Remaining: 0; and otherwise the core limit (or the budget
+// X-RateLimit-Resource names). So only a 429 or a 403 with X-RateLimit-Remaining: 0, no Retry-After
+// and no such message is the core limit. The wait is retryAfter's, the one this client's own
+// Answer carries: the Retry-After, else until the reset where no requests are left, as GitHub's
+// documentation asks of the secondary limit too, else a minute. An answer that is no limit asks
+// for no wait.
+func TestLimitSaysWhichLimitAnAnswerIs(t *testing.T) {
+	now := time.Date(2026, 11, 15, 16, 0, 0, 0, time.UTC)
+	reset := strconv.FormatInt(now.Add(10*time.Minute).Unix(), 10)
+	const (
+		secondary = `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+		hyphen    = `{"message":"You have exceeded a secondary rate-limit. Please wait a few minutes before you try again."}`
+		abuse     = `{"message":"You have triggered an abuse detection mechanism. Please wait a few minutes before you try again."}`
+	)
+	for _, tc := range []struct {
+		name    string
+		status  int
+		headers map[string]string
+		body    string
+		limited bool
+		budget  Budget
+		wait    time.Duration
+	}{
+		{name: "a 429 with nothing else", status: http.StatusTooManyRequests, body: `{"message":"invented"}`,
+			limited: true, budget: BudgetSecondary, wait: time.Minute},
+		{name: "a 429 with no requests left and a reset is the core limit", status: http.StatusTooManyRequests,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
+			body:    `{"message":"invented"}`, limited: true, budget: BudgetCore, wait: 10 * time.Minute},
+		{name: "a 403 with no requests left and a reset", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "core"},
+			body:    `{"message":"API rate limit exceeded for installation ID 1."}`, limited: true, budget: BudgetCore, wait: 10 * time.Minute},
+		{name: "a 403 with a Retry-After", status: http.StatusForbidden, headers: map[string]string{"Retry-After": "30"},
+			body: `{"message":"invented"}`, limited: true, budget: BudgetSecondary, wait: 30 * time.Second},
+		{name: "a 403 with requests left, naming the secondary limit", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "21", "X-RateLimit-Reset": reset},
+			body:    secondary, limited: true, budget: BudgetSecondary, wait: time.Minute},
+		{name: "a 403 naming the secondary rate-limit, with a hyphen and no headers", status: http.StatusForbidden,
+			body: hyphen, limited: true, budget: BudgetSecondary, wait: time.Minute},
+		{name: "a 403 naming the abuse detection mechanism", status: http.StatusForbidden,
+			body: abuse, limited: true, budget: BudgetSecondary, wait: time.Minute},
+		{name: "a 403 that is no limit", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "4321", "X-RateLimit-Reset": reset},
+			body:    `{"message":"Resource not accessible by integration"}`},
+		{name: "a 403 naming the secondary limit with no requests left and no Retry-After is the secondary limit", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
+			body:    secondary, limited: true, budget: BudgetSecondary, wait: 10 * time.Minute},
+		{name: "a 403 naming the secondary rate-limit, with a hyphen, with no requests left and no Retry-After", status: http.StatusForbidden,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset},
+			body:    hyphen, limited: true, budget: BudgetSecondary, wait: 10 * time.Minute},
+		{name: "a 429 naming the secondary limit with no requests left and no Retry-After", status: http.StatusTooManyRequests,
+			headers: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset, "X-RateLimit-Resource": "core"},
+			body:    secondary, limited: true, budget: BudgetSecondary, wait: 10 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := &http.Response{StatusCode: tc.status, Header: http.Header{}}
+			for name, value := range tc.headers {
+				response.Header.Set(name, value)
+			}
+			if limited, budget := Limit(response, []byte(tc.body)); limited != tc.limited || budget != tc.budget {
+				t.Errorf("Limit = %v, %q; want %v, %q", limited, budget, tc.limited, tc.budget)
+			}
+			if wait := retryAfter(response, []byte(tc.body), now); wait != tc.wait {
+				t.Errorf("the wait = %s, want %s", wait, tc.wait)
+			}
+		})
 	}
 }

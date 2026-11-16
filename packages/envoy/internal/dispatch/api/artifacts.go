@@ -263,11 +263,13 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	s.storeArtifact(w, r, input, actor, kind, target)
 }
 
+// jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
+// jsonArtifactUpload does not declare and logs it at debug with the route; it keeps its own size
+// refusal for the artifact cap.
 func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
 	var body jsonArtifactUpload
 	var read bytes.Buffer
 	decoder := json.NewDecoder(io.TeeReader(r.Body, &read))
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&body); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
@@ -285,6 +287,9 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		s.writeHandlerError(w, refusal)
 		return artifactUploadInput{}, false
 	}
+	logUndeclaredMembers(r, &body, read.Bytes())
+	// `primary` stays declared, though no upload may set it, so that it is refused by name rather
+	// than ignored: an upload never makes a document the issue's primary one.
 	if body.Primary != nil {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
 		return artifactUploadInput{}, false
@@ -624,7 +629,14 @@ func (s *server) storeArtifact(
 		size := len(input.content)
 		content := input.content
 		if s.deps.Files != nil {
-			content = nil
+			keep, err := fleetServesFilesFromRows(r.Context(), tx)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if !keep {
+				content = nil
+			}
 		}
 		var versionAuthors []byte
 		if err := tx.QueryRow(r.Context(), `
@@ -980,7 +992,7 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 }
 
 // artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
-// answers, on all three artifact patterns.
+// answers without `download=true`, on all three artifact patterns.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
@@ -989,6 +1001,9 @@ type artifactVersionText struct {
 	model.Version
 }
 
+// getArtifactVersion answers one version of an artifact on all four version routes: a document's
+// text as artifactVersionText, or as its Markdown under its file name at the download address,
+// and a file's or an image's bytes (serveFileVersion).
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -998,16 +1013,38 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
 		return
 	}
+	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
+	// routes; any other value, `1` included, answers as without the parameter.
+	download := r.URL.Query().Get("download") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	latest := 0
+	for _, version := range artifact.Versions {
+		latest = max(latest, version.Number)
+	}
+	// The file name is the artifact's name as this read finds it, so a renamed document downloads
+	// under its new name, and an older version's carries its number (versionFilename).
+	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
 		var markdown string
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
+			return
+		}
+		if download {
+			// The download is the Markdown file itself, not the JSON that wraps it: the text the
+			// JSON's `markdown` field holds, with no display tree read.
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
+			w.Header().Set("Cache-Control", downloadCacheControl)
+			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, markdown)
 			return
 		}
 		hash := sha256.Sum256([]byte(markdown))
@@ -1038,7 +1075,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.serveFileVersion(w, r, artifact.ID, number, content, contentType, sha, size)
+	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
 // deref is the string a nullable column holds, or "".
@@ -1173,6 +1210,11 @@ type editArtifactResponse struct {
 	Token        string         `json:"token"`
 	UnchangedOps []int          `json:"unchanged_ops"`
 	Version      *model.Version `json:"version"`
+	// Written is the markdown the batch wrote, read back off the tree it wrote
+	// (docs.EditOutcome.Written): each of the document's own blocks the write added, changed or
+	// moved, in document order, and a line for each one it removed or emptied. It is empty for a
+	// batch that left the document as it was.
+	Written string `json:"written"`
 }
 
 func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
@@ -1320,6 +1362,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		Token:        edit.Token,
 		UnchangedOps: unchanged,
 		Version:      version,
+		Written:      edit.Written,
 	}
 	// The ask blocks the edit added, read from the documents the batch was applied to: whether an
 	// operation's markdown makes a block depends on where it lands and on the parser's reading of
@@ -2046,18 +2089,22 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// carries none and its slug is the role's, for a row a rolling deploy left with no role because
-// the build that created it did not know the column. It is documentRolePredicate's answer about
-// one row, so every reader — the queries that find a document by its role and the routes that
-// judge the document in hand — agrees about the same row.
+// is an issue's document that carries none and its slug is the role's, for a row a rolling deploy
+// left with no role because the build that created it did not know the column. A role belongs to
+// an issue's documents alone - documentRole gives none to any other, and the constraint
+// artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
+// column to them - so a project document whose slug is a role's, a project's plan.md, plays no
+// role and is a plain document. It is documentRolePredicate's answer about one row, so every
+// reader — the queries that find a document by its role and the routes that judge the document in
+// hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
 // true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and a row that carries none falls back to its
-// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// row that carries a role carries one of them, and an issue's row that carries none falls back to
+// its slug, which the map pairs with a single role - so the order this walks the map in cannot
 // change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
 // whose role column is still null the role its slug decides, which is the state a rolling deploy
 // leaves behind. A document that plays none of them answers "", which omits the field of a
@@ -2081,13 +2128,15 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or the slug a document of that name carries, for a row
-// a rolling deploy left with no role. `alias` is empty where the query names no alias.
+// document of one role: the role itself, or, for an issue's row a rolling deploy left with no
+// role, the slug a document of that name carries. A project document never plays a role
+// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
+		alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query

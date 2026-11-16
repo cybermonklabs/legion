@@ -111,6 +111,8 @@ export const realStackReasons: Record<string, string> = {
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",
   "delivery-groups.e2e.ts": "grouping and the window's counts are the server's aggregation",
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
+  "delivery-queued.e2e.ts":
+    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
@@ -119,6 +121,8 @@ export const realStackReasons: Record<string, string> = {
   "document-way-back.e2e.ts":
     "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
+  "download-names.e2e.ts":
+    "the server computes each download's Content-Disposition, the name the browser saves, and its Cache-Control; the rows write a version and then download again, since an older version's name changes only once a newer one is written",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
   "failed-room.e2e.ts": "a document room that fails and recovers",
@@ -219,6 +223,8 @@ export const realStackReasons: Record<string, string> = {
     "the trap is asserted while a send is out; asserts the project document's live editor content",
   "picture-link-click.e2e.ts": "the link is clicked inside the live document editor",
   "pictures.e2e.ts": "pastes and uploads, with the live editor and stored markdown read back",
+  "pinned-review-events.e2e.ts":
+    "the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state",
   "pipeline.e2e.ts": "`sql`-seeded pipeline state the server aggregates",
   "plain-http-origin.e2e.ts": "types into the live document over the plain-HTTP origin",
   "plain-http-proxy.e2e.ts": "counts the live socket upstream of a real proxy",
