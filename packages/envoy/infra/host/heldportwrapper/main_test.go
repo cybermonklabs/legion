@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/sockettest"
 )
 
 // The wrapper's real-process tests: the wrapper this directory builds, run as the held-port image
@@ -53,8 +56,10 @@ func TestTheListenerServesTheHeldSocketInTheWrappersProcess(t *testing.T) {
 		t.Fatalf("the wrapper's process %d runs %s, not the listener %s: the wrapper did not execute it in its place", pid, exe, want)
 	}
 
-	socket := "socket:[" + listeningInode(t, port) + "]"
-	holders := descriptorsOf(t, pid, socket)
+	holders, err := sockettest.Descriptors(pid, listeningInode(t, port))
+	if err != nil {
+		t.Fatalf("read the listener's descriptors: %v", err)
+	}
 	if len(holders) != 1 {
 		t.Fatalf("the listener holds the socket on descriptors %v, want exactly one: its own serving copy", holders)
 	}
@@ -193,7 +198,7 @@ func requireFailedNaming(t *testing.T, process *cmdtest.Process, socket string) 
 func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	t.Helper()
 	addr := held.Addr().String()
-	socket := "socket:[" + listeningInode(t, held.Addr().(*net.TCPAddr).Port) + "]"
+	inode := listeningInode(t, held.Addr().(*net.TCPAddr).Port)
 	processes, err := filepath.Glob("/proc/[0-9]*")
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +208,15 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 		if err != nil || pid == os.Getpid() {
 			continue
 		}
-		if fds := descriptorsOf(t, pid, socket); len(fds) > 0 {
+		fds, err := sockettest.Descriptors(pid, inode)
+		// A process of another user's, whose descriptors this test may not read, is passed over.
+		if errors.Is(err, fs.ErrPermission) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read process %d's descriptors: %v", pid, err)
+		}
+		if len(fds) > 0 {
 			t.Errorf("process %d holds the socket on %s on descriptors %v", pid, addr, fds)
 		}
 	}
@@ -218,7 +231,7 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 }
 
 // listeningInode returns the inode of the socket listening on 127.0.0.1:port, from /proc/net/tcp.
-func listeningInode(t *testing.T, port int) string {
+func listeningInode(t *testing.T, port int) uint64 {
 	t.Helper()
 	file, err := os.Open("/proc/net/tcp")
 	if err != nil {
@@ -243,29 +256,11 @@ func listeningInode(t *testing.T, port int) string {
 	if len(inodes) != 1 {
 		t.Fatalf("/proc/net/tcp lists %d sockets listening on 127.0.0.1:%d, want exactly one", len(inodes), port)
 	}
-	return inodes[0]
-}
-
-// descriptorsOf returns the descriptors of process pid that are socket, read from /proc/<pid>/fd:
-// none for a process that has exited or whose descriptors this test may not read.
-func descriptorsOf(t *testing.T, pid int, socket string) []int {
-	t.Helper()
-	dir := fmt.Sprintf("/proc/%d/fd", pid)
-	entries, err := os.ReadDir(dir)
+	inode, err := strconv.ParseUint(inodes[0], 10, 64)
 	if err != nil {
-		return nil
+		t.Fatalf("/proc/net/tcp lists the socket listening on 127.0.0.1:%d with inode %q", port, inodes[0])
 	}
-	var fds []int
-	for _, entry := range entries {
-		if target, err := os.Readlink(filepath.Join(dir, entry.Name())); err == nil && target == socket {
-			fd, err := strconv.Atoi(entry.Name())
-			if err != nil {
-				t.Fatalf("%s lists %q", dir, entry.Name())
-			}
-			fds = append(fds, fd)
-		}
-	}
-	return fds
+	return inode
 }
 
 // closeOnExec reports whether descriptor fd of process pid is close-on-exec, from the octal flags

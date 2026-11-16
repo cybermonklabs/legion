@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/sockettest"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -146,54 +146,28 @@ func socketInode(t *testing.T, file *os.File) uint64 {
 }
 
 // checkSocket fails the test, naming when, unless each pid in copies holds the socket of inode on
-// that many descriptors, read from /proc/<pid>/fd, and /proc/net/tcp and /proc/net/tcp6 list it in
+// that many descriptors (sockettest.Descriptors), and /proc/net/tcp and /proc/net/tcp6 list it in
 // rows rows: one while any process holds it listening, none once every holder has closed it. A
-// process that has exited and been reaped has no /proc/<pid>/fd, and so holds none. It reads
-// /proc, so off Linux it checks nothing and says so.
+// process that has exited and been reaped holds none. It reads /proc, so off Linux it checks
+// nothing and says so.
 func checkSocket(t *testing.T, when string, inode uint64, copies map[int]int, rows int) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
 		t.Logf("%s: the held socket's holders are read from /proc, which %s has not; not checked", when, runtime.GOOS)
 		return
 	}
-	link := fmt.Sprintf("socket:[%d]", inode)
 	for pid, want := range copies {
-		if got := descriptorsLinking(t, pid, link); len(got) != want {
+		got, err := sockettest.Descriptors(pid, inode)
+		if err != nil {
+			t.Fatalf("%s: read process %d's descriptors: %v", when, pid, err)
+		}
+		if len(got) != want {
 			t.Errorf("%s: process %d holds the held socket on descriptors %v, want %d of them", when, pid, got, want)
 		}
 	}
 	if got := socketRows(t, inode); len(got) != rows {
 		t.Errorf("%s: /proc/net/tcp lists the held socket in %d rows %q, want %d", when, len(got), got, rows)
 	}
-}
-
-// descriptorsLinking names each descriptor of pid whose /proc/<pid>/fd link is link. A pid with no
-// such directory holds none.
-func descriptorsLinking(t *testing.T, pid int, link string) []string {
-	t.Helper()
-	dir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
-	var linking []string
-	for _, entry := range entries {
-		target, err := os.Readlink(filepath.Join(dir, entry.Name()))
-		// The listing's own descriptor, and any other closed since the listing was read.
-		if errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("read %s/%s: %v", dir, entry.Name(), err)
-		}
-		if target == link {
-			linking = append(linking, entry.Name())
-		}
-	}
-	return linking
 }
 
 // socketRows returns the local address and state of each row of /proc/net/tcp and /proc/net/tcp6

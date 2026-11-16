@@ -121,7 +121,11 @@ itself, whose tests import its sources by relative path.
   a hold that fails fails that row alone): the port of a server the test stopped is free for any
   other process to take, and port 1 is refused only while nothing on the machine listens there,
   which a privileged process, or any process of a container whose `ip_unprivileged_port_start` is
-  0, can.
+  0, can. For the same reason a row that checks a port was let go reads the socket itself, never a
+  bind of the port: by its inode, in `/proc/net/tcp` and in each holder's `/proc/<pid>/fd`
+  (`packages/envoy/internal/sockettest` for the Go tests of `packages/envoy`, the readers in
+  `scripts/e2e/lib/held-port.test.ts`), or, for a socket that is bound and never listens, which
+  `/proc/net/tcp` does not list, by the descriptor that held it (`refused-port.test.ts`).
 
 - A suite that needs a program this host may not have skips with that program's name. Call
   `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
