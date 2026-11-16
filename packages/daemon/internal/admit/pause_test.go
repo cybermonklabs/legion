@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -282,5 +283,46 @@ func TestTheEntrySweepsGateOwesNothingWhileTheProjectIsPaused(t *testing.T) {
 	endTestPause(t, pool, pause, fixedNow.Add(time.Minute))
 	if !entrySweepGateOpens(t, pool, admission) {
 		t.Fatalf("the gate over %s answers no once the pause has ended: its architect is still owed its entry", root)
+	}
+}
+
+// The stalled-tree notice counts no time a pause held the project, as the architect-stalled arms
+// count none (stallFloor, decision 14 of dispatch://INFRA-3759): a pause stops every role of a
+// tree, so a tree quiet only because the pause held it is no tree that has stopped. A tree quiet
+// past the bound, whose quiet stretch a pause covered, is told nothing at the first pass after
+// the resume; it is told once the bound has passed again since the pause ended, and the notice
+// still says how long the tree has been quiet, the pause's time included.
+func TestTheStalledTreeNoticeCountsNoTimeAPauseHeldTheProject(t *testing.T) {
+	pool := migratedPool(t)
+	admission := quiet(t, 1)
+	admission.UseStalledTreeNotice(6 * time.Hour)
+	registerController(t, pool)
+	const root = "LEGION-880"
+	seedQuietRoot(t, pool, root, "Q", phase.Implementing)
+	seedClaim(t, claimStore(t, pool), root, root, claim.RoleImplementer, supervise.StateIdle)
+	settled := settleMovements(t, pool, root)
+
+	pause := pauseTestProject(t, pool, settled.Add(30*time.Minute))
+	admission.now = func() time.Time { return settled.Add(7 * time.Hour) }
+	tick(t, pool, admission, "while-paused")
+	if got := stalledNotices(t, pool); len(got) != 0 {
+		t.Fatalf("the controller was told %#v while the project is paused, want nothing: the pause stopped every role of the tree", got)
+	}
+	resumed := settled.Add(7*time.Hour + time.Minute)
+	endTestPause(t, pool, pause, resumed)
+
+	admission.now = func() time.Time { return resumed.Add(time.Minute) }
+	tick(t, pool, admission, "after-the-resume")
+	if got := stalledNotices(t, pool); len(got) != 0 {
+		t.Fatalf("the controller was told %#v at the first pass after the resume, want nothing: the pause held the project "+
+			"for most of the tree's quiet time", got)
+	}
+
+	admission.now = func() time.Time { return resumed.Add(6*time.Hour + time.Minute) }
+	tick(t, pool, admission, "past-the-bound-since-the-resume")
+	got := stalledNotices(t, pool)
+	if len(got) != 1 || got[0].issue != root || !strings.Contains(got[0].reason, "The tree has been quiet for 13.0 hours.") {
+		t.Fatalf("the controller was told %#v once the bound had passed since the pause ended, want one notice of %s that "+
+			"says how long the tree has been quiet", got, root)
 	}
 }

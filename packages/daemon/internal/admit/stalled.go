@@ -168,8 +168,18 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	if len(candidates) == 0 {
 		return nil
 	}
-	// Step 2: the measure the rule decides on.
+	// Step 2: the measure the rule decides on. The quiet time is counted from no earlier than
+	// the end of the project's latest pause (stallFloor), as the architect-stalled arms count
+	// theirs: a pause stops every role of a tree, so a tree quiet only while the pause held the
+	// project has not stopped (decision 14 of dispatch://INFRA-3759). The floor is read here,
+	// past step 1, so a project with no tree past the bound pays no read for it; the notice still
+	// says how long the tree has been quiet, the pause's time included. Nothing reaches this
+	// while the project is paused, because the pass promotes nothing then (promoteHolds).
 	quiet, claims, err := a.quietTrees(ctx, tx, issues, now)
+	if err != nil {
+		return err
+	}
+	floor, _, err := a.readStallFloor(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -177,7 +187,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	claimed := false
 	for _, root := range candidates {
 		measure := quiet[root.Key]
-		if measure.Quiet <= a.stalledTreeNotice {
+		if min(measure.Quiet, floor.sinceFloor(now)) <= a.stalledTreeNotice {
 			continue
 		}
 		if told := root.TreeStalledToldAt; told != nil && !measure.MovedAt.After(*told) {

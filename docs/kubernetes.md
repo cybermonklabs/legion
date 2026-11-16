@@ -5572,6 +5572,8 @@ A long queue at the resume is not reported as stuck.
 A woken role's stuck clock (`pod_resumes.clock_at`) starts when the pacing lets its launch out, and the resume starts it again for each wake that the pause held.
 The stuck warning and the stranded-claim report read that clock, and both pass over a project that is paused.
 The architect-stalled wake reads none of its arms while the project is paused, and after a pause each arm counts its time from no earlier than the end of the latest pause, so the resume tells the controller of no stall that the pause made (`stallFloor`, `internal/admit/architect_stall.go`).
+The stalled-tree notice and the entry sweep's gate say nothing while the project is paused, because the admission pass promotes nothing then and the gate answers no (`promoteHolds` and `OwesEntryWork`, `internal/admit/admit.go`).
+After a pause a tree is told it has stopped only once `stalled_tree_notice_hours` has passed since the pause ended, and the notice still names how long the tree has been quiet (`tellStalledTrees`, `internal/admit/stalled.go`).
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
 `read_release_records` counts such a wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
 A held wake names no release.

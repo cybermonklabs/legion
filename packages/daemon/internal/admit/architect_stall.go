@@ -147,10 +147,11 @@ func (f stallFloor) count(since time.Time) (from time.Time, said string) {
 		f.pause, f.at.UTC().Format(time.RFC3339))
 }
 
-// maxStartAge is the most age a queued start of the root's run counts with at now
-// (workflow.ArchitectRelaunchOf): the time since the floor, since a pause holds every start, and
-// the largest duration where no pause has ended.
-func (f stallFloor) maxStartAge(now time.Time) time.Duration {
+// sinceFloor is the most time a wait of the project counts at now: the time since the floor,
+// since a pause holds every start and stops every role, and the largest duration where no pause
+// has ended. A queued start of a root's run counts its age no further back
+// (workflow.ArchitectRelaunchOf), and a tree its quiet time (tellStalledTrees).
+func (f stallFloor) sinceFloor(now time.Time) time.Duration {
 	if f.at.IsZero() {
 		return math.MaxInt64
 	}
@@ -433,7 +434,7 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 	if held != nil && held.State != supervise.StateFailed && held.State != supervise.StateRetired {
 		return ""
 	}
-	relaunch := workflow.ArchitectRelaunchOf(run, root, floor.maxStartAge(now))
+	relaunch := workflow.ArchitectRelaunchOf(run, root, floor.sinceFloor(now))
 	if relaunch == workflow.RelaunchNext {
 		return ""
 	}
