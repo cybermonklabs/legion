@@ -41,12 +41,12 @@ func owedCount(t *testing.T, ctx context.Context, pool *store.Pool, repo string,
 }
 
 // A pull request a GitHub outage owed a read is read by the reconcile's first pass after GitHub
-// answers again, however many refusals are owed before it. Every envelope that names a pull
-// request GitHub does not have owes a refusal, and any Envoy /v1 bearer can publish such
-// envelopes (dispatch://INFRA-3911), so the owed reads of refusals must take no read from the
-// reads a failure owes. The forged envelopes go through the real intake and are owed before the
-// real one; the real one's read fails as it does in an outage (a 500), and the cap's own record
-// owes it (Intake.oweEnvelopesRead). forged_0 is the control. The reviewer's probe
+// answers again, however many refusals were owed before the outage, where no pass ran during it.
+// Every envelope that names a pull request GitHub does not have owes a refusal, and any Envoy /v1
+// bearer can publish such envelopes (dispatch://INFRA-3911), so the owed reads of refusals must
+// take no read from the reads a failure owes. The forged envelopes go through the real intake and
+// are owed before the real one; the real one's read fails as it does in an outage (a 500), and the
+// cap's own record owes it (Intake.oweEnvelopesRead). forged_0 is the control. The reviewer's probe
 // (TestReview2OwedQueueRealReadWaitsBehindForgedRefusals) measured, before the fix:
 // `forged=250 … pass_pull_reads=200 owed_after_pass=251 real_head_is_basis_after_one_pass=false`.
 func TestAnOutagesOwedReadIsNotHeldBehindForgedRefusals(t *testing.T) {

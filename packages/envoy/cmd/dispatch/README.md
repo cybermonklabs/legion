@@ -1456,12 +1456,21 @@ A read that GitHub answers writes the row, creating it where none exists and wha
 A `failure` is read again every pass until GitHub answers, and a `refusal` settles at its first read once it has been owed for one reconcile period (`owedReadRefusalFinalAfter`).
 So a `refusal` is kept until the reconcile's first read of it after it has been owed for 5 minutes, and a pull request GitHub still answers 404 for at that read has no head until its next event.
 No reader of a head reads that table, so an owed read is never a head, a basis or a merge.
-After an outage, the head of a pull request whose envelope the intake gave up on is written by the first reconcile pass after GitHub answers again: within one period, 5 minutes and up to a tenth more (`delivery.ReconcileInterval`, `duty.Jittered`), however many refusals are owed.
-With 10,000 refusals owed before it, that first pass makes 51 reads of GitHub for the owed rows, the failure and 50 refusals (`TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure`).
+With no forged envelopes, the first reconcile pass after GitHub answers again writes the head of a pull request whose envelope the intake gave up on.
+That pass comes within one period, 5 minutes and up to a tenth more (`delivery.ReconcileInterval`, `duty.Jittered`).
+Forged envelopes can delay that head by more passes when a pass runs during the outage.
+During the outage, a pass reads up to 50 refusals, and each of these reads fails.
+Each such row then becomes a `failure` with fewer reads than the real failure, so it goes before the real failure.
+After the outage, each 200 such rows can delay the real head by one more pass.
+With 10,000 refusals owed before the outage and no pass during it, the first pass after GitHub answers again makes 51 reads of GitHub for the owed rows: the failure and 50 refusals (`TestTenThousandOwedRefusalsTakeNoReadFromAnOwedFailure`).
 Any bearer of Envoy's `/v1` publish route can name a pull request GitHub never had, and each such envelope owes a `refusal`; dispatch://INFRA-3911 owns forged envelopes.
-So the 50 reads a pass are the most such envelopes cost, about 600 reads an hour of the App's installation, and a run of N of them is gone after about N/50 passes.
+Outside an outage, the 50 reads a pass are the most such envelopes cost, about 600 reads an hour of the App's installation, and a run of N of them is gone after about N/50 passes.
 The bound does not hold for a real pull request whose own read was refused because GitHub's answer had not caught up with its webhook, since that pull request is a `refusal` too.
-Its head is written by the first pass after the lag only while fewer than 50 refusals rank before it, that is, refusals read no more often than it and owed earlier, and each further 50 delay it by one pass.
+The refusals go in this order: the row with the fewest reads first, then the row owed longest.
+If no pass has read the real refusal, the first pass after the lag reads it only while fewer than 50 refusals with no reads were owed before it.
+Each further 50 such refusals delay it by one pass.
+If a pass read the real refusal while GitHub still lagged, each later refusal with no reads goes before it.
+Then a flood of forged envelopes that continues can hold it back with no fixed bound.
 A later event of that pull request reads GitHub at once regardless.
 That hand-back is the process's own answer to the durable rather than the stop's, so it is made only while the process still holds the durable's hold and the hold records the deliver subject the envelope arrived on:
 a process whose hold has lapsed publishes nothing, and the next holder's take-over, which recreates the durable at its ack floor, hands it that envelope once.

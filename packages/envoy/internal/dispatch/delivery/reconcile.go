@@ -561,8 +561,10 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 // readOwedPullRequests reads from GitHub the pull requests owed a read (pull_request_reads_owed,
 // owePullRequestRead): every failure first, at most PullRequestHeadBatch of them a pass, and then
 // the refusals, at most RefusedReadsPerPass, each kind the row read the fewest times first and
-// then the one owed longest (listOwedPullRequestReads). So a table full of refusals, which forged
-// envelopes can make, takes no read from a failure, which a GitHub outage or a slow read leaves.
+// then the one owed longest (listOwedPullRequestReads). So outside a GitHub outage a table full of
+// refusals, which forged envelopes can make, takes no read from a failure, which an outage or a
+// slow read leaves; during an outage the refusals a pass reads fail, become failures, and go
+// before the real failure in the passes after it (pull_request_reads_owed.go).
 // These come before the stored rows: nothing else writes the head of a pull request that has no
 // row, or reads a merged or closed one again. The read writes the row, creating it where none
 // exists, through the refresh every stored row takes, and recordOwedReadOutcome settles the owed

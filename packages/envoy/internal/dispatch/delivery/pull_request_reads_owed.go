@@ -33,14 +33,19 @@ package delivery
 //
 // The two budgets are what keep a forged envelope from costing a real one its head. Any bearer of
 // Envoy's /v1 publish route can name a pull request GitHub never had, and each such envelope owes
-// a refusal (dispatch://INFRA-3911 owns forged envelopes). Refusals take no read from a failure,
-// so the head of a pull request an outage or a slow read left owed is written by the first pass
-// after GitHub answers again, however many refusals are owed. A real pull request whose own read
-// was refused, because GitHub's answer had not caught up with its webhook, is a refusal itself:
-// the first pass after the lag reads it only when fewer than RefusedReadsPerPass refusals rank
-// before it, that is, refusals the reconcile has read no more often and that were owed earlier.
-// A larger run of forged envelopes in the minutes before it delays its head by one pass for each
-// RefusedReadsPerPass of them, and its next event reads GitHub at once regardless.
+// a refusal (dispatch://INFRA-3911 owns forged envelopes). Outside a GitHub outage, refusals take
+// no read from a failure, so the head of a pull request an outage or a slow read left owed is
+// written by the first pass after GitHub answers again. During an outage, a pass reads up to
+// RefusedReadsPerPass refusals and each read fails, so each such row becomes a failure with fewer
+// reads than the real failure and goes before it: after the outage, each PullRequestHeadBatch of
+// such rows can delay the real head by one more pass. A real pull request whose own read was
+// refused, because GitHub's answer had not caught up with its webhook, is a refusal itself, and
+// refusals go fewest reads first, then owed longest. So the first pass after the lag reads it,
+// where no pass has read it yet, only when fewer than RefusedReadsPerPass refusals with no reads
+// were owed before it, and each further RefusedReadsPerPass of them delay it by one pass. Where a
+// pass read it while GitHub still lagged, every later refusal with no reads goes before it, so a
+// flood that continues can hold it back with no fixed bound. Its next event reads GitHub at once
+// regardless.
 //
 // No reader of a head reads this table. The results read, the CI-proved checks and the delivery
 // timeline read pull_request_heads and delivery_pull_requests alone, so an owed read is never a
@@ -69,10 +74,11 @@ const (
 )
 
 // RefusedReadsPerPass is how many pull requests owed a refusal one reconcile pass reads, after
-// every failure it reads. It bounds what forged envelopes cost: at most 50 reads of the App's
-// installation a pass, about 600 an hour, however many are owed, and none of them taken from a
-// failure. A refusal is settled at its first read past owedReadRefusalFinalAfter, so a run of N
-// forged envelopes is gone after about N/50 passes.
+// every failure it reads. Outside a GitHub outage it bounds what forged envelopes cost: at most 50
+// reads of the App's installation a pass, about 600 an hour, however many are owed, and none of
+// them taken from a failure. During an outage the refusals a pass reads fail and become failures,
+// so they take failure reads after it. A refusal is settled at its first read past
+// owedReadRefusalFinalAfter, so a run of N forged envelopes is gone after about N/50 passes.
 const RefusedReadsPerPass = 50
 
 // owedReadRefusalFinalAfter is how long a pull request must have been owed a read before
