@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import type { SpecFormFinding, SpecFormRead } from "@legion/contracts";
+import type { SpecFormFinding, SpecFormRead, SpecFormTerm } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
@@ -565,21 +565,129 @@ describe("dispatch spec-form", () => {
     expect(stdout).toBe("Dispatch found no issue under ACME-9, so it read no document.\n");
   });
 
-  test("--root beside --issue, --artifact or --version is refused before any request", async () => {
+  test("--root beside --issue, --artifact, --version or --terms is refused before any request", async () => {
     for (const extra of [
       ["--issue", "ACME-2"],
       ["--artifact", "spec.md"],
       ["--version", "2"],
+      ["--terms"],
     ]) {
       requests.length = 0;
       const { code, stdout } = await run(["spec-form", "--root", "ACME-1", ...extra]);
 
       expect(code, extra.join(" ")).toBe(2);
       expect(stdout, extra.join(" ")).toContain(
-        "root walks every issue under that root: name no issue, project, artifact, version or ref with it."
+        "root walks every issue under that root: name no issue, project, artifact, version, ref or terms with it."
       );
       expect(requests, extra.join(" ")).toEqual([]);
     }
+  });
+});
+
+describe("dispatch spec-form --terms", () => {
+  const session: SpecFormTerm = {
+    term: "session",
+    definition: "One conversation of an agent, with its id, in which the agent does its work.",
+    document: "terms.md",
+    version: 3,
+    issue: "ACME-1",
+  };
+  const lease: SpecFormTerm = {
+    term: "lease",
+    definition: "The time for which a session holds an issue.",
+    document: "spec.md",
+    version: 2,
+    issue: "ACME-2",
+  };
+  const sessionLine =
+    "session: One conversation of an agent, with its id, in which the agent does its work. (terms.md version 3 of ACME-1)";
+
+  test("prints the list of terms of the document's root, one line per term with the document, the version and the issue that define it", async () => {
+    forms["ACME-2-spec"] = {
+      ...formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 1 }, [
+        finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
+      ]),
+      terms: [lease, session],
+    };
+
+    const { code, stdout, stderr } = await run([
+      "spec-form",
+      "ACME-2",
+      "--artifact",
+      "spec.md",
+      "--terms",
+    ]);
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "The list of terms of ACME-1 holds 2 terms:",
+      "lease: The time for which a session holds an issue. (spec.md version 2 of ACME-2)",
+      sessionLine,
+      "",
+    ]);
+    expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form"]);
+  });
+
+  test("with no --artifact, prints the root's list once, from the spec of the issue", async () => {
+    forms["ACME-5-spec"] = {
+      ...formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 2 }),
+      terms: [session],
+    };
+    forms["ACME-5-verification"] = {
+      ...formRead("ACME-5-verification", "verification.md", 1, "covered", { claim: 1 }),
+      terms: [session],
+    };
+
+    const { code, stdout } = await run(["spec-form", "ACME-5", "--terms"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "The list of terms of ACME-1 holds 1 term:",
+      sessionLine,
+      "",
+    ]);
+    expect(formReads()).toEqual(["/api/v1/artifacts/ACME-5-spec/spec-form"]);
+  });
+
+  test("with no --artifact, names a document with no version yet and reads the list from the next one", async () => {
+    forms["ACME-6-verification"] = {
+      ...formRead("ACME-6-verification", "verification.md", 1, "covered", { claim: 1 }),
+      terms: [session],
+    };
+
+    const { code, stdout } = await run(["spec-form", "ACME-6", "--terms"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "spec.md has no version yet, so Dispatch read no text in it.",
+      "The list of terms of ACME-1 holds 1 term:",
+      sessionLine,
+      "",
+    ]);
+  });
+
+  test("an issue with no spec and no Verification document has no document to read the list from", async () => {
+    const { code, stdout } = await run(["spec-form", "ACME-3", "--terms"]);
+
+    expect(code).toBe(0);
+    expect(stdout).toBe(
+      "ACME-3 has no spec and no Verification document, so Dispatch read no list of terms.\n"
+    );
+    expect(formReads()).toEqual([]);
+  });
+
+  test.each([
+    ["no_root", "This server names no root of The Spec, so it holds no list of terms."],
+    ["outside", "spec.md is not under a root of The Spec, so it has no list of terms."],
+    ["covered", "The list of terms of ACME-1 holds no term."],
+  ])("a document of scope %s with no term says why it lists none", async (scope, line) => {
+    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, scope, { statement: 1 });
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md", "--terms"]);
+
+    expect(code).toBe(0);
+    expect(stdout).toBe(`${line}\n`);
   });
 });
 

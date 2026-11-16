@@ -908,6 +908,11 @@ With no `--artifact`, it reads the spec and the Verification document of the iss
 `dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
 It ends with the count of issues and documents it read.
 
+`dispatch spec-form --issue <KEY> [--artifact <document>] --terms` prints the list of terms of the document's root in place of the findings.
+Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it, in the order of the terms.
+With no `--artifact`, it reads the list from the spec of the issue, or from its Verification document while the spec has no version.
+A document that no root holds has no list, and `--terms` goes with no `--root`.
+
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
 [--reason <text>]` records a person's review of one version of an issue's document: what the
 document header's Approve and Request changes record (`reviewCommand`,

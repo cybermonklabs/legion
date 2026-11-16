@@ -2,10 +2,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createIssue, createProject, editArtifact, getAsk, listIssueAsks, patchIssue } from "./api";
+import {
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  editArtifact,
+  getArtifact,
+  getAsk,
+  listIssueAsks,
+  patchIssue,
+} from "./api";
 import { type CliRun, cliSession, runDispatch } from "./dispatch-cli";
-import { inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
-import { expect, test } from "./test";
+import { askControls, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
+import { expect, type Page, test } from "./test";
 
 /**
  * The form of The Spec, end to end: Dispatch refuses an approval request, and a person's approval,
@@ -14,12 +23,17 @@ import { expect, test } from "./test";
  * the real server, whose root is `STE-1`: `e2e/run-server.sh` names it in `DISPATCH_SPEC_ROOTS`
  * unless the caller's `DISPATCH_E2E_SPEC_ROOTS` names another root.
  *
- * Every row seeds the same tree in the project STE. The root, an issue outside it, and four issues
- * whose spec holds one statement of three sentences. Three of them are under the issue outside the
- * root when the agent asks for their approval, so Dispatch opens those requests, which is the
- * control of the gate's scope. Then two of them move under the root, so the person's approval of
- * them is judged; the third stays outside until the reopen row moves it. The fourth is under the
- * root from the start, and the agent's request of it is refused.
+ * The first four rows seed the same tree in the project STE. The root, an issue outside it, and
+ * four issues whose spec holds one statement of three sentences. Three of them are under the issue
+ * outside the root when the agent asks for their approval, so Dispatch opens those requests, which
+ * is the control of the gate's scope. Then two of them move under the root, so the person's
+ * approval of them is judged; the third stays outside until the reopen row moves it. The fourth is
+ * under the root from the start, and the agent's request of it is refused.
+ *
+ * The last two rows seed the list of terms instead: the root's terms.md defines `session`, the
+ * agent asks for its approval, and the person approves it in the Inbox. One issue under the root
+ * then defines `session` again, or a term that only the agent's unapproved version of terms.md
+ * defines.
  */
 
 /** The root of The Spec that `e2e/run-server.sh` names for every harness server. */
@@ -111,6 +125,63 @@ async function seedTree(home: string) {
   await patchIssue(header.key, { parent: root.key });
   await patchIssue(card.key, { parent: root.key });
   return { asks, card, header, reopened, requested };
+}
+
+/** The definition of `session` that the person approves in the root's terms.md. */
+const sessionDefinition =
+  "One conversation of an agent, with its id, in which the agent does its work.";
+/** A second definition of `session`, which the form refuses under the root. */
+const otherSession = "The record of one agent process in Envoy.";
+/** The definition of a term that the approved list does not hold. */
+const leaseDefinition = "The time for which a session holds an issue.";
+/** The one statement of a spec that defines terms, which breaks no rule. */
+const oneSentence = "Dispatch keeps each message for 72 hours.";
+/** The line `spec-form --terms` prints for the approved `session`. */
+const sessionListLine = `session: ${sessionDefinition} (terms.md version 1 of ${ROOT})`;
+
+/** A term line as the form reads one under a `Terms` heading, without its list marker: an edit
+ *  replaces the text of a list item and keeps its marker. */
+function termLine(term: string, definition: string): string {
+  return `**${term}**: ${definition}`;
+}
+
+/** A spec of one statement and a `## Terms` list that defines each of `lines`. */
+function specWithTerms(...lines: string[]): string {
+  const items = lines.map((line) => `- ${line}`).join("\n");
+  return `# Spec\n\n:::requirement{#${node}}\n${oneSentence}\n:::\n\n## Terms\n\n${items}\n`;
+}
+
+/**
+ * The root of The Spec with its terms.md, which defines `session`. The agent asks for its approval
+ * through the real command, and the signed-in person approves it in the Inbox: only a version that
+ * a person approved counts for the list of terms.
+ */
+async function seedApprovedTerms(page: Page, home: string): Promise<{ terms: string }> {
+  await createProject({ key: "STE", name: "The Spec" });
+  const root = await createIssue({ project: "STE", title: "The Spec" });
+  // e2e/run-server.sh names this key, so the seed must make it.
+  expect(root.key).toBe(ROOT);
+  const terms = await createIssueArtifact(
+    ROOT,
+    { content: `# Terms\n\n- ${termLine("session", sessionDefinition)}\n`, name: "terms.md" },
+    agent
+  );
+  const requested = await runDispatch(
+    ["request-approval", "--issue", ROOT, "--artifact", "terms.md", "--summary", "The terms."],
+    home
+  );
+  // The root's terms.md is judged too, and its one definition of one sentence breaks no rule.
+  expect(requested.code, printed(requested)).toBe(0);
+  expect(requested.stdout).toContain(
+    "Dispatch read the form of 0 statements, 0 claims, 0 purposes and 1 definition against 0 terms: no text breaks it."
+  );
+  await page.goto("/");
+  const head = await askControls(page, await theOpenRequest(ROOT));
+  await head.getByRole("button", { exact: true, name: "Approve" }).click();
+  await expect
+    .poll(async () => (await getArtifact(terms.artifact.id)).approval?.state)
+    .toBe("approved");
+  return { terms: terms.artifact.id };
 }
 
 // SLOW(>=2s): eight cold `bun` starts of the real `dispatch` command around one Inbox page load.
@@ -286,5 +357,98 @@ test("a reopen leaves a broken request under the root resolved with its finding,
     await page.goto("/");
     await expect(inboxRow(page, tree.asks.card)).toBeVisible();
     await expect(inboxRow(page, tree.asks.reopened)).toHaveCount(0);
+  });
+});
+
+// SLOW(>=2s): four cold `bun` starts of the real `dispatch` command around the person's Approve in the Inbox.
+test("an agent's second definition of a term that the person approved under the root is refused with the term and the document that defines it, and spec-form --terms shows the definition to use", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    await seedApprovedTerms(page, home);
+    const change = await createIssue({
+      parent: ROOT,
+      project: "STE",
+      spec: specWithTerms(termLine("lease", leaseDefinition), termLine("session", otherSession)),
+      title: "Defines session again",
+    });
+    const request = ["request-approval", "--issue", change.key, "--summary", "The message."];
+
+    // The request is refused: the finding names the term and the document that defines it.
+    const refused = await runDispatch(request, home);
+    expect.soft(refused.code, printed(refused)).toBe(1);
+    expect
+      .soft(printed(refused))
+      .toContain(
+        "SPEC_FORM: Dispatch refused this approval request, because 1 text breaks the form of The Spec."
+      );
+    expect
+      .soft(printed(refused))
+      .toContain(
+        `- definition session in spec.md version 1: terms.md version 1 of ${ROOT} already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first.`
+      );
+    expect.soft(await openRequests(change.key)).toEqual([]);
+
+    // The list of terms shows the definition to use, with the document that defines it.
+    const list = await runDispatch(["spec-form", "--issue", change.key, "--terms"], home);
+    expect.soft(list.code, printed(list)).toBe(0);
+    expect.soft(list.stdout).toContain(sessionListLine);
+
+    // The agent removes the second definition, and the request opens against the one term.
+    await editArtifact(
+      change.primary_artifact_id,
+      { ops: [{ find: termLine("session", otherSession), op: "delete" }] },
+      agent
+    );
+    const opened = await runDispatch(request, home);
+    expect(opened.code, printed(opened)).toBe(0);
+    expect(opened.stdout).toContain(
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition against 1 term: no text breaks it."
+    );
+  });
+});
+
+// SLOW(>=2s): three cold `bun` starts of the real `dispatch` command around the person's Approve in the Inbox.
+test("spec-form --terms lists only what the person approved: the agent's later version of terms.md changes nothing in the list, and its new term is no second definition", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await withHome(async (home) => {
+    const { terms } = await seedApprovedTerms(page, home);
+    // The agent's version 2 replaces `session` with `lease`, and no person approves it.
+    await editArtifact(
+      terms,
+      {
+        ops: [
+          {
+            find: termLine("session", sessionDefinition),
+            op: "replace",
+            with: termLine("lease", leaseDefinition),
+          },
+        ],
+      },
+      agent
+    );
+    await expect.poll(async () => ((await getArtifact(terms)).versions ?? []).length).toBe(2);
+    const change = await createIssue({
+      parent: ROOT,
+      project: "STE",
+      spec: specWithTerms(termLine("lease", leaseDefinition)),
+      title: "Defines lease",
+    });
+
+    const list = await runDispatch(["spec-form", "--issue", change.key, "--terms"], home);
+    expect.soft(list.code, printed(list)).toBe(0);
+    expect
+      .soft(list.stdout)
+      .toBe(`The list of terms of ${ROOT} holds 1 term:\n${sessionListLine}\n`);
+
+    const request = ["request-approval", "--issue", change.key, "--summary", "The lease."];
+    const opened = await runDispatch(request, home);
+    expect(opened.code, printed(opened)).toBe(0);
+    expect(opened.stdout).toContain(
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 1 definition against 1 term: no text breaks it."
+    );
   });
 });

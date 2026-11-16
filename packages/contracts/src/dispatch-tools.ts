@@ -174,20 +174,27 @@ export function pathKeepsBytesOf(name: string): boolean {
 
 const artifactOwner = documentOwnerValidation(false);
 
-/** What dispatch_spec_form says of root beside any argument that names a document. */
+/** What dispatch_spec_form says of root beside any argument of a read of one document. */
 const SPEC_FORM_ROOT_RULE =
-  "root walks every issue under that root: name no issue, project, artifact, version or ref with it.";
+  "root walks every issue under that root: name no issue, project, artifact, version, ref or terms with it.";
 
-/** The arguments that name one document, which a walk of a root takes none of. */
-const SPEC_FORM_DOCUMENT_ARGUMENTS = ["issue", "project", "artifact", "version", "ref"] as const;
+/** The arguments of a read of one document, which a walk of a root takes none of. */
+const SPEC_FORM_DOCUMENT_ARGUMENTS = [
+  "issue",
+  "project",
+  "artifact",
+  "version",
+  "ref",
+  "terms",
+] as const;
 
 const specFormDocumentOwner = documentOwnerValidation(true);
 
 /**
  * dispatch_spec_form reads one document, or the spec and the Verification document of one issue,
  * under the document-owner rule. With root, it walks the issues under that root, which names them
- * all, so no argument that names a document goes beside it. The schema hands each callback the
- * parsed arguments object.
+ * all, so no argument of a read of one document (terms among them) goes beside it. The schema hands
+ * each callback the parsed arguments object.
  */
 const specFormValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => {
@@ -1523,7 +1530,8 @@ export const dispatchToolSpecs = [
       "It lists each statement, check, component purpose and term that breaks the form, with its rule. " +
       "It writes nothing. " +
       "It says whether the document is under a root of The Spec, and how many texts it read. " +
-      "With root, it lists each issue under that root and the form of each document that the root covers.",
+      "With root, it lists each issue under that root and the form of each document that the root covers. " +
+      "With terms, it lists the terms of the document's root in place of the findings, each with its definition and the document that defines it.",
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1546,6 +1554,12 @@ export const dispatchToolSpecs = [
         )
         .optional(),
       ref: z.string().describe("Optional dispatch:// document reference.").optional(),
+      terms: z
+        .boolean()
+        .describe(
+          "List the terms of the document's root, each with its definition and the document that defines it, in place of the findings."
+        )
+        .optional(),
     }),
     validation: specFormValidation,
   },
