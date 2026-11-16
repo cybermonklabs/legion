@@ -64,34 +64,27 @@ can also enroll a box and read the operator's agent secrets. `agent-secrets --he
 form, and each form answers `-h`.
 
 Before the broker spends a stored value, it removes that value's trailing line endings under one
-rule, and the secret's `shape` tag says how to read the value. `shape: token` is a one-line
-credential, an API key or a bearer token: the whole trailing run of carriage returns and line
-feeds goes, unless the value is nothing but line endings, which stays as it is. `shape: document`
-is a value whose every byte is part of it, a PEM key for one, and nothing goes. A secret with no
-tag is read by the broker's own reading of the value: that run goes only where the rest of the
-value is not empty and holds no carriage return and no line feed, so a PEM document keeps the
-line feed that ends it.
+rule, which reads the value itself and no tag at all: the whole trailing run of carriage returns
+and line feeds goes only where what is left is not empty and holds no carriage return and no line
+feed, so a one-line API key or bearer token loses the ending an editor or a shell left behind,
+a PEM document keeps the line feed that ends it, and a value that is nothing but line endings
+stays as it is.
 
 The rule reaches the stored value alone, in both of the broker's reads of the store: the value a
 session is handed, and the input a minter reads. A token a minter makes is never changed. The
 broker writes one line at INFO for each value it changed, `broker: a stored value's trailing line
-ending was removed name=<NAME>`, which carries the secret's name and no part of any value. An
-owner whose value the rule reads wrongly answers that line with one retag: `agent-secrets secret
-retag <NAME> --shape document`.
+ending was removed name=<NAME>`, which carries the secret's name and no part of any value.
 
-`agent-secrets secret create --shape token|document` writes the tag, `secret retag --shape
-token|document|none` changes it or removes it, `secret show` prints it as a `shape:` line, and
-`secret list` prints it as a `SHAPE` column. `secret create` and `secret set` read the value they
+`secret create` and `secret set` read the value they
 store by this same rule, so a value stored through this client and a value stored by any other
-writer are spent alike. `secret set` reads the secret's own kind and shape tags first, so a
-document's owner stores a document. Where the rule changes nothing, the client still removes one
+writer are spent alike. Where the rule changes nothing, the client still removes one
 final line feed, which it has always done, so `echo` and a file that ends in a newline store the
 value without one.
 
 A kind secret's value is checked before it is written, by the decoder the broker's minter for that
 kind reads it with: `secret create --kind` checks the value it stores, `secret set` checks it under
 the kind tag the secret holds, and `secret retag` checks the value the secret holds when it
-changes the kind, or the shape of a secret that keeps a kind. A value that minter could not mint
+changes the kind. A value that minter could not mint
 from is refused with the minter's reason, exit 2, and nothing is written. The retag reads the
 value for that check and never prints it. A sign-in the store refuses that read still writes the
 tags, and the retag says on standard error that the value was not checked and names the

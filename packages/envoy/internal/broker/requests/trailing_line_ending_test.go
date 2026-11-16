@@ -98,8 +98,8 @@ func wantTrimLog(t *testing.T, captured string, changed, unchanged []string) {
 	}
 }
 
-// TestTheBrokerTrimsAStoredValuesTrailingLineEnding is what a release of a secret carrying no
-// shape tag hands over: the broker reads the value for itself (policy.TrimForShape), so a
+// TestTheBrokerTrimsAStoredValuesTrailingLineEnding is what a release of a secret hands over: the
+// broker reads the value for itself (policy.TrimLineEnding), so a
 // one-line credential loses its whole trailing run of carriage returns and line feeds, however
 // many and in whichever order, while a value holding a line ending inside it, and one that is
 // nothing but line endings, are released byte for byte. The rule reaches the input a minter is
