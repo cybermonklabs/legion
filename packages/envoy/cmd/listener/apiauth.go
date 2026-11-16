@@ -34,14 +34,12 @@ const (
 )
 
 // The warnings an admission on one of the two credentials the shared token's removal waits on
-// logs, once a minute each (admissionWarnings).
+// logs, and how often each logs at most (admissionWarnings).
 const (
 	sharedTokenAdmittedMessage = "listener: request admitted on the shared token"
 	openAdmittedMessage        = "listener: request admitted with no credential"
+	admissionWarnEvery         = time.Minute
 )
-
-// admissionWarnEvery is how often each of the two credentials the removal waits on logs a warning.
-const admissionWarnEvery = time.Minute
 
 // newListenerRequests registers envoy_listener_requests_total, the census the removal of the
 // shared token and of the open /v1 is gated on: both credential="shared_token" and
@@ -67,7 +65,8 @@ type listenerAPIAuth struct {
 	brokers *brokerTokens
 	// allowedHosts is ENVOY_ALLOWED_HOSTS, the names an open /v1 serves beside loopback.
 	allowedHosts []string
-	logger       *logging.Logger
+	// logger takes every refusal and every warned admission; apiAuth refuses an auth without one.
+	logger *logging.Logger
 	// requests is envoy_listener_requests_total (newListenerRequests); nil counts nothing.
 	requests *metrics.Counter
 	// route names the route a request reaches, the counter's path label (startingGate.route);
@@ -90,7 +89,8 @@ func (a listenerAPIAuth) requiresBearer() bool {
 type googleIdentities struct {
 	// audience is ENVOY_OIDC_GOOGLE_AUDIENCE, the audience the caller asks its metadata server for.
 	audience string
-	// verifier verifies a token Google (oidc.GoogleIssuer) signed for audience.
+	// verifier verifies a token Google (oidc.GoogleIssuer) signed for audience; apiAuth refuses
+	// Google identities without one.
 	verifier *oidc.Verifier
 	// accounts is ENVOY_OIDC_GOOGLE_ACCOUNTS, each address in lower case.
 	accounts []string
@@ -209,10 +209,11 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // never to the caller, since naming it would tell an unauthenticated client which credential the
 // listener is configured for.
 //
-// The two identity-token bearers are told apart by the token's own issuer (oidc.Verifier.Issues):
-// a token Google issued goes to the Google branch, any other to the projected-token one, and a
-// listener that takes only one of them gives it every token, so each refusal is logged with its
-// class and no token is judged twice.
+// The two identity-token bearers are told apart by the token's own issuer
+// (oidc.Verifier.IssuesGoogleIdentity), including Google's scheme-less issuer spelling: a token
+// Google issued goes to the Google branch, any other to the projected-token one, and a listener
+// that takes only one of them gives it every token, so each refusal is logged with its class and
+// no token is judged twice.
 //
 // Every request it admits is counted in envoy_listener_requests_total under the credential that
 // admitted it and the route it reached (route), and an admission on the shared token or on none
@@ -220,7 +221,7 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // the shared token and of the open /v1 is gated on.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
-// nil on one that does not), and there the scheme alone decides it, before both bearer ones:
+// nil on one that does not), and there the scheme alone decides it, before every bearer one:
 // RFC 9449 Section 7.2 refuses a DPoP-bound token presented under any other scheme, so a DPoP
 // presentation is this credential whatever the listener's other settings are, and is never
 // retried as a bearer. It comes before the open pass-through too, which is what binds a session
@@ -242,7 +243,18 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // listener with no bearer and no ENVOY_API_ALLOW_UNAUTHENTICATED — because a broker token is a
 // credential a caller may hold rather than one this listener can require: every client of /v1
 // that holds none would be locked out by a setting whose purpose is to tell callers apart.
+//
+// An auth without its logger, or with Google identities that carry no verifier, is a programming
+// error, refused here at construction rather than at the first request that would reach either:
+// every refusal and every warned admission writes to the logger, and every identity token the
+// Google branch takes goes to that verifier.
 func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
+	if auth.logger == nil {
+		panic("listener API auth built without its logger")
+	}
+	if auth.google != nil && auth.google.verifier == nil {
+		panic("listener API auth built with Google identities but no verifier for them")
+	}
 	open := !auth.requiresBearer()
 	warnings := newAdmissionWarnings(auth.now)
 	admit := func(w http.ResponseWriter, r *http.Request, credential string) {
@@ -299,7 +311,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 
 		if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
 			switch {
-			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.Issues(raw)):
+			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.IssuesGoogleIdentity(raw)):
 				if auth.google.admits(r, raw, auth.logger) {
 					admit(w, r, credentialGoogle)
 					return
@@ -424,8 +436,9 @@ func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]s
 		return nil, errors.New("ENVOY_OIDC_ACCOUNTS needs ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE: it names the projected-token callers that pair's verifier admits")
 	}
 	for _, account := range accounts {
-		namespace, name, found := strings.Cut(strings.TrimPrefix(account, serviceAccountSubjectPrefix), ":")
-		if !strings.HasPrefix(account, serviceAccountSubjectPrefix) || !found || namespace == "" || name == "" || strings.Contains(name, ":") {
+		rest, prefixed := strings.CutPrefix(account, serviceAccountSubjectPrefix)
+		namespace, name, found := strings.Cut(rest, ":")
+		if !prefixed || !found || namespace == "" || name == "" || strings.Contains(name, ":") {
 			return nil, fmt.Errorf("ENVOY_OIDC_ACCOUNTS must be whitespace-separated system:serviceaccount:<namespace>:<name> subjects, got %q", account)
 		}
 	}

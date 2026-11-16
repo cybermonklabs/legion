@@ -308,14 +308,29 @@ func TestAPIAuthValidatesV1BodyContentType(t *testing.T) {
 // service-account token, naming the class and never repeating the bearer.
 func assertRejectionLog(t *testing.T, logged, wantReason, authorize string) {
 	t.Helper()
-	const message = "listener: service-account token rejected"
+	raw, bearer := strings.CutPrefix(authorize, "Bearer ")
+	if !bearer {
+		raw = ""
+	}
+	assertRejectionLines(t, logged, "listener: service-account token rejected", wantReason, "", raw)
+}
+
+// assertRejectionLines holds the listener to one line carrying message per refused token, naming
+// the class wantReason, naming the account wantAccount when one is expected, and never repeating
+// raw, the token it refused. An empty wantReason expects no line.
+func assertRejectionLines(t *testing.T, logged, message, wantReason, wantAccount, raw string) {
+	t.Helper()
 	lines := 0
 	for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
-		if strings.Contains(line, message) {
-			lines++
-			if !strings.Contains(line, `"reason":"`+wantReason+`"`) {
-				t.Fatalf("rejection line does not name reason %q: %s", wantReason, line)
-			}
+		if !strings.Contains(line, message) {
+			continue
+		}
+		lines++
+		if !strings.Contains(line, `"reason":"`+wantReason+`"`) {
+			t.Fatalf("rejection line does not name reason %q: %s", wantReason, line)
+		}
+		if wantAccount != "" && !strings.Contains(line, `"account":"`+wantAccount+`"`) {
+			t.Fatalf("rejection line does not name the account %q: %s", wantAccount, line)
 		}
 	}
 	want := 0
@@ -323,10 +338,10 @@ func assertRejectionLog(t *testing.T, logged, wantReason, authorize string) {
 		want = 1
 	}
 	if lines != want {
-		t.Fatalf("logged %d rejection lines, want %d; log: %s", lines, want, logged)
+		t.Fatalf("logged %d rejection lines %q, want %d; log: %s", lines, message, want, logged)
 	}
-	if raw, ok := strings.CutPrefix(authorize, "Bearer "); ok && raw != "" && strings.Contains(logged, raw) {
-		t.Fatalf("the log repeats the bearer it refused: %s", logged)
+	if raw != "" && strings.Contains(logged, raw) {
+		t.Fatalf("the log repeats the token it refused: %s", logged)
 	}
 }
 

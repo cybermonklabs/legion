@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,36 +103,8 @@ func bearerRequest(path, authorize string) *http.Request {
 
 var served = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
-// assertGoogleRejectionLog holds the listener to one rejection line per refused Google identity
-// token, naming the class, naming the account when the token named one, and never repeating the
-// token.
-func assertGoogleRejectionLog(t *testing.T, logged, wantReason, wantAccount, raw string) {
-	t.Helper()
-	const message = "listener: Google identity token rejected"
-	lines := 0
-	for _, line := range strings.Split(strings.TrimSpace(logged), "\n") {
-		if !strings.Contains(line, message) {
-			continue
-		}
-		lines++
-		if !strings.Contains(line, `"reason":"`+wantReason+`"`) {
-			t.Fatalf("rejection line does not name reason %q: %s", wantReason, line)
-		}
-		if wantAccount != "" && !strings.Contains(line, `"account":"`+wantAccount+`"`) {
-			t.Fatalf("rejection line does not name the account %q: %s", wantAccount, line)
-		}
-	}
-	want := 0
-	if wantReason != "" {
-		want = 1
-	}
-	if lines != want {
-		t.Fatalf("logged %d Google rejection lines, want %d; log: %s", lines, want, logged)
-	}
-	if raw != "" && strings.Contains(logged, raw) {
-		t.Fatalf("the log repeats the token it refused: %s", logged)
-	}
-}
+// googleRejectedMessage is the one line a refused Google identity token logs (googleIdentities.admits).
+const googleRejectedMessage = "listener: Google identity token rejected"
 
 // ENVOY_OIDC_ACCOUNTS holds the projected-token branch to the subjects it lists: any pod of the
 // cluster can project a token for the listener's audience, so a verified token alone says nothing
@@ -168,10 +142,7 @@ func TestOIDCAccountsLimitTheProjectedTokenBranch(t *testing.T) {
 			if tc.wantStatus == http.StatusUnauthorized && recorder.Body.String() != "{\"error\":\"unauthorized\"}\n" {
 				t.Fatalf("body = %q, want the one unauthorized body every refused credential gets", recorder.Body.String())
 			}
-			assertRejectionLog(t, logged.String(), tc.wantReason, authorize)
-			if tc.wantAccount != "" && !strings.Contains(logged.String(), `"account":"`+tc.wantAccount+`"`) {
-				t.Fatalf("the refusal does not name the subject %s: %s", tc.wantAccount, logged.String())
-			}
+			assertRejectionLines(t, logged.String(), "listener: service-account token rejected", tc.wantReason, tc.wantAccount, tc.token)
 		})
 	}
 }
@@ -195,6 +166,7 @@ func TestAListedGoogleIdentityIsAdmitted(t *testing.T) {
 	}{
 		{name: "a listener taking only Google identities admits a listed one", auth: listenerAPIAuth{google: google.identities}, authorize: "Bearer " + googleToken, wantStatus: http.StatusNoContent},
 		{name: "email_verified written as the string true is verified, as Google documents", auth: listenerAPIAuth{google: google.identities}, authorize: "Bearer " + quotedTrue, wantStatus: http.StatusNoContent},
+		{name: "a listed Google address is compared without case", auth: listenerAPIAuth{google: google.identities}, authorize: "Bearer " + google.token(t, strings.ToUpper(listenerGoogleAccount), true, listenerGoogleAudience), wantStatus: http.StatusNoContent},
 		{name: "beside a projected-token verifier the Google token reaches the Google branch", auth: listenerAPIAuth{verifier: cluster.verifier, accounts: []string{listenerListedSubject}, google: google.identities}, authorize: "Bearer " + googleToken, wantStatus: http.StatusNoContent},
 		{name: "beside Google identities a listed projected token still reaches its own branch", auth: listenerAPIAuth{verifier: cluster.verifier, accounts: []string{listenerListedSubject}, google: google.identities}, authorize: "Bearer " + cluster.token(t, listenerListedSubject), wantStatus: http.StatusNoContent},
 		{name: "a listener taking only Google identities is not open", auth: listenerAPIAuth{google: google.identities}, wantStatus: http.StatusUnauthorized},
@@ -210,9 +182,56 @@ func TestAListedGoogleIdentityIsAdmitted(t *testing.T) {
 			if recorder.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s; log: %s", recorder.Code, tc.wantStatus, recorder.Body.String(), logged.String())
 			}
-			assertGoogleRejectionLog(t, logged.String(), "", "", "")
+			assertRejectionLines(t, logged.String(), googleRejectedMessage, "", "", "")
 			assertRejectionLog(t, logged.String(), "", tc.authorize)
 		})
+	}
+}
+
+// Google's identity tokens use either spelling of its issuer. A listener that also takes
+// projected tokens must send both spellings through the account list, as a Google-only listener
+// does, without falling back to the projected-token verifier after a refusal.
+func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
+	issuer := oidctest.New(t)
+	key := issuer.PublishKey(t, "google-signing-key")
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatalf("oidc.NewKeys: %v", err)
+	}
+	google := &googleIdentities{
+		audience: listenerGoogleAudience,
+		verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys),
+		accounts: []string{listenerGoogleAccount},
+	}
+	cluster := newClusterIssuer(t)
+	for _, iss := range []string{"https://accounts.google.com", "accounts.google.com"} {
+		for _, both := range []bool{false, true} {
+			for _, listed := range []bool{true, false} {
+				t.Run(fmt.Sprintf("issuer=%s/projected=%t/listed=%t", iss, both, listed), func(t *testing.T) {
+					account := listenerGoogleAccount
+					wantStatus, wantReason := http.StatusNoContent, ""
+					if !listed {
+						account = listenerGoogleOtherEmail
+						wantStatus, wantReason = http.StatusUnauthorized, "not_listed"
+					}
+					claims := issuer.Claims("118000000000000000001", listenerGoogleAudience)
+					claims["iss"], claims["email"], claims["email_verified"] = iss, account, true
+					raw := issuer.Mint(t, key, claims)
+					var logged bytes.Buffer
+					auth := listenerAPIAuth{google: google, logger: logging.NewWithWriter("test-machine", &logged)}
+					if both {
+						auth.verifier = cluster.verifier
+					}
+					recorder := httptest.NewRecorder()
+					apiAuth(auth, served).ServeHTTP(recorder, bearerRequest("/v1/sessions", "Bearer "+raw))
+					if recorder.Code != wantStatus {
+						t.Fatalf("status = %d, want %d; body = %s; log: %s", recorder.Code, wantStatus, recorder.Body.String(), logged.String())
+					}
+					assertRejectionLines(t, logged.String(), googleRejectedMessage, wantReason, account, raw)
+					assertRejectionLog(t, logged.String(), "", raw)
+				})
+			}
+		}
 	}
 }
 
@@ -248,7 +267,7 @@ func TestAnUnlistedGoogleIdentityIsRefused(t *testing.T) {
 			if body := recorder.Body.String(); body != "{\"error\":\"unauthorized\"}\n" {
 				t.Fatalf("body = %q, want the one unauthorized body every refused credential gets", body)
 			}
-			assertGoogleRejectionLog(t, logged.String(), tc.wantReason, tc.wantAccount, tc.token)
+			assertRejectionLines(t, logged.String(), googleRejectedMessage, tc.wantReason, tc.wantAccount, tc.token)
 		})
 	}
 }
@@ -323,17 +342,19 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 		handler    http.Handler
 		request    func() *http.Request
 	}{
-		{credentialSharedToken, "/v1/sessions", closed, func() *http.Request { return bearerRequest("/v1/sessions", "Bearer "+shared) }},
-		{credentialOIDC, "/v1/registry/", closed, func() *http.Request {
+		// The labels are written out rather than taken from the constants apiAuth counts with, so a
+		// renamed label, which every query on the series would stop matching, fails here.
+		{"shared_token", "/v1/sessions", closed, func() *http.Request { return bearerRequest("/v1/sessions", "Bearer "+shared) }},
+		{"oidc", "/v1/registry/", closed, func() *http.Request {
 			return bearerRequest("/v1/registry/ses_oidc", "Bearer "+cluster.token(t, listenerUnlistedSubject))
 		}},
-		{credentialGoogle, "/v1/sessions", closed, func() *http.Request {
+		{"google", "/v1/sessions", closed, func() *http.Request {
 			return bearerRequest("/v1/sessions", "Bearer "+google.token(t, listenerGoogleAccount, true, listenerGoogleAudience))
 		}},
-		{credentialBroker, "/v1/messages/publish", closed, func() *http.Request {
+		{"broker", "/v1/messages/publish", closed, func() *http.Request {
 			return brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-counted", `{}`)
 		}},
-		{credentialNone, "/v1/registry/", open, func() *http.Request { return bearerRequest("/v1/registry/ses_anyone", "") }},
+		{"none", "/v1/registry/", open, func() *http.Request { return bearerRequest("/v1/registry/ses_anyone", "") }},
 	}
 	for _, row := range rows {
 		before := requestSeries(t, met)
@@ -356,14 +377,27 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 		}
 	}
 
-	before := requestSeries(t, met)
-	recorder := httptest.NewRecorder()
-	closed.ServeHTTP(recorder, bearerRequest("/v1/sessions", "Bearer wrong-token"))
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("a wrong bearer: status = %d, want 401", recorder.Code)
-	}
-	if after := requestSeries(t, met); fmt.Sprint(after) != fmt.Sprint(before) {
-		t.Fatalf("a refused request moved the series: %v, then %v", before, after)
+	// Nothing apiAuth refuses, and nothing it lets past without judging (the exempt paths), is
+	// counted.
+	misdirected := bearerRequest("/v1/sessions", "")
+	misdirected.Host = "rebind.attacker.example"
+	for _, refused := range []struct {
+		name    string
+		handler http.Handler
+		request *http.Request
+	}{
+		{"a wrong bearer", closed, bearerRequest("/v1/sessions", "Bearer wrong-token")},
+		{"an unlisted Google identity", closed, bearerRequest("/v1/sessions", "Bearer "+google.token(t, listenerGoogleOtherEmail, true, listenerGoogleAudience))},
+		{"an unverified Google identity", closed, bearerRequest("/v1/sessions", "Bearer "+google.token(t, listenerGoogleAccount, false, listenerGoogleAudience))},
+		{"a broker token the broker does not know", closed, brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-unknown", `{}`)},
+		{"a Host the open listener does not serve", open, misdirected},
+		{"the exempt /metrics on the open listener", open, bearerRequest("/metrics", "")},
+	} {
+		before := requestSeries(t, met)
+		refused.handler.ServeHTTP(httptest.NewRecorder(), refused.request)
+		if after := requestSeries(t, met); fmt.Sprint(after) != fmt.Sprint(before) {
+			t.Fatalf("%s moved the series: %v, then %v", refused.name, before, after)
+		}
 	}
 }
 
@@ -424,7 +458,16 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 		t.Fatalf("an admission on a projected token logged a warning: %s", logged.String())
 	}
 
-	clock = clock.Add(time.Minute)
+	// Inside the minute nothing more is logged, however close to its end.
+	clock = clock.Add(time.Minute - time.Second)
+	serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
+	serve(open, bearerRequest("/v1/sessions", ""))
+	for _, message := range []string{sharedTokenAdmittedMessage, openAdmittedMessage} {
+		if found := lines(message); len(found) != 1 {
+			t.Fatalf("%d lines %q a second before the minute ends, want 1; log: %s", len(found), message, logged.String())
+		}
+	}
+	clock = clock.Add(time.Second)
 	serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 	serve(open, bearerRequest("/v1/sessions", ""))
 	for _, message := range []string{sharedTokenAdmittedMessage, openAdmittedMessage} {
@@ -432,8 +475,8 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 		if len(found) != 2 {
 			t.Fatalf("%d lines %q once a minute had passed, want 2; log: %s", len(found), message, logged.String())
 		}
-		if !strings.Contains(found[1], `"held":2`) {
-			t.Fatalf("the second line %q does not say it held back the two admissions since the first", found[1])
+		if !strings.Contains(found[1], `"held":3`) {
+			t.Fatalf("the second line %q does not say it held back the three admissions since the first", found[1])
 		}
 	}
 }
@@ -566,5 +609,171 @@ func TestTheRouteLabelIsAPatternNeverAPath(t *testing.T) {
 	}
 	if got := requestSeries(t, met); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("series = %v, want %v", got, want)
+	}
+}
+
+// A Google issuer claim must not select a branch the listener has not configured. In particular,
+// the projected-only listener retains its verifier's admission rule when the new lists are unset.
+func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
+	cluster := newClusterIssuer(t)
+	keys, err := oidc.NewKeys(context.Background(), cluster.issuer.URL())
+	if err != nil {
+		t.Fatalf("oidc.NewKeys: %v", err)
+	}
+	claims := cluster.issuer.Claims("118000000000000000001", listenerTestAudience)
+	claims["iss"] = "https://accounts.google.com"
+	raw := cluster.issuer.Mint(t, cluster.key, claims)
+	for _, tc := range []struct {
+		name       string
+		verifier   *oidc.Verifier
+		wantStatus int
+		wantReason string
+	}{
+		{name: "the cluster verifier refuses Google's issuer", verifier: cluster.verifier, wantStatus: http.StatusUnauthorized, wantReason: "issuer"},
+		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys), wantStatus: http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			recorder := httptest.NewRecorder()
+			apiAuth(listenerAPIAuth{verifier: tc.verifier, logger: logging.NewWithWriter("test-machine", &logged)}, served).
+				ServeHTTP(recorder, bearerRequest("/v1/sessions", "Bearer "+raw))
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; log: %s", recorder.Code, tc.wantStatus, logged.String())
+			}
+			assertRejectionLog(t, logged.String(), tc.wantReason, "Bearer "+raw)
+			assertRejectionLines(t, logged.String(), googleRejectedMessage, "", "", raw)
+		})
+	}
+}
+
+// Concurrent admissions share one warning window and retain every suppressed admission in the
+// next warning's held count. Both credentials have independent windows.
+func TestAdmissionWarningsCountConcurrentAdmissions(t *testing.T) {
+	clock := time.Unix(0, 0)
+	warnings := newAdmissionWarnings(func() time.Time { return clock })
+	var logged bytes.Buffer
+	logger := logging.NewWithWriter("test-machine", &logged)
+	request := bearerRequest("/v1/sessions", "")
+	var workers sync.WaitGroup
+	for range 64 {
+		for _, credential := range []string{credentialSharedToken, credentialNone} {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				warnings.admitted(logger, credential, "/v1/sessions", request)
+			}()
+		}
+	}
+	workers.Wait()
+	clock = clock.Add(time.Minute)
+	for _, credential := range []string{credentialSharedToken, credentialNone} {
+		warnings.admitted(logger, credential, "/v1/sessions", request)
+	}
+	decoder := json.NewDecoder(&logged)
+	held := map[string][]int{}
+	for decoder.More() {
+		var line struct {
+			Credential string `json:"credential"`
+			Held       int    `json:"held"`
+		}
+		if err := decoder.Decode(&line); err != nil {
+			t.Fatalf("warning is not JSON: %v", err)
+		}
+		held[line.Credential] = append(held[line.Credential], line.Held)
+	}
+	if len(held) != 2 {
+		t.Fatalf("warning credentials = %v, want shared_token and none", held)
+	}
+	for _, credential := range []string{credentialSharedToken, credentialNone} {
+		if got := held[credential]; len(got) != 2 || got[0] != 0 || got[1] != 63 {
+			t.Fatalf("%s held counts = %v, want [0 63]", credential, got)
+		}
+	}
+}
+
+// The outer mux handles path cleaning before authentication. CONNECT skips that cleaning, but
+// every admitted request still uses one of the registered patterns, including slash redirects
+// and refusals while the gate is closed. An empty Host keeps the open listener's Host refusal.
+func TestTheRouteLabelStaysBoundedForUnusualRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, path, host, token string
+		closed                          bool
+		wantStatus                      int
+		wantPath                        string
+	}{
+		{name: "a session path", method: http.MethodGet, path: "/v1/registry/ses_one", host: "localhost", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
+		{name: "a repeated slash redirects before admission", method: http.MethodGet, path: "/v1//registry/ses_one", host: "localhost", wantStatus: http.StatusTemporaryRedirect},
+		{name: "a dot segment redirects before admission", method: http.MethodGet, path: "/v1/registry/../unknown", host: "localhost", wantStatus: http.StatusTemporaryRedirect},
+		{name: "an escaped slash stays in its route", method: http.MethodGet, path: "/v1/registry/ses%2fone", host: "localhost", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
+		{name: "an inner slash redirect", method: http.MethodGet, path: "/v1/registry", host: "localhost", wantStatus: http.StatusTemporaryRedirect, wantPath: "/v1/registry/"},
+		{name: "CONNECT with an inner slash redirect", method: http.MethodConnect, path: "/v1/registry", host: "localhost", wantStatus: http.StatusTemporaryRedirect, wantPath: "/v1/registry/"},
+		{name: "CONNECT leaves a repeated slash alone", method: http.MethodConnect, path: "/v1//registry/ses_one", host: "localhost", wantStatus: http.StatusNotFound, wantPath: "/v1/"},
+		{name: "CONNECT leaves a dot segment alone", method: http.MethodConnect, path: "/v1/registry/../ses_one", host: "localhost", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
+		{name: "an empty Host is refused when open", method: http.MethodGet, path: "/v1/registry/ses_one", wantStatus: http.StatusMisdirectedRequest},
+		{name: "an empty Host is unused beside a bearer", method: http.MethodGet, path: "/v1/registry/ses_one", token: "shared-example", wantStatus: http.StatusNoContent, wantPath: "/v1/registry/"},
+		{name: "a closed gate counts under the outer pattern", method: http.MethodGet, path: "/v1/registry/ses_one", host: "localhost", closed: true, wantStatus: http.StatusServiceUnavailable, wantPath: "/v1/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			met := metrics.New()
+			logger := logging.NewWithWriter("test-machine", io.Discard)
+			gate := newStartingGate("v1", logger)
+			if !tc.closed {
+				routes := http.NewServeMux()
+				routes.Handle("/v1/registry/", served)
+				gate.open(routes)
+			}
+			handler := apiAuth(listenerAPIAuth{token: tc.token, logger: logger, requests: newListenerRequests(met), route: gate.route}, gate)
+			outer := http.NewServeMux()
+			outer.Handle("/v1", handler)
+			outer.Handle("/v1/", handler)
+			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			request.Method, request.Host = tc.method, tc.host
+			if tc.token != "" {
+				request.Header.Set("Authorization", "Bearer "+tc.token)
+			}
+			recorder := httptest.NewRecorder()
+			outer.ServeHTTP(recorder, request)
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			series := requestSeries(t, met)
+			if tc.wantPath == "" {
+				if len(series) != 0 {
+					t.Fatalf("a request refused before admission counted: %v", series)
+				}
+				return
+			}
+			credential := credentialNone
+			if tc.token != "" {
+				credential = credentialSharedToken
+			}
+			if len(series) != 1 || series[[2]string{credential, tc.wantPath}] != 1 {
+				t.Fatalf("series = %v, want one request under %s and %s", series, credential, tc.wantPath)
+			}
+		})
+	}
+}
+
+// An auth apiAuth cannot serve is refused when the handler is built, not at the first request
+// that would reach the missing part: one with no logger, which every refusal and every warned
+// admission writes to, and one whose Google identities carry no verifier to judge a token with.
+func TestAPIAuthRefusesAnAuthItCannotServe(t *testing.T) {
+	logger := logging.NewWithWriter("test-machine", io.Discard)
+	for _, tc := range []struct {
+		name string
+		auth listenerAPIAuth
+	}{
+		{name: "an open listener with no logger", auth: listenerAPIAuth{}},
+		{name: "the shared token with no logger", auth: listenerAPIAuth{token: "expected-token"}},
+		{name: "Google identities with no verifier", auth: listenerAPIAuth{google: &googleIdentities{audience: listenerGoogleAudience, accounts: []string{listenerGoogleAccount}}, logger: logger}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("apiAuth built a handler from an auth it cannot serve")
+				}
+			}()
+			apiAuth(tc.auth, served)
+		})
 	}
 }

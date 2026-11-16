@@ -507,6 +507,11 @@ address or a name in `ENVOY_ALLOWED_HOSTS`, and answers any other `Host` with a 
 page that rebinds its own name to the listener's address cannot use the API.
 Keep the API private: only `/webhook/...` needs to be reachable from GitHub and Slack.
 
+The Google identity-token branch accepts both `https://accounts.google.com` and
+`accounts.google.com` as Google's issuer, including when the projected-token verifier is also
+configured. Both spellings require a listed, verified account address; addresses are compared
+without case.
+
 `/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
 `credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
 credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request

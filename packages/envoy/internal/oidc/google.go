@@ -5,9 +5,17 @@ import (
 	"fmt"
 )
 
-// GoogleIssuer is the issuer of every Google identity token: the token a Google machine's metadata
-// server, or Cloud Run's, mints for an audience it is asked for.
+// GoogleIssuer is the canonical issuer of a Google identity token: the token a Google machine's
+// metadata server, or Cloud Run's, mints for an audience it is asked for.
 const GoogleIssuer = "https://accounts.google.com"
+
+// IssuesGoogleIdentity reports whether raw names this verifier's issuer, including Google's
+// scheme-less spelling when the verifier is Google's. Verify accepts that spelling too. This
+// reads no signature and grants no admission; VerifyGoogleIdentity still checks the token.
+func (v *Verifier) IssuesGoogleIdentity(raw string) bool {
+	claims, err := decodeClaims(raw)
+	return err == nil && (claims.Issuer == v.issuer || v.issuer == GoogleIssuer && claims.Issuer == "accounts.google.com")
+}
 
 // VerifyGoogleIdentity is Verify for a Google identity token, which names its caller by an
 // address rather than by its subject: it also reads Claims.Email, Claims.EmailVerified and

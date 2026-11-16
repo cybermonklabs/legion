@@ -166,7 +166,7 @@ func assertBrokerRejectionLog(t *testing.T, logged, wantReason, token, proof str
 
 // The DPoP branch of /v1's authentication, outcome by outcome: who is admitted, who is refused
 // and with what, and the one line each refusal writes. The branch is driven through apiAuth
-// itself, as every other case in apiauth_test.go is, so the order it sits in — before the two
+// itself, as every other case in apiauth_test.go is, so the order it sits in — before the
 // bearers and before the open listener's pass-through — is part of what is proved.
 func TestAPIAuthBrokerToken(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

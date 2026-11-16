@@ -5369,7 +5369,7 @@ and — when `ENVOY_OIDC_GOOGLE_AUDIENCE` and `ENVOY_OIDC_GOOGLE_ACCOUNTS` are b
 `ENVOY_OIDC_ACCOUNTS`, whitespace-separated `system:serviceaccount:<namespace>:<name>` subjects, holds the projected-token branch to the subjects it lists:
 any pod of the cluster can project a token for any audience, and that branch names no session, so a verified token alone does not say which caller it is.
 Unset, the branch admits every subject the issuer signed for, as it did before the list existed;
-set beside no `ENVOY_OIDC_ISSUER`, or holding an entry of any other shape, it refuses the start, naming the entry.
+set beside no `ENVOY_OIDC_ISSUER` it refuses the start naming the pair it needs, and holding an entry of any other shape it refuses the start naming the entry.
 An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
 The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
 The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`
@@ -5378,8 +5378,8 @@ so the caller asks its metadata server for the token with `format=full`, the for
 One of the pair without the other refuses the start, naming the missing one, and so does an entry that is not an address.
 A refused Google token is one `listener: Google identity token rejected` warning carrying the class
 — `oidc.Reason`'s, `no_email`, `email_not_verified` or `not_listed` —
-the path, and the account when the token names one, never the token.
-The token's own issuer decides which of the two identity-token branches judges it (`oidc.Verifier.Issues`), and a listener that takes only one of them gives it every token.
+the path, and, for a token that verifies, the account it names, never the token.
+The token's own issuer decides which of the two identity-token branches judges it (`oidc.Verifier.IssuesGoogleIdentity`, which takes Google's scheme-less `accounts.google.com` as Google's too, as the verifier does), and a listener that takes only one of them gives it every token.
 The exempt paths (`/healthz`, `/metrics`, `/webhook/*`) require none of them, and `/livez`, which the mux answers in front of `apiAuth`, never reaches the check.
 `/v1` is open only when none is configured, so an empty `ENVOY_API_TOKEN` opens it only while no verifier is configured, and a listener whose address is not loopback refuses to start with none unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` is set.
 That flag is how an operator declares that something else fences the listener's port.
