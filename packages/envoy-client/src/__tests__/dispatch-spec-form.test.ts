@@ -437,6 +437,7 @@ describe("dispatch spec-form", () => {
       "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
       `- statement ship-at-head: ${THREE_SENTENCES}.`,
       `- statement ship-at-head: ${LONG_SENTENCE}.`,
+      REVIEWER_LINE,
       "",
     ]);
   });
