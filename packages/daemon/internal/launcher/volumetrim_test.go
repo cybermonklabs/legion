@@ -3813,9 +3813,9 @@ func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 // climbs past 91%. Over twelve sweeps its reports may carry the first episode and at most one
 // rise. Measured at 72566309 in an issue pod: the twelve reports carried twelve episodes, each
 // after the first raised by a rise, and through the daemon's glue with its clock moving eleven
-// minutes a report the architect was told of all twelve in 2h12m. A rise sets no anchor and
-// the next reported sweep anchors the new episode at its own start, 86% again, so the next
-// 91% is a rise once more.
+// minutes a report the architect was told of all twelve in 2h12m. That trimmer set no anchor at
+// a rise, and the next reported sweep anchored the new episode at its own start, 86% again, so
+// the next 91% was a rise once more.
 func TestAVolumeThatOnlyOscillatesRaisesNoNewEpisodeOnEveryCycle(t *testing.T) {
 	f := newTrimFixture(t, 0)
 	f.useVolume(func(interval int) volumeUsage {
