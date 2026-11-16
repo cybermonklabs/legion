@@ -931,7 +931,7 @@ export class DispatchClient {
     if (refusal === undefined) return answer as IssueSummaryPage;
     const url = withoutUserinfo(this.#url(path, query));
     throw new Error(
-      `GET ${url} asked for a page ({issues, total, limit, offset}) and got ` + refusal
+      `GET ${url} asked for a page ({issues, total, limit, offset}) and got ${refusal}`
     );
   }
 
