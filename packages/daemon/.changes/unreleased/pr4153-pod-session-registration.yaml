@@ -14,9 +14,9 @@ body: |-
   registration's write in flight, up to the RPC timeout, before the next process writes its own.
   Every write also sends the claim's launch generation, and the broker keeps the registration of
   the latest one, so a late write of an earlier process cannot put its key back; an answer at a
-  later generation ends that registration's writes, logged with the pod, the session and both
-  generations, as a later process of the claim's registration, or, when the answered generation is
-  above the claim's current one, at error level as a registration this daemon never made. An
+  later generation ends that registration's writes, logged at error level with the pod, the
+  session and both generations, as a later process of the claim's registration, or, when the
+  answered generation is above the claim's current one, as a registration this daemon never made. An
   answer that names another pod or another key than the daemon sent ends them
   too, logged with the pod, the session and both values. The registration needs this release's
   broker, which binds and orders it; an earlier broker refuses the `thumbprint` and `generation`
