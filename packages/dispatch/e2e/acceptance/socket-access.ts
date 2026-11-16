@@ -118,7 +118,10 @@ async function upgradeAnswer(): Promise<{ status: number; body: string }> {
   });
   connection.write(request);
   const timer = setTimeout(
-    () => received.reject(new Error(`no answer to the upgrade of ${path} within ${answerWithinMs / 1000} s`)),
+    () =>
+      received.reject(
+        new Error(`no answer to the upgrade of ${path} within ${answerWithinMs / 1000} s`)
+      ),
     answerWithinMs
   );
   try {
@@ -148,7 +151,9 @@ function documentAnswer(socket: WebSocket): Promise<string> {
     if (subtype === authenticatedSubtype) answer.resolve(`authenticated ${text}`);
     if (subtype === permissionDeniedSubtype) answer.resolve(`denied ${text}`);
   });
-  socket.addEventListener("close", (event) => answer.resolve(`closed ${event.code} ${event.reason}`));
+  socket.addEventListener("close", (event) =>
+    answer.resolve(`closed ${event.code} ${event.reason}`)
+  );
   return answer.promise;
 }
 
@@ -160,7 +165,12 @@ function liveAnswer(socket: WebSocket): Promise<string> {
   const settled = () => answer.resolve(lines.join("\n"));
   socket.addEventListener("open", () =>
     socket.send(
-      JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" }, resume: { since: "0" } })
+      JSON.stringify({
+        type: "subscribe",
+        sub: "e",
+        view: { kind: "events" },
+        resume: { since: "0" },
+      })
     )
   );
   socket.addEventListener("message", (event) => {

@@ -223,10 +223,13 @@ mint_token() {
 #                 (GET /api/v1/agents/{session_id}/answers); and, as a decimal event id, the
 #                 cursor the live socket's events_start frame names, which is the event log's
 #                 head, so it counts every event of the server, a hidden one's included
+#   last_seen     a session's last heartbeat as the listener reports it, in epoch milliseconds
+#                 (GET /api/v1/agents); each server reads a fake listener of its own
 readonly durations='["took_ms","age_seconds"]'
 readonly timings='["keyword_ms","meaning_ms","total_ms"]'
 readonly window_starts='["since"]'
 readonly event_cursors='["since"]'
+readonly epoch_instants='["last_seen"]'
 
 # mask BUILD FILE [EXTRA] prints FILE with every id BUILD's seed recorded replaced by <LABEL>, each
 # `LABEL<tab>VALUE` line of the file EXTRA likewise, every RFC 3339 instant the run wrote (between
@@ -242,6 +245,7 @@ mask() {
     --argjson timings "$timings" \
     --argjson window_starts "$window_starts" \
     --argjson event_cursors "$event_cursors" \
+    --argjson epoch_instants "$epoch_instants" \
     --argjson from "$run_epoch" \
     --argjson to "$(date +%s)" '
       def literal: gsub("(?<c>[.*+?^$|(){}\\[\\]\\\\/])"; "\\\(.c)");
@@ -258,7 +262,8 @@ mask() {
       | reduce $timings[] as $member (.; gsub("\"\($member)\":\\{[^{}]*\\}"; "\"\($member)\":<duration>"))
       | reduce $window_starts[] as $member (.;
           gsub("\"\($member)\":\"[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\"]*\""; "\"\($member)\":\"<time>\""))
-      | reduce $event_cursors[] as $member (.; gsub("\"\($member)\":\"[0-9]+\""; "\"\($member)\":\"<event id>\""))' "$file"
+      | reduce $event_cursors[] as $member (.; gsub("\"\($member)\":\"[0-9]+\""; "\"\($member)\":\"<event id>\""))
+      | reduce $epoch_instants[] as $member (.; gsub("\"\($member)\":[0-9]+"; "\"\($member)\":<time>"))' "$file"
 }
 
 # keep_answer NAME BUILD [EXTRA] keeps the last answer, masked as BUILD's (mask), as
