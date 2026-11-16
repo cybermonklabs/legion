@@ -3800,6 +3800,45 @@ func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 	assertOneRise(t, f, "the volume is 95.0%, 9.0 points above the 86.0%", "where 5 points raise a new episode")
 }
 
+// A volume that only goes up and down between the same two readings raises no new episode on
+// every cycle: the five points of a rise are what keeps the roles' ordinary rebuilding between
+// the marks from waking the issue's architect again and again, and a rise-raised episode's
+// reports skip the pod's hour, so an episode raised on every cycle is a notice on every cycle
+// with no bound at all. The volume reads 86% at every sweep's start, and 91% for one reading in
+// the middle of each pause — a build's temporary files, gone again a minute later — so it never
+// climbs past 91%. Over twelve sweeps its reports may carry the first episode and at most one
+// rise. Measured at 72566309 in an issue pod: the twelve reports carried twelve episodes, each
+// after the first raised by a rise, and through the daemon's glue with its clock moving eleven
+// minutes a report the architect was told of all twelve in 2h12m. A rise sets no anchor and
+// the next reported sweep anchors the new episode at its own start, 86% again, so the next
+// 91% is a rise once more.
+func TestAVolumeThatOnlyOscillatesRaisesNoNewEpisodeOnEveryCycle(t *testing.T) {
+	f := newTrimFixture(t, 0)
+	f.useVolume(func(interval int) volumeUsage {
+		if (interval-1)%(1+volumeQuietIntervals) == 5 {
+			return usageAt(91)
+		}
+		return usageAt(86)
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 12)
+
+	reports := f.reports()
+	if len(reports) != 12 {
+		t.Fatalf("the trimmer sent %d reports, want one for each of the twelve sweeps, each ending above the low mark", len(reports))
+	}
+	episodes := map[int]bool{}
+	for _, report := range reports {
+		episodes[report.Episode] = true
+	}
+	if len(episodes) > 2 {
+		t.Errorf("the reports of a volume that never climbs past 91%% carry %d episodes, want the first and at most one rise: every cycle of it is told to the architect, past the hour and past the three",
+			len(episodes))
+	}
+}
+
 // A volume that sits still above the high mark keeps one episode: a reading that does not move
 // is no rise, so every sweep of it reports under the first episode, and the daemon tells the
 // architect of three of those reports and no more (internal/workflow's
