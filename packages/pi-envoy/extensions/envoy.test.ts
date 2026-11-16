@@ -600,12 +600,17 @@ let configDirectory = "";
 // cannot be static, as the entry reads `@oh-my-pi/pi-coding-agent` and so must load below the
 // stand-ins for it; it carries a query of its own so no row's instance is this one; and it sits
 // below the `original*` captures because loading the entry sets `PATH`, `DISPATCH_HOST` and
-// `ENVOY_CONFIG_FILE` as every row's own load does, which `afterEach` puts back to what was
-// captured. Loading it here writes those three names whether or not a row of this file runs, so
-// the capture below puts them back as soon as the entry is loaded; every row's own load writes
-// them again.
-const restoreEntryLoad = captureEnvironment(["PATH", "DISPATCH_HOST", "ENVOY_CONFIG_FILE"]);
-const { resetNatsConnectForTests, setNatsConnectForTests } = await import(
+// `ENVOY_CONFIG_FILE` and takes `ENVOY_SESSION_ROLE` out, as every row's own load does, which
+// `afterEach` puts back to what was captured. Loading it here changes those four names whether or
+// not a row of this file runs, so the capture below puts them back as soon as the entry is loaded;
+// every row's own load changes them again.
+const restoreEntryLoad = captureEnvironment([
+  "PATH",
+  "DISPATCH_HOST",
+  "ENVOY_CONFIG_FILE",
+  "ENVOY_SESSION_ROLE",
+]);
+const { resetNatsConnectForTests, resetSessionRoleForTests, setNatsConnectForTests } = await import(
   "./envoy.ts?nats-stand-in"
 );
 restoreEntryLoad();
@@ -637,7 +642,9 @@ beforeEach(() => {
   delete process.env.ENVOY_MACHINE_ID;
   // The role a session pod's launch names, which every pass of an instance created under it
   // claims: a suite run inside a session pod must not claim that pod's role for every fixture.
+  // A load takes the variable into a slot every later load reads, so the slot goes too.
   delete process.env.ENVOY_SESSION_ROLE;
+  resetSessionRoleForTests();
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
   delete process.env.TMUX;
   delete process.env.TMUX_PANE;
@@ -1474,14 +1481,13 @@ function roleClaimBody(session: string, role: string, rest: Record<string, unkno
 
 /**
  * A fresh session in a session pod whose launch named `sessionRole` in `ENVOY_SESSION_ROLE`
- * (agent-infra's sessions workload), or named none. Every registration and every role claim the
- * listener is sent lands in `seen`, in the order sent; a role lookup names `sessionID` as the
- * holder. `heartbeat` runs one heartbeat pass and lets it settle, and `records` reads the role
- * claim records the session's transcript holds.
+ * (agent-infra's sessions workload); with no `sessionRole` the environment is left as it is. Every
+ * registration and every role claim the listener is sent lands in `seen`, in the order sent; a
+ * role lookup names `sessionID` as the holder. `heartbeat` runs one heartbeat pass and lets it
+ * settle, and `records` reads the role claim records the session's transcript holds.
  */
-async function bootSessionPod(query: string, sessionID: string, sessionRole: string | undefined) {
-  if (sessionRole === undefined) delete process.env.ENVOY_SESSION_ROLE;
-  else process.env.ENVOY_SESSION_ROLE = sessionRole;
+async function bootSessionPod(query: string, sessionID: string, sessionRole?: string) {
+  if (sessionRole !== undefined) process.env.ENVOY_SESSION_ROLE = sessionRole;
   const seen: unknown[] = [];
   let registrations = 0;
   globalThis.fetch = async (input, init) => {
@@ -11227,7 +11233,9 @@ console.log(JSON.stringify(args));
     expect(pod.seen).toEqual([registered, claimed, registered, claimed, registered, claimed]);
     expect(pod.records()).toEqual([roleClaimRecord("fan-cloud", "ses_pod")]);
 
-    const unset = await bootSessionPod("session-role-unset", "ses_pod_unset", undefined);
+    delete process.env.ENVOY_SESSION_ROLE;
+    resetSessionRoleForTests();
+    const unset = await bootSessionPod("session-role-unset", "ses_pod_unset");
     await unset.heartbeat();
     await unset.heartbeat();
     await unset.shutdown();
@@ -11252,6 +11260,37 @@ console.log(JSON.stringify(args));
       { claimed: roleClaimBody("ses_pod_moved", "librarian") },
       registered,
     ]);
+  });
+
+  // The variable is the launch's word to this process alone: an `omp` an agent starts inside the
+  // pod must not inherit it, or that session would take the pod's role from the pod's session at
+  // each of its registrations. Every extension instance of the process still reads it: a second
+  // one, loaded after the first took the variable out of the environment, claims it too.
+  test("no process the session starts inherits ENVOY_SESSION_ROLE, and every instance of the process claims it", async () => {
+    const first = await bootSessionPod("session-role-first", "ses_pod_first", "fan-cloud");
+    expect(first.seen).toEqual([
+      { registered: "ses_pod_first" },
+      { claimed: roleClaimBody("ses_pod_first", "fan-cloud") },
+    ]);
+
+    // Handed the live environment, as Oh My Pi's shell is (`procmgr.refreshShellConfigCache`
+    // captures `Bun.env`): `Bun.spawnSync` with no `env` passes the environment the process
+    // started with, which no write to `process.env` reaches, and would see nothing either way.
+    const child = Bun.spawnSync(["env"], { env: process.env, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(0);
+    const inherited = child.stdout
+      .toString()
+      .split("\n")
+      .filter((line) => line.startsWith("ENVOY_SESSION_ROLE="));
+    expect(inherited).toEqual([]);
+
+    const second = await bootSessionPod("session-role-second", "ses_pod_second");
+    expect(second.seen).toEqual([
+      { registered: "ses_pod_second" },
+      { claimed: roleClaimBody("ses_pod_second", "fan-cloud") },
+    ]);
+    await first.shutdown();
+    await second.shutdown();
   });
 
   test("unsubscribing all topics preserves a held role for heartbeat re-assertion", async () => {
