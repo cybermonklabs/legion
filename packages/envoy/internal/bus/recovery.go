@@ -35,6 +35,15 @@ func (c *Client) onConnect(nc *nats.Conn) {
 	c.onReconnect(nc)
 }
 
+// onReconnect is the ReconnectedCB, run on nats.go's one callback goroutine. It reports the
+// reconnect (ConnectionChanged), marks the hooks due and hands the rest, the re-subscribe and the
+// run of the reconnect hooks, to a goroutine of its own (afterReconnect), and returns. That rest
+// asks the server, and a request on a connection that drops again waits out its whole bound (a
+// JetStream context's MaxWait, 10 s, for most hooks): run here, it would hold every callback queued
+// behind it, the next disconnect's among them, which reports the outage (ConnectionChanged, the
+// outbox's wake that starts a holder's loss grace) and runs the disconnect hooks
+// (TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce). The run off this goroutine is
+// the one recover already makes after a failed run, and it takes turns with recover's (rewatch).
 func (c *Client) onReconnect(nc *nats.Conn) {
 	// The reconnect is reported first (ConnectionChanged), so a publish waiting for it goes on
 	// without waiting for the re-subscribe and the hooks below.
@@ -65,9 +74,16 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 		c.subscriptionsMu.Unlock()
 	}
 	c.mu.Unlock()
+	go c.afterReconnect(nc)
+}
+
+// afterReconnect re-subscribes what the reconnect left unbound and runs the reconnect hooks for the
+// reconnect of nc, off nats.go's callback goroutine (onReconnect), and starts the recovery for what
+// it could not finish.
+func (c *Client) afterReconnect(nc *nats.Conn) {
 	pending, restoreErr := c.restoreSubscriptions()
 	if errors.Is(restoreErr, errStopped) {
-		// Stopped between the check above and the re-subscribe: same as that branch.
+		// Stopped between onReconnect's check and the re-subscribe: same as that branch.
 		c.closeStopped(nc)
 		return
 	}
@@ -98,7 +114,7 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 	// should that bind fail, and runs the hooks again after a failed run; until the next connection
 	// event nothing else does either.
 	if pending || restoreErr != nil || hookErr != nil {
-		go c.recover()
+		c.recover()
 	}
 }
 
@@ -125,7 +141,9 @@ func (c *Client) closeStopped(nc *nats.Conn) {
 // begins that covers it, whatever restoring the subscriptions returned. A run covers every event
 // counted before it began, so an event that lands between runs gets a run of its own and a burst of
 // events that land before one begins gets one. Runs take turns, never two at once, and a run that
-// fails is run again by a recovery, the only way an event gets a second run.
+// fails is run again by a recovery, the only way an event gets a second run. No run is on nats.go's
+// callback goroutine (afterReconnect, recover), so a hook may ask the server and wait for its answer;
+// a disconnect's hooks may run while it waits, and a hook that then fails leaves the hooks due.
 func (c *Client) AddReconnectHook(hook func(*nats.Conn) error) {
 	if hook == nil {
 		return
@@ -140,7 +158,8 @@ func (c *Client) AddReconnectHook(hook func(*nats.Conn) error) {
 // open through the outage, so the watcher never ends and nothing else says its cache has stopped
 // following the bucket. The hooks run on every disconnect of the client's connection, in the order
 // they were added, on nats.go's callback goroutine and so before the reconnect hooks of the
-// reconnect that follows. A hook returns at once: it runs inside that callback.
+// reconnect that follows, and at once: no reconnect hook holds that goroutine (onReconnect). A hook
+// returns at once: it runs inside that callback.
 func (c *Client) AddDisconnectHook(hook func()) {
 	if hook == nil {
 		return

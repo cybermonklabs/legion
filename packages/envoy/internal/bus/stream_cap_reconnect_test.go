@@ -87,16 +87,15 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 	}
 }
 
-// The reconnect hooks run on nats.go's one callback goroutine, and so does every disconnect
-// callback, the KV caches' and the client's own among them (AddDisconnectHook). A connection that
-// drops again between its reconnect and the stream ensure's read of the server version is a flap,
-// and the second disconnect's callback waits for that ensure to return: an ensure that waited for a
-// version there would hold every disconnect hook through the whole second outage, and each cache
-// would go on answering from a bucket it no longer follows. The ensure looks once, so the second
-// disconnect hook runs at once. The flap is made exact through the version read
-// (connectedVersion): its first call after the reconnect stops the server and waits until the
-// connection is down, then reads the version as the client does, so the read sees the second
-// outage every time.
+// Every disconnect callback runs on nats.go's one callback goroutine, the KV caches' and the
+// client's own among them (AddDisconnectHook), and so does the reconnect callback that starts a run
+// of the reconnect hooks. A connection that drops again between its reconnect and the stream
+// ensure's read of the server version is a flap: an ensure that waited for a version on that
+// goroutine held the second disconnect's callback through the whole second outage. The run of the
+// hooks is off that goroutine (onReconnect) and the ensure looks once, so the second disconnect
+// hook runs at once. The flap is made exact through the version read (connectedVersion): its first
+// call after the reconnect stops the server and waits until the connection is down, then reads the
+// version as the client does, so the read sees the second outage every time.
 func TestAFlapRunsTheSecondDisconnectHookAtOnce(t *testing.T) {
 	server, uri := testnats.Start(t)
 	client, err := ConnectOwningStream([]string{uri}, WithName(t.Name()))

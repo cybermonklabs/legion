@@ -608,12 +608,10 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // connection event, so a stream lost while the process runs is created again. It reads the
 // version off the connection nats.go hands it, so the ensure asks the server it writes to whether
 // a stream with no consumer cap is one that server caps (ensureStreamReported), and it looks once
-// and waits for nothing: the hooks run on nats.go's one callback goroutine, which also runs every
-// disconnect callback, so a hook that waited out a connection that dropped again would hold the KV
-// caches' disconnect hooks through that whole outage (TestAFlapRunsTheSecondDisconnectHookAtOnce).
-// A connection that reports no version fails the hook with the error, which makes onReconnect
-// start the recovery, and the recovery runs the hooks again off that goroutine once the connection
-// is back (recover).
+// and waits for nothing: a connection that reports no version has dropped again, and a run of the
+// hooks that waited out that outage would keep the next reconnect's run behind it (rewatch). The
+// hook fails with the error instead, the run's caller starts the recovery, and the recovery runs
+// the hooks again once the connection is back (afterReconnect, recover).
 func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
