@@ -573,14 +573,14 @@ pods as any broker does and approves nothing:
 - What the policy grants at once is granted as on any broker: a person's own and a shared
   `tier=agent` secret for their sessions, and a service's own secret for its pods. A machine
   login, which a person decides on Dispatch's machine-login page, is unchanged.
-- A request still pending from a run with sign-in on, written before this pod's first sweep —
-  one a restart with `BROKER_SIGNIN=off` left — is denied by that sweep and leaves the
-  approver's Inbox: the session reads `was denied: a person must approve it, and this broker
-  signs nobody in (BROKER_SIGNIN=off)`, and the request records `broker:signin-off` as having
-  decided it. The bound is the database's own time of that first sweep, so the broker's clock
-  moves nothing. A grant a person approved before stays until it ends as any grant does, and a
-  request signed for another broker sharing the database, at another `BROKER_PUBLIC_URL`, is
-  left to that broker.
+- A request still pending from a broker with sign-in on — one an earlier run left, or one a pod
+  still on sign-in queues during a roll — is denied by the next sweep, within
+  `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads `was denied: a person
+  must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and the request records
+  `broker:signin-off` as having decided it. No clock bounds the selection, so the database's
+  `created_at` cannot hide a request from it. A grant a person approved before stays until it
+  ends as any grant does, and a request signed for another broker sharing the database, at
+  another `BROKER_PUBLIC_URL`, is left to that broker.
 - `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off, by the
   broker's last configuration check: `BROKER_PUBLIC_URL must be an http or https URL, got the
   scheme "ftp"`.
@@ -595,19 +595,19 @@ the judge decides only a request that waits for a person. With `BROKER_SIGNIN` u
 missing a sign-in setting refuses exactly as above, so a deployment that lost its sign-in settings
 never starts without its approval page.
 
-Moving between the two settings is a roll of the broker's pods, and the sweep's bound is what
-keeps each direction safe while pods of both kinds share the database:
+Moving between the two settings is a roll of the broker's pods, and while pods of both kinds
+share the database, every request a person would decide is denied: an `off` pod denies at once
+each one it serves, and its sweep denies each one a pod with sign-in on queues, within
+`BROKER_SWEEP_SECONDS`. A pod cannot tell a request queued in the overlap from one an earlier run
+left, so a cutover that denies nothing queued during it has no overlap: stop every pod of the old
+setting before the first pod of the new one starts.
 
 - **Turning sign-in on.** Set the four `BROKER_SIGNIN_*` settings, unset `BROKER_SIGNIN`, and
-  roll the pods. A pod still `off` during the roll denies nothing the new pods queue, since
-  every request they write comes after its first sweep. It still denies at once a new request
-  it serves itself, so a session that reached an `off` pod during the roll asks again once the
-  roll is done.
+  roll the pods. A session denied during the roll reads `BROKER_SIGNIN=off` in its denial and asks
+  again once the last `off` pod has stopped.
 - **Turning sign-in off.** Set `BROKER_SIGNIN=off`, unset every `BROKER_SIGNIN_*` setting and
-  the model judge's, and roll the pods. A request a pod with sign-in on queues after the first
-  `off` pod's first sweep is left pending: its page is served while that pod runs, and once the
-  roll is done it expires undecided. Restart one `off` pod after the roll to deny those at its
-  first sweep instead.
+  the model judge's, and roll the pods. Every request still pending when the first `off` pod
+  starts, and every one queued until the last pod with sign-in on stops, is denied by the sweep.
 
 ## Signing in to RDS by IAM token
 

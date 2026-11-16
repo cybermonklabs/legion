@@ -305,15 +305,10 @@ type Machine struct {
 	// SignInOff is BROKER_SIGNIN=off: the broker signs nobody in and serves no approval page, so
 	// no person can ever decide a request. Create then denies at once every name whose answer
 	// would be an approval, policy.ReasonSignInOff, and writes no pending request, no record and
-	// nothing for Judge (config.Load refuses a judge beside it), and the sweep denies what a run
-	// with sign-in on left pending before this process's first sweep (denyUndecidable); every
-	// name the policy grants at once is granted as ever.
+	// nothing for Judge (config.Load refuses a judge beside it), and the sweep denies what a
+	// broker with sign-in on left or leaves pending (denyUndecidable); every name the policy
+	// grants at once is granted as ever.
 	SignInOff bool
-	// signInOffSince is the database's time of this process's first sweep with SignInOff, which
-	// bounds what denyUndecidable denies, zero until that sweep has read it (signInOffBound);
-	// signInOffMu guards it.
-	signInOffSince time.Time
-	signInOffMu    sync.Mutex
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -987,31 +982,26 @@ func (m *Machine) expirePending(ctx context.Context, now time.Time) ([]store.End
 const SignInOffActor = "broker:signin-off"
 
 // denyUndecidable is the sweep's half of SignInOff: Create writes no request pending on a broker
-// that signs nobody in, but the database can hold ones a run with sign-in on wrote before this
-// pod started serving, after a restart with sign-in off. Each one this broker would list for its
-// approver (PendingForApprover: its signed request verifies for this broker's own audience) and
-// that was written before this pod's first sweep is denied here, policy.ReasonSignInOff, with its
-// record's denied event and its request.denied audit row in one statement, rather than left on
-// the approver's list behind a page that is gone until its deadline.
-//
-// Two kinds of pending request are left alone. One signed for another BROKER_PUBLIC_URL belongs
-// to another broker sharing this database, whose page may still be served, and this broker lists
-// it for nobody anyway. One written after this pod's first sweep can only come from a pod with
-// sign-in on beside this one, as in a roll between the two settings, whose page serves it, so
-// turning sign-in back on denies nothing the new pods queue. The bound is the database's own
-// time of that first sweep (signInOffSince), compared with the database's created_at, so the
-// broker's clock moves nothing. It returns the requests it denied, so the sweep wakes each
-// one's session once the transaction has committed, and nothing on a broker with sign-in on. A
-// grant made before stays as it was: off decides nothing new, it takes nothing back.
+// that signs nobody in, but the database can hold ones a broker with sign-in on wrote, before a
+// restart with sign-in off or from a pod with sign-in on that runs beside this one in a roll
+// between the two settings. Each one this broker would list for its approver
+// (PendingForApprover: its signed request verifies for this broker's own audience) is denied
+// here, policy.ReasonSignInOff, with its record's denied event and its request.denied audit row
+// in one statement, rather than left on the approver's list behind a page that is gone until its
+// deadline. No time bounds the selection: while this pod runs it denies what a pod with sign-in
+// on queues too, so a roll between the two settings denies the requests of its overlap, each
+// one's session told why, and a session asks again once the roll is done. A bound taken per
+// process cannot do better, since a later or restarted pod with sign-in off takes a later one.
+// A request signed for another BROKER_PUBLIC_URL is left alone: it belongs to another broker
+// sharing this database, whose page may still be served, and this broker lists it for nobody
+// anyway. It returns the requests it denied, so the sweep wakes each one's session once the
+// transaction has committed, and nothing on a broker with sign-in on. A grant made before stays
+// as it was: off decides nothing new, it takes nothing back.
 func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
 	if !m.SignInOff {
 		return nil, nil
 	}
-	since, err := m.signInOffBound(ctx)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := m.Store.Pool.Query(ctx, pendingRecordsQuery, since)
+	rows, err := m.Store.Pool.Query(ctx, pendingRecordsQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -1039,25 +1029,10 @@ func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.E
 	})
 }
 
-// signInOffBound is the database's own time of this process's first sweep with sign-in off,
-// read from the database at that sweep and kept, so denyUndecidable compares one database time
-// with another. A read that fails is read again at the next sweep.
-func (m *Machine) signInOffBound(ctx context.Context) (time.Time, error) {
-	m.signInOffMu.Lock()
-	defer m.signInOffMu.Unlock()
-	if m.signInOffSince.IsZero() {
-		if err := m.Store.Pool.QueryRow(ctx, `select now()`).Scan(&m.signInOffSince); err != nil {
-			return time.Time{}, err
-		}
-	}
-	return m.signInOffSince, nil
-}
-
-// pendingRecordsQuery is every pending agent_secret request written before $1 with its record's
-// canonical body and the time the record was written, which is what requestedIdentifiers
-// verifies a record against.
+// pendingRecordsQuery is every pending agent_secret request with its record's canonical body and
+// the time the record was written, which is what requestedIdentifiers verifies a record against.
 const pendingRecordsQuery = `select r.id::text, cr.body, cr.created_at from requests r
-	join credential_requests cr on cr.id = r.record_id where r.state = 'pending' and r.created_at < $1`
+	join credential_requests cr on cr.id = r.record_id where r.state = 'pending'`
 
 // endPending ends, as end says, every request scope and arg select that is still pending, in a
 // transaction of its own, and logs one grant-log line per request once that transaction has

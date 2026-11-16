@@ -53,7 +53,7 @@ var sweeps = [...]struct{ name, failed string }{
 // whose lease lapsed (revoking their grants and cancelling their pending requests), ends the
 // dormant enrollments whose carry window passed, expires overdue
 // pending agent_secret requests (waking each one's owner), denies on a broker with
-// BROKER_SIGNIN=off each pending one an earlier run with sign-in on left
+// BROKER_SIGNIN=off each pending one a broker with sign-in on left or leaves
 // (Machine.denyUndecidable), expires overdue pending machine logins,
 // deletes spent OAuth state (oauthstore.Store.Sweep), deletes expired browser sessions, and
 // deletes the airlock placeholders of grants that have ended — all
@@ -119,8 +119,8 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	s.settle(ctx, sweepDormantEnrollments, err)
 	now := time.Now()
 	// The pending-requests sweep: the overdue expire, and on a broker with BROKER_SIGNIN=off the
-	// denial of every request a run with sign-in on left pending before this process's first
-	// sweep (Machine.denyUndecidable), each one's session woken once with the state it reached.
+	// denial of every request a broker with sign-in on left or leaves pending
+	// (Machine.denyUndecidable), each one's session woken once with the state it reached.
 	// One sweep, so a failure of either is one run of failures.
 	expired, err := s.Machine.expirePending(ctx, now)
 	denied, deniedErr := s.Machine.denyUndecidable(ctx, now)
