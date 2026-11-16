@@ -108,11 +108,18 @@ describe("parseFindings", () => {
     });
   });
 
-  test("reads a NOT REVIEWED line as no verdict even beside findings", () => {
-    const answer = parseFindings(
-      "FINDING principle inbox-simple -: It states a quality.\nNOT REVIEWED: dispatch read --issue ACME-3 failed: 404"
-    );
-    expect(answer.verdict).toBe("not-reviewed");
+  // The skill says to print the NOT REVIEWED line "and stop", so an answer that holds it and any
+  // other line holds two verdicts, or a verdict and prose, and is no answer of the skill's form.
+  test("refuses a NOT REVIEWED line beside a finding, beside NO FINDING, or beside prose", () => {
+    const failed = "NOT REVIEWED: dispatch spec-form --issue ACME-3 --artifact spec.md failed: 404";
+    for (const other of [
+      "FINDING principle inbox-simple -: It states a quality.",
+      "NO FINDING",
+      "I could not reach Dispatch, but the request looks fine.",
+    ]) {
+      expect(parseFindings(`${other}\n${failed}`).verdict, other).toBe("unreadable");
+      expect(parseFindings(`${failed}\n${other}`).verdict, other).toBe("unreadable");
+    }
   });
 
   test("refuses an answer with no FINDING and no NO FINDING line", () => {
@@ -399,7 +406,7 @@ describe("formProblems", () => {
 });
 
 describe("the fixtures", () => {
-  test("hold eleven change requests under the three roots", () => {
+  test("hold twelve change requests under the three roots", () => {
     expect(plan.fixtures.map((one) => one.id)).toEqual([
       "1-principle",
       "2-undefined-noun",
@@ -412,6 +419,7 @@ describe("the fixtures", () => {
       "9-form-findings",
       "10-entry-lines",
       "11-command-fails",
+      "12-common-nouns",
     ]);
     expect(plan.roots.map((root) => root.key)).toEqual(["ACME-1", "ACME-2", "ACME-3"]);
   });
@@ -424,6 +432,18 @@ describe("the fixtures", () => {
     expect(plan.fixtures.filter((one) => one.expect !== "review").map((one) => one.id)).toEqual([
       "11-command-fails",
     ]);
+  });
+
+  // The control of the noun test of the skill's step 4: each statement names, beside the terms
+  // of the list, only the common nouns of the skill's examples and two more, so a reviewer that
+  // takes a common noun for a noun of the system fails the run.
+  test("fixture 12 plants nothing, and each of its statements must not be named", () => {
+    const twelve = fixture("12-common-nouns");
+    expect(twelve.planted).toEqual([]);
+    expect(twelve.mustNotName.map((item) => item.node)).toEqual(blockIds(twelve.specText));
+    for (const noun of ["page", "minutes", "file", "database", "list", "message"]) {
+      expect(twelve.specText, noun).toContain(` ${noun}`);
+    }
   });
 
   // The Spec's own documents write each statement as an entry line, and its how-to puts the terms
@@ -609,11 +629,27 @@ describe("the exit status of a command that cannot run", () => {
     expect(code).toBe(2);
   }, 30_000);
 
-  test("is 2 with an --out that an earlier run used, and names it", async () => {
+  test("is 2 with an --out that an earlier run used, and names what it holds", async () => {
     const out = await emptyOut("used");
     await mkdir(join(out, "run-1", "stack", "home"), { recursive: true });
     const { code, stderr } = await command(CLOSED_PORT, out);
-    expect(stderr).toContain(`--out ${out} holds the files of an earlier run`);
+    expect(stderr).toContain(`--out ${out} is not empty: it holds run-1;`);
+    expect(code).toBe(2);
+  }, 30_000);
+
+  test("is 2 with an --out that holds one other file, and names that file", async () => {
+    const out = await emptyOut("stray");
+    await writeFile(join(out, "notes.txt"), "a note\n", "utf8");
+    const { code, stderr } = await command(CLOSED_PORT, out);
+    expect(stderr).toContain(`--out ${out} is not empty: it holds notes.txt;`);
+    expect(code).toBe(2);
+  }, 30_000);
+
+  test("is 2 with an --out that is a file, in the command's own words", async () => {
+    const out = join(scratch, "a-file");
+    await writeFile(out, "not a directory\n", "utf8");
+    const { code, stderr } = await command(CLOSED_PORT, out);
+    expect(stderr.trim()).toBe(`--out ${out} is not a directory`);
     expect(code).toBe(2);
   }, 30_000);
 });

@@ -148,6 +148,18 @@
       "expect": "not-reviewed",
       "planted": [],
       "mustNotName": []
+    },
+    {
+      "id": "12-common-nouns",
+      "root": "without",
+      "spec": "12-common-nouns.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "inbox-page-size" },
+        { "node": "ask-wait-minutes" },
+        { "node": "summary-file" },
+        { "node": "answer-message" }
+      ]
     }
   ]
 }
