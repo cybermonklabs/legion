@@ -1259,25 +1259,27 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 	return nil, nil
 }
 
-// notice publishes a notice row to the architect that owns its issue, on that architect's own role
-// topic, and to nothing else. Every notice kind is for an architect, and no claim subscribes to an
-// issue topic (packages/pi-legion/src/claim-session.ts), so no issue topic carries one. The
-// owner, the earlier notices it waits behind, and whether its tree lingers are read from one
-// snapshot of the tree (notice_routing.go). A notice waits behind an earlier notice of its tree
-// that is held for the same architect, so each architect is told in the order the notices were
-// written: on its backoff (errNoticeWaits), or, when the earlier row is itself due at a moment
-// still ahead, at that moment and once (wait.Until). A role topic with no live holder
-// refuses the publish (notify.ErrNoHolder): while the owning architect's claim can hold its role
-// again — relaunching, or a root the operator suspended and can resume — the row is held for it;
-// once nobody will hold that role for this notice — the claim has failed or retired, or its tree
-// lingers or has closed — the row finishes undelivered with one log line. So does a row whose
-// architect cannot be resolved from the record (errNoticeUnroutable), which holds back no later
-// notice either, and, before any publish, a row whose architect stopped with its finished tree
-// (stoppedWithTree). A person's spec decision in either of the two cases a notice finishes
-// undelivered because nobody will hold the role (its architect stopped with its finished tree, or
-// will not hold its role again) goes to the controller instead (parkDecision). What the
-// listener's answer to the publish then decides — a delivery the architect's session did not
-// confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
+// notice publishes a notice row to its architect (noticeArchitect), on that architect's own role
+// topic, and to nothing else: a catch-up to the architect of its own issue, whose state it states,
+// and every other notice to the architect that owns its issue. Every notice kind is for an
+// architect, and no claim subscribes to an issue topic (packages/pi-legion/src/claim-session.ts),
+// so no issue topic carries one. The architect, the earlier notices it waits behind, and whether
+// its tree lingers are read from one snapshot of the tree (notice_routing.go). A notice waits
+// behind an earlier notice of its tree that is held for the same architect, so each architect is
+// told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
+// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
+// topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
+// can hold its role again — relaunching, a root the operator suspended and can resume, or the
+// architect of a catch-up's own issue suspended with that issue, which its next start resumes —
+// the row is held for it; once nobody will hold that role for this notice — the claim has failed
+// or retired, or its tree lingers or has closed — the row finishes undelivered with one log line.
+// So does a row whose architect cannot be resolved from the record (errNoticeUnroutable), which
+// holds back no later notice either, and, before any publish, a row whose architect stopped with
+// its finished tree (stoppedWithTree). A person's spec decision in either of the two cases a
+// notice finishes undelivered because nobody will hold the role (its architect stopped with its
+// finished tree, or will not hold its role again) goes to the controller instead (parkDecision).
+// What the listener's answer to the publish then decides — a delivery the architect's session did
+// not confirm, a holder that cannot take the payload, a forward the listener's own NATS grant
 // denies, a holder only unresponsive, a role nobody holds — is the re-hold policy's
 // (noticeAnswered, notice_exceptions.go), which a role-lane exception of an earlier listener
 // reaches by the same route (rehold). A listener of this release never answers that a session
@@ -1288,14 +1290,15 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // The runner executes a row it leased from memory, so a row deleted under its lease since (a
 // catch-up a newer ready dropped) is found gone in the tree's snapshot and finishes without a
 // publish, and so does a catch-up a newer one superseded (catchUpSuperseded, read against the
-// snapshot's root and the claim as it runs now): the re-hold reads the claim from memory and
-// writes its copy outside ApplyFact's lock, so it can lose the race to a ready and commit an older
-// copy after the fresh catch-up. A catch-up that publishes records the telling and forgets the
-// decisions it named (toldKept, settleTold); one a newer catch-up superseded hands them to a fresh
-// catch-up instead (supersededKept), since the newer one was composed without them; one that
-// finishes any other way leaves them claimed until its row's deletion releases them, for the
-// architect's next ready to name. However the row ends, a catch-up that told its decisions in any
-// run forgets them here rather than let its ending release what the architect has already heard.
+// row's own issue as the snapshot holds it and its architect's claim as it runs now): the re-hold
+// reads the claim from memory and writes its copy outside ApplyFact's lock, so it can lose the
+// race to a ready and commit an older copy after the fresh catch-up. A catch-up that publishes
+// records the telling and forgets the decisions it named (toldKept, settleTold); one a newer
+// catch-up superseded hands them to a fresh catch-up instead (supersededKept), since the newer
+// one was composed without them; one that finishes any other way leaves them claimed until its
+// row's deletion releases them, for the architect's next ready to name. However the row ends, a
+// catch-up that told its decisions in any run forgets them here rather than let its ending release
+// what the architect has already heard.
 //
 // A row the wake pacing held to its turn (record.Notice.PacedAt) writes the line a wake writes,
 // once, on the attempt that publishes it (noticeAnswered's wakeRan, notice_exceptions.go):
@@ -1313,10 +1316,11 @@ func (r *outbox) notice(ctx context.Context, row record.OutboxRow, payload recor
 // prepended with the claim this one wakes (supervise.WakeRanMessage, WakeRanFields): the shape is
 // what matters to its reader, since one grep over the daemon's log finds every wake of a restart
 // or a plugin wave, whichever lane caused it, and counts the wakes of a minute against the rate
-// and burst each line names. The claim is the architect the catch-up goes to, the root architect
-// of the row's issue (QueueCatchUp writes the row for the root), spelled as a machine's own lines
-// spell a claim, since this logger is the runner's and carries no claim of its own — where a
-// machine's logger carries one already, which is why the field is this caller's to add.
+// and burst each line names. The claim is the architect the catch-up goes to, the architect of
+// the row's own issue (noticeArchitect; QueueCatchUp writes the row on that issue), spelled as a
+// machine's own lines spell a claim, since this logger is the runner's and carries no claim of its
+// own — where a machine's logger carries one already, which is why the field is this caller's to
+// add.
 //
 // The line is written on the attempt that publishes, and so once for the row: a row that waits
 // behind an earlier notice of the same architect (errNoticeWaits, wait.Until), finds its role
@@ -1369,13 +1373,16 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if err != nil {
 		return err
 	}
+	// A catch-up goes to the architect of its own issue and to no other (noticeArchitect), so it is
+	// judged against that architect's claim and that issue's generation: a child's catch-up is
+	// superseded by the child's architect's later launch, never by its tree root's.
+	architect, err := noticeArchitect(tree.project, tree.issues, issue, payload, r.holdsItsRole)
+	if err != nil {
+		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
+	}
 	if payload.CatchUp != nil {
-		root, err := claim.NewToken(tree.project, tree.root.Key, claim.RoleArchitect)
-		if err != nil {
-			return fmt.Errorf("the architect of %s: %w", tree.root.Key, err)
-		}
-		held := r.supervisedClaim(root).Claim
-		if catchUpSuperseded(*payload.CatchUp, held, &tree.root) {
+		held := r.supervisedClaim(architect).Claim
+		if catchUpSuperseded(*payload.CatchUp, held, &issue) {
 			// A row that published before told what it named and settles after this run
 			// (settleTold); one that never published hands its decisions to a fresh catch-up, since
 			// the newer catch-up was composed from what nobody claimed and left them out.
@@ -1387,10 +1394,6 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 				"generation", payload.CatchUp.Generation, "launch", payload.CatchUp.Launch)
 			return nil
 		}
-	}
-	architect, err := record.OwningArchitect(tree.project, tree.issues, issue, payload.Kind, payload.Role, r.holdsItsRole)
-	if err != nil {
-		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
 	}
 	notice, key := payload.Published(row.ID)
 	if held := r.supervisedClaim(architect); stoppedWithTree(tree.root.Lingers(), held) {
@@ -1958,16 +1961,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 			gave = true
 		}
-		// A start that finds a tree's root architect running is a re-admission while its session
-		// lived on. The linger suspends the root's claim, so that happens only when the claim was
-		// mid-launch when the suspend ran (the machine ignores a suspend while launching), or the
-		// re-admission's start ran before the suspend. No ready follows, and a ready is what tells
-		// the architect its tree (workflow's claimReady), so the start applies that fact itself,
-		// for the running launch, once per start row, and the architect is told its tree's new
-		// generation. Its catch-up names what nobody claims, which this row's task may name too, so
-		// the decisions the task carries are settled first (settleKept) and the catch-up is
-		// composed without them; the settle after the row then finds nothing left to do. A retry of
-		// the row queues the task no second time and applies the fact once.
+		// A start that finds an architect running is a return of its issue while its session lived
+		// on: a tree's re-admission for a root's architect, a child's next first phase start (a
+		// rerun, or a person's move back to todo) for a child's own. The linger suspends a root's
+		// claim and a child's leave suspends the child's architect, so that happens only when the
+		// claim was mid-launch when the suspend ran (the machine ignores a suspend while
+		// launching), or the start ran before the suspend. No ready follows, and a ready is what
+		// tells the architect the issues it owns (workflow's claimReady), so the start applies that
+		// fact itself, for the running launch, once per start row, on the start's own issue: the
+		// architect is told its issues at their new generation, a root's whole tree and a child's
+		// own subtree, each through the workflow's one composer (workflow.QueueCatchUp). Its
+		// catch-up names what nobody claims, which this row's task may name too, so the decisions
+		// the task carries are settled first (settleKept) and the catch-up is composed without
+		// them; the settle after the row then finds nothing left to do. A retry of the row queues
+		// the task no second time and applies the fact once.
 		//
 		// That catch-up stands in place of a launch, so it is a wake of the architect and takes a
 		// turn in the daemon's pacing like the launch it replaces: the fact says so (Paced), the
@@ -1975,13 +1982,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (workflow's claimReady), and this runner writes the line that wake writes when the row
 		// runs (wakeRan). A start that launches instead took its turn at the machine's gate above
 		// (supervise's reserveWake), so one start row is one wake either way.
-		if supervise.SaidReady(state) && claim.IsTreeArchitect(payload.Role, issue.Key, issue.Tree) {
+		if supervise.SaidReady(state) && payload.Role == claim.RoleArchitect {
 			if err := r.settleKept(ctx, row, payload, gave); err != nil {
 				return err
 			}
 			if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("start-running:%s:%d", token, row.ID),
 				intake.ClaimReady{Issue: issue.Key, Role: payload.Role, Launch: machine.Claim().Generation, Paced: true}, r.handlers...); err != nil {
-				return fmt.Errorf("tell the running architect of %s its tree: %w", issue.Key, err)
+				return fmt.Errorf("tell the running architect of %s its issues: %w", issue.Key, err)
 			}
 		}
 		return nil

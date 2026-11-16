@@ -134,9 +134,9 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
 // run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
 // earlier notice's architect is resolved again rather than recorded when it was held, since a
-// sub-architect can start or end while it waits. An earlier row whose architect cannot be
-// resolved is no architect's, so it holds back no later notice; it finishes on its own attempt
-// (notice).
+// sub-architect can start or end while it waits, and by the rule its own publish follows
+// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
+// holds back no later notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out, and the row behind it runs once, then (deliverNotice's wait.Until), rather than
@@ -155,11 +155,27 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if !ok {
 			continue
 		}
-		if owner, err := record.OwningArchitect(tree.project, tree.issues, issue, notice.Kind, notice.Role, runs); err == nil && owner == architect {
+		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
 			return other.ID, other.NextAt
 		}
 	}
 	return 0, time.Time{}
+}
+
+// noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the
+// architect of its own issue and to no other: it states what that architect owns
+// (workflow.QueueCatchUp, which queues it on that issue), so a child's catch-up that walked up to
+// the architect above it while the child's own architect was stopped would be read there as that
+// architect's own state. It waits for its architect, or finishes undelivered once that claim will
+// not hold its role again, as a root's catch-up does. Every other notice goes to the architect
+// that owns its issue (record.OwningArchitect), by runs. The publish (deliverNotice), the fence
+// (earlierNoticeFor) and a ready's release (releaseWaiting) all ask this, so each finds a notice
+// the same architect. project is the tree's claim project token.
+func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
+	if notice.CatchUp != nil {
+		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	}
+	return record.OwningArchitect(project, tree, issue, notice.Kind, notice.Role, runs)
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's

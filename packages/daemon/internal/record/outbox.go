@@ -294,7 +294,7 @@ type Notice struct {
 	Resends int `json:"resends,omitempty"`
 	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
 	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds the tree's root architect already running (the outbox's start,
+	// launch when a start row finds an architect already running (the outbox's start,
 	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
 	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
 	// a launch does.
@@ -529,20 +529,25 @@ type SilentIssue struct {
 	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
-// CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
-// (a catch-up notice), which is the architect's first instruction: admission launches it with no
-// task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
-// root's generation, the launch of the architect's claim it was written for, whether a hand-over
-// created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
-// and every issue of the tree. A handed-over root's workers already run their phases, so its
-// architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
-// what a person decided on the tree while nobody in it could hear it and the start did not name (a
-// decision made while the architect's claim had ended, before this relaunch), in the words of
-// workflow.Engine.ParkedDecisionTask; empty when there is none. Kept is what Decided named, which
-// a published catch-up forgets (Store.ForgetKeptDecisions): a catch-up a newer one supersedes
-// hands it over to a fresh catch-up instead (workflow.HandOverKept), and one that finishes
-// undelivered any other way leaves it all for the architect's next ready to name again.
+// CatchUp is what an architect is told of the issues it owns when its claim is ready at a launch
+// (a catch-up notice), which is the architect's first instruction: admission launches a tree's
+// root architect with no task, or only with the decisions kept for it, and a child's first phase
+// start launches the child's own architect with no task. It is those issues as the daemon records
+// them then: the generation of the architect's own issue, the launch of the architect's claim it
+// was written for, whether a hand-over created the root at this generation with its child's phase
+// and pull request (HandedOver) and whether its old root's gate came with them (Carried), the
+// design gate step by step (Gates), and every issue the architect owns — a root's whole tree, a
+// child's own issue and every issue under it. A child registers no gate and no hand-over creates
+// one, so a child's catch-up states no step and is neither handed over nor carried. A handed-over
+// root's workers already run their phases, so its architect decomposes nothing anew; one that
+// carried no gate registers its own spec. Decided names what a person decided on the tree while
+// nobody in it could hear it and the start did not name (a decision made while the architect's
+// claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
+// empty when there is none, and on every child's catch-up, since what is kept for a tree is its
+// root architect's to hear. Kept is what Decided named, which a published catch-up forgets
+// (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
+// instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
+// for the architect's next ready to name again.
 type CatchUp struct {
 	Generation uint64         `json:"generation"`
 	Launch     uint64         `json:"launch"`

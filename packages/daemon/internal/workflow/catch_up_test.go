@@ -222,9 +222,10 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 	}
 }
 
-// Only a live tree's root architect is told its tree. A tree that lingers or has left the
-// workflow is told nothing, nor is a sub-architect, nor a phase worker on the root.
-func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {
+// Only a live tree's architects are told their issues. A tree that lingers or has left the
+// workflow is told nothing, nor is a phase worker on the root; a child's own architect is told
+// the child and the issues under it, with no gate.
+func TestOnlyALiveTreesArchitectsAreToldTheirIssues(t *testing.T) {
 	// A lingering root set back to todo still lingers until admission takes it again: only its
 	// linger, not its status, says the tree has left the workflow.
 	lingering := func(root *record.Issue) {
@@ -236,11 +237,13 @@ func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {
 		root  func(*record.Issue)
 		issue string
 		role  claim.Role
+		want  []string
 	}{
-		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect},
-		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect},
-		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect},
-		{"a phase worker on the root", func(*record.Issue) {}, "LEGION-1", claim.RolePlanner},
+		{"a lingering tree set back to todo", lingering, "LEGION-1", claim.RoleArchitect, nil},
+		{"a tree moved to backlog", func(root *record.Issue) { root.Status = "backlog" }, "LEGION-1", claim.RoleArchitect, nil},
+		{"a sub-architect", func(*record.Issue) {}, "LEGION-2", claim.RoleArchitect, []string{
+			"gen=1 launch=1 gates= issues=LEGION-2 reason=the issues under LEGION-2, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"}},
+		{"a phase worker on the root", func(*record.Issue) {}, "LEGION-1", claim.RolePlanner, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -248,8 +251,8 @@ func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {
 			tc.root(&root)
 			seedIssue(t, pool, root)
 			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), tc.issue, tc.role, 1)
-			if got := catchUps(t, pool); len(got) != 0 {
-				t.Fatalf("catch-ups %v; want none", got)
+			if got := catchUps(t, pool); fmt.Sprint(got) != fmt.Sprint(tc.want) || len(got) != len(tc.want) {
+				t.Fatalf("catch-ups %v; want %v", got, tc.want)
 			}
 		})
 	}
