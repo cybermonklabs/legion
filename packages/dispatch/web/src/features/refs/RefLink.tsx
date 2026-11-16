@@ -1,5 +1,6 @@
 import { type ReactNode, useLayoutEffect, useState } from "react";
 
+import { dispatchOrigins, hereHref } from "../../api/origins";
 import { borderDefault } from "../../theme/classes";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import {
@@ -181,30 +182,33 @@ function isTextUrl(target: string, text: string): boolean {
 
 /**
  * Finds every already-rendered `<a>` in root whose href is a dispatch:// reference or a
- * same-origin dashboard path — a link `linkifyDispatchRefs` just inserted, an ordinary Markdown
- * link a user wrote by hand, or a bare `http(s)://` URL remark-gfm autolinked — rewrites its href
- * to the SPA route via `buildReferencePath`, and clears its text so the caller can
- * portal a `RefLink` in to render the resolved title. A URL its author left as text
- * (`isTextUrl`) is read as the server's `text.Extract` reads text (`referenceRouteFromHref`): one
- * whose block is past the bounds the index keys names its document, as the server cites it; an
- * `http(s)://` one past them stays the link it is; and a `dispatch://` one that names nothing
- * becomes its words as plain text, as a bare one already renders, with no link to click and no
- * hover trigger. A link its author wrote names its target explicitly, and drawing or opening it
- * is a read, so its href is read as the server reads a request (`nodeRouteFromHref`), whatever the
- * length of its names. An external link, or an author's href that fails to parse as a reference,
- * is left untouched, and so is a picture's link (`data-dispatch-picture`, the engine's
- * `pictureSerializer`), whose content is a `DispatchPicture` rather than a title.
+ * dashboard path of any origin this Dispatch answers at (`dispatchOrigins`) — a link
+ * `linkifyDispatchRefs` just inserted, an ordinary Markdown link a user wrote by hand, or a bare
+ * `http(s)://` URL remark-gfm autolinked — rewrites its href to the SPA route via
+ * `buildReferencePath`, and clears its text so the caller can portal a `RefLink` in to render
+ * the resolved title. A URL its author left as text (`isTextUrl`) is read as the server's
+ * `text.Extract` reads text (`referenceRouteFromHref`): one whose block is past the bounds the
+ * index keys names its document, as the server cites it; an `http(s)://` one past them stays the
+ * link it is; and a `dispatch://` one that names nothing becomes its words as plain text, as a
+ * bare one already renders, with no link to click and no hover trigger. A link its author wrote
+ * names its target explicitly, and drawing or opening it is a read, so its href is read as the
+ * server reads a request (`nodeRouteFromHref`), whatever the length of its names. An external
+ * link, or an author's href that fails to parse as a reference, keeps its words; one to another
+ * origin this Dispatch answers at - a project's board, say - opens on the origin the page is on
+ * (`hereHref`), where the reader holds a session, and any other is left untouched. So is a
+ * picture's link (`data-dispatch-picture`, the engine's `pictureSerializer`), whose content is a
+ * `DispatchPicture` rather than a title.
  *
  * `@legion/proof-editor`'s Markdown link serializer sanitizes a `dispatch://` href to `""`
  * (Milkdown's link sanitizer only allows http/https/mailto/tel/ftp — a document strangers can
  * edit should never render an attacker-chosen non-http scheme as a clickable href), but tags the
  * anchor with `data-dispatch-href` carrying the original target. `linkifyDispatchRefs`'s own
- * freshly-wrapped anchors, and a same-origin dashboard URL a remark-gfm autolinked, still carry
+ * freshly-wrapped anchors, and a dashboard URL remark-gfm autolinked, still carry
  * their real value in `href` — `data-dispatch-href` takes priority when present.
  */
 export function collectReferenceAnchors(
   root: HTMLElement,
-  appOrigin: string = window.location.origin
+  appOrigins: readonly string[] = dispatchOrigins()
 ): ReferenceAnchor[] {
   const targets: ReferenceAnchor[] = [];
   let index = 0;
@@ -216,8 +220,8 @@ export function collectReferenceAnchors(
     const text = anchor.textContent ?? "";
     const textUrl = isTextUrl(href, text);
     const route = textUrl
-      ? referenceRouteFromHref(href, appOrigin)
-      : nodeRouteFromHref(href, appOrigin);
+      ? referenceRouteFromHref(href, appOrigins)
+      : nodeRouteFromHref(href, appOrigins);
     if (route === undefined) {
       // A `dispatch://` URL left as text that cites nothing - past the bounds the index keys -
       // is the text it is, as a bare one past them already renders (`linkifyDispatchRefs`):
@@ -225,6 +229,12 @@ export function collectReferenceAnchors(
       // current page and open a hover card for a reference the server never recorded.
       if (textUrl && href.startsWith("dispatch://")) {
         anchor.replaceWith(document.createTextNode(text));
+        continue;
+      }
+      const shown = anchor.getAttribute("href") ?? "";
+      const here = hereHref(shown);
+      if (here !== shown) {
+        anchor.setAttribute("href", here);
       }
       continue;
     }

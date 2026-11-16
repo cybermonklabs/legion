@@ -7,6 +7,7 @@ import { configure } from "@testing-library/react";
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
+import { setDispatchOrigins } from "../api/origins";
 import { resetReachability } from "../api/reachability";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
@@ -178,6 +179,10 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// The origins a whoami answer named are the page's for every later read (`origins.ts`): a test
+// whose fake whoami named a second origin would otherwise have the next test read its links
+// against it.
+afterEach(() => setDispatchOrigins([]));
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its
 // file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails

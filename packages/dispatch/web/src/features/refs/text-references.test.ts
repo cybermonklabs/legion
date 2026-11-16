@@ -27,7 +27,7 @@ test.each(
     cited(body, {
       issues: row.issues,
       items: row.items,
-      origin: server,
+      origins: [server],
       questions: row.questions,
     })
   ).toEqual([...row.refs]);
@@ -38,7 +38,7 @@ test.each(
 test("a reading answers what it would have to ask before it has asked anything", () => {
   const { needs, references } = readTextReferences(
     "Both CORE-1 and ACME-12 are blocked; CORE-1 again, see #q2 and dispatch://CORE-1/ask/2a7f1c90.",
-    { origin }
+    { origins: [origin] }
   );
 
   expect(needs).toEqual({
@@ -57,7 +57,9 @@ test("a reading answers what it would have to ask before it has asked anything",
 });
 
 test("a text with nothing to resolve asks nothing", () => {
-  const { needs, references } = readTextReferences("Tied to dispatch://CORE-1 here.", { origin });
+  const { needs, references } = readTextReferences("Tied to dispatch://CORE-1 here.", {
+    origins: [origin],
+  });
 
   expect(needs).toEqual({ keys: [], prefixes: [], questions: false });
   expect(references.map((found) => found.reference)).toEqual(["dispatch://CORE-1"]);

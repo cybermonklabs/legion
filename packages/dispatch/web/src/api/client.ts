@@ -17,6 +17,7 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { setDispatchOrigins } from "./origins";
 import {
   type Answer,
   type Body,
@@ -1805,9 +1806,13 @@ export class DispatchApiClient {
   }
 
   /** The signed-in person. `/auth/*` sits outside the `/api/v1` route table the document is
-   *  rendered from, so this one read names its path and its answer itself. */
-  whoAmI(): Promise<AuthenticatedUser> {
-    return this.json<AuthenticatedUser>("/auth/whoami");
+   *  rendered from, so this one read names its path and its answer itself. The origins the
+   *  answer names are the ones every dashboard URL is read against from then on
+   *  (`setDispatchOrigins`); an answer naming none leaves the page's own alone. */
+  async whoAmI(): Promise<AuthenticatedUser> {
+    const user = await this.json<AuthenticatedUser>("/auth/whoami");
+    setDispatchOrigins(user.origins ?? []);
+    return user;
   }
 
   /** Ends this browser's session. `/auth/logout` sits outside Dispatch's keyed layer and is the
