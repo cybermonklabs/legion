@@ -88,7 +88,7 @@ func uploadVersions(t *testing.T, handler http.Handler, owner, name, contentType
 	for index, content := range contents {
 		fields := map[string]string{"name": name}
 		if index > 0 && contentType == "text/markdown" {
-			fields["precondition"] = encodeUploadBase(t, uploadBase(t, handler, artifact.ID))
+			fields["precondition"] = uploadBaseField(t, handler, artifact.ID)
 		}
 		response := multipartRequest(t, handler, owner+"/artifacts", fields, "upload.bin", contentType, content, "alice")
 		if response.Code != http.StatusCreated {

@@ -343,10 +343,12 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 // `jsonArtifactUpload` do it, so one build of a fleet takes an upload another build's member
 // rides in (#2461). What a misspelled key cannot do is pass as the key it misspells: a
 // precondition left naming nothing is refused `400 INVALID_PRECONDITION` by its own shape check
-// (`docs.checkUploadPrecondition`), and an actor naming no kind is refused the same way. A field
-// holding more than one JSON value is refused, and a field the form does not carry, or carries
-// empty, is no field at all and answers nil. Every refusal is written here, naming the field, so
-// a caller reading false returns.
+// (`docs.ValidateUploadPrecondition`), and an actor naming no kind is refused when the caller is
+// a bearer that proves no session (`bearerSessionActor`), the one caller the actor names.
+// A field holding more than one JSON value is refused, and a field the form does not carry, or
+// carries empty, is no field at all and answers nil. Every refusal is written here, naming the
+// field, so a caller reading false returns. A field is logged only once it passed those checks,
+// as the JSON body is.
 func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request, field string) (*T, bool) {
 	raw := r.FormValue(field)
 	if raw == "" {
@@ -358,7 +360,6 @@ func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request
 		writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart "+field)
 		return nil, false
 	}
-	logUndeclaredMembers(r, &read, []byte(raw))
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, "INVALID_JSON", http.StatusBadRequest, "multipart "+field+" must contain one JSON value")
 		return nil, false
@@ -367,6 +368,7 @@ func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, refusal)
 		return nil, false
 	}
+	logUndeclaredMembers(r, &read, []byte(raw))
 	return &read, true
 }
 
