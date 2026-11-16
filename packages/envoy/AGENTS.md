@@ -3788,7 +3788,7 @@ On every row the list does not name, and on `/ws/live`, a read-only token is `40
 That answer comes before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler, so the refused request claims no key and writes nothing.
 The gate reads the decision `decideBrokerToken` carried and resolves nothing of its own, so every other credential passes it as before.
 For such a caller, a listed route writes nothing but the row of its spent DPoP proof and caches Dispatch rebuilds from what it holds (`TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches`).
-The mounts outside the table read no broker token: `/ws/doc/{room}` answers that token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers that token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries that token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 
@@ -6565,6 +6565,7 @@ Needs `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`;
 unset, no account exchanges), `BROKER_EXCHANGE_READ_ACCOUNTS` (optional;
 whitespace-separated `<service account>=<service>=<session>` entries, such as `system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session`:
 the token minted for a pod of that account holds the OAuth scope `read` alone and the project scope `none`, names that service and that session, and names no person and no project.
+That token reads the architecture of every project: no setting holds a read entry to some projects.
 Every field is required, and the session is everything after the second `=`, so it alone may carry one.
 A namespace's `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is `shared`, an account listed twice and an account that `BROKER_EXCHANGE_ACCOUNTS` lists too are refused.
 A broker of a build older than this setting does not read it, so it mints those accounts no token at all.

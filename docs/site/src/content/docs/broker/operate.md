@@ -284,7 +284,8 @@ entries, for example
 The token of such an entry holds the OAuth scope `read` alone and the project scope `none`, names
 that service and that session, and names no person and no project. Dispatch serves it on the routes
 its read list names, today `GET /api/v1/projects/{key}/architecture` alone, and answers it
-`403 READ_ONLY_TOKEN` on every other route. The Envoy listener answers it `401`. Both settings need
+`403 READ_ONLY_TOKEN` on every other route. That token reads the architecture of every project: no
+setting holds a read entry to some projects. The Envoy listener answers it `401`. Both settings need
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and the broker refuses to start on a
 read entry without the audience. It also refuses an entry with a missing field, a namespace's
 `default` account, a service that is not lowercase letters, digits and hyphens of at most 64 or is

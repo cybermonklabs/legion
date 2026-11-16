@@ -6264,6 +6264,7 @@ The subject token's own kind decides those claims (`packages/envoy/internal/brok
 A pod's token needs an entry for its service account, which gives the project and the person and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
 A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>`) gives a service and a fixed session in their place.
 The token it mints holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
+That token reads the architecture of every project: no setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
 The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` with `invalid_scope`, under every entry.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
@@ -6287,7 +6288,7 @@ With any one of them set it logs `token exchange state=on`, naming which issuers
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/broker/oauth/exchange.go`).
 For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/broker/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its section "Exchange a pod's token".
 
-Of what Legion runs, the operator-launched controller is the one process that presents such a token.
+Of what Legion runs, the operator-launched controller is the one process that can present such a token.
 A pod, the daemon, a tmux pane and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes.
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
 Dispatch accepts such a token where `DISPATCH_AGENT_SECRETS_URL` names the broker, and reads the session, the person or the service, and the project from it (`packages/envoy/cmd/dispatch/README.md`).

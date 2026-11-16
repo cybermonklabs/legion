@@ -772,7 +772,7 @@ func (s *Set) Registration(account, podUID, session string) error {
 		return err
 	}
 	if fixed := listing.fixed(); fixed != "" {
-		return fmt.Errorf("%w: %s writes as %s, which every pod of it may do, so its pods are registered for no name", ErrSessionFixed, account, fixed)
+		return fmt.Errorf("%w: %s's tokens all name the session %s, which every pod of it may use, so its pods are registered for no name", ErrSessionFixed, account, fixed)
 	}
 	if !validSession(session) {
 		return fmt.Errorf("%w: the registration of %s names a session of %d bytes; %s", ErrSessionInvalid, account, len(session), sessionRule)
