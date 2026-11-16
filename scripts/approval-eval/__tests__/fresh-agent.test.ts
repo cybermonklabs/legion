@@ -790,6 +790,16 @@ describe("the round's own numbers", () => {
     expect(read).toEqual({ numbers: null, modelFaults: 4 });
   });
 
+  test("are read again once a resume has answered each judgement an old row faulted", () => {
+    const resumed = [...rowsOf(undefined), ...rowsOf("anthropic/claude-opus-5-5")];
+    const read = roundNumbersOf(arms, resumed, caseIds);
+    expect(read.modelFaults).toBe(0);
+    expect(read.numbers?.gain).toBe(0.5);
+    // And the other way about: a judgement whose last row is the fault is still not read.
+    const refaulted = [...rowsOf("anthropic/claude-opus-5-5"), ...rowsOf(undefined)];
+    expect(roundNumbersOf(arms, refaulted, caseIds)).toEqual({ numbers: null, modelFaults: 4 });
+  });
+
   test("count only the pair's own rows of the model fault", () => {
     const rows = [...rowsOf("anthropic/claude-opus-5-5"), ...rowsOf(undefined, "other")];
     const read = roundNumbersOf(arms, rows, caseIds);

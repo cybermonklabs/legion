@@ -1003,11 +1003,12 @@ export interface RoundRead {
  * model against its bare arm, read from that round's own rows. No numbers where the round holds
  * no such pair of arms over these cases, in which case nothing is printed: numbers written into
  * this file would be one round's and would be printed as every later round's own. No numbers
- * either where a row of that pair over these cases carries the `model` fault.
+ * either where a judgement of that pair over these cases, its last row winning as `readRound`
+ * reads it, carries the `model` fault.
  */
 export function roundNumbersOf(
   arms: readonly RoundArm[],
-  rows: readonly Pick<JudgementRow, "arm" | "caseId" | "fault">[],
+  rows: readonly Pick<JudgementRow, "arm" | "caseId" | "judgement" | "fault">[],
   caseIds: readonly string[]
 ): RoundRead {
   // The round names its models with the provider in front, and the agent reports the bare name.

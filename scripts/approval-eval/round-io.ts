@@ -120,13 +120,20 @@ export function servedModelFaultOf(
 }
 
 /**
- * How many of these rows carry the `model` fault: a verdict no record ties to its arm's model,
- * on a row written before rows recorded one or one another model answered. A reader that turns
- * rows into a figure counts them, since such a row is no agreement and no disagreement of its
- * arm's model, and a figure taken over it reads as a measured one.
+ * How many judgements of these rows carry the `model` fault: a verdict no record ties to its
+ * arm's model, on a row written before rows recorded one or one another model answered. One
+ * row per arm, case and judgement counts, the last written winning, as the row store and
+ * `readRound` hold them, so a fault a resume has since answered counts no more. A reader that
+ * turns rows into a figure counts them, since such a row is no agreement and no disagreement of
+ * its arm's model, and a figure taken over it reads as a measured one.
  */
-export function modelFaultsOf(rows: readonly Pick<JudgementRow, "fault">[]): number {
-  return rows.filter((row) => row.fault === "model").length;
+export function modelFaultsOf(
+  rows: readonly Pick<JudgementRow, "arm" | "caseId" | "judgement" | "fault">[]
+): number {
+  const last = new Map<string, JudgementRow["fault"]>();
+  for (const row of rows)
+    last.set(`${row.arm}\u0000${row.caseId}\u0000${row.judgement}`, row.fault);
+  return [...last.values()].filter((fault) => fault === "model").length;
 }
 
 /** What one reading of `rows.jsonl` found: the rows, and how much of the file they were. */

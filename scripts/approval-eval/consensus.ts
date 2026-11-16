@@ -150,9 +150,9 @@ export interface ConsensusRecord {
   rowsRead: number;
   rowsUnreadable: number;
   /**
-   * The rows read that carry the `model` fault (`modelFaultsOf`): verdicts no record ties to
-   * their arm's model, which every case reading here takes as undecided, as every row of a round
-   * written before rows recorded their served model is.
+   * The judgements read whose last row carries the `model` fault (`modelFaultsOf`): verdicts
+   * no record ties to their arm's model, which every case reading here leaves out, as it does
+   * every row of a round written before rows recorded their served model.
    */
   rowsModelFault: number;
   ranAt: string;
@@ -424,7 +424,7 @@ export function renderConsensus(record: ConsensusRecord): string[] {
       `unreadable, ${count(record.rowsModelFault)} of the model fault` +
       (record.rowsModelFault === 0
         ? ""
-        : ", each read as undecided: resume the round with run-round.ts to ask them again"),
+        : ", none of them a returned judgement: resume the round with run-round.ts to ask them again"),
     `bound             one-sided Clopper-Pearson at ${num(100 * DEFAULT_CONFIDENCE, 0)} percent`,
     `read at           ${record.ranAt}`,
     "",

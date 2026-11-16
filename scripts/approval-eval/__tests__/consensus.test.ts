@@ -480,7 +480,7 @@ describe("the question", () => {
 describe("the rows line", () => {
   test("counts the rows of the model fault an old round holds, beside read and unreadable", () => {
     // A round's rows as they were written before rows recorded their served model, read back
-    // the way the command reads them: each is the model fault, so each case reads undecided.
+    // the way the command reads them: each is the model fault, so none of them returned.
     const old = armRows("bare-opus-5-5", "one", same([APPROVE]))
       .map((row) => rowOf(JSON.stringify(row)))
       .filter((row): row is JudgementRow => row !== null);
@@ -501,7 +501,7 @@ describe("the rows line", () => {
     };
     expect(renderConsensus(record)).toContain(
       `rows              ${JUDGEMENTS} read, 0 unreadable, ${JUDGEMENTS} of the model fault, ` +
-        "each read as undecided: resume the round with run-round.ts to ask them again"
+        "none of them a returned judgement: resume the round with run-round.ts to ask them again"
     );
     expect(renderConsensus({ ...record, rowsModelFault: 0 })).toContain(
       `rows              ${JUDGEMENTS} read, 0 unreadable, 0 of the model fault`

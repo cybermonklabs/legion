@@ -4,13 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CaseRow } from "./build-corpus";
 import { artifactsOf } from "./corpus-io";
-import {
-  askClaude,
-  type ClaudeAsk,
-  type ModelAnswer,
-  servedAsAsked,
-  servedModelFault,
-} from "./models";
+import { askClaude, type ClaudeAsk, type ModelAnswer, servedModelFault } from "./models";
 
 /**
  * What the agent never decides, whatever its confidence.
@@ -307,7 +301,7 @@ async function readCache(directory: string, key: string): Promise<CacheEntry | n
   if (kind !== null && !NEVER_DECIDE_KINDS.includes(kind)) return null;
   const model = entry.model ?? "";
   const servedModel = entry.servedModel ?? "";
-  if (!servedAsAsked(model, servedModel)) return null;
+  if (servedModelFault(model, servedModel, true) !== null) return null;
   return {
     model,
     documentId: entry.documentId ?? null,
