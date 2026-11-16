@@ -555,10 +555,12 @@ as_role_probe() {
 # credential the image's own `legion git-credential` hands out, to the request a `git push` opens
 # with (`GET <repo>.git/info/refs?service=git-receive-pack`): 200 and a receive-pack
 # advertisement for O, the issue's own repository, and the same for T, a repository of another
-# owner no mapping of this issue's project names. What a role reaches is the accounts its App is
-# installed on and nothing narrower, which is the property. O's answer stays the control that the
-# network, the helper and the token are sound, so T's 200 is reach and not a rig that answers
-# anything. The request writes nothing: it is the read a push opens with, where a push would leave
+# owner. What a role reaches is the accounts its App is installed on, whichever owner's
+# repository its issue names, which is the property. The observation reads no repository
+# mapping, so it shows reach across owners and says nothing of whether a mapping names T. O's
+# answer stays the control that the network, the helper and the token are sound, so T's 200 is
+# reach and not a rig that answers anything. The request writes nothing: it is the read a push
+# opens with, where a push would leave
 # a branch on a repository every run shares. The prober runs no git (git reads
 # ~/.netrc, config files and the GIT_* variables, all of which the agent's uid can write) and takes
 # no executable, search path or credential directory from the agent's environment, which its own

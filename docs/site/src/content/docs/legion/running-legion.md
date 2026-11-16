@@ -186,12 +186,38 @@ bun scripts/github-apps/create.ts --out <new dir> --name-prefix <prefix>- \
 ```
 
 `--org` registers them under an organization, which only its owners and App managers can do;
-without it they belong to the account that clicks. The Apps are private unless you pass
-`--public`, and GitHub lets a private App be installed only on the account that owns it. Register
-them under the one owner whose repositories Legion works, and keep them private. Pass `--public`
-only when Legion works repositories under more than one owner: then any account can install them,
-and an install of the Envoy App sends that account's repository events to your listener and adds
-an installation that Dispatch searches.
+without it they belong to the account that clicks.
+The Apps are private unless you pass `--public`, and GitHub lets a private App be installed only
+on the account that owns it.
+Register them under the one owner whose repositories Legion works, and keep them private.
+Pass `--public` only when Legion works repositories under more than one owner: then any GitHub
+account can install them.
+An install of the Envoy App sends that account's repository events to your listener and adds an
+installation that Dispatch searches.
+An install of a role App counts as every other installation of it does, because the daemon
+keeps no list of owners.
+An account that installs the implement App gets a directory with that App's write token in the
+gh bundle of every implementer and merger, from the next bundle the daemon builds.
+An install of the review App gives every other role that App's token the same way, and the
+controller its read-only one.
+The account's name joins the owners that each later launch of that App's roles is told in the
+`Legion addressing` line of its prompt.
+Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's
+next refresh.
+Under `runtime: kubernetes` the bundle is each role's Secret, and a pod projects the directories
+of its creation, an issue pod only those that both role Apps' bundles hold.
+So once both role Apps are installed on the account, the daemon opens one update round over each
+live issue pod, and the pod that replaces it projects the new directory.
+The controller's pod runs the review App alone and no round covers it: after the review App's
+install it is replaced at its next launch.
+An uninstall opens no round and replaces no pod: the next bundle holds no directory for the
+account, a pane loses its directory at the next refresh, and a running pod keeps one that the
+daemon refreshes no more.
+All of that is true of a daemon that mints with its own App key (`private_key`,
+`private_key_command` or `private_key_secret`).
+A daemon that takes its tokens from the secrets broker through `token_command` gets a token only
+for the accounts the secret's `github-owners` tag lists, so an install by any other account
+gives nothing there.
 
 `--webhook-url` becomes the Envoy App's webhook. That App's webhook secret is the listener's
 `ENVOY_GITHUB_WEBHOOK_SECRET`, its client id is Dispatch's `DISPATCH_APP_CLIENT_ID`, and its

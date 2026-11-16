@@ -44,18 +44,25 @@ with exactly one repository per issue — never two. A change that spans reposit
 issue with one child per repository, each child's own `--repo` fixed when the daemon records it.
 An issue may name any `owner/name`, whether or not Dispatch maps it to the project, and the
 account that installs a role's GitHub App decides what that role reaches.
-Every pane and pod holds a write token, minted from the role's GitHub App on the installation of
-its own issue's owner, and a read-only token on every other owner that App is installed on. Its
-gh bundle holds one directory per owner the App is installed on, one more per owner a configured
-rename moved a repository away from while the project serves the name it moved to, and one for
-the issue's recorded owner. The write token stands in
-two of those directories, the recorded owner's and the serving owner's, which are one directory
-unless a rename moved the issue's repository, and every other directory is read-only. Each token
-reaches every repository its own installation holds. `legion gh`, the `gh`
-wrapper every pane and pod runs, reads the directory of the owner of the repository a command
-names, and `git` reaches the same bundle
-through a credential helper that picks a directory the same way, so a command naming an owner the
-App is not installed on is refused there, not merely discouraged.
+Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
+is installed on.
+Each token is minted on that owner's installation with the role's own permissions: the implement
+App's write set for the implementer and the merger, the review App's review set for every other
+role.
+The bundle holds one directory per owner the App is installed on, one more per owner a
+configured rename moved a repository away from while the project serves the name it moved to, and
+one for the issue's recorded owner.
+An issue pod shows its roles the directories that both Apps' bundles hold.
+No directory holds a read-only token, so a role writes in every repository its App reaches,
+whichever owner holds it.
+The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
+or, for a repository a configured rename moved, the directory of the owner it moved to.
+The controller's bundle is the one bundle of read-only tokens.
+Each token reaches every repository its own installation holds.
+`legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
+repository a command names, and `git` reaches the same bundle through a credential helper that
+picks a directory the same way, so a command naming an owner the App is not installed on is
+refused there, not merely discouraged.
 
 ## The controller
 

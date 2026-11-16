@@ -85,6 +85,15 @@ request; `agent-secrets`' exit 75 (still waiting when its own wait ended) is ret
 `legion start --check-config` never runs it, and `installations` cannot be set beside it, since
 the release names every installation.
 
+Both Apps are public GitHub Apps, so any GitHub account can install them.
+What such an install gives depends on where the daemon gets its tokens.
+A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing.
+A daemon that mints with its own App key counts every installation and keeps no list of owners.
+There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
+The account's name is among the owners that each later launch of that App's roles is told in its `Legion addressing` line.
+What an install changes for a running pod is in `docs/kubernetes.md`.
+
 Each App needs its own `app_id` and `token_command`, with no second credential source.
 See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rotation procedure.
 
@@ -101,13 +110,15 @@ one more per owner a configured rename moved a repository away from while the pr
 name it moved to, and one for the issue's own recorded owner: the
 daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-token`) and
 `config.yml` under `<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the
-pane — in two directories, the issue's recorded owner's and the one named for the owner whose
-installation serves that repository now, which are one directory unless a rename moved the issue's
-repository, the role's App write token on that owner's installation, and in every
-other directory that App's token narrowed to reading contents, pull requests, issues, Actions and metadata
-on that owner's installation (each token asks for what the App's installation on
-that owner is granted of the set, and a permission it is granted none of is left out, named in
-a warn record of the daemon's log) — names the issue owner's directory as `GH_CONFIG_DIR`
+pane — in every directory the role's App token on that owner's installation, asked for with the
+role's own permissions, the implement App's write set or the review App's review set, and in no
+directory a token narrowed to reading, the one directory with another owner's token being that
+of an owner a rename moved a repository away from where the App is not installed on it, which
+holds the token of the owner the repository moved to (each token asks for what the App's
+installation on that owner is granted of the set, and a permission it is granted none of is left
+out, named in a warn record of the daemon's log) — names the directory the issue's repository
+routes to as `GH_CONFIG_DIR`, its recorded owner's or, for a repository a configured rename
+moved, that of the owner it moved to,
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
 empty so nothing outranks the files, and rewrites each directory's `hosts.yml` in place every
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github

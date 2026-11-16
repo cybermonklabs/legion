@@ -365,9 +365,10 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the `gh` first on every tmux pane's and pod's PATH (a script in the pane's launcher directory, `/opt/legion/bin/gh` in the image) runs it, never a person:
   it runs the real gh (LEGION_GH_PATH) with GH_CONFIG_DIR at a directory of the role's gh bundle (LEGION_GH_OWNERS_DIR:
   one directory per GitHub owner the role's App is installed on, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's own recorded owner;
-  each directory holds one token, minted on that owner's installation, which reaches every repository that installation holds and no fewer, the account having chosen that set when it installed the App;
-  the role App's write token stands in two of them, the directory named for the issue's recorded owner and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
-  every other directory holds its owner's read-only token, over contents, pull requests, Actions and metadata):
+  each directory holds one token of the role's own App, minted on that owner's installation with the role's own permissions, and none holds a read-only token;
+  a token reaches every repository that installation holds and no fewer, the account having chosen that set when it installed the App, so a role writes in every repository its App reaches;
+  the directory of an owner a rename moved a repository away from, where the App is not installed on that owner, holds the token of the owner the repository moved to;
+  the pane's or pod's own GH_CONFIG_DIR names the directory the issue's repository routes to, its recorded owner's or that of the owner a rename moved it to):
   the directory of the owner of the repository the command names, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
   -R/--repo before or after the command, a repository or owner argument, before `--` or as a clone's or fork's first after it, a github.com URL argument (for a pr command or agent-task view only a pull request's, any other naming a branch of its own repository), every one of a slot gh's usage takes several of, agent-task view's OWNER/REPO#N, `gh api`'s `repos/orgs/users/<owner>/` endpoint and a search endpoint's q, a search query's plain repo:/owner:
   qualifiers, the options naming a repository, an owner, a team or an issue by URL;
@@ -565,6 +566,14 @@ projects:
 Dispatch's mapping (Settings → Repositories → Projects) names the project's default repository and the repositories the daemon prepares before an issue names one;
 `legion.yaml` names none, and refuses `projects.<KEY>.repo`.
 An issue may name any `owner/name`, and the daemon records and runs it where both role Apps are installed.
+Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation and keeps no list of owners.
+An account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, from the next bundle the daemon builds, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+The account's name joins the owners that each later launch of that App's roles is told in its `Legion addressing` line.
+Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's next refresh.
+Under `runtime: kubernetes` the daemon opens one update round over each live issue pod once both role Apps are installed on the account, since an issue pod projects only the directories that both Apps' bundles hold.
+The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
+An uninstall opens no round and replaces no pod: the next bundle holds no directory for the account, a pane loses its directory at the next refresh, and a running pod keeps one that the daemon refreshes no more.
+A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
 `projects.<KEY>.commit_issue_trailer_repos` is the one key of `legion.yaml` that names repositories: the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends.
 A pane stamps the commit when its launch's repository is one of those names, and boot checks each name against the mapping alone, which catches a typo.
 The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated`, and reads each repository's installation of both GitHub Apps.
