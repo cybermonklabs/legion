@@ -4998,7 +4998,7 @@ The head arm launches each pane on the role prompts the daemon snapshots below i
 The base arm writes the base's prompt files (`git archive <base> packages/daemon/internal/prompts/{roles,go}`, extracted into a scratch directory removed on exit) over that snapshot before the first pane starts:
 a pane reads its role prompt from those files at launch, so the arm needs no second daemon.
 The addressing the daemon appends after them, and the skills the plugins carry, are this checkout's in both arms.
-Each run reads its panes' prompts back from their own command lines and stops the proof when a pane runs the other arm's.
+Each run reads its panes' prompts back from the files their own command lines name, and stops the proof when a pane runs the other arm's.
 
 Each step runs three times in the head arm and then three times in the base arm, each run on trees of its own and bounded at eight minutes.
 A run prints `== <step> <arm> <n>`, its evidence, read from the sessions' own transcripts (each tool call and its arguments, and each Envoy message and task a session was given), and `run <step> <arm> <n>: <outcome> … in <s>s, <n> model calls`.

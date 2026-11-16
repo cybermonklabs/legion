@@ -38,10 +38,11 @@
 // Two arms. The head arm launches each pane on the prompts the daemon snapshots below its state
 // directory at boot (prompts.New). The base arm writes the base commit's prompt files,
 // APPROVED_VERSION_NEWS_BASE_PROMPTS, over that snapshot before the first pane starts: a pane
-// reads its role prompt from those files at launch (specs.rolePromptPaths, promptArgument), so the
-// arm needs no second daemon. The addressing the daemon appends after the files is this
-// checkout's in both arms. Each run reads the prompt back from its pane's own command line and
-// ends the proof when the arm it ran is not the one it meant.
+// reads its role prompt from those files at launch (specs.rolePromptPaths,
+// runtime.ComposePrompt), so the arm needs no second daemon. The addressing the daemon appends
+// after the files is this checkout's in both arms. Each run reads the prompt back from the file
+// its pane's own command line names and ends the proof when the arm it ran is not the one it
+// meant.
 //
 // Three steps, each run three times in each arm, each run on trees of its own:
 //   - a4-the-architect-tells-the-child-reviewer: under root-issues, a root waiting in admitted and
@@ -180,10 +181,10 @@ const (
 	sessionsCheckAgain  = "The read answers 200 with the page it read."
 )
 
-// The sentence of each arm's prompt the run reads back from a pane's own command line: the head's
-// carries it and the base commit's does not. The architect's is its answer to a version the daemon
-// sends no news of (prompts/go/architect-common.md); a phase worker's is its answer to a news task
-// (prompts/go/worker-common.md).
+// The sentence of each arm's prompt the run reads back from the file a pane's command line names:
+// the head's carries it and the base commit's does not. The architect's is its answer to a version
+// the daemon sends no news of (prompts/go/architect-common.md); a phase worker's is its answer to a
+// news task (prompts/go/worker-common.md).
 const (
 	sessionsArchitectMark = "Send that news yourself once you write such a version"
 	sessionsWorkerMark    = "A news task tells you that a person approved a new version of your tree's design."
@@ -908,12 +909,14 @@ func (r *sessionsRun) checkArm(member *sessionsMember, role claim.Role, mark str
 	if carries {
 		said = "carries"
 	}
-	r.note("%s runs the %s arm's prompt: its own command line %s the head's sentence %q", token, r.arm, said, mark)
+	r.note("%s runs the %s arm's prompt: the file its own command line names %s the head's sentence %q", token, r.arm, said, mark)
 }
 
-// launchedPrompt is the `--append-system-prompt` word token's Oh My Pi was started with, read from
-// /proc as role_prompt_rule_live_test.go reads it: the pid the locator carries is the shim's, whose
-// child is Oh My Pi.
+// launchedPrompt is the prompt token's Oh My Pi was started with: the contents of the file its one
+// `--append-system-prompt` word names, read from /proc as role_prompt_rule_live_test.go reads it.
+// The pid the locator carries is the shim's, whose child is Oh My Pi, and the launch writes that
+// file before the process starts and never while it runs (runtime.WriteSystemPrompt). A file that
+// cannot be read stops the run, since Oh My Pi would then have taken the path as the prompt's text.
 func (r *sessionsRun) launchedPrompt(token claim.Token) string {
 	t := r.t
 	t.Helper()
@@ -944,7 +947,11 @@ func (r *sessionsRun) launchedPrompt(token claim.Token) string {
 		}
 		for i := len(argv) - 2; i >= 0; i-- {
 			if argv[i] == promptWord {
-				return argv[i+1]
+				text, err := os.ReadFile(argv[i+1])
+				if err != nil {
+					t.Fatalf("%s's Oh My Pi was launched with %s %s, which could not be read: %v", token, promptWord, argv[i+1], err)
+				}
+				return string(text)
 			}
 		}
 	}
