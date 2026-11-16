@@ -1043,7 +1043,11 @@ const legionRepositories = z.object({
     })
   ),
   refused: z.array(
-    z.object({ repo: nonEmptyString, reason: nonEmptyString, apps: legionAppInstallations.optional() })
+    z.object({
+      repo: nonEmptyString,
+      reason: nonEmptyString,
+      apps: legionAppInstallations.optional(),
+    })
   ),
   withoutWebhookApp: z.array(z.object({ repo: nonEmptyString, reason: nonEmptyString })),
   caches: z.array(legionCacheView),

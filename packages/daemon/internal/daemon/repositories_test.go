@@ -199,7 +199,7 @@ func (d *mappingDispatch) set(mappings ...dispatch.RepoProject) {
 	d.mappings = mappings
 }
 
-// The project's repositories are Dispatch's mapping of the project, each served only once both
+// The mapping's own repositories, which are not all the project serves, are served only once both
 // Apps are installed on it: a repository missing an App is left out with the App named, the
 // owners are the served repositories', lowercased and sorted, and a served repository is held as
 // GitHub names it, at its default branch.
