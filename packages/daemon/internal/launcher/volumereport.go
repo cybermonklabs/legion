@@ -207,7 +207,7 @@ func (t *trimmer) report(ctx context.Context, out sweepOutcome) shimwire.Launche
 	})
 }
 
-// What one report may carry. Every list and every string below is the pod's own and not this
+// What one report may carry. Every path in the lists below is the pod's own and not this
 // package's: a name two levels under /legion, a directory's or a file's, is whatever a role
 // made, and /legion/scratch is writable by the role uid (measured in an issue pod of this
 // deployment at 2026-11-11T08:05Z: `drwx--S--- legion legion /legion/scratch`, the role process

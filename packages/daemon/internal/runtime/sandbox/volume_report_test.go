@@ -210,11 +210,11 @@ func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 // container apart by, one whose episode is below the 1 the trimmer counts from, and one holding
 // more entries in a list than that list's cap, every entry of which the notice would carry. Each
 // is logged as a report the daemon refuses, with the reason the rule gives, and dropped, and the
-// connection is left open: closing it costs a redial a second for every role of the pod, and
-// would not have the report sent again. The control is the valid report after them, which
-// reaches the seam on the same connection. The negative control for the line's words is the
-// warning as it stood at a3f5d0965f3f, which called each of the three a report the daemon cannot
-// count.
+// connection is left open: closing it costs a redial a second of the one role's connection that
+// carries the pod's reports, and would not have the report sent again. The control is the valid
+// report after them, which reaches the seam on the same connection. The negative control for the
+// line's words is the warning as it stood at a3f5d0965f3f, which called each of the three a
+// report the daemon cannot count.
 func TestAVolumeReportTheFramesRuleRefusesIsDroppedAndLeavesTheConnection(t *testing.T) {
 	logs := &bytes.Buffer{}
 	seam := newVolumeSeam()

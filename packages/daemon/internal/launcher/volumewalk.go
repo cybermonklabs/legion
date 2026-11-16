@@ -81,21 +81,24 @@ type walkResult struct {
 	// immediate child of the volume root it had not listed in full, the one whose listing it cut
 	// among them, or the volume root alone where the cut came inside the root's own listing
 	// (targets), and MissingOmitted counts the rest (cut). A target the walk could read nothing
-	// of, and one it could read only in part (LauncherVolumeSize.Refused), end nothing, so a walk
-	// that met only those reached its end and is not partial.
+	// of, the volume root or an immediate child of it that the walk could not list, and a target
+	// it could read only in part (LauncherVolumeSize.Refused), end nothing, so a walk that met
+	// only those reached its end and is not partial.
 	Partial bool
 	// Missing is what the walk did not measure: a target it kept no reading of — a directory it
-	// could not open or list, or a file whose lstat was refused — with the read the kernel
-	// refused (LauncherVolumeMissing.Reason), and everything it had not reached when the budget
-	// or the container's stop cut it. It holds at most shimwire.VolumeReportSizesMissing of them,
-	// the most a report names, and MissingOmitted counts the rest (miss), for the reason Sizes is
+	// could not open or list, or a file whose lstat was refused — and the volume root or an
+	// immediate child of it that it could not list, each with the read the kernel refused
+	// (LauncherVolumeMissing.Reason), and everything it had not reached when the budget or the
+	// container's stop cut it. It holds at most shimwire.VolumeReportSizesMissing of them, the
+	// most a report names, and MissingOmitted counts the rest (miss), for the reason Sizes is
 	// bounded.
 	Missing        []shimwire.LauncherVolumeMissing
 	MissingOmitted int
 }
 
-// miss names one target the walk did not measure, and why where a read was refused, or counts it
-// once Missing holds as many as a report names.
+// miss names one target the walk did not measure, or the volume root or an immediate child of it
+// that the walk did not list in full, and why where a read was refused, or counts it once Missing
+// holds as many as a report names.
 func (r *walkResult) miss(path, reason string) {
 	if len(r.Missing) >= shimwire.VolumeReportSizesMissing {
 		r.MissingOmitted++
@@ -339,9 +342,10 @@ func (w sizeWalk) pathOf(target walkTarget) string {
 	return filepath.Join(w.root, target.child, target.inside)
 }
 
-// cut is the walk ended by its budget or the container's stop with targets still to measure:
-// it is partial, and each of them is named as unmeasured as far as Missing holds them and
-// counted beyond that, with no path built for one it only counts (miss).
+// cut is the walk ended by its budget or the container's stop with targets still to measure, or
+// with immediate children of the volume root still to list in full (targets): it is partial, and
+// each of them is named as unmeasured as far as Missing holds them and counted beyond that, with
+// no path built for one it only counts (miss).
 func (w sizeWalk) cut(result *walkResult, targets []walkTarget) {
 	result.Partial = true
 	for at, target := range targets {
@@ -353,10 +357,10 @@ func (w sizeWalk) cut(result *walkResult, targets []walkTarget) {
 	}
 }
 
-// unreadReason is why the walk left a target unmeasured, as its entry in Missing carries it: the
-// read the kernel refused and its answer, `openat: permission denied`, with no path, since the
-// entry names the target already. An error that carries no answer of the kernel's is
-// written whole.
+// unreadReason is why the walk left a target unmeasured, or the volume root or an immediate
+// child of it unlisted, as its entry in Missing carries it: the read the kernel refused and its
+// answer, `openat: permission denied`, with no path, since the entry names it already. An error
+// that carries no answer of the kernel's is written whole.
 func unreadReason(err error) string {
 	op := ""
 	var quoted *quotedPathError

@@ -4123,8 +4123,9 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 	// The two strings this package mints rather than reads off the pod are cut as well. Neither
 	// is long in a report this launcher made — randomID writes 32 hex characters, and what
 	// raised the episode is one of shimwire's three words — and the daemon renders both into
-	// the sentence the architect's session reads, which the frame's own rule leaves unchecked
-	// (LauncherVolumeReport.Validate), so the sentence's size rests on this bound.
+	// the sentence the architect's session reads, and the frame's own rule checks neither one's
+	// length (LauncherVolumeReport.Validate), so where this launcher sent the report their part
+	// of the sentence's size rests on this bound.
 	t.Run("the identifier and the raised-by this package mints", func(t *testing.T) {
 		f := newTrimFixture(t, 1)
 		long := strings.Repeat("l", volumeReportTrimmerRunes*3)

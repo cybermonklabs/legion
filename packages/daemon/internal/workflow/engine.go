@@ -1282,8 +1282,8 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // a report the launcher held through an outage reaches the daemon after it (launcher's deliver):
 // the volume was above its low mark when the sweep ended, which says nothing of it now. The freed
 // bytes are the sweep's first reading's used bytes less its last's (launcher's sweep), so they are
-// negative when the roles wrote more than the sweep removed; such a sweep is told as the volume
-// growing by that many bytes while it ran, and never as a negative number freed.
+// negative when the volume's used bytes grew; such a sweep is told as the volume growing by that
+// many bytes while it ran, and never as a negative number freed.
 //
 // Everything that comes from the pod rather than from this package is rendered with %q: a
 // name two levels under /legion, a directory's or a file's, is one a role of that pod chose —
@@ -1362,9 +1362,10 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 		fmt.Fprintf(&out, "; %d more sizes are left out of this report", report.SizesOmitted)
 	}
 	// Two facts and not one: a walk that was cut ended early, and a target the walk measured
-	// none of may be one whose read the kernel refused while the walk went on to its end — a
-	// directory it could not open or list, a file whose lstat was refused — which is told with
-	// the read the kernel refused (record.VolumeNearFull, record.VolumeMissing).
+	// none of, or the volume root or an immediate child of it that it did not list in full, may
+	// be one whose read the kernel refused, which cuts no walk — a directory it could not open or
+	// list, a file whose lstat was refused — and is told with the read the kernel refused
+	// (record.VolumeNearFull, record.VolumeMissing).
 	if report.SizesPartial {
 		out.WriteString("; the size walk was cut before it reached every target")
 	}
@@ -1380,9 +1381,8 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 	// The count and each fault's first line alone. A fault is a recovered panic with its whole
 	// stack behind it (the trimmer's recover, launcher's volumetrim.go), kilobytes of it, and
 	// Volume.Faults carries them whole already: this sentence is stored in an outbox row and
-	// published to a role topic, where a size is one this package chose rather than one a panic
-	// happened to have, as the pod end's message is bounded where it is built
-	// (runtime.PodEndRunes).
+	// published to a role topic, so the stack is left out of it. The first line's length is the
+	// sender's: this package cuts at the first newline and applies no rune limit.
 	if len(report.Faults) > 0 {
 		fmt.Fprintf(&out, "; faults the trimmer recovered from: %d", len(report.Faults)+report.FaultsOmitted)
 		for _, fault := range report.Faults {
@@ -1407,9 +1407,10 @@ func quotedList(list []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// missingList is the targets a size walk measured none of as quotedList writes a list, each
-// followed by the reason the kernel gave where it has one, quoted the same way: the reason comes
-// from the pod as the path does.
+// missingList is the targets a size walk measured none of, and the volume root or an immediate
+// child of it where the walk did not list one in full, as quotedList writes a list, each followed
+// by the reason the kernel gave where it has one, quoted the same way: the reason comes from the
+// pod as the path does.
 func missingList(list []record.VolumeMissing) string {
 	quoted := make([]string, len(list))
 	for at, one := range list {

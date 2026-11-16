@@ -405,17 +405,18 @@ type Notice struct {
 // (shimwire.VolumeEpisodeFirst, VolumeEpisodeRecovery, VolumeEpisodeRise). UsedBytes and
 // FreeBytes are the volume as the sweep's last reading saw it and FreedBytes what the sweep
 // freed, read from the volume and never counted from the bytes unlinked: the sweep's first
-// reading's used bytes less its last's, negative where the roles wrote more while the sweep ran
-// than the sweep removed. StopReason is why the sweep stopped, in the trimmer's own words, and
-// RefusedReads the /proc reads the kernel refused that no report had carried yet, of this sweep
-// and of earlier ones that sent no report: one per process the trimmer could not read, or one for
-// /proc itself when /proc could not be listed.
+// reading's used bytes less its last's, negative where the volume's used bytes grew while the
+// sweep ran. StopReason is why the sweep stopped, in the trimmer's own words, and RefusedReads
+// the /proc reads the kernel refused that no report had carried yet, of this sweep and of earlier
+// ones that sent no report: one per process the trimmer could not read, or one for /proc itself
+// when /proc could not be listed.
 //
 // Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
 // were measured — a report made between walks carries the last walk's numbers with that walk's
 // time — SizesPartial a walk its budget or the container's stop cut before it reached every
 // target, which is the one way a walk ends early, and SizesMissing every target the walk did not
-// measure at all, each with its reason where a read was refused (VolumeMissing): a directory it
+// measure at all, and the volume root or an immediate child of it where the walk did not list
+// one in full, each with its reason where a read was refused (VolumeMissing): a directory it
 // could not open or list, a file whose lstat was refused, and, of a walk that was cut, every
 // target it had not measured when it was cut, as far as the report's cap and counted past it
 // (SizesMissingOmitted) — where the cut came while it listed them, every one it had listed, the
@@ -480,10 +481,11 @@ type VolumeSize struct {
 	Refusals      int    `json:"refusals,omitempty"`
 }
 
-// VolumeMissing is one target the trimmer's size walk measured none of, and why where a read was
-// refused: the read and the kernel's answer, as `openat: permission denied`, for a directory the
-// walk could not open or list or a file whose lstat was refused, and nothing for one a cut walk
-// never reached, which VolumeNearFull.SizesPartial says (shimwire.LauncherVolumeMissing).
+// VolumeMissing is one target the trimmer's size walk measured none of, or the volume root or an
+// immediate child of it that the walk did not list in full, and why where a read was refused: the
+// read and the kernel's answer, as `openat: permission denied`, for a directory the walk could
+// not open or list or a file whose lstat was refused, and nothing for one the cut of a walk left
+// unmeasured, which VolumeNearFull.SizesPartial says (shimwire.LauncherVolumeMissing).
 type VolumeMissing struct {
 	Path   string `json:"path"`
 	Reason string `json:"reason,omitempty"`

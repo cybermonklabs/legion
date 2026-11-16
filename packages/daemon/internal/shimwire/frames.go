@@ -357,11 +357,11 @@ type LauncherVolumeSize struct {
 	Refusals      int    `json:"refusals,omitempty"`
 }
 
-// LauncherVolumeMissing is one target the size walk measured none of. Reason is why, for a
-// directory the walk could not open or list or a file whose lstat was refused: the read the
-// kernel refused and its answer, as `openat: permission denied`, and never a path, since Path
-// names the target already. It is empty for a target a cut walk never reached, which the
-// report's SizesPartial says.
+// LauncherVolumeMissing is one target the size walk measured none of, or the volume root or an
+// immediate child of it that the walk did not list in full. Reason is why, for a directory the
+// walk could not open or list or a file whose lstat was refused: the read the kernel refused and
+// its answer, as `openat: permission denied`, and never a path, since Path names it already. It
+// is empty for one the cut of a walk left unmeasured, which the report's SizesPartial says.
 type LauncherVolumeMissing struct {
 	Path   string `json:"path"`
 	Reason string `json:"reason,omitempty"`
@@ -396,17 +396,18 @@ const (
 // UsedBytes and FreeBytes are the volume as the sweep's last reading saw it, and FreedBytes what
 // the sweep freed, read from the volume itself and never counted from the bytes unlinked: a
 // deletion the kernel has not accounted for yet is not space anything can use. FreedBytes is the
-// sweep's first reading's used bytes less its last's, so it is negative where the roles wrote
-// more while the sweep ran than the sweep removed. StopReason is why the sweep stopped, in the
-// trimmer's own words, and RefusedReads the /proc reads the kernel refused that no report has
-// carried yet, of this sweep and of earlier ones that sent no report: one per process it could
-// not read, or one for /proc itself when /proc could not be listed.
+// sweep's first reading's used bytes less its last's, so it is negative where the volume's used
+// bytes grew while the sweep ran. StopReason is why the sweep stopped, in the trimmer's own
+// words, and RefusedReads the /proc reads the kernel refused that no report has carried yet, of
+// this sweep and of earlier ones that sent no report: one per process it could not read, or one
+// for /proc itself when /proc could not be listed.
 //
 // Sizes are the size walk's targets (LauncherVolumeSize) and SizesAt when they were
 // measured: a report made between walks carries the last walk's numbers with that walk's time,
 // so a reader never reads a stale measurement as this sweep's. SizesPartial is a walk that ended
 // early, which is a walk its budget or the container's stop cut before it reached every target.
-// SizesMissing is every target the walk did not measure at all, each with its reason where a
+// SizesMissing is every target the walk did not measure at all, and the volume root or an
+// immediate child of it where the walk did not list one in full, each with its reason where a
 // read was refused (LauncherVolumeMissing): a directory it could not open or list or a file whose
 // lstat was refused, which ends nothing, and, of a walk that was cut, every target it had not
 // measured when it was cut — where the cut came while it listed them, every one it had listed,
@@ -460,7 +461,8 @@ const (
 	// /legion/scratch; fifty is room for a layout that grows, and the largest fifty are the ones
 	// a reader acts on, whichever of them the walk reached first.
 	VolumeReportSizes = 50
-	// VolumeReportSizesMissing is how many unmeasured targets a report names (SizesMissing).
+	// VolumeReportSizesMissing is how many unmeasured targets a report names, with the volume
+	// root or an immediate child of it where the walk did not list one in full (SizesMissing).
 	// The list can run as long as the one above, so it takes the same cap.
 	VolumeReportSizesMissing = 50
 	// VolumeReportRefusedReads is how many refused /proc reads a report names (RefusedReads): one

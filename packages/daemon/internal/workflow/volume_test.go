@@ -428,9 +428,9 @@ func TestAVolumeReportOfAnIssueNobodyRunsWritesNothing(t *testing.T) {
 //
 // The trimmer's identifier and what raised its episode are carried the same way. Legion's own
 // launcher mints the one and takes the other from one of three constants, and the launcher's
-// bound cuts both (internal/launcher's volumeReportTrimmerRunes), but the frame's rule checks
-// neither (shimwire.LauncherVolumeReport.Validate): what keeps them out of the sentence's own
-// voice is this daemon's quoting rather than the sender being that launcher.
+// bound cuts both (internal/launcher's volumeReportTrimmerRunes), but the frame's rule reads
+// neither one's contents (shimwire.LauncherVolumeReport.Validate): what keeps them out of the
+// sentence's own voice is this daemon's quoting rather than the sender being that launcher.
 func TestANameTheRoleChoseReachesTheArchitectQuotedAndOnOneLine(t *testing.T) {
 	rig := newVolumeRig(t)
 	// What a role could make with one mkdir under /legion/scratch, written as the walk would
@@ -558,9 +558,9 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 // reports, and a report the launcher held through an outage reaches the daemon after it, so the
 // volume was above its low mark when the sweep ended and the sentence says nothing of it now. Its
 // freed bytes are the sweep's first reading's used bytes less its last's, which are negative when
-// the roles wrote more than the sweep removed, and such a sweep is told as the volume growing by
-// that many bytes. The negative control is the sentence at b7085e21, which read "is still above
-// its low mark after a sweep" in both rows and "-1048576 freed by this sweep" in the second.
+// the volume's used bytes grew, and such a sweep is told as the volume growing by that many
+// bytes. The negative control is the sentence at b7085e21, which read "is still above its low
+// mark after a sweep" in both rows and "-1048576 freed by this sweep" in the second.
 func TestAVolumeNoticeTellsTheSweepInThePastAndAGrowthAsAGrowth(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

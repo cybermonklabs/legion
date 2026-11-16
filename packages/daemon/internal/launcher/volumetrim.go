@@ -178,7 +178,7 @@ type trimmer struct {
 	id string
 	// settings is what is in force now, read before every interval reading and again while the
 	// trimmer waits for settings it may run by. Nil stops the sweeping: it ends a sweep in
-	// flight at its next entry boundary with its deletions standing, sends no report, and
+	// flight before its next removal begins, with its deletions standing, sends no report, and
 	// discards a report it was holding — and the trimmer then waits here for settings to come
 	// back rather than ending with the pod (awaitSettings). Settings the trimmer refuses stop it
 	// the same way, except that a report it was holding is tried rather than discarded
@@ -717,9 +717,10 @@ func (t *trimmer) sizes(ctx context.Context) walkResult {
 // container's stop cut (walkResult.Partial), each size it could read only in part, named with
 // the first read under it the walk did not make — one the kernel refused, or a directory deeper
 // than the walk descends (LauncherVolumeSize.Refused) — and each target it measured none of,
-// with the read the kernel refused where there was one (walkResult.Missing). How many sizes it
-// measured, and how many of them only in part, count the sizes the walk dropped from its fifty
-// too (walkResult.SizesOmitted, PartlyOmitted).
+// or the volume root or an immediate child of it that it did not list in full, with the read
+// the kernel refused where there was one (walkResult.Missing). How many sizes it measured, and
+// how many of them only in part, count the sizes the walk dropped from its fifty too
+// (walkResult.SizesOmitted, PartlyOmitted).
 //
 // The names are the pod's own: a role may make a directory or a file of any name two levels
 // under the volume root, and any number of them, so each list takes the bound the frame takes
@@ -870,10 +871,12 @@ type sweepEntry struct {
 // an entry's pre-delete re-read (newerThan), which comes before that entry's removal begins; a
 // /proc read the kernel refused at a refresh of the used-path set is taken at the next entry
 // boundary or after an entry's pre-delete re-read and before its removal begins (guard,
-// remove); and every other ending at the next entry boundary, so no ending of the sweep's own
-// leaves an entry half removed. The container's kill at the end of its grace is none of them: it
-// can land inside the removal of one large entry, which is then left part-removed on the volume
-// and is an ordinary entry to the next sweep (remove).
+// remove); and every other ending at the next entry boundary but a deleter that ends, which the
+// sweep meets only as the removal of one entry fails and can leave that entry half removed
+// (remove), so no other ending of the sweep's own leaves an entry half removed. The container's
+// kill at the end of its grace is none of them: it can land inside the removal of one large
+// entry, which is then left part-removed on the volume and is an ordinary entry to the next
+// sweep (remove).
 //
 // first is the interval's own reading, which is the sweep's first: it was taken moments ago, and
 // the difference between it and the sweep's last reading is what the sweep freed. Progress is
