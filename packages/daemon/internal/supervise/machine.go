@@ -746,8 +746,9 @@ type Deps struct {
 	Secrets Enroller
 	// Registrar keeps each process's pod registered at the secrets broker to trade under the
 	// claim's session (ensureRegistered). nil — every deployment that names no
-	// `runtime.kubernetes.agent_secrets.exchange_audience` — registers nothing. It reads the pod
-	// token the shim's hello carried, so it does nothing without Secrets.
+	// `runtime.kubernetes.agent_secrets.exchange_audience` — registers nothing, and pins and logs
+	// no hello's key (helloKey). It reads the pod token the shim's hello carried, so it does
+	// nothing without Secrets.
 	Registrar Registrar
 	// Identity is the git identity a role's commits carry on issue: its App's bot, minted for the
 	// owner of the repository the issue works. A phase task hands it to the agent's working copy
@@ -1302,8 +1303,10 @@ type Machine struct {
 	registration *podRegistration
 	// helloKey is the thumbprint the first hello of the claim's current incarnation named, which
 	// every registration of that incarnation is bound to (ensureRegistered); a later hello of the
-	// same incarnation naming another key is logged and changes nothing. Memory only, like
-	// registration: a restored claim pins the key its shim's first hello to the new daemon names.
+	// same incarnation naming another key is logged and changes nothing. A machine with no
+	// Registrar pins none and logs none, since it keeps no registration for a key to be bound to.
+	// Memory only, like registration: a restored claim pins the key its shim's first hello to the
+	// new daemon names.
 	helloKey helloKey
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
@@ -1435,7 +1438,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		}
 		m.identity = &heldIdentity{incarnation: m.claim.Locator.Incarnation, AgentSecretsIdentity: identity}
 		m.enrollmentSent = false
-		m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
+		if m.deps.Registrar != nil {
+			m.pinHelloKey(m.claim.Locator.Incarnation, identity.Thumbprint)
+		}
 	}
 	dropped := m.dropWakeFor(ev)
 	if err := m.runParkedLaunchNow(ctx, ev); err != nil {

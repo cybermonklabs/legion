@@ -415,3 +415,61 @@ func TestARegistrationKeepsTheKeyItsProcessFirstHelloNamed(t *testing.T) {
 		})
 	}
 }
+
+// TestAHelloPinsItsKeyOnlyWhereTheMachineRegisters: the pin of a hello's key exists for the
+// registration alone (ensureRegistered), so a machine with no registrar — the daemon's wiring with
+// runtime.kubernetes.agent_secrets.exchange_audience unset — pins no key, and a later hello of the
+// same process naming another key logs no Warn of a registration that does not exist (R9). With a
+// registrar the first hello's key is pinned and the later one logged, naming both keys.
+func TestAHelloPinsItsKeyOnlyWhereTheMachineRegisters(t *testing.T) {
+	const (
+		pod    = "pod-uid-9"
+		first  = "first-hello-key-thumbprint-aaaaaaaaaaaaaaaa"
+		second = "second-hello-key-thumbprint-bbbbbbbbbbbbbbb"
+	)
+	for name, registrar := range map[string]Registrar{
+		"with no registrar": nil,
+		"with a registrar":  &keyRecorder{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withSecrets()
+			h.deps.Registrar = registrar
+			h.start(h.store.load(h.token))
+			incarnation := runtime.SandboxIncarnation(pod, 1)
+			h.rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{
+				Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: incarnation,
+				Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: 1},
+			}})
+			hello := func(thumbprint string) {
+				t.Helper()
+				h.conns.Register(h.token, h.conn)
+				h.must(StreamHello{Claim: h.token, Generation: h.generation(), AgentSecrets: &AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: testIdentity.PodToken}})
+			}
+			h.launch()
+			hello(first)
+			h.register()
+			hello(second)
+
+			h.m.mu.Lock()
+			pinned := h.m.helloKey
+			h.m.mu.Unlock()
+			warned := h.logs.lines("level=WARN", second)
+			if registrar == nil {
+				if pinned != (helloKey{}) {
+					t.Errorf("the machine with no registrar pinned %+v, want no key: no registration exists to keep one", pinned)
+				}
+				if len(warned) != 0 {
+					t.Errorf("the machine with no registrar logged a Warn naming the later hello's key %s, want none:\n%s", second, strings.Join(warned, "\n"))
+				}
+				return
+			}
+			if want := (helloKey{incarnation: incarnation, thumbprint: first}); pinned != want {
+				t.Errorf("the machine with a registrar pinned %+v, want %+v, the key the process's first hello named", pinned, want)
+			}
+			if len(warned) != 1 || !strings.Contains(warned[0], first) {
+				t.Errorf("the machine with a registrar logged %q, want one Warn naming both the first hello's key %s and the later one's %s", warned, first, second)
+			}
+		})
+	}
+}
