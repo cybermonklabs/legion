@@ -16,6 +16,8 @@ import {
   dangerHoverText,
   dangerText,
   inputClasses,
+  linkHoverText,
+  linkText,
   primaryButtonBg,
   primaryButtonHoverBg,
   successText,
@@ -169,7 +171,10 @@ const MAX_TOKEN_PROJECTS = 16;
  *  Dispatch cuts a token's list to what the reader sees, and tells the person's own browser when
  *  the cut removed some (`hidden`): such a token is never shown as one of the public projects
  *  only, and the picker says a change drops them, since an edit names the whole list and Dispatch
- *  refuses a project the reader does not see. */
+ *  refuses a project the reader does not see. A token whose every project is hidden opens the
+ *  picker with nothing ticked, so no change of it sends anything; the button beside the note does
+ *  what the note says a change does, once the reader confirms it: it saves the list they see, the
+ *  empty list where they see none, which makes the token one of the public projects only. */
 function TokenProjectsChoice({
   chosen,
   disabled,
@@ -238,9 +243,30 @@ function TokenProjectsChoice({
         {shown}
       </MultiSelect>
       {hidden ? (
-        <p className={`mt-1 max-w-xs text-xs ${textMutedOnSurface}`}>
-          A change here drops the projects you cannot see.
-        </p>
+        <div className="mt-1 max-w-xs space-y-1">
+          <p className={`text-xs ${textMutedOnSurface}`}>
+            A change here drops the projects you cannot see.
+          </p>
+          <button
+            aria-label={`Drop the projects you cannot see (${subject})`}
+            className={`text-xs underline ${linkText} ${linkHoverText} disabled:cursor-not-allowed disabled:opacity-50`}
+            disabled={disabled}
+            onClick={() => {
+              const after =
+                chosen.length === 0 ? "the public projects only" : `${chosen.join(", ")} alone`;
+              if (
+                window.confirm(
+                  `Drop the projects you cannot see from ${subject}? It then uses ${after}, and a project you cannot see cannot be added back.`
+                )
+              ) {
+                onChoose([...chosen]);
+              }
+            }}
+            type="button"
+          >
+            Drop the projects you cannot see
+          </button>
+        </div>
       ) : null}
     </>
   );

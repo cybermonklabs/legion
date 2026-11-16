@@ -410,6 +410,106 @@ test("a token listing projects its reader cannot see says so, and never reads as
   }
 });
 
+/** The row's button that saves the token's list without the projects its reader cannot see. */
+function dropHidden(subject: string): HTMLElement {
+  return screen.getByRole("button", { name: `Drop the projects you cannot see (${subject})` });
+}
+
+// A token whose every listed project is hidden from its reader can read nothing, and its
+// picker opens with nothing ticked, so no change of it sends anything. The row's button does
+// what the note says a change does: once the reader confirms it, it saves the list they see,
+// here none, which makes the token one of the public projects only. A part-hidden token keeps
+// what the reader sees. A declined confirmation sends nothing, and a token whose list is whole
+// carries no such button.
+test("a token listing projects its reader cannot see can drop them in one confirmed step", async () => {
+  const user = userEvent.setup();
+  listProjects.mockResolvedValue([project("CORE", "Core")]);
+  const allHidden: AgentToken = { ...token, id: "hidden", name: "hidden", projects_hidden: true };
+  const partHidden: AgentToken = {
+    ...token,
+    id: "part",
+    name: "part",
+    projects: ["CORE"],
+    projects_hidden: true,
+  };
+  const whole: AgentToken = { ...token, id: "whole", name: "whole", projects: ["CORE"] };
+  const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([
+    allHidden,
+    partHidden,
+    whole,
+  ]);
+  const updateAgentToken = spyOn(api, "updateAgentToken").mockImplementation(
+    async (id: string, input: { projects?: string[] | null; scopes: DispatchScope[] }) => {
+      const named = [allHidden, partHidden, whole].find((row) => row.id === id) ?? token;
+      const { projects: _listed, projects_hidden: _hidden, ...rest } = named;
+      const kept = input.projects ?? [];
+      return kept.length === 0 ? { ...rest, scopes: input.scopes } : { ...rest, projects: kept };
+    }
+  );
+  const asked: string[] = [];
+  const answers = [false, true, true];
+  const originalConfirm = window.confirm;
+  window.confirm = (message?: string) => {
+    asked.push(message ?? "");
+    return answers.shift() ?? false;
+  };
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await screen.findAllByRole("cell", { name: "dsp_AbCdEf12…" });
+    expect(
+      screen.queryByRole("button", { name: "Drop the projects you cannot see (whole)" })
+    ).toBeNull();
+
+    // Declined: nothing is sent.
+    await user.click(dropHidden("hidden"));
+    expect(asked[0]).toBe(
+      "Drop the projects you cannot see from hidden? It then uses the public projects only, and a project you cannot see cannot be added back."
+    );
+    await settle();
+    expect(updateAgentToken).not.toHaveBeenCalled();
+
+    await user.click(dropHidden("hidden"));
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenCalledWith(
+        "hidden",
+        { projects: [], scopes: ["person", "approve"] },
+        keyedAttempt
+      )
+    );
+    await waitFor(() => expect(projectsPicker("hidden").textContent).toBe("Public projects only"));
+    expect(
+      screen.queryByRole("button", { name: "Drop the projects you cannot see (hidden)" })
+    ).toBeNull();
+
+    await user.click(dropHidden("part"));
+    expect(asked[2]).toBe(
+      "Drop the projects you cannot see from part? It then uses CORE alone, and a project you cannot see cannot be added back."
+    );
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenLastCalledWith(
+        "part",
+        { projects: ["CORE"], scopes: ["person", "approve"] },
+        keyedAttempt
+      )
+    );
+    await waitFor(() => expect(projectsPicker("part").textContent).toBe("CORE"));
+    expect(updateAgentToken).toHaveBeenCalledTimes(2);
+  } finally {
+    cleanup();
+    queryClient.clear();
+    window.confirm = originalConfirm;
+    listAgentTokens.mockRestore();
+    updateAgentToken.mockRestore();
+  }
+});
+
 // Dispatch holds a token to at most 16 projects (400 TOKEN_PROJECTS_INPUT): the picker takes no
 // seventeenth, and says why.
 test("a token's picker takes at most 16 projects", async () => {

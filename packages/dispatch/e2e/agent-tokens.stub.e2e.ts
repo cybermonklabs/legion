@@ -92,3 +92,36 @@ hiddenTest(
     expect((await edit).postDataJSON()).toEqual({ scopes: ["person"] });
   }
 );
+
+// A token whose every project is hidden from its reader can read nothing, and its picker opens
+// with nothing ticked. The row's button saves the list the reader sees, here none, once the
+// reader confirms it: the edit sends the empty list, and the token reads as one of the public
+// projects only.
+hiddenTest(
+  "a token listing only projects its reader cannot see is made public-only by one confirmed press @pr",
+  async ({ page, scene }) => {
+    await page.goto("/settings");
+    const picker = page.getByRole("button", { name: `Projects (${scene.token})` });
+    await expect(picker).toHaveText("No project you can see");
+
+    const asked: string[] = [];
+    page.on("dialog", (dialog) => {
+      asked.push(dialog.message());
+      void dialog.accept();
+    });
+    const edit = page.waitForRequest(
+      (request) =>
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname.startsWith("/api/v1/me/agent-tokens/")
+    );
+    await page
+      .getByRole("button", { name: `Drop the projects you cannot see (${scene.token})` })
+      .click();
+    expect((await edit).postDataJSON()).toEqual({ projects: [], scopes: ["person", "approve"] });
+    expect(asked).toEqual([
+      `Drop the projects you cannot see from ${scene.token}? It then uses the public projects only, and a project you cannot see cannot be added back.`,
+    ]);
+    await expect(picker).toHaveText("Public projects only");
+    await expect(page.getByText("A change here drops the projects you cannot see.")).toHaveCount(0);
+  }
+);
