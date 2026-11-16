@@ -267,15 +267,23 @@ func TestInboxRowsUnderStateInboxListReadThreads(t *testing.T) {
 	}
 }
 
-// The de-dupe is exactly the row the Inbox already shows in Waiting on you: an open ask on an open
-// issue assigned to the caller. An open ask on another person's issue, on an unassigned issue or
-// on a project document is nobody else's row of theirs, so each is a Reply row.
+// The de-dupe is exactly the row the Inbox already shows in Waiting on you: an open ask that
+// waits on the caller, which is three steps resolved as it is read (askedOfPersonExpression) -
+// the person it was handed to, its issue's assignee, then its project's default assignee. An
+// open ask that waits on somebody else is nobody else's row of the caller's, so it is a Reply
+// row: one on another person's issue, and - since TEST defaults to bob below - one on an issue
+// nobody holds and one on a project document, which has no issue at all.
 func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "TEST", "Asks", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n\nStep one.\n")
-	// Bob signs in, so he is a person an issue can be assigned to.
+	// Bob signs in, so he is a person an issue can be assigned to, and TEST's unowned work
+	// lands on him: the last step of the chain names him rather than alice, who created it.
 	getMyReplies(t, handler, "bob", "")
+	if moved := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/TEST/default-assignee",
+		map[string]any{"assignee": "bob"}, "alice"); moved.Code != http.StatusOK {
+		t.Fatalf("move TEST's default to bob: status=%d body=%s", moved.Code, moved.Body.String())
+	}
 
 	mine := createAnswerListIssue(t, handler, "Mine")
 	assignIssue(t, handler, mine.Key, "alice")
@@ -312,7 +320,11 @@ func TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers(t *testing.T) {
 	if listsThread(page, asks["mine"]) {
 		t.Fatalf("an open ask on alice's own open issue is listed: %#v", page.Rows)
 	}
-	for name, id := range map[string]string{"bob's issue": asks["bobs"], "an unassigned issue": asks["nobodys"], "a project document": documentAsk.ID} {
+	for name, id := range map[string]string{
+		"bob's issue":                     asks["bobs"],
+		"an issue nobody holds":           asks["nobodys"],
+		"a document of bob's own project": documentAsk.ID,
+	} {
 		if !listsThread(page, id) {
 			t.Fatalf("the open ask on %s is not listed: %#v", name, page.Rows)
 		}

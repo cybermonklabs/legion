@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // Delivery is one attempt GitHub recorded for the App's webhook
@@ -143,6 +145,12 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s: %s", e.Status, e.Wait, e.Body)
 }
 
+// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
+// body that is not JSON or names none, as a held error's empty body does (responseMessage).
+func (e *RateLimitError) Message() string {
+	return responseMessage([]byte(e.Body))
+}
+
 // AsRateLimit is errors.As(err, &limited) collapsed to one line: delivery's reconcile.go,
 // github_prs.go and intake.go each repeated the same three-line var/errors.As idiom at every
 // point a *RateLimitError must be told apart from every other per-item failure.
@@ -154,10 +162,11 @@ func AsRateLimit(err error) (*RateLimitError, bool) {
 
 // RateLimit reads a rate-limited answer, as GitHub's REST rate-limit documentation describes one:
 // a 429, or a 403 with no requests remaining, a Retry-After, or a message naming a rate limit
-// (any other 403 is a refusal of that request). The wait is Retry-After's seconds, else the time
-// until x-ratelimit-reset when no requests remain, else the one minute GitHub asks for when it
-// gives neither. Exported so other GitHub-calling packages (delivery's reconcile) can reuse the
-// same detection this client already has, instead of treating every non-2xx the same.
+// (any other 403 is a refusal of that request). The wait is Retry-After's, in seconds or as an
+// HTTP date, else the time until x-ratelimit-reset when no requests remain, else the one minute
+// GitHub asks for when it gives neither (rateLimitWait). Exported so other GitHub-calling packages
+// (delivery's reconcile) can reuse the same detection this client already has, instead of treating
+// every non-2xx the same.
 func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 	if status != http.StatusTooManyRequests && status != http.StatusForbidden {
 		return nil
@@ -166,7 +175,7 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 	if status == http.StatusForbidden && header.Get("Retry-After") == "" && !exhausted && !containsFold(body, rateLimitPhrase) {
 		return nil
 	}
-	return &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
+	return &RateLimitError{Status: status, Wait: rateLimitWait(header), Body: string(body)}
 }
 
 // GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells several
@@ -181,9 +190,9 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 // whose top-level `message` carries it, which GitHub answers a query with as readily as it
 // answers a REST call with one (graphQLLimitErrors).
 //
-// Every one of them is read here, at either status, and the wait is Retry-After's seconds when
-// GitHub gives them, else the time until x-ratelimit-reset when no requests remain, else the
-// minute GitHub asks for when it gives neither.
+// Every one of them is read here, at either status, and the wait is Retry-After's when GitHub
+// gives one, else the time until x-ratelimit-reset when no requests remain, else the minute GitHub
+// asks for when it gives neither (rateLimitWait).
 //
 // RateLimit reads the answer first: it covers the two statuses GitHub answers a REST-style
 // limit with, 403 and 429, and answers nil at every other status, 200 among them. What it
@@ -218,7 +227,7 @@ func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *Rat
 		if !spent && !worded && (status != http.StatusOK || (!exhausted && !retryAfter)) {
 			return nil, false
 		}
-		limited = &RateLimitError{Status: status, Wait: rateLimitWait(header, exhausted), Body: string(body)}
+		limited = &RateLimitError{Status: status, Wait: rateLimitWait(header), Body: string(body)}
 	}
 	switch {
 	case worded:
@@ -307,24 +316,39 @@ func containsFold(body, phrase []byte) bool {
 }
 
 // rateLimitWait is how long GitHub asks for before the next request under a limit it answered
-// with: Retry-After's seconds, else the time until x-ratelimit-reset when the answer says no
-// requests remain, else the one minute GitHub asks for when it gives neither. A reset already
-// past is no wait at all rather than a negative one.
-func rateLimitWait(header http.Header, exhausted bool) time.Duration {
-	if seconds, err := strconv.Atoi(header.Get("Retry-After")); err == nil {
-		return time.Duration(seconds) * time.Second
-	}
-	if reset, err := strconv.ParseInt(header.Get("X-Ratelimit-Reset"), 10, 64); err == nil && exhausted {
-		return max(time.Until(time.Unix(reset, 0)), 0)
+// with, read now through serverwait.Read, else the one minute GitHub asks for when the answer
+// names no wait. Client.request records it in github_rate_limits under the call's scope, so a wait
+// of an hour stops every Dispatch process's calls under that scope for that hour: every App-JWT
+// call, for a limit an App-JWT call met.
+func rateLimitWait(header http.Header) time.Duration {
+	if wait, named := serverwait.Read(header, time.Now()); named {
+		return wait
 	}
 	return time.Minute
 }
 
+// StatusError is GitHub answering a request with a status other than 200 that is no rate limit
+// (CheckResponse): the status, and the whole body GitHub answered. Its text is `status <n>: <body>`.
+type StatusError struct {
+	Status int
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.Status, e.Body)
+}
+
+// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
+// body that is not JSON or names none (responseMessage).
+func (e *StatusError) Message() string {
+	return responseMessage([]byte(e.Body))
+}
+
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:
-// RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a generic
-// "status %d: %s" error carrying the raw body. Factors the identical "check rate limit, then
-// check status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go,
-// client.go's own ListInstallationRepositoriesByID) all repeated at every call site.
+// RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a *StatusError
+// carrying the status and the raw body. Factors the identical "check rate limit, then check
+// status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go, client.go's own
+// ListInstallationRepositoriesByID) all repeated at every call site.
 func CheckResponse(status int, header http.Header, body []byte) error {
 	if status == http.StatusOK {
 		return nil
@@ -332,7 +356,7 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	if limited := RateLimit(status, header, body); limited != nil {
 		return limited
 	}
-	return fmt.Errorf("status %d: %s", status, body)
+	return &StatusError{Status: status, Body: string(body)}
 }
 
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the

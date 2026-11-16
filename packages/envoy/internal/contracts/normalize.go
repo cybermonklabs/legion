@@ -888,10 +888,10 @@ func githubPayload(event string, body map[string]any) string {
 			"sender":   nestedString(body, "sender", "login"),
 			"head_ref": nestedString(body, "pull_request", "head", "ref"),
 			// head_repo is the repository the head branch lives in, which is this repository for a
-			// branch of it and another for a fork's. Dispatch attributes a check result's currency
-			// to a pull request only when the two are the same, since anyone may open a fork's pull
-			// request at any commit and title it after an issue (delivery's headAttribution). GitHub
-			// sends null for it once a fork is deleted, which normalizes to the empty string.
+			// branch of it and another for a fork's. Dispatch compares a check's results with a
+			// pull request's head only when the two are the same, since anyone may open a fork's
+			// pull request at any commit and title it after an issue (delivery's headAttribution).
+			// GitHub sends null for it once a fork is deleted, which normalizes to the empty string.
 			"head_repo":        nestedString(body, "pull_request", "head", "repo", "full_name"),
 			"base_ref":         nestedString(body, "pull_request", "base", "ref"),
 			"merged":           strconv.FormatBool(boolValue(nested(body, "pull_request", "merged"))),
@@ -1641,10 +1641,18 @@ func ghostWisprSummary(eventType string, body map[string]any) string {
 	return OneLineSummary(summary)
 }
 
+// ghostWisprPayload builds the envelope payload from the body's payload object: the session id,
+// its times and links, its title and its duration for every event type, and the summary fields
+// for summary_ready. payloadJSON drops a field the unit did not send. A current unit sends no
+// title or summary text (packages/envoy/AGENTS.md says why), and an older unit's still pass.
 func ghostWisprPayload(eventType string, body map[string]any) string {
 	normalizedEventType := normalizeGhostWisprEventType(eventType)
 	data := map[string]string{"event_type": normalizedEventType}
 	data["session_id"] = ghostWisprSummarySessionID(body)
+	data["started_at"] = nestedString(body, "payload", "started_at")
+	data["ended_at"] = nestedString(body, "payload", "ended_at")
+	data["drive_folder_url"] = nestedString(body, "payload", "drive_folder_url")
+	data["session_url"] = nestedString(body, "payload", "session_url")
 	data["title"] = nestedString(body, "payload", "title")
 	data["duration"] = nestedNumberString(body, "payload", "duration")
 	data["created_at"] = stringValue(body["created_at"])
@@ -1658,6 +1666,7 @@ func ghostWisprPayload(eventType string, body map[string]any) string {
 			}
 		}
 		data["summary_preset"] = nestedString(body, "payload", "summary_preset")
+		data["summary_model"] = nestedString(body, "payload", "summary_model")
 		data["timestamp"] = nestedString(body, "payload", "timestamp")
 		data["version"] = nestedNumberString(body, "payload", "version")
 		data["payload_type"] = nestedString(body, "payload", "type")

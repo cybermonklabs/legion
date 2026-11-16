@@ -73,15 +73,16 @@ type StallBackstopStop struct {
 // one thing that decides it is the record, never a guess of the daemon's.
 //
 // A claim that already holds a wake is decided nothing at all, exactly as refreshPlugin decides
-// nothing over one: that wake is a launch or a task of this same claim waiting its turn in the
-// pacing, and a replacement raised over it would take a second token and replace the wake with
-// a launch that does what the parked one was already going to do. A relaunch parked on the
+// nothing over one: that wake is a launch of this same claim waiting its turn in the pacing,
+// and a replacement raised over it would take a second token and replace the wake with a
+// launch that does what the parked one was already going to do. A relaunch parked on the
 // pacing leaves the claim working, so without this guard every sweep of a wave would raise
 // another. Nothing is lost by returning, and nothing is owed to this request: the wake standing
 // over the claim is what decides the turn — its own turn replaces the stalled process, unless a
 // suspension already waiting or the tree's close ends the claim there instead (wakeNow, letGo) —
-// and the claim a plugin task's round leaves working is swept again at the next tick,
-// since this pass posts over every claim still in a turn past its bound.
+// and a claim that turn leaves working — a relaunch its own lifecycle recheck refused, which
+// keeps the process it found — is swept again at the next tick, since this pass posts over
+// every claim still in a turn past its bound.
 //
 // What it does when it does act is exactly what a daemon-made replacement does (replaceProcess):
 // the turn in flight is interrupted, so the task it was serving goes back to waiting and the
@@ -127,6 +128,12 @@ type StallBackstopStop struct {
 // and bounded by a deadline (holdSuspension, whose deadline only moves earlier); this request
 // carries its deadline already passed — the recorded last step plus the role's bound — because
 // the turn it exists for is one that never ends, and a request held for it would wait for ever.
+//
+// The launch lets the stalled process go as one whose turn showed no progress for the role's
+// bound, or whose claim did where this decision finds the claim working for a compaction with no
+// turn under it (endStalled, endState), and records what it ended there: in this decision, or at
+// the turn of the wake the pacing parks it on (launchNow, letGo). The cause is what this stop
+// found, so a parked launch carries it to that turn as the decision named it (launchAfter).
 func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) error {
 	last := m.claim.Step.LastStep()
 	if m.steppedAt.After(last) {
@@ -169,7 +176,8 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// failure of the claim's life, and the owner of a stalled worker is told what this one
 	// replacement took out of it (StallBackstopStop.LaunchFailures).
 	charged := m.claim.Budgets.LaunchFailures
-	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
+	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd,
+		endStalled(ev.Bound, m.endState() == StateWorking))
 	charged = m.claim.Budgets.LaunchFailures - charged
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,

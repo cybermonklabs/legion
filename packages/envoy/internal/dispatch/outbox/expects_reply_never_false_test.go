@@ -127,23 +127,42 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 // dispatchEventTypes are the event types of the contract's DispatchEvent union, the one list of
 // what an event's type may be. Reading the TypeScript is reading the source of truth: Go holds no
 // enumeration of its own, and a type added to the union is one the outbox will be handed.
+//
+// The union is looked for in every module of the contract rather than in `dispatch-api.ts`, which
+// is the re-export barrel over the modules the contract is split into: the union lives in
+// `dispatch-api-events.ts` today, and a later split that moves it again must not make this test
+// read an empty list and pass.
 func dispatchEventTypes(t *testing.T) []string {
 	t.Helper()
-	const contract = "../../../../contracts/src/dispatch-api.ts"
-	source, err := os.ReadFile(contract)
+	const contractDir = "../../../../contracts/src"
+	modules, err := filepath.Glob(filepath.Join(contractDir, "dispatch-api*.ts"))
 	if err != nil {
-		t.Fatalf("read %s: %v", contract, err)
+		t.Fatalf("list %s: %v", contractDir, err)
 	}
-	lines := strings.Split(string(source), "\n")
+	var lines []string
 	start := -1
-	for index, line := range lines {
-		if strings.HasPrefix(line, "export type DispatchEvent =") {
-			start = index + 1
-			break
+	var contract string
+	for _, module := range modules {
+		if strings.HasSuffix(module, ".test.ts") {
+			continue
+		}
+		source, err := os.ReadFile(module)
+		if err != nil {
+			t.Fatalf("read %s: %v", module, err)
+		}
+		moduleLines := strings.Split(string(source), "\n")
+		for index, line := range moduleLines {
+			if strings.HasPrefix(line, "export type DispatchEvent =") {
+				if start >= 0 {
+					t.Fatalf("%s and %s both declare the DispatchEvent union", contract, module)
+				}
+				contract, lines, start = module, moduleLines, index+1
+				break
+			}
 		}
 	}
 	if start < 0 {
-		t.Fatalf("%s declares no DispatchEvent union", contract)
+		t.Fatalf("no module of %s declares a DispatchEvent union", contractDir)
 	}
 	pattern := regexp.MustCompile(`readonly type: "([a-z_.]+)"`)
 	seen := map[string]bool{}

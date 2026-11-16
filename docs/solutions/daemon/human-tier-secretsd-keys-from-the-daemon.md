@@ -113,7 +113,7 @@ Never `secrets <NAME> -- <cmd>` or `secrets get <NAME>` (no `--no-request`) from
 is human-tier: the pane carries an agent session token, so the broker does not refuse — it **queues
 a request on the operator's YubiKey under the pane's session**, blinking until tapped or 90 s pass.
 That is an unwatched request a stray tap would satisfy (the spec's Rejected list, and the architect's
-ruling that replaced the plan's `secrets <KEY> -- true` step). The status check proves the same
+decision that replaced the plan's `secrets <KEY> -- true` step). The status check proves the same
 boundary — no agent-tier copy, no grant — with no request opened.
 
 ## Rotating a key the daemon holds in memory: rotate, store, restart and confirm, then revoke

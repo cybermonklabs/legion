@@ -31,6 +31,8 @@ function heldBy(actor: IssueClaim["actor"]): IssueSummary {
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,
@@ -53,6 +55,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     rank: "U",
     title: "Core work",
     updated_at: "2026-09-10T00:00:00Z",
+    closed_at: overrides.status === "done" ? "2026-09-10T00:00:00Z" : null,
     created_by: null,
     created_at: "2026-09-10T00:00:00Z",
     ...overrides,

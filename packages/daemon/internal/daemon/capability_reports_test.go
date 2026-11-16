@@ -66,6 +66,7 @@ func supervisorOf(t *testing.T, claims ...supervise.Claim) *supervisor {
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	all := make([]*supervise.Machine, 0, len(claims))
 	for _, c := range claims {
@@ -153,10 +154,11 @@ func TestDeploymentRendersTheReportsOfLiveSessionsAlone(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &supervision{
-				cfg:        config.Config{Runtime: config.Runtime{Name: "tmux"}},
-				log:        quietLogger(),
-				supervisor: supervisorOf(t, tc.claims...),
-				reports:    tc.reports,
+				cfg:         config.Config{Runtime: config.Runtime{Name: "tmux"}},
+				log:         quietLogger(),
+				supervisor:  supervisorOf(t, tc.claims...),
+				reports:     tc.reports,
+				refreshGate: supervise.NewRefreshGate(0),
 			}
 
 			d := s.deployment()
@@ -181,7 +183,7 @@ func TestDeploymentRendersTheReportsOfLiveSessionsAlone(t *testing.T) {
 // A supervision with no supervisor yet — `legion start --check-config`'s, and a bare test's —
 // reports the deployment from what it has.
 func TestDeploymentWithoutASupervisorRendersNoSession(t *testing.T) {
-	s := &supervision{cfg: config.Config{Runtime: config.Runtime{Name: "tmux"}}, log: quietLogger()}
+	s := &supervision{cfg: config.Config{Runtime: config.Runtime{Name: "tmux"}}, log: quietLogger(), refreshGate: supervise.NewRefreshGate(0)}
 	if d := s.deployment(); d.Sessions != nil {
 		t.Fatalf("deployment sessions = %+v, want none", d.Sessions)
 	}
@@ -222,6 +224,7 @@ func TestCapabilityReportedKeepsPersistsAndLogsTheReport(t *testing.T) {
 				log:         slog.New(slog.NewTextHandler(&logged, nil)),
 				supervisor:  supervisorOf(t, c),
 				reportStore: store,
+				refreshGate: supervise.NewRefreshGate(0),
 			}
 
 			s.capabilityReported(context.Background(), c, report)

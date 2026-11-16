@@ -19,14 +19,20 @@ import (
 // idleWaitingKinds are the outbox kinds that reach a role's own session, which is what "a task, a
 // notice, a message or a start waits for a role of the pod" means: a supervise row (a start, the
 // task it carries, a stop), an architect's notice, the message a phase's end sends the role
-// whose phase ended, and the words a hook fired on a move back puts in front of a role
-// (record.HookPrompt). The issue's board writes — its Dispatch status, its merge-queue packet —
-// reach no session and hold no pod. The same set is what the release's boundary is read over
-// (IssueRelease), so the rule that holds a pod and the rule that cancels its release never
-// disagree about which row speaks to a role. Every kind of the role-message lane belongs here:
-// one left out lets the daemon release the issue's pod out from under the prompt the firing just
-// wrote, and the role it was written for never reads it.
-var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt"}
+// whose phase ended, the words a hook fired on a move back puts in front of a role
+// (record.HookPrompt), the ask an update round puts to a role of the pod (record.UpdateAsk), and
+// the message that tells the merger its pull request left the merge queue
+// (record.MergeQueueRemoval). The read of GitHub that comes before that message
+// (record.MergeQueueRead) reaches no session itself, but its answer is what writes the message,
+// so it holds the pod as the message does. The issue's board writes — its Dispatch status, its
+// messages on the Dispatch issue — reach no session and hold no pod. The same set is what the
+// release's boundary is read over (IssueRelease), so the rule that holds a pod and the rule that
+// cancels its release never disagree about which row speaks to a role. Every kind of the
+// role-message lane belongs here: one left out lets the daemon release the issue's pod out from
+// under the row that was just written for one of its roles, and that role never reads it. An
+// update ask holds the pod only while its row is pending, which is one attempt where the publish
+// goes through or finds no holder.
+var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal"}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
@@ -237,6 +243,30 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())`,
 			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
+		}
+		// The pod this release stops is gone, so a resume of it still open — a wake whose pod
+		// came back and whose role took no turn the daemon saw — belongs to that pod and not to
+		// the next one. Closing them here, in the transaction that marks the release, is what
+		// lets the next wake of each role take its own (store's TakePodWake, one open resume per
+		// role).
+		//
+		// A release that suspends no role is no wake's to end, so it closes none. It stops a pod
+		// whose every claim is failed, retired or suspended, which is a pod no wake of this issue
+		// is waiting on: a claim an earlier release left `released` is waiting for the pod that
+		// release took, not for this one, and its resume is the record of that wait. Closing it
+		// here would stamp that release woken and never turned up, and charge it from its own
+		// moment to every later read — the distortion the records exist to remove, moved onto the
+		// row beside it. internal/daemon's
+		// TestAnIssueWithNoLiveClaimHasItsSandboxReleased/"the pod holding a claim an earlier
+		// release left released" is what holds this, and the teardown's own reading in that
+		// package's outbox arms no backstop here for the same reason. A resume this release
+		// leaves open is closed by the next wake of its role, which reads that a release was
+		// recorded after that wake was taken (store's ClosePodGoneResume, the workflow's
+		// wakeReleased).
+		if !mark.SuspendsNoRole {
+			if err := CloseOpenResumes(ctx, tx, project, issue); err != nil {
+				return err
+			}
 		}
 		marked = true
 		return nil

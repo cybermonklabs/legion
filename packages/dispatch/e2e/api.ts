@@ -1,4 +1,9 @@
-import type { DispatchEvent, InboxThreadKind, paths } from "@legion/contracts";
+import {
+  AGENT_STREAM_LIMITS,
+  type DispatchEvent,
+  type InboxThreadKind,
+  type paths,
+} from "@legion/contracts";
 import type { Cookie } from "@playwright/test";
 import {
   type Body,
@@ -129,9 +134,12 @@ export function devSignInError(login: string, status: number, responseText: stri
  *  (`resetDatabaseOnce`, e2e/seed.ts): the only logins whose session cookie outlives a reset. */
 export const resetLogins: readonly string[] = ["alice", "bob"];
 
-/** One login's cached session cookie. */
+/** One cached session cookie, of one login signed in at one process. */
 interface CachedSession {
   cookie: Promise<Cookie>;
+  /** The login the cookie signs in as. The cache is keyed by login and process asked, so a key
+   *  is not a login. */
+  login: string;
   /** Whether the cookie names generation 0, which is where the reset puts `user_sessions` back
    *  (e2e/seed.ts). A cookie minted after a sign-out names a later generation, and the server
    *  admits only the login's current one (identity.CookieIdentity.Login), so the reset would
@@ -142,20 +150,25 @@ interface CachedSession {
 const sessionCookies = new Map<string, CachedSession>();
 
 /** The session cookie the server issues `login` at its dev sign-in route, minted once per
- *  spelling of a login and kept until something revokes it: the generation the cookie names lives
- *  in `user_sessions`, which `resetDatabase` empties and refills for `resetLogins` alone (it
- *  calls `forgetSessions`), and a browser context's Sign out as the same login advances it. A
- *  sign-in that fails, by its answer or by the request itself, is not kept, so the next call asks
- *  again. */
-export function sessionCookie(login: string): Promise<Cookie> {
-  const cached = sessionCookies.get(login);
+ *  spelling of a login and process asked, and kept until something revokes it: the generation
+ *  the cookie names lives in `user_sessions`, which `resetDatabase` empties and refills for
+ *  `resetLogins` alone (it calls `forgetSessions`), and a browser context's Sign out as the same
+ *  login advances it. With `target` set the sign-in is pinned to that process, so every request
+ *  a pinned call makes, its sign-in included, is served by the process it names. A sign-in that
+ *  fails, by its answer or by the request itself, is not kept, so the next call asks again. */
+export function sessionCookie(login: string, target?: DispatchProcess): Promise<Cookie> {
+  const key = `${target ?? ""} ${login}`;
+  const cached = sessionCookies.get(key);
   if (cached !== undefined) {
     return cached.cookie;
   }
   const mint = new URL(devSignInPath(login), baseUrl);
   const session: CachedSession = {
     atGenerationZero: false,
-    cookie: fetch(mint, { redirect: "manual" }).then(async (response) => {
+    cookie: fetch(mint, {
+      headers: target === undefined ? {} : pinnedTo(target),
+      redirect: "manual",
+    }).then(async (response) => {
       const cookie = sessionCookieOf(response, mint);
       if (response.status !== 302 || cookie === undefined) {
         throw devSignInError(login, response.status, await response.text());
@@ -166,11 +179,12 @@ export function sessionCookie(login: string): Promise<Cookie> {
       session.atGenerationZero = cookie.value.split(".")[2] === "0";
       return cookie;
     }),
+    login,
   };
-  sessionCookies.set(login, session);
+  sessionCookies.set(key, session);
   session.cookie.catch(() => {
-    if (sessionCookies.get(login) === session) {
-      sessionCookies.delete(login);
+    if (sessionCookies.get(key) === session) {
+      sessionCookies.delete(key);
     }
   });
   return session.cookie;
@@ -207,19 +221,22 @@ export function reusableSessionCookie(login: string): Promise<Cookie> | undefine
  *  in the row just ended leaves behind. A kept cookie carries no state of its row into the next
  *  one: it names a login and a generation, both of which the emptied database holds again. */
 export function forgetSessions(): void {
-  for (const [login, session] of sessionCookies) {
-    if (!resetLogins.includes(login) || !session.atGenerationZero) {
-      sessionCookies.delete(login);
+  for (const [key, session] of sessionCookies) {
+    if (!resetLogins.includes(session.login) || !session.atGenerationZero) {
+      sessionCookies.delete(key);
     }
   }
   reusedSignIns.clear();
 }
 
-/** Headers that make a plain fetch act as `login`: the session cookie, and the dashboard origin
- *  the server requires on every cookie-authenticated write (enforceCookieOrigin admits a write
- *  whose `Origin` is the dashboard's). */
-export async function userHeaders(login = "alice"): Promise<Record<string, string>> {
-  const cookie = await sessionCookie(login);
+/** Headers that make a plain fetch act as `login`: the session cookie (signed by `target` when it
+ *  is given), and the dashboard origin the server requires on every cookie-authenticated write
+ *  (enforceCookieOrigin admits a write whose `Origin` is the dashboard's). */
+export async function userHeaders(
+  login = "alice",
+  target?: DispatchProcess
+): Promise<Record<string, string>> {
+  const cookie = await sessionCookie(login, target);
   return { Cookie: `${cookie.name}=${cookie.value}`, Origin: dashboardOrigin };
 }
 
@@ -241,7 +258,7 @@ async function request<T>(
   if (as === "agent") {
     headers.Authorization = `Bearer ${options.token ?? e2eAgentToken}`;
   } else {
-    Object.assign(headers, await userHeaders(options.login));
+    Object.assign(headers, await userHeaders(options.login, options.process));
   }
   if (options.idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = options.idempotencyKey;
@@ -346,8 +363,8 @@ function del<P extends PathsOf<"delete">>(
   return send(pattern, "DELETE", args, options);
 }
 
-export function createProject(input: Body<"/api/v1/projects", "post">, login = "alice") {
-  return post("/api/v1/projects", { body: input }, { login });
+export function createProject(input: Body<"/api/v1/projects", "post">, options: ApiOptions = {}) {
+  return post("/api/v1/projects", { body: input }, options);
 }
 
 /** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
@@ -438,6 +455,18 @@ export function recordCheckResult(
   return post("/api/v1/issues/{key}/results", { body: input, params: { key: issue } }, options);
 }
 
+/** `POST /api/v1/results/{id}/retract`: one recorded result marked wrong, with the reason it
+ *  is wrong. The result is neither updated nor deleted, and the retraction is a record of its
+ *  own. The seeded agent is the session that recorded the result, which is one of the three
+ *  callers the route admits. */
+export function retractCheckResult(
+  id: string,
+  input: Body<"/api/v1/results/{id}/retract", "post">,
+  options: ApiOptions = { as: "agent" }
+) {
+  return post("/api/v1/results/{id}/retract", { body: input, params: { id } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
  *  document order, each with the results recorded against it. */
 export function getIssueResults(issue: string, options: ApiOptions = {}) {
@@ -475,6 +504,51 @@ export async function listIssues(project: string, options: ApiOptions = {}) {
     throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
   }
   return answered;
+}
+
+// The five priority routes. A priority belongs to no project, so each of these reads or writes
+// the whole deployment's one order. Every caller here is the signed-in person rather than the
+// agent bearer (the default `as`), because a priority's margin draws who made each act and a
+// bearer would name a session there.
+
+/** `GET /api/v1/priorities`: every live priority in rank order with the work under each, and
+ *  the two faults the same read answers. */
+export function listPriorities(
+  query: Query<"/api/v1/priorities", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/priorities", { query }, options);
+}
+
+/** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
+ *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
+export function createPriority(
+  input: Body<"/api/v1/priorities", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/priorities", { body: input }, options);
+}
+
+/** `PATCH /api/v1/priorities/{id}`: writes the attributes the body names, and nothing else. */
+export function patchPriority(
+  id: string,
+  input: Body<"/api/v1/priorities/{id}", "patch">,
+  options: ApiOptions = {}
+) {
+  return patch("/api/v1/priorities/{id}", { body: input, params: { id } }, options);
+}
+
+/** `DELETE /api/v1/priorities/{id}`: retires one by writing the state `gone`, which removes no
+ *  row, so the priority still answers its history. */
+export function endPriority(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/priorities/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/priorities/{id}/history`: the priority's own acts, newest first - every write
+ *  of its attributes and every relation an issue stated or retracted on it - which the margin
+ *  of its page draws. */
+export function getPriorityHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
 }
 
 /** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
@@ -595,6 +669,12 @@ export function createIssueArtifact(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
+}
+
+/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
+ *  own `["artifacts", key]` read lists them, each with its role and its versions. */
+export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
 }
 
 export function getProjectArtifact(project: string, slug: string, options: ApiOptions = {}) {
@@ -1066,7 +1146,9 @@ export function putArchitectureSource(
   );
 }
 
-/** Names the person a project's unowned new issues fall to, or clears it with `assignee: null`. */
+/** Moves the person a project's unowned new issues fall to, and whom a question on an issue
+ *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
+ *  blank is refused `400 INVALID_PROJECT`, so nothing here clears a default. */
 export function putProjectDefaultAssignee(
   project: string,
   input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
@@ -1079,7 +1161,8 @@ export function putProjectDefaultAssignee(
   );
 }
 
-/** Every project that names a default assignee, as the Settings page reads them. */
+/** Every project with the person it defaults to, as the Settings page reads them: each project
+ *  names somebody, so none is left out. */
 export function listProjectDefaultAssignees(options: ApiOptions = {}) {
   return get("/api/v1/settings/project-default-assignees", {}, options);
 }
@@ -1152,4 +1235,65 @@ export function publishAgentStreamFrame(
  * cannot do. */
 export function dropAgentStreamViewers(sessionID: string, options: ApiOptions = {}) {
   return publishAgentStreamFrame(sessionID, {}, "drop", options);
+}
+
+/** A frame's own JSON beside its prose: the kind, the sequence, the version, and the message's
+ *  id, role, time, streaming flag and part type. Measured on the frames below, rounded up, so
+ *  the prose they carry is sized to leave room for it. */
+const AGENT_STREAM_FRAME_BYTES = 192;
+
+/** `chars` characters of plain prose beginning with `Turn <index>: `, so the turn a check is
+ *  looking at names itself. */
+function agentStreamTurnText(index: number, chars: number): string {
+  const opening = `Turn ${index}: `;
+  const sentence = "the relay carries this turn to the viewer. ";
+  const repeats = Math.ceil((chars - opening.length) / sentence.length);
+  return (opening + sentence.repeat(repeats)).slice(0, chars);
+}
+
+/**
+ * One session's conversation at the stream's limit, as the session answers a viewer's replay
+ * request with it: `AGENT_STREAM_LIMITS.historyMessages` turns, alternating the person's and the
+ * session's, whose prose together fills `AGENT_STREAM_LIMITS.historyBytes`
+ * (`packages/contracts/src/agent-stream.ts`). Both caps are the publisher's own, so this is the
+ * heaviest transcript a live view can ever be handed, which is what a check of what an open view
+ * costs needs behind every session it opens (INFRA-812).
+ */
+export function agentStreamConversationAtLimit(sessionID: string): Record<string, unknown> {
+  const chars =
+    Math.floor(AGENT_STREAM_LIMITS.historyBytes / AGENT_STREAM_LIMITS.historyMessages) -
+    AGENT_STREAM_FRAME_BYTES;
+  const frames = Array.from({ length: AGENT_STREAM_LIMITS.historyMessages }, (_, index) => ({
+    kind: "message",
+    message: {
+      at: 1_000 + index * 1_000,
+      id: `m${index}`,
+      parts: [{ text: agentStreamTurnText(index, chars), type: "text" }],
+      role: index % 2 === 0 ? "user" : "assistant",
+      streaming: false,
+    },
+    seq: index + 1,
+    v: 1,
+  }));
+  return { frames, session_id: sessionID, v: 1 };
+}
+
+/** Gives every one of `sessionIDs` a conversation at the stream's limit: what each session
+ *  answers the next viewer's replay request with, seeded before any view is opened. Answering a
+ *  replay at all makes a session a responder, as a running session with a streaming plugin is,
+ *  so no `setAgentStreamResponder` is needed beside it. */
+export async function seedAgentStreamConversations(
+  sessionIDs: readonly string[],
+  options: ApiOptions = {}
+): Promise<void> {
+  await Promise.all(
+    sessionIDs.map((sessionID) =>
+      publishAgentStreamFrame(
+        sessionID,
+        agentStreamConversationAtLimit(sessionID),
+        "replay",
+        options
+      )
+    )
+  );
 }

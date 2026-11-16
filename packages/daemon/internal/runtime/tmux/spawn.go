@@ -224,13 +224,14 @@ type PaneInputs struct {
 	GHOwnersDir, GHDefault, GH string
 	// OperatorEnv is the operator's pane variables (runtime.tmux.pane_env), PiConfigFiles the
 	// operator's Oh My Pi overlays every pane names (runtime.tmux.pi_config_files),
-	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and
-	// MemoryConfigFiles the project's own (memory.config_files), which only a pane whose tree is
-	// in the memory group is given (runtime.SpawnSpec.Memory); nil for none.
-	OperatorEnv       map[string]string
-	PiConfigFiles     []string
-	RoleConfigFiles   []string
-	MemoryConfigFiles []string
+	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and Variants the
+	// arms of the project's declared experiments this pane's unit was drawn into
+	// (runtime.SpawnSpec.Variants), whose own overlays the pane names last, in the order the
+	// project's file declares the experiments; nil for none.
+	OperatorEnv     map[string]string
+	PiConfigFiles   []string
+	RoleConfigFiles []string
+	Variants        []runtime.Variant
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
 	// the pane is then told no such variable and refuses every public write with the setup error
@@ -248,9 +249,11 @@ type PaneInputs struct {
 // token in the daemon's environment outranks the file — a non-empty GH_TOKEN would — then
 // LEGION_GH_OWNERS_DIR, the bundle's root, and
 // LEGION_GH_PATH, the real gh the `legion gh` wrapper first on the pane's PATH runs;
-// PI_SHELL_PREFIX, which keeps this daemon's launcher directory (its legion and gh) first in the
-// agent's bash tool; PI_CONFIG_FILES, the operator's overlays, then the role's own, then the
-// project's memory overlays for a memory-group pane, and nothing of Legion's own, which names no
+// PI_SHELL_PREFIX, which keeps this daemon's launcher directory first in the agent's bash tool
+// (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
+// operator's overlays, then the role's own, then the
+// overlays of each arm this pane's unit was drawn into, in the order the project's file declares
+// the experiments, and nothing of Legion's own, which names no
 // settings overlay at all — empty where none of the three names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
@@ -260,7 +263,9 @@ type PaneInputs struct {
 // issue it serves, then the
 // spec's own variables sorted, then a `<NAME>_FILE` pointer per secret file. PATH is never among
 // them — tmux would replace it (LEGION-91) — and neither is any secret's value. No other tool path
-// is told: a pane's git and jj are whatever its PATH, the daemon's, gives.
+// is told: a pane's jj is the first jj on its PATH, the daemon's, and its git is the launcher
+// directory's git wrapper where workerbin.Install writes one, and the first git on that PATH
+// otherwise.
 //
 // A composed name is told once, which is why the operator's loop leaves it out: a second pair of
 // one name leaves the value the pane's process reads to the C library's lookup, which answers
@@ -311,7 +316,7 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_GH_PATH", in.GH)
 	}
 	add("PI_SHELL_PREFIX", shellprefix.For(workerbin.LauncherDir(in.StateDir)))
-	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, in.MemoryConfigFiles), ":"))
+	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, runtime.VariantOverlays(in.Variants)), ":"))
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
@@ -425,14 +430,12 @@ func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 // is refused, naming the key (paneOf). The session is resumed where it is: at its recorded path,
 // or, by its name, in another working directory's folder of the recorded path's sessions directory
 // or of the pane's own (sessionFileOf), where a session carried over from a pod lands. One found
-// nowhere starts nothing. While take_over is set (takingOverSession), a session found nowhere
-// wraps runtime.ErrSessionFileMissing, which the claim's machine answers by forgetting the session
-// and spawning a fresh agent: most such sessions are the taken-over runtime's, and the operator
-// chose that cost. It holds for a resume over a foreign prev and for every other resume alike,
-// since neither the recorded path nor the previous incarnation tells the
-// other runtime's sessions from this host's own. With the key off, a session found nowhere is a
-// refusal, never a fresh agent: the claim resumes the agent it recorded or none
-// (assertResumeSessionFile, runtime.ts), and the refusal is charged as any launch failure is.
+// nowhere starts nothing and wraps runtime.ErrSessionFileMissing, which the claim's machine
+// answers by forgetting the session and spawning a fresh agent, charged nothing and reported. That
+// holds whether or not take_over is set: the folders searched are the same, and a session no
+// folder holds is gone whichever runtime last wrote it — under the key most such sessions are the
+// taken-over runtime's, which neither the recorded path nor the previous incarnation tells from
+// this host's own.
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if spec.ResumeSessionFile == "" {
 		return runtime.Locator{}, fmt.Errorf("resume %s: no session file to resume from", spec.Claim)
@@ -478,16 +481,18 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // launch is Spawn's and Resume's shared half: every check that needs no tmux, then, under the launch
 // lock, the refusal of a claim whose process still runs, the secret files, the claim's gh bundle
 // and the pane. The refusal comes first, so a refused launch rewrites none of the files the live
-// process reads. While the operator's takeover is on (takingOverSession), a session found nowhere
-// is runtime.ErrSessionFileMissing rather than a refusal, whatever the claim recorded: a resume
-// over the taken-over runtime's own incarnation is one such launch, and nothing tells its session
-// from this host's own (sessionfile.go).
+// process reads. A session found in no folder it searched is runtime.ErrSessionFileMissing,
+// whatever the claim recorded and whether or not the operator's takeover is on
+// (takingOverSession): the search is the same search either way, and a session nothing holds is
+// the same fact however the daemon is configured. The caller starts a fresh agent in its place,
+// charged nothing and reported (supervise's start), which is also what a taken-over runtime's
+// session gets, since nothing tells it from this host's own (sessionfile.go).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
 	}
 	for _, path := range slices.Concat(spec.Prompt.RolePromptPaths,
-		[]string{spec.Prompt.DeploymentInstructionsPath, spec.Prompt.MemoryInstructionsPath}) {
+		[]string{spec.Prompt.DeploymentInstructionsPath}, spec.Prompt.VariantInstructionsPaths) {
 		if path == "" {
 			continue
 		}
@@ -519,16 +524,9 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		switch {
 		case err != nil:
 			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
-		case found == "" && r.takingOverSession():
+		case found == "":
 			return runtime.Locator{}, fmt.Errorf("resume %s: %w: no %s session at %s, and no other folder of %s holds that session",
 				spec.Claim, runtime.ErrSessionFileMissing, harness, spec.ResumeSessionFile, searchedIn(searched))
-		case found == "":
-			verb := "respawning"
-			if claim.IsTreeArchitect(spec.Role, spec.Issue, spec.Tree) {
-				verb = "resurrecting"
-			}
-			return runtime.Locator{}, fmt.Errorf("Refusing to start %s fresh while %s: recorded %s session file is missing: %s, and no other folder of %s holds that session",
-				spec.Issue, verb, harness, spec.ResumeSessionFile, searchedIn(searched))
 		case found != spec.ResumeSessionFile:
 			r.log.Warn("tmux runtime: the recorded session is in another folder; resuming it there",
 				"claim", spec.Claim, "backend", backend, "recorded", spec.ResumeSessionFile, "session", found)
@@ -568,12 +566,6 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		return runtime.Locator{}, err
 	}
 	command := shimShellCommand(r.socket, path, workDir, r.legion, r.streamAddress, files[0].Path, r.providerEnvDir, inner)
-	// Only a pane whose tree was drawn into the memory group names the project's memory overlays;
-	// every other pane's PI_CONFIG_FILES is the one it had before the block existed.
-	var memoryOverlays []string
-	if spec.Memory {
-		memoryOverlays = r.memoryConfigFiles
-	}
 	// The check is resolved here, once per launch, in the daemon's own environment, because a
 	// pane can resolve none of the three places itself (resolveLeakCheck). A machine that carries
 	// none is no launch failure: the pane is told no PUBLIC_LEAK_CHECK and every public write
@@ -588,7 +580,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		MemoryConfigFiles: memoryOverlays, LeakCheck: leakCheck,
+		Variants: spec.Variants, LeakCheck: leakCheck,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }

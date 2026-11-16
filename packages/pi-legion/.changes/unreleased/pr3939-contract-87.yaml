@@ -1,0 +1,4 @@
+kind: Changed
+custom:
+  Issue: pr3939
+body: The plugin declares daemon API contract 87, which adds each claim's `leakCheckCause` to `GET /legion/v1/state` and to the operator's claim routes.

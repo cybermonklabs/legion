@@ -12,7 +12,7 @@
 -- once per attribution rule (ListStalePullRequestHeads), so asking GitHub again from a read
 -- teaches nothing. So the read asks this first, and a child's result on its parent's tab — whose
 -- commit heads the child's own pull request, attributed to the child — costs no GitHub call at all
--- (api/results_currency.go, currencyReader.readThroughHead). A closed-unmerged row is counted for
+-- (api/results_comparison.go, comparisonReader.readThroughHead). A closed-unmerged row is counted for
 -- nothing: the reconcile keeps none, and a pull request closed at a commit does not stop another
 -- being opened from the same head.
 --
@@ -24,7 +24,7 @@
 -- a commit's rows are one or two and the state is read from them.
 --
 -- No index served that lookup. pull_request_heads_issue_head (20261102122300) is keyed
--- (issue_key, head_sha) and partial on `issue_key is not null`, which answers the currency read
+-- (issue_key, head_sha) and partial on `issue_key is not null`, which answers the results read
 -- and no lookup by repository and head commit; the primary key is (repo, number). Without this
 -- index every results read of such a commit would scan the table.
 --

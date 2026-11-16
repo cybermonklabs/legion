@@ -151,6 +151,29 @@ test("eventDescription labels a malformed decision", () => {
   ]);
 });
 
+test("eventDescription reads a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: { id: "session-1", kind: "session" },
+    created_at: "2026-09-13T17:01:00Z",
+    id: 4,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "a check proved by CI carries no run",
+      disturbed_by: { id: "session-1", kind: "session" },
+      block_type: "check",
+    },
+    seq: 4,
+    type: "block.invalid",
+  };
+
+  expect(eventDescription(event)).toEqual([
+    "refused check k1: a check proved by CI carries no run",
+  ]);
+});
+
 test("eventDescription names an added artifact", () => {
   const event: Extract<DispatchEvent, { type: "artifact.created" }> = {
     actor: { id: "session-1", kind: "session" },
@@ -204,6 +227,46 @@ test("eventDescription names a saved artifact version", () => {
   };
 
   expect(eventDescription(event)).toEqual(["Saved cu-update-2026-09-15.md v2"]);
+});
+
+test("eventDescription names the document and version of a review", () => {
+  const approved: Extract<DispatchEvent, { type: "artifact.approved" }> = {
+    actor: { id: "person@example.com", kind: "user" },
+    created_at: "2026-09-15T00:00:00Z",
+    id: 6,
+    issue_key: "OPS-52",
+    notify: true,
+    payload: {
+      actor: { id: "person@example.com", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: null,
+      version: 4,
+    },
+    seq: 6,
+    type: "artifact.approved",
+  };
+  const changesRequested: Extract<DispatchEvent, { type: "artifact.changes_requested" }> = {
+    actor: { id: "person@example.com", kind: "user" },
+    created_at: "2026-09-16T00:00:00Z",
+    id: 7,
+    issue_key: "OPS-52",
+    notify: true,
+    payload: {
+      actor: { id: "person@example.com", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: "Name the rollback step.",
+      version: 5,
+    },
+    seq: 7,
+    type: "artifact.changes_requested",
+  };
+
+  expect(eventDescription(approved)).toEqual(["Approved spec.md v4"]);
+  expect(eventDescription(changesRequested)).toEqual(["Changes requested on spec.md v5"]);
 });
 
 test("eventDescription names the phase and version of a recorded handoff", () => {
@@ -294,6 +357,31 @@ test("eventDescription names the repository an architecture import came from; a 
   ]);
 });
 
+test("eventDescription names the person a project's default moved to; a retained clear reads as cleared", () => {
+  const base = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 4,
+    issue_key: null,
+    notify: false,
+    project: "CORE",
+    seq: 4,
+    type: "settings.project_default_assignee.updated",
+  } as const;
+
+  expect(
+    eventDescription({
+      ...base,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+    })
+  ).toEqual(["Default assignee updated: CORE → bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(eventDescription({ ...base, payload: { assignee: null, project: "CORE" } })).toEqual([
+    "Default assignee cleared: CORE",
+  ]);
+});
+
 // The issue log names the same five movements, in its own voice: it has no actor column beside
 // the line, so a release says what happened and a takeover names who lost the claim.
 type ClaimLogEvent = Extract<DispatchEvent, { type: "issue.claimed" | "issue.released" }>;
@@ -362,4 +450,37 @@ test("the issue log keeps the session an unsubscribe or a follower names", () =>
 
   expect(eventDescription(sessionEvent("subscription.removed"))).toEqual(["Unsubscribed ", agent]);
   expect(eventDescription(sessionEvent("ask.follower_added"))).toEqual([agent, " follows an ask"]);
+});
+
+// A queued attempt waits for a session that is not running, so the line says queued even when the
+// stream already held the message: "already delivered" would say the session has it.
+test("the issue log reads a queued delivery receipt as queued, a queued repeat included", () => {
+  const receipt = (
+    type: "message.delivery" | "comment.delivery",
+    state: "sent" | "queued",
+    duplicate: boolean
+  ) =>
+    ({
+      actor: { id: "system", kind: "system" },
+      created_at: "2026-11-02T09:15:00Z",
+      id: 11,
+      issue_key: "CORE-1",
+      notify: false,
+      payload: { delivery: "aside", duplicate, state, target: "session:planner" },
+      seq: 11,
+      type,
+    }) as DispatchEvent;
+
+  expect(eventDescription(receipt("message.delivery", "queued", true))).toEqual([
+    "Message queued: Aside",
+  ]);
+  expect(eventDescription(receipt("message.delivery", "sent", true))).toEqual([
+    "Message already delivered: Aside",
+  ]);
+  expect(eventDescription(receipt("comment.delivery", "queued", true))).toEqual([
+    "Comment queued: Aside",
+  ]);
+  expect(eventDescription(receipt("comment.delivery", "sent", true))).toEqual([
+    "Comment already delivered: Aside",
+  ]);
 });

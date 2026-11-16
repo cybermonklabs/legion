@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
 import { phaseStallFile } from "../src/legion-phase-hook"
 import { FakeNatsServer } from "./fake-nats-server"
@@ -376,11 +377,17 @@ async function runWorker(options: {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })
     }
     // The Envoy listener: the registration, the role claim, and any read answer with an interest.
+    const registering = typeof body["session_id"] === "string" ? body["session_id"] : SESSION
     return Response.json({
-      session_id: typeof body["session_id"] === "string" ? body["session_id"] : SESSION,
+      session_id: registering,
       machine_id: "claude-pane-machine",
       dir: workspace,
       topics: [],
+      // Every accepted registration is answered with the session's own consumer, as every
+      // stand-in listener of this repository does (`@legion/envoy-client/test/subscribe-answer`):
+      // a session answered no delivery is refused inbound and says so in its transcript, which
+      // the mod submits as a turn of its own, and these rows count the turns.
+      delivery: consumerDelivery(registering),
     })
   })
 

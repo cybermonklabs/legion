@@ -47,7 +47,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		// outbox's delivery wake in one of its own, so one pairing holds for all of them.
 		records := podRecords(t, st)
 		inTx(t, st, func(tx pgx.Tx) error {
-			taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeDelivery, "row-7", at)
+			taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleArchitect, pods.WakeDelivery, at)
 			if err != nil || !taken {
 				t.Fatalf("TakePodWake = %t, %v; want the architect's wake taken", taken, err)
 			}
@@ -74,7 +74,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 			t.Fatalf("record the idle release: %v", err)
 		}
 		if err := st.Tx(ctx, func(tx pgx.Tx) error {
-			_, err := RecordPodWakeTx(ctx, tx, PodResume{Release: idle, Project: "legion", Issue: rootIssue,
+			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: idle, Project: "legion", Issue: rootIssue,
 				Role: "architect", Kind: pods.WakeDelivery, At: at.Add(time.Minute)})
 			return err
 		}); err != nil {
@@ -89,7 +89,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 			Generation: 1, At: at.Add(30 * time.Minute)}); err != nil {
 			t.Fatalf("record the release of the pod no claim owns: %v", err)
 		}
-		unfinished, err := st.UnfinishedPodResumes(ctx, "legion", time.Now().UTC())
+		unfinished, err := unfinishedResumes(ctx, st, "legion", time.Now().UTC())
 		if err != nil || len(unfinished) != 1 || unfinished[0].Release != idle {
 			t.Fatalf("unfinished wakes = %+v, %v; want the architect's wake of release %d, which no later release ended",
 				unfinished, err, idle)

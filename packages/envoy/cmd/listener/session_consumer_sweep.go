@@ -1,8 +1,8 @@
 // The sweep of the stream's session consumers: the loop that runs every interval and once as the
 // listener starts, and the pass it makes, which deletes the consumer of every session the session
 // registry judges gone. It is the bound behind the deregistration's own delete
-// (sessionDelivery.deleteAfterAnswer, api.go), which reaches only a registration this listener
-// removed.
+// (sessionDelivery.deleteAfterAnswer, session_consumer_delete.go), which reaches only a
+// registration this listener removed.
 
 package main
 
@@ -38,13 +38,13 @@ const defaultSessionConsumerSweepInterval = 5 * time.Minute
 const sessionConsumerSweepCap = 256
 
 // sweptSessions is what the sweep asks of the session registry (session.SessionRegistry): the
-// state the fleet's record puts a session in, whether this listener's copy of that record may
-// be read at all, and the read of the bucket itself the delete makes under the session's lock
-// (sessionRecords). It is an interface because a copy whose cache is not ready is the one state
+// state the fleet's record puts a session in and whether this listener's copy of that record
+// may be read at all. The read of the bucket itself is the delete's own, made under the
+// session's lock through the listener's stores (deps, sessionDelivery.deleteConsumer). It is an
+// interface because a copy whose cache is not ready is the one state
 // a test cannot put a real registry into: a registry's readiness is released once and never
 // taken back (kvwatch.Watcher.Ready), and that state is where the pass must delete nothing.
 type sweptSessions interface {
-	sessionRecords
 	// CacheReady reports whether the copy's first read of the session bucket has completed.
 	CacheReady() bool
 	// Servable reports whether the copy may be served at all, nil when it may.
@@ -67,6 +67,10 @@ type sessionConsumerSweep struct {
 	delivery *sessionDelivery
 	// sessions is the fleet's record of which sessions have ended.
 	sessions sweptSessions
+	// deps is the listener's stores the delete reads the session's record from the bucket's
+	// leader through, and gives the consumer back to a session whose record is there from
+	// (sessionDelivery.deleteConsumer, repairRegistered).
+	deps *listenerDeps
 	// relays holds this task's machine durable binding (sessionRelays.owned), which the pass
 	// requires: the task of a rolling deploy that relays nothing sweeps nothing either.
 	relays *sessionRelays
@@ -90,10 +94,13 @@ func startSessionConsumerSweep(ctx context.Context, sweep *sessionConsumerSweep,
 // that judgement against the bucket itself under the session's lock and deletes only where the
 // bucket answers nats.ErrKeyNotFound (sessionDelivery.deleteConsumer): a read that did not
 // answer, and a record the bucket does hold, each leave that consumer standing for the next
-// pass. The pass makes no such read of its own - it did, before this delete took the lock, and
-// the two asked the bucket the same question - so a swept consumer costs one bucket read rather
-// than two, and only the read under the lock, which no registration of this listener's can
-// land behind, decides anything.
+// pass. A session another listener registered between that read and the delete is given its
+// consumer back by the delete itself, from the record and the row the bucket then holds and at
+// the floor it recorded (repairRegistered), so no pass of this sweep leaves a live session
+// without one. The pass makes no read of the bucket of its own - it did, before this delete took
+// the lock, and the two asked the bucket the same question - so a swept consumer costs one
+// bucket read rather than two, and only the read under the lock, which no registration of this
+// listener's can land behind, decides anything.
 //
 // The pass deletes the consumer of a session this listener never owned, and that is the normal
 // case: a session's consumer outlives the listener that created it, so the consumers of a box
@@ -147,10 +154,7 @@ func (s *sessionConsumerSweep) pass(ctx context.Context) {
 		// The info the list already answered is handed to the delete, which records the
 		// consumer's floor from it rather than reading the consumer again: a session the
 		// delete confirms gone has nobody left to move that floor.
-		remove := func(ctx context.Context) error {
-			return s.delivery.consumers.DeleteListed(ctx, sessionID, info)
-		}
-		if s.delivery.deleteConsumer(ctx, s.sessions, sessionID, remove) {
+		if s.delivery.deleteConsumer(ctx, s.deps, sessionID, info) {
 			deleted++
 		}
 	}

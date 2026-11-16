@@ -269,18 +269,23 @@ func (rig *listRig) interestIDs(t *testing.T) []string {
 	return ids
 }
 
-// sample is gauge's sample on the rig's /metrics, and whether the scrape has one. The scrape always
-// carries the gauge's TYPE line, which the test checks too.
+// sample is gauge's sample on the rig's /metrics, and whether the scrape has one (gaugeSample).
 func (rig *listRig) sample(t *testing.T, gauge string) (int64, bool) {
 	t.Helper()
-	body, err := io.ReadAll(rig.get("/metrics").Body)
-	if err != nil {
-		t.Fatalf("read /metrics: %v", err)
-	}
-	if !strings.Contains(string(body), "# TYPE "+gauge+" gauge\n") {
+	return gaugeSample(t, rig.handler, gauge)
+}
+
+// gaugeSample is gauge's sample on the /metrics that handler serves, and whether the scrape has
+// one. The scrape always carries the gauge's TYPE line, which the test checks too.
+func gaugeSample(t *testing.T, handler http.Handler, gauge string) (int64, bool) {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := recorder.Body.String()
+	if !strings.Contains(body, "# TYPE "+gauge+" gauge\n") {
 		t.Fatalf("/metrics lacks the TYPE line of %s:\n%s", gauge, body)
 	}
-	for _, line := range strings.Split(string(body), "\n") {
+	for _, line := range strings.Split(body, "\n") {
 		if value, ok := strings.CutPrefix(line, gauge+" "); ok {
 			n, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {

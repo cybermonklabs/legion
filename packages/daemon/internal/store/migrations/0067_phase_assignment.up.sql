@@ -8,7 +8,7 @@
 -- a token the workflow mints at each start that hands a role a task, written in the transition's
 -- own transaction onto the role's phases row and onto the start's payload, and carried from there
 -- to the delivery and, when a confirmed delivery is retired, onto the claim. The completion route
--- compares the two (HANDOFF_STALE_ASSIGNMENT).
+-- compares the two and refuses a completion whose token differs from the row's.
 --
 -- phases.assignment is what the issue's current phase handed the role; the claim's
 -- serving_assignment is what the claim's worker took, as serving_generation is the run it took;

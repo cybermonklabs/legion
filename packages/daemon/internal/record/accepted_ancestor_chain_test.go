@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -71,10 +72,12 @@ func TestTheLineHoldsAnIssueUnderAnAcceptedAncestorAboveADoneParent(t *testing.T
 		// before, the walk stops at the done parent and the line offers the held issue a slot.
 		bare := facts
 		bare.Parents = nil
-		if !inLine(Waiting(issues, nil, bare), heldAtAdmit) {
+		bareLine, _ := Waiting(issues, nil, bare)
+		if !inLine(bareLine, heldAtAdmit) {
 			t.Fatalf("%s is out of the line even with no record of %s: this test proves nothing", heldAtAdmit, doneParent)
 		}
-		for _, entry := range Waiting(issues, nil, facts) {
+		heldLine, _ := Waiting(issues, nil, facts)
+		for _, entry := range heldLine {
 			if entry.Issue.Key == heldAtAdmit {
 				t.Fatalf("%s stands in the waiting line, though %s above it is merging: the daemon holds it until that ancestor closes", heldAtAdmit, merging)
 			}
@@ -115,11 +118,11 @@ func inLine(line []LineEntry, key string) bool {
 }
 
 // A lane whose lease lapsed may be slow rather than dead, and every move it has left is matched
-// on the token it holds: it renews by the token alone, and finishes the row by the id and the
-// token. So the rewrite of a lapsed row takes the token with it. Left in place, that lane could
-// renew, deliver the earlier task it had already read, and then finish the row now carrying the
-// later one — deleting the later task with nothing to re-place it.
-func TestReplacingALapsedOwedStartTakesItsLeaseToken(t *testing.T) {
+// on the row it holds: it renews by the token alone, and finishes the row by the id and the
+// token. So a start written in place of a lapsed row takes that row out from under it. Left in
+// place, that lane could renew, deliver the earlier task it had already read, and then finish
+// the row now carrying the later one — deleting the later task with nothing to re-place it.
+func TestAStartOverALapsedOwedRowTakesItFromItsLane(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
@@ -131,22 +134,23 @@ func TestReplacingALapsedOwedStartTakesItsLeaseToken(t *testing.T) {
 			where issue = $1 and kind = 'supervise'`, issue); err != nil {
 			t.Fatalf("lapse the lease: %v", err)
 		}
-		replaced, err := records.ReplaceOwedStart(ctx, tx, owedStartRow(t, issue, "Implement the change again."))
-		if err != nil {
-			t.Fatalf("replace the owed start: %v", err)
+		var lapsed int64
+		if err := tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise'`, issue).Scan(&lapsed); err != nil {
+			t.Fatalf("read the lapsed row: %v", err)
 		}
-		if !replaced {
-			t.Fatalf("ReplaceOwedStart left the lapsed row alone")
-		}
+		must(t, records.EnqueueStart(ctx, tx, owedStartRow(t, issue, "Implement the change again.")))
+		var id int64
 		var token string
-		if err := tx.QueryRow(ctx, `select lease_token from outbox where issue = $1 and kind = 'supervise'`, issue).Scan(&token); err != nil {
-			t.Fatalf("read the rewritten row's lease token: %v", err)
+		var until *time.Time
+		if err := tx.QueryRow(ctx, `select id, lease_token, lease_until from outbox
+			where issue = $1 and kind = 'supervise'`, issue).Scan(&id, &token, &until); err != nil {
+			t.Fatalf("read the start the issue owes: %v", err)
 		}
-		if token == "lane" {
-			t.Fatalf("the rewritten row still carries the lapsed lane's token: that lane can renew its lease, deliver the earlier task and delete the later one")
+		if id == lapsed {
+			t.Fatalf("the later task is on row %d, the very row the lapsed lane holds: that lane can renew its lease, deliver the earlier task and delete the later one", id)
 		}
-		if token == "" {
-			t.Fatalf("the rewritten row carries no token at all: a row that was leased keeps one, rotated, as the ready_merge conflict does")
+		if token != "" || until != nil {
+			t.Fatalf("the start the issue owes carries lease %q until %v, want none: no lane holds a row nobody has claimed", token, until)
 		}
 	})
 }

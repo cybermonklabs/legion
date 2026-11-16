@@ -186,10 +186,20 @@ var sessionStoreVariables = []string{ompsessions.StorageVariable, ompsessions.DS
 // whatever the Secret's key is called.
 const providersDSNFile = ProvidersDir + "/" + ompsessions.DSNFileName
 
-// sessionProxyFlagNames are the flags a pod's `legion launcher` is told the Cloud SQL
+// sessionProxyFlagNames are the flags a pod's `legion launcher` is always told the Cloud SQL
 // session database by, in the order sessionProxyFlags writes them: the instance's connection name,
-// the database in it, and the IAM login the pod signs in as.
+// the database in it, and the IAM login the pod signs in as, which is the login of the service
+// account it impersonates where the store names one (sessionProxyAccountFlag). All three are
+// required, so a launcher carrying them is what marks a pod as created under cloudsql-iam
+// (sessionProxyFlagsIn).
 var sessionProxyFlagNames = [3]string{"--session-instance", "--session-database", "--session-user"}
+
+// sessionProxyAccountFlag names the Google service account a pod's `legion launcher` impersonates
+// with the pod's own credentials to sign in to Cloud SQL (Database.ImpersonateServiceAccount). It
+// is optional, so it is no member of sessionProxyFlagNames: a pod that signs in as itself carries
+// no such flag at all, never an empty one, so a deployment that names no account keeps the very
+// command its pods were created with before the flag existed, and none of them drifts for it.
+const sessionProxyAccountFlag = "--session-impersonate-service-account"
 
 // legionVolumeNames are the volumes Legion puts in a pod, an issue pod's, the controller's or the
 // probe's, whose names the operator's volumes may not take: the shared ones, the role homes, the
@@ -300,7 +310,7 @@ type launch struct {
 // keptPod is what a live pod a launch keeps was built with, for the one role that launch starts in
 // it: the facets of the pod the role's own start command names, which a pod cannot be changed to
 // carry (INFRA-484). A pod that has drifted from the configuration is replaced by an update round,
-// which first tasks every worker in it to push its work and answer, and not by the launch that
+// which first asks every role in it to push its work and answer, and not by the launch that
 // finds it; so the launch starts its role as that pod was built, and the role runs degraded —
 // without the secrets broker, without an overlay added since — until the round replaces the pod.
 // It can still push its work and answer the round, which a process that refused to start could
@@ -315,13 +325,13 @@ type keptPod struct {
 	// actually holds, in configuration order: the only ones its generation's PI_CONFIG_FILES may
 	// name (heldRoleOverlays, roleOperatorEnv).
 	overlays []string
-	// memory are the project's memory overlay files (Options.MemoryConfigFiles) the pod's
-	// container actually holds, in configuration order: what the pod holds for every role, as
-	// overlays is (heldRoleOverlays). Which launch is told them is a launch's own question, and
-	// launch.overlays asks it once — only a launch whose tree is in the memory group
-	// (runtime.SpawnSpec.Memory) names them in its generation's PI_CONFIG_FILES, after the role's
-	// own (roleOperatorEnv).
-	memory []string
+	// variantFiles are the overlay files of the project's declared variants
+	// (Options.ExperimentVariants) the pod's container actually holds, in configuration order:
+	// what the pod holds for every role, as overlays is (heldRoleOverlays). Which of them a
+	// launch is told is a launch's own question, and launch.overlays asks it once — a launch
+	// names the files of the arms its unit was drawn into (runtime.SpawnSpec.Variants), and of
+	// those only the ones this list holds, after the role's own (roleOperatorEnv).
+	variantFiles []string
 	// store is the session store this pod was built under (heldSessionStore), the kind alone: it
 	// is all a start command names, since the URL itself is in the file the pod projects or its
 	// own launcher writes (sessionDSNFile). A pod created before the store was configured carries
@@ -354,7 +364,8 @@ type keptPod struct {
 // in). A role in a kept pod that carries no enrollment is told of none, so it reports a resource
 // it cannot reach rather than a secrets grant it never had, and its generation is recorded as
 // carrying no broker URL, so moving the broker's URL never reads as StaleAddress and never
-// repoints that role mid-turn: the update round replaces its pod once every worker has answered.
+// repoints that role mid-turn: the update round replaces its pod once every worker has answered,
+// or at the round's bound.
 //
 // The launch reads the pod from the Sandbox's stored template, the pod's own build (keptBy), and
 // an observation from the live pod; neither a kubelet nor an admission webhook takes a volume off
@@ -374,32 +385,67 @@ func (l launch) enrolls(r *Runtime) bool {
 }
 
 // overlays are this launch's settings overlays, which its generation is told in PI_CONFIG_FILES
-// after the operator's own (roleOperatorEnv): the role's own overlays, then, for a launch whose
-// tree is in the memory group (runtime.SpawnSpec.Memory), the project's memory overlays, which
-// outrank them. They are the ones a kept pod holds, which may be fewer than role_config_files and
-// memory.config_files now name, and all of the configuration's for a launch that builds the pod.
-// This is the one place a launch's memory group decides what it is told, for a kept pod as for a
-// fresh one: the pod holds the memory overlays for every role of it (keptPod.memory).
+// after the operator's own (roleOperatorEnv): the role's own overlays, then the overlays of each
+// arm this launch's unit was drawn into (runtime.SpawnSpec.Variants), in the order the project's
+// file declares the experiments, which outrank them. They are the ones a kept pod holds, which
+// may be fewer than role_config_files and the declared variants now name, and all of the
+// configuration's for a launch that builds the pod. This is the one place a launch's variants
+// decide what it is told, for a kept pod as for a fresh one: the pod holds every declared
+// variant's overlays for every role of it (keptPod.variantFiles).
+//
+// A pod built before an arm's mount was added holds none of that arm's files, so a unit recorded
+// in it starts its role without them — in neither arm, until the update round replaces the pod —
+// since Oh My Pi refuses to start on an entry that is not there and a role that never starts
+// never answers that round (INFRA-484). Each such drop is logged once, at the launch that makes
+// it, naming the issue, the role, the experiment and the arm, because nothing else says that this
+// generation ran outside the arm it was drawn into.
 func (l launch) overlays(r *Runtime) []string {
-	own, memory := r.roleConfigFiles[l.spec.Role], r.memoryConfigFiles
+	own := r.roleConfigFiles[l.spec.Role]
 	if l.kept != nil {
-		own, memory = l.kept.overlays, l.kept.memory
+		own = l.kept.overlays
 	}
-	if !l.spec.Memory {
-		return own
+	var variants []string
+	for _, variant := range l.spec.Variants {
+		files := variant.ConfigFiles
+		if l.kept != nil {
+			var dropped []string
+			files, dropped = splitHeld(l.kept.variantFiles, variant.ConfigFiles)
+			if len(dropped) > 0 {
+				r.log.Warn("sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod",
+					"issue", l.spec.Issue, "role", l.spec.Role, "experiment", variant.Experiment, "variant", variant.Name,
+					"dropped", dropped)
+			}
+		}
+		variants = append(variants, files...)
 	}
-	return withMemoryOverlays(own, memory)
+	return withVariantOverlays(own, variants)
 }
 
-// withMemoryOverlays is one PI_CONFIG_FILES list: a role's own overlays and then the project's
-// memory overlays, which outrank them, and own itself where there is no memory overlay to add, so
-// a deployment whose project names no memory overlay hands every caller the list it handed before
-// the block existed (launch.overlays, probeManifest).
-func withMemoryOverlays(own, memory []string) []string {
-	if len(memory) == 0 {
+// splitHeld is want in two, each part in want's order: the files held holds, and the files it
+// does not. For one variant's overlays against a kept pod, that is the share the pod carries,
+// which the launch names, and the share it lacks, which the launch's one log line names.
+func splitHeld(held, want []string) (kept, missing []string) {
+	for _, file := range want {
+		if slices.Contains(held, file) {
+			kept = append(kept, file)
+		} else {
+			missing = append(missing, file)
+		}
+	}
+	return kept, missing
+}
+
+// withVariantOverlays is one PI_CONFIG_FILES list: a role's own overlays and then the variants'
+// own, which outrank them, and own itself where there is no variant overlay to add, so a
+// deployment whose project declares no experiment of its own and writes no `memory` block, and
+// one whose variants name no overlay, hands the launch the list it handed before any experiment
+// existed (launch.overlays, its one caller; the image probe's values are
+// runtime.RoleOverlayValues').
+func withVariantOverlays(own, variants []string) []string {
+	if len(variants) == 0 {
 		return own
 	}
-	return slices.Concat(own, memory)
+	return slices.Concat(own, variants)
 }
 
 // sessionStore is the kind of store this launch's generation keeps its session in: the one the
@@ -529,10 +575,11 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 
 // systemPrompt is the one --append-system-prompt value, the same text tmux's pane shell builds
 // (runtime/tmux/prompt.go): the role prompt files concatenated, then the addressing sentence,
-// then the deployment instructions, then the project's memory instructions, which only a launch
-// whose tree is in the memory group is given (PromptParts.MemoryInstructionsPath), separated by a
-// blank line, each file's trailing newlines dropped as `$(cat …)` drops them. A pod cannot read
-// the daemon's files, so the text is inlined here.
+// then the deployment instructions, then one text per arm this launch's unit was drawn into, in
+// the order the project's file declares the experiments
+// (PromptParts.VariantInstructionsPaths), separated by a blank line, each file's trailing
+// newlines dropped as `$(cat …)` drops them. A pod cannot read the daemon's files, so the text is
+// inlined here.
 func systemPrompt(parts runtime.PromptParts) (string, error) {
 	var role strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -546,7 +593,7 @@ func systemPrompt(parts runtime.PromptParts) (string, error) {
 	if parts.Addressing != "" {
 		fragments = append(fragments, parts.Addressing)
 	}
-	for _, path := range []string{parts.DeploymentInstructionsPath, parts.MemoryInstructionsPath} {
+	for _, path := range slices.Concat([]string{parts.DeploymentInstructionsPath}, parts.VariantInstructionsPaths) {
 		if path == "" {
 			continue
 		}
@@ -936,19 +983,24 @@ func (r *Runtime) sessionDSNFile(l launch) string {
 }
 
 // sessionProxyFlags are what a pod's `legion launcher` is told of the Cloud SQL session database
-// it proxies its generations' sessions to, none under any other store. There is no address among
-// them: the launcher binds the socket in the generation's own private directory, which it knows
-// from --roles-dir and the role in an issue pod's one container, and from --private-dir in the
-// controller's.
+// it proxies its generations' sessions to, none under any other store: the three of
+// sessionProxyFlagNames, then sessionProxyAccountFlag only where the store names a service account
+// to impersonate, so the login the pod signs in as is its own identity's, or that account's. There
+// is no address among them: the launcher binds the socket in the generation's own private
+// directory, which it knows from --roles-dir and the role in an issue pod's one container, and
+// from --private-dir in the controller's.
 func (r *Runtime) sessionProxyFlags() []string {
 	if r.sessionStore.Kind != ompsessions.StoreCloudSQLIAM {
 		return nil
 	}
 	database := r.sessionStore.Database
 	values := [len(sessionProxyFlagNames)]string{database.Instance, database.Name, database.User}
-	flags := make([]string, 0, 2*len(values))
+	flags := make([]string, 0, 2*len(values)+2)
 	for i, value := range values {
 		flags = append(flags, sessionProxyFlagNames[i], value)
+	}
+	if database.ImpersonateServiceAccount != "" {
+		flags = append(flags, sessionProxyAccountFlag, database.ImpersonateServiceAccount)
 	}
 	return flags
 }
@@ -984,9 +1036,10 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // spend attributes alone, since no spec has ever been refused for naming PI_CONFIG_FILES.
 //
 // PI_CONFIG_FILES carries the launch's own overlays (launch.overlays, the role's from
-// Options.RoleConfigFiles and then a memory-group launch's from Options.MemoryConfigFiles) after
-// the operator's, so each of them outranks the operator's, and is inserted in name order when the
-// operator's pod env names none. A role with none is told operatorEnv unchanged.
+// Options.RoleConfigFiles and then those of the arms its unit was drawn into, from
+// runtime.SpawnSpec.Variants) after the operator's, so each of them outranks the operator's, and
+// is inserted in name order when the operator's pod env names none. A role with none is told
+// operatorEnv unchanged.
 //
 // runtime.SpendAttributesVariable carries the launch's issue and role after the operator's own
 // attributes (runtime.SpendResourceAttributes), so a pod's resource attributes name the issue it
@@ -1250,8 +1303,8 @@ func skillsEnvironment() []corev1.EnvVar {
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
 // repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the cache's stream and its
-// verification, then one of its own for the delta from GitHub), workspace-init's shared clone of
+// wait for the repository cache, then one FetchTimeout for the verification of what the cache
+// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
 // the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
 // one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
 // CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's
@@ -1259,6 +1312,10 @@ func skillsEnvironment() []corev1.EnvVar {
 // (awaitRoleLauncher). The fetch started no later than that, the shared clone after the fetch
 // ended and the checkout after the clone, so the three end inside the bound, each failing on its
 // own, naming why, when it runs out, while the commands between them take the moments they do.
+// The stream from the repository cache is the one part of the fetch outside those bounds: it
+// ends when it falls below the low-speed bound rather than on any clock
+// (workspace.CacheStreamLowSpeedBytes), so a stream that keeps receiving runs on into the slack
+// this bound holds over what its fetch actually waited and checked.
 //
 // The sum counts no term for the commands that keep CommandTimeout, and never has: workspace-
 // init's dozen other commands, local work that waits on no other pod, and the skills clone of
@@ -1344,15 +1401,15 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("PI_SHELL_PREFIX", shellprefix.For(legionDir))
 	add("GIT_TERMINAL_PROMPT", "0")
 	env = append(env, gitConfigEnv()...)
-	// The shared public leak check every write of this role runs first: its `legion gh`, its
-	// pushes and the rescue helper each resolve PUBLIC_LEAK_CHECK before anything else
+	// The shared public leak check every write of this role runs first: its `legion gh` and its
+	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
 	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, and a pod installs the pinned one once, before any role's
-	// agent starts (leakguard.Install, run by each role's shim from the pin the image carries) —
-	// so what is named here is the installed copy, under the scratch the roles of this pod share.
-	// The path is the installer's own constant, so the path a role is told and the path the
-	// install writes are one string and cannot drift
-	// (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
+	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
+	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
+	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
+	// is named here is the installed copy, under the scratch the roles of this pod share. The path
+	// is the installer's own constant, so the path a role is told and the path the install writes
+	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
 	add(leakguard.CheckVar, leakguard.InstalledCheck)
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a

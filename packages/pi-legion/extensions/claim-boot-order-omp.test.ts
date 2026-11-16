@@ -7,14 +7,16 @@ import {
   type Block,
   type Cleanup,
   call,
+  deliveryFor,
   messageStream,
   ompRoot,
   type Request,
+  sendRelayFrame,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { connect, StringCodec } from "nats";
+import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
 // INFRA-1573 on the real binary: a phase worker takes its Envoy name once its first turn has
@@ -117,8 +119,8 @@ interface Worker {
   refusal(): string | undefined;
   /** The summary of the message the stand-in listener kept for this worker's role. */
   readonly kept: string;
-  /** Resolves once the session has taken that message: the lane receipt it answers the forwarded
-   * envelope with before it delivers it (`expectsLaneReceipt`, packages/envoy-client). */
+  /** Resolves once the session has taken that message: the word it answers the relay frame with
+   * (`sendRelayFrame`, which refuses a `nak` by name, so this resolves on a take alone). */
   handedOver(what: string): Promise<void>;
   /** How long after the stand-in answered `claims/ready` the role claim reached the listener. */
   claimedAfterReadyMs(): number;
@@ -159,19 +161,27 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   );
 
   // The message the listener kept while no session held the role, and the connection it is handed
-  // over on. The forwarded envelope keeps the role topic, so the session acknowledges it on the
-  // request's reply inbox before it delivers it, which is the receipt a case waits for.
+  // over on. A session takes its messages from its own consumer alone (dispatch://INFRA-771), so
+  // the hand-over is a relay frame of that consumer on the session's deliver subject, as the
+  // listener's relay sends it; the session answers the frame, which is the receipt a case waits
+  // for.
   const kept = `KEPT-${randomUUID().slice(0, 8)}`;
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
   const codec = StringCodec();
   let receipt: Promise<unknown> | undefined;
+  let relayedSeq = 0;
   const handOver = (sid: string): void => {
     const key = `kept-${randomUUID()}`;
     const minted = createHash("sha256").update(key).digest("hex").slice(0, 32);
-    receipt = connection.request(
-      `notifications.agent.${sid}`,
-      codec.encode(
+    relayedSeq += 1;
+    receipt = sendRelayFrame({
+      connection,
+      newHeaders: headers,
+      sessionID: sid,
+      subject: `notifications.agent.${sid}`,
+      seq: relayedSeq,
+      payload: codec.encode(
         JSON.stringify({
           event_id: `evt-${key}`,
           source: "envoy",
@@ -183,8 +193,8 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
           trace_id: `trace-${key}`,
         })
       ),
-      { timeout: 10_000 }
-    );
+      stopped: closed,
+    });
     // A case that never waits for the receipt (the hand-over is the proposition, not the ack)
     // leaves no rejection unhandled.
     receipt.catch(() => undefined);
@@ -253,11 +263,15 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     if (url.pathname === `/v1/roles/${CLAIM_TOKEN}`) {
       return Response.json({ role: CLAIM_TOKEN, holder: roleHolder, last_seen: 1 });
     }
+    // Every registration asks for a consumer and is refused without one in the client
+    // (`parseSubscribeAnswer`), which would leave this session deaf and end its claim boot
+    // (dispatch://INFRA-771), so the stand-in answers the consumer the client asked for.
     return Response.json({
       session_id: sid === "" ? roleHolder : sid,
       machine_id: "claim-boot-order-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, roleHolder),
     });
   });
   // A request still held at the end is answered, so the server stops at once.

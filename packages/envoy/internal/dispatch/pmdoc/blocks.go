@@ -640,7 +640,9 @@ func listItemRemoval(parent *Node, textblockPath []int) (removePath []int, hoist
 
 // MoveBlock returns a copy of doc with the block carrying blockID relocated to
 // the document-level boundary before or after the top-level block containing
-// target, the boundary a block insert uses. An empty target at the document
+// target, the boundary a block insert uses. A list item is relocated inside the
+// list holding target instead, the boundary an insert of list content takes
+// there (ListBoundary, moveListItem). An empty target at the document
 // start or end selects that edge. A target inside the moved block is
 // ErrMoveInsideItself; a block that cannot stand at document level is ErrSchema.
 // It validates doc first (ValidateDocument).
@@ -665,6 +667,9 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 	}
 	if target.From < target.To && target.From >= moved.From && target.To <= moved.To {
 		return nil, fmt.Errorf("%w: block %q", ErrMoveInsideItself, blockID)
+	}
+	if out, relocated, err := moveListItem(doc, path, blockID, target, after); err != nil || relocated {
+		return out, err
 	}
 	if node := nodeAtPath(doc, path); !isBlockNodeType(node.Type) {
 		return nil, fmt.Errorf("%w: %s %q cannot stand at document level; move its enclosing block", ErrSchema, node.Type, blockID)
@@ -711,4 +716,101 @@ func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Nod
 		return nil, err
 	}
 	return out, nil
+}
+
+// moveListItem relocates a list item to the boundary inside the list holding target, the boundary
+// an insert of list content takes there (ListBoundary): the item becomes a sibling of the item
+// holding target, or, where target is a list's own block, that list's first or last item. It
+// reports relocated=false for a block that is no list item, for a target in no list, and for an
+// empty target, which names a document edge rather than a block: each of those takes the
+// document-level move instead.
+//
+// The block a caller names is the one a listing shows it (documentBlocks), and a list's items are
+// listed by the paragraph each holds rather than by the item itself, so a move of an item is
+// written against that paragraph's id. Such a paragraph is read as its item, but only where it is
+// the item's whole content: an item that also holds a nested list would otherwise carry that list
+// along, which is not what a caller naming one paragraph asked for, and that move keeps the
+// document-level placement it has today.
+func moveListItem(doc *Node, path []int, blockID string, target Range, after bool) (*Node, bool, error) {
+	if target.From == target.To {
+		return nil, false, nil
+	}
+	if item, ok := listItemOfOnlyChild(doc, path); ok {
+		path = item
+	}
+	if nodeAtPath(doc, path).Type != "list_item" {
+		return nil, false, nil
+	}
+	found, ok := listAnchor(doc, target)
+	if !ok {
+		return nil, false, nil
+	}
+	out := cloneNode(doc)
+	item := nodeAtPath(out, path)
+	anchor := nodeAtPath(out, found.path)
+	list := anchor
+	if anchor.Type == "list_item" {
+		list = nodeAtPath(out, found.path[:len(found.path)-1])
+	}
+	removeAtPath(out, path)
+	// Taking the item out takes with it every list, item or blockquote it empties (removeAtPath),
+	// which can be the list the move anchored on: moving a list's only item to that list's own
+	// block leaves no list to put it in.
+	if !holdsNode(out, list) {
+		return nil, true, fmt.Errorf("%w: the anchor list was emptied by moving block %q out of it", ErrSchema, blockID)
+	}
+	index := len(list.Children)
+	switch {
+	case anchor.Type == "list_item":
+		index = childIndex(list, anchor)
+		if after {
+			index++
+		}
+	case !after:
+		index = 0
+	}
+	children := make([]*Node, 0, len(list.Children)+1)
+	children = append(children, list.Children[:index]...)
+	children = append(children, item)
+	children = append(children, list.Children[index:]...)
+	list.Children = children
+	if err := out.Validate(); err != nil {
+		return nil, true, err
+	}
+	return out, true, nil
+}
+
+// listItemOfOnlyChild is the path of the list item a block is the whole content of, and false for
+// every other block: one at document level, one of an item that holds more than it, and one whose
+// parent is no list item at all.
+func listItemOfOnlyChild(doc *Node, path []int) ([]int, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	parent := nodeAtPath(doc, path[:len(path)-1])
+	if parent == nil || parent.Type != "list_item" || len(parent.Children) != 1 {
+		return nil, false
+	}
+	return path[:len(path)-1], true
+}
+
+// holdsNode reports whether tree still holds node itself, by identity.
+func holdsNode(tree, node *Node) bool {
+	found := false
+	Walk(tree, func(candidate *Node) bool {
+		found = found || candidate == node
+		return !found
+	})
+	return found
+}
+
+// childIndex is the index of child among parent's children, by identity, or len(Children) for a
+// node parent no longer holds.
+func childIndex(parent, child *Node) int {
+	for index, candidate := range parent.Children {
+		if candidate == child {
+			return index
+		}
+	}
+	return len(parent.Children)
 }

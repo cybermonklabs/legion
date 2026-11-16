@@ -49,7 +49,7 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	rig.claim(t, mentioned, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+mentioned)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -144,8 +144,8 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 
 	rig := newRoleRig(t)
 	rig.claim(t, mentioned, holder, session.SessionEntry{SelfSubscribed: true})
-	claimant := rig.receiver(t, holder, true)
-	wrote := rig.receiver(t, author, true)
+	claimant := rig.receiver(t, holder)
+	wrote := rig.receiver(t, author)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)

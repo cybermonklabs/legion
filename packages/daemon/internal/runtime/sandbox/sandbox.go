@@ -89,35 +89,44 @@ type Runtime struct {
 	tools                          Tools
 	pod                            Pod
 	roleConfigFiles                map[claim.Role][]string
-	memoryConfigFiles              []string
-	providerKeys                   map[string]string
-	providersSecrets               []string
-	natsUser                       string
-	sessionStore                   ompsessions.Store
-	agentSecrets                   *AgentSecrets
-	controllerSlackChannels        []string
-	agent                          []string
-	setup                          []string
-	skills                         ghrepo.Repository
-	testPostgres                   bool
-	bootTimeout                    time.Duration
-	registrationIntervals          int
-	busyBackoff                    time.Duration
-	provisionBound                 time.Duration
-	launchBound                    time.Duration
-	terminationGrace               time.Duration
-	probeInterval                  time.Duration
-	adoptTimeout                   time.Duration
-	tokens                         ProvisionTokens
-	gitHubCredential               runtime.GitHubCredential
-	controllerCredential           runtime.ControllerCredential
-	gitHubDirs                     func(repo ghrepo.Repository, roles []appauth.AppRole) []string
-	store                          Store
-	conns                          runtime.Conns
-	launchers                      *launchers
-	launcherAuth                   launcherCredentials
-	now                            func() time.Time
-	log                            *slog.Logger
+	// experimentVariants are every arm of every experiment the project declares
+	// (Options.ExperimentVariants), and variantFiles their overlay files as one list, in that
+	// same order: the union every reader that holds a pod or the deployment and no tree takes,
+	// since any unit may be drawn into any arm (movedRoleOverlays, heldRoleOverlays).
+	experimentVariants      []runtime.Variant
+	variantFiles            []string
+	providerKeys            map[string]string
+	providersSecrets        []string
+	natsUser                string
+	sessionStore            ompsessions.Store
+	agentSecrets            *AgentSecrets
+	controllerSlackChannels []string
+	agent                   []string
+	setup                   []string
+	skills                  ghrepo.Repository
+	testPostgres            bool
+	bootTimeout             time.Duration
+	registrationIntervals   int
+	busyBackoff             time.Duration
+	provisionBound          time.Duration
+	launchBound             time.Duration
+	terminationGrace        time.Duration
+	probeInterval           time.Duration
+	adoptTimeout            time.Duration
+	tokens                  ProvisionTokens
+	gitHubCredential        runtime.GitHubCredential
+	controllerCredential    runtime.ControllerCredential
+	gitHubDirs              func(repo ghrepo.Repository, roles []appauth.AppRole) []string
+	store                   Store
+	conns                   runtime.Conns
+	launchers               *launchers
+	launcherAuth            launcherCredentials
+	now                     func() time.Time
+	log                     *slog.Logger
+	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
+	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
+	// guard off.
+	memoryGuard *shimwire.LauncherMemoryGuard
 	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
 	// encoded once here. Every input of a shape — the image, the kind's reservation, the
 	// operator's volumes and mounts and the disk — is set at construction and never written
@@ -259,6 +268,9 @@ func checkSupervision(opts Options) error {
 // defaults, touching no cluster. A runtime it builds alone runs the image probe and nothing else
 // (newProber); configure adds supervision's requirements to it.
 func configureProber(opts Options) (*Runtime, error) {
+	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget,
+	// which its stream from the repository cache runs outside of, the shared clone's own, and the
+	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
@@ -346,9 +358,11 @@ func configureProber(opts Options) (*Runtime, error) {
 			}
 		}
 	}
-	for _, file := range opts.MemoryConfigFiles {
-		if !filepath.IsAbs(file) || strings.Contains(file, ":") {
-			return refuse("the memory overlay %q is not an absolute path PI_CONFIG_FILES can name", file)
+	for _, variant := range opts.ExperimentVariants {
+		for _, file := range variant.ConfigFiles {
+			if !filepath.IsAbs(file) || strings.Contains(file, ":") {
+				return refuse("the overlay %q of experiment %s variant %s is not an absolute path PI_CONFIG_FILES can name", file, variant.Experiment, variant.Name)
+			}
 		}
 	}
 	r := &Runtime{
@@ -356,14 +370,15 @@ func configureProber(opts Options) (*Runtime, error) {
 		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
-		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, memoryConfigFiles: opts.MemoryConfigFiles,
+		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
+		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
 		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository,
+		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
@@ -380,9 +395,10 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry one pod's saved workspace bundle to it before any of its roles start,
-	// and log what they could not carry, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
+	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
+	// before any of its roles start, take its memory guard's kill reports, and log what they could
+	// not carry or record, so they are built once the runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}
@@ -717,12 +733,12 @@ func terminal(p *corev1.Pod) bool {
 // A pod is built whole from one image, so one container's drift is the pod's: it was launched by
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
-// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round, once
-// every worker in it has pushed its work and signalled (PodDrift, ReplacePod). The controller's
-// pod, which no round covers, is replaced by the next launch into it that installs nothing
-// (roundCovers), and the repository cache's own pod, which holds no worker, by its next sweep
-// (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod holds no drift: it
-// is replaced for being absent.
+// issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
+// once every role in it has answered the update message and no turn runs, or at the round's
+// bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
+// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
+// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
+// one it finds. A nil pod holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -1053,39 +1069,6 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
-}
-
-// RescueUnpushed has the claim's shim run the push check of its issue pod's disk over the claim's
-// connection (internal/rescue): the shim runs git and jj as the role, with the role's gh files
-// answering the clone's credential helper, so no credential leaves the pod and none reaches the
-// daemon. The recorded process must still be the claim's running pod: the connection is its.
-func (r *Runtime) RescueUnpushed(ctx context.Context, k runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	if err := k.Validate(); err != nil {
-		return nil, fmt.Errorf("sandbox runtime: push check: %w", err)
-	}
-	if k.Locator == nil {
-		return nil, fmt.Errorf("push check of %s: the claim records no process to ask", k.Claim)
-	}
-	loc := *k.Locator
-	if err := r.checkLocator(loc); err != nil {
-		return nil, err
-	}
-	view, err := r.view(loc.Sandbox.Name)
-	if err != nil {
-		return nil, fmt.Errorf("push check of %s's pod: %w", loc.Claim, err)
-	}
-	if view.pod == nil || string(view.pod.UID) != loc.Sandbox.PodUID || terminal(view.pod) {
-		return nil, fmt.Errorf("push check of %s: its recorded role process %s is not in its running issue pod", loc.Claim, loc.Incarnation)
-	}
-	conn, ok := r.conns.Conn(loc.Claim)
-	if !ok {
-		return nil, fmt.Errorf("push check of %s's pod: the claim has no connection to ask over", loc.Claim)
-	}
-	report, err := conn.RescueUnpushed(ctx, request)
-	if err != nil {
-		return nil, fmt.Errorf("push check of %s's pod: %w", loc.Claim, err)
-	}
-	return report, nil
 }
 
 // ReconcileOrphans deletes the project's Sandboxes nothing owns, once older than grace. An issue

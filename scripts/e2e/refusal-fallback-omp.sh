@@ -51,14 +51,16 @@
 # the fleet's build rather than the branch's own fetch, and this script prints which build it ran.
 # The driver needs this repository's node_modules. A whole run took 798 s measured in a Legion
 # worker pod (omp/18.16.0), and a pane that never gets its model back holds one to about eighteen
-# minutes. It reaches no network and starts no server of its own: each pane's model gateway, the
+# minutes. It reaches no network: each pane's model gateway, the
 # stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS
-# address it hands the Envoy extension refuses every connection. REFUSAL_FALLBACK_EVIDENCE_DIR
+# server the Envoy extension connects to is one the run builds and starts itself
+# (packages/envoy/internal/testnats/cmd/natsd, on a port the kernel picks), since a session given
+# no consumer ends at its claim boot. REFUSAL_FALLBACK_EVIDENCE_DIR
 # (default a fresh directory under TMPDIR, or /tmp when it is unset, kept and printed) holds the
-# transcript and a copy of every pane's Oh My Pi transcript; each pane's scratch root is under
-# TMPDIR too, since a pod's own disk is small and its TMPDIR names the issue's volume. It needs no
-# PostgreSQL, no NATS server, no kube context and no tmux, so it runs in a Legion pod, on a devbox
-# and on a runner holding the pinned binary alike.
+# transcript, the NATS log and a copy of every pane's Oh My Pi transcript; each pane's scratch root
+# is under TMPDIR too, since a pod's own disk is small and its TMPDIR names the issue's volume. It
+# needs `go` for that one build, and no PostgreSQL, no kube context and no tmux, so it runs in a
+# Legion pod, on a devbox and on a runner holding the pinned binary alike.
 set -euo pipefail
 
 # The cooldown the panes run on (LEGION_REFUSAL_COOLDOWN_MS) and how long each is driven for: ten
@@ -96,20 +98,32 @@ fail() {
 evidence=${REFUSAL_FALLBACK_EVIDENCE_DIR:-}
 if [ -z "$evidence" ]; then
   evidence=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-refusal-fallback-evidence.XXXXXXXX")
-else
-  mkdir -p "$evidence"
 fi
+# logs/ is the rig's own: start_process redirects each service it starts to $evidence/logs/<name>.log
+# and creates no directory for it, so a run whose evidence directory holds none dies at the first
+# service with "No such file or directory" rather than starting it (lib/rig.sh, start_process).
+mkdir -p "$evidence/logs"
 
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-refusal-fallback.XXXXXXXX")
+timeout_hook=
+# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
+. "$root/scripts/e2e/lib/rig.sh"
 
 # cleanup reports how the run ended with rc: the script's own status for EXIT, 128 plus the
 # signal's number for INT and TERM, so an interrupted run never reports success. The panes are the
-# driver's own children and it stops them itself.
+# driver's own children and it stops them itself. natsd is this script's own, started under
+# start_process's `set -m` in a process group of its own, so nothing else ends it: it is stopped
+# by the pid start_process recorded, and `$work`, which holds only the natsd binary this run built
+# and its JetStream store, goes with it. The evidence directory is not touched: every log, the
+# transcript and each pane's Oh My Pi transcript live there and are the run's record.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
+  stop_pid "${nats_pid:-}"
+  [ -z "${work:-}" ] || rm -rf "${work:?}"
   if [ "$rc" -eq 0 ]; then
     echo "refusal fallback e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
   else
@@ -133,6 +147,23 @@ omp_build=$("$LEGION_OMP_PATH" --version 2>&1) || fail "$LEGION_OMP_PATH --versi
 note "Oh My Pi ${omp_build%%$'\n'*} at $LEGION_OMP_PATH"
 note "cooldown ${cooldown_ms}ms, each pane driven for ${drive_ms}ms"
 note "evidence directory $evidence"
+pass
+
+begin nats
+# A pane's Envoy extension is given no consumer by a listener it cannot reach a NATS server
+# through, and a session with no consumer ends at its claim boot (INFRA-771), so the run starts a
+# JetStream server of its own, as the delivery proofs do. The port is the kernel's pick (`-p -1`),
+# read back from the line the server logs once it listens.
+command -v go >/dev/null || fail "go is not on PATH: the run builds its own natsd"
+go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
+  fail "./internal/testnats/cmd/natsd did not build"
+start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
+await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
+nats_port=$(report_port "$evidence/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
+  fail "natsd logged no client port; see $evidence/logs/nats.log"
+REFUSAL_FALLBACK_NATS_URL=nats://127.0.0.1:$nats_port
+export REFUSAL_FALLBACK_NATS_URL
+note "JetStream on $REFUSAL_FALLBACK_NATS_URL"
 pass
 
 # The driver prints a section per expectation of its own, as verification-results.sh's does, so this

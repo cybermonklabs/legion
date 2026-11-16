@@ -199,10 +199,12 @@ func (s *replaySeeder) run(ctx context.Context, plans []seedIssuePlan) error {
 	go s.progress(stop, len(plans))
 	defer close(stop)
 
-	// Step 0: the project.
+	// Step 0: the project. It is created as seedPerson, through the identity header, so that it
+	// names them as its default assignee: the create takes the person creating it where the call
+	// names no login, and the seed's session acts for nobody (internal/dispatch/api/projects.go).
 	if _, err := s.write(ctx, seedWrite{kind: "project-create", step: "project", logged: s.b.State.Project,
-		method: "POST", path: "/api/v1/projects",
-		body: jsonBody(map[string]any{"key": s.b.State.Project, "name": s.b.State.Project, "actor": sessionActor(replaySeedActorID)}),
+		method: "POST", path: "/api/v1/projects", w: who{person: seedPerson},
+		body: jsonBody(map[string]any{"key": s.b.State.Project, "name": s.b.State.Project}),
 		ok:   []int{http.StatusConflict}}); err != nil {
 		return err
 	}

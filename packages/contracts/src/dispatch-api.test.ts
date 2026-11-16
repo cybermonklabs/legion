@@ -16,6 +16,7 @@ import {
   type AskRead,
   type AskThread,
   answerNotKept,
+  BlockInvalidEventPayloadSchema,
   type ChangedReference,
   type Comment,
   CommentEventPayloadSchema,
@@ -54,12 +55,16 @@ import {
   type MessageReplyInput,
   type MyAnswersResponse,
   type MyRepliesResponse,
+  NO_ROUTE_RETRY_DELAYS_MS,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
   retriesUnderKey,
+  retryNoRoute,
   SEARCH_MEMBERS_EVERY_BUILD_READS,
+  type Sleep,
   serviceSubjectLabel,
+  sleep,
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
@@ -468,14 +473,14 @@ test("models answer changes, ask answer history, and the answers page", () => {
     issue_key: "CORE-1",
     artifact_id: null,
     block_id: null,
-    author: { kind: "session", id: "session-1" },
-    kind: "question",
+    author: { kind: "session", id: "session-1" } as const,
+    kind: "question" as const,
     question: "Ship it?",
     options: [{ label: "Ship" }, { label: "Hold" }],
     multiple: false,
-    urgency: "med",
+    urgency: "med" as const,
     anchor: null,
-    state: "answered",
+    state: "answered" as const,
     answer,
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
@@ -761,34 +766,34 @@ test("models full orphaned anchor refresh events without a notification", () => 
     quote: "Removed text",
     version: 3,
   };
-  const ask: Ask = {
+  const ask = {
     anchor,
     artifact_id: null,
     block_id: null,
     anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     answer: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     created_at: "2026-09-18T00:00:00Z",
     edited_at: null,
     id: "ask-1",
     issue_key: "CORE-1",
-    kind: "question",
+    kind: "question" as const,
     multiple: false,
     opened_event_id: 7,
     options: [{ label: "Review the revised plan" }],
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
-    state: "open",
-    urgency: "med",
+    state: "open" as const,
+    urgency: "med" as const,
     asked_of: null,
     asked_of_by: null,
     asked_of_at: null,
-  };
-  const comment: Comment = {
+  } satisfies Ask;
+  const comment = {
     anchor,
     answers: null,
     artifact_id: null,
     reply_block: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
     deliveries: [],
@@ -803,7 +808,7 @@ test("models full orphaned anchor refresh events without a notification", () => 
     suggestion: { accepted: null, replace_with: "Replacement" },
     ask_id: null,
     turn: null,
-  };
+  } satisfies Comment;
   const events: DispatchEvent[] = [
     {
       actor,
@@ -907,6 +912,34 @@ test("models an invalid ask block event", () => {
   });
 });
 
+test("models a refused ci_check event on a check block", () => {
+  const event: DispatchEvent = {
+    id: 74,
+    issue_key: "DOC-1",
+    seq: 6,
+    type: "block.invalid",
+    actor: { kind: "session", id: "session-1" },
+    notify: false,
+    created_at: "2026-09-13T16:31:00Z",
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "a check proved by CI carries no run",
+      disturbed_by: { kind: "session", id: "session-1" },
+      block_type: "check",
+    },
+  };
+
+  expect(DispatchEventSchema.safeParse(event)).toMatchObject({
+    data: { payload: { block_type: "check" }, type: "block.invalid" },
+    success: true,
+  });
+  expect(BlockInvalidEventPayloadSchema.safeParse(event.payload).success).toBe(true);
+  expect(
+    BlockInvalidEventPayloadSchema.safeParse({ ...event.payload, block_type: "ask" }).success
+  ).toBe(false);
+});
+
 test("rejects edit history on non-edit ask events", () => {
   expect(
     AskEventPayloadSchema.safeParse({
@@ -967,8 +1000,8 @@ test("models anchors pinned to a block while preserving mark selectors", () => {
 });
 
 test("models comment thread lifecycle events and author edits", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
     answers: null,
     artifact_id: null,
@@ -988,7 +1021,7 @@ test("models comment thread lifecycle events and author edits", () => {
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
   const input: EditCommentInput = { body: "Edited discussion" };
   const reopened: DispatchEvent = {
     actor,
@@ -1069,8 +1102,8 @@ test("models comment mention inputs and hydrated delivery records", () => {
 });
 
 test("keeps the comment id, author, and message id when parsing event payloads", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
     answers: null,
     artifact_id: null,
@@ -1090,7 +1123,7 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
 
   expect(CommentEventPayloadSchema.parse({ ...comment, artifact_name: "spec.md" })).toMatchObject({
     id: "comment-1",
@@ -1141,7 +1174,7 @@ test("parses a message reply's in_reply_to, reply_body preview, and thread targe
 });
 
 test("a reply names the block it answers, and an event recorded before reads no block", () => {
-  const actor: Actor = { id: "bob", kind: "user" };
+  const actor = { id: "bob", kind: "user" } as const satisfies Actor;
   const commentInput: CreateCommentInput = {
     body: "On the second paragraph.",
     reply_to: "comment-1",
@@ -1436,6 +1469,168 @@ test("a Kubernetes service subject renders as namespace/name, and anything else 
     "system:serviceaccount:legion:default:extra"
   );
   expect(serviceSubjectLabel("kubernetes-admin")).toBe("kubernetes-admin");
+});
+
+test("a client's wait ends when its timer fires", async () => {
+  await expect(sleep(0, new AbortController().signal)).resolves.toBeUndefined();
+});
+
+test("a client's wait rejects at once with the reason its request was aborted for", async () => {
+  const controller = new AbortController();
+  const reason = new Error("a newer read replaced this one");
+  const waiting = sleep(60_000, controller.signal);
+  controller.abort(reason);
+  await expect(waiting).rejects.toBe(reason);
+});
+
+test("a client's wait for a request already aborted rejects at once", async () => {
+  const reason = new Error("the caller gave up");
+  await expect(sleep(60_000, AbortSignal.abort(reason))).rejects.toBe(reason);
+});
+
+/** What a Dispatch process that has no route for the request answers, as a client recognises it:
+ *  each client has its own error class, and `retryNoRoute` knows none of them. */
+class NoRouteAnswer extends Error {}
+
+/** A wait that returns at once, recording each wait it was asked for and the signal it was given. */
+function recordedWait(): {
+  wait: Sleep;
+  waits: number[];
+  signals: (AbortSignal | null | undefined)[];
+} {
+  const waits: number[] = [];
+  const signals: (AbortSignal | null | undefined)[] = [];
+  return {
+    wait: async (ms, signal) => {
+      waits.push(ms);
+      signals.push(signal);
+    },
+    waits,
+    signals,
+  };
+}
+
+test("a no-route answer is attempted again, and the next answer resolves the call", async () => {
+  const answers: (NoRouteAnswer | string)[] = [
+    new NoRouteAnswer(),
+    new NoRouteAnswer(),
+    "the page",
+  ];
+  const recorded = recordedWait();
+  const { signal } = new AbortController();
+  let attempts = 0;
+
+  const answer = await retryNoRoute(
+    async () => {
+      attempts += 1;
+      const next = answers.shift();
+      if (next === undefined || next instanceof Error) throw next ?? new Error("no answer left");
+      return next;
+    },
+    (error) => error instanceof NoRouteAnswer,
+    { exhausted: () => new Error("the attempts were not exhausted"), signal, sleep: recorded.wait }
+  );
+
+  expect(answer).toBe("the page");
+  expect(attempts).toBe(3);
+  // Waits of 1 s and 2 s, each jittered by a quarter either way, each given the caller's signal.
+  expect(recorded.waits).toHaveLength(2);
+  for (const [index, base] of [1_000, 2_000].entries()) {
+    expect(recorded.waits[index]).toBeGreaterThanOrEqual(base * 0.75);
+    expect(recorded.waits[index]).toBeLessThanOrEqual(base * 1.25);
+  }
+  expect(recorded.signals).toEqual([signal, signal]);
+});
+
+test("an answer that is not a no-route is thrown on at once", async () => {
+  const failure = new Error("Dispatch refused the write");
+  const recorded = recordedWait();
+  let attempts = 0;
+
+  await expect(
+    retryNoRoute(
+      async () => {
+        attempts += 1;
+        throw failure;
+      },
+      (error) => error instanceof NoRouteAnswer,
+      { exhausted: () => new Error("the attempts were not exhausted"), sleep: recorded.wait }
+    )
+  ).rejects.toBe(failure);
+  expect(attempts).toBe(1);
+  expect(recorded.waits).toEqual([]);
+});
+
+test("every attempt answered with no route throws what the caller builds", async () => {
+  const rollingRelease = new Error("a new release of Dispatch is in progress");
+  const recorded = recordedWait();
+  let attempts = 0;
+
+  await expect(
+    retryNoRoute(
+      async () => {
+        attempts += 1;
+        throw new NoRouteAnswer();
+      },
+      (error) => error instanceof NoRouteAnswer,
+      { exhausted: () => rollingRelease, sleep: recorded.wait }
+    )
+  ).rejects.toBe(rollingRelease);
+  // One attempt more than the waits between them: waits of 1 s, 2 s and 4 s, each jittered.
+  expect(attempts).toBe(NO_ROUTE_RETRY_DELAYS_MS.length + 1);
+  expect([...NO_ROUTE_RETRY_DELAYS_MS]).toEqual([1_000, 2_000, 4_000]);
+  expect(recorded.waits).toHaveLength(NO_ROUTE_RETRY_DELAYS_MS.length);
+  for (const [index, base] of NO_ROUTE_RETRY_DELAYS_MS.entries()) {
+    expect(recorded.waits[index]).toBeGreaterThanOrEqual(base * 0.75);
+    expect(recorded.waits[index]).toBeLessThanOrEqual(base * 1.25);
+  }
+});
+
+test("a request aborted during a wait rejects at once with the abort, and is not attempted again", async () => {
+  const controller = new AbortController();
+  const reason = new Error("a newer read replaced this one");
+  let attempts = 0;
+
+  await expect(
+    retryNoRoute(
+      async () => {
+        attempts += 1;
+        throw new NoRouteAnswer();
+      },
+      (error) => error instanceof NoRouteAnswer,
+      {
+        exhausted: () => new Error("the attempts were not exhausted"),
+        signal: controller.signal,
+        // The shared wait, with the caller's abort arriving once the wait has begun.
+        sleep: (ms, signal) => {
+          const waiting = sleep(ms, signal);
+          controller.abort(reason);
+          return waiting;
+        },
+      }
+    )
+  ).rejects.toBe(reason);
+  expect(attempts).toBe(1);
+});
+
+test("a call with no wait of its own waits on a timer, which an aborted request rejects at once", async () => {
+  const reason = new Error("the caller gave up");
+  let attempts = 0;
+
+  await expect(
+    retryNoRoute(
+      async () => {
+        attempts += 1;
+        throw new NoRouteAnswer();
+      },
+      (error) => error instanceof NoRouteAnswer,
+      {
+        exhausted: () => new Error("the attempts were not exhausted"),
+        signal: AbortSignal.abort(reason),
+      }
+    )
+  ).rejects.toBe(reason);
+  expect(attempts).toBe(1);
 });
 
 test("a search of the members every build reads stays on GET /api/v1/search", () => {

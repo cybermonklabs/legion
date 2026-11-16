@@ -17,9 +17,11 @@ function triggerText(selected: readonly string[], viewer: string): string {
  * Who the Inbox is listed for: the `?assignee=` filter, one of the five fields the **Filter**
  * control opens. The trigger says the selection in the reader's own words (`Assignee · you`,
  * `· everyone`, `· Unassigned`, one other person's email, or how many), and the popover picks
- * any number of people, with Unassigned - every document ask and every issue nobody holds -
- * first. Each row carries how many rows that value holds, counted under the other four fields'
- * filters, so a person the narrowed list has nothing for says 0 rather than nothing.
+ * any number of people, with Unassigned first. Unassigned lists what the server resolved no
+ * person for, and every project naming a default assignee leaves nothing: it reads 0 and lists
+ * nothing, which is what the filter saying so is for. Each row carries how many rows that value
+ * holds, counted under the other four fields' filters, so a person the narrowed list has nothing
+ * for says 0 rather than nothing.
  */
 export function AssigneeFilter({
   counts,

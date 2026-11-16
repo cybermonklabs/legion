@@ -275,11 +275,13 @@ projects:
   $project: {}
 gates:
   design: root-issues
-# Four: an issue keeps the slot the daemon gave it until it is done, leaves the workflow or waits
-# only for its merge (INFRA-1909), so the four roots that wait on a person at trees-wait-on-a-person
-# — trees 1, 2, 4 and 5 — hold a row each at once, which is this lane's peak. It is the peak again
-# later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running again
-# (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start.
+# Four: an issue holds one of the cap's slots as root AGENTS.md's "Admission" says. The four
+# roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row each
+# at once, since a root in awaiting_person keeps its slot, and that is this lane's peak. It is
+# the peak again later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running
+# again (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start. No root of
+# this lane reaches its own review, so no issue of it gives a row back where the rule before
+# dispatch://INFRA-2560 kept it.
 admission_cap: 4
 review_round_cap: 3
 # The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
@@ -888,9 +890,10 @@ done_with question-stays-parked
 
 begin foreign-park-stays
 waited=$SECONDS
-# A park that is not Legion's own hold moves only when whoever made it asks: the controller moves
-# none of these trees and names who parked each, the daemon's session with no hold mark for tree 2
-# (the operator's `legion status`) and the person for tree 4.
+# A park that is not Legion's own hold moves only when a person sets it to todo, approves its spec
+# when it has no parent, or asks Legion to start it: the controller moves none of these trees and
+# names who parked each, the daemon's session with no hold mark for tree 2 (the operator's
+# `legion status`) and the person for tree 4.
 declare -A seq_of before_of told_of parker_of read_of
 parker_of[$tree2]="legion-daemon"
 parker_of[$tree4]="$proof_human_user parked the tree"

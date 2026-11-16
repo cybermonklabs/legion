@@ -9,11 +9,15 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
@@ -25,6 +29,64 @@ func TestNewRigConnectsAndServesHealthz(t *testing.T) {
 	status, body := rig.Req(t, http.MethodGet, "/healthz", nil, nil)
 	if status != http.StatusOK {
 		t.Fatalf("GET /healthz = %d, want 200: %s", status, body)
+	}
+}
+
+// TestTheRigsRegistryServesThePolicysMetrics: Rig.Registry holds the policy's metrics as the
+// broker's metrics port serves them. The rig's first load is one read="list" and refuses nothing;
+// a reread of a secret the store holds without a value is one read="describe" and one
+// broker_unservable_secrets series for it, a reread of a name the store does not hold adds none,
+// and the reread after its value is put takes the series away.
+func TestTheRigsRegistryServesThePolicysMetrics(t *testing.T) {
+	rig := NewRig(t)
+	scrape := func(metric string) string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		rig.Registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		var samples strings.Builder
+		for line := range strings.Lines(recorder.Body.String()) {
+			if strings.HasPrefix(line, metric+"{") {
+				samples.WriteString(line)
+			}
+		}
+		return samples.String()
+	}
+	reread := func(name string, served bool) {
+		t.Helper()
+		status, body := rig.Req(t, http.MethodPost, "/v1/secrets/"+name+"/reread", nil, nil)
+		var answer struct {
+			Served bool `json:"served"`
+		}
+		if err := json.Unmarshal(body, &answer); err != nil || status != http.StatusOK || answer.Served != served {
+			t.Fatalf("reread %s = %d %s, want 200 served=%t", name, status, body, served)
+		}
+	}
+	unservable := `broker_unservable_secrets{secret="` + policytest.ID("LATER_KEY") + `",reason="` + policy.ReasonNoCurrentValue + `",owner="` + rig.Operator + `"} 1` + "\n"
+
+	for _, step := range []struct {
+		name               string
+		act                func()
+		reads, unservables string
+	}{
+		{"the first load", func() {}, `broker_policy_store_reads_total{read="list"} 1` + "\n", ""},
+		{"a reread of a secret with no value", func() {
+			rig.Secrets.Put(policytest.Secret("LATER_KEY", rig.Operator, policy.TierAgent, ""))
+			reread("LATER_KEY", false)
+		}, `broker_policy_store_reads_total{read="describe"} 1` + "\n" + `broker_policy_store_reads_total{read="list"} 1` + "\n", unservable},
+		{"a reread of a name the store does not hold", func() { reread("NO_SUCH_KEY", false) },
+			`broker_policy_store_reads_total{read="describe"} 2` + "\n" + `broker_policy_store_reads_total{read="list"} 1` + "\n", unservable},
+		{"a reread once its value is put", func() {
+			rig.Secrets.Put(policytest.Secret("LATER_KEY", rig.Operator, policy.TierAgent, "later-v1"))
+			reread("LATER_KEY", true)
+		}, `broker_policy_store_reads_total{read="describe"} 3` + "\n" + `broker_policy_store_reads_total{read="list"} 1` + "\n", ""},
+	} {
+		step.act()
+		if got := scrape("broker_policy_store_reads_total"); got != step.reads {
+			t.Fatalf("after %s the store reads are\n%s\nwant\n%s", step.name, got, step.reads)
+		}
+		if got := scrape("broker_unservable_secrets"); got != step.unservables {
+			t.Fatalf("after %s broker_unservable_secrets reads\n%s\nwant\n%s", step.name, got, step.unservables)
+		}
 	}
 }
 

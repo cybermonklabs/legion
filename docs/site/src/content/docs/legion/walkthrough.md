@@ -64,25 +64,26 @@ the issue with its latest result, the approval of the head) and accepts the chan
 issue, which moves it to `retro`; a change that falls short goes back to the implementer or the
 tester instead. Retro runs next.
 
-## 7. READY, and the merge
+## 7. The merge
 
-The merger sends `READY`; the daemon checks the head against the approved one, posts it on the
-Dispatch issue, and submits its merge, which lands under the repository's own rules — the checks
-it requires among them. The merge closes the issue: it moves to `done` the moment GitHub reports
-the pull request merged.
+The merger reads the pull request and merges it itself, at the head it read and under a message
+it writes — the pull request's title and number, with an empty body — so GitHub's own default,
+which joins every commit message of the branch, puts none of Legion's internal trailers on your
+default branch. The merge lands under the repository's own rules, the checks it requires among
+them. It closes the issue: the daemon reads the merged pull request and moves the issue to `done`.
 
-![The READY message on the issue: the pull request, its head and the approved commit, then the outcome and the risk.](/legion/media/legion/ready.png)
-
-![The issue closed as Done at the merge, with the architect's acceptance and the READY message.](/legion/media/legion/signed-off.png)
+![The issue closed as Done at the merge, with the architect's acceptance on it.](/legion/media/legion/signed-off.png)
 
 ## 8. The production check
 
 After the close the tester gets the production check in its live session — the role your
 project's `production_check` names, which is the tester unless the setting is `off`, where no
 check opens. It asks your deploy
-role to carry the merge and waits for no reply; when production does not carry the merge yet it
-reports `pending` with `wake_at`, the time it wants to look again, its pod goes, and the daemon
-brings it back at that time. Nothing else wakes a check. The look that finds the merge in
+role to carry the merge and waits for no reply; when production does not carry the merge yet, or
+carries it with a requirement only the deploy can show still unobserved, it reports `pending` with
+`wake_at`, the time it wants to look again, its pod goes, and the daemon brings it back at that
+time, until the check's last look, where such a requirement still unobserved is a `fail`. Nothing
+else wakes a check. The look that finds the merge in
 production drives the change and records the result of
 the issue's `after_merge` check, naming the merge commit and what woke the look, with that
 result's line on the pull request. A closed issue takes such a result, a comment and a message,

@@ -34,9 +34,9 @@ import (
 // view holds is exactly what this registry's own writes put there and nothing the watcher
 // delivered later can mask the disagreement.
 //
-// Each session's record carries a topic that is not the role's, so the pass over the record
-// releases nothing and the claim's fate is the view sweep's alone (removeInterestTopics takes the
-// role topic SetRole added back off the record, releasing nothing).
+// Each session's record carries a topic that is not the role's, so the record names no role to
+// release and the claim is in the deregistration's set from the view alone (removeInterestTopics
+// takes the role topic SetRole added back off the record, releasing nothing).
 func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -90,8 +90,8 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 
 	// claimAndDropTheTopic has session claim role through the registry, so the claim reaches the
 	// view through the write rather than the watcher, and then takes the role's topic back off
-	// session's record, leaving a record that carries one topic that is not a role's. What
-	// releases the claim after that can only be the view sweep.
+	// session's record, leaving a record that carries one topic that is not a role's. What names
+	// the claim to the deregistration after that can only be the view.
 	claimAndDropTheTopic := func(t *testing.T, session, role string) {
 		t.Helper()
 		if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, []string{recordsTopic}); err != nil {
@@ -314,8 +314,8 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 // process asks. Without it every claim standing at the deploy would wait out the role claim
 // reaper.
 //
-// Neither session's record carries a role topic, so the pass over the record releases nothing
-// (releaseRoleClaims) and what every claim's fate turns on is the view sweep alone.
+// Neither session's record carries a role topic, so the record names no role to release and
+// every claim is in the deregistration's set from the view alone (releaseAllRoleClaims).
 func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()

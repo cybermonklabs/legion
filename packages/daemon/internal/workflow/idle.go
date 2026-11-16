@@ -196,7 +196,7 @@ type IdleDecision struct {
 //     that work and store it over the one that does;
 //
 //   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
-//     has come waits only for its slot and qualifies, and the children of a root that waits on a
+//     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
 //
 //   - the pod runs the image the configuration names, and each live claim speaks this daemon's
@@ -205,13 +205,13 @@ type IdleDecision struct {
 //
 //   - no update round of the pod is open on a live claim of it (sjawhar/legion#2538, read from
 //     supervise.Claim.UpdateRound with supervise.IsPodRound, the predicate Claim.InPodRound()
-//     is): such a pod is already being replaced, and the replacement waits until every worker in
-//     it has pushed its work and answered. A release that deleted the pod under that wait would
-//     leave the round to read its own pod as one that went, and to tell the issue that the
-//     workers which had not answered lost what they had not pushed. A claim's own plugin round
-//     is not this condition's: that claim speaks a contract other than this daemon's, which the
-//     condition above already holds the pod for, and such a round keeps the pod and the disk
-//     anyway;
+//     is): such a pod is already being replaced, and the replacement waits until every role in
+//     it has answered the update message, or until the round's bound. A release that deleted the
+//     pod under that wait would leave the round to read its own pod as one that went, and to
+//     tell the issue that the workers which had not answered lost what they had not pushed. A
+//     claim's own plugin round is not this condition's: that claim speaks a contract other than
+//     this daemon's, which the condition above already holds the pod for, and such a round keeps
+//     the pod and the disk anyway;
 //
 //   - no claim of the pod has a process in a turn, starting or stopping, or whose launch is not
 //     yet known. Failed, retired and already suspended claims stay as they are and hold nothing;

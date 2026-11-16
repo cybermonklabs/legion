@@ -1,0 +1,5 @@
+kind: Added
+body: 'The daemon logs `supervise: the working copy was adopted for the phase task` at Info for each adoption of an issue''s shared working copy that the shim answers ok, with the delivery, its phase, the App''s git name and the time the shim took, so an operator can read which tasks adopted the working copy.'
+time: 2026-11-13T06:37:33.697148721Z
+custom:
+    Issue: pr3971

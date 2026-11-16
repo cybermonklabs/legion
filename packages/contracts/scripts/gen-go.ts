@@ -8,6 +8,10 @@ import {
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_SIGN_IN_REQUIRED,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
+  DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
+  DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
+  DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
   ID_AMBIGUOUS,
@@ -29,6 +33,7 @@ import {
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
   MAX_BROADCAST_RECIPIENTS,
+  MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
@@ -81,7 +86,13 @@ import {
   GOING_SEARCH_TOOL,
   GOING_WORDS_MAX,
 } from "../src/going";
-import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
+import { controllerToken } from "../src/legion-roles";
+import {
+  legionControllerNoticeSubject,
+  SUBJECT_MAX_BYTES,
+  SUBJECT_SEGMENT_REPLACED,
+  uncapturedTopicRefusal,
+} from "../src/subject";
 import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
@@ -116,6 +127,64 @@ const map = {
   integer: "int64",
   boolean: "bool",
 } satisfies Record<ScalarKind, string>;
+
+// splitAtSentinels is the text a builder puts around the values it interpolates: what comes
+// before the first value, between each pair of them, and after the last, read by building it with
+// one sentinel per value. A builder that stopped interpolating one of them, interpolated one
+// twice, or interpolated them in another order throws here rather than generating Go that reads
+// nothing like it.
+function splitAtSentinels(built: string, ...sentinels: string[]): string[] {
+  const parts: string[] = [];
+  let rest = built;
+  for (const sentinel of sentinels) {
+    const at = rest.indexOf(sentinel);
+    if (built.split(sentinel).length !== 2 || at < 0) {
+      throw new Error(`cannot split ${JSON.stringify(built)} at the sentinel ${sentinel}`);
+    }
+    parts.push(rest.slice(0, at));
+    rest = rest.slice(at + sentinel.length);
+  }
+  parts.push(rest);
+  return parts;
+}
+
+// goConcat is the Go expression a builder's text becomes: its literal parts, read by
+// splitAtSentinels, with each Go value between them. A part the builder left empty is left out
+// rather than written as "".
+function goConcat(parts: string[], values: string[]): string {
+  const terms = parts.flatMap((part, index) => {
+    const value = values[index];
+    return [
+      ...(part === "" ? [] : [JSON.stringify(part)]),
+      ...(value === undefined ? [] : [value]),
+    ];
+  });
+  return terms.join(" + ");
+}
+
+// A Legion project token is lowercase alphanumeric (PROJECT_TOKEN in src/legion-roles.ts), which
+// this sentinel is, so both builders below accept it.
+const projectSentinel = "zzprojectzz";
+const [legionNoticeTopicPrefix, controllerNoticeSuffix] = splitAtSentinels(
+  legionControllerNoticeSubject(projectSentinel),
+  projectSentinel
+);
+const controllerRoleToken = goConcat(
+  splitAtSentinels(controllerToken(projectSentinel), projectSentinel),
+  ["project"]
+);
+// The refusal interpolates a topic and a session id, reading neither, so any text that appears
+// nowhere else in the sentence stands in for them.
+const topicSentinel = "zztopiczz";
+const sessionSentinel = "zzsessionzz";
+const uncapturedTopicRefusalText = goConcat(
+  splitAtSentinels(
+    uncapturedTopicRefusal(topicSentinel, sessionSentinel),
+    topicSentinel,
+    sessionSentinel
+  ),
+  ["topic", "sessionID"]
+);
 
 const keep = `func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
@@ -159,8 +228,34 @@ const RoleTopicPrefix = "notifications.role."
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
+// LegionNoticeTopicPrefix opens every Legion daemon notice subject, ControllerNoticeSuffix ends
+// the one subject of that family naming a project's controller rather than an issue, so project
+// <p>'s notice lane is LegionNoticeTopicPrefix + <p> + ControllerNoticeSuffix, and
+// ControllerRoleToken is the Legion role token whose holder that lane is for. Generated from
+// legionControllerNoticeSubject and controllerToken in packages/contracts: a rename there that Go
+// did not follow would leave the listener refusing the holder's registration of its own lane
+// (bus.ReachesPrivateStreamSubject would read a role token no claim names) and the controller
+// would receive no notice, with nothing else failing.
+const LegionNoticeTopicPrefix = ${JSON.stringify(legionNoticeTopicPrefix)}
+const ControllerNoticeSuffix = ${JSON.stringify(controllerNoticeSuffix)}
+
+func ControllerRoleToken(project string) string {
+	return ${controllerRoleToken}
+}
+
+// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
+// subject captures and no role lane (bus.ReachesNoSession), is told: nothing would ever be
+// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
+// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
+// plugin's explicit subscribe refuses such a topic in the same words. Generated from
+// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
+// the listener and the hosts cannot word it apart.
+func UncapturedTopicRefusal(topic, sessionID string) string {
+	return ${uncapturedTopicRefusalText}
+}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
-// notification stream and by every host that subscribes over core NATS. Generated from
+// notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
 // this window bounds, so the stream, the hosts and the dashboard read one number.
 const DeliveryDuplicateWindow = ${DELIVERY_DUPLICATE_WINDOW_MS} * time.Millisecond
@@ -303,6 +398,12 @@ const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 
+// MaxIssueAdvances bounds the \`advances\` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -359,6 +460,23 @@ const ProjectNameMax = ${PROJECT_NAME_MAX}
 // reading of it cannot drift apart.
 const DocumentSchemaCloseCode = ${DOCUMENT_SCHEMA_CLOSE_CODE}
 const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)}
+
+// DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
+// whose room holds an element this build cannot read, before any sync. The Hocuspocus provider
+// reconnects on the code. Generated from DOCUMENT_NEWER_CONTENT_CLOSE_CODE and
+// DOCUMENT_NEWER_CONTENT_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentNewerContentCloseCode = ${DOCUMENT_NEWER_CONTENT_CLOSE_CODE}
+const DocumentNewerContentCloseReason = ${JSON.stringify(DOCUMENT_NEWER_CONTENT_CLOSE_REASON)}
+
+// DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
+// document socket whose page the live server processes no longer admit, once the message in flight
+// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
+// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
+// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
+// dashboard's reading of it cannot drift apart.
+const DocumentAdmissionRevokedCloseCode = ${DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE}
+const DocumentAdmissionRevokedCloseReason = ${JSON.stringify(DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON)}
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
 // its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
@@ -758,9 +876,10 @@ ${keep}
 }
 
 // The slice of JSON Schema that schemas/block-schema.schema.json uses, which the block schema
-// renderers below read. `x-ordered` marks an object whose keys carry their declaration order,
-// `x-go-type` names the Go type holding such an object, and `x-go-constants` names the Go
-// constant of each value of a string enum.
+// renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
+// `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
+// map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
+// string enum.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
@@ -826,10 +945,11 @@ function blockGoType(prop: BlockProp): string {
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;
     case "object": {
+      const values = prop.additionalProperties;
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      if (!prop["x-ordered"]) return `map[string]${blockGoType(values)}`;
       const goType = prop["x-go-type"];
-      if (!prop["x-ordered"] || !goType) {
-        throw new Error("a block schema object property needs x-ordered and x-go-type");
-      }
+      if (!goType) throw new Error("an ordered block schema object property needs x-go-type");
       return goType;
     }
     default:
@@ -852,11 +972,9 @@ function blockTypeScriptType(prop: BlockProp): string {
       return `readonly ${blockTypeScriptType(prop.items)}[]`;
     case "object": {
       const values = prop.additionalProperties;
-      if (!prop["x-ordered"] || !values) {
-        throw new Error("a block schema object property needs x-ordered and additionalProperties");
-      }
-      // A JavaScript object keeps the insertion order of its string keys, so the object the
-      // server sends carries the declaration order the Go decoder keeps.
+      if (!values) throw new Error("a block schema object property needs additionalProperties");
+      // A JavaScript object keeps the insertion order of its string keys, so an ordered object
+      // the server sends carries the declaration order the Go decoder keeps.
       return `Readonly<Record<string, ${blockTypeScriptType(values)}>>`;
     }
     default:

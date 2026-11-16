@@ -223,7 +223,7 @@ func (h *harness) replica() *Reconciler {
 func (h *harness) mapRepository(repository string) {
 	h.t.Helper()
 	if _, err := h.pool.Exec(h.ctx, `
-		insert into projects (key, name) values ('CIR', 'CI reconcile') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ('CIR', 'CI reconcile', 'alice') on conflict (key) do nothing
 	`); err != nil {
 		h.t.Fatalf("seed the project: %v", err)
 	}

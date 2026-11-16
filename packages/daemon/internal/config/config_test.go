@@ -235,8 +235,10 @@ func defaultsFor(port int) Config {
 		},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
-		PodUpdateRetask:      time.Hour,
-		PodUpdateNotice:      4 * time.Hour,
+		PodUpdateGrace:       30 * time.Minute,
+		StalledTreeNotice:    6 * time.Hour,
+		WorkerSilence:        30 * time.Minute,
+		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
 		Hooks:                DefaultHooks(),
@@ -352,7 +354,7 @@ func TestLoadReadsEveryStage3Key(t *testing.T) {
 dispatch_token_file: tokens/DISPATCH_TOKEN
 projects:
   DEMO: {}
-  OTHER: { merge_queue_role: merge-queue }
+  OTHER: {}
   EMPTY: {}
 gates:
   design: off
@@ -367,6 +369,7 @@ github_apps:
 linger_hours: 96
 production_check_hours: 48
 review_round_cap: 5
+worker_silence_minutes: 45
 hooks:
   - name: back-to-implementing
     on: work_back
@@ -388,7 +391,7 @@ hooks:
 	}
 	if !reflect.DeepEqual(cfg.Projects, map[string]Project{
 		"DEMO":  {ProductionCheck: claim.RoleTester},
-		"OTHER": {MergeQueueRole: "merge-queue", ProductionCheck: claim.RoleTester},
+		"OTHER": {ProductionCheck: claim.RoleTester},
 		"EMPTY": {ProductionCheck: claim.RoleTester},
 	}) {
 		t.Errorf("Projects = %#v", cfg.Projects)
@@ -403,7 +406,10 @@ hooks:
 		t.Errorf("review app = %#v", cfg.GitHubApps.Review)
 	}
 	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
-		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h, 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+	}
+	if cfg.WorkerSilence != 45*time.Minute {
+		t.Errorf("WorkerSilence = %s, want the file's 45m", cfg.WorkerSilence)
 	}
 	if want := []Hook{{
 		Name: "back-to-implementing", On: HookEventWorkBack, Every: 2,
@@ -478,19 +484,6 @@ func TestTheZeroValueOfGatesGatesTheSpec(t *testing.T) {
 	off := Config{Gates: Gates{Design: DesignGateOff.Steps()}}
 	if steps := off.Gates.Steps(); len(steps) != 0 || steps == nil {
 		t.Fatalf("Gates.Steps() under 'off' = %#v, want the non-nil empty list: 'off' gates no step and is not the unset field", steps)
-	}
-}
-
-func TestLoadReadsProjectMergeRules(t *testing.T) {
-	body := strings.Replace(minimalFile, "DEMO: {}",
-		"DEMO: { merge: { by_hand: ['^migrations/versions/'] } }", 1)
-	cfg, err := Load(writeConfigFile(t, body), noEnv)
-	if err != nil {
-		t.Fatalf("Load project merge rules: %v", err)
-	}
-	rules := cfg.Projects["DEMO"].Merge
-	if !rules.MatchByHand([]string{"migrations/versions/0001.py"}) {
-		t.Error("by_hand rule does not match its migration path")
 	}
 }
 
@@ -1749,10 +1742,21 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "github_apps", line: "github_apps: {implement: {app_id: \"1\", private_key: key}, review: {app_id: \"2\", private_key: key}}", class: modelled},
 		{key: "linger_hours", line: "linger_hours: 72", class: modelled},
 		{key: "production_check_hours", line: "production_check_hours: 336", class: modelled},
+		{key: "pod_update_grace_minutes", line: "pod_update_grace_minutes: 30", class: modelled},
 		{key: "review_round_cap", line: "review_round_cap: 3", class: modelled},
+		{key: "worker_silence_minutes", line: "worker_silence_minutes: 45", class: modelled},
+		{key: "worker_background_hours", line: "worker_background_hours: 6", class: modelled},
 		{
 			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
-			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+		},
+		{
+			key: "pod_update_retask_hours", line: "pod_update_retask_hours: 1", class: warned,
+			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+		},
+		{
+			key: "pod_update_notice_hours", line: "pod_update_notice_hours: 4", class: warned,
+			want: "setting pod_update_notice_hours changes nothing: the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
 		},
 		{key: "capabilities", line: `capabilities: {decided: {secrets: "dispatch://LEGION-205 enrolls pods later"}}`, class: modelled},
 		{key: "hooks", line: "hooks: [{name: stuck, on: work_back, every: 5, roles: [implementer], prompt: Say what is in your way.}]", class: modelled},
@@ -1843,7 +1847,7 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 			if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "max_fix_attempts") {
 				t.Fatalf("Load warned %+v, want the one max_fix_attempts warning", cfg.Warnings)
 			}
-			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "sends the work back to the implementer",
+			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "no CI verdict sends work back on its own",
 				"the architect decides when to stop", "review_round_cap"} {
 				if !strings.Contains(cfg.Warnings[0], want) {
 					t.Errorf("the warning %q does not say %q", cfg.Warnings[0], want)

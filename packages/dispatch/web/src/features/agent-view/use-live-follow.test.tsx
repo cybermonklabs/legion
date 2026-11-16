@@ -3,6 +3,7 @@ import { act, render } from "@testing-library/react";
 import { type ReactNode, useCallback, useState } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import type { LivePlace } from "./live-views";
 import { type LiveFollowControl, useLiveFollow } from "./use-live-follow";
 
 // happy-dom has no layout engine, no ResizeObserver and no hit testing, so the harness is the
@@ -26,12 +27,17 @@ interface Geometry {
 
 interface Props {
   contentIds: string[];
+  /** Whether the view is the one in front, as the shell tells it. */
+  front: boolean;
+  /** Where the store says this session's reader was, which a waking view starts at. */
+  initialPlace: LivePlace | null;
+  /** Every place the hook has reported, newest last. */
+  places: (LivePlace | null)[];
   ownSendCount: number;
   replayCount: number;
   /** The turns the DOM actually holds, where they lag the ids the way assistant-ui's runtime
    *  does; `null` renders `contentIds` itself. */
   renderedIds: string[] | null;
-  sessionId: string;
   /** Changing it remounts the viewport element, as the view's error boundary does when a reset
    *  replaces the node under the mounted hook. */
   viewportKey: string;
@@ -139,11 +145,13 @@ function installResizeObserver(): { fire: () => void; restore: () => void } {
 function Harness({
   contentIds,
   control,
+  front,
   geometry,
+  initialPlace,
   ownSendCount,
+  places,
   renderedIds,
   replayCount,
-  sessionId,
   viewportKey,
 }: Props & {
   control: { current: LiveFollowControl | null };
@@ -163,7 +171,20 @@ function Harness({
     },
     [geometry]
   );
-  control.current = useLiveFollow({ contentIds, ownSendCount, replayCount, sessionId, viewport });
+  control.current = useLiveFollow({
+    contentIds,
+    front,
+    initialPlace,
+    onPlace: useCallback(
+      (place: LivePlace | null) => {
+        places.push(place);
+      },
+      [places]
+    ),
+    ownSendCount,
+    replayCount,
+    viewport,
+  });
   return (
     <div data-testid={VIEWPORT_TESTID} key={viewportKey} ref={attach}>
       {/* The content wrapper, whose height is the transcript's: the hook observes it too. */}
@@ -183,6 +204,8 @@ interface LiveFollowHarness {
   readonly jumpToEnd: () => void;
   /** The reader's position, as the element reports it. */
   readonly position: () => number;
+  /** Every place the hook has reported to the store, newest last. */
+  readonly reported: () => readonly (LivePlace | null)[];
   /** A content or viewport resize the browser reports to the hook's observer. */
   readonly resize: () => void;
   /** One scroll event on the viewport the hook holds now, after whatever it changed about the
@@ -195,18 +218,24 @@ interface LiveFollowHarness {
   readonly updateRendered: (ids: string[]) => Promise<void>;
 }
 
-function startHarness(contentIds: string[]): LiveFollowHarness {
+function startHarness(
+  contentIds: string[],
+  initialPlace: LivePlace | null = null
+): LiveFollowHarness {
   const geometry: Geometry = { extraHeight: 0, scrollTop: 0 };
   const control: { current: LiveFollowControl | null } = { current: null };
+  const places: (LivePlace | null)[] = [];
   const restoreRects = installRects();
   const restoreHitTest = installHitTest();
   const sizes = installResizeObserver();
   let props: Props = {
     contentIds,
+    front: true,
+    initialPlace,
     ownSendCount: 0,
+    places,
     renderedIds: null,
     replayCount: 0,
-    sessionId: "session-1",
     viewportKey: "first",
   };
   const view = render(<Harness {...props} control={control} geometry={geometry} />);
@@ -228,6 +257,7 @@ function startHarness(contentIds: string[]): LiveFollowHarness {
       });
     },
     position: () => element().scrollTop,
+    reported: () => places,
     resize: () => {
       act(() => {
         sizes.fire();
@@ -392,7 +422,7 @@ test("jumpToEnd clears the count and resumes following", () => {
   }
 });
 
-test("an own send and a new session each force the live end", () => {
+test("an own send forces the live end", () => {
   const live = startHarness([...SIX]);
 
   try {
@@ -408,7 +438,8 @@ test("an own send and a new session each force the live end", () => {
     live.scroll({ scrollTop: 100 });
     expect(live.atEnd()).toBe(false);
 
-    live.update({ sessionId: "session-2" });
+    // A second send from where the reader has scrolled back to does the same.
+    live.update({ ownSendCount: 2 });
     expect(live.position()).toBe(300);
     expect(live.atEnd()).toBe(true);
   } finally {
@@ -582,6 +613,114 @@ test("a rebuild whose turns reach the DOM a commit later still finds the reader'
     expect(live.count()).toBe(0);
   } finally {
     realClock();
+    live.stop();
+  }
+});
+
+// What a view that slept and woke does (R2): the place is the store's, not something measured
+// afresh, so the reader is put back on the turn they were reading instead of at the live end.
+test("a view that wakes with a place starts on that turn, counting nothing new", () => {
+  // `c` is the third turn, so its top sits 10 px above the viewport's top edge at `scrollTop`
+  // 210 - where this reader left it.
+  const live = startHarness([...SIX], { id: "c", top: -10 });
+
+  try {
+    expect(live.position()).toBe(210);
+    expect(live.atEnd()).toBe(false);
+    // The turns it woke to are the ones it was left with, not news.
+    expect(live.count()).toBe(0);
+
+    live.update({ contentIds: [...SIX, "g"] });
+    expect(live.position()).toBe(210);
+    expect(live.count()).toBe(1);
+  } finally {
+    live.stop();
+  }
+});
+
+// The waking view the shell really mounts (R2): its session's replay is a round trip away, so
+// the first commit draws no turn at all. An empty scroller is trivially at its live end, and
+// reading it as the reader following threw their place away - the browser case of INFRA-812's
+// k2 found every woken view back at the live end with its draft intact and its place gone. The
+// place is kept until the turns are drawn, and settled in the commit that draws them.
+test("a view that wakes before its turns arrive still lands on the turn it was left on", async () => {
+  jest.useFakeTimers();
+  const live = startHarness([], { id: "c", top: -10 });
+
+  try {
+    // Nothing drawn and nothing given: the hook decides nothing. The place is the store's and
+    // it has nothing to tell it - above all not the `null` that forgetting it looks like.
+    expect(live.atEnd()).toBe(false);
+    expect(live.reported()).toEqual([]);
+
+    // The session answers; assistant-ui applies the turns one commit later.
+    live.update({ contentIds: [...SIX], renderedIds: [], replayCount: 1 });
+    expect(live.atEnd()).toBe(false);
+
+    await live.updateRendered([...SIX]);
+
+    expect(live.position()).toBe(210);
+    expect(live.atEnd()).toBe(false);
+    // What it woke to is what the reader was left with, not news.
+    expect(live.count()).toBe(0);
+    expect(live.reported()).toEqual([]);
+
+    live.update({ contentIds: [...SIX, "g"] });
+    expect(live.position()).toBe(210);
+    expect(live.count()).toBe(1);
+  } finally {
+    realClock();
+    live.stop();
+  }
+});
+
+// The view the reader left (R2, D6): the shell keeps it mounted for the watch window, laid out
+// over the page rather than in it, so its scroller is suddenly another size and the browser
+// clamps a reader who had scrolled back. None of that is the reader, who is on another page -
+// before this, that clamp arrived as a scroll at the live end and the view forgot where they
+// were, which the browser case of INFRA-812's k2 found for a view left behind for a moment.
+test("a view left behind the one in front keeps its place through the shell's own resize", () => {
+  const live = startHarness([...SIX]);
+
+  try {
+    live.scroll({ scrollTop: 150 });
+    expect(live.reported().at(-1)).toEqual({ id: "b", top: -50 });
+
+    // Left behind: the shell lays it out over the page, the content fits its new box, and the
+    // clamp arrives as a scroll of the viewport's own.
+    live.update({ front: false });
+    live.scroll({ extraHeight: -400, scrollTop: 0 });
+    live.resize();
+
+    expect(live.reported().at(-1)).toEqual({ id: "b", top: -50 });
+    expect(live.atEnd()).toBe(false);
+
+    // Back in front, in the box it has then: the reader is on the turn they were reading.
+    live.scroll({ extraHeight: 0 });
+    live.update({ front: true });
+    expect(live.position()).toBe(150);
+    expect(live.atEnd()).toBe(false);
+  } finally {
+    live.stop();
+  }
+});
+
+test("the place the reader holds is reported, and cleared once they follow again", () => {
+  const live = startHarness([...SIX]);
+
+  try {
+    // A mount at the live end is a reader with no place: the store keeps none for it.
+    expect(live.reported().at(-1)).toBeNull();
+
+    live.scroll({ scrollTop: 150 });
+    expect(live.reported().at(-1)).toEqual({ id: "b", top: -50 });
+
+    live.scroll({ scrollTop: 250 });
+    expect(live.reported().at(-1)).toEqual({ id: "c", top: -50 });
+
+    live.jumpToEnd();
+    expect(live.reported().at(-1)).toBeNull();
+  } finally {
     live.stop();
   }
 });

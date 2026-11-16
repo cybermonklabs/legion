@@ -17,10 +17,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Runtime is what the supervisor has instead of a process table. Every method is about one
@@ -46,14 +49,11 @@ type Runtime interface {
 	// when it recorded none, and a hint: a runtime that finds a claim's process by the claim's own
 	// place, as a sandbox finds a role's launcher in its issue's pod, waits out whatever runs
 	// there even when prev is nil. A claim resumes the agent it recorded or none: a fresh agent on
-	// a claim that had one is the failure the same-agent refusal exists to catch, so a session file
-	// found nowhere is a refusal, charged as any launch failure is, and the claim keeps its
-	// session. The one exception is the operator's takeover of another runtime's claims (the tmux
-	// runtime's `runtime.tmux.take_over`): while that key is set, any Resume whose session file is
-	// found nowhere the agent would run — the taken-over runtime's session or this host's own,
-	// which nothing tells apart — returns an error wrapping ErrSessionFileMissing, having started
-	// nothing, and the caller then forgets the session and starts a fresh agent. On
-	// an error the caller owns stopping prev (Suspend), and Resume has stopped any process it
+	// a claim that had one is the failure the same-agent refusal exists to catch. A session the
+	// runtime looked for and did not find is ErrSessionFileMissing, and a session store that could
+	// not be asked at all is ErrSessionStore; every runtime answers both the same way, having
+	// started nothing, and the caller tells them apart by what it does next (supervise's start).
+	// On an error the caller owns stopping prev (Suspend), and Resume has stopped any process it
 	// started itself.
 	Resume(ctx context.Context, prev *Locator, spec SpawnSpec) (Locator, error)
 	// Suspend stops the process gracefully, within the runtime's stop grace, and keeps everything
@@ -118,9 +118,10 @@ type Runtime interface {
 	// life — and only for a claim that runs in one: it answers nothing for a claim with no
 	// process, which records no place at all, and nothing for the project controller's own pod,
 	// which has no issue workspace and nothing to push. The daemon opens an update round on a
-	// non-empty answer: every worker claim of that place is tasked to push its work and signal
-	// (api's claims/ready-for-update), and only once each has answered is the place replaced
-	// (ReplacePod).
+	// non-empty answer: the round asks each role of that place to push its work and answer (api's
+	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
+	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
+	// roles answered, an operator's suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -146,28 +147,27 @@ type Runtime interface {
 	// deletes an issue's disk, so every caller states what makes it still due rather than
 	// leaving the question to a nil.
 	ReplacePod(ctx context.Context, k Known, due func(context.Context) error) error
-	// RescueUnpushed is the push check of the place k's process runs in, made just before
-	// ReplacePod deletes it: the process's own shim checks every workspace on that place's disk
-	// for work its remote lacks and pushes it to rescue branches named from request.Branch, as
-	// the process's role and with that role's own credential, so the daemon handles no secret for
-	// it. It answers one entry per workspace. k must record a running process in the place it
-	// names. A shim built before the check is ErrRescueUnsupported. A runtime whose places outlive
-	// every replacement (a tmux pane's host directory) has nothing to check and answers nil.
-	RescueUnpushed(ctx context.Context, k Known, request RescueRequest) ([]WorkspaceRescue, error)
 	// CleanupTree deletes what the runtime holds for tree beyond its claims' processes, once every
 	// claim of the tree has retired and the tree's cleanup is reserved (store.CleanupReservedTree);
 	// nil once nothing of it remains. A runtime that holds nothing per tree returns nil at once.
 	CleanupTree(ctx context.Context, tree string) error
 }
 
-// ErrSessionFileMissing is a Resume made while the operator's takeover of another runtime's claims
-// is on (the tmux runtime's `runtime.tmux.take_over: kubernetes`) that found the spec's
-// ResumeSessionFile nowhere the agent would run. Most such sessions are the taken-over runtime's,
-// kept where this one cannot read it, and neither the recorded path nor the previous incarnation
-// tells them from this host's own, so every missing session is this error while the key is set.
-// Nothing was started, and the caller starts a fresh agent in the session's
-// place. A session file missing with the key off is a refusal that does not wrap it.
+// ErrSessionFileMissing is a Resume whose spec.ResumeSessionFile is held by no store the runtime
+// can resume it from: no folder the tmux runtime searched holds that session, or the session table
+// the Kubernetes launcher reads has no row for it. The session is gone, not unreachable, so the
+// caller starts a fresh agent in its place, charged nothing and reported (supervise's start).
+// Nothing was started. Both runtimes answer this for that one fact, whatever else is configured —
+// the operator's takeover of another runtime's claims (`runtime.tmux.take_over`) changes which
+// sessions are found, never what a session found nowhere means.
 var ErrSessionFileMissing = errors.New("the recorded session file is missing")
+
+// ErrSessionStore is a Resume whose session store could not be asked: the table does not exist, or
+// the store did not answer. It says nothing about the claim's session, so it is neither a missing
+// session nor the claim's own failure: the caller keeps the session, charges nothing, and starts
+// again every minute until the store answers (supervise's startWaitsForStore). Nothing was
+// started.
+var ErrSessionStore = errors.New("the session store could not be asked")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
@@ -188,6 +188,20 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // endRoundOverAGonePod, supervise's Claim.UpdateLeftRound), so the sweep that reads this need
 // not come before the roles are relaunched into the pod that replaced this one.
 var ErrPodGone = errors.New("the pod the locator records is not there")
+
+// IssuePodReader reads which pod an issue's Sandbox holds now, asked by the issue alone: the uid
+// of that pod, "" where the runtime holds no Sandbox of the issue or the Sandbox holds no pod, and
+// read false where the runtime cannot say at all. It exists beside PodDrift because it needs no
+// locator: an update round whose claims record no pod — every claim suspended, since a suspension
+// lets the process go and its locator with it (supervise's letGo) — has no claim left to ask
+// PodDrift through, and only the issue to ask by (internal/daemon's podlessRound). A pod other
+// than the round's own, or none, is that round's pod gone, and the round ends; the round's own
+// pod, or no answer, leaves it waiting. A runtime whose processes run in no pod implements
+// nothing here, and the daemon then reads no answer, which a round never needs from it, since
+// such a runtime answers no drift and so opens no pod round.
+type IssuePodReader interface {
+	IssuePod(issue string) (pod string, read bool)
+}
 
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
@@ -251,6 +265,23 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 // the issue's next pod.
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
+// MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
+// SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the launcher
+// sends the report on the connection of the role whose process it was, and the daemon tells that
+// role why the process is gone. The session gives it the issue key, the claim token of the role
+// the connection authenticated for, the uid of the pod the launcher runs in and the report; the
+// three are the session's own and never the report's, so a launcher cannot name another role,
+// issue or pod.
+//
+// It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
+// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
+// be one more shape to keep in step for no reader that needs it.
+//
+// An error, a store that did not answer among them, is returned to the session, which logs it
+// and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
+// and the guard's kill line in the pod's own log is then the one record of the kill.
+type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token, podUID string, report shimwire.LauncherMemoryKill) error
+
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and
 // with zero after, so the one computation is the deadline's.
@@ -305,11 +336,12 @@ func (k Known) Validate() error {
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
 // Kubernetes launch that is not replacing a process on another plugin contract. The tmux runtime
 // ignores it: a pane always resumes on the plugin installed on the daemon's host, which the boot
-// gate already holds to the daemon's contract. Memory is whether the claim's tree was drawn into
-// the project's memory group (record.Issue.MemoryGroup on the tree's root, which internal/daemon's
-// specs reads): such a launch names the project's memory overlays last in PI_CONFIG_FILES and ends
-// its system prompt with the memory instructions; false for every no-memory tree and for the
-// controller, which runs in no tree. IssueTrailer is the issue key this pane stamps into its
+// gate already holds to the daemon's contract. Variants are the arms of the project's declared
+// experiments this launch's unit was drawn into, in the order the project's file declares the
+// experiments (internal/daemon's specs reads them): such a launch names each variant's overlays
+// last in PI_CONFIG_FILES, in that order, and ends its system prompt with each variant's
+// instructions in that same order; empty for a launch in no experiment and for the controller,
+// which runs in no tree. IssueTrailer is the issue key this pane stamps into its
 // commits, as the `Dispatch: <KEY>` trailer the agent's jj overlay writes (LEGION_ISSUE_TRAILER,
 // which each runtime sets itself): the claim's own issue when the project names its repository in
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
@@ -331,9 +363,110 @@ type SpawnSpec struct {
 	DefaultBranch     string
 	ResumeSessionFile string
 	Plugins           *PluginInstall
-	Memory            bool
+	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+}
+
+// Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the
+// experiment's name and the arm's, as the draw recorded them (config.Experiment.Name,
+// config.Variant.Name), the Oh My Pi settings overlays the arm names (config.Variant.ConfigFiles)
+// and the key the operator wrote those overlays under (config.Variant.ConfigFilesField). An arm
+// that names no overlay adds nothing to PI_CONFIG_FILES, so a launch carrying only such arms names
+// the overlays a unit in no experiment gets; its prompt still ends with the copy of any
+// instructions those arms name (PromptParts.VariantInstructionsPaths). Only an arm that names
+// neither file is the control the others are measured against, and a launch carrying such arms
+// alone is the launch a unit in no experiment gets.
+//
+// The instructions an arm names are no field of this: no runtime reads them off an arm, and what
+// a launch's prompt ends with is the daemon's own copy of each of them
+// (PromptParts.VariantInstructionsPaths, which internal/experiment's Launch answers beside these
+// arms).
+//
+// ConfigFilesField is what a refusal and a pod's drift name the arm's overlays by, so both name
+// the key an operator can find in the file rather than a path each reader works out for itself:
+// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, which a drift
+// names `memory.config_files` instead (MemoryBlock). The
+// declared list sets it on every arm that may carry overlays (config.Project.ExperimentsDeclared):
+// each arm of an `experiments` key, and the `memory` block's own arm whether or not the block
+// names `config_files`. It is read only where the arm names overlays, so the block's control arm,
+// which names none and stands under no key of its own, leaves it empty.
+//
+// MemoryBlock is whether the arm is one the project's `memory` block declares
+// (config.Variant.MemoryBlock), which config.Project.ExperimentsDeclared decides and this carries.
+// It is for a pod's drift report (internal/runtime/sandbox's movedRoleOverlays), which names a
+// moved overlay of the block's own arm `memory.config_files <file>`, the spelling it had before
+// any experiment was declared, and every other arm's by ConfigFilesField.
+type Variant struct {
+	Experiment       string
+	Name             string
+	ConfigFiles      []string
+	ConfigFilesField string
+	MemoryBlock      bool
+}
+
+// VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:
+// each variant's own files in its own order, the variants in theirs, which for a launch's
+// variants is the order the project's file declares the experiments. Both runtimes name it after
+// the operator's overlays and the role's own, so a variant's file outranks both; a list of
+// variants that names no file at all answers none, so a launch under a project whose declared
+// variants name no overlay is told the value it was told before any experiment was declared.
+func VariantOverlays(variants []Variant) []string {
+	var files []string
+	for _, variant := range variants {
+		files = append(files, variant.ConfigFiles...)
+	}
+	return files
+}
+
+// RoleOverlayValue is one whole PI_CONFIG_FILES tail a role may start on, after the operator's
+// own overlays: Files is the role's own overlays and then the overlays of one arm it may be
+// drawn into, and Variant is that arm, nil where the value is the role's own files alone.
+type RoleOverlayValue struct {
+	Variant *Variant
+	Files   []string
+}
+
+// RoleOverlayValues are every distinct PI_CONFIG_FILES tail a role starts on, in declared order:
+// own, the role's own overlays (`role_config_files`), followed by the overlays of each of
+// variants, the arms of every experiment the project declares, that names any — one value per
+// arm, never one value holding two arms' files, since the union of two arms is a configuration
+// no launch produces. An arm that names no overlay adds no value of its own, because its roles
+// start on the role's own files, which the role's own value already is. A role no arm reaches
+// answers that one value, which is the value every role was told before any experiment existed.
+//
+// The controller runs in no tree, so it is in no arm and answers its own files alone whatever
+// the project declares. A value two arms produce alike is answered once, and a value holding no
+// file at all is answered not at all: there is nothing for a reader of it to read.
+//
+// Both readers of a whole value ask this: the boot gate, which starts the image's Oh My Pi on
+// each (internal/daemon's checkPaneRoleOverlays), and the image probe's manifest, which passes
+// each to the probe pod (runtime/sandbox's probeManifest). What a launch is told is another
+// question — it names the arms its own unit was drawn into, not every declared one — and
+// VariantOverlays answers that one.
+func RoleOverlayValues(role claim.Role, own []string, variants []Variant) []RoleOverlayValue {
+	var values []RoleOverlayValue
+	if role != claim.RoleController {
+		for i, variant := range variants {
+			if len(variant.ConfigFiles) > 0 {
+				values = append(values, RoleOverlayValue{Variant: &variants[i], Files: slices.Concat(own, variant.ConfigFiles)})
+			}
+		}
+	}
+	if len(values) == 0 {
+		values = []RoleOverlayValue{{Files: own}}
+	}
+	read := make(map[string]struct{}, len(values))
+	distinct := values[:0]
+	for _, value := range values {
+		joined := strings.Join(value.Files, ":")
+		if _, done := read[joined]; done || len(value.Files) == 0 {
+			continue
+		}
+		read[joined] = struct{}{}
+		distinct = append(distinct, value)
+	}
+	return distinct
 }
 
 // PluginInstall is the plugin pair a Kubernetes launch installs before Oh My Pi starts, and the
@@ -351,14 +484,15 @@ type PluginInstall struct {
 // concatenates them into exactly one `--append-system-prompt` word — one, because a second
 // occurrence of the flag replaces the first rather than adding to it: the role prompt files, the
 // sentence that tells the agent which claim it is, the operator's deployment instructions, and
-// the project's memory instructions. MemoryInstructionsPath is set only for a launch whose tree
-// was drawn into the memory group (SpawnSpec.Memory) under a project whose `memory` block names
-// an instructions file; "" for every other launch, whose prompt ends at the deployment's own.
+// the instructions of each variant the launch runs in. VariantInstructionsPaths are the daemon's
+// own copies of those files, one per variant that names one, in the order the project's file
+// declares the experiments (SpawnSpec.Variants); empty for every launch whose variants name none
+// and for every launch in no experiment, whose prompt ends at the deployment's own.
 type PromptParts struct {
 	RolePromptPaths            []string
 	Addressing                 string
 	DeploymentInstructionsPath string
-	MemoryInstructionsPath     string
+	VariantInstructionsPaths   []string
 }
 
 // ObservationKind is what a runtime can say about a process.

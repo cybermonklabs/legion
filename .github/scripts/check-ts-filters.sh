@@ -20,7 +20,8 @@
 # contracts, envoy_client (packages/envoy-client and packages/broker-client), pi_shared,
 # pi_envoy, pi_legion, claude_envoy, dispatch_ui (packages/dispatch and packages/proof-editor),
 # docs (docs/site, in the docs-site.yaml job ci.yaml's docs job calls), conflicts_script
-# (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps and scripts/sessions).
+# (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps, scripts/sessions and
+# scripts/approval-eval).
 # The gates left out are the ones whose job runs TypeScript but no typecheck, so there is no
 # program to derive: `dispatch_browser`, whose jobs are the browser suite itself, sharded and in
 # two-process mode, in the workflow ci.yaml's dispatch-browser job calls (the dashboard's and the
@@ -54,7 +55,8 @@
 # `bun install --frozen-lockfile` for the Biome pass; lint is gated by no `changes` output, so a
 # change anywhere starts it, which is what a check of every filter needs; and the cost is small
 # against that job's 30 minutes, 36.9 s measured over the nine package programs and 55 s over
-# all fourteen of this table, in a pod with node_modules already installed.
+# all fourteen programs this table held when that was measured, in a pod with node_modules
+# already installed.
 #
 # Run from anywhere: .github/scripts/check-ts-filters.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.

@@ -10,13 +10,13 @@ import { asUser } from "./users";
 /**
  * dispatch://INFRA-1576 on the surface the asking agent reads: `dispatch open-asks` names the
  * person each of its open questions waits on, by the server's own expression
- * (`coalesce(a.asked_of, i.assignee)`, answered as `waiting_on_person`), so an agent that opened
- * a question can say who it is waiting for instead of guessing.
+ * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, answered as `waiting_on_person`), so
+ * an agent that opened a question can say who it is waiting for instead of guessing.
  *
  * The real command, as its own process, opens both questions through the real server: one on an
- * issue a person holds, one on a project document, which nobody holds. A second person then
- * hands the first to themselves in a browser, and the same author session's `open-asks` names
- * them from then on.
+ * issue a person holds, and one on a project document, which no assignee holds, so it waits on
+ * the project's default assignee (dispatch://INFRA-3090). A second person then hands the first to
+ * themselves in a browser, and the same author session's `open-asks` names them from then on.
  */
 
 /** The `- ` lines of one `dispatch open-asks` run, each one open ask. */
@@ -61,9 +61,10 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
 }, testInfo) => {
   test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
   test.setTimeout(240_000);
-  await createProject({ key: "CORE", name: "Core" });
-  // A human's issue is assigned to its creator, so this one is alice's; a project document has
-  // no assignee, so nobody waits on a question asked on it.
+  // carol creates the project, so she is its default assignee and the person a question on its
+  // document waits on: a project document has no assignee of its own.
+  await createProject({ key: "CORE", name: "Core" }, { login: "carol" });
+  // A human's issue is assigned to its creator, so this one is alice's.
   const issue = await createIssue(
     { project: "CORE", title: "Ship the rollout flag" },
     { login: "alice" }
@@ -105,13 +106,13 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     expect(onDocument.code, `${onDocument.stdout}${onDocument.stderr}`).toBe(0);
     const documentAsk = askedId(onDocument.stdout);
 
-    // 1. The session's own listing names the issue's assignee on the first row and nobody on the
-    // second - in the card's own word, `asked of`, which claims no turn - and both are waiting
-    // on a human, so the three numbers are 2, 2 and 0.
+    // 1. The session's own listing names the issue's assignee on the first row and the project's
+    // default on the second - in the card's own word, `asked of`, which claims no turn - and both
+    // are waiting on a human, so the three numbers are 2, 2 and 0.
     const own = await runDispatch(["open-asks"], home);
     expect(own.code, `${own.stdout}${own.stderr}`).toBe(0);
     expect(rowFor(own.stdout, issueAsk)).toContain(" · asked of alice · ");
-    expect(rowFor(own.stdout, documentAsk)).toContain(" · asked of nobody · ");
+    expect(rowFor(own.stdout, documentAsk)).toContain(" · asked of carol · ");
     expect(printedCounts(own.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 2. The project-wide listing, which is every open ask in the project whoever authored it,
@@ -119,7 +120,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     const project = await runDispatch(["open-asks", "--project", "CORE"], home);
     expect(project.code, `${project.stdout}${project.stderr}`).toBe(0);
     expect(rowFor(project.stdout, issueAsk)).toContain(" · asked of alice · ");
-    expect(rowFor(project.stdout, documentAsk)).toContain(" · asked of nobody · ");
+    expect(rowFor(project.stdout, documentAsk)).toContain(" · asked of carol · ");
     expect(printedCounts(project.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
 
     // 3. Bob, who holds neither the issue nor the document, takes the first question himself
@@ -142,7 +143,7 @@ test("open-asks names the person each ask waits on, before and after a hand-on",
     const after = await runDispatch(["open-asks"], home);
     expect(after.code, `${after.stdout}${after.stderr}`).toBe(0);
     expect(rowFor(after.stdout, issueAsk)).toContain(" · asked of bob · ");
-    expect(rowFor(after.stdout, documentAsk)).toContain(" · asked of nobody · ");
+    expect(rowFor(after.stdout, documentAsk)).toContain(" · asked of carol · ");
     expect(printedCounts(after.stdout)).toEqual({ agent: 0, human: 2, total: 2 });
   } finally {
     await bob.close();

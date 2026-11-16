@@ -28,13 +28,21 @@ func quiet(t *testing.T, cap int) *Admission {
 	return newAdmission(t, cap, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-// seedMirror writes what Dispatch says of key — its status and, in order, the keys it waits on —
-// as the blockers.Mirror handler writes one from an event. Its sequence is 1, so any event a test
-// then applies through the mirror (sequence 2 or more) wins the row's fence.
+// seedMirror writes what Dispatch says of key, an issue of this package's project, as
+// seedMirrorIn writes it.
 func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...string) {
 	t.Helper()
+	seedMirrorIn(t, pool, testProject, key, status, waits...)
+}
+
+// seedMirrorIn writes what Dispatch says of key, an issue of project — its status and, in
+// order, the keys it waits on — as the blockers.Mirror handler writes one from an event. Its
+// sequence is 1, so any event a test then applies through the mirror (sequence 2 or more) wins
+// the row's fence.
+func seedMirrorIn(t *testing.T, pool *pgxpool.Pool, project, key, status string, waits ...string) {
+	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: testProject, Status: status, Blockers: waits, Seq: 1}
+		row := record.DispatchIssueRow{Key: key, Project: project, Status: status, Blockers: waits, Seq: 1}
 		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
 			t.Fatalf("seed the mirror of %s: %v", key, err)
 		}
@@ -135,7 +143,7 @@ func TestTheRootIsAdmittedOnItsLastBlockersCloseExactlyAsAnUnblockedOneIs(t *tes
 	if got, want := effects(t, subject), effects(t, control); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admission of the unblocked root wrote %#v, want the rows a control admission writes, %#v", got, want)
 	}
-	if got, want := issue(t, subject, "LEGION-ROOT"), issue(t, control, "LEGION-ROOT"); !reflect.DeepEqual(got, want) {
+	if got, want := withoutMovement(issue(t, subject, "LEGION-ROOT")), withoutMovement(issue(t, control, "LEGION-ROOT")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admitted root = %#v, want the record a control admission leaves, %#v", got, want)
 	}
 	if got, want := slots(t, subject), slots(t, control); !reflect.DeepEqual(got, want) {
@@ -300,8 +308,12 @@ func TestASlotIsFreeWhenEveryRootInTheQueueIsBlocked(t *testing.T) {
 		payload: record.ControllerNotice{Kind: record.SlotFreeNotice}}})
 }
 
-// Work already under way is never stopped and never re-checked: a blocker put on the issue of a
-// tree that already runs leaves its slot and its record alone.
+// Work already under way is never stopped: a blocker put on the issue of a tree that already runs
+// stops no worker and moves no phase. Whether it keeps its slot is the release for a wait's to
+// say (blockers.waitsOf), and this root keeps it only because it is one of the three that do: it
+// stands at admitted with no design gate ever opened, its architect writing the design
+// (record.AtWork). A started issue that waits on another issue in any other state gives its
+// slot back (TestNoIssueIsBothUnstartedAndUnreported below, waiting_slot_test.go).
 func TestATreeAlreadyRunningIsUntouchedWhenABlockerIsAddedToItsIssue(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
@@ -607,7 +619,7 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				blocked, err := admission.blocked(context.Background(), tx)
+				_, blocked, _, err := admission.tickRows(context.Background(), tx)
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
@@ -708,11 +720,13 @@ func TestATreeThatRanAndCameBackIsAdmittedOnTheMarkItsRunEarned(t *testing.T) {
 
 // No issue is both unstarted and unreported. Every issue Legion is waiting to start that its links
 // hold is named in `admission.blocked` (the tick notice and the state read the same judgement), and
-// one nothing holds any longer is started. A root's links are read once, when promotion admits it
-// into a slot, so a slotted root at phase.Admitted whose mirror row names an unfinished blocker is
-// held by nothing: `blocked` does not name it, and the opening of its tree's design gate starts it.
-// A waiting root and a held child with exactly the same links are still held, and both are named,
-// before the gate opens and after.
+// one nothing holds any longer is started. A slotted root at phase.Admitted whose design gate has
+// never opened is its architect writing the design, the whole of that tree's work, so its links
+// hold it at nothing: `blocked` does not name it and it keeps its row. Once that gate opens its
+// own first phase is what waits, and an unfinished blocker holds that phase like any other
+// (INFRA-3036): the root gives its row back, `blocked` names it, and it starts when the blocker
+// is done. A waiting root and a held child with exactly the same links are held throughout, and
+// both are named, before the gate opens and after.
 func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	const slotted, waiting, child, blocker = "LEGION-208", "LEGION-ROOT", "LEGION-209", "LEGION-BLOCKER"
 	pool := migratedPool(t)
@@ -732,37 +746,40 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 			t.Fatalf("seed the slotted root's gate: %v", err)
 		}
 	})
-	want := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}, {Issue: waiting, BlockedBy: []string{blocker}}}
-	assertBlocked := func(when string) {
+	held := []record.BlockedIssue{{Issue: child, BlockedBy: []string{blocker}}, {Issue: waiting, BlockedBy: []string{blocker}}}
+	assertBlocked := func(when string, want []record.BlockedIssue) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			got, err := admission.blocked(context.Background(), tx)
+			_, got, _, err := admission.tickRows(context.Background(), tx)
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("blocked %s = %#v, want %#v: the waiting root and the held child, never the slotted root", when, got, want)
+				t.Fatalf("blocked %s = %#v, want %#v", when, got, want)
 			}
 		})
 	}
 
-	assertBlocked("before the gate opens")
+	assertBlocked("before the gate opens", held)
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "approved", intake.DispatchArtifact{
 		Key: slotted, ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2}, admission.engine, admission); err != nil {
 		t.Fatalf("approve the slotted root's design: %v", err)
 	}
 
-	if got := issue(t, pool, slotted); got.Phase != phase.Planning {
-		t.Fatalf("the slotted root = %s once its gate opened, want planning: nothing holds it, so it starts", got.Phase)
+	// The root's own first phase is what the gate's opening offers, and its unfinished blocker
+	// holds that phase: it stands where it stood, holding no row, named with the issue it waits
+	// on. Its tree runs on, and the issues its links never touched are untouched.
+	if got := issue(t, pool, slotted); got.Phase != phase.Admitted {
+		t.Fatalf("the slotted root = %s once its gate opened, want it still at admitted: its first phase waits on its unfinished blocker", got.Phase)
 	}
-	for _, held := range []string{waiting, child} {
-		if got := issue(t, pool, held); got.Phase != phase.Admitted {
-			t.Fatalf("%s = %s, want it held at admitted by its unfinished blocker", held, got.Phase)
+	for _, key := range []string{waiting, child} {
+		if got := issue(t, pool, key); got.Phase != phase.Admitted {
+			t.Fatalf("%s = %s, want it held at admitted by its unfinished blocker", key, got.Phase)
 		}
 	}
-	assertSlots(t, pool, []record.Slot{{Issue: slotted, Index: 0, AdmittedAt: fixedNow}})
-	assertBlocked("after the gate opened")
+	assertSlots(t, pool, nil)
+	assertBlocked("after the gate opened", append([]record.BlockedIssue{{Issue: slotted, BlockedBy: []string{blocker}}}, held...))
 }
 
 // countingStore counts the mirror reads of the calls under test; every other read and write is
@@ -772,13 +789,17 @@ type countingStore struct {
 	mirrorReads int
 }
 
-func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]record.DispatchIssueRow, error) {
+func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]record.DispatchIssueRow, error) {
 	s.mirrorReads++
-	return s.Store.DispatchIssuesOf(ctx, tx, project, keys)
+	return s.Store.DispatchIssuesOf(ctx, tx, keys)
 }
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
-// the waiting line holds: the rows are read before the loop, not inside it.
+// the waiting line holds: the rows are read before the loop, not inside it. The tick the test
+// drives judges the line twice and no more — promotion's own pass, and the one pass that builds
+// both lists the notice carries (Admission.tickRows) — whether or not a controller is registered
+// to be told, so it reads the mirror once for each judgement it makes and never once for each
+// candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {
 	pool := migratedPool(t)
 	store := &countingStore{Store: record.NewStore()}
@@ -795,8 +816,9 @@ func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T
 		t.Fatalf("ApplyFact tick: %v", err)
 	}
 
-	if store.mirrorReads != 1 {
-		t.Fatalf("the mirror was read %d times for three blocked candidates, want exactly once per promotion", store.mirrorReads)
+	const judgements = 2
+	if store.mirrorReads != judgements {
+		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once per judgement the tick makes", store.mirrorReads, judgements)
 	}
 	assertSlots(t, pool, nil)
 }

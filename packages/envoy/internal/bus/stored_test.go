@@ -2,7 +2,11 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -58,6 +62,124 @@ func TestNextStoredMessageReadsByFilterAfterASequence(t *testing.T) {
 	}
 }
 
+// probeHeader is the header the listener's connection probe carries (cmd/listener).
+var probeHeader = nats.Header{"Envoy-Probe": []string{"1"}}
+
+// requestCoreClient connects a bus client and a plain connection of its own to one test server,
+// for the core requests the client makes and the subscriptions that answer or ignore them.
+func requestCoreClient(t *testing.T) (*Client, *nats.Conn) {
+	t.Helper()
+	uri := testnats.URL(t)
+	client, err := Connect([]string{uri})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	responder, err := Dial("request-core-responder", []string{uri}, os.LookupEnv)
+	if err != nil {
+		t.Fatalf("connect the responder: %v", err)
+	}
+	t.Cleanup(responder.Close)
+	return client, responder
+}
+
+// The connection probe's request (RequestCore) carries its header and no body to the subject's
+// subscriber and returns that subscriber's reply; a subject nobody subscribes is
+// nats.ErrNoResponders, and one whose subscriber keeps silent waits out the caller's deadline and
+// returns ctx's error. These are the three answers the send route reads a session's connection
+// from: connected, stopped and connected.
+func TestARequestCoreCarriesItsHeaderAndReadsTheThreeAnswers(t *testing.T) {
+	client, responder := requestCoreClient(t)
+	heard := make(chan *nats.Msg, 1)
+	if _, err := responder.Subscribe(DeliverSubject("ses_answers"), func(msg *nats.Msg) {
+		heard <- msg
+		_ = msg.Respond(nil)
+	}); err != nil {
+		t.Fatalf("subscribe the answering subject: %v", err)
+	}
+	if _, err := responder.SubscribeSync(DeliverSubject("ses_silent")); err != nil {
+		t.Fatalf("subscribe the silent subject: %v", err)
+	}
+	if err := responder.Flush(); err != nil {
+		t.Fatalf("flush the subscriptions: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := client.RequestCore(ctx, DeliverSubject("ses_answers"), probeHeader); err != nil {
+		t.Fatalf("request to a subscriber that answers = %v, want its reply", err)
+	}
+	select {
+	case msg := <-heard:
+		if msg.Header.Get("Envoy-Probe") != "1" || len(msg.Data) != 0 {
+			t.Fatalf("the subscriber heard header %v and %d body bytes, want Envoy-Probe: 1 and no body", msg.Header, len(msg.Data))
+		}
+	default:
+		t.Fatal("the request was answered without reaching the subscriber")
+	}
+
+	if _, err := client.RequestCore(ctx, DeliverSubject("ses_nobody"), probeHeader); !errors.Is(err, nats.ErrNoResponders) {
+		t.Fatalf("request to a subject nobody subscribes = %v, want nats.ErrNoResponders", err)
+	}
+
+	silentCtx, silentCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer silentCancel()
+	if _, err := client.RequestCore(silentCtx, DeliverSubject("ses_silent"), probeHeader); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("request to a subscriber that keeps silent = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// The connection probe's request takes its reply over a channel of nats.RequestChanLen slots, not
+// conn.SubscribeSync's, which nats.go sizes at nats.Options.SubChanLen (65,536 pointers, 512 KiB
+// allocated and zeroed per request): the send route probes once per send, so a send would cost
+// half a megabyte to hold one reply. requestConfirmed, which still subscribes that way, is
+// measured beside it, so a measurement that could not see the channel fails here rather than
+// passing the probe.
+func TestARequestCoreAllocatesNoSubscriptionChannelOfTheDefaultSize(t *testing.T) {
+	client, responder := requestCoreClient(t)
+	subject := DeliverSubject("ses_allocation")
+	if _, err := responder.Subscribe(subject, func(msg *nats.Msg) { _ = msg.Respond(nil) }); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := responder.Flush(); err != nil {
+		t.Fatalf("flush the subscription: %v", err)
+	}
+	const requests = 64
+	perRequest := func(request func(ctx context.Context) error) uint64 {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := request(ctx); err != nil {
+			t.Fatalf("warm-up request: %v", err)
+		}
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range requests {
+			if err := request(ctx); err != nil {
+				t.Fatalf("request: %v", err)
+			}
+		}
+		runtime.ReadMemStats(&after)
+		return (after.TotalAlloc - before.TotalAlloc) / requests
+	}
+	probe := perRequest(func(ctx context.Context) error {
+		_, err := client.RequestCore(ctx, subject, probeHeader)
+		return err
+	})
+	confirmed := perRequest(func(ctx context.Context) error {
+		_, err := client.requestConfirmed(ctx, subject, nil)
+		return err
+	})
+	t.Logf("bytes allocated per request: RequestCore %d, requestConfirmed %d", probe, confirmed)
+	if confirmed < 512<<10 {
+		t.Fatalf("requestConfirmed allocated %d bytes per request, under its 512 KiB channel, so this measurement cannot see the channel", confirmed)
+	}
+	if probe > 64<<10 {
+		t.Fatalf("RequestCore allocated %d bytes per request, want at most 64 KiB", probe)
+	}
+}
+
 func TestSubjectContainsFollowsNATSWildcards(t *testing.T) {
 	for _, tc := range []struct {
 		pattern, subject string
@@ -106,47 +228,65 @@ func TestCheckFilterSubjectRefusesWhatNATSCannotFilterOn(t *testing.T) {
 	}
 }
 
-// What a session may register as an interest (/v1/interests/subscribe): anything but a topic
-// reaching a private stream subject other than its own agent subject: another session's agent
-// subject by name or any wildcard over the agent subjects, a failed-delivery lane (its own
-// included) or a wildcard over them, the Legion controller lane, and wildcards reaching any of
-// those. Its own agent subject is its own only when it is one literal subject.
-func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
-	for _, tc := range []struct {
-		sessionID, topic string
-		want             bool
-	}{
-		{"ses_a", "notifications.agent.ses_a", false},
-		{"ses_a", "notifications.agent.ses_b", true},
-		{"ses_a", "notifications.agent.*", true},
-		{"ses_a", "notifications.agent.>", true},
-		{"ses_a", "notifications.agent.ses_a.>", true},
-		{"ses_a", "notifications.>", true},
-		{"ses_a", "notifications.*.ses_a", true},
-		{"ses_a", "notifications.*.*.x", true},
-		{"ses_a", ">", true},
-		{">", "notifications.agent.>", true},
-		{"*", "notifications.agent.*", true},
-		{"ses_a", "notifications.envoy.exceptions.notifications.agent.ses_a", true},
-		{"ses_a", "notifications.envoy.exceptions.notifications.agent.ses_b", true},
-		{"ses_a", "notifications.envoy.exceptions.notifications.agent.>", true},
-		{"ses_a", "notifications.envoy.exceptions.>", true},
-		{"ses_a", "notifications.envoy.>", true},
-		{"ses_a", "notifications.legion.ACME.controller", true},
-		{"ses_a", "notifications.legion.>", true},
-		{"ses_a", "notifications.*.ACME.controller", true},
-		{"ses_a", "notifications.agent", false},
-		{"ses_a", "notifications.*", false},
-		{"ses_a", "notifications.legion", false},
-		{"ses_a", "notifications.dispatch.issue.KEY-1.>", false},
-		{"ses_a", "notifications.github.acme.widgets.pr.7.>", false},
-		{"ses_a", "notifications.team.x.>", false},
-		{"ses_a", "notifications.role.reviewer", false},
-		{"ses_a", "notifications.envoy.exceptions.notifications.role.reviewer", false},
-		{"ses_a", "notifications.exceptions.agent.ses_b", false},
+// ControllerNoticeRole pairs one project's controller notice lane with the role token its holder
+// claims, from the project token the lane names, so the listener never builds the two strings
+// side by side. Only a literal lane of the family pairs: a wildcard, a bare prefix, an issue
+// notice and a longer subject name no role.
+func TestControllerNoticeRolePairsALaneWithItsRoleToken(t *testing.T) {
+	for topic, want := range map[string]string{
+		"notifications.legion.ACME.controller":      "legion-ACME-controller",
+		"notifications.legion.omp.controller":       "legion-omp-controller",
+		"notifications.legion.ACME.LEGION-208":      "",
+		"notifications.legion.*.controller":         "",
+		"notifications.legion.>":                    "",
+		"notifications.legion..controller":          "",
+		"notifications.legion.controller":           "",
+		"notifications.legion.ACME.x.controller":    "",
+		"notifications.agent.ses_a":                 "",
+		"notifications.role.legion-ACME-controller": "",
 	} {
-		if got := ReachesPrivateStreamSubject(tc.sessionID, tc.topic); got != tc.want {
-			t.Errorf("ReachesPrivateStreamSubject(%q, %q) = %v, want %v", tc.sessionID, tc.topic, got, tc.want)
+		role, lane := ControllerNoticeRole(topic)
+		if role != want || lane != (want != "") {
+			t.Errorf("ControllerNoticeRole(%q) = %q, %v; want %q, %v", topic, role, lane, want, want != "")
+		}
+	}
+}
+
+// What a session may register as an interest (/v1/interests/subscribe): anything but a topic
+// reaching a private stream subject that is not its own: another session's agent subject by name
+// or any wildcard over the agent subjects, a failed-delivery lane of an agent subject (its own
+// included) or of a team topic, or a wildcard over either, a controller notice lane of a project
+// whose controller role it does not hold, and wildcards reaching any of those. Its own agent
+// subject is its own only when it is one literal subject, and so is the notice lane of the
+// project whose controller role its claims name: the holder registers that lane because the
+// notices reach it through its own consumer alone (INFRA-771), while another project's
+// controller lane, and every other private subject, stay out of a controller's registration too.
+// The cases are testdata/private-stream-subjects.json, which @legion/envoy-client's mirror of this
+// rule runs too (stream-topics.test.ts): one file, read by both, so a case added for either is run
+// by both on the next test run and neither can drift from a hand copy. Each case is a session id,
+// a topic, the roles that session holds and the answer.
+func TestReachesPrivateStreamSubjectBoundsInterests(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "private-stream-subjects.json"))
+	if err != nil {
+		t.Fatalf("read the shared cases: %v", err)
+	}
+	var cases []struct {
+		SessionID string   `json:"sessionID"`
+		Topic     string   `json:"topic"`
+		Roles     []string `json:"roles"`
+		Want      bool     `json:"want"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatalf("read the shared cases: %v", err)
+	}
+	// The file held 37 cases when this was written: a read that answers a handful of them, or
+	// none, passes while covering nothing.
+	if len(cases) < 37 {
+		t.Fatalf("the shared cases hold %d rows, want at least 37", len(cases))
+	}
+	for _, tc := range cases {
+		if got := ReachesPrivateStreamSubject(tc.SessionID, tc.Topic, tc.Roles); got != tc.Want {
+			t.Errorf("ReachesPrivateStreamSubject(%q, %q, %v) = %v, want %v", tc.SessionID, tc.Topic, tc.Roles, got, tc.Want)
 		}
 	}
 }

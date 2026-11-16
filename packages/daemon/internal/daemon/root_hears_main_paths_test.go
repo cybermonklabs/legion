@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -92,7 +91,7 @@ type mainPathRig struct {
 	t         *testing.T
 	ctx       context.Context
 	key       string
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	engine    *workflow.Engine
 	admission *admit.Admission
@@ -409,7 +408,7 @@ func readmissionPath(r *mainPathRig) string {
 	return ref
 }
 
-// answeredResumePath: the root waits on a person in awaiting_person, holding no slot, its architect
+// answeredResumePath: the root waits on a person in awaiting_person, keeping its slot, its architect
 // still live; a person answers the question it handed them, which answers the wait, and the
 // admission pass that same fact runs takes its answered branch, which gives the architect a task of
 // its own (workflow.Engine.ResumeAwaitedRoot). That task reaches the live architect at once.

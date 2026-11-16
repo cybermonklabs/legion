@@ -40,7 +40,7 @@ func TestAForwardCarriesTheKeyOfALiveUnnamedMentionBesideASettledOne(t *testing.
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+settled)
 	rig.silent(t, contracts.RoleTopicPrefix+live)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -102,7 +102,7 @@ func TestAForwardCarriesTheKeyOfALapsedUnnamedMentionBesideASettledOne(t *testin
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+settled)
 	rig.silent(t, contracts.RoleTopicPrefix+lapsed)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -161,7 +161,7 @@ func TestAForwardGoesUnkeyedOnceTheOneUnnamedMentionHasSettled(t *testing.T) {
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+mentioned)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)

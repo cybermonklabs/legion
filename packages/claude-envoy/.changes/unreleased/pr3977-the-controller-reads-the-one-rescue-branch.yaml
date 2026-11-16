@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr3977
+body: |-
+  The controller's escalation reference (`skills/legion-controller/references/escalation.md`) now
+  says that the daemon's push check before a pod replacement pushes only the issue's own work, to
+  one branch, `legion/<KEY>-rescue`, which only moves forward. The message the daemon then writes
+  on the issue is a short summary that links an artifact with the full list of branches and
+  commits. A pod of an older image still pushes to branches of its own,
+  `legion/<KEY>-rescue-<pod>-<n>`.

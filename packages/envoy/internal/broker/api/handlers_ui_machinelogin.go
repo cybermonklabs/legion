@@ -1,5 +1,5 @@
 // handlers_ui_machinelogin.go: POST /v1/machine-logins/lookup — resolves a pending machine login
-// by its human-readable confirmation code, for the operator's own page (ruling 13: a direct link
+// by its human-readable confirmation code, for the operator's own page (decision 13: a direct link
 // can never approve a machine login, only the typed code selects it) — and GET
 // /v1/launcher-credentials and POST /v1/launcher-credentials/{id}/revoke-by-approver, the machine
 // logins a person may revoke that can still reach a secret, and the route that ends one. Part of
@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -26,7 +27,7 @@ type lookupMachineLoginBody = wire.MachineLookupRequest
 // lookupMachineLogin resolves a pending machine login by its human-readable confirmation code, the
 // user code the machine's device authorization minted, and is the only route
 // that selects a machine record. Deciding it takes the same code again (CODE_REQUIRED /
-// CODE_MISMATCH), so a direct link to the record can never approve it (ruling 13).
+// CODE_MISMATCH), so a direct link to the record can never approve it (decision 13).
 func (s *server) lookupMachineLogin(w http.ResponseWriter, r *http.Request, _ string) {
 	var body lookupMachineLoginBody
 	if !readJSON(w, r, &body, "INVALID_LOOKUP") {
@@ -105,7 +106,9 @@ func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request
 	if !requireApprover(w, body.Approver) {
 		return
 	}
-	slog.Info("machine login revocation relayed", "caller", callerName, "approver", body.Approver, "credential", id)
+	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
+	// (answer.ClipFields).
+	slog.Info("machine login revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "credential", id})...)
 	s.revokeCredentialAs(w, r, s.deps.Enroll.RevokeCredential, id, body.Approver, record.HumanActor(body.Approver))
 }
 

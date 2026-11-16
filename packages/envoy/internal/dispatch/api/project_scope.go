@@ -15,9 +15,12 @@ package api
 //   - Nothing moves an object between projects. An issue's, an artifact's, an ask's, a comment's
 //     and a message's project is written when the row is inserted and updated by no route: no
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
-//     migrations and the tests, and the two writes that take another issue's project into
-//     account (a parent, a rank neighbour) refuse one outside the issue's own project rather
-//     than move anything. So the project this check reads before the handler runs is the project
+//     migrations and the tests, and the three writes that take another issue's project into
+//     account move nothing: a parent and a rank neighbour outside the issue's own project are
+//     refused, while a `blocked_by` target may be an issue of any project, which the write
+//     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
+//     inside the write because this check reads the project of the object the path names and no
+//     key in the body). So the project this check reads before the handler runs is the project
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
@@ -141,6 +144,8 @@ func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 		return s.projectOfComment, true
 	case addresses(pattern, "/api/v1/messages/{id}"):
 		return s.projectOfMessage, true
+	case addresses(pattern, "/api/v1/results/{id}"):
+		return s.projectOfCheckResult, true
 	}
 	return nil, false
 }
@@ -209,6 +214,20 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 		from messages m
 		left join issues i on i.key = m.issue_key
 		where m.id = $1
+	`, r.PathValue("id")))
+}
+
+// projectOfCheckResult is one hop to the project of the issue the result was recorded on,
+// since the check_results table holds no project of its own
+// (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
+// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
+// and both issues are of one project anyway, since an issue's parent is of its own project.
+func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
+	return scanProjectKey(q.QueryRow(ctx, `
+		select coalesce(i.project_key, '')
+		from check_results c
+		left join issues i on i.key = c.issue_key
+		where c.id = $1
 	`, r.PathValue("id")))
 }
 
@@ -299,8 +318,8 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 	default:
 		// A write that belongs to the calling session (scopeSession, held to its own session by
-		// withinSessionScope), and the issue create, whose project its handler reads from the
-		// body (scopeProjectInBody).
+		// withinSessionScope), the issue create, whose project its handler reads from the body
+		// (scopeProjectInBody), and a row that writes nothing at all (scopeNoWrite).
 		return handler
 	}
 }
@@ -399,8 +418,9 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses
 // gives no class, and one classed scopeProject whose address names no object to resolve. Every
-// other class is decided: scopeDeployment and scopeProjectInBody by the class itself, and
-// scopeSession by withinSessionScope and the handlers behind it.
+// other class is decided: scopeDeployment and scopeProjectInBody by the class itself,
+// scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by writing
+// nothing at all.
 // TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
 // table it names anything in, so a row added later cannot be left undecided. The other direction,
 // a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
@@ -413,7 +433,7 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 		}
 		name := route.Method + " " + route.Pattern
 		switch route.Scope {
-		case scopeSession, scopeDeployment, scopeProjectInBody:
+		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
 			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")

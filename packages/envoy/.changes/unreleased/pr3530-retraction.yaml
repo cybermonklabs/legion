@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+    `POST /api/v1/results/{id}/retract` records that a stored result is wrong, with the reason.
+    The result is neither updated nor deleted: the retraction is a row of its own, both records
+    stay readable, and no surface counts a retracted result as evidence. Three callers are
+    admitted - the session that recorded the result, a session holding the Dispatch claim of the
+    issue it was recorded on, and a caller whose credential carries a person - and the write is
+    taken on a closed issue and for a check of any `when`, because a closed issue's results are
+    the production record. It appends `result.retracted` on the check's issue.
+time: 2026-11-11T10:10:01.000000000Z
+custom:
+    Issue: pr3530

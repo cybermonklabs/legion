@@ -26,14 +26,14 @@ func TestHandleAgentMessage_UnknownSession(t *testing.T) {
 
 	result := session.HandleAgentMessage(
 		newTestEnvelope("agent", "notifications.agent.ses_unknown", "test"),
-		"ses_unknown", "test-machine", nil, nil, 0,
+		"ses_unknown", "test-machine", nil, nil, 0, true,
 	)
 
-	if result.Delivered {
+	if result.Relayed {
 		t.Fatal("should not deliver to unknown session")
 	}
-	if result.ShouldNAK {
-		t.Fatal("unknown session should ACK (skip), not NAK (retry forever)")
+	if result.Err != nil {
+		t.Fatalf("unknown session should ACK (skip), not NAK (retry forever), got error %v", result.Err)
 	}
 }
 
@@ -55,10 +55,10 @@ func TestHandleAgentMessage_StoredInterestOnAnotherMachine(t *testing.T) {
 
 	result := session.HandleAgentMessage(
 		newTestEnvelope("agent", "notifications.agent.ses_target", "test"),
-		"ses_target", "test-machine", interest, resolvedEntry(t, sessions, "ses_target"), 0,
+		"ses_target", "test-machine", interest, resolvedEntry(t, sessions, "ses_target"), 0, true,
 	)
 
-	if !result.OwnedElsewhere || result.Delivered || result.ShouldNAK || result.Err != nil {
+	if !result.OwnedElsewhere || result.Relayed || result.Err != nil {
 		t.Fatalf("result = %+v, want owned elsewhere with no delivery, NAK or error", result)
 	}
 }

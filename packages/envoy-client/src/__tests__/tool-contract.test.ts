@@ -16,7 +16,6 @@ import {
   toMessageMetadata,
 } from "../tool-contract";
 import { ToolInputError } from "../tool-input-errors";
-import { UNRESPONSIVE_RULE } from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: the rule's text must carry that number, and a change of the constant
@@ -124,19 +123,23 @@ describe("envoyToolSpecs", () => {
     expect(publish?.description).toContain("id for dedupe and at for freshness");
     for (const description of [subscribe?.description, publish?.description]) {
       expect(description).toContain(
-        "reach each subscribed session once from the durable consumer its listener relays to it, also one that was away or restarted"
+        "reaches each subscribed session once from the durable consumer its listener relays to it, also one that was away or restarted"
       );
-      expect(description).toContain("Team and other ad-hoc topics are live only.");
+      // A team topic is stored like every other one, and a 200 says the stream stored it.
+      expect(description).toContain("whatsapp, team;");
+      expect(description).toContain(
+        "A 200 means the stream stored the message for each subscribed session's consumer, not that any recipient has read it."
+      );
+      expect(description).not.toContain("live only");
     }
-    expect(publish?.description).toContain("errs naming each session that did not confirm");
+    // The ways a role publish ends in an error: the holder's refusal (403), and the window the
+    // listener spends waiting for the stream (504). No holder is not one of them: the listener
+    // keeps the message for the role's next holder.
     expect(publish?.description).toContain(
-      "a session that stopped without unregistering stays registered until Envoy finds it gone and is named until then. A named session is not a failed delivery to the other sessions"
+      "the holder refuses the message, or the forward is not stored within four seconds"
     );
-    // The listener answers 200 for an unresponsive follower and names it under `unresponsive`
-    // (`cmd/listener/api.go`'s `publishResponse`), so the description must not call that an
-    // error (dispatch://INFRA-392, R7).
     expect(publish?.description).toContain(
-      "A session that is only unresponsive is named as no failure at all. The listener stores that session's copy, asks it for no receipt, and names the session under unresponsive. The accepted publish and the error both name it there. That session takes the message when it answers again."
+      "A notifications. topic no stream subject captures is refused by name: nothing would store it."
     );
   });
 
@@ -144,9 +147,10 @@ describe("envoyToolSpecs", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
 
     expect(publish?.description).toContain("A role message has three possible answers.");
-    // 200: a live holder took it, and must confirm it.
+    // 200: a live holder's own consumer holds the forward, once the stream stored it. No holder
+    // confirms a forward.
     expect(publish?.description).toContain(
-      "the session that holds the role takes the message. That session must confirm the message inside the listener's window, or this tool errs"
+      "a session holds the role, and the stream stores the forward for that holder's consumer"
     );
     // 202: nobody holds the role, so the listener keeps the message. This is not a refusal.
     expect(publish?.description).toContain(
@@ -160,13 +164,26 @@ describe("envoyToolSpecs", () => {
       "A holder that stopped answering keeps its role but was not sent the message, and nothing waits for it, so publish the message again once that holder's holder_state reads live, and start no replacement for that session."
     );
   });
+
+  test("says what the recipient counts and the stopped state mean", () => {
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
+
+    for (const name of ["envoy_sessions", "envoy_role_get", "envoy_send", "envoy_publish"]) {
+      expect(envoyToolSpecs.find((spec) => spec.name === name)?.description).toContain(
+        "A send answered with state stopped means that session is not running: the message is stored for it and reaches it if it runs again within 72 hours, and nothing of its claims changes."
+      );
+    }
+    expect(publish?.description).toContain(
+      "recipients is every session other than you that the message goes to, one that is stopped and gets it when it runs again within 72 hours included, and recipients_connected is how many of those are running now"
+    );
+    expect(publish?.description).toContain("a role topic names its holder instead");
+  });
 });
 
 describe("publishConfirmationText", () => {
   test("says a kept answer is a success, and that the message waits for the role's next holder", () => {
     const line = publishConfirmationText({
-      envelope: { event_id: "event-kept" },
-      unresponsive: [],
+      envelope: { event_id: "event-kept", topic: "notifications.role.architect" },
       kept: true,
     });
 
@@ -179,9 +196,8 @@ describe("publishConfirmationText", () => {
     // `holder` on a kept answer is the session the resolution read, which never got the
     // message, so naming it as the holder would be a lie.
     const line = publishConfirmationText({
-      envelope: { event_id: "event-lapsed" },
+      envelope: { event_id: "event-lapsed", topic: "notifications.role.architect" },
       holder: "ses_lapsed",
-      unresponsive: [],
       kept: true,
     });
 
@@ -192,13 +208,14 @@ describe("publishConfirmationText", () => {
   test("names the holder a delivered role message reached, and nothing else for a plain topic", () => {
     expect(
       publishConfirmationText({
-        envelope: { event_id: "event-held" },
+        envelope: { event_id: "event-held", topic: "notifications.role.architect" },
         holder: "ses_architect",
-        unresponsive: [],
       })
     ).toBe("published event-held. Its role holder is ses_architect.");
     expect(
-      publishConfirmationText({ envelope: { event_id: "event-team" }, unresponsive: [] })
+      publishConfirmationText({
+        envelope: { event_id: "event-team", topic: "notifications.team.deploy-squad.all" },
+      })
     ).toBe("published event-team.");
   });
 
@@ -230,10 +247,12 @@ describe("publishConfirmationText", () => {
 
 describe("sendConfirmationText", () => {
   const envelope = { event_id: "evt_1" };
+  const connected = { state: "connected" } as const;
 
   test("names the recipient's state, and tells the sender an unresponsive one is not a failure", () => {
     expect(
       sendConfirmationText({
+        ...connected,
         envelope,
         recipient: "ses_peer",
         recipientState: "live",
@@ -243,6 +262,7 @@ describe("sendConfirmationText", () => {
     ).toBe("sent evt_1 to ses_peer (live)");
     expect(
       sendConfirmationText({
+        ...connected,
         envelope,
         recipient: "ses_peer",
         recipientState: "unresponsive",
@@ -261,6 +281,7 @@ describe("sendConfirmationText", () => {
   test("says since when an unresponsive recipient has been silent, from the listener's last_seen", () => {
     expect(
       sendConfirmationText({
+        ...connected,
         envelope,
         recipient: "ses_peer",
         recipientState: "unresponsive",
@@ -273,20 +294,7 @@ describe("sendConfirmationText", () => {
 });
 
 describe("publishConfirmationText", () => {
-  const envelope = { event_id: "evt_1" };
-
-  // A publish the listener accepted still leaves a stalled subscriber without the message: the
-  // copy is stored for it. The line both hosts show is where the publishing agent learns that,
-  // so it must name the session and say the rule (dispatch://INFRA-392, R7).
-  test("names each recipient the message was only stored for, and says the rule once", () => {
-    expect(publishConfirmationText({ envelope, unresponsive: [] })).toBe("published evt_1.");
-    expect(publishConfirmationText({ envelope, unresponsive: ["ses_stalled"] })).toBe(
-      `published evt_1. Envoy stored it for ses_stalled. That session stopped answering, so it has not taken it yet. ${UNRESPONSIVE_RULE}`
-    );
-    expect(publishConfirmationText({ envelope, unresponsive: ["ses_one", "ses_two"] })).toBe(
-      `published evt_1. Envoy stored it for ses_one, ses_two. Those sessions stopped answering, so they have not taken it yet. ${UNRESPONSIVE_RULE}`
-    );
-  });
+  const envelope = { event_id: "evt_1", topic: "notifications.role.reviewer" };
 
   test("names a role publish's holder and the state the listener resolved it in", () => {
     expect(
@@ -294,13 +302,22 @@ describe("publishConfirmationText", () => {
         envelope,
         holder: "ses_holder",
         holderState: "live",
-        unresponsive: [],
       })
     ).toBe("published evt_1. Its role holder is ses_holder (live).");
     // A listener predating the field names the holder alone, and the line says only that.
-    expect(publishConfirmationText({ envelope, holder: "ses_holder", unresponsive: [] })).toBe(
+    expect(publishConfirmationText({ envelope, holder: "ses_holder" })).toBe(
       "published evt_1. Its role holder is ses_holder."
     );
+  });
+
+  // A topic publish from a listener that sends no count (one that cannot read the known-session
+  // bucket) is answered with the envelope alone, so the line names the event and nothing else.
+  test("says only that a topic publish was published", () => {
+    expect(
+      publishConfirmationText({
+        envelope: { event_id: "evt_1", topic: "notifications.team.deploy-squad.all" },
+      })
+    ).toBe("published evt_1.");
   });
 });
 
@@ -323,26 +340,39 @@ describe("envoy_send resend", () => {
 
   test("says a resend the listener already held stored no second copy", () => {
     const envelope = { event_id: "event-2" };
-    expect(
-      sendConfirmationText({
-        envelope,
-        recipient: "ses_b",
-        recipientState: "live",
-        confirmed: true,
-        duplicate: true,
-      })
-    ).toBe(
+    const sent = {
+      envelope,
+      recipient: "ses_b",
+      recipientState: "live",
+      confirmed: true,
+      state: "connected",
+    } as const;
+    expect(sendConfirmationText({ ...sent, duplicate: true })).toBe(
       "sent to ses_b once: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy"
     );
-    expect(
-      sendConfirmationText({
-        envelope,
-        recipient: "ses_b",
-        recipientState: "live",
-        confirmed: true,
-        duplicate: false,
-      })
-    ).toBe("sent event-2 to ses_b (live)");
+    expect(sendConfirmationText({ ...sent, duplicate: false })).toBe(
+      "sent event-2 to ses_b (live)"
+    );
+  });
+
+  test("a resend for a stopped target is queued once, and never says sent", () => {
+    const text = sendConfirmationText({
+      envelope: { event_id: "event-2" },
+      recipient: "ses_b",
+      recipientState: "live",
+      confirmed: true,
+      state: "stopped",
+      lastSeen: Date.UTC(2026, 10, 2, 9, 15),
+      duplicate: true,
+    });
+
+    expect(text).toBe(
+      "queued once for ses_b: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy; the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
+    );
+    // The one stored copy waits on a session that is not running, so the line says queued and
+    // leaves out the event id of the copy this resend did not store.
+    expect(text).not.toContain("sent");
+    expect(text).not.toContain("event-2");
   });
 });
 
@@ -486,5 +516,90 @@ describe("sessionsOnMachine", () => {
 
     expect(sessionsOnMachine([hostless], "devbox")).toEqual([hostless]);
     expect(sessionsOnMachine([hostless], "gke-node-7")).toEqual([]);
+  });
+});
+
+describe("sendConfirmationText for a state", () => {
+  const connected = {
+    envelope: { event_id: "evt_01" },
+    recipient: "ses_target",
+    recipientState: "live",
+    confirmed: true,
+    state: "connected",
+    duplicate: false,
+  } as const;
+  // 2026-11-02T09:15:00Z, as the listener sends it: unix milliseconds.
+  const lastSeen = Date.UTC(2026, 10, 2, 9, 15);
+
+  test("a connected target is sent to with its registry state, as before the state existed", () => {
+    expect(sendConfirmationText(connected)).toBe("sent evt_01 to ses_target (live)");
+    expect(sendConfirmationText({ ...connected, confirmed: false })).toBe(
+      "sent evt_01 to ses_target (live) (recipient unconfirmed by listener)"
+    );
+  });
+
+  test("a stopped target is queued, with when it was last seen as a UTC instant", () => {
+    const text = sendConfirmationText({ ...connected, state: "stopped", lastSeen });
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session is stopped (last seen 2026-11-02T09:15:00Z); if it runs again within 72 hours, it gets the message"
+    );
+    // A model that reads "sent" waits for an answer from a session that is not running, so the
+    // queued line says nothing of the kind.
+    expect(text).not.toContain("sent");
+  });
+
+  // The probe wins over the registry's age: an entry whose plugin is gone answers stopped with
+  // `recipient_state` still live or unresponsive, and one past the gone horizon with a record
+  // answers gone. Either way the line is the queued one.
+  test("a stopped target is queued whatever its registry state", () => {
+    for (const recipientState of ["live", "unresponsive", "gone"] as const) {
+      const text = sendConfirmationText({
+        ...connected,
+        recipientState,
+        state: "stopped",
+        lastSeen,
+      });
+
+      expect(text).toMatch(/^queued \S+ for /);
+      expect(text).not.toContain("sent");
+      expect(text).not.toContain(recipientState);
+    }
+  });
+
+  test("a stopped target the listener gives no last seen for is still queued", () => {
+    const text = sendConfirmationText({ ...connected, state: "stopped" });
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session is stopped; if it runs again within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("sent");
+  });
+});
+
+describe("publishConfirmationText counts", () => {
+  const envelope = { event_id: "evt_02", topic: "notifications.team.deploy-squad.all" };
+
+  test("counts the other sessions that get the message, and how many run now", () => {
+    const text = publishConfirmationText({ envelope, recipients: 3, recipientsConnected: 2 });
+
+    expect(text).toBe("published evt_02 to 3 other sessions (2 running now)");
+  });
+
+  test("one other session takes the singular", () => {
+    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 1 })).toBe(
+      "published evt_02 to 1 other session (1 running now)"
+    );
+    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 0 })).toBe(
+      "published evt_02 to 1 other session (0 running now)"
+    );
+  });
+
+  test("a count of none says the message reached nobody, and names the topic", () => {
+    const text = publishConfirmationText({ envelope, recipients: 0, recipientsConnected: 0 });
+
+    expect(text).toBe(
+      "published evt_02; no other session subscribes to notifications.team.deploy-squad.all, so no other session gets it"
+    );
   });
 });

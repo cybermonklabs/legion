@@ -141,7 +141,8 @@ type controllerDaemonOptions struct {
 }
 
 // fakeTx is the no-op pgx.Tx the controller test daemon's state route opens: fixedStateSource
-// never reads from it, and the route's own deferred Rollback is the only call it sees.
+// never reads from it, so the only calls it sees are the route's own — the bound it puts on its
+// statements, and its Commit and deferred Rollback.
 type fakeTx struct{}
 
 func (fakeTx) Begin(context.Context) (pgx.Tx, error) { return fakeTx{}, nil }
@@ -155,8 +156,15 @@ func (fakeTx) LargeObjects() pgx.LargeObjects                         { return p
 func (fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	return nil, errors.New("unexpected prepare")
 }
-func (fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, errors.New("unexpected exec")
+
+// Exec takes the one statement the state route runs of its own on this transaction, the bound on
+// its statements, and refuses anything else by name: every other statement would be a state
+// source's, and this daemon's source runs none.
+func (fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.HasPrefix(sql, "set local statement_timeout = ") {
+		return pgconn.CommandTag{}, nil
+	}
+	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
 }
 func (fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, errors.New("unexpected query")
@@ -718,6 +726,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 		"LEGION_GH_OWNERS_DIR":            filepath.Join(c.defaultDir, "gh"),
 		"LEGION_GH_PATH":                  c.gh,
 		"LEGION_CONTROLLER_START_MESSAGE": daemon.ControllerStartMessage,
+		"PERSON_SIGNIN_TRADE":             "off",
 		"DISPATCH_URL":                    "https://dispatch.test",
 		"DISPATCH_TOKEN_FILE":             filepath.Join(c.dir, "dispatch-token"),
 		"LEGION_CONTROLLER_SECRET_FILE":   filepath.Join(secrets, "legion-demo-controller"),
@@ -1354,6 +1363,53 @@ func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
 		if value, set := env["LEGION_SLACK_CHANNELS"]; set {
 			t.Errorf("the %s's environment carries LEGION_SLACK_CHANNELS=%q", kind, value)
 		}
+	}
+}
+
+// The TypeScript client trades the controller's own Dispatch credential under
+// `dispatch_token_broker` and its Envoy credential wherever no bearer names one, and on a machine
+// where the operator ran `agent-secrets login` it would trade that person's sign-in, found under
+// the operator's HOME, which the controller keeps. So under either Dispatch credential the load
+// probe and the controller are told PERSON_SIGNIN_TRADE=off (controllerPersonTradeVar), and
+// nothing else about how agent-secrets signs: the sign-in directory, the key directory and the
+// helper socket of the operator's shell reach both exactly as that shell has them, so the
+// controller's own agent-secrets reads are signed as they are without the setting.
+func TestControllerStartTurnsThePersonTradeOffAndLeavesAgentSecretsAsTheOperatorsShellHasIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		broker bool
+	}{
+		{"dispatch_token_file", false},
+		{"dispatch_token_broker", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newControllerDaemon(t)
+			c := newControllerStart(t, d, controllerOptions{dispatchBroker: tc.broker})
+			if tc.broker {
+				c.provesAnIdentity(newStubBroker(t, ""))
+			}
+			operator := map[string]string{
+				"AGENT_SECRETS_SIGNIN_DIR":  filepath.Join(c.home, ".local", "state", "agent-secrets", "operator-signins"),
+				"AGENT_SECRETS_KEY_DIR":     filepath.Join(c.home, ".local", "state", "agent-secrets", "operator-keys"),
+				"AGENT_SECRETS_HELPER_SOCK": filepath.Join(c.dir, "operator-helper.sock"),
+			}
+			for name, value := range operator {
+				t.Setenv(name, value)
+			}
+			if code, _, errb := c.run(); code != 0 {
+				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+			}
+			for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
+				if got := env["PERSON_SIGNIN_TRADE"]; got != "off" {
+					t.Errorf("the %s's PERSON_SIGNIN_TRADE = %q, want off: the controller's own credentials would trade the operator's sign-in", kind, got)
+				}
+				for name, want := range operator {
+					if got, set := env[name]; !set || got != want {
+						t.Errorf("the %s's %s = %q (set %v), want the operator's %q: the controller's agent-secrets reads are not this setting's", kind, name, got, set, want)
+					}
+				}
+			}
+		})
 	}
 }
 

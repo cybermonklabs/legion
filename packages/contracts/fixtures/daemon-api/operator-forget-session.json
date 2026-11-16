@@ -16,5 +16,16 @@
     "promptRetires": 0
   },
   "uncertainStreak": 0,
-  "pluginContract": 38
+  "pluginContract": 38,
+  "failure": {
+    "cause": "launch_refused",
+    "detail": "launch failures ran out: resume the pane: the session table holds no such session",
+    "at": "2026-09-22T09:28:41Z",
+    "attempts": {
+      "launchFailures": 3,
+      "deaths": 0,
+      "promptFailures": 0,
+      "promptRetires": 0
+    }
+  }
 }

@@ -11,6 +11,7 @@ import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
@@ -540,10 +541,13 @@ export function parseMachinePath(pathname: string): string | undefined {
 }
 
 /** The project a route is about: a project path's own key, or an issue path's key without its
- *  number (an issue key is `<PROJECT>-<n>`, `issueKeyPattern` above); `undefined` elsewhere. */
+ *  number (`issueProject`, the one key-to-project rule); `undefined` elsewhere. */
 export function routeProjectOf(pathname: string): string | undefined {
   const issueKey = parseIssuePath(pathname)?.key;
-  return parseProjectPath(pathname)?.project ?? issueKey?.slice(0, issueKey.lastIndexOf("-"));
+  return (
+    parseProjectPath(pathname)?.project ??
+    (issueKey === undefined ? undefined : issueProject(issueKey))
+  );
 }
 
 /** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as
@@ -1153,4 +1157,11 @@ export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
  */
 export function routeFillsViewport(pathname: string): boolean {
   return matchPath(AGENT_LIVE_PATH, pathname) !== null;
+}
+
+/** The session whose live view `pathname` names, and `undefined` on every other address. The
+ *  address is read here, beside the pattern, because a surface outside this module holds no
+ *  live route of its own: its link into a live view is `AgentName`'s (`biome.json`). */
+export function liveViewSessionOf(pathname: string): string | undefined {
+  return matchPath(AGENT_LIVE_PATH, pathname)?.params.sessionId;
 }

@@ -141,6 +141,15 @@ func newIssueVolume(t *testing.T) *issueVolume {
 	return v
 }
 
+// runner runs one of the volume's own fixture commands — a git or jj that builds its remote or
+// reads one of its repositories, never the command under test. Every such command wants the same
+// environment, which is this one: fixtureenv.Isolated of a home of its own, so it reaches no
+// workspace, repository, remote, credential or configuration of whoever runs the tests.
+func (v *issueVolume) runner(t *testing.T) fixturegit.Runner {
+	t.Helper()
+	return fixturegit.Isolated(t, t.TempDir())
+}
+
 // withRemote gives the volume's git a real repository to clone: a bare remote whose default branch,
 // defaultBranch, holds one commit, as github.com/acme/widgets would.
 func (v *issueVolume) withRemote(t *testing.T, defaultBranch string) *issueVolume {
@@ -156,7 +165,7 @@ func (v *issueVolume) withRemote(t *testing.T, defaultBranch string) *issueVolum
 		{v.realJJ, "git", "remote", "add", "origin", remote, "-R", seed},
 		{v.realJJ, "git", "push", "--remote", "origin", "--bookmark", defaultBranch, "-R", seed},
 	} {
-		fixturegit.Isolated(t, t.TempDir()).Run(dir, argv...)
+		v.runner(t).Run(dir, argv...)
 	}
 	v.env["WINIT_REMOTE"] = remote
 	v.defaultBranch = defaultBranch
@@ -239,7 +248,7 @@ func (v *issueVolume) jj(t *testing.T, args ...string) string {
 	// which holds them all: jj searches upward from the directory it runs in for the closest .jj,
 	// so a command with no Dir would open the workspace the test process stands in, which in a
 	// Legion issue pod is a real one.
-	return strings.TrimSpace(fixturegit.Isolated(t, t.TempDir()).Out(v.root, append([]string{v.realJJ}, args...)...))
+	return strings.TrimSpace(v.runner(t).Out(v.root, append([]string{v.realJJ}, args...)...))
 }
 
 func (v *issueVolume) git(t *testing.T, args ...string) string {
@@ -256,7 +265,9 @@ func (v *issueVolume) gitInput(t *testing.T, input string, args ...string) strin
 	// directory: the helper runs in the volume's root rather than wherever the test process
 	// stands.
 	command.Dir = v.root
-	command.Env = fixtureenv.Isolated(t.TempDir())
+	// The command carries its own standard input, which a fixturegit.Runner does not take, so it
+	// is built here and takes that runner's environment alone (v.runner).
+	command.Env = v.runner(t).Env
 	command.Stdin = strings.NewReader(input)
 	output, err := command.Output()
 	if err != nil {
@@ -752,7 +763,7 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 			calls := len(v.jjCalls(t))
 
 			code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-			if want := "refusing the git worktrees of " + v.clone() + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
+			if want := "refusing the git worktrees of " + filepath.Join(v.clone(), ".git") + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
 				t.Fatalf("exit %d, stdout %q, stderr %q, want exit 1 with %q", code, stdout, stderr, want)
 			}
 			if _, err := os.Lstat(victim); err != nil {

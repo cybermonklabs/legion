@@ -97,12 +97,12 @@ func TestAKeptCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey(t *test
 	database := migratedDispatchDatabase(t)
 	broker := events.NewBroker()
 	outboxRoleIssue(t, database, key, role)
-	// Each mentioned session's host answers on its own agent subject, as a self-subscribed
-	// session does, so the outbox's copy of the comment to each of them is taken and the event
-	// publishes; the role itself stays unclaimed, so its route's copy is kept for its next
-	// holder.
-	answeredForwards(t, harness, first)
-	secondsFrames := answeredForwards(t, harness, second)
+	// Each mentioned session's copy is published into the stream on its own agent subject, as a
+	// session's consumer is delivered from, so the outbox's copy of the comment to each of them
+	// is taken and the event publishes; the role itself stays unclaimed, so its route's copy is
+	// kept for its next holder.
+	takenForwards(t, harness, first)
+	secondsFrames := takenForwards(t, harness, second)
 	_, event, firstKey, secondKey := outboxFailedRoleComment(t, database, broker, key, role, first, second)
 	runOutbox(t, harness, database, broker)
 

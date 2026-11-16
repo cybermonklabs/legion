@@ -371,6 +371,13 @@ func openAPIStructOf(t reflect.Type) reflect.Type {
 // its Go field carries `required:"true"`, which jsonschema-go has read into the parent's required
 // before this runs. A field rawFieldSchemas names is left out of required by its json tag alone —
 // absent is one of its three states — and carries the schema that table gives it.
+//
+// A name is added to required once however often it is reflected. A shaped read shadows a field
+// of the row it embeds - architectureTreeRead declares `components` in front of the
+// model.ArchitectureTree it embeds - and the reflector walks the embedded struct's fields into
+// the object beside the shadowing one, so both reach this with the same json name. JSON Schema
+// 2020-12 §6.5.3 says the entries of required are unique, and the first of the two keeps the
+// place the emitter gave it.
 func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 	if !p.Processed {
 		return nil
@@ -398,7 +405,8 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 		return err
 	}
 	if !openAPIOmitsEmpty(p.Field.Tag.Get("json")) {
-		if !e.requestBodies[openAPIStructOf(p.ParentSchema.ReflectType)] {
+		if !e.requestBodies[openAPIStructOf(p.ParentSchema.ReflectType)] &&
+			!slices.Contains(p.ParentSchema.Required, p.Name) {
 			p.ParentSchema.Required = append(p.ParentSchema.Required, p.Name)
 		}
 		openAPIAllowNullRef(p.PropertySchema, p.Field.Type)
@@ -861,12 +869,12 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 		}
 	}
 	if shape.Opaque != "" {
-		if shape.OpaqueContentType == "" {
+		if len(shape.OpaqueContentTypes) == 0 {
 			return nil, fmt.Errorf("%s %s answers bytes Dispatch does not model and names no "+
-				"content type for them (routeShape.OpaqueContentType)", route.Method, route.Pattern)
+				"content type for them (routeShape.OpaqueContentTypes)", route.Method, route.Pattern)
 		}
 		success.description = shape.Opaque
-		success.opaque = append(success.opaque, shape.OpaqueContentType)
+		success.opaque = append(success.opaque, shape.OpaqueContentTypes...)
 	}
 	for _, also := range shape.Also {
 		if err := add(also.Status, also.Body); err != nil {

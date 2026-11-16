@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptFunctions } from "./script-functions";
 
 // ensure_project, write_dispatch_header and dispatch_agent (lib/workflow.sh) against a fake curl on
 // PATH: it logs every invocation, writes FAKE_CURL_BODY to whatever file follows -o, prints
@@ -33,8 +34,9 @@ printf '%s' "$FAKE_CURL_STATUS"
 
 // The stage scripts' shell options, ERR trap, and check helpers, then the lib. note, fail and
 // scrub live in stage4b-sandbox-tree.sh, not workflow.sh, so the prelude stands in for them: note
-// and scrub are stage4b's own (scrub here is the identity, since no service host is under test),
-// fail matches stage4b's exact wording.
+// is stage4b's own, fail matches stage4b's exact wording, and scrub is the identity, which the
+// redaction rows below replace with a stand-in that marks what passes through it, or with
+// stage4b's own definition.
 const prelude = `set -Eeuo pipefail
 check=prerequisites
 note() { printf '   %s\\n' "$*"; }
@@ -49,10 +51,14 @@ repo=sjawhar/legion-smoke ptoken=s3test ok=
 let runs = 0;
 // The proof human's session every write names as its actor, as stage4b-sandbox-tree.sh sets it.
 const proofActor = "legion-e2e4b-proof-human-4242";
+// The person a created project names as its default assignee, which stage4b-sandbox-tree.sh reads
+// from LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE; null leaves dispatch_default_assignee unset.
+const proofAssignee = "smoke-owner@example.com";
 function run(
   script: string,
   fake: { status?: string; body?: string; exit?: number; error?: string } = {},
-  actor = proofActor
+  actor = proofActor,
+  assignee: string | null = proofAssignee
 ) {
   const work = join(dir, `run-${++runs}`);
   const log = join(dir, `calls-${runs}`);
@@ -66,6 +72,7 @@ function run(
       "-c",
       prelude +
         `work=${JSON.stringify(work)} dispatch_token_file=${JSON.stringify(tokenFile)} project=LPROOF2 dispatch_actor=${JSON.stringify(actor)}\n` +
+        (assignee === null ? "" : `dispatch_default_assignee=${JSON.stringify(assignee)}\n`) +
         script,
     ],
     {
@@ -107,8 +114,10 @@ describe("write_dispatch_header", () => {
 
 describe("ensure_project", () => {
   // Production Dispatch answers a bearer that names no session 400 ACTOR_KIND before it reads the
-  // key, so a body without the actor would fail every run against it.
-  test("201: a created project is ready; the body posts {key, name} and the proof human's actor", () => {
+  // key, so a body without the actor would fail every run against it; and it answers a bearer's
+  // create naming no person 400 INVALID_PROJECT, since that bearer acts for nobody, so the body
+  // names the run's default assignee too.
+  test("201: a created project is ready; the body posts {key, name}, the default assignee and the proof human's actor", () => {
     const r = run("write_dispatch_header\nensure_project", {
       status: "201",
       body: '{"key":"LPROOF2","name":"LPROOF2","created_at":"2026-10-11T00:00:00Z"}',
@@ -122,11 +131,46 @@ describe("ensure_project", () => {
     expect(r.calls[0]).toContain(`-H @${r.work}/dispatch-human-header `);
     expect(r.bearer).toBe("Authorization: Bearer stage4b-fake-bearer\n");
     expect(r.calls[0]).toContain(
-      `{"key":"LPROOF2","name":"LPROOF2","actor":{"kind":"session","id":"${proofActor}"}}`
+      `{"key":"LPROOF2","name":"LPROOF2","default_assignee":"${proofAssignee}","actor":{"kind":"session","id":"${proofActor}"}}`
     );
   });
 
-  test("an empty dispatch_actor posts {key, name} alone, as a scratch Dispatch's human header writes", () => {
+  // The create resolves the person before it reads the key, so a body naming none is refused
+  // 400 INVALID_PROJECT for a project that already exists as well; ensure_project refuses it
+  // first, naming the operator's input, and makes no call.
+  test("an unset default assignee fails before any call, naming LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE", () => {
+    const r = run("write_dispatch_header\nensure_project", { status: "201" }, proofActor, null);
+    expect(r.status).toBe(1);
+    expect(r.calls).toHaveLength(0);
+    expect(r.stderr.trimEnd().split("\n")).toEqual([
+      "CHECK prerequisites: FAIL: LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset (dispatch_default_assignee): Dispatch refuses a project the agents' bearer creates naming no default assignee, so LPROOF2 cannot be ensured",
+    ]);
+  });
+
+  test("an empty default assignee is refused as unset", () => {
+    const r = run("write_dispatch_header\nensure_project", { status: "201" }, proofActor, "");
+    expect(r.status).toBe(1);
+    expect(r.calls).toHaveLength(0);
+    expect(r.stderr).toContain("LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset");
+  });
+
+  test("the body carries the person the caller names, and only that person", () => {
+    const r = run(
+      "write_dispatch_header\nensure_project",
+      {
+        status: "201",
+        body: '{"key":"LPROOF2","name":"LPROOF2","default_assignee":"lane-two@example.com"}',
+      },
+      proofActor,
+      "lane-two@example.com"
+    );
+    expect(r.status).toBe(0);
+    expect(r.calls).toHaveLength(1);
+    expect(r.calls[0]).toContain('"default_assignee":"lane-two@example.com"');
+    expect(r.calls[0]).not.toContain(proofAssignee);
+  });
+
+  test("an empty dispatch_actor posts {key, name, default_assignee} with no actor, as a scratch Dispatch's human header writes", () => {
     const r = run(
       "write_dispatch_header\nensure_project",
       { status: "201", body: '{"key":"LPROOF2","name":"LPROOF2"}' },
@@ -134,7 +178,9 @@ describe("ensure_project", () => {
     );
     expect(r.status).toBe(0);
     expect(r.calls).toHaveLength(1);
-    expect(r.calls[0]).toContain('{"key":"LPROOF2","name":"LPROOF2"}');
+    expect(r.calls[0]).toContain(
+      `{"key":"LPROOF2","name":"LPROOF2","default_assignee":"${proofAssignee}"}`
+    );
     expect(r.calls[0]).not.toContain("actor");
   });
 
@@ -155,6 +201,124 @@ describe("ensure_project", () => {
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("project LPROOF2 already exists");
+    expect(r.calls[0]).toContain(`"default_assignee":"${proofAssignee}"`);
+  });
+
+  // A refused create's body reaches the FAIL line through the caller's scrub, the one filter that
+  // keeps the run's private hosts and its default assignee out of what it prints, on both lines
+  // that print a body: here a stand-in that brackets whatever passes through it.
+  for (const [status, body, line] of [
+    [
+      "400",
+      `{"error":"\\"${proofAssignee}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
+      "Dispatch answered 400 creating project LPROOF2: ",
+    ],
+    [
+      "409",
+      '{"error":"something else entirely","code":"SOMETHING_ELSE"}',
+      "Dispatch answered 409 creating LPROOF2, not PROJECT_EXISTS: ",
+    ],
+  ] as const) {
+    test(`${status}: the refusal's body is printed through scrub`, () => {
+      const r = run(
+        `scrub() { printf 'scrubbed['; cat; printf ']'; }\nwrite_dispatch_header\nensure_project`,
+        { status, body }
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr.trimEnd().split("\n")).toEqual([
+        `CHECK prerequisites: FAIL: ${line}scrubbed[${body}]`,
+      ]);
+    });
+  }
+
+  // A person nobody signed in as is refused before the key is read, so even an existing project
+  // answers it rather than 409. Dispatch's body names the email it refused as the operator spelled
+  // it (allowedLogin, packages/envoy/internal/dispatch/api/issue_assignee.go), and stage4b's own
+  // scrub, taken from its text, prints that spelling as the variable's name and the rest of the
+  // line as it was, so a run's log carries no person's email.
+  const stage4bScrub = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"))(
+    "scrub"
+  );
+  const operatorSpelling = "Smoke.Owner+e2e@Example.com";
+
+  test("400 ASSIGNEE_NOT_ALLOWED through stage 4b's scrub names the variable, never the email", () => {
+    const r = run(
+      `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
+      {
+        status: "400",
+        body: `{"error":"\\"${operatorSpelling}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
+      },
+      proofActor,
+      operatorSpelling
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr.trimEnd().split("\n")).toEqual([
+      'CHECK prerequisites: FAIL: Dispatch answered 400 creating project LPROOF2: {"error":"\\"<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}',
+    ]);
+  });
+
+  // Dispatch writes its error bodies with Go's encoding/json, which escapes `&`, `<` and `>` as
+  // `\u0026`, `\u003c` and `\u003e`: measured against a local Dispatch at 4198dff4, a create
+  // naming "a&b@example.com" answered `"\"a\u0026b@example.com\" has not signed in to Dispatch"`.
+  // An email may hold `&`, so the body spells it differently from the variable, and the FAIL line
+  // must still name the variable and never the email.
+  test("400 ASSIGNEE_NOT_ALLOWED for an email Dispatch's JSON escapes still names the variable, never the email", () => {
+    const person = "Smoke&Owner@Example.com";
+    const r = run(
+      `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
+      {
+        status: "400",
+        body: '{"code":"ASSIGNEE_NOT_ALLOWED","error":"\\"Smoke\\u0026Owner@Example.com\\" has not signed in to Dispatch"}',
+      },
+      proofActor,
+      person
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
+    expect(r.stderr).not.toContain("Owner@Example.com");
+  });
+
+  // allowedLogin names the email with `%q`, so a `"` or `\` in it is escaped once by Go's quoting
+  // and again by the JSON body: the refusal carries `\\\"` and `\\\\` where the email held `"`
+  // and `\`. scrub must hide that spelling too.
+  test("400 ASSIGNEE_NOT_ALLOWED for an email Go quotes and JSON escapes again names the variable, never the email", () => {
+    const person = 'Smoke"Quoted\\Owner@Example.com';
+    const goQuoted = `"${person.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+    const r = run(
+      `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
+      {
+        status: "400",
+        body: JSON.stringify({
+          code: "ASSIGNEE_NOT_ALLOWED",
+          error: `${goQuoted} has not signed in to Dispatch`,
+        }),
+      },
+      proofActor,
+      person
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
+    expect(r.stderr).not.toContain("Owner@Example.com");
+  });
+
+  // The email is matched in any case, as the hosts are, and literally: each character sed's regular
+  // expression or its `#` delimiter reads as special stands for itself, so a line that differs only
+  // where the email holds `.` keeps it, and a host still names its own variable.
+  test("stage 4b's scrub matches the default assignee in any case and literally, beside the hosts", () => {
+    const person = "a.b*c[d]^e$f#g\\h+i@Example.com";
+    const line = `${person.toUpperCase()} aXb*c[d]^e$f#g\\h+i@Example.com DISPATCH.example:443 ${person}`;
+    const result = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\ndispatch_default_assignee=$PERSON\nprintf '%s\\n' "$LINE" | scrub`,
+      ],
+      { env: { PATH: "/usr/bin:/bin", PERSON: person, LINE: line } }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(
+      "<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE> aXb*c[d]^e$f#g\\h+i@Example.com <LEGION_E2E_DISPATCH_URL>:443 <LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>\n"
+    );
   });
 
   // A 409 could in principle mean something other than this key's own conflict; ensure_project

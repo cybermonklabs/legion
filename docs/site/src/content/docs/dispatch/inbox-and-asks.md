@@ -129,25 +129,28 @@ across it, the rows stay put until the pointer rests, leaves the list, or you cl
 
 ### Whose asks you see
 
-Every ask waits on one person: whoever it was handed to, and the assignee of its issue until
-somebody hands it on. The **Assignee** field inside
+Every ask waits on one person: whoever it was handed to, else the assignee of its issue, else the
+project's default assignee. Every project names a default assignee, so every ask reaches
+somebody. The **Assignee** field inside
 **Filter** picks whose asks the Inbox holds. Its button reads `Assignee · you` while it is on you, and
 the list it opens offers **Unassigned** and everyone who has signed in to Dispatch. Pick as many
 people as you like; the button then names the one you picked, or how many.
 
 - The Inbox opens on your own asks every visit: the asks waiting on you. Dispatch
   remembers nothing between visits.
-- Add **Unassigned** to see the asks nobody waits on — those nobody was handed on issues with no
-  assignee, and the asks on project documents that nobody was handed.
+- **Unassigned** holds the asks Dispatch names no person for, and there are none of those while
+  every project names a default assignee, so it shows an empty list.
 - Clear the filter to see every open ask.
 
-An ask nobody waits on has an **Assign to me** button: at the head of the right
-column, and on the ask's own row where there is no second column. Choosing it makes the issue
-yours, so the ask is in your own list, and your counts, from then on. An ask on a project
-document belongs to no issue and has no such button.
+The **Assign to me** button is on an ask Dispatch names no person for, so no ask carries it while
+every project names a default assignee. Choosing it makes the issue yours, so the ask is in your
+own list, and your counts, from then on. An ask on a project document belongs to no issue and
+never has one.
 
 Every open ask carries **Asked of**, a badge naming the person it waits on and a picker that hands
-it to somebody else. It is on the card wherever the question is drawn: the Inbox, the issue page
+it to somebody else. The badge names a person on every ask: an ask nobody was handed shows the
+issue's assignee, and one on an issue nobody holds, or on a project document, shows the project's
+default assignee. It is on the card wherever the question is drawn: the Inbox, the issue page
 and a document's margin. Hand a question on and it leaves your list and joins theirs, wherever its
 issue goes after that; hand it back to the issue's assignee and it follows the issue again. Under
 the badge the card says who handed it on and when.

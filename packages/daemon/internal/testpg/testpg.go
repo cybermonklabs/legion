@@ -9,5 +9,6 @@
 // internal/testpg/testdb, which imports nothing of this module and so is open to every package,
 // internal/store among them: an empty database (testdb.Database), a file holding its DSN
 // (testdb.DSNFile), one database for a whole run (testdb.RunDatabaseMain, testdb.RunDatabaseFor),
-// and a database reached across a network's delay (testdb.Delayed).
+// and a database reached across a network's delay (testdb.Delayed), and the drop that waits an
+// autovacuum worker out (testdb.Drop), which every clone of this package's template goes through.
 package testpg

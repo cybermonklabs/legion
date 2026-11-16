@@ -1,11 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { dispatchCliLive, useDispatchCliDirectories } from "../../test/dispatch-cli-live";
 import {
   type DispatchStack,
   dispatchStackEnabled,
   startDispatchStack,
-  useDispatchStackDirectory,
 } from "../../test/dispatch-stack";
 
 // The design-gate clause of a document write's advice, over the whole path it is printed through:
@@ -20,8 +18,6 @@ import {
 // deployment configured. Everything else a row needs - the project, the issue, the document and
 // the approval the write supersedes - is made over the routes a person reaches.
 
-const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-
 /** The person who approves every document below, as the server's header identity names them. */
 const PERSON = "alice";
 /** The session the CLI acts as, which is also the session a plan review is recorded by. */
@@ -32,10 +28,17 @@ const PROJECT = "DGATE";
 const FIRST_TREE = "GATEA";
 const SECOND_TREE = "GATEB";
 
-/** The second sentence of a superseded-approval line, printed whether a gate records the document
- *  or not. */
+/** The second sentence of a superseded-approval line for a person's approval of any document but
+ *  a plan, printed whether a gate records the document or not. */
 const NEXT_STEP =
   "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+
+/** The second sentence for a plan, whoever approved it: Dispatch refuses a request for a person's
+ *  approval of any plan, so it names the command that records a plan review's approval of the
+ *  version the write stored. */
+function planNextStep(issue: string, version: number): string {
+  return `A plan is approved by its plan review, and Dispatch refuses a request for a person's approval of a plan. Once a plan review approves version ${version}, record it with \`dispatch plan-approve --issue ${issue} --version ${version}\`.`;
+}
 
 /** The first sentence: the version this write stored and the approval it staled. */
 function storedSentence(version: number, approvedBy: string): string {
@@ -54,77 +57,22 @@ interface PublishedGate {
   readonly artifact_id: string;
 }
 
-/** An issue as its creation answers it. */
-interface CreatedIssue {
-  readonly key: string;
-  readonly primary_artifact_id: string;
-}
-
-/** A document as its upload answers it. */
-interface UploadedDocument {
-  readonly artifact: { readonly id: string };
-  readonly version: { readonly number: number };
-}
-
 // Reserved here, at the file's module scope: the file's own `afterAll` removes each once the
 // `describe` below has stopped the server writing into it.
-const stackDirectory = useDispatchStackDirectory();
-const stateDirectory = temporaryDirectory("dispatch-cli-live-state");
+const directories = useDispatchCliDirectories();
 
 describe.skipIf(!dispatchStackEnabled)(
   "the design-gate clause the real CLI prints against a real Dispatch",
   () => {
     let stack: DispatchStack | undefined;
 
-    /** The running server, or the error that says why no row can run. */
-    function server(): DispatchStack {
-      if (stack === undefined) throw new Error("the Dispatch stack did not start");
-      return stack;
-    }
-
-    async function request<T>(
-      method: string,
-      route: string,
-      body: unknown,
-      headers: Readonly<Record<string, string>>
-    ): Promise<T> {
-      const response = await fetch(`${server().url}${route}`, {
-        method,
-        headers: { "Content-Type": "application/json", ...headers },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`${method} ${route}: ${response.status} ${text}`);
-      return JSON.parse(text) as T;
-    }
-
-    /** A person's own write, which the server's header identity takes as that person. */
-    const asPerson = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-      request<T>(method, route, body, { "X-Dispatch-User": PERSON });
-
-    /** A machine's write, over the credential the deployment configured, as the daemon publishes
-     *  a gate record and as an agent records a plan review. */
-    const asMachine = <T>(method: string, route: string, body?: unknown): Promise<T> =>
-      request<T>(method, route, body, { Authorization: `Bearer ${server().token}` });
-
-    /** An issue in the workflow, which is where a tree whose gate holds a READY back stands: an
-     *  issue Dispatch still shows in `triage` is out of the workflow, and the advice names no
-     *  gate of one. */
-    const createIssue = async (
-      project: string,
-      title: string,
-      parent?: string
-    ): Promise<CreatedIssue> => {
-      const issue = await asPerson<CreatedIssue>("POST", "/api/v1/issues", {
-        project,
-        title,
-        force: true,
-        spec: "# Design\n\nThe design, as approved.\n",
-        ...(parent === undefined ? {} : { parent }),
-      });
-      await asPerson("PATCH", `/api/v1/issues/${issue.key}`, { status: "in_progress" });
-      return issue;
-    };
+    const { asPerson, asMachine, createIssue, upload, docEdit, read } = dispatchCliLive({
+      stack: () => stack,
+      session: SESSION,
+      person: PERSON,
+      spec: "# Design\n\nThe design, as approved.\n",
+      directories,
+    });
 
     /** The person's approval of a document's latest version, and the version it pinned. */
     async function approve(artifactId: string): Promise<number> {
@@ -143,51 +91,8 @@ describe.skipIf(!dispatchStackEnabled)(
         actor: { kind: "session", id: SESSION },
       });
 
-    /**
-     * One insert at the end of a document, run through the real CLI entry as an agent's shell runs
-     * it, and the output it printed. A refusal, or anything on standard error, fails the row here:
-     * every row below is about the line a write that went through printed.
-     */
-    async function docEdit(issue: string, artifact: string, sentence: string): Promise<string> {
-      const child = Bun.spawn(
-        [
-          process.execPath,
-          ENTRY,
-          "doc-edit",
-          "--issue",
-          issue,
-          "--artifact",
-          artifact,
-          "--ops-json",
-          JSON.stringify([{ op: "insert", markdown: sentence, after: "end" }]),
-        ],
-        {
-          env: {
-            PATH: process.env.PATH,
-            HOME: stateDirectory,
-            DISPATCH_STATE_DIR: stateDirectory,
-            DISPATCH_HOST: "omp",
-            DISPATCH_SESSION_ID: SESSION,
-            DISPATCH_URL: server().url,
-            DISPATCH_TOKEN: server().token,
-          },
-          stdout: "pipe",
-          stderr: "pipe",
-        }
-      );
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ]);
-      if (code !== 0 || stderr !== "") {
-        throw new Error(`dispatch doc-edit on ${issue} exited ${code}: ${stderr}${stdout}`);
-      }
-      return stdout.trimEnd();
-    }
-
     beforeAll(async () => {
-      stack = await startDispatchStack({ work: stackDirectory });
+      stack = await startDispatchStack({ work: directories.stack });
       for (const key of [PROJECT, FIRST_TREE, SECOND_TREE]) {
         await asPerson("POST", "/api/v1/projects", { key, name: `${key} project` });
         // The deployment's own gated steps, which its daemon publishes beside the gate records
@@ -205,11 +110,7 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("a Verification document no gate records names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved verification");
-      const document = await asPerson<UploadedDocument>(
-        "POST",
-        `/api/v1/issues/${issue.key}/artifacts`,
-        { name: "verification.md", content: "# Verification\n\nOne check.\n" }
-      );
+      const document = await upload(issue.key, "verification.md", "# Verification\n\nOne check.\n");
       const approved = await approve(document.artifact.id);
 
       const printed = await docEdit(issue.key, document.artifact.id, "One more check.");
@@ -220,12 +121,9 @@ describe.skipIf(!dispatchStackEnabled)(
 
     test("a plan a plan review approved names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved plan");
-      const plan = await asPerson<UploadedDocument>(
-        "POST",
-        `/api/v1/issues/${issue.key}/artifacts`,
-        { name: "plan.md", content: "# Plan\n\nOne task.\n" }
-      );
-      // A plan is approved by the plan review an agent records over it, never by a person.
+      const plan = await upload(issue.key, "plan.md", "# Plan\n\nOne task.\n");
+      // The plan review an agent records over a plan approves it; the next row's person approves
+      // one from its document header.
       await asMachine("POST", `/api/v1/artifacts/${plan.artifact.id}/plan-reviews`, {
         actor: { kind: "session", id: SESSION },
         version: plan.version.number,
@@ -233,8 +131,37 @@ describe.skipIf(!dispatchStackEnabled)(
 
       const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
 
-      expect(printed).toEndWith(`${storedSentence(plan.version.number + 1, SESSION)} ${NEXT_STEP}`);
+      const stored = plan.version.number + 1;
+      expect(printed).toEndWith(
+        `${storedSentence(stored, SESSION)} ${planNextStep(issue.key, stored)}`
+      );
       expect(printed).not.toContain("design gate");
+    }, 120_000);
+
+    // Dispatch refuses a request for a person's approval on every plan (409
+    // PLAN_APPROVED_BY_REVIEW), whoever approved it, and a person approves a plan from its
+    // document header: the reviews route has no plan check. So a write that staled a person's
+    // approval of a plan names `dispatch plan-approve`, and so does the plan's `Approval:` line,
+    // each read off the role of the plan Dispatch answers.
+    test("a plan a person approved names dispatch plan-approve, in the write and on its Approval line", async () => {
+      const issue = await createIssue(PROJECT, "Plan a person approved");
+      const plan = await upload(issue.key, "plan.md", "# Plan\n\nOne task.\n");
+      const approved = await approve(plan.artifact.id);
+
+      const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
+
+      const stored = approved + 1;
+      expect(printed).toEndWith(
+        `${storedSentence(stored, PERSON)} ${planNextStep(issue.key, stored)}`
+      );
+      expect(printed).not.toContain("request-approval");
+
+      const summary = await read(issue.key, "plan.md");
+      const line = summary.split("\n").find((row) => row.startsWith("Approval:"));
+      expect(line).toStartWith(
+        `Approval: approved v${approved} by ${PERSON}, changed since (now v${stored}) - a plan review of this version records a new approval with dispatch plan-approve, content sha256:`
+      );
+      expect(line).toMatch(/, content sha256:[0-9a-f]{64}$/);
     }, 120_000);
 
     test("a child issue's own document, which no gate records, names none", async () => {

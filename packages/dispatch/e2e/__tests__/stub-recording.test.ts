@@ -75,6 +75,10 @@ function recorded(options: {
             },
             headers: [
               { name: "Date", value: options.at ?? "Mon, 09 Nov 2026 00:00:00 GMT" },
+              // The server compresses an answer this size, and the HAR holds the body decoded,
+              // so these two count and name a form no entry carries.
+              { name: "Content-Encoding", value: "gzip" },
+              { name: "Content-Length", value: "61" },
               { name: "Content-Type", value: "application/json" },
             ],
             status: options.status ?? 200,
@@ -99,6 +103,15 @@ describe("a committed recording", () => {
     // would make the page render an invalid date. Masking belongs to the comparison alone.
     const body = '{"as_of":"2026-11-09T00:51:05.715869Z","rows":[]}';
     expect(normalise(recorded({ body }), from).log.entries[0].response.content.text).toBe(body);
+  });
+
+  test("names no encoding of a body it holds decoded", () => {
+    // A reader who trusted the recorded `Content-Encoding` would look for gzip in a body stored
+    // as text, and the `Content-Length` beside it counts the compressed form the file replaced.
+    const written = normalise(recorded({}), from);
+    expect(written.log.entries[0].response.headers.map((header) => header.name)).toEqual([
+      "Content-Type",
+    ]);
   });
 
   test("carries no credential, and one that slipped through is refused by name", () => {

@@ -19,14 +19,15 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 )
 
-// roleReceiptTimeout bounds the wait for a role holder's answer to a forward: its empty receipt,
-// or the stream's acknowledgement of the stored copy for a holder whose entry records a port. A
-// holder that never answers holds back its own owner's later events for that long and nothing
-// else: the batch waiting on it settles and releases every other owner as their own sends come
-// in, and the batches beside it read and publish the owners it does not hold (Outbox.scan, lanes).
+// roleForwardAckTimeout bounds the wait for the stream's acknowledgement of a role forward's
+// stored copy, which is what counts the forward as reached: no holder answers a forward. A
+// forward the stream does not acknowledge holds back its own owner's later events for that long
+// and nothing else: the batch waiting on it settles and releases every other owner as their own
+// sends come in, and the batches beside it read and publish the owners it does not hold
+// (Outbox.scan, lanes).
 //
-// An outbox waits this long unless a test set Deps.receiptWait (Deps.receiptTimeout).
-const roleReceiptTimeout = 5 * time.Second
+// An outbox waits this long unless a test set Deps.forwardAckWait (Deps.forwardAckTimeout).
+const roleForwardAckTimeout = 5 * time.Second
 
 // errNoRoleReaders is a role route's holder resolved with no role-claim or session reader in Deps.
 var errNoRoleReaders = errors.New("the outbox has no role-claim or session reader")
@@ -53,20 +54,17 @@ var errNoRoleReaders = errors.New("the outbox has no role-claim or session reade
 //
 // holder is the claim's holder whenever it is known, so the destination's key is the holder's agent
 // subject (destination.key) even while it stays pending; a keep carries none, since it reaches no
-// session. streamAck is a holder whose session entry records a port, which only a listener of an
-// earlier release stored and which lapses with the entry. settledKeys is the comment's settled
-// mentions by session, a delivered mention's included (destination.settledKeys), which a keep
-// stores on the copy it keeps so that whoever forwards it to the role's next holder keys it by
-// that holder's own mention (keep, contracts.Envelope.MentionDedupeKeys); mentionKeys is the
-// failed ones alone, which is what the key a keep is stored under is chosen from
-// (roleFallbackKey). Both are put on every role forward of a new comment, by the batch that
-// resolved the role (resolveRoleHolders) and by the fallback pass that decides a held copy of
-// one (decideFallbackCopy), and both are empty for every other event, which has no mention to
-// key by.
+// session. settledKeys is the comment's settled mentions by session, a delivered mention's
+// included (destination.settledKeys), which a keep stores on the copy it keeps so that whoever
+// forwards it to the role's next holder keys it by that holder's own mention (keep,
+// contracts.Envelope.MentionDedupeKeys); mentionKeys is the failed ones alone, which is what the
+// key a keep is stored under is chosen from (roleFallbackKey). Both are put on every role forward
+// of a new comment, by the batch that resolved the role (resolveRoleHolders) and by the fallback
+// pass that decides a held copy of one (decideFallbackCopy), and both are empty for every other
+// event, which has no mention to key by.
 type roleForward struct {
 	holder      string
 	keptFor     string
-	streamAck   bool
 	skip        string
 	err         error
 	heldState   string
@@ -628,7 +626,7 @@ func roleFallbackKey(keys, settled map[string]string, unpinned *unpinnedRoleMent
 // refused (bus.ErrNotCaptured) and the row backed off for ever. A role no live holder can take is
 // forwarded too: its copy is kept on the role's kept lane for the holder that claims the role
 // next (keptOrSkipped, roleForward.keep), and the stream's acknowledgement of that keep settles
-// the row as a holder's receipt of a forward settles it. It is nil for every other destination,
+// the row as its acknowledgement of a forward settles one. It is nil for every other destination,
 // which the pass publishes to its topic as before (publishFallbackCopies). The comment's
 // mentions by session are the caller's to put on the forward, which has read them to decide the
 // row (decideFallbackCopy), as the batch puts them on the forward of its own role route.
@@ -661,7 +659,11 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 //     holds says the bucket forgot the session, not that the session died;
 //   - a read that failed (the listener's lookup failures): pending;
 //   - the holder is item's own actor session (the listener's echo skip): reached, nothing sent;
-//   - otherwise a forward to the holder.
+//   - otherwise a forward to the holder, stored on the holder's agent subject, which the stream
+//     captures, under its own Nats-Msg-Id (send), so one copy is stored however often it is
+//     sent; the stream's acknowledgement of that copy is what counts the forward as having
+//     reached the holder, for every holder alike, because every holder is delivered its copy
+//     from its own consumer by the listener's relay and answers the forward with nothing.
 //
 // A holder that is only unresponsive is the one no-holder case that is not kept: it keeps its
 // claim and writes no new one, so a copy kept for it would wait for a claim that never comes, and
@@ -694,7 +696,7 @@ func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution
 	if item.SourceSession != "" && item.SourceSession == holder {
 		return &roleForward{holder: holder, skip: "the role's holder is the event's actor"}
 	}
-	return &roleForward{holder: holder, streamAck: resolution.Entry.Port != 0}
+	return &roleForward{holder: holder}
 }
 
 // keptOrSkipped is how a role route no live holder can take reaches the role's next holder: a
@@ -747,18 +749,16 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 //
 // It goes to the holder's agent subject with a Request under the forward's MsgId
 // (bus.ForwardMsgID of that key and the subject), so the stream, which captures agent subjects,
-// stores one copy however often it is sent. The answer is the holder's empty receipt for a
-// self-subscribed holder (or one with no subscription of its own, which nothing answers, so it
-// stays pending). For a holder whose entry records a port it is the stream's acknowledgement of
-// the stored copy alone: no listener pushes to a port, so such a holder answers nothing itself
-// and only a session consumer of its own reaches it.
+// stores one copy however often it is sent. The stream's acknowledgement of that copy is the
+// answer, and what counts the forward as having reached the holder, for every holder alike: a
+// holder is delivered its stored copy from its own consumer by the listener's relay and answers
+// the request with nothing (INFRA-771).
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.AgentSubject(f.holder)
 	return sender.Request(subject, item, bus.RequestOptions{
-		MsgID:           bus.ForwardMsgID(item.DedupeKey, subject),
-		AcceptStreamAck: f.streamAck,
-		Timeout:         deps.receiptTimeout(),
+		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
+		Timeout: deps.forwardAckTimeout(),
 	})
 }
 

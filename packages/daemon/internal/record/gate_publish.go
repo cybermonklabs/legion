@@ -32,9 +32,6 @@ func GateDocuments(gates map[DesignStep]DesignGate) []DesignGateDocument {
 // caller's transaction, so it is the whole set as that write left it rather than the one row the
 // caller touched.
 //
-// That read of the issue's gates is given back, so a caller that needs the set the write left —
-// to decide what the tree does next — takes this one rather than reading the same rows again.
-//
 // The comparison is of the pairs alone. A write that moves only a version, a review mark or
 // ever_opened leaves them as they were and queues nothing: every review and every version of every
 // gated tree reaches this helper, and each would otherwise cost Dispatch a write that says what it
@@ -45,17 +42,14 @@ func GateDocuments(gates map[DesignStep]DesignGate) []DesignGateDocument {
 // inside Postgres.PutGate because PutGate is also what every test seed writes a gate with: an
 // enqueue there would queue a publication under each of them.
 func PublishChangedGates(ctx context.Context, store Store, tx pgx.Tx, issue string, before map[DesignStep]DesignGate,
-	now time.Time) (map[DesignStep]DesignGate, error) {
+	now time.Time) error {
 	after, err := store.GatesOf(ctx, tx, issue)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	documents := GateDocuments(after)
 	if slices.Equal(documents, GateDocuments(before)) {
-		return after, nil
+		return nil
 	}
-	if err := store.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: documents}, now); err != nil {
-		return nil, err
-	}
-	return after, nil
+	return store.EnqueueDesignGates(ctx, tx, DesignGatesPublish{Issue: issue, Gates: documents}, now)
 }

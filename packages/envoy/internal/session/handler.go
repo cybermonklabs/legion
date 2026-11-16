@@ -5,20 +5,24 @@ import (
 	"github.com/sjawhar/envoy/internal/store"
 )
 
-// HandleAgentResult captures the outcome of agent message handling.
+// HandleAgentResult captures the outcome of agent message handling: the message the session's own
+// consumer holds and its relay delivers (Relayed), the session another listener owns
+// (OwnedElsewhere), a failure the caller NAKs (Err), or none of the three - the zero result - for
+// a session this listener answers for whose record says no way of receiving, which the caller
+// holds and retries rather than NAKs (cmd/listener/unplaceable_delivery.go).
 type HandleAgentResult struct {
-	Delivered bool
-	Skipped   bool
-	// Relayed is set with Delivered and Skipped for a message the session's own consumer holds,
-	// which the relay of that consumer delivers (DeliveryResult.Relayed): the caller records
-	// nothing about it, neither an attempt nor a dedupe key.
+	// Relayed reports a message the session's own consumer holds, which the relay of that
+	// consumer delivers: the caller records nothing about it, neither an attempt nor a dedupe
+	// key, since it delivered nothing. A dedupe key says the session has the message, and only
+	// a delivery may say that.
 	Relayed bool
 	// OwnedElsewhere reports a session whose stored subscription names another listener. That
 	// listener reads the same inbox message from its own durable and delivers it, so this one
 	// acknowledges it with nothing to report: no delivery, no exception, no NAK.
 	OwnedElsewhere bool
-	ShouldNAK      bool
-	Err            error
+	// Err is a resolution the interest path made and failed (Resolve): the one outcome whose
+	// caller NAKs the message for redelivery.
+	Err error
 }
 
 // HandleAgentMessage handles delivery of an agent-to-agent message.
@@ -34,7 +38,8 @@ type HandleAgentResult struct {
 // stored message carries its own, and a core path's message, which is not the durable's copy of
 // anything, resolves under 0, which leaves a session on consumer delivery its consumer's copy
 // whatever that copy's sequence is. An agent message is stored on the subject it names as its
-// topic, the session's own agent subject, so Resolve reads that topic for both paths below.
+// topic, the session's own agent subject, and captured is whether the deployed stream captures
+// that topic (Resolve), which both paths below read.
 func HandleAgentMessage(
 	item contracts.Envelope,
 	sessionID string,
@@ -42,14 +47,14 @@ func HandleAgentMessage(
 	interest *store.Interest,
 	entry *SessionEntry,
 	storedSeq uint64,
+	captured bool,
 ) HandleAgentResult {
 	// Interest path: the stored subscription names this listener, which owns the session.
 	if interest != nil && interest.MachineID == machineID {
-		delivery, err := Resolve(item, sessionID, entry, storedSeq)
-		if err != nil {
-			return HandleAgentResult{ShouldNAK: true, Err: err}
+		if err := Resolve(item, sessionID, entry, storedSeq, captured); err != nil {
+			return HandleAgentResult{Err: err}
 		}
-		return delivered(delivery)
+		return HandleAgentResult{Relayed: true}
 	}
 	// A stored subscription naming another listener makes the session that listener's: the
 	// stored MachineID is the one its topics are fanned out on (store.Registry.Match), and that
@@ -63,17 +68,11 @@ func HandleAgentMessage(
 	// No stored subscription names an owner, so this listener answers for the session: there is
 	// nobody else the message can be left to. The entry is the one the caller resolved, delivered
 	// through directly rather than read a second time.
-	delivery, err := Resolve(item, sessionID, entry, storedSeq)
-	if err != nil {
-		// Resolve fails only with ErrNoSessionRecord. The result carries no error, so the
+	if err := Resolve(item, sessionID, entry, storedSeq, captured); err != nil {
+		// Resolve fails only with ErrNoSessionRecord. The zero result carries no error, so the
 		// listener defers the message for its retry window (cmd/listener/unplaceable_delivery.go)
 		// rather than NAK it.
-		return HandleAgentResult{Delivered: false}
+		return HandleAgentResult{}
 	}
-	return delivered(delivery)
-}
-
-// delivered is the result of a delivery that succeeded.
-func delivered(delivery DeliveryResult) HandleAgentResult {
-	return HandleAgentResult{Delivered: true, Skipped: delivery.Skipped, Relayed: delivery.Relayed}
+	return HandleAgentResult{Relayed: true}
 }

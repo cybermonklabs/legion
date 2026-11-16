@@ -166,8 +166,8 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 		}
 	}
 	hooks := openAPIHookRoutes()
-	if len(hooks) != 13 {
-		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 13", len(hooks))
+	if len(hooks) != 14 {
+		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 14", len(hooks))
 	}
 	for name := range hooks {
 		if !marked[name] {
@@ -281,6 +281,45 @@ func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
 	}
 	if read == 0 {
 		t.Fatal("the document declares no enum at all, so this test proves nothing")
+	}
+}
+
+// JSON Schema 2020-12 §6.5.3 says the entries of an object's `required` are unique, so a
+// document that lists one twice is invalid however kindly a generator reads it: the one in hand
+// (openapi-typescript 7.13.0) accepts it, and a stricter consumer need not. The emitter would
+// repeat a name wherever a shaped read shadows a field of the row it embeds, since the
+// reflector walks the embedded struct's fields into the object beside the shadowing one and
+// both reach interceptProp under the same json name. The emitted tree is walked whole rather
+// than its component schemas alone: a request body's nested objects are written where they
+// stand and carry a required of their own.
+func TestNoSchemaRequiresOneNameTwice(t *testing.T) {
+	tree, _ := readOpenAPITree(t)
+	read := 0
+	var repeated []string
+	walkOpenAPI(tree, "", func(path string, node map[string]any) {
+		required, isList := node["required"].([]any)
+		if !isList {
+			return
+		}
+		read++
+		seen := map[string]bool{}
+		for _, entry := range required {
+			name, isString := entry.(string)
+			if !isString {
+				continue
+			}
+			if seen[name] {
+				repeated = append(repeated, fmt.Sprintf("%s requires %s twice", path, name))
+			}
+			seen[name] = true
+		}
+	})
+	sort.Strings(repeated)
+	for _, found := range repeated {
+		t.Error(found)
+	}
+	if read == 0 {
+		t.Fatal("the document declares no required at all, so this test proves nothing")
 	}
 }
 

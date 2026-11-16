@@ -10,10 +10,11 @@ import (
 // Handing an ask on: PUT /api/v1/asks/{id}/asked-of.
 //
 // An ask waits on one person, and until somebody hands it on that person is the assignee of its
-// issue (askedOfPersonExpression, the one expression every list reading an ask's person shares).
-// This route writes the other half of that expression, asks.asked_of: the person a question is
-// for, when that is not whoever holds the issue. The ask keeps everything else - its question,
-// its thread, its followers - and stays open; only whose Inbox it sits in moves.
+// issue, or, while the issue holds nobody and on a project document, the default assignee of
+// its project (askedOfPersonExpression, the three steps every read of an ask's person shares).
+// This route writes the first step of that expression, asks.asked_of: the person a question is
+// for, when that is not whoever the two steps below it name. The ask keeps everything else -
+// its question, its thread, its followers - and stays open; only whose Inbox it sits in moves.
 //
 // It is a person's act, so it needs the person scope (routeScopes) and nobody else may make it:
 // a credential the deployment configured holds no person to hand a question from, and handing a
@@ -89,13 +90,17 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Whom the ask waited on before this write, read under the two locks through the expression
-	// every reader of that person shares, and the assignee of its issue beside it (null for a
-	// document ask, which has none).
-	var waitedOn, assignee *string
+	// every reader of that person shares - so its joins are that expression's own
+	// (askedOfPersonJoins): the ask's issue, its own document and their project - and the
+	// assignee of its issue beside it (null for a document ask, which has none, and for an issue
+	// nobody holds). The person is scanned into a string: every project names a default
+	// assignee, so a null there is a broken invariant, which fails the scan rather than naming
+	// nobody.
+	var waitedOn string
+	var assignee *string
 	if err := tx.QueryRow(r.Context(), `
 		select `+askedOfPersonExpression+`, i.assignee
-		from asks a
-		left join issues i on i.key = a.issue_key
+		from asks a`+askedOfPersonJoins+`
 		where a.id = $1
 	`, ask.ID).Scan(&waitedOn, &assignee); err != nil {
 		s.writeHandlerError(w, err)
@@ -103,8 +108,11 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	}
 	// Handing an ask to the assignee of its own issue empties the field instead of repeating
 	// them in it: the ask follows its issue again, so a later reassignment carries it along, and
-	// coalesce(asked_of, assignee) answers the same person either way. A document ask has no
-	// assignee, so nothing empties there.
+	// the expression answers the same person either way. Only the issue's own assignee does
+	// that. A question handed to the person its project defaults to stores that login and stops
+	// following the default, so a later default names somebody else and the question does not
+	// move; and a document ask, and one on an issue nobody holds, have no assignee to match, so
+	// nothing empties there.
 	stored := &askedOf
 	if assignee != nil && *assignee == askedOf {
 		stored = nil
@@ -130,7 +138,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// one person's list and puts it into the other's, and no other reader's rows move. That is
 	// why the event does not carry the ask's thread logins (events.AskEventPayload): somebody
 	// who replied in the thread has the same rows after this write as before it.
-	payload.ThreadLogins = movedLogins(nil, waitedOn, &askedOf)
+	payload.ThreadLogins = movedLogins(nil, waitedOn, askedOf)
 	event, err := s.appendEvent(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.asked_of", actor, payload,
 	))
@@ -142,8 +150,10 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// transaction's own locks through the columns those reads share (askReadColumns), so it
 	// carries waiting_on and waiting_on_person - which the locked row above carries neither of,
 	// and which a handler setting them by hand would be a second rule to keep in step with
-	// askedOfPersonExpression at every hand-back. The event payload stays the locked row, which
-	// is the shape every ask.* payload has (ask_rows.go).
+	// askedOfPersonExpression at every hand-back. It is written as the shaped read every other
+	// ask write answers (display_trees.go), so a caller that sent `Dispatch-Trees: 1` reads the
+	// trees of this ask's texts here as it does from an edit or an answer. The event payload
+	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
 	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -153,6 +163,6 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
-	WriteJSON(w, http.StatusOK, answer)
+	s.publish(r.Context(), event)
+	WriteJSON(w, http.StatusOK, newShapedAsk(answer, wantsDisplayTrees(r)))
 }

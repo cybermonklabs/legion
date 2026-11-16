@@ -216,9 +216,10 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 	return blocked
 }
 
-// The opening of a tree's design gate releases every admitted member it was holding, and the
-// waiting line then starts each of them at its own slot — except one that waits on an unfinished
-// issue of its own, whose own blockers hold it where the gate left it.
+// The opening of a tree's design gate tells every phase holder of the tree and its architect, and
+// releases every admitted member it was holding, and the waiting line then starts each of them at
+// its own slot — except one that waits on an unfinished issue of its own, whose own blockers hold
+// it where the gate left it.
 func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
@@ -238,7 +239,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the child that waits on nothing = %s once the line reached it, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"notice", "issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "dispatch_status", "supervise", "notice", "notice"})
 }
 
 // An unblocked child whose tree would not start it now is in no line either: the tree's gate is
@@ -258,14 +259,18 @@ func TestAnUnblockedChildWaitsForItsTreesGate(t *testing.T) {
 	assertOutboxKinds(t, pool, []string{})
 }
 
-// A root's own blockers are judged once, when promotion opens its tree; its tree is running from
-// then on, and running work is never re-checked. So its first phase starts whatever its links
-// say now: a blocker a person added after the tree was opened, or one a tree Legion took back
-// still names (record.Issue.TakenBack, which promotion admitted whatever its links say). The
-// line carries the root as an issue of its own (record.Waiting's LineFirstPhase) and
-// blockers.LineWaitsOn asks blockers.Holds of it, which answers nothing for a root, so no blocker
-// keeps it out.
-func TestTheGateOpeningStartsAnAdmittedRootWhateverItsLinksSay(t *testing.T) {
+// A root whose tree already runs and whose design gate opens while Dispatch shows it blocked by an
+// issue that is not done does not start its first phase: that phase is what waits now, so the
+// release for a wait takes the row its architect wrote the design in back (admit's
+// releaseSlotsForWaits, judged by blockers.waitsOf), marks it (record.Issue.ReleasedForWaitAt),
+// and the root stands in the line as an issue whose work came back, which nothing starts while
+// its blocker is open (record.LineWaitingOnIssue). A tree Legion took back after it finished and
+// lingered is no exception: blockers.Exempt, which names it, is the promotion's rule about what
+// a candidate may start in spite of its links, and the release does not read it. Only three
+// roots keep their slot through such a wait, and neither case here is one of them
+// (blockers.waitsOf). This replaces an older test that said the root's first phase starts
+// whatever its links say, which held only because its stand-in pass never ran the release.
+func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		takenBack bool
@@ -282,17 +287,33 @@ func TestTheGateOpeningStartsAnAdmittedRootWhateverItsLinksSay(t *testing.T) {
 			seedTreeLifecycle(t, pool, "LEGION-208")
 			seedMirror(t, pool, "LEGION-208", "in_progress", "LEGION-300")
 			seedMirror(t, pool, "LEGION-300", "backlog")
+			seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Date(2026, 11, 13, 7, 0, 0, 0, time.UTC)})
 
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
 				Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
 			startUnblockedChildren(t, pool, engine)
 
-			if got := phaseOf(t, pool, "LEGION-208"); got != phase.Planning {
-				t.Fatalf("the admitted root = %s when its tree's gate opened, want planning: its tree already runs", got)
+			if got := phaseOf(t, pool, "LEGION-208"); got != phase.Admitted {
+				t.Fatalf("the admitted root = %s when its tree's gate opened, want admitted: its first phase waits on its unfinished blocker", got)
 			}
-			assertBranchRow(t, pool, "LEGION-208", 4)
-			assertPlannerStart(t, pool, "LEGION-208")
+			var slotted int
+			if err := pool.QueryRow(t.Context(), "select count(*) from slots where issue = 'LEGION-208'").Scan(&slotted); err != nil {
+				t.Fatalf("count the root's slot rows: %v", err)
+			}
+			if slotted != 0 {
+				t.Fatalf("the root holds %d slot rows once its gate opened, want none: it gave its row back for the wait", slotted)
+			}
+			if got := issueRecord(t, pool, "LEGION-208"); got == nil || got.ReleasedForWaitAt == nil {
+				t.Fatalf("the root = %+v, want it marked released for a wait", got)
+			}
+			var started int
+			if err := pool.QueryRow(t.Context(), "select count(*) from outbox where kind = 'supervise' and issue = 'LEGION-208' and payload->>'role' = 'planner'").Scan(&started); err != nil {
+				t.Fatalf("count the planner starts: %v", err)
+			}
+			if started != 0 {
+				t.Fatalf("the root's planner was started %d times, want never while its blocker is open", started)
+			}
 		})
 	}
 }
@@ -330,7 +351,7 @@ func TestALingerHandsOverTheAdmittedChildThatStillWaits(t *testing.T) {
 	for _, child := range []string{"LEGION-209", "LEGION-210"} {
 		var writes int
 		if err := pool.QueryRow(t.Context(), `select count(*) from outbox where kind = 'dispatch_status' and issue = $1
-			and payload->>'status' = 'todo' and payload->>'observedStatus' = 'todo' and payload->>'handOver' = 'true'
+			and payload->>'status' = 'todo' and payload->>'observedStatus' = 'todo' and payload->>'kind' = 'hand-over'
 			and payload->>'handOverTree' = 'LEGION-208' and payload->>'handOverLinger' = '4'`, child).Scan(&writes); err != nil || writes != 1 {
 			t.Fatalf("%s's hand-over writes = %d, %v; want one fenced on LEGION-208's linger 4", child, writes, err)
 		}

@@ -8,9 +8,9 @@ import type {
   Agent,
   Artifact,
   Comment,
-  Message,
   MessageDelivery,
   MessageDeliveryMode,
+  MessageWithTrees,
   UserState,
 } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
@@ -82,6 +82,7 @@ import {
   failureGuidance,
   isSafeRetry,
   MODE_LABELS,
+  queuedParts,
   withGuidance,
 } from "./delivery";
 import {
@@ -169,7 +170,7 @@ function threadDelivery(root: MessageConversation): ReplyTarget["thread"] | unde
 
 /** What the composer quotes when the reader replies to `message`. */
 function replyTargetFor(
-  message: Message,
+  message: MessageWithTrees,
   root: MessageConversation,
   issueKey: string
 ): ReplyTarget {
@@ -203,7 +204,7 @@ function ConversationReply({
   /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
   markRef?: DwellRef;
   onReply: (target: ReplyTarget) => void;
-  reply: Message;
+  reply: MessageWithTrees;
   replyDisabled: boolean;
   root: MessageConversation;
 }): ReactNode {
@@ -229,7 +230,11 @@ function ConversationReply({
       author={reply.author}
       body={
         <>
-          <MarkdownBody markdown={reply.body} source={textSourceOf("message", reply.id)} />
+          <MarkdownBody
+            markdown={reply.body}
+            source={textSourceOf("message", reply.id)}
+            tree={reply.body_tree}
+          />
           <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
         </>
       }
@@ -256,6 +261,7 @@ function ConversationReply({
         author: parent?.author,
         block: reply.reply_block,
         excerpt: parent?.body ?? "",
+        excerptTree: parent?.body_tree,
         to:
           reply.in_reply_to === null
             ? undefined
@@ -360,7 +366,11 @@ function MessageTurn({
             <Timestamp at={item.root.created_at} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <MarkdownBody
+            markdown={item.root.body}
+            source={textSourceOf("message", item.root.id)}
+            tree={item.root.body_tree}
+          />
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
@@ -568,7 +578,13 @@ function CommentDeliveryList({
           >
             <span>
               <AgentParts parts={[recipient]} /> ·{" "}
-              {delivery.duplicate === true ? duplicateText : delivery.state}
+              {delivery.state === "queued" ? (
+                <AgentParts parts={queuedParts(recipient)} />
+              ) : delivery.duplicate === true ? (
+                duplicateText
+              ) : (
+                delivery.state
+              )}
               {delivery.error === null
                 ? ""
                 : ` · ${guidance === undefined ? delivery.error : withGuidance(delivery.error, guidance)}`}
@@ -854,7 +870,11 @@ function TargetedMessageTurn({
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody markdown={item.root.body} source={textSourceOf("message", item.root.id)} />
+          <MarkdownBody
+            markdown={item.root.body}
+            source={textSourceOf("message", item.root.id)}
+            tree={item.root.body_tree}
+          />
           <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </>
       }

@@ -1,3 +1,4 @@
+import type { BlockInvalidEventPayload } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
@@ -9,6 +10,14 @@ export function eventDescription(event: DispatchEvent): AgentPart[] {
   return typeof description === "string" ? [description] : description;
 }
 
+/** A `block.invalid`'s line, in the Pinned tab and the Activity tab alike: a check block whose
+ *  `ci_check` settlement refused, or an ask block it marked malformed. */
+export function blockInvalidDescription(payload: BlockInvalidEventPayload): string {
+  return payload.block_type === "check"
+    ? `refused check ${payload.block_id}: ${payload.reason}`
+    : `marked decision ${payload.block_id} malformed: ${payload.reason}`;
+}
+
 function describe(event: DispatchEvent): string | AgentPart[] {
   switch (event.type) {
     case "project.created":
@@ -17,6 +26,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Project updated: ${event.payload.name}`;
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "Repository mapping removed" : "Repository mapping updated"}: ${event.payload.mapping.repo}`;
+    // No write clears a default now: a project always names somebody. An event retained from
+    // before that rule can record a clear, and keeps its wording.
     case "settings.project_default_assignee.updated":
       return event.payload.assignee === null
         ? `Default assignee cleared: ${event.payload.project}`
@@ -43,6 +54,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Thread read";
     case "decision.kept":
       return "Kept a decision";
+    case "priority.updated":
+      return `Priority ${event.payload.change}: ${event.payload.id}`;
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.answered":
@@ -55,7 +68,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Ask handed back: ${event.payload.question}`;
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
-      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
+      // project's default assignee while the issue holds nobody.
       return `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: ${event.payload.question}`;
     case "comment.resolved":
       return "Comment resolved";
@@ -67,9 +81,11 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "message.answered":
       return event.payload.body;
     case "message.delivery":
-      // A duplicate attempt reached the listener and the stream stored nothing new; its state is
-      // still `sent`, so reporting the state alone would read as a fresh delivery.
-      return event.payload.duplicate === true
+      // A queued attempt reads as queued, a queued repeat included: the listener holds it for a
+      // session that is not running. Any other duplicate attempt reached the listener and the
+      // stream stored nothing new; its state is still `sent`, so reporting the state alone would
+      // read as a fresh delivery.
+      return event.payload.state !== "queued" && event.payload.duplicate === true
         ? `Message already delivered: ${capabilityLabel(event.payload.delivery)}`
         : `Message ${event.payload.state}: ${capabilityLabel(event.payload.delivery)}`;
     case "message.accepted":
@@ -89,7 +105,7 @@ function describe(event: DispatchEvent): string | AgentPart[] {
         : "Comment re-anchored after an edit";
     case "comment.delivery":
       // Same rule as message.delivery above.
-      return event.payload.duplicate === true
+      return event.payload.state !== "queued" && event.payload.duplicate === true
         ? `Comment already delivered: ${capabilityLabel(event.payload.delivery)}`
         : `Comment ${event.payload.state}: ${capabilityLabel(event.payload.delivery)}`;
     case "issue.created":
@@ -110,10 +126,14 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return `Recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return `Added ${event.payload.artifact.name}`;
+    case "artifact.renamed":
+      return `Renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
+    case "artifact.removed":
+      return `Removed ${event.payload.artifact.name}`;
     case "artifact.approved":
-      return `Approved v${event.payload.version}`;
+      return `Approved ${event.payload.name} v${event.payload.version}`;
     case "artifact.changes_requested":
-      return `Changes requested on v${event.payload.version}`;
+      return `Changes requested on ${event.payload.name} v${event.payload.version}`;
     case "artifact.version":
       return `Saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":
@@ -145,9 +165,13 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "block.repaired":
       return `Repaired block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return blockInvalidDescription(event.payload);
     case "result.recorded":
       return `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}, recorded by ${event.payload.role}${event.payload.issue === event.payload.check_issue ? "" : ` on ${event.payload.issue}`}`;
+    case "result.retracted":
+      return `Check ${event.payload.check_block_id}'s result at ${event.payload.commit_sha} was retracted: ${event.payload.reason}`;
+    case "issue.pull_request_attribution_changed":
+      return `Pull request ${event.payload.repo}#${event.payload.number} moved from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }
   return event satisfies never;
 }

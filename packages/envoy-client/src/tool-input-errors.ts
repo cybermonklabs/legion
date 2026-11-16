@@ -7,17 +7,28 @@ import { commandFlags, commandLine, commandName, fieldFlag } from "./dispatch-co
  * defect found in one pass so the caller fixes them all with a single retry. A Dispatch tool is
  * named as its `dispatch` command (`dispatch message was not called`), followed by the command's
  * flags and an example; an Envoy tool by its own name (`envoy_send was not called`).
+ *
+ * `aboutAFlag` false leaves the list of flags out: the problem is the value a flag carries and
+ * not which flags the command takes, so a list of them is noise the reader must read past. The
+ * example stays, since it shows the value's own shape. A refusal leaves the list out only when
+ * every problem it lists is about the value a flag carries. Every other refusal keeps it.
  */
 export class ToolInputError extends Error {
   readonly tool: string;
   readonly problems: readonly string[];
 
-  constructor(tool: string, problems: readonly string[]) {
+  constructor(
+    tool: string,
+    problems: readonly string[],
+    options?: { readonly aboutAFlag?: boolean }
+  ) {
     const count = problems.length;
     const cli = isDispatchTool(tool);
     const help = cli
       ? [
-          `Allowed flags: ${commandFlags(tool).join(", ")}`,
+          ...(options?.aboutAFlag === false
+            ? []
+            : [`Allowed flags: ${commandFlags(tool).join(", ")}`]),
           `Example: ${commandLine(tool, exampleFor(tool))}`,
         ]
       : [];

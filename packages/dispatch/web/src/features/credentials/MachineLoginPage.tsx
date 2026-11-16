@@ -56,7 +56,7 @@ function MachineLoginDecision({
  * The machine-login page: `agent-secrets machine login` prints an 8-character code on the
  * machine, and the operator types it here. A service, such as the Legion daemon, logs in with its
  * own Kubernetes token and prints no code; a service's login an older broker opened can still be
- * looked up here, and only denied. Ruling 13 of the shared broker contract:
+ * looked up here, and only denied. Decision 13 of the shared broker contract:
  * only this code-lookup route selects a
  * `launcher_credential` record, and deciding it sends the same code again, so this is the one
  * place a machine record gets Approve/Deny buttons. A looked-up login already decided shows its

@@ -27,7 +27,7 @@ implementer's first-round simplify pass, before any reviewer asks:
   changes" is no reason to skip it. Run the existing proof again on the shared code instead, which
   costs one more run.
 - **Write nothing on `Fast-follow:` for this deployment.** The deployment's rule, and the human's
-  ruling of 2026-10-26 (dispatch://INFRA-49/ask/2d080aec-ce9a-4c7c-a235-ae998d2b0830), forbid
+  decision of 2026-10-26 (dispatch://INFRA-49/ask/2d080aec-ce9a-4c7c-a235-ae998d2b0830), forbid
   deferral, so the architect sends every Fast-follow back as another implementing round. A
   reviewer's Fast-follow goes into the open round too.
 - **Treat the skill's allowance as superseded here.** `skills/legion-worker/SKILL.md` and
@@ -39,7 +39,7 @@ implementer's first-round simplify pass, before any reviewer asks:
 On sjawhar/legion#2223, the simplify pass found that the new `no-required-checks` driver and
 script copied `merged-root-waits`. It skipped sharing them, citing the plan. The reviewer then
 named the duplication as a Fast-follow, and the architect sent it back under the no-deferral
-ruling. Round 2 shared the run (`scripts/e2e/lib/live-daemon-proof.sh`) and the Go harness. Rounds
+decision. Round 2 shared the run (`scripts/e2e/lib/live-daemon-proof.sh`) and the Go harness. Rounds
 3 and 4 each made one more harness Fast-follow the reviewer named. That reached the review-round
 cap, and the architect narrowed. Three of the four implementing rounds went to work the first pass
 had already found.

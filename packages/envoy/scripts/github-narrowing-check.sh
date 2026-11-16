@@ -48,8 +48,9 @@
 #
 # The stand-in's answer to a token request is set while it runs, at the answer route the stack's
 # banner names (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|
-# "widen", "repository": "<name>"}, the repository being the one refuse-repository reads), since
-# k2 and INFRA-3099's k1 drive four answers against one stack.
+# "widen"|"fail-once", "repository": "<name>"}, the repository being the one refuse-repository
+# reads), since k2 and INFRA-3099's k1 drive four of those answers against one stack; fail-once
+# is the outage another check drives and this one never sets.
 #
 # The curl calls the child makes carry no --cacert and no --resolve, which the check's own text
 # would have them carry for a stand-in behind TLS. The GitHub stand of cmd/dev-airlock-stands is

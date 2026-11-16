@@ -238,7 +238,9 @@ func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name stri
 	}
 	bounded, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
 	defer cancel()
-	request := mintRequest(name, served, value, narrowing)
+	// The check runs for github-app names alone (checkNarrowing), so that is the kind its
+	// minter counts this attempt under, as the release it stands for would.
+	request := mintRequest(name, policy.KindGitHubApp, served, value, narrowing)
 	request.Check = true
 	_, err := mint(bounded, request)
 	if err != nil && bounded.Err() != nil {

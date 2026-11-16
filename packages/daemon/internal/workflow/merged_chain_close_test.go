@@ -11,9 +11,10 @@ import (
 
 // One departure can end the wait of more than one merged issue above it, and closing the nearest
 // one is itself a departure that may end the next one's. A chain of merged issues therefore
-// closes whole when the last issue beneath it leaves, rather than one step per fact: an issue
-// left in awaiting_merge is in the workflow, holds no admission slot, stands in neither part of
-// the waiting line, and refuses its tree root's sign_off for as long as it stands there.
+// closes whole when the last issue beneath it leaves, rather than one step per fact: a merged
+// issue left in merging is in the workflow, holds no admission slot, since merging is past its
+// review (record.KeepsSlot), stands in neither part of the waiting line, and refuses its tree
+// root's sign_off for as long as it stands there.
 func TestAChainOfMergedIssuesClosesWhenTheLastIssueBeneathItLeaves(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
@@ -31,7 +32,7 @@ func TestAChainOfMergedIssuesClosesWhenTheLastIssueBeneathItLeaves(t *testing.T)
 		number int
 	}{{child, &rootKey, 43}, {grandchild, &childKey, 44}} {
 		seedIssue(t, pool, record.Issue{Key: merged.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-			Tree: root, Parent: merged.parent, Project: "LEGION", Title: merged.key, Phase: phase.AwaitingMerge,
+			Tree: root, Parent: merged.parent, Project: "LEGION", Title: merged.key, Phase: phase.Merging,
 			Generation: 3, Status: "retro", Rank: "V" + merged.key, LastDispatchSeq: 1})
 		seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: merged.key, Repo: "sjawhar/legion",
 			Number: merged.number, Branch: "legion/" + merged.key, HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})

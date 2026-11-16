@@ -96,6 +96,9 @@ type harnessOptions struct {
 	addr       string
 	resolver   *resolver
 	rpcTimeout time.Duration
+	// launcherWait is Options.LauncherWait, for the tests that measure how long a launcher's
+	// hello waits for an acceptor; zero leaves the listener's own default.
+	launcherWait time.Duration
 }
 
 func startListener(t *testing.T, options harnessOptions) *harness {
@@ -112,8 +115,9 @@ func startListener(t *testing.T, options harnessOptions) *harness {
 	logs := &logRecorder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	listener, err := Listen(ctx, options.addr, options.resolver.resolve, Options{
-		RPCTimeout: options.rpcTimeout,
-		Log:        slog.New(logs),
+		RPCTimeout:   options.rpcTimeout,
+		LauncherWait: options.launcherWait,
+		Log:          slog.New(logs),
 	})
 	if err != nil {
 		cancel()

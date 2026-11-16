@@ -11,6 +11,7 @@ import { harnessProcessCount } from "./harness-processes";
 import { type Harness, startHarness } from "./harness-start";
 import {
   agentViewRefusal,
+  awaitSeededInbox,
   databaseUrlRefusal,
   Interrupted,
   Supervisor,
@@ -126,7 +127,10 @@ async function main(): Promise<void> {
   const whoami = await fetch(`${baseUrl}/auth/whoami`, { headers: await userHeaders("alice") });
   const identity = (await whoami.json()) as { login?: string };
   check(whoami.status === 200 && identity.login === "alice", "signed-in whoami");
-  check((await getInbox({ login: "alice" })).length === seeded.inboxRows, "inbox rows");
+  const inbox = await awaitSeededInbox(seeded.inbox, () => getInbox({ login: "alice" }), {
+    signal: supervisor.signal,
+  });
+  console.log(inbox.line);
   const [newest] = await listBroadcasts({ login: "alice" });
   check(newest?.id === seeded.broadcast.id, "broadcast listed");
   const agents = new Set((await listAgents({ login: "alice" })).map((agent) => agent.session_id));

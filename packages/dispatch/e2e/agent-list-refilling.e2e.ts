@@ -9,6 +9,7 @@ import {
   patchIssue,
   userHeaders,
 } from "./api";
+import { frontLiveView } from "./live-views";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -96,6 +97,15 @@ const documentPath = `/projects/CORE/documents/${DOCUMENT_SLUG}`;
 
 function refillingNotice(scope: Page | Locator): Locator {
   return scope.getByTestId("agent-list-refilling");
+}
+
+/** The planner's live view names its machine and its working directory, each in a part of the
+ *  composer's footer (`AgentConversationPage`), scoped to the view in front because two live
+ *  views can be mounted at once (`e2e/live-views.ts`). */
+async function expectPlannerFacts(page: Page): Promise<void> {
+  const footer = frontLiveView(page).getByTestId("agent-composer-footer");
+  await expect(footer.getByTestId("agent-footer-machine")).toHaveText("box-refill");
+  await expect(footer.getByTestId("agent-footer-dir")).toHaveText("/srv/refill-planner");
 }
 
 /** What the server answers `GET /api/v1/agents`: its status, its `Retry-After` and its code. */
@@ -236,7 +246,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
 
     const livePage = await alice.newPage();
     await livePage.goto(livePath);
-    await expect(livePage.getByText("box-refill · /srv/refill-planner")).toBeVisible();
+    await expectPlannerFacts(livePage);
     await expectNoRefillingWording(livePage);
 
     const issuePage = await alice.newPage();
@@ -276,7 +286,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expectNoAbsenceClaim(agentsPage);
     await expectNoUnreachableWording(agentsPage);
     await expect(refillingNotice(livePage)).toHaveText(REFILLING, { timeout: POLL_TIMEOUT });
-    await expect(livePage.getByText("box-refill · /srv/refill-planner")).toBeVisible();
+    await expectPlannerFacts(livePage);
     await expectNoAbsenceClaim(livePage);
     await expectNoUnreachableWording(livePage);
 
@@ -291,7 +301,7 @@ test("a list that starts refilling after a complete read claims no agent absent,
     await expect(refillingNotice(agentsPage)).toHaveCount(0, { timeout: POLL_TIMEOUT });
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
     await expect(refillingNotice(livePage)).toHaveCount(0, { timeout: POLL_TIMEOUT });
-    await expect(livePage.getByText("box-refill · /srv/refill-planner")).toBeVisible();
+    await expectPlannerFacts(livePage);
 
     await openIssueConversation(issuePage, fixture.issueKey);
     await expect(issuePage.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
@@ -427,7 +437,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expect(agentRow(agentsPage, planner.session_id)).toBeVisible();
     const livePage = await alice.newPage();
     await livePage.goto(livePath);
-    await expect(livePage.getByText("box-refill · /srv/refill-planner")).toBeVisible();
+    await expectPlannerFacts(livePage);
 
     await setListsState("down");
     expect(await agentsAnswer()).toEqual({
@@ -509,7 +519,7 @@ test("a listener that cannot answer reads as unreachable on every view, never as
     await expect(livePage.getByTestId("agent-list-unreachable")).toBeVisible({
       timeout: POLL_TIMEOUT,
     });
-    await expect(livePage.getByText("box-refill · /srv/refill-planner")).toBeVisible();
+    await expectPlannerFacts(livePage);
     await expectNoRefillingWording(livePage);
     await expectNoAbsenceClaim(livePage);
   } finally {

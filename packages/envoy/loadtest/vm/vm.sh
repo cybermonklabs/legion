@@ -208,9 +208,9 @@
 # "requests": 60, "sessions": 400, "event_mix": "production-2026-10-26"}, "loop": {"writes":
 # 3.5, "reads": 38.5, "unit_starts": 1.75, "event_mix": "spec-loop-2026-11-03", "route_mix":
 # "routes-spec-loop-2026-11-03.txt"}, "unit_life": "5m", "driver_topics": 614,
-# "receipt_deadline": "1s", "session_delivery": "consumer"}. The sessions take their messages
-# through the listener's relay of their consumers, which is the delivery R5 names ("each
-# listener uses the consumer delivery the Envoy plugin uses").
+# "receipt_deadline": "1s"}. The sessions take their messages through the listener's relay of
+# their consumers, which is the only delivery there is and the delivery R5 names ("each listener
+# uses the consumer delivery the Envoy plugin uses").
 #
 # The loop's route_mix is a file, and `loadgen run` reads it on the machine it runs on. The
 # deployment file names it by a bare name, which is read from this package's own directory here
@@ -2558,7 +2558,6 @@ run_step() {
     -receipt-deadline "$(load_value receipt_deadline 1s)"
     -event-mix "$EVENT_MIX" -loop-event-mix "$LOOP_EVENT_MIX"
     -duration "$duration" -warmup "$warmup" -grace 20s
-    -session-delivery "$(load_value session_delivery consumer)"
   )
   [ -z "$ROUTE_MIX_REMOTE" ] || args+=(-route-mix "$ROUTE_MIX_REMOTE")
   args+=("${ENDPOINTS[@]}")

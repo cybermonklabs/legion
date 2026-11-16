@@ -15,7 +15,7 @@ import (
 // and it can fail — a database error, a lost connection — while the turn goes on. The daemon then
 // cannot record that it told, so the decision stands KEPT and the root's next start names it again.
 // That is the accepted behaviour: the tree's rule is that a person's decision is never lost and
-// that telling it twice is the lesser fault (the architect's ruling on #2163, review round cap, 31
+// that telling it twice is the lesser fault (the architect's decision on #2163, review round cap, 31
 // October 2026). What this test holds is the other half: the decision is told again, never zero
 // times, so a failed write cannot lose it.
 func TestADecisionToldInATurnWhoseConfirmationFailedIsToldAgain(t *testing.T) {

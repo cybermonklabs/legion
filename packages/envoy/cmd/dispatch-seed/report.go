@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
 // buildTermStatistics runs one full term-statistics build for every project, the build the
@@ -39,7 +40,8 @@ func (r *seedRun) buildTermStatistics(ctx context.Context) error {
 // reportTables are the tables the command prints a row count for, in the order it prints them.
 var reportTables = []string{
 	"projects", "repo_projects", "issues", "issue_links", "issue_components",
-	"issue_component_members", "architecture_snapshots", "components", "component_depends",
+	"issue_component_members", "priority_nodes", "priority_tuples",
+	"architecture_snapshots", "components", "component_depends",
 	"artifacts", "artifact_versions", "document_blocks", "document_block_texts",
 	"document_block_versions", "document_indexed_versions", "asks", "ask_followers", "ask_blocks",
 	"ask_block_texts", "ask_block_state", "ask_block_refs", "comments",
@@ -155,6 +157,19 @@ func (r *seedRun) reportDistributions(ctx context.Context) error {
 		{"issues with a repository of their own", `select count(*) || ' of ' || (select count(*) from issues) from issues where repo is not null`},
 		{"graph edges by kind", `select kind || '->' || to_kind || '=' || rows from (
 			select kind, to_kind, count(*) as rows from graph_edges group by 1, 2) e order by kind, to_kind`},
+		{"issues advancing a priority", `with recursive ` + priorityMemberTerms + `
+			select 'priorities=' || (select count(*) from priority_nodes where state = '` + prioritystore.StateLive + `') ||
+			       ' relations stated=' || (select count(*) from stated) ||
+			       ' issues stating one=' || (select count(distinct key) from stated) ||
+			       ' issues under one, the inheritance counted=' || (select count(distinct key) from members)`},
+		{"priority faults", `with recursive ` + priorityMemberTerms + `
+			select 'work in flight advancing none=' || (
+			         select count(*) from issues i
+			         where i.closed_at is null and i.status in (` + priorityInFlightStatuses + `)
+			           and not exists (select 1 from members m where m.key = i.key)) ||
+			       ' priority work parked=' || (
+			         select count(distinct i.key) from issues i join members m on m.key = i.key
+			         where i.closed_at is null and i.status in (` + priorityParkedStatuses + `))`},
 	}
 	for _, item := range readings {
 		rows, err := r.database.Pool.Query(ctx, item.query)

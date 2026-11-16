@@ -12,9 +12,11 @@ import type {
   ArtifactText,
   ArtifactUploadResponse,
   ArtifactVersionText,
-  Ask,
   AskRead,
+  AskWithTrees,
   CheckResultRecorded,
+  CheckResultRetraction,
+  CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
   CommentRead,
@@ -23,6 +25,7 @@ import type {
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  CreatedProject,
   CreateIssueInput,
   CreateMessageInput,
   CreateProjectInput,
@@ -51,12 +54,14 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  Priorities,
   Project,
   RecordCheckResultInput,
   RelatedCheckInput,
@@ -78,7 +83,12 @@ import {
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
+  NO_ROUTE_MESSAGE_PREFIX,
+  NO_ROUTE_ROLLING_RELEASE_MESSAGE,
   retriesUnderKey,
+  retryNoRoute,
+  type Sleep,
+  sleep,
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
@@ -242,15 +252,57 @@ function isJson(response: Response): boolean {
   return response.headers.get("content-type")?.includes("application/json") ?? false;
 }
 
-/** Whether `error` is a server's answer that it has no route for the request (`404 NOT_FOUND`,
- *  "no route for …"), as a server older than a route answers it; a `404 NOT_FOUND` for a
- *  resource the server does not know says "not found" instead. */
+/** Whether `error` is a Dispatch process's answer that it has no route for the request (`404
+ *  NOT_FOUND`, `NO_ROUTE_MESSAGE_PREFIX`), as a process older than a route answers it; a `404
+ *  NOT_FOUND` for a resource the server does not know says "not found" instead. */
 export function isNoRoute(error: unknown): boolean {
   return (
     error instanceof DispatchServiceError &&
     error.status === 404 &&
     error.code === "NOT_FOUND" &&
-    error.message.startsWith("no route for ")
+    error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
+  );
+}
+
+/**
+ * A request every attempt of which a Dispatch process answered with no route for it (`404
+ * NOT_FOUND`, "no route for …"). While a release rolls out, two builds of Dispatch answer, and
+ * the older one answers this way for a route only the newer one serves. A server older than a
+ * route answers it this way too, so a caller with an older route to fall back on catches this
+ * error and asks that route.
+ */
+export class DispatchNoRouteError extends DispatchServiceError {
+  constructor() {
+    super("NOT_FOUND", 404, NO_ROUTE_ROLLING_RELEASE_MESSAGE);
+  }
+}
+
+/**
+ * What `reviewArtifact` throws once the Dispatch at `baseUrl` answered no route for `route` (the
+ * method and path it sent the review to) each time it was sent. The code and status are that
+ * answer's, so a caller reads it as the refusal it is. The words are not
+ * `DispatchNoRouteError`'s: a build without the versioned review route may simply be older than
+ * that route rather than half of a release in progress, and no other review route is asked, so
+ * the message says why. Dispatch's no-route answer carries only a code, an error and a hint
+ * (`staticHandler`, packages/envoy/internal/dispatch/routes/router.go) and names no build, so it
+ * points at `/healthz`, whose `commit` member names the commit of the build that answers it when
+ * that build was stamped with one and is null otherwise (`buildCommit` and `healthzHandler`,
+ * packages/envoy/cmd/dispatch/main.go), rather than guessing.
+ */
+function reviewNoRouteRefusal(
+  baseUrl: string,
+  route: string,
+  version: number
+): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${baseUrl} answered no route for ${route} each time the review was sent, and an ` +
+      "answer of no route records no review. This build is older than that route. No other review " +
+      "route was asked: the review route an older build serves takes no version, and it " +
+      `would record the review at a version that build chooses, which may not be version ${version}. ` +
+      `The no-route answer does not name the build; GET ${baseUrl}/healthz names the commit of the ` +
+      "build that answers it, when that build was stamped with one."
   );
 }
 
@@ -598,6 +650,26 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
 }
 
 /**
+ * Dispatch's refusal of a broker token the secrets broker does not hold as live: unknown to it,
+ * lapsed, or ended by a revoke before it lapsed (`brokerTokenActor`,
+ * packages/envoy/internal/dispatch/api/broker_token.go).
+ */
+const BROKER_TOKEN_NOT_ACTIVE = "BROKER_TOKEN_NOT_ACTIVE";
+
+/**
+ * Whether `response` is Dispatch's `401 BROKER_TOKEN_NOT_ACTIVE`. Its JSON is read from a clone,
+ * so the body stays whole for whoever reads the answer.
+ */
+async function tokenNotLive(response: Response): Promise<boolean> {
+  if (response.status !== 401 || !isJson(response)) return false;
+  const body: unknown = await response
+    .clone()
+    .json()
+    .catch(() => undefined);
+  return asErrorShape(body).code === BROKER_TOKEN_NOT_ACTIVE;
+}
+
+/**
  * Why `answer` is not the page `listIssuePage` asked for, and whether asking again can change
  * that; undefined when it is one. A JSON answer that is not a page is Dispatch's own and comes back
  * the same; text (`#response` returns a body it could not read as JSON as its text) looks like a
@@ -769,18 +841,23 @@ function excerpt(text: string, token: string): string {
 /**
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
- * `writeRetry` paces it.
+ * `writeRetry` paces it, and where a broker token Dispatch says is no longer live is traded
+ * afresh and the request sent once more.
  *
  * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
- * what this machine trades its own identity for at the secrets broker, presented under the
- * `DPoP` scheme with a fresh proof of this process's key on every request. A resolved Dispatch
- * holds exactly one of them (`ActiveDispatchConfig.credential`), so no caller chooses.
+ * what the secrets broker trades this machine's identity for, or the identity of a person signed
+ * in on it, presented under the `DPoP` scheme with a fresh proof of the token's key on every
+ * request. A resolved Dispatch holds exactly one of them (`ActiveDispatchConfig.credential`), so
+ * no caller chooses.
  */
 export class DispatchClient {
   readonly #baseUrl: string;
   readonly #resolvedIssues = new Map<string, Promise<string>>();
   readonly #signal: AbortSignal;
   readonly #credential: RequestCredential;
+  readonly #sleep: Sleep;
+  readonly #retryNoRoute: boolean;
+  readonly writeRetry: DispatchWriteRetry;
   /**
    * When this client was made, on the write clock (`#now`): its 60 s deadline counts from here, so
    * no write asks again later than `writeRetry.inFlightWithinMs` after it, however late in the
@@ -792,12 +869,24 @@ export class DispatchClient {
     baseUrl: string,
     credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
-    signal?: AbortSignal,
-    readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
+    options: {
+      readonly signal?: AbortSignal | undefined;
+      readonly writeRetry?: DispatchWriteRetry | undefined;
+      readonly sleep?: Sleep | undefined;
+      /** Whether a request a Dispatch process answered with no route for it is asked again
+       *  (`#noRoute`), true by default. False runs each request once and throws that answer as it
+       *  came (a `DispatchServiceError` `isNoRoute` recognises), for a caller that has an answer
+       *  of its own to a missing route and wants it at once, rather than after the waits of
+       *  `NO_ROUTE_RETRY_DELAYS_MS`. */
+      readonly retryNoRoute?: boolean | undefined;
+    } = {}
   ) {
     this.#credential = credential;
     this.#baseUrl = withoutTrailingSlashes(baseUrl);
-    this.#signal = requestSignal(signal);
+    this.#signal = requestSignal(options.signal);
+    this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
+    this.#sleep = options.sleep ?? sleep;
+    this.#retryNoRoute = options.retryNoRoute ?? true;
     this.#madeAt = this.#now();
   }
 
@@ -859,6 +948,26 @@ export class DispatchClient {
     throw new Error(
       `GET ${this.#url(path, query)} asked for the unpaged listing and got ${whyNotAnArray(answer)}.`
     );
+  }
+
+  /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
+   *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
+   *  holds. */
+  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  }
+
+  /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
+   *  route writes nothing: it parses the text and renders it again, as a document write does, so
+   *  a caller compares the answer with the text it holds and refuses a text the store would
+   *  change. */
+  async markdownRoundTrip(markdown: string): Promise<string> {
+    const answer: MarkdownRoundTripResponse = await this.#json(
+      "POST",
+      ["api", "v1", "markdown", "round-trip"],
+      { markdown }
+    );
+    return answer.markdown;
   }
 
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
@@ -1014,7 +1123,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1032,6 +1141,12 @@ export class DispatchClient {
   /** Every open ask on a project's issues and documents (issue- or document-owned), oldest first. */
   async openAsksForProject(project: string): Promise<OpenAsksResponse> {
     return this.#json("GET", ["api", "v1", "asks", "open"], undefined, { project });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order with the work under it, and the
+   *  two faults; `project`, repeated, counts only those projects' work. */
+  async priorities(projects: readonly string[] = []): Promise<Priorities> {
+    return this.#json("GET", ["api", "v1", "priorities"], undefined, { project: projects });
   }
 
   /** `GET /api/v1/agents/{session_id}/answers`: what people wrote that Dispatch delivered to the
@@ -1105,9 +1220,10 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }
 
-  /** `POST /api/v1/projects`: create a project. A key that already exists is 409
+  /** `POST /api/v1/projects`: create a project. It answers the project with the default assignee
+   *  the create stored, which the project list leaves out. A key that already exists is 409
    *  PROJECT_EXISTS, and a key that is not a project key or an empty name 400 INVALID_PROJECT. */
-  async createProject(input: CreateProjectInput): Promise<Project> {
+  async createProject(input: CreateProjectInput): Promise<CreatedProject> {
     return this.#json("POST", ["api", "v1", "projects"], input);
   }
 
@@ -1120,15 +1236,16 @@ export class DispatchClient {
    *  per repository, in the order the project added them; `[]` when it has none.
    *
    *  The plugin and the server ship separately, so a rollout mixes versions (#1522). A server
-   *  older than this route has no route for it (`404 NOT_FOUND`, "no route for …"), so the client
-   *  asks its `GET /api/v1/projects/{key}/architecture-source` instead: `200 null` (or a pre-#1522
+   *  older than this route has no route for it (`404 NOT_FOUND`, "no route for …"). Once every
+   *  attempt met no route (`DispatchNoRouteError`), the client asks its
+   *  `GET /api/v1/projects/{key}/architecture-source` instead: `200 null` (or a pre-#1522
    *  `404 SOURCE_NOT_FOUND`) is `[]`, and a row is that one source. Any other answer throws, so a
    *  project the server does not know (`404 NOT_FOUND`, "not found") is still an error. */
   async listArchitectureSources(project: string): Promise<ArchitectureSource[]> {
     try {
       return await this.#json("GET", ["api", "v1", "projects", project, "architecture-sources"]);
     } catch (error) {
-      if (!isNoRoute(error)) throw error;
+      if (!(error instanceof DispatchNoRouteError)) throw error;
     }
     try {
       const source: ArchitectureSource | null = await this.#json("GET", [
@@ -1157,11 +1274,12 @@ export class DispatchClient {
    *  project has no source.
    *
    *  The plugin and the server ship separately, so a rollout mixes versions (#1522). A server
-   *  older than this route has no route for it (`404 NOT_FOUND`, "no route for …"), so the client
-   *  asks its `POST /api/v1/projects/{key}/architecture-source/sync` instead, which imports that
-   *  server's one source, and returns the row as a one-element array. Any other answer of either
-   *  call throws as is, so that server's `404 SOURCE_NOT_FOUND` for a project with no source is
-   *  still an error. */
+   *  older than this route has no route for it (`404 NOT_FOUND`, "no route for …"). Once every
+   *  attempt met no route (`DispatchNoRouteError`), the client asks its
+   *  `POST /api/v1/projects/{key}/architecture-source/sync` instead, which imports that server's
+   *  one source, and returns the row as a one-element array. Any other answer of either call
+   *  throws as is, so that server's `404 SOURCE_NOT_FOUND` for a project with no source is still
+   *  an error. */
   async syncArchitectureSources(project: string): Promise<ArchitectureSource[]> {
     try {
       return await this.#json("POST", [
@@ -1173,7 +1291,7 @@ export class DispatchClient {
         "sync",
       ]);
     } catch (error) {
-      if (!isNoRoute(error)) throw error;
+      if (!(error instanceof DispatchNoRouteError)) throw error;
     }
     const source: ArchitectureSource = await this.#json("POST", [
       "api",
@@ -1207,7 +1325,7 @@ export class DispatchClient {
     ]);
   }
 
-  async resolveAsk(id: string, input: ResolveAskInput): Promise<Ask> {
+  async resolveAsk(id: string, input: ResolveAskInput): Promise<AskWithTrees> {
     return this.#json("POST", ["api", "v1", "asks", id, "resolve"], input);
   }
 
@@ -1244,6 +1362,47 @@ export class DispatchClient {
   }
 
   /**
+   * Records the review of the person the credential names on one version of a document:
+   * `approved`, or `changes_requested` with its `reason`. It sends
+   * `POST /api/v1/artifacts/{id}/versions/{number}/reviews` with `{state, reason?}` and nothing
+   * else (`createArtifactVersionReview` in packages/envoy/internal/dispatch/api/reviews.go); the
+   * body names no actor, since the route records the person the credential names. `version` is
+   * the version the caller read, sent as the path's `{number}` rather than as a member of the
+   * body: a Dispatch route ignores a member it does not declare (`decodeJSON`;
+   * packages/envoy/cmd/dispatch/README.md, "Two builds at once"), so a build without this route
+   * answers that it has no route for it rather than recording the review at a version it picks
+   * itself.
+   *
+   * Dispatch refuses a credential that names no person holding `approve` (403
+   * `OAUTH_SCOPE_REQUIRED` or `SIGN_IN_REQUIRED`), and a `version` other than the one the review
+   * would record (409 `REVIEW_VERSION_MOVED`); those refusals are thrown as Dispatch wrote them.
+   * With an approval request open the review answers it and records the verdict on every
+   * document the request named, but the answer is this document's review alone; its `ask_id`
+   * names the request it answered.
+   *
+   * A build without the route answers no route each time the review is sent (`#noRoute`), and
+   * this then throws `reviewNoRouteRefusal`'s refusal. No other review route is asked, since the
+   * review route such a build serves takes no version.
+   */
+  async reviewArtifact(
+    artifactID: string,
+    version: number,
+    input: { readonly state: "approved" | "changes_requested"; readonly reason?: string }
+  ): Promise<ArtifactReview> {
+    const path = ["api", "v1", "artifacts", artifactID, "versions", String(version), "reviews"];
+    // Built from the two members the route takes, so nothing else a caller's object carries can
+    // reach the wire; JSON leaves out a reason that is undefined.
+    const body = { state: input.state, reason: input.reason };
+    try {
+      return await this.#json("POST", path, body);
+    } catch (error) {
+      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
+      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
+      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+    }
+  }
+
+  /**
    * Records one result of one check of an issue's Verification document, and answers it beside
    * the pull-request body line it implies. `issue` is the issue the result is recorded on; the
    * check may be one of an issue above it, and the result is recorded against that issue.
@@ -1256,12 +1415,35 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it. */
-  async issueResults(issue: string): Promise<IssueCheckResults> {
-    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "results"]);
+  /** Each check of an issue's Verification document with every result recorded against it, and
+   *  for a check CI proves the one result Dispatch derives from its check run.
+   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
+   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
+   *  proves, at the issue's newest pull request head as on every read. */
+  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
   }
 
-  async editAsk(id: string, input: EditAskInput): Promise<Ask> {
+  /**
+   * Records that one stored result is wrong, with the reason, and answers the retraction. The
+   * result itself is neither changed nor deleted: a reader of the results sees the result and
+   * its retraction together. The session that recorded the result, a session holding the
+   * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
+   * person may each retract it.
+   */
+  async retractResult(
+    resultID: string,
+    input: CheckResultRetractionInput
+  ): Promise<CheckResultRetraction> {
+    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
+  }
+
+  async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
@@ -1274,7 +1456,7 @@ export class DispatchClient {
   }
 
   /** Every ask on an issue (all states unless narrowed). */
-  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1283,7 +1465,7 @@ export class DispatchClient {
     );
   }
 
-  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "artifacts", id, "asks"],
@@ -1292,7 +1474,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
@@ -1464,16 +1646,26 @@ export class DispatchClient {
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
   }
 
+  /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
+   *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
+   *  by another session between two reads cannot leave the blocks indexing markdown they were not
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
+  async docReadWithBlocks(id: string): Promise<ArtifactText> {
+    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
+  }
+
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
    * answers a file with its bytes under its own MIME type, never a JSON envelope. */
   async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {
     const url = this.#url(["api", "v1", "artifacts", id, "versions", String(version)]);
-    const response = await this.#send("GET", url, undefined, "*/*");
-    if (!response.ok) return this.#response<never>("GET", url, response);
-    return {
-      mime: response.headers.get("Content-Type") ?? "application/octet-stream",
-      bytes: new Uint8Array(await response.arrayBuffer()),
-    };
+    return this.#noRoute(async () => {
+      const response = await this.#send("GET", url, undefined, "*/*");
+      if (!response.ok) return this.#response<never>("GET", url, response);
+      return {
+        mime: response.headers.get("Content-Type") ?? "application/octet-stream",
+        bytes: new Uint8Array(await response.arrayBuffer()),
+      };
+    });
   }
 
   async artifactBlocks(id: string): Promise<ArtifactBlock[]> {
@@ -1670,20 +1862,49 @@ export class DispatchClient {
     key?: string
   ): Promise<{ readonly status: number; readonly payload: T }> {
     const url = this.#url(path, query);
-    const response = await this.#send(
-      method,
-      url,
-      body === undefined ? undefined : { content: JSON.stringify(body), type: "application/json" },
-      undefined,
-      signal,
-      key
-    );
-    return { status: response.status, payload: await this.#response<T>(method, url, response) };
+    return this.#noRoute(async () => {
+      const response = await this.#send(
+        method,
+        url,
+        body === undefined
+          ? undefined
+          : { content: JSON.stringify(body), type: "application/json" },
+        undefined,
+        signal,
+        key
+      );
+      return { status: response.status, payload: await this.#response<T>(method, url, response) };
+    }, signal);
   }
 
-  /** An upload to an owner's artifact route: inline content as JSON, a file as multipart. */
+  /**
+   * `attempt`'s answer, with an answer of no route for the request (`404 NOT_FOUND`, "no route
+   * for …") sent again, as the same request, after each of `NO_ROUTE_RETRY_DELAYS_MS`: while a
+   * release rolls out, two builds of Dispatch answer, and the next attempt may reach the build
+   * that serves the route. No handler ran, so this is safe for every method; a write's repeat
+   * carries a key of its own (`#send`), as a first attempt does. After the last attempt it throws
+   * `DispatchNoRouteError`. An abort of the client's signal, or of the call's own `signal`, during
+   * a wait rejects at once with the abort's reason and sends nothing more.
+   *
+   * A client built with `retryNoRoute: false` runs `attempt` once instead and throws its answer
+   * of no route as it came (the `DispatchServiceError` `isNoRoute` recognises), so a caller with
+   * an answer of its own to a missing route — a back-off of its own — reaches it at once.
+   */
+  #noRoute<T>(attempt: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!this.#retryNoRoute) return attempt();
+    return retryNoRoute(attempt, isNoRoute, {
+      exhausted: () => new DispatchNoRouteError(),
+      signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
+      sleep: this.#sleep,
+    });
+  }
+
+  /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
+   *  inline content, and a name alone, which makes an empty document. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
-    if ("content" in input) return this.#json("POST", path, input, undefined, undefined, key);
+    if (input.file === undefined) {
+      return this.#json("POST", path, input, undefined, undefined, key);
+    }
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
@@ -1704,25 +1925,62 @@ export class DispatchClient {
     key?: string
   ): Promise<T> {
     const url = this.#url(path);
-    const encoded = new Response(form);
-    const type = encoded.headers.get("Content-Type") ?? "multipart/form-data";
-    const content = new Uint8Array(await encoded.arrayBuffer());
-    const response = await this.#send(method, url, { content, type }, undefined, undefined, key);
-    return this.#response<T>(method, url, response);
+    return this.#noRoute(async () => {
+      const encoded = new Response(form);
+      const type = encoded.headers.get("Content-Type") ?? "multipart/form-data";
+      const content = new Uint8Array(await encoded.arrayBuffer());
+      const response = await this.#send(method, url, { content, type }, undefined, undefined, key);
+      return this.#response<T>(method, url, response);
+    });
   }
 
   /**
-   * The one request function: every call the client makes goes through here. A read, a PUT or a
-   * DELETE goes once, and `signal` aborts it beside the client's own signal. A write (POST or
-   * PATCH) carries an `Idempotency-Key`: the caller's own `callerKey`, where it has one intent
-   * across calls and processes, else one minted here for this call alone, so all its attempts are
-   * one intent to Dispatch, which runs it once and answers a
-   * repeat with the answer it stored, while two calls are two writes. Each attempt sends the same
-   * encoded body. While an attempt gets no definitive answer (`writeAnswer`, a transport failure,
-   * or `writeRetry.silenceMs` without progress, `#attempt`) the write asks again under its key,
-   * paced by `writeRetry`, and the first definitive answer is the call's: a 2xx, a replay of one
-   * included, or a refusal. The call's deadline and its caller's cancellation end the attempts at
-   * once, whether a fetch or a pause is under way (`#ended`).
+   * The one request function: every call the client makes goes through here. It presents the
+   * credential and sends the request (`#sendPresenting`), and sends it once more where Dispatch
+   * answers that the token presented is not live (`tokenNotLive`, its
+   * `401 BROKER_TOKEN_NOT_ACTIVE`) and the credential can be told so (`RequestCredential.stale`):
+   * the broker ended that token before it lapsed, as a person's revoke of their sign-in does. The
+   * credential is told, presents afresh, which trades at the broker again, and the request goes
+   * again, a write under the same `Idempotency-Key`. Dispatch authenticates a request before any
+   * handler runs (`brokerTokenActor`, packages/envoy/internal/dispatch/api/broker_token.go), so
+   * that 401 says it did nothing and the request is safe to send again. It is sent again once
+   * per `#send`, and a second such answer is returned as any other refusal is; each no-route
+   * retry (`#noRoute`) runs `#send` afresh, so it may send its request again once after such an
+   * answer of its own. A trade the broker refuses throws out of the second presentation, so the
+   * call fails in the broker's own words, which name `agent-secrets login` after a revoke.
+   */
+  async #send(
+    method: string,
+    url: string,
+    body?: EncodedBody,
+    accept = "application/json",
+    signal?: AbortSignal,
+    callerKey?: string
+  ): Promise<Response> {
+    // A write's key is the call's, so the request sent again after a dead token is the same
+    // intent to Dispatch as the first.
+    const key =
+      method === "POST" || method === "PATCH" ? (callerKey ?? crypto.randomUUID()) : undefined;
+    const send = async (): Promise<Response> =>
+      this.#sendPresenting(method, url, body, accept, signal, key);
+    const answer = await send();
+    if (this.#credential.stale === undefined || !(await tokenNotLive(answer))) return answer;
+    this.#credential.stale();
+    return await send();
+  }
+
+  /**
+   * One request, presenting the credential for it. A read, a PUT or a DELETE (no `key`) goes
+   * once, and `signal` aborts it beside the client's own signal. A write (POST or PATCH) carries
+   * `key` as its `Idempotency-Key`: the caller's own, where it has one intent across calls and
+   * processes, else one minted for this call alone (`#send`), so all its attempts are one intent
+   * to Dispatch, which runs it once and answers a repeat with the answer it stored, while two
+   * calls are two writes. Each attempt sends the same encoded body. While an attempt gets no
+   * definitive answer (`writeAnswer`, a transport failure, or `writeRetry.silenceMs` without
+   * progress, `#attempt`) the write asks again under its key, paced by `writeRetry`, and the first
+   * definitive answer is the call's: a 2xx, a replay of one included, or a refusal. The call's
+   * deadline and its caller's cancellation end the attempts at once, whether a fetch or a pause
+   * is under way (`#ended`).
    *
    * It asks again only against a Dispatch this process has lately seen run the keyed layer: a
    * Dispatch without the layer would run a repeat as a second write, so its 5xx — which can come
@@ -1734,13 +1992,13 @@ export class DispatchClient {
    * say nothing, so they rely on what an answer or `/healthz` showed within
    * `KEYED_LAYER_MEMORY_MS`, and ask `/healthz` when nothing did (`#runsKeyedLayer`).
    */
-  async #send(
+  async #sendPresenting(
     method: string,
     url: string,
-    body?: EncodedBody,
-    accept = "application/json",
-    signal?: AbortSignal,
-    callerKey?: string
+    body: EncodedBody | undefined,
+    accept: string,
+    signal: AbortSignal | undefined,
+    key: string | undefined
   ): Promise<Response> {
     // The credential is presented once here, and again for each attempt the write loop makes
     // below: a key-bound scheme signs one proof per request, so one presentation is one proof
@@ -1750,7 +2008,7 @@ export class DispatchClient {
     const headers: Record<string, string> = { Accept: accept };
     let presented = await this.#credential.headers(method, url);
     if (body !== undefined) headers["Content-Type"] = body.type;
-    if (method !== "POST" && method !== "PATCH") {
+    if (key === undefined) {
       return this.fetchImpl(url, {
         method,
         headers: { ...headers, ...presented },
@@ -1758,7 +2016,6 @@ export class DispatchClient {
         ...(body === undefined ? {} : { body: body.content }),
       });
     }
-    const key = callerKey ?? crypto.randomUUID();
     headers[IDEMPOTENCY_KEY_HEADER] = key;
     const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
     const pause = this.writeRetry.pause ?? pauseFor;

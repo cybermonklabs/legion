@@ -11,6 +11,8 @@ import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/t
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -39,6 +41,8 @@ const issue: Issue = {
   updated_at: "2026-10-01T00:00:00Z",
 };
 const summary: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   assignee: null,
   blocked_by: [],
   claim: null,
@@ -61,6 +65,7 @@ const summary: IssueSummary = {
   status: "todo",
   title: issue.title,
   updated_at: issue.updated_at,
+  closed_at: issue.closed_at,
   created_by: issue.created_by,
   created_at: issue.created_at,
 };

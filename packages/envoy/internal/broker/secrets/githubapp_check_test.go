@@ -52,9 +52,10 @@ func reachesWith(t *testing.T, service *airlocktest.Service, token string) int {
 	return response.StatusCode
 }
 
-// answered is what a check and the release it stands for are compared by: the error's text, and
-// "" for no error.
-func answered(err error) string {
+// errorText is what a check and the release it stands for are compared by: the error's text, and
+// "" for no error. It is named for its answer rather than `answered`, which retry_test.go's own
+// helper of that name takes in this package's tests.
+func errorText(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -189,7 +190,7 @@ func TestAGitHubAppCheckOfANarrowingBeforeApprovalReleasesNoToken(t *testing.T) 
 			}
 
 			checked, checkErr := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHubOwners: owners, GitHubNarrowing: tc.narrowing, Check: true})
-			if answered(checkErr) != answered(releaseErr) || errors.Is(checkErr, secrets.ErrMintNoInstallation) != tc.noInstallation {
+			if errorText(checkErr) != errorText(releaseErr) || errors.Is(checkErr, secrets.ErrMintNoInstallation) != tc.noInstallation {
 				t.Fatalf("the check answered %v, want the release's own answer, %v", checkErr, releaseErr)
 			}
 			if checked.Value != "" || !checked.Expires.IsZero() {

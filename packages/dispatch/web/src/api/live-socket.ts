@@ -70,7 +70,8 @@ const SIGN_IN_CHECK_MS = 30_000;
 const SERVICE_RESTART = 1012;
 /** Dispatch closes a socket with this code once its caller no longer resolves (signed out). */
 const CALLER_GONE = 1008;
-/** The code the page closes a silent socket with before it opens another. */
+/** The code the page closes a socket with before it opens another: a silent one, or one whose
+ *  process refused a frame of a subscription the page holds. */
 const REPLACED = 4000;
 
 /** The status the matching GET route answers each error frame's code with, so the page's error
@@ -414,23 +415,38 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     }
     switch (sub.kind) {
       case "delivery":
-        return failDelivery(sub, frame);
+        failDelivery(sub, frame);
+        break;
       case "agent":
         // Dispatch holds no subscription it refused, so the page lets it go without telling it.
         remove(sub, false);
-        return sub.handlers.onUnavailable(frame.code, frame.message);
+        sub.handlers.onUnavailable(frame.code, frame.message);
+        break;
       case "events":
         // Dispatch holds no subscription it refused either, but the page never gives the feed up:
         // it is sent again after a backoff of its own, and its next start reports the gap.
         console.error("live socket: Dispatch refused the event feed", frame);
         sub.gap = true;
         resendLater(sub);
+        break;
     }
+    // While a release rolls out, the process this socket reached can be of an older build that
+    // cannot serve a frame this page sends (a frame type or a view kind it does not know). Each
+    // reconnect may reach another process, so the page closes the socket and reconnects through
+    // the lost socket's backoff, and the reconnect subscribes again.
+    if (frame.code === "INVALID_FRAME") refused();
+  };
+
+  /** Closes the socket a process refused a frame on and reconnects as a lost socket does, with
+   *  its backoff. */
+  const refused = () => {
+    if (socket === null) return;
+    letGo();
+    retryLater();
   };
 
   const receive = (data: unknown) => {
     lastFrameAt = Date.now();
-    attempt = 0;
     let parsed: unknown;
     try {
       parsed = JSON.parse(String(data));
@@ -445,6 +461,9 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       return;
     }
     const frame = parsed as LiveServerFrame;
+    // A frame the process refused does not show that this process serves the page, so the backoff
+    // keeps growing while each reconnect meets such a process.
+    if (frame.type !== "error" || frame.code !== "INVALID_FRAME") attempt = 0;
     switch (frame.type) {
       case "heartbeat":
         return;
@@ -622,8 +641,26 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     update({ since: null, state: "closed", stuck: false });
   };
 
+  /**
+   * Reports how many agent subscriptions this socket holds, on the `window` handle the live-view
+   * registry writes its own snapshot to (`features/agent-view/live-views.ts`, D15). It is two
+   * owners on one object: the registry writes `views` and this writes `agentSubscriptions`, and
+   * neither touches the other's key. A browser check reads it to see what an open view costs and
+   * that a sleeping one holds nothing - no subscription here is also no re-arming of the relay's
+   * watch for that session, which then lapses. A number, written whenever an agent subscription
+   * is added or dropped; it says nothing of what any session published.
+   */
+  const reportAgentSubscriptions = () => {
+    let open = 0;
+    for (const sub of subs.values()) if (sub.kind === "agent") open += 1;
+    window.__dispatchLiveViews ??= {};
+    window.__dispatchLiveViews.agentSubscriptions = open;
+  };
+  reportAgentSubscriptions();
+
   const add = (sub: Subscription) => {
     subs.set(sub.id, sub);
+    if (sub.kind === "agent") reportAgentSubscriptions();
     if (socket !== null) {
       sendSubscribe(sub);
     } else if (cancelReconnect === undefined) {
@@ -639,6 +676,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
   const remove = (sub: Subscription, unsubscribe: boolean) => {
     if (subs.get(sub.id) !== sub) return;
     subs.delete(sub.id);
+    if (sub.kind === "agent") reportAgentSubscriptions();
     if (sub.kind === "events") sub.cancelRetry?.();
     if (sub.kind === "delivery" && byHash.get(sub.hash) === sub) byHash.delete(sub.hash);
     // Told even for a feed waiting out a backoff: Dispatch holds a subscription whose events
@@ -733,6 +771,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       stopCache();
       for (const sub of subs.values()) if (sub.kind === "events") sub.cancelRetry?.();
       subs.clear();
+      reportAgentSubscriptions();
       byHash.clear();
       shutDown();
     },

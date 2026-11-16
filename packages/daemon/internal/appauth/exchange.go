@@ -1,9 +1,11 @@
 package appauth
 
 // The token exchange: POST /app/installations/{id}/access_tokens, the one call that mints a
-// lease in key mode. Every request carries a body naming the repositories the token reaches and
-// the permissions it holds, and the answer is held against both before a lease is served
-// (narrowedTo).
+// lease in key mode. Every request carries a body naming the permissions the token holds and no
+// repository at all, and the answer is held against those permissions before a lease is served
+// (narrowedTo). What a token reaches is the App installation's own business: the account that
+// installs the App chooses the repositories, and no body the daemon sends narrows them further
+// (INFRA-2543).
 
 import (
 	"bytes"
@@ -20,95 +22,76 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 )
 
-// accessTokensBody is GitHub's POST /app/installations/{id}/access_tokens body: the repositories
-// the token reaches and the permissions it holds, both of which every mint names, as the secrets
-// broker's githubAccessTokensBody does for a narrowed release.
+// accessTokensBody is GitHub's POST /app/installations/{id}/access_tokens body: the permissions
+// the token holds, which every mint names, and nothing else. GitHub reads a body naming no
+// repository as the whole installation, which is the reach the installation is there to decide.
 type accessTokensBody struct {
-	Repositories []string          `json:"repositories"`
-	Permissions  map[string]string `json:"permissions"`
+	Permissions map[string]string `json:"permissions"`
 }
 
-// mintedToken is GitHub's answer to a token exchange: the token, its expiry, and what GitHub says
-// the token reaches and holds, which the mint holds against what it asked for (narrowedTo).
+// mintedToken is GitHub's answer to a token exchange: the token, its expiry, and the permissions
+// GitHub says the token holds, which the mint holds against what it asked for (narrowedTo). The
+// answer also lists the repositories the installation holds, which this daemon neither asks
+// about nor reads: the installation decides them, and a list of them is nothing to hold an
+// answer to.
 type mintedToken struct {
-	Token               string            `json:"token"`
-	ExpiresAt           string            `json:"expires_at"`
-	RepositorySelection string            `json:"repository_selection"`
-	Permissions         map[string]string `json:"permissions"`
-	Repositories        []struct {
-		Name string `json:"name"`
-	} `json:"repositories"`
+	Token       string            `json:"token"`
+	ExpiresAt   string            `json:"expires_at"`
+	Permissions map[string]string `json:"permissions"`
 }
 
-// narrowedTo reports that GitHub's answer describes a token reaching no more than asked names and
-// holding no more than permissions does: a selection of named repositories, each of them one
-// asked names (GitHub names them in its own case), and no permission the request did not ask for
-// nor one above the access it asked at. GitHub applies the body and refuses what it cannot grant,
-// so an answer past it means the body was dropped or widened between the daemon and GitHub,
-// leaving a lease wider than the one asked for; it is refused rather than served, as the secrets
-// broker refuses one its narrowing does not hold (heldBy). The refusal names what was asked for
-// and the permission the answer named, never a value the answer carries that a request did not,
-// which for this answer is the token.
+// narrowedTo reports that GitHub's answer describes a token holding no more than permissions
+// does: no permission the request did not ask for, nor one above the access it asked at. GitHub
+// applies the body and refuses what it cannot grant, so an answer past it means the body was
+// dropped or widened between the daemon and GitHub, leaving a lease wider than the one asked
+// for; it is refused rather than served, as the secrets broker refuses one its narrowing does
+// not hold (heldBy). The refusal names what was asked for and the permission the answer named,
+// never a value the answer carries that a request did not, which for this answer is the token.
 //
-// An answer naming no permission at all is refused as one naming no repository is: GitHub names
-// every permission a token holds, and the token it mints for a request whose permissions were
-// dropped on the way holds every permission the installation is granted — the owner-wide token
-// this package exists to stop — which no later read of the answer could tell from a narrowed
-// one.
+// An answer naming no permission at all is refused too: GitHub names every permission a token
+// holds, and the token it mints for a request whose permissions were dropped on the way holds
+// every permission the installation is granted — the token at the installation's full strength
+// that this package exists to stop — which no later read of the answer could tell from a
+// narrowed one.
 //
-// An access the answer names that this daemon cannot order (accessOrder) is refused too: it
+// An access the answer names that this daemon cannot order (accessOrder) is refused as well: it
 // cannot be held to be no wider than the one asked for, and an answer naming it is no answer
 // GitHub makes to a request that asked for a word of its own.
-func (t mintedToken) narrowedTo(asked []string, permissions map[string]string) error {
-	wider := func(because string) error {
-		return fmt.Errorf("GitHub App token exchange returned a token wider than the %d repositories asked for (%s): %s",
-			len(asked), strings.Join(asked, ", "), because)
-	}
-	if t.RepositorySelection != "selected" {
-		return wider(`its repository selection is not "selected"`)
-	}
-	if len(t.Repositories) == 0 {
-		return wider("it names no repository")
-	}
-	for _, granted := range t.Repositories {
-		if !slices.ContainsFunc(asked, func(name string) bool { return strings.EqualFold(name, granted.Name) }) {
-			return wider("it reaches a repository the request did not name")
-		}
-	}
+func (t mintedToken) narrowedTo(permissions map[string]string) error {
 	if len(t.Permissions) == 0 {
 		return fmt.Errorf("GitHub App token exchange returned a token wider than the permissions asked for (%s): it names no permission",
-			askedFor(asked, permissions))
+			askedFor(permissions))
 	}
 	for _, permission := range slices.Sorted(maps.Keys(t.Permissions)) {
 		access := t.Permissions[permission]
 		if rank := accessOrder[access]; rank == 0 || rank > accessOrder[permissions[permission]] {
 			return fmt.Errorf("GitHub App token exchange returned a token wider than the permissions asked for (%s): it holds %s: %s",
-				askedFor(asked, permissions), permission, access)
+				askedFor(permissions), permission, access)
 		}
 	}
 	return nil
 }
 
-// askedFor is what a token request carried, for a refusal to say which half of it GitHub turned
-// down: its repositories and its permissions, each named in a fixed order so one refusal reads
-// like the next. A request body carries no token, so neither does this.
-func askedFor(repos []string, permissions map[string]string) string {
+// askedFor is what a token request carried, for a refusal to say what GitHub turned down: its
+// permissions, named in a fixed order so one refusal reads like the next. A request body carries
+// no token, so neither does this.
+func askedFor(permissions map[string]string) string {
 	named := make([]string, 0, len(permissions))
 	for _, permission := range slices.Sorted(maps.Keys(permissions)) {
 		named = append(named, permission+": "+permissions[permission])
 	}
-	return fmt.Sprintf("repositories %s; permissions %s", strings.Join(repos, ", "), strings.Join(named, ", "))
+	return "permissions " + strings.Join(named, ", ")
 }
 
-// exchange asks GitHub for installation's token over repos with permissions, naming both in the
-// access_tokens body, which every request carries: a token names the repositories it reaches and
-// the permissions it holds, and GitHub reads a request that names neither as the whole
-// installation at every permission it is granted, which is the owner-wide token no caller here
-// asks for. A request that names repositories is no proof of a narrowed token, so what GitHub
+// exchange asks GitHub for installation's token with permissions, which the access_tokens body
+// names alone: the token reaches every repository the installation holds, and the account that
+// installs the App is what decides which those are. GitHub reads a request naming no permission
+// as the whole installation at every permission it is granted, which is a token no caller here
+// asks for, so a request naming permissions is no proof of a token held to them: what GitHub
 // says it minted is held against what was asked (narrowedTo) and a wider lease is refused rather
 // than served.
-func (m *Manager) exchange(ctx context.Context, jwt, installation string, repos []string, permissions map[string]string) (Lease, error) {
-	encoded, err := json.Marshal(accessTokensBody{Repositories: repos, Permissions: permissions})
+func (m *Manager) exchange(ctx context.Context, jwt, installation string, permissions map[string]string) (Lease, error) {
+	encoded, err := json.Marshal(accessTokensBody{Permissions: permissions})
 	if err != nil {
 		return Lease{}, err
 	}
@@ -139,18 +122,16 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, repos 
 			if githubrest.RateLimitSignals(response, body) {
 				return Lease{}, &TransientError{Err: failed}
 			}
-			// Every other 422 is the narrowing this request carried: the installation reaching
-			// fewer repositories than the request asked for, or being granted less than it asked
-			// for of a permission — which a mint asks for as the installation was granted it a
-			// moment before (exchangeGranted), so that half is a grant changed between the two
-			// calls. GitHub answers the two the same way and its text is never quoted as a
-			// cause, so the refusal names both halves of what was asked and an operator reads
-			// which it was.
-			return Lease{}, fmt.Errorf("%w (%s): %w", ErrNarrowingRefused, askedFor(repos, permissions), refused)
+			// Every other 422 is the permissions this request carried: the installation being
+			// granted less than the request asked for of one of them — which a mint asks for as
+			// the installation was granted it a moment before (exchangeGranted), so it is a
+			// grant that changed between the two calls. GitHub's text is never quoted as a
+			// cause, so the refusal names what was asked for and an operator reads what it was.
+			return Lease{}, fmt.Errorf("%w (%s): %w", ErrNarrowingRefused, askedFor(permissions), refused)
 		}
 		return Lease{}, refused
 	}
-	body, err := readBody(response, "GitHub App token exchange", responseBound+int64(len(repos))*repositoryAnswerBound)
+	body, err := readBody(response, "GitHub App token exchange", exchangeAnswerBound)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -162,7 +143,7 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, repos 
 	if err != nil || payload.Token == "" {
 		return Lease{}, fmt.Errorf("GitHub App token exchange returned an invalid response")
 	}
-	if err := payload.narrowedTo(repos, permissions); err != nil {
+	if err := payload.narrowedTo(permissions); err != nil {
 		return Lease{}, err
 	}
 	return Lease{Token: payload.Token, ExpiresAt: expiresAt, Minted: m.now()}, nil

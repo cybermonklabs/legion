@@ -46,7 +46,7 @@ The daemon's lifecycle writes all go through `writeStatus` (`dispatch-client.ts`
 | merge / close → `done` | `closeTree` | `processes.ts` |
 | controller `todo`/`backlog`/`icebox` | `/issues/status` | `api/routes/issues.ts` |
 
-The round-2 ruling added a second spawn-time write, "`todo` → `in_progress` for the first worker
+The round-2 decision added a second spawn-time write, "`todo` → `in_progress` for the first worker
 on a released child", reasoning from the table's *gaps*: only the root gets `in_progress` from
 `spawnTree`, children are released to `todo`, so a child's implementer would complete from `todo`
 and the new guard would write nothing. Unit tests modelled a child at `todo` under its parent's

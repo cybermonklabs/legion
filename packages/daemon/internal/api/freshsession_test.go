@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -28,7 +29,7 @@ import (
 
 // freshSessionHarness is the one daemon both doors are driven against: the operator's bearer and
 // a controller grant on the same server, with the workflow's facts recorded and the role of each
-// phase known (workflow.RoleFor), which the start of a phase worker whose process is gone reads.
+// phase known (phase.RoleFor), which the start of a phase worker whose process is gone reads.
 func freshSessionHarness(t *testing.T, handler intake.Handler) *harness {
 	t.Helper()
 	return freshSessionHarnessStopping(t, handler, context.Background(), NewRouteDecisions())
@@ -43,7 +44,7 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
+		Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
 		Stopping: stopping, Decisions: decisions,
 	}).Handler
 	return h
@@ -333,10 +334,10 @@ func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// freshSessionLine is admission's waiting line and the facts it is read from, read exactly as a
-// promotion reads them — blockers.JudgeLine, the one place the line is judged, which fills the
-// held set and the children-first waits the line cannot judge itself: the order in which the
-// next slot is offered.
+// freshSessionLine is admission's waiting line and the facts it is read from, judged by
+// blockers.JudgeLine from the stored state: the held set, the children-first waits and the waits
+// of started issues (record.LineFacts.Held, ChildWaits and Waits). It runs none of the releases
+// a pass runs before it judges the line.
 func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.LineEntry, record.LineFacts) {
 	t.Helper()
 	var (
@@ -358,7 +359,7 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 		if facts, err = record.ReadLineFacts(h.ctx, tx, records, testDispatchProject, issues, config.DesignGateRootIssues.Steps()); err != nil {
 			return err
 		}
-		_, facts, line, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil)
+		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil, time.Now())
 		return err
 	}); err != nil {
 		t.Fatalf("read the waiting line: %v", err)
@@ -587,6 +588,54 @@ func TestAFreshSessionOutrunsTheRuleResumeThePhaseFactWakes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A phase worker that holds only the daemon's own delivery of a relaunch's record owes no task:
+// that delivery carries no run, phase or entry, only the sentence of what the relaunch ended
+// (supervise.Delivery.Relaunch). So its fresh session restarts its issue's phase
+// (restartWorkedPhase), as the fresh session of a worker holding nothing does, rather than bring
+// it back in a new session with nothing to do. Both doors are held to it, since the effect behind
+// them is one.
+func TestAFreshSessionOfAWorkerHoldingOnlyARelaunchDeliveryRestartsItsPhase(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			facts := &phaseRestarter{}
+			h := freshSessionHarness(t, facts)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			// The worker's process dies in a turn of the agent's own, so the relaunch records what
+			// it cut off, and the relaunched agent's ready, holding no task, is given the daemon's
+			// own delivery of that record (supervise's queueRelaunch). No shim is connected, so
+			// that delivery waits unsent.
+			if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+				t.Fatalf("start the agent's own turn: %v", err)
+			}
+			h.relaunch(token)
+			h.ready(token, "ses_implementer", 2)
+			if held := h.stored(token).Pending; held == nil || !held.Relaunch() {
+				t.Fatalf("the relaunched worker holds %+v, want the daemon's own delivery of the relaunch's record alone", held)
+			}
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
+			}
+			if note := freshSessionNote(t, recorder); note != "" {
+				t.Errorf("the answer says %q, want nothing: the phase was restarted", note)
+			}
+			applied := facts.recorded()
+			if len(applied) != 1 {
+				t.Fatalf("the fresh session applied %#v, want the phase's restart alone", applied)
+			}
+			if fact, ok := applied[0].(intake.RestartPhase); !ok || fact.Issue != "LEGION-209" || fact.Role != claim.RoleImplementer {
+				t.Errorf("the fresh session applied %#v, want RestartPhase{LEGION-209, implementer}", applied[0])
+			}
+			if after := h.stored(token); after.Session != "" || after.State != supervise.StateLaunching {
+				t.Errorf("the claim is %s recording session %q, want it launching in a new session", after.State, after.Session)
+			}
+		})
 	}
 }
 

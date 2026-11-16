@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -189,11 +191,41 @@ func TestDefaultBranchRefusesARepositoryItCannotRead(t *testing.T) {
 	}
 }
 
+// A default-branch read GitHub refuses for its rate limit carries GitHub's answer through Read's
+// wrap: a caller tells the limit, and how long GitHub asks it to wait, from a refusal of the
+// repository such as the 404 above, and reads the limit's headers as GitHub sent them.
+func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
+	// Ten minutes out, so no scheduling delay can carry the clock past it before the answer is read.
+	reset := strconv.FormatInt(time.Now().Add(10*time.Minute).Unix(), 10)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "15000")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", reset)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"API rate limit exceeded for installation ID 7.","status":"403"}`)
+	}))
+	t.Cleanup(server.Close)
+	_, err := Read(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"))
+	var answer *githubrest.Answer
+	if !errors.As(err, &answer) || !answer.RateLimited {
+		t.Fatalf("Read = %v, want GitHub's rate-limited *githubrest.Answer", err)
+	}
+	if answer.RetryAfter < 9*time.Minute || answer.RetryAfter > 10*time.Minute {
+		t.Errorf("the limit's wait = %s, want until the reset ten minutes away", answer.RetryAfter)
+	}
+	if want := (githubrest.LimitHeaders{Limit: "15000", Remaining: "0", Reset: reset}); answer.Limit != want {
+		t.Errorf("the limit's headers = %+v, want %+v", answer.Limit, want)
+	}
+	if want := `read the default branch of acme/widgets: GitHub answered GET /repos/acme/widgets with 403: {"message":"API rate limit exceeded for installation ID 7.","status":"403"}`; errorText(err) != want {
+		t.Errorf("Read error = %q, want %q", errorText(err), want)
+	}
+}
+
 // The branch starts at the base's own commit, whatever the base's tree holds: no role of the issue
-// has run yet, and nothing a role reads comes from another issue's directory (each tree reads and
-// writes only .legion/<its issue>/, and retro removes its own before READY, so no merge carries one
-// onto the default branch; dispatch://LEGION-605). Create reads the base's ref and creates the
-// branch there, and reads, posts or commits no tree: the fake answers nothing else.
+// has run yet, and nothing a role reads comes from the branch's tree, since every phase's handoff
+// is a record on the issue's Dispatch issue rather than a file on the branch (sjawhar/legion#2354).
+// Create reads the base's ref and creates the branch there, and reads, posts or commits no tree:
+// the fake answers nothing else.
 func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -16,18 +16,14 @@ const googleTokenURL = "https://oauth2.googleapis.com/token"
 
 // GoogleLogin exchanges the refresh token in a google-login secret for a Google access token.
 // TokenURL and HTTP let tests replace Google's token endpoint and its transport, and Now the
-// clock the minted token's expiry is measured from, as GitHubApp has.
+// clock the minted token's expiry is measured from, as GitHubApp has. Retry is the policy the
+// refresh is retried under, and the process-wide budget it draws from, as GitHubApp's is; nil
+// makes one attempt.
 type GoogleLogin struct {
 	TokenURL string
 	HTTP     *http.Client
 	Now      func() time.Time
-}
-
-type googleLoginSecret struct {
-	Type         string `json:"type"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	RefreshToken string `json:"refresh_token"`
+	Retry    *Retry
 }
 
 type googleTokenResponse struct {
@@ -64,15 +60,11 @@ func googleSubtype(subtype string) string {
 // ErrMintStoredValue, ErrMintRefused or ErrMintUpstream.
 func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	const what = "refresh Google login"
-	var secret googleLoginSecret
-	// encoding/json's syntax errors quote the offending byte, so neither decode wraps its error:
-	// the stored credential and Google's answer both hold secrets.
-	if json.Unmarshal([]byte(req.Value), &secret) != nil {
-		return Minted{}, fmt.Errorf("%w: decode Google login secret: not a JSON object of its fields", ErrMintStoredValue)
+	parsed, err := ParseValue(kindGoogleLogin, req.Value)
+	if err != nil {
+		return Minted{}, err
 	}
-	if secret.Type != "authorized_user" || secret.ClientID == "" || secret.ClientSecret == "" || secret.RefreshToken == "" {
-		return Minted{}, fmt.Errorf("%w: Google login secret must be an authorized_user credential", ErrMintStoredValue)
-	}
+	secret := parsed.GoogleLogin
 	endpoint := cmp.Or(m.TokenURL, googleTokenURL)
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -92,20 +84,22 @@ func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) 
 		now = m.Now
 	}
 	asked := now()
-	payload, err := mintCall(m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
 	if status := (*mintStatusError)(nil); errors.As(err, &status) {
 		var tokenError googleTokenError
 		if json.Unmarshal(payload, &tokenError) == nil && tokenError.Code == "invalid_grant" {
 			if tokenError.Subtype != "" {
-				return Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (%s)", ErrMintRefused, googleSubtype(tokenError.Subtype))
+				return Minted{}, withAttempts(fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (%s)", ErrMintRefused, googleSubtype(tokenError.Subtype)), err)
 			}
-			return Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant", ErrMintRefused)
+			return Minted{}, withAttempts(fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant", ErrMintRefused), err)
 		}
 	}
 	if err != nil {
 		return Minted{}, err
 	}
 	var token googleTokenResponse
+	// encoding/json's syntax errors quote the offending byte, so this decode does not wrap its
+	// error: Google's answer holds a secret.
 	if json.Unmarshal(payload, &token) != nil {
 		return Minted{}, fmt.Errorf("%w: decode Google token response: not a JSON object of its fields", ErrMintUpstream)
 	}

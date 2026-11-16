@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,12 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // idleRigURLVariable names the rig's own service in the environment of every process the rig's
@@ -36,8 +37,9 @@ import (
 const idleRigURLVariable = "LEGION_IDLE_RIG_URL"
 
 // idleRigRole is one role process the rig has seen: the claim it registered, the session it
-// became, and every message it was given — the daemon's prompts over the worker stream, and the
-// messages the session's own consumer was relayed.
+// became, every message it was given — the daemon's prompts over the worker stream, and the
+// messages the session's own consumer was relayed — and every adopt-working-copy frame the daemon
+// sent it ahead of a prompt.
 type idleRigRole struct {
 	Claim       string
 	Secret      string
@@ -46,22 +48,47 @@ type idleRigRole struct {
 	Registered  int
 	Prompts     []idleRigMessage
 	Messages    []idleRigMessage
+	Adoptions   []idleRigAdoption
 }
 
-// idleRigMessage is one message a role process recorded, with the moment it arrived.
+// idleRigMessage is one message a role process recorded, with the moment it arrived. Delivery is
+// the delivery a prompt carried (shimwire.Prompt.DeliveryID), the id the daemon's own log names
+// the task by; a message the session's consumer relayed carries none.
 type idleRigMessage struct {
-	ID   string
-	Text string
-	At   time.Time
+	ID       string
+	Delivery string
+	Text     string
+	At       time.Time
+}
+
+// idleRigAdoption is one adopt-working-copy frame a role process was sent, recorded before the
+// process answered it: the frame's id, the jj identity it named, and Ahead, how many tasks the
+// role had been given when it came. The daemon sends the frame ahead of the task it adopts the
+// working copy for and sends that task only once the frame is answered (supervise's startSend),
+// so Ahead is the index, in the role's prompts, of the task the frame came before: a count of the
+// frames ahead of a task is read from the rig's own order of arrival rather than from two clocks.
+type idleRigAdoption struct {
+	ID       string
+	Identity string
+	Ahead    int
 }
 
 // idleRigPlan is what a role process does with the next prompt it is given: take a turn on it, or
 // acknowledge it and take none, which is the shape of a resume that never reaches its first turn.
 // Topics are the topics the process registers with the Envoy listener beside its agent subject,
 // as `envoy_subscribe` adds one.
+//
+// Background is the background work the session's host runs, by the kind its activity report
+// names it with — `subagent` for a running `task` subagent, `async-job` for any other job the
+// host's manager runs (asyncJobKinds, packages/pi-shared/src/session-activity.ts) — and none
+// while nothing runs. The process reports it as the Oh My Pi extension does
+// (packages/pi-legion/extensions/legion.ts): at every turn's end whatever it says, and between
+// turns whenever it changes (idleRigRoleProcess.watchActivity), so a test that changes it
+// mid-run is a subagent starting or ending in a live session.
 type idleRigPlan struct {
-	TakeTurn bool     `json:"takeTurn"`
-	Topics   []string `json:"topics"`
+	TakeTurn   bool     `json:"takeTurn"`
+	Topics     []string `json:"topics"`
+	Background []string `json:"background"`
 }
 
 // idleRigAgents is the rig's own service: it hands each role process the boot token its pod's
@@ -75,7 +102,7 @@ type idleRigPlan struct {
 type idleRigAgents struct {
 	t    *testing.T
 	url  string
-	pool *pgxpool.Pool
+	pool *store.Pool
 
 	mu sync.Mutex
 	// private is each role's launcher private directory, by "<pod>/<role>".
@@ -86,7 +113,7 @@ type idleRigAgents struct {
 	plan idleRigPlan
 }
 
-func newIdleRigAgents(t *testing.T, pool *pgxpool.Pool) *idleRigAgents {
+func newIdleRigAgents(t *testing.T, pool *store.Pool) *idleRigAgents {
 	t.Helper()
 	a := &idleRigAgents{t: t, pool: pool, private: map[string]string{}, roles: map[string]*idleRigRole{},
 		plans: map[string]idleRigPlan{}, plan: idleRigPlan{TakeTurn: true}}
@@ -124,6 +151,7 @@ func (a *idleRigAgents) role(pod, role string) idleRigRole {
 	copied := *seen
 	copied.Prompts = append([]idleRigMessage(nil), seen.Prompts...)
 	copied.Messages = append([]idleRigMessage(nil), seen.Messages...)
+	copied.Adoptions = append([]idleRigAdoption(nil), seen.Adoptions...)
 	return copied
 }
 
@@ -133,6 +161,11 @@ func (a *idleRigAgents) prompts(pod, role string) []idleRigMessage { return a.ro
 // messages is every message the role's session was given, relayed from its own consumer.
 func (a *idleRigAgents) messages(pod, role string) []idleRigMessage {
 	return a.role(pod, role).Messages
+}
+
+// adoptions is every adopt-working-copy frame the daemon sent the role over the worker stream.
+func (a *idleRigAgents) adoptions(pod, role string) []idleRigAdoption {
+	return a.role(pod, role).Adoptions
 }
 
 // counting is how many of the role's prompts and pushed messages hold want.
@@ -214,8 +247,12 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 	writeIdleRigJSON(w, map[string]string{})
 }
 
+// record files what a role process was given under the kind it names. An adopt-working-copy frame
+// is filed apart from both lists of what the role was told: it is no message, and a frame filed
+// under Messages would read as one the session was given, which is the list
+// ARoleMessageThatKeepsNothingStillWakesTheRole reads for a woken session that was given nothing.
 func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
-	var request struct{ Pod, Role, Kind, ID, Text string }
+	var request struct{ Pod, Role, Kind, ID, Delivery, Text, Identity string }
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -227,10 +264,13 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 		seen = &idleRigRole{}
 		a.roles[key] = seen
 	}
-	message := idleRigMessage{ID: request.ID, Text: request.Text, At: time.Now().UTC()}
-	if request.Kind == "prompt" {
+	message := idleRigMessage{ID: request.ID, Delivery: request.Delivery, Text: request.Text, At: time.Now().UTC()}
+	switch request.Kind {
+	case "prompt":
 		seen.Prompts = append(seen.Prompts, message)
-	} else {
+	case "adopt":
+		seen.Adoptions = append(seen.Adoptions, idleRigAdoption{ID: request.ID, Identity: request.Identity, Ahead: len(seen.Prompts)})
+	default:
 		seen.Messages = append(seen.Messages, message)
 	}
 	a.mu.Unlock()
@@ -262,7 +302,8 @@ func writeIdleRigJSON(w http.ResponseWriter, body any) {
 // worker stream the shim speaks (packages/daemon/internal/daemon/daemon_test.go's shim), claims
 // its role on the Envoy listener and takes the session's messages from the session's own
 // consumer over NATS, and records every message it is given — the daemon's prompts and the
-// consumer's frames alike — with the rig.
+// consumer's frames alike — with the rig, and every adopt-working-copy frame the daemon sends it
+// as a thing apart, before it answers it.
 //
 // Run by anything but that launcher it does nothing: with no rig service named in its
 // environment there is no rig to serve.
@@ -283,21 +324,23 @@ func TestIdleRigRoleProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-// The subjects, header and replies of a session's own delivery, which the role process reads
+// The subjects, headers and replies of a session's own delivery, which the role process reads
 // and answers as a plugin in consumer mode does. They are packages/envoy's: bus.DeliverSubject
 // and contracts.AgentSubject build the two subjects, cmd/listener/session_relay.go names the
-// header and the replies, and cmd/listener/session_delivery.go the mode the registration
+// frame header and the replies, internal/bus/stream.go the probe header
+// (bus.ConnectionProbeHeader), and cmd/listener/session_delivery.go the mode the registration
 // answers. The rig writes them out because they are another module's, and an Envoy that renamed
 // one would be a contract change this rig has to be told about.
 const (
 	// idleRigDeliverSubjectPrefix and the session id are the session's relay subject, where the
 	// listener that owns the session publishes each message of its durable consumer.
 	idleRigDeliverSubjectPrefix = "notifications.envoy.deliver."
-	// idleRigAgentSubjectPrefix and the session id are the session's agent subject: its inbox,
-	// which a role-lane forward reaches as a core request waiting for a receipt.
-	idleRigAgentSubjectPrefix = "notifications.agent."
 	// idleRigStreamSeqHeader is a relay frame's stream sequence, in decimal.
 	idleRigStreamSeqHeader = "Envoy-Stream-Seq"
+	// idleRigProbeHeader, "1", with no body, is the listener's connection probe on the relay
+	// subject (bus.ConnectionProbeHeader): the send route asks with it whether the session still
+	// subscribes the subject. It is no frame, and is answered done before anything is decoded.
+	idleRigProbeHeader = "Envoy-Probe"
 	// idleRigRelayReceived is the answer that the frame decoded, before any work of the
 	// session's; idleRigRelayDone is the answer that it was written, which acknowledges the
 	// message to the consumer.
@@ -309,11 +352,9 @@ const (
 )
 
 // idleRigEnvelope is what the rig reads of an Envoy envelope, the frame's data unchanged: the
-// event it carries, the topic it was sent on (which tells a role-lane forward from a message
-// stored on the session's own agent subject), and the message itself.
+// event it carries and the message itself.
 type idleRigEnvelope struct {
 	EventID        string `json:"event_id"`
-	Topic          string `json:"topic"`
 	PayloadSummary string `json:"payload_summary"`
 	Payload        string `json:"payload"`
 }
@@ -363,6 +404,15 @@ type idleRigRoleProcess struct {
 	// counts.
 	recordedMu sync.Mutex
 	recorded   map[uint64]bool
+
+	// reportMu orders this process's activity reports, which a turn's end and the watch between
+	// turns both send. reported is the background work the last report sent named, and taken
+	// whether the daemon took it: a report it did not take is sent again at the watch's next
+	// reading whatever that reads, as the extension forgets a report that did not reach the
+	// daemon (lastActivity in packages/pi-legion/extensions/legion.ts).
+	reportMu sync.Mutex
+	reported []string
+	taken    bool
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
@@ -444,6 +494,7 @@ func (p *idleRigRoleProcess) run() error {
 	if err := p.reportActivity(); err != nil {
 		return err
 	}
+	go p.watchActivity()
 	// The registration goes when the process does, as a session's Envoy plugin drops it when its
 	// process ends: a released pod's session must be gone from the listener's registry, or a
 	// message published to its role topic would be forwarded to a session nothing is left of
@@ -506,22 +557,18 @@ func (p *idleRigRoleProcess) dial(bootToken string) error {
 	return nil
 }
 
-// openDelivery opens the session's own NATS connection and takes the two subjects a session is
+// openDelivery opens the session's own NATS connection and takes the one subject a session is
 // reached on, as a plugin in consumer mode does (packages/envoy's "Session consumers", and the
 // Go stand-ins of packages/envoy/cmd/listener's session_relay_test.go and
-// current_registration_test.go):
+// current_registration_test.go's captureLaneForwards, neither of which answers anything on the
+// agent subject either): its relay subject, notifications.envoy.deliver.<session id>, where the
+// listener that owns the session publishes each message of the session's durable consumer. Every
+// message the session is given arrives there, and that is where the rig records it. A role-lane
+// forward and an ad-hoc topic's forward are published into the stream on the session's agent
+// subject, so each comes back as a frame of that consumer; the session does not subscribe to that
+// subject at all and answers nothing on it.
 //
-//   - its relay subject, notifications.envoy.deliver.<session id>, where the listener that owns
-//     the session publishes each message of the session's durable consumer. Every message the
-//     session is given arrives here, and this is where the rig records it;
-//   - its agent subject, notifications.agent.<session id>, where a role-lane forward and an
-//     ad-hoc topic's forward arrive as core requests waiting for the holder's empty receipt.
-//     That receipt is what the publish route answers its sender 200 on. Nothing is recorded
-//     from it: the listener's forward is stored on the agent subject too, so the same message
-//     comes back as a frame of the session's own consumer, which is the one copy the session
-//     is given.
-//
-// Both are taken, and flushed to the server, before the session registers, so nothing the
+// It is taken, and flushed to the server, before the session registers, so nothing the
 // listener relays or forwards once it knows the session can arrive before this process listens.
 func (p *idleRigRoleProcess) openDelivery() error {
 	bus, err := nats.Connect(p.natsURLs, nats.Name("idle-rig-"+p.session), nats.MaxReconnects(-1))
@@ -531,9 +578,6 @@ func (p *idleRigRoleProcess) openDelivery() error {
 	p.bus = bus
 	if _, err := bus.Subscribe(idleRigDeliverSubjectPrefix+p.session, p.relayed); err != nil {
 		return fmt.Errorf("subscribe to the relay subject of %s: %w", p.session, err)
-	}
-	if _, err := bus.Subscribe(idleRigAgentSubjectPrefix+p.session, p.forwarded); err != nil {
-		return fmt.Errorf("subscribe to the agent subject of %s: %w", p.session, err)
 	}
 	if err := bus.Flush(); err != nil {
 		return fmt.Errorf("flush the subscriptions of %s: %w", p.session, err)
@@ -545,8 +589,15 @@ func (p *idleRigRoleProcess) openDelivery() error {
 // frame decodes, records the message with the rig, and only then answers `done`, which is what
 // acknowledges the message to the consumer. A frame whose stream sequence this process has
 // already recorded — the relay sends again what it saw no reply to — is acknowledged and not
-// recorded twice.
+// recorded twice. The listener's connection probe is no frame: it is answered `done`, as a
+// plugin answers it before it decodes anything, and recorded nowhere.
 func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
+	if msg.Header.Get(idleRigProbeHeader) == "1" {
+		if msg.Reply != "" {
+			p.reply(msg, idleRigRelayDone)
+		}
+		return
+	}
 	var item idleRigEnvelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
 		fmt.Fprintf(os.Stderr, "idle rig role process: decode a frame for %s: %v\n", p.session, err)
@@ -578,25 +629,6 @@ func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
 		}
 	}
 	p.reply(msg, idleRigRelayDone)
-}
-
-// forwarded answers the empty receipt a role-lane forward and an ad-hoc topic's forward wait for
-// on the session's agent subject, as every plugin answers one in either delivery mode. A frame
-// carrying no reply, and one whose envelope's topic is the agent subject itself (a send stored
-// through JetStream, whose reply subject is the server's own acknowledgement inbox), is left
-// alone: an empty answer there fails the publisher.
-func (p *idleRigRoleProcess) forwarded(msg *nats.Msg) {
-	var item idleRigEnvelope
-	if err := json.Unmarshal(msg.Data, &item); err != nil {
-		fmt.Fprintf(os.Stderr, "idle rig role process: decode a forward to %s: %v\n", p.session, err)
-		return
-	}
-	if msg.Reply == "" || item.Topic == idleRigAgentSubjectPrefix+p.session {
-		return
-	}
-	if err := msg.Respond(nil); err != nil {
-		fmt.Fprintf(os.Stderr, "idle rig role process: answer the receipt of a forward to %s: %v\n", p.session, err)
-	}
 }
 
 // firstSighting reports whether this process has not recorded the stream sequence yet, taking it
@@ -656,8 +688,9 @@ func (p *idleRigRoleProcess) plan() (idleRigPlan, error) {
 // one — the machine it runs on, every topic it follows beside its own agent subject, and the
 // delivery it asks for: its own durable consumer, relayed to the NATS connection openDelivery
 // opened, under this process's epoch. The answer says which delivery the session got, and a
-// session left on the core path would be given nothing here, so anything but the consumer's is
-// this process's failure to start (`core` with the listener's reason).
+// registration this listener can give no consumer is refused with an HTTP status and carries no
+// `delivery` at all, so an answer with none, and one whose mode is not the consumer's, are each
+// this process's failure to start.
 func (p *idleRigRoleProcess) subscribe(topics []string) error {
 	if topics == nil {
 		topics = []string{}
@@ -701,13 +734,56 @@ func (p *idleRigRoleProcess) ready() error {
 	}, nil)
 }
 
-// reportActivity is the session's report that it runs no background work and has no reminder due,
-// which the idle rule reads before it releases the pod (R1).
+// reportActivity is the session's report of what it is doing, sent whatever it says, as the
+// extension's turn-end report is (its `session_stop` handler): once the process is ready, and
+// after every task it is given (prompted). It names the background work the rig's plan says is
+// running (idleRigPlan.Background) and no reminder due. The idle rule reads it before it releases
+// the pod (R1), and holds the pod while it names background work running.
 func (p *idleRigRoleProcess) reportActivity() error {
-	return p.post(p.daemon+"/legion/v1/claims/activity", claim.ActivityRequest{
+	p.reportMu.Lock()
+	defer p.reportMu.Unlock()
+	plan, err := p.plan()
+	if err != nil {
+		return err
+	}
+	return p.report(plan.Background)
+}
+
+// idleRigActivityPeriod is how often a role process reads its background work between turns: the
+// extension's managed interval, five seconds there (SESSION_ACTIVITY_PERIOD_MS), cut to one here
+// so a subagent that ends is reported within a second rather than within the rig's waits.
+const idleRigActivityPeriod = time.Second
+
+// watchActivity is the extension's managed interval between turns: every idleRigActivityPeriod
+// it reads the background work the rig's plan says is running and reports it when it differs
+// from what the daemon last took, or when the daemon took nothing last time, and sends nothing
+// otherwise. A reading it cannot make is skipped, as the next one comes a period later. Each
+// reading is made under reportMu, as reportActivity's is, so the report the daemon holds last is
+// always of the latest reading: none read before a change lands after one read since.
+func (p *idleRigRoleProcess) watchActivity() {
+	ticker := time.NewTicker(idleRigActivityPeriod)
+	defer ticker.Stop()
+	for range ticker.C {
+		p.reportMu.Lock()
+		if plan, err := p.plan(); err == nil && (!p.taken || !slices.Equal(plan.Background, p.reported)) {
+			if err := p.report(plan.Background); err != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s: %v\n", p.session, err)
+			}
+		}
+		p.reportMu.Unlock()
+	}
+}
+
+// report posts one activity report through the daemon's own route, naming kinds as the
+// background work running, and records whether the daemon took it. The caller holds reportMu.
+func (p *idleRigRoleProcess) report(kinds []string) error {
+	err := p.post(p.daemon+"/legion/v1/claims/activity", claim.ActivityRequest{
 		ClaimToken: p.claimToken, SessionID: p.session, Secret: p.secret,
-		Activity: claim.SessionActivity{At: time.Now().UTC()},
+		Activity: claim.SessionActivity{At: time.Now().UTC(),
+			BackgroundWork: claim.BackgroundWork{Running: len(kinds) > 0, Kinds: kinds}},
 	}, nil)
+	p.reported, p.taken = kinds, err == nil
+	return err
 }
 
 // serve answers the daemon's frames until the connection ends or a shutdown arrives.
@@ -741,7 +817,7 @@ func (p *idleRigRoleProcess) serve() error {
 				return err
 			}
 		case shimwire.AdoptWorkingCopy:
-			if err := p.writer.WriteFrame(shimwire.AdoptWorkingCopyResult{ID: f.ID, OK: true}); err != nil {
+			if err := p.adopted(f); err != nil {
 				return err
 			}
 		case shimwire.Shutdown:
@@ -750,12 +826,26 @@ func (p *idleRigRoleProcess) serve() error {
 	}
 }
 
+// adopted records the adopt-working-copy frame and only then answers it, as a shim answers once
+// its jj commands are done. The daemon sends the task the frame is for only once this answer is
+// in (supervise's startSend), so every frame is on the rig's record before the task it came ahead
+// of is. A record that does not reach the rig ends the process, as a prompt's does, rather than
+// answer a frame the record lacks: a count of these frames must never miss one.
+func (p *idleRigRoleProcess) adopted(adopt shimwire.AdoptWorkingCopy) error {
+	if err := p.post(p.rig+"/agent/record", map[string]any{
+		"pod": p.pod, "role": p.role, "kind": "adopt", "id": adopt.ID, "identity": adopt.JJUser + " <" + adopt.JJEmail + ">",
+	}, nil); err != nil {
+		return err
+	}
+	return p.writer.WriteFrame(shimwire.AdoptWorkingCopyResult{ID: adopt.ID, OK: true})
+}
+
 // prompted records the task and, when the rig's plan says so, takes a turn on it. A plan that
 // takes no turn acknowledges the prompt and nothing else, which is a resume whose woken role
 // never reaches its first turn.
 func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 	if err := p.post(p.rig+"/agent/record", map[string]any{
-		"pod": p.pod, "role": p.role, "kind": "prompt", "id": prompt.ID, "text": prompt.Message,
+		"pod": p.pod, "role": p.role, "kind": "prompt", "id": prompt.ID, "delivery": prompt.DeliveryID, "text": prompt.Message,
 	}, nil); err != nil {
 		return err
 	}

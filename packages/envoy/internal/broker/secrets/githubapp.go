@@ -22,16 +22,15 @@ import (
 const githubAPIBase = "https://api.github.com"
 
 // GitHubApp mints installation tokens from the App id and private key in a github-app secret.
-// Base, HTTP and Now let tests replace GitHub, its transport and the clock.
+// Base, HTTP and Now let tests replace GitHub, its transport and the clock. Retry is the policy
+// each of a mint's calls is retried under, and the process-wide budget it draws from; nil makes
+// one attempt of each. It is a pointer, so every copy of the minter (kindMinters takes it by
+// value) draws from the one budget.
 type GitHubApp struct {
-	Base string
-	HTTP *http.Client
-	Now  func() time.Time
-}
-
-type githubAppSecret struct {
-	AppID      string `json:"app_id"`
-	PrivateKey string `json:"private_key"`
+	Base  string
+	HTTP  *http.Client
+	Now   func() time.Time
+	Retry *Retry
 }
 
 type githubInstallation struct {
@@ -156,7 +155,7 @@ func (n *GitHubNarrowing) refusal(err error, appID, owner string) error {
 	if n.ReadOnly {
 		causes = append(causes, "contents: read, metadata: read or pull_requests: read, which the App does not hold")
 	}
-	return fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the narrowed token for %s: likely %s; the caller fixes the narrowing", ErrMintNarrowingRefused, appID, owner, strings.Join(causes, ", or "))
+	return withAttempts(fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the narrowed token for %s: likely %s; the caller fixes the narrowing", ErrMintNarrowingRefused, appID, owner, strings.Join(causes, ", or ")), err)
 }
 
 // refusedPermissions reports GitHub refusing the permissions a read-only narrowing's token
@@ -236,27 +235,44 @@ const revokedCheckMessage = "broker: GitHub did not revoke a token minted for a 
 const missingActionsMessage = "broker: a GitHub App installation does not hold actions, so the read-only token released for it reads no Actions runs, jobs or job logs; grant the App Actions: Read and approve it on that account"
 
 // revokeInstallationToken asks GitHub to revoke token, as the token itself
-// (DELETE /installation/token), for a token Mint minted and will not release. It runs to its own
-// bound even once ctx ends, since GitHub honours an unreleased token for an hour otherwise.
-func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) error {
+// (DELETE /installation/token), for a token Mint minted and will not release, retried as the
+// mint's other calls are and from the same wait budget. It runs to its own bound even once ctx
+// ends, since GitHub honours an unreleased token for an hour otherwise. A 401 or a 404 to an
+// attempt after the first answers nil, since an earlier attempt may have revoked the token and
+// lost its answer; one to the first attempt stays a refusal, since nothing in this revoke can
+// have revoked a token minted moments before.
+func (m GitHubApp) revokeInstallationToken(ctx context.Context, mint *mintRetry, token string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
 	defer cancel()
-	return m.revokeToken(ctx, token)
+	return m.revokeToken(ctx, mint, token)
 }
 
-// revokeToken is that same revoke under ctx as it is given, and nothing else. A check's revoke
-// calls it with the caller's own context (Mint): that caller is waiting on the check's answer
-// inside a budget it bounds, and a revoke that outlived the cut context by revokeTimeout there
-// would put a single probe past the 30 s whole-call timeout the agent-secrets client gives every
-// call (leasetime.RenewClientTimeout). A release's revoke runs after its caller may be gone, so
-// it keeps the detached bound revokeInstallationToken gives it.
-func (m GitHubApp) revokeToken(ctx context.Context, token string) error {
+// revokeToken is that same revoke under ctx as it is given, retried from the same wait budget,
+// and nothing else. A check's revoke calls it with the caller's own context (Mint): that caller
+// is waiting on the check's answer inside a budget it bounds, and a revoke that outlived the cut
+// context by revokeTimeout there would put a single probe past the 30 s whole-call timeout the
+// agent-secrets client gives every call (leasetime.RenewClientTimeout). A release's revoke runs
+// after its caller may be gone, so it keeps the detached bound revokeInstallationToken gives it.
+func (m GitHubApp) revokeToken(ctx context.Context, mint *mintRetry, token string) error {
 	const what = "revoke GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodDelete, m.base()+"/installation/token", token, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
-	_, err = mintCall(m.HTTP, request, what, "GitHub", http.StatusNoContent, mintResponseLimit)
+	_, err = mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusNoContent, mintResponseLimit)
+	// GitHub answers a request made as a token it has revoked 401, and one made as a token it no
+	// longer knows 404. Nothing in this revoke can have revoked a token minted moments before, so
+	// either status at the first attempt is GitHub refusing the request, and stays the refusal
+	// Mint logs revokedWiderMessage for. At a later attempt either may follow an earlier attempt
+	// that revoked the token and lost its answer, past mintAttemptTimeout or on a connection that
+	// dropped, so it reads as the revoke done. mintCall's error is its last attempt's alone, so an
+	// earlier attempt that was a rate limit, which revoked nothing, cannot be told apart from that
+	// and reads the same. A rate limit itself is no verdict on the token at any attempt.
+	var status *mintStatusError
+	if MintAttempts(err) > 1 && errors.As(err, &status) && !status.rateLimited &&
+		(status.code == http.StatusUnauthorized || status.code == http.StatusNotFound) {
+		return nil
+	}
 	return err
 }
 
@@ -283,10 +299,13 @@ func (m GitHubApp) revokeToken(ctx context.Context, token string) error {
 // there would hold every permission of the installation before anybody approved the request.
 // A check needs req.GitHubNarrowing, since a release without one is the owner-wide one the
 // broker already makes; a check without one is refused before GitHub is asked anything.
-// The value is the JSON object stored in the secret, never part of an error. Every error wraps
-// one of ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the
-// refusal of an App with no installation on the account also wraps ErrMintNoInstallation, which
-// is inside ErrMintRefused and which the broker's narrowing check reads.
+// The value is the JSON object stored in the secret, decoded by ParseValue before anything else,
+// so a value it refuses is refused as the stored value even when the narrowing is refused too;
+// it is never part of an error. Every call it makes is retried under m.Retry, all of them
+// waiting from the one wait budget this mint starts. Every error wraps one of
+// ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the refusal of
+// an App with no installation on the account also wraps ErrMintNoInstallation, which is inside
+// ErrMintRefused and which the broker's narrowing check reads.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	if req.Check && req.GitHubNarrowing == nil {
 		// A programming error in the broker: the caller asked this minter to find out about a
@@ -299,15 +318,11 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		// which is right: the broker's own code is at fault and the caller's narrowing is not.
 		return Minted{}, fmt.Errorf("%w: a github app mint check needs the narrowing it checks", ErrMintRefused)
 	}
-	var secret githubAppSecret
-	// encoding/json's syntax errors quote the offending byte, so this decode and the token's do
-	// not wrap their errors: the stored key and GitHub's token are both secrets.
-	if json.Unmarshal([]byte(req.Value), &secret) != nil {
-		return Minted{}, fmt.Errorf("%w: decode GitHub App secret: not a JSON object of its fields", ErrMintStoredValue)
+	parsed, err := ParseValue(kindGitHubApp, req.Value)
+	if err != nil {
+		return Minted{}, err
 	}
-	if !validGitHubAppID(secret.AppID) || secret.PrivateKey == "" {
-		return Minted{}, fmt.Errorf("%w: GitHub App secret needs an app_id and private_key", ErrMintStoredValue)
-	}
+	secret := parsed.GitHubApp
 	owners := req.GitHubOwners
 	narrowing := req.GitHubNarrowing
 	if narrowing != nil {
@@ -320,19 +335,18 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		owners = []string{owner}
 	}
 	body := narrowing.accessTokensBody(readOnlyPermissions)
-	key, err := githubappjwt.ParseKey(secret.PrivateKey)
-	if err != nil {
-		return Minted{}, fmt.Errorf("%w: parse GitHub App private key: %w", ErrMintStoredValue, err)
-	}
 	now := time.Now
 	if m.Now != nil {
 		now = m.Now
 	}
-	jwt, err := githubappjwt.Sign(secret.AppID, key, now())
+	// Mint signs its own JWT, at its own clock's now: ParseValue has signed one with this key
+	// already, so this signature fails only where that one would have, and as the same class.
+	jwt, err := githubappjwt.Sign(secret.AppID, secret.Key, now())
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: sign GitHub App JWT: %w", ErrMintStoredValue, err)
 	}
-	installations, err := m.installations(ctx, jwt)
+	mint := m.Retry.start(req.Kind)
+	installations, err := m.installations(ctx, mint, jwt)
 	if err != nil {
 		return Minted{}, err
 	}
@@ -359,13 +373,13 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 			// hour wherever the revoke did not finish.
 			return Minted{}, nil
 		}
-		token, err := m.installationToken(ctx, jwt, installation.ID, body)
+		token, err := m.installationToken(ctx, mint, jwt, installation.ID, body)
 		if narrowing.refusedPermissions(err) {
 			// The installation holds fewer permissions than the body named, and actions is the
 			// one of them an App is not always granted: ask once more without it, so an App that
 			// reads contents, metadata and pull requests releases those rather than nothing
 			// (optionalReadOnlyPermission). heldBy still bounds what the answer may hold.
-			token, err = m.installationToken(ctx, jwt, installation.ID, narrowing.accessTokensBody(readOnlyPermissionsWithoutActions))
+			token, err = m.installationToken(ctx, mint, jwt, installation.ID, narrowing.accessTokensBody(readOnlyPermissionsWithoutActions))
 			if err == nil && !req.Check {
 				// A check releases nothing, so the line would say a token was released that
 				// never was, and it would be written once for each mint the check makes
@@ -383,7 +397,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 			// which is waiting on this answer. Blanking it leaves no token held past this point;
 			// heldBy reads what GitHub says the token holds and never the token itself, so the
 			// verdict below is still the one the release would get.
-			if revokeErr := m.revokeToken(ctx, token.Token); revokeErr != nil {
+			if revokeErr := m.revokeToken(ctx, mint, token.Token); revokeErr != nil {
 				slog.Warn(revokedCheckMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 			}
 			token.Token = ""
@@ -391,7 +405,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		if err := narrowing.heldBy(token); err != nil {
 			if !req.Check {
 				// A check revoked this token already, and holds none to revoke here.
-				if revokeErr := m.revokeInstallationToken(ctx, token.Token); revokeErr != nil {
+				if revokeErr := m.revokeInstallationToken(ctx, mint, token.Token); revokeErr != nil {
 					slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 				}
 			}
@@ -431,11 +445,6 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	return Minted{Value: string(encoded), Expires: expires}, nil
 }
 
-// validGitHubAppID reports whether id is a non-empty run of ASCII digits.
-func validGitHubAppID(id string) bool {
-	return id != "" && !strings.ContainsFunc(id, func(r rune) bool { return r < '0' || r > '9' })
-}
-
 func (m GitHubApp) base() string {
 	return cmp.Or(strings.TrimSuffix(m.Base, "/"), githubAPIBase)
 }
@@ -459,7 +468,7 @@ func githubRequest(ctx context.Context, method, target, bearer string, body []by
 	return request, nil
 }
 
-func (m GitHubApp) installations(ctx context.Context, jwt string) ([]githubInstallation, error) {
+func (m GitHubApp) installations(ctx context.Context, mint *mintRetry, jwt string) ([]githubInstallation, error) {
 	const what = "list GitHub App installations"
 	var installations []githubInstallation
 	for page := 1; ; page++ {
@@ -467,7 +476,7 @@ func (m GitHubApp) installations(ctx context.Context, jwt string) ([]githubInsta
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 		}
-		payload, err := mintCall(m.HTTP, request, what, "GitHub", http.StatusOK, mintResponseLimit)
+		payload, err := mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusOK, mintResponseLimit)
 		if err != nil {
 			return nil, err
 		}
@@ -484,17 +493,19 @@ func (m GitHubApp) installations(ctx context.Context, jwt string) ([]githubInsta
 
 // installationToken asks GitHub for installationID's token, sending body, GitHub's access_tokens
 // body, when it is not nil.
-func (m GitHubApp) installationToken(ctx context.Context, jwt string, installationID int64, body []byte) (githubInstallationToken, error) {
+func (m GitHubApp) installationToken(ctx context.Context, mint *mintRetry, jwt string, installationID int64, body []byte) (githubInstallationToken, error) {
 	const what = "mint GitHub App installation token"
 	request, err := githubRequest(ctx, http.MethodPost, m.base()+"/app/installations/"+strconv.FormatInt(installationID, 10)+"/access_tokens", jwt, body)
 	if err != nil {
 		return githubInstallationToken{}, fmt.Errorf("%w: %s: %w", ErrMintUpstream, what, err)
 	}
-	payload, err := mintCall(m.HTTP, request, what, "GitHub", http.StatusCreated, accessTokensResponseLimit)
+	payload, err := mintCall(mint, m.HTTP, request, what, "GitHub", http.StatusCreated, accessTokensResponseLimit)
 	if err != nil {
 		return githubInstallationToken{}, err
 	}
 	var token githubInstallationToken
+	// encoding/json's syntax errors quote the offending byte, so this decode does not wrap its
+	// error: GitHub's token is a secret.
 	if json.Unmarshal(payload, &token) != nil {
 		return githubInstallationToken{}, fmt.Errorf("%w: decode GitHub App installation token: not a JSON object of its fields", ErrMintUpstream)
 	}

@@ -485,6 +485,10 @@ func TestResumeAfterARestartHasNoIncarnationToWaitOut(t *testing.T) {
 
 func TestADeliveryToASuspendedClaimResumesIt(t *testing.T) {
 	h := newHarness(t)
+	// The agent's session reports at its turn's end that nothing of its own runs, as Oh My Pi's
+	// does, so the suspension ends no work and the task goes as it was queued (recordEnd).
+	h.reach(StateIdle)
+	h.reportActivity()
 	h.reach(StateSuspended)
 
 	h.must(RequestDeliver{Claim: testToken, Task: "answer the review"})
@@ -888,6 +892,45 @@ func TestAstraAFailedClaimStaysFailedAcrossARestart(t *testing.T) {
 	h.wantState(StateFailed)
 	if got := len(h.rt.Calls()); got != calls {
 		t.Errorf("the runtime was asked %v after the restart", h.rt.Methods()[calls:])
+	}
+}
+
+// The turn times are the claim's record of when its agent last began work and last stopped: the
+// only handle a reader has on a worker that has stopped making progress. Each turn's start
+// replaces the start, the end replaces the end, and both are persisted with the claim, so a
+// daemon restart hands the next reader what it had rather than a claim that looks as if it had
+// never worked.
+func TestATurnsStartAndEndAreRecordedAndSurviveARestart(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan"})
+
+	h.must(StreamTurnStart{Claim: testToken})
+	firstStart := h.clock.Now()
+	h.advance(90 * time.Second)
+	h.must(StreamTurnEnd{Claim: testToken})
+	ended := h.clock.Now()
+	if c := h.claim(); !c.LastTurnStart.Equal(firstStart) || !c.LastTurnEnd.Equal(ended) {
+		t.Fatalf("the turn's times = %s and %s, want %s and %s", c.LastTurnStart, c.LastTurnEnd, firstStart, ended)
+	}
+
+	h.restart()
+	if c := h.claim(); !c.LastTurnStart.Equal(firstStart) || !c.LastTurnEnd.Equal(ended) {
+		t.Fatalf("after the restart the turn's times = %s and %s, want the stored %s and %s",
+			c.LastTurnStart, c.LastTurnEnd, firstStart, ended)
+	}
+
+	// A second turn moves the start and leaves the end where the first turn put it, until it ends.
+	h.advance(5 * time.Minute)
+	h.must(StreamTurnStart{Claim: testToken})
+	secondStart := h.clock.Now()
+	if c := h.claim(); !c.LastTurnStart.Equal(secondStart) || !c.LastTurnEnd.Equal(ended) {
+		t.Fatalf("in the second turn the times = %s and %s, want %s and the first turn's %s",
+			c.LastTurnStart, c.LastTurnEnd, secondStart, ended)
+	}
+	if stored := h.store.load(testToken); !stored.LastTurnStart.Equal(secondStart) || !stored.LastTurnEnd.Equal(ended) {
+		t.Fatalf("the stored times = %s and %s, want %s and %s",
+			stored.LastTurnStart, stored.LastTurnEnd, secondStart, ended)
 	}
 }
 

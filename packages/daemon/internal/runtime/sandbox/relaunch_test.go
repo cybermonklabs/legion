@@ -992,15 +992,17 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 
 // ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (190m:
 // the wait for the repository cache, which covers the cache's own first clone, then one bound for
-// the cache's stream and its verification, then one of its own for the delta from GitHub) for
+// the verification of what the cache streamed, then one of its own for the delta from GitHub) for
 // workspace-fetch, workspace.CloneTimeout (30m) for workspace-init's shared clone, and
 // workspace.CheckoutTimeout (60m) for the issue's own checkout of that clone, and nothing more:
 // provisioning from the feed onto the pod's own disk waits on no other pod, so no lock wait is
-// added to it. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
+// added to it. The cache's stream holds the low-speed bound and no clock, so a stream that keeps
+// receiving runs on into the slack this bound holds over what its fetch actually waited and
+// checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
 func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
 	g := newRig(t, nil)
 	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
-		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the stream's bound, the delta's own, the shared clone's, and the checkout's", got, want)
+		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
 	}
 }
 
@@ -1894,6 +1896,7 @@ func loggedSandboxMachine(
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)

@@ -52,9 +52,9 @@ type GitHubAnswer struct {
 	Repository string
 }
 
-// GitHubTokenAnswer is one of the five answers a GitHubStand gives a token request, which
+// GitHubTokenAnswer is one of the six answers a GitHubStand gives a token request, which
 // GitHubStand.Answers sets while the stand runs. The values are the words the answer route of
-// cmd/dev-airlock-stands takes in its body, so a check script names the same five answers a Go
+// cmd/dev-airlock-stands takes in its body, so a check script names the same six answers a Go
 // test does. An account the App has no installation on is no answer of its own: leaving that
 // account out of GitHubOptions.Installations is already that case.
 type GitHubTokenAnswer string
@@ -88,6 +88,11 @@ const (
 	// nothing (secrets.GitHubNarrowing.heldBy). It is how a check drives that path, which nothing
 	// else reaches.
 	GitHubTokensWider GitHubTokenAnswer = "widen"
+	// GitHubTokensFailOnce answers the next token request HTTP 503, as a GitHub outage does, and
+	// mints nothing for it, and then answers as GitHubTokensOrdinary from the request after it on.
+	// The minter retries a 503 (secrets.Retry), so a release against it mints at its second
+	// attempt: it is how a check drives the retry, which nothing else reaches on a stack.
+	GitHubTokensFailOnce GitHubTokenAnswer = "fail-once"
 )
 
 // refuses reports whether this answer refuses the token request that asked: every one of them
@@ -159,26 +164,32 @@ func NewGitHubStand(o GitHubOptions) *GitHubStand {
 	return &GitHubStand{options: o, answer: answer, scopes: map[string]githubScope{}}
 }
 
-// Answers replaces what every token request from here on is answered with, which is how one run
-// of a stack drives the ordinary mint, each refusal and the token wider than asked one after
-// another. It mints nothing itself, so a token already minted keeps its string, but it does not
-// keep what that string reaches: one string stands for one owner and one repository list
-// (token), and every mint of that scope records anew what it reaches (remember), under the
-// answer in force at the time. So a widened mint of a scope an ordinary mint already minted
-// widens what that one string reaches, and the minter's revoke of the widened token leaves the
-// string a credential of nobody's (forget). A check that wants an ordinary token after another
-// answer minted its scope mints it again.
+// Answers replaces what the token requests from here on are answered with - every one of them,
+// but for GitHubTokensFailOnce, which answers the next one alone and then the ordinary mint -
+// which is how one run of a stack drives the ordinary mint, each refusal, the token wider than
+// asked and the one outage a retry rides out, one after another. It mints nothing itself, so a
+// token already minted keeps its string, but it does not keep what that string reaches: one
+// string stands for one owner and one repository list (token), and every mint of that scope
+// records anew what it reaches (remember), under the answer in force at the time. So a widened
+// mint of a scope an ordinary mint already minted widens what that one string reaches, and the
+// minter's revoke of the widened token leaves the string a credential of nobody's (forget). A
+// check that wants an ordinary token after another answer minted its scope mints it again.
 func (g *GitHubStand) Answers(answer GitHubAnswer) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.answer = answer
 }
 
-// answering is what the token route answers now.
+// answering is what the token route answers the request it is asked for now. GitHubTokensFailOnce
+// is spent by the one request it answers, and the stand answers GitHubTokensOrdinary from then on.
 func (g *GitHubStand) answering() GitHubAnswer {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.answer
+	answer := g.answer
+	if answer.Mode == GitHubTokensFailOnce {
+		g.answer = GitHubAnswer{Mode: GitHubTokensOrdinary}
+	}
+	return answer
 }
 
 // owners names every owner the App is installed on, in order, so two runs answer one list.
@@ -265,11 +276,18 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 // GitHub says the token holds, which is what the minter checks a narrowing against
 // (secrets.GitHubNarrowing.heldBy). The answer echoes the body: a selection of the repositories
 // it named, or all of the account's when it named none, and the permissions it asked for. The
-// other answers (Answers) answer in its place: three that refuse this request or every one, and
-// one that mints wider than asked.
+// other answers (Answers) answer in its place: three that refuse this request or every one, one
+// that mints wider than asked, and one outage before it.
 func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner string) {
 	answering := g.answering()
 	asked := githubTokenRequest(seen)
+	if answering.Mode == GitHubTokensFailOnce {
+		// GitHub's own 503, which mints nothing. The minter retries it (secrets.Retry), and
+		// answering has already put the stand back to the ordinary mint, so the retry is minted.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"message": "Service Unavailable", "status": "503"})
+		return
+	}
 	if answering.refuses(asked) {
 		// GitHub's own 422, which mints nothing. One body serves whichever part the answer
 		// refuses: the minter reads the status alone and quotes none of GitHub's text

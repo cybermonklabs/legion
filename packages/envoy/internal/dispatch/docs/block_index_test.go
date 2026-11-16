@@ -31,7 +31,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	t.Helper()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank) values
 			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U'),
 			('CORE-2', 'CORE', 2, 'Two', '{"kind":"user","id":"alice"}', 'V');

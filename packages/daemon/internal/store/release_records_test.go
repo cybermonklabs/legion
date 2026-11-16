@@ -43,6 +43,20 @@ func holdRows(t *testing.T, st *Store, issue string) []struct {
 	return out
 }
 
+// unfinishedResumes is the stranded read a test makes, in a transaction of its own:
+// UnfinishedPodResumesTx is the only form of it, because every caller of those rows in the
+// daemon already holds a transaction of this pool (release_records.go). The error comes back
+// rather than failing here, so each caller keeps saying what it expected of the rows.
+func unfinishedResumes(ctx context.Context, st *Store, project string, before time.Time) ([]PodResume, error) {
+	var out []PodResume
+	err := st.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = st.UnfinishedPodResumesTx(ctx, tx, project, before)
+		return err
+	})
+	return out, err
+}
+
 // A hold row is a streak and not a tally of a pod's whole life: every pass of the same reason
 // counts into the running streak, and the streak ends when the pod is released, when the rule
 // reads another reason for the pod, or when a pass reads no reason worth a row. A pod held for
@@ -129,7 +143,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 	wake := func(release int64, role string, when time.Time) {
 		t.Helper()
 		if err := st.Tx(ctx, func(tx pgx.Tx) error {
-			_, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: "legion", Issue: rootIssue,
+			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: "legion", Issue: rootIssue,
 				Role: role, Kind: pods.WakeDelivery, At: when})
 			return err
 		}); err != nil {
@@ -139,7 +153,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 	wake(first, "implementer", at.Add(time.Minute))
 
 	bound := time.Now().UTC()
-	if unfinished, err := st.UnfinishedPodResumes(ctx, "legion", bound); err != nil || len(unfinished) != 1 {
+	if unfinished, err := unfinishedResumes(ctx, st, "legion", bound); err != nil || len(unfinished) != 1 {
 		t.Fatalf("unfinished wakes of the only release = %+v, %v; want the one wake", unfinished, err)
 	}
 
@@ -150,7 +164,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record the second release: %v", err)
 	}
-	unfinished, err := st.UnfinishedPodResumes(ctx, "legion", bound)
+	unfinished, err := unfinishedResumes(ctx, st, "legion", bound)
 	if err != nil || len(unfinished) != 0 {
 		t.Fatalf("unfinished wakes after the second release = %+v, %v; want none of the release that is over", unfinished, err)
 	}
@@ -159,7 +173,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 	}
 
 	wake(second, "tester", at.Add(31*time.Minute))
-	unfinished, err = st.UnfinishedPodResumes(ctx, "legion", bound)
+	unfinished, err = unfinishedResumes(ctx, st, "legion", bound)
 	if err != nil || len(unfinished) != 1 || unfinished[0].Role != "tester" {
 		t.Fatalf("unfinished wakes of the newest release = %+v, %v; want the tester's alone", unfinished, err)
 	}

@@ -2,7 +2,7 @@
 // a full agent). Each capability is checked at one site — in the image by `legion probe-image`
 // (CheckImage), by each claimed session at an idle tick of the 5 s interval it already runs, which
 // sends the row on a `claims/ready` of its own and the daemon renders (LEGION-663, INFRA-927), by
-// the daemon from the deployment's configuration, or withheld by a ruling — and the probe prints
+// the daemon from the deployment's configuration, or withheld by a cited issue — and the probe prints
 // the whole table, one line per row, so an operator reads a single declared list in the probe
 // pod's log rather than inferring what was checked from which probes happened to run.
 package capabilities
@@ -63,7 +63,7 @@ const (
 	// SiteDeployment is decided by the deployment's legion.yaml, which the daemon reports: no
 	// image or pod can show it.
 	SiteDeployment Site = "deployment"
-	// SiteWithheld is withheld by a ruling the row cites: a worker never gets it, by design.
+	// SiteWithheld is withheld by the cited issue: a worker never gets it, by design.
 	SiteWithheld Site = "withheld"
 )
 
@@ -73,35 +73,35 @@ type Capability struct {
 	Site Site
 	// Summary is one line: what a worker does with it.
 	Summary string
-	// Ruling is the dispatch://LEGION-<n> a withheld row cites; for a live row, the issue whose
+	// Citation is the dispatch://LEGION-<n> a withheld row cites; for a live row, the issue whose
 	// check proves it (never ""); "" otherwise.
-	Ruling string
+	Citation string
 }
 
 // Table is every capability, in the order the probe prints them: the declared list, printed
 // whole. Image rows are checked by CheckImage; the others are rendered as what they are.
 var Table = []Capability{
-	{Name: Subagents, Site: SiteLive, Summary: "dispatches task subagents, each on the model its role configures", Ruling: "dispatch://LEGION-663"},
+	{Name: Subagents, Site: SiteLive, Summary: "dispatches task subagents, each on the model its role configures", Citation: "dispatch://LEGION-663"},
 	{Name: EvalJS, Site: SiteImage, Summary: "evaluates JavaScript in Oh My Pi's own runtime"},
 	{Name: EvalPython, Site: SiteImage, Summary: "evaluates Python through the interpreter `omp setup python` manages"},
 	{Name: Browser, Site: SiteImage, Summary: "drives a headless Chromium through the browser tools"},
 	{Name: LSP, Site: SiteImage, Summary: "reads diagnostics and symbols from the Go, TypeScript and Python language servers"},
 	{Name: CodeGraph, Site: SiteImage, Summary: "queries the CodeGraph index for affected tests, impact and callers"},
-	{Name: WebSearch, Site: SiteLive, Summary: "searches the web through the web-search tool", Ruling: "dispatch://LEGION-663"},
+	{Name: WebSearch, Site: SiteLive, Summary: "searches the web through the web-search tool", Citation: "dispatch://LEGION-663"},
 	{Name: Skills, Site: SiteImage, Summary: "loads the skills Legion's prompts name"},
-	{Name: MCP, Site: SiteLive, Summary: "reaches the MCP servers the deployment configures", Ruling: "dispatch://LEGION-663"},
-	{Name: RepositoryExtensions, Site: SiteLive, Summary: "loads the Oh My Pi extensions the repository it works carries", Ruling: "dispatch://LEGION-629"},
-	{Name: DispatchEnvoyTools, Site: SiteLive, Summary: "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools", Ruling: "dispatch://LEGION-663"},
-	{Name: GitHub, Site: SiteLive, Summary: "reads and writes GitHub through its plain `gh` and `git` on its role's App token file", Ruling: "dispatch://LEGION-631"},
+	{Name: MCP, Site: SiteLive, Summary: "reaches the MCP servers the deployment configures", Citation: "dispatch://LEGION-663"},
+	{Name: RepositoryExtensions, Site: SiteLive, Summary: "loads the Oh My Pi extensions the repository it works carries", Citation: "dispatch://LEGION-629"},
+	{Name: DispatchEnvoyTools, Site: SiteLive, Summary: "reaches Dispatch through the `dispatch` command and Envoy through the pi-envoy tools", Citation: "dispatch://LEGION-663"},
+	{Name: GitHub, Site: SiteLive, Summary: "reads and writes GitHub through its plain `gh` and `git` on its role's App token file", Citation: "dispatch://LEGION-631"},
 	{Name: Secrets, Site: SiteDeployment, Summary: "reads the secrets the deployment grants its pod generation through the agent-secrets broker"},
 	{Name: ModelFallback, Site: SiteDeployment, Summary: "falls back to another model when its own is unavailable (retry.modelFallback)"},
 	{Name: Toolchain, Site: SiteImage, Summary: "builds and runs with the generic toolchain: go, gcc, curl, wget, python3, node, bun, uv, kubectl, jq, ssh-keygen, flock, psql, redis-cli, sqlite3, nc and dig"},
 	{Name: ClaudeCode, Site: SiteImage, Summary: "runs a phase worker on Claude Code: the claude-envoy plugin that worker loads, which the image carries, and the pin a pod installs Claude Code from at launch and verifies it against"},
 	{Name: ResourceLimits, Site: SiteDeployment, Summary: "runs within the CPU and memory the deployment's pod resources give it"},
 	{Name: PoolCapacity, Site: SiteDeployment, Summary: "starts in a Legion pool with room for the image probe's reservation at boot"},
-	{Name: Network, Site: SiteWithheld, Summary: "reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload", Ruling: "dispatch://LEGION-5"},
-	{Name: OperatorSetup, Site: SiteWithheld, Summary: "installs or configures its own dependencies in the pod: Legion owns its dependencies", Ruling: "dispatch://LEGION-200"},
-	{Name: ProductionIdentities, Site: SiteWithheld, Summary: "acts under a production identity of its own", Ruling: "dispatch://LEGION-551, dispatch://LEGION-205"},
+	{Name: Network, Site: SiteWithheld, Summary: "reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload", Citation: "dispatch://LEGION-5"},
+	{Name: OperatorSetup, Site: SiteWithheld, Summary: "installs or configures its own dependencies in the pod: Legion owns its dependencies", Citation: "dispatch://LEGION-200"},
+	{Name: ProductionIdentities, Site: SiteWithheld, Summary: "acts under a production identity of its own", Citation: "dispatch://LEGION-551, dispatch://LEGION-205"},
 }
 
 // renderer renders one row of Table at each site but SiteWithheld, which render renders itself:
@@ -113,7 +113,7 @@ type renderer struct {
 }
 
 // render renders every row of Table, in its order, dispatching each to r's function for its site;
-// a withheld row renders itself: State{Name, StatusWithheld, the ruling and the summary}. CheckImage
+// a withheld row renders itself: State{Name, StatusWithheld, the citation and the summary}. CheckImage
 // and Deployment.Report are its two callers, each with the renderer that gives a row's state as
 // that surface knows it. A ctx that ends ends the walk — the rows rendered so far, and an error
 // wrapping ctx's — since an image row's rendering runs commands under it; Report's renderers run
@@ -356,38 +356,66 @@ const heldSequence = `\x{FFFE}|\x{FDD0}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 // also ran across one would let one run hold a start after each opener in it.
 const jwtFirstHeldSequence = `\x{FFFE}|\x{FFFF}(?:\[[0-?]*[@-~])?`
 
+// labeledWord is the value of the API-key and bare bearer rules: the word after the label up to
+// the next space or quote, held markers included, whatever its shape, except a trailing run of
+// backslashes, closing brackets (`)`, `]`, `}`, `>`, where the Authorization rule's unquoted value
+// ends) and the punctuation `,;:.!?`: such a run stays outside the word where only a space, a
+// quote or the line's end follows it. So a quoted value keeps its closing quote, escaped or not
+// (`\"x-api-key\":\"***\"`), a word keeps the punctuation of the sentence after it
+// (`Bearer ***, retrying`, `api-key: ***: why`), a header the Authorization rule masked keeps its
+// closing bracket and the text after it where only that punctuation or a space follows the bracket
+// (`): 401`, `), retrying`), and a word made only of such characters is not masked. A run that any
+// other character follows is masked with the word, as a URL's `://` and `:8080/`, an IPv6 host's
+// `]:8080`, `ab).x` and `ab).)x` are. That includes a masked header's bracket glued to anything
+// else (`)\n401`, `)/retry`, an escape sequence): the word takes `***)` and what follows, the next
+// pass masks that header's value to the line's end, and the tail is lost. Where the word's end is
+// in doubt the rule masks too much and never too little (dispatch://INFRA-3557, the architect's
+// decision of round 5). Only the run's alternative takes a character of the run, and the run
+// shares no character with the one that must follow it, so the word reads each run once, from the
+// character that starts it: in the plugin's JavaScriptCore, which backtracks, an alternative that
+// could start inside a run would read that run once per start.
+const labeledWord = `(?:[^ "'\\)\]}>,;:.!?]|[\\)\]}>,;:.!?]+[^ "'\\)\]}>,;:.!?])+`
+
 // credentialRules are the credential shapes redactCredentials replaces, each keeping what names
-// the credential and replacing the secret with `***`; the shared fixture names each with an
-// example, in this order. They run on cleanDetail's line, where a space is the only whitespace and
-// held or c1Introducer stands for a control rune: a value class runs across a heldSequence, and a
-// separator takes a space or either marker. A quote may follow a backslash, as it does in JSON that
-// was escaped again. Order matters: the Authorization header runs before the bare bearer rule, so a
-// header under any scheme loses its whole value and keeps a listed scheme's label, and the GitHub
-// rule before the JWT rule, so a stateless installation token (`ghs_<app id>_<JWT>`) reads
-// `ghs_***`. The JWT rule starts nowhere its first segment's class could have run on from: not
-// after held, a C1 introducer or a value character, and not after a held `[` and its parameters,
-// followed by any final byte or by a `\uXXXX` escape whose backslash is that final byte. The plugin
-// says so with a lookbehind; here the rule's last alternative matches that held prefix with `eyJ`
-// and redactJWT gives it back unchanged. It may start after an opener, which its first segment does
-// not run across, and right after a percent or `\u` escape that no held sequence closes. A JWT may
-// also start right after held when its first segment crosses no held character and no opener, only
-// a C1 introducer, so a JWT right after a replacement character is masked in the first pass, before
-// the fourth reading would split it at a control inside it. And it may start right after a held
-// `[`, its parameters and an optional final byte or `\uXXXX` when its first segment holds a C1
-// introducer and crosses nothing else held, since reading 2 would turn that introducer into an
-// opener its first segment can't cross. A JWT with no C1 introducer in its first segment is left to
-// the later readings there, where its later segments cross what the first pass would stop at. These
-// segments stop at the next held character, and a first segment ends at its one dot, so no start
-// reads another's run: in the plugin's JavaScriptCore, which backtracks, a start inside a run its
-// first segment reads through would read that run once per start. An Authorization value opened by
-// an escaped quote ends at the next backslash or quote; one opened by a quote runs over escaped
-// characters to an unescaped quote; one with neither runs to a closing bracket or the end of the
-// line, since an AWS signature or a Digest credential carries commas, semicolons and quotes of its
-// own. The API-key rule has no left anchor, so `api-key` also covers `x-api-key`, `x-goog-api-key`
-// and Datadog's `dd-api-key`, and `application-key` covers `dd-application-key`. A rule whose value
-// may be short takes `*` in its value class, and a quoted connection-string password keeps its
-// quotes, so a value already redacted is matched whole and left as it is; the others need more than
-// `***` to match at all.
+// the credential and replacing the secret with `***`. The shared fixture is the fixed list of the
+// shapes they cover, each with an example, in this order; a secret that no named pattern marks,
+// such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not masked. They run on
+// cleanDetail's line, where a space is the only whitespace and held or c1Introducer stands for a
+// control rune: a value class runs across a heldSequence, and a separator takes a space or either
+// marker. A quote may follow a backslash, as it does in JSON that was escaped again. Order matters:
+// the Authorization header runs before the bare bearer rule, so a header under any scheme loses its
+// whole value and keeps a listed scheme's label, and the GitHub rule before the JWT rule, so a
+// stateless installation token (`ghs_<app id>_<JWT>`) reads `ghs_***`. After an API-key label or a
+// bare `Bearer`, the word up to the next space or quote is masked (labeledWord, which says what it
+// leaves outside): what stands there is the credential, whatever its shape, so a URL there reads
+// `Bearer ***` with or without a userinfo. A userinfo the
+// Authorization rule opens takes a second pass: where a control rune parts a userinfo from its `@`
+// (`http://u:pw`, a control rune, an Authorization value that runs across spaces to a `)` before
+// the `@`), the Authorization rule masks what stood between them on the first pass and the
+// userinfo rule reaches its `@` on the next. The JWT rule starts nowhere its first segment's class
+// could have run on from: not after held, a C1 introducer or a value character, and not after a
+// held `[` and its parameters, followed by any final byte or by a `\uXXXX` escape whose backslash
+// is that final byte. The plugin says so with a lookbehind; here the rule's last alternative
+// matches that held prefix with `eyJ` and redactJWT gives it back unchanged. It may start after an
+// opener, which its first segment does not run across, and right after a percent or `\u` escape
+// that no held sequence closes. A JWT may also start right after held when its first segment
+// crosses no held character and no opener, only a C1 introducer, so a JWT right after a replacement
+// character is masked in the first pass, before the fourth reading would split it at a control
+// inside it. And it may start right after a held `[`, its parameters and an optional final byte or
+// `\uXXXX` when its first segment holds a C1 introducer and crosses nothing else held, since
+// reading 2 would turn that introducer into an opener its first segment can't cross. A JWT with no
+// C1 introducer in its first segment is left to the later readings there, where its later segments
+// cross what the first pass would stop at. These segments stop at the next held character, and a
+// first segment ends at its one dot, so no start reads another's run: in the plugin's
+// JavaScriptCore, which backtracks, a start inside a run its first segment reads through would read
+// that run once per start. An Authorization value opened by an escaped quote ends at the next
+// backslash or quote; one opened by a quote runs over escaped characters to an unescaped quote; one
+// with neither runs to a closing bracket or the end of the line, since an AWS signature or a Digest
+// credential carries commas, semicolons and quotes of its own. The API-key rule has no left anchor,
+// so `api-key` also covers `x-api-key`, `x-goog-api-key` and Datadog's `dd-api-key`, and
+// `application-key` covers `dd-application-key`. A rule whose value may be short takes `*` in its
+// value class, and a quoted connection-string password keeps its quotes, so a value already
+// redacted is matched whole and left as it is; the others need more than `***` to match at all.
 var credentialRules = []struct {
 	pattern *regexp.Regexp
 	// replacement expands the match; replace, when set, computes it instead.
@@ -398,9 +426,9 @@ var credentialRules = []struct {
 	{pattern: regexp.MustCompile(`(?i)([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#"'<>]+`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)\b(password[ \x{FFFE}\x{FFFF}]*=[ \x{FFFE}\x{FFFF}]*)(?:(')(?:[^'\\]|\\.)*('?)|[^ &#"'<>]+)`), replacement: "${1}${2}***${3}"},
 	{pattern: regexp.MustCompile(`(?i)(authorization\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*)(?:(\\["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^"'\\]+|(["'](?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)(?:[^"'\\]|\\.)+|(\[?(?:(?:bearer|basic|token|digest)[ \x{FFFE}\x{FFFF}]+)?)[^)\]}>]+)`), replacement: "${1}${2}${3}${4}***"},
-	{pattern: regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)(?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+`), replacement: "${1}***"},
+	{pattern: regexp.MustCompile(`(?i)((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\?["']?[ \x{FFFE}\x{FFFF}]*[:=][ \x{FFFE}\x{FFFF}]*\\?["']?)` + labeledWord), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?i)(\\?["'](?:api_key|access_token)\\?["'][ \x{FFFE}\x{FFFF}]*:[ \x{FFFE}\x{FFFF}]*\\?["'])[^"'\\]+`), replacement: "${1}***"},
-	{pattern: regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)(?:[A-Za-z0-9._~+/=*-]|` + heldSequence + `)+`), replacement: "${1}***"},
+	{pattern: regexp.MustCompile(`(?i)\b(bearer[ \x{FFFE}\x{FFFF}]+)` + labeledWord), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|` + heldSequence + `){20,}`), replacement: "${1}***"},
 	{pattern: regexp.MustCompile(`(?:\x{FFFF}eyJ(?:[A-Za-z0-9_-]|\x{FFFE}){8,}|\x{FFFF}\[[0-?]*(?:[@-~]|\\u[0-9A-Fa-f]{4})?eyJ[A-Za-z0-9_-]*\x{FFFE}(?:[A-Za-z0-9_-]|\x{FFFE})*|(?:^|[^A-Za-z0-9_\x{FFFE}\x{FFFF}-]|%[0-9A-Fa-f]{2}|\\u[0-9A-Fa-f]{4})eyJ(?:[A-Za-z0-9_-]|` + jwtFirstHeldSequence + `){8,})\.(?:[A-Za-z0-9_-]|` + heldSequence + `){8,}\.(?:[A-Za-z0-9_-]|` + heldSequence + `)*|\x{FFFF}\[[0-?]*(?:[@-~]?|\\u[0-9A-Fa-f]{4})eyJ`), replace: redactJWT},
 	{pattern: regexp.MustCompile(`\b(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\.|xox[a-z]-|glpat-|npm_)(?:[A-Za-z0-9_-]|` + heldSequence + `){20,}`), replacement: "${1}***"},

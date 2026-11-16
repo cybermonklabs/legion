@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `dispatch artifact --issue <KEY> --name <title>`, with neither `--path` nor `--content`, makes
+  an empty document and prints its `dispatch://` reference. The line says the document was made,
+  not uploaded, and names `dispatch doc-edit` as the way to write in it.

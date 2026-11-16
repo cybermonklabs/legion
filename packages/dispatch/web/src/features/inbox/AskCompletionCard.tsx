@@ -2,7 +2,13 @@ import { actorActText } from "@legion/contracts";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { Ask, AskAnswer, AskEdit, AskResolution } from "../../api/types";
+import type {
+  Ask,
+  AskAnswerWithTrees,
+  AskEditWithTrees,
+  AskResolution,
+  AskWithTrees,
+} from "../../api/types";
 import {
   badgeLow,
   calloutSuccessBg,
@@ -28,7 +34,7 @@ import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
 
-export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEdit[] }): ReactNode {
+export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
   if (ask.edited_at === null) {
     return null;
   }
@@ -51,6 +57,7 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEdit[] }): 
                   <MarkdownBody
                     markdown={edit.previous.question}
                     source={textSourceOf("ask", ask.id)}
+                    tree={edit.previous.question_tree}
                   />
                 </div>
                 <AskOptionList options={edit.previous.options ?? []} selected={[]} />
@@ -68,7 +75,7 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEdit[] }): 
 }
 
 /** Earlier answers to an ask whose answer was changed, oldest first. */
-export function AskAnswerHistory({ answers }: { answers: AskAnswer[] }): ReactNode {
+export function AskAnswerHistory({ answers }: { answers: AskAnswerWithTrees[] }): ReactNode {
   const earlier = answers.slice(0, -1);
   const latest = answers.at(-1);
   if (earlier.length === 0 || latest === undefined) return null;
@@ -90,7 +97,7 @@ export function AskAnswerHistory({ answers }: { answers: AskAnswer[] }): ReactNo
               <div key={previous.at}>
                 {selected.length === 0 ? null : <p>{selected.join(", ")}</p>}
                 {previous.text === null || previous.text === "" ? null : (
-                  <MarkdownBody markdown={previous.text} />
+                  <MarkdownBody markdown={previous.text} tree={previous.text_tree} />
                 )}
                 <p className="mt-1">
                   {actorActText(previous.user, previous.act)} · <Timestamp at={previous.at} />
@@ -145,11 +152,11 @@ function AnsweredAsk({
   markRef,
   onChangeAnswer,
 }: {
-  answers: AskAnswer[];
+  answers: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
-  ask: Ask;
+  ask: AskWithTrees;
   documentLink: boolean;
-  edits: AskEdit[];
+  edits: AskEditWithTrees[];
   frame: AskFrame;
   markRef?: DwellRef;
   onChangeAnswer?: () => void;
@@ -173,7 +180,11 @@ function AnsweredAsk({
       <OrphanedAnchorNotice artifactSlug={artifactSlug} ask={ask} />
       {frame === "block" ? null : (
         <div className={`font-medium ${textPrimaryOnSuccessCallout}`}>
-          <MarkdownBody markdown={ask.question} source={textSourceOf("ask", ask.id)} />
+          <MarkdownBody
+            markdown={ask.question}
+            source={textSourceOf("ask", ask.id)}
+            tree={ask.question_tree}
+          />
         </div>
       )}
       <p className={`mt-1 text-xs ${calloutSuccessTimestampText}`}>
@@ -190,12 +201,20 @@ function AnsweredAsk({
         <div className="mt-2">
           <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
           <div className="mt-1">
-            <MarkdownBody markdown={otherText} source={textSourceOf("ask", ask.id)} />
+            <MarkdownBody
+              markdown={otherText}
+              source={textSourceOf("ask", ask.id)}
+              tree={answer?.text_tree}
+            />
           </div>
         </div>
       ) : answer === null || answer.text === null || answer.text === "" ? null : (
         <div className="mt-1">
-          <MarkdownBody markdown={answer.text} source={textSourceOf("ask", ask.id)} />
+          <MarkdownBody
+            markdown={answer.text}
+            source={textSourceOf("ask", ask.id)}
+            tree={answer.text_tree}
+          />
         </div>
       )}
       {answer === null ? (
@@ -229,9 +248,9 @@ function ResolvedAsk({
   edits,
   frame,
 }: {
-  ask: Ask & { resolution: AskResolution };
+  ask: AskWithTrees & { resolution: AskResolution };
   documentLink: boolean;
-  edits: AskEdit[];
+  edits: AskEditWithTrees[];
   frame: AskFrame;
 }): ReactNode {
   const { resolution } = ask;
@@ -244,7 +263,11 @@ function ResolvedAsk({
       <AskAnchorHeader ask={ask} inBlock={frame === "block"} tone="surface" />
       {frame === "block" ? null : (
         <div className={`font-medium ${textPrimaryOnSurface}`}>
-          <MarkdownBody markdown={ask.question} source={textSourceOf("ask", ask.id)} />
+          <MarkdownBody
+            markdown={ask.question}
+            source={textSourceOf("ask", ask.id)}
+            tree={ask.question_tree}
+          />
         </div>
       )}
       <span
@@ -269,7 +292,12 @@ function ResolvedAsk({
           <>
             {" "}
             -{" "}
-            <MarkdownBody markdown={reason} source={textSourceOf("ask", ask.id)} variant="inline" />
+            <MarkdownBody
+              markdown={reason}
+              source={textSourceOf("ask", ask.id)}
+              tree={ask.resolution.reason_tree}
+              variant="inline"
+            />
           </>
         )}
       </p>
@@ -282,13 +310,13 @@ export type AskFrame = "card" | "block";
 
 interface AskCompletionCardProps {
   /** Every real answer, oldest first, from the ask's thread read. */
-  answers?: AskAnswer[];
+  answers?: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
-  ask: Ask;
+  ask: AskWithTrees;
   /** Whether an approval ask's completed record also links its document and version; mirrors
    *  `AskCardProps.documentLink`. */
   documentLink?: boolean;
-  edits: AskEdit[];
+  edits: AskEditWithTrees[];
   frame?: AskFrame;
   /** The shared thread read mark for the ask (`AskCard`, `useMarkThreadRead`), placed on an
    *  answered record when its answer is the newest write the card shows. */

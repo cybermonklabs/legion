@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { consumerDelivery } from "../../test/subscribe-answer";
 import { DEFAULT_HEARTBEAT_MS, DEFAULT_TMUX_PLACE_CACHE_MS } from "../envoy-settings";
 import type { TmuxPlace, TmuxPlaceReading } from "../tmux-place";
 import { createTmuxPlaceCache } from "../tmux-place-cache";
@@ -265,6 +266,7 @@ describe("createTmuxPlaceCache", () => {
           machine_id: "host-a",
           dir: body.dir,
           topics: body.topics,
+          delivery: consumerDelivery(body.session_id as string),
         });
       },
     });
@@ -278,6 +280,7 @@ describe("createTmuxPlaceCache", () => {
         port: 0,
         title: "Envoy QA",
         driving: false,
+        delivery: { consumer: true, epoch: "epoch-1" },
         plugin: { name: "@sjawhar/pi-envoy", version: "11.0.0" },
         ...(place === undefined ? {} : { place }),
       });

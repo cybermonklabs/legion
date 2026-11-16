@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    `GET /api/v1/issues/{key}/results` answers the comparison it made in place of the word
+    `currency`. Each check carries `compared_with`, every commit or branch its results were
+    compared with - each head of the check's issue with its pull request number and when Dispatch
+    learned it, or the branches a merge and the default branch name - or `compared_nothing` with
+    the reason there are none, and `pass_stands`, whether a pass stands and from which roles. Each
+    result carries `commit_stands`, `check_words_moved` with the result's and the check's version,
+    and `retracted`. The route takes `?at=<commit>`, which makes that one commit the only basis of
+    every check of the issue and asks GitHub nothing.
+time: 2026-11-11T10:10:00.000000000Z
+custom:
+    Issue: pr3530

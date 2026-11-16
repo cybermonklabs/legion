@@ -23,7 +23,14 @@
 
 import { BLOCK_ID_DOM_ATTR, blockIdOf, blockIdPlugins } from './editor/schema/block-ids';
 import { withoutLeafMarks } from './editor/schema/leaf-marks';
-import { blockSchemaPlugins, type BlockSchema, type HostBlockRenderer } from './block-schema';
+import { documentFromJSON, type DocumentJSON } from './document-json';
+import {
+  assertCreatable,
+  blockSchemaPlugins,
+  creatableDomParser,
+  type BlockSchema,
+  type HostBlockRenderer,
+} from './block-schema';
 import { createTypedBlockCommands, type TypedBlockCommands } from './typed-block-commands';
 import {
   Editor,
@@ -125,6 +132,7 @@ export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOu
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
 export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
 export type { BlockMark } from './editor-highlights';
+export type { DocumentJSON, DocumentMarkJSON } from './document-json';
 export type {
   BlockAttributeKind,
   BlockAttributeSchema,
@@ -205,8 +213,16 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   view: EditorView;
   /** Serialize the current document to markdown via the configured serializer. */
   getMarkdown(): string;
-  /** Replace the current document with parsed markdown. */
+  /** Replace the current document with parsed markdown. An editor with `'edit'` access writes
+   *  it, so it throws for content the editor may not create yet; one that takes no edits only
+   *  shows it. */
   setMarkdown(markdown: string): void;
+  /** Replace the current document with `tree`, a document another reader of the same text has
+   *  already built - Dispatch's Go reader of a stored text (`pmdoc.ReadForDisplay`) - as JSON,
+   *  so no parser of this editor's runs. Tolerant of the attributes those readers write, where
+   *  `Schema.nodeFromJSON` is not (./document-json.ts); throws for a node or mark type this
+   *  editor has no schema for, which the host draws in place of the document. */
+  setDocumentJSON(tree: DocumentJSON): void;
   /** Top offset of each mark's first span relative to the library root. */
   markOffsets(): Map<string, number>;
   /** Changes what the reader may do with the document (`access`) post-construction. */
@@ -362,6 +378,26 @@ function installSelfHealingParser(ctx: Ctx): void {
   });
 }
 
+/**
+ * Keeps what the editor's parsers write to what an editor of `blockSchema`'s version may create.
+ * A markdown parse through `parserCtx` (a text/plain paste, a suggestion's accept) throws for
+ * content that holds an element the editor may not create yet, as the parse throws for a
+ * directive the schema refuses. The schema's DOM parser, which `DOMParser.fromSchema` keeps in
+ * `schema.cached` and every HTML paste and drop reads with, no longer reads such a node or mark,
+ * so its content is kept without it. A document the editor reads (the collab sync, a node it
+ * already draws) passes through neither, so it keeps every element it holds.
+ */
+function installCreationGate(ctx: Ctx, blockSchema: BlockSchema): void {
+  const schema = ctx.get(schemaCtx);
+  schema.cached.domParser = creatableDomParser(schema, blockSchema);
+  const parse = ctx.get(parserCtx);
+  ctx.set(parserCtx, (markdown) => {
+    const doc = parse(markdown);
+    assertCreatable(blockSchema, doc.content);
+    return doc;
+  });
+}
+
 export async function createProofEditor(
   root: HTMLElement,
   opts: CreateProofEditorOptions,
@@ -467,17 +503,20 @@ export async function createProofEditor(
 
   editor.action((ctx) => {
     installSelfHealingParser(ctx);
+    if (opts.blockSchema) installCreationGate(ctx, opts.blockSchema);
     setDefaultMarkdownParser(ctx.get(parserCtx));
   });
 
   const view = editor.ctx.get(editorViewCtx);
 
   view.setProps(brokenAskInputGuards); // no input throws in an off-rule ask (./ask-content.ts)
+  let currentAccess: ProofEditorAccess = opts.access ?? 'edit';
   const applyAccess = (access: ProofEditorAccess) => {
+    currentAccess = access;
     setAccess(view, access);
     view.setProps({ editable: () => access === 'edit' });
   };
-  applyAccess(opts.access ?? 'edit');
+  applyAccess(currentAccess);
 
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
@@ -556,8 +595,19 @@ export async function createProofEditor(
       // This parser is its own, so the shared parserCtx's rule is applied here too: no inline
       // leaf of an imported document carries a mark (./editor/schema/leaf-marks.ts).
       const parsed = withoutLeafMarks(importParser(markdown));
+      if (opts.blockSchema && currentAccess === 'edit')
+        assertCreatable(opts.blockSchema, parsed.content);
       const { state } = view;
       view.dispatch(state.tr.replaceWith(0, state.doc.content.size, parsed.content));
+    },
+    setDocumentJSON(tree: DocumentJSON): void {
+      // No parser runs: the tree is a document already, and this only rebuilds it against this
+      // editor's own schema (./document-json.ts). It is an import all the same, so the rule
+      // every import seam applies holds here too: no inline leaf of the document carries a mark
+      // (./editor/schema/leaf-marks.ts).
+      const document = withoutLeafMarks(documentFromJSON(editor.ctx.get(schemaCtx), tree));
+      const { state } = view;
+      view.dispatch(state.tr.replaceWith(0, state.doc.content.size, document.content));
     },
     markOffsets(): Map<string, number> {
       const offsets = new Map<string, number>();

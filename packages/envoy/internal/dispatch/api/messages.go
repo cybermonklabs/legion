@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -30,9 +32,12 @@ type createMessageInput struct {
 	Actor          *model.Actor `json:"actor"`
 }
 
+// messageRead is one conversation as a route answers it: its root message and every message
+// replying to it, each shaped for the dashboard (shapedMessage) so a caller that asked for the
+// display trees is given them beside every body.
 type messageRead struct {
-	Message model.Message   `json:"message"`
-	Replies []model.Message `json:"replies"`
+	Message shapedMessage   `json:"message"`
+	Replies []shapedMessage `json:"replies"`
 	// Unread is this conversation's own unread verdict for the caller, from the shared
 	// unreadDirectRepliesCTE: the one definition the count reads too, so a client never
 	// re-derives it from timestamps. Only the agent-conversation list sets it.
@@ -62,12 +67,12 @@ func (s *server) createMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	issueKey := r.PathValue("key")
-	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, actor)
+	message, advice, err := s.createStoredMessage(r.Context(), &issueKey, input, delivery, false, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, withAdvice(message, advice))
+	WriteJSON(w, http.StatusCreated, withAdvice(newShapedMessage(message, wantsDisplayTrees(r)), advice))
 }
 
 // createAgentMessageInput is the body of POST /api/v1/agents/{session_id}/messages.
@@ -76,6 +81,17 @@ type createAgentMessageInput struct {
 	Delivery       string  `json:"delivery" required:"true"`
 	InReplyTo      *string `json:"in_reply_to"`
 	InReplyToBlock *string `json:"in_reply_to_block"`
+	// ConnectedOnly asks that this message reach a session that is running now or not at all:
+	// the send is made with the listener's connected_only, which refuses a session the listener
+	// knows and that is not running rather than storing the message for it, and the attempt
+	// records that refusal as its failure, as it does on every later attempt of the message. The
+	// live view's model and thinking switch sets it; a switch sent without it, from a tab loaded
+	// before the field existed, is held to a running session all the same (isSessionSwitch), as a
+	// person's own Send or Aside (not one an agent wrote for them) whose body is one switch line.
+	// Every other send that leaves it out is queued for a stopped session, and the listener hands
+	// it the message when it runs again. An issue message takes no such field: a stopped
+	// session's is queued whatever its body says.
+	ConnectedOnly bool `json:"connected_only"`
 }
 
 // createAgentMessage is POST /api/v1/agents/{session_id}/messages: a person's send to one session.
@@ -93,19 +109,20 @@ func (s *server) createAgentMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	target := "session:" + r.PathValue("session_id")
 	messageInput := createMessageInput{
-		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock, Target: &target, Delivery: &input.Delivery,
+		Body: input.Body, InReplyTo: input.InReplyTo, InReplyToBlock: input.InReplyToBlock,
+		Target: &target, Delivery: &input.Delivery,
 	}
 	delivery, err := validateCreateMessage(&messageInput)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, actor)
+	message, _, err := s.createStoredMessage(r.Context(), nil, messageInput, delivery, input.ConnectedOnly, actor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, message)
+	WriteJSON(w, http.StatusCreated, newShapedMessage(message, wantsDisplayTrees(r)))
 }
 
 // messageRecovery is the recovery point a keyed message write commits with its message
@@ -152,7 +169,7 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusCreated, message)
+	WriteJSON(w, http.StatusCreated, newShapedMessage(message, wantsDisplayTrees(r)))
 }
 
 // replayIssueMessage answers a repeat of a keyed issue message whose message committed: the
@@ -233,12 +250,15 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
-// however this request ends, then sends a targeted message's first attempt.
+// however this request ends, then sends a targeted message's first attempt. connectedOnly is the
+// request's connected_only, which only the agents route takes
+// (createAgentMessageInput.ConnectedOnly).
 func (s *server) createStoredMessage(
 	ctx context.Context,
 	issueKey *string,
 	input createMessageInput,
 	delivery string,
+	connectedOnly bool,
 	actor model.Actor,
 ) (model.Message, *writeAdvice, error) {
 	tx, err := s.begin(ctx)
@@ -347,13 +367,19 @@ func (s *server) createStoredMessage(
 	// release opened it after the listener lookup, so a message it stored could have no attempt at
 	// all, and the recovery that opens a first attempt for one (owedKeyedSend,
 	// openFirstMessageDeliveryAttempt) serves only the messages such a release stored. It records
-	// who asked for it and the urgency they chose, which every send of it
-	// carries (pendingMessageDelivery), this request's own and a resumed one alike.
+	// who asked for it, the urgency they chose and the request's own connected_only (connectedOnly,
+	// the agents route's alone), which every later attempt of the message inherits
+	// (insertMessageDeliveryAttempt). No attempt row records the switch rule (isSessionSwitch):
+	// each send judges it from the message and the mode it is sent in (deliverMessageResuming), so
+	// this request's own send of a switch asks for a running session while a later Use BTW instead,
+	// which changes no model, inherits nothing of it. The target is read here and not at
+	// validation, since a person's reply that names none takes its thread root's above.
 	if message.Target != nil {
 		if _, err := tx.Exec(ctx, `
-			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by, urgency)
-			values ($1, 1, $2, '', 'pending', $3, $4)
-		`, message.ID, delivery, author, input.Urgency); err != nil {
+			insert into message_deliveries (message_id, attempt, delivery, session_id, state, requested_by,
+			                                urgency, connected_only)
+			values ($1, 1, $2, '', 'pending', $3, $4, $5)
+		`, message.ID, delivery, author, input.Urgency, model.ConnectedOnlyColumn(connectedOnly)); err != nil {
 			return model.Message{}, nil, err
 		}
 	}
@@ -366,7 +392,8 @@ func (s *server) createStoredMessage(
 	if err := tx.Commit(ctx); err != nil {
 		return model.Message{}, nil, err
 	}
-	s.publish(event)
+	s.publish(ctx, event)
+	s.storeDisplayTrees(ctx, message.ID, input.Body)
 	if message.Target != nil {
 		// The send keeps the request's values (its transaction tracking) and drops its
 		// cancellation: a connection cut after the commit - a closed tab, a front door's pod
@@ -403,7 +430,13 @@ func messageEvent(message model.Message, eventType string, actor model.Actor, pa
 	return model.Event{Type: eventType, Actor: actor, Payload: payload}
 }
 
+// validateCreateMessage holds a send to what a message may carry and leaves input ready to store:
+// the body with line feeds alone, and the target as validateMessageDelivery resolved it. A body is
+// markdown a reader is shown, so it reaches the store the way text written into a document reaches
+// it (pmdoc.LineFeeds), and every surface that reads it back - the message row, its event, its
+// delivery and the tree the display read makes of it - sees one line ending.
 func validateCreateMessage(input *createMessageInput) (string, error) {
+	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
 		return "", errorf(http.StatusBadRequest, "INVALID_MESSAGE", "message body is required")
 	}
@@ -422,6 +455,50 @@ func validateCreateMessage(input *createMessageInput) (string, error) {
 		return "", errorf(http.StatusBadRequest, "MESSAGE_INPUT", "urgency must be one of low, med, high, blocking")
 	}
 	return delivery, nil
+}
+
+// isSessionSwitchCommand reports whether body is a model or thinking switch line, the line the
+// live view's switch writes: the whole body, trimmed, is one `/model <value>` or `/effort <value>`
+// line, its value not empty and holding no whitespace (switchMessageInput in
+// packages/dispatch/web/src/features/agent-view/use-session-switch.ts, and switchCommand there
+// in the release before it). A body that only mentions /model in its prose is not one. The body
+// alone decides nothing: isSessionSwitch judges whether a send of it would switch the session.
+func isSessionSwitchCommand(body string) bool {
+	command := strings.TrimSpace(body)
+	value, found := strings.CutPrefix(command, "/model ")
+	if !found {
+		value, found = strings.CutPrefix(command, "/effort ")
+	}
+	return found && value != "" && !strings.ContainsFunc(value, unicode.IsSpace)
+}
+
+// isSessionSwitch reports whether a send of message in mode delivery is a model or thinking switch
+// the session runs as its own turn: a message a person wrote themselves (an author of kind "user"
+// with no act, the agent an author records when it wrote for its person) on no issue, no
+// broadcast's copy, sent as Send (steer) or Aside, whose body is one switch line
+// (isSessionSwitchCommand). It mirrors isUserTurnCandidate in
+// packages/pi-shared/src/accept-user-turn.ts and the accept route's own checks (acceptDelivery,
+// which refuses a message an agent wrote for its person as ACCEPT_WRITTEN_BY_AGENT), which admit
+// only that shape to run as the session's own turn. Every other message reaches the session as a
+// card and changes no model - an issue message, a mention, a broadcast copy, a BTW, a session's
+// message and a message an agent wrote for its person among them, whatever its body - so a stopped
+// session's listener stores it like any other message (spec R6).
+//
+// A send that is one asks the listener for a session that is running now whatever its request
+// said, at every attempt and every send, each judged in the mode that attempt is sent in and never
+// stored on a row (deliverMessageResuming): a switch an earlier release stored with no flag on its
+// rows included, and a Retry or a Use Aside instead of a switch included, while a Use BTW instead
+// of it is queued. This rule decides a switch, not the client's connected_only, which a send to a
+// session may still set to ask the same (createAgentMessageInput.ConnectedOnly). A tab loaded
+// before connected_only existed sends the switch without the field, and a switch stored for a
+// stopped session would change that session's model or thinking level at an unknown later time,
+// long after the person chose it. The spec keeps the switch out of the queued path (its non-goal,
+// dispatch://INFRA-626/spec), and plan D9 and its switch rule table refuse it for a stopped session
+// with nothing stored (dispatch://INFRA-626/artifact/plan-md).
+func isSessionSwitch(message model.Message, delivery string) bool {
+	return message.IssueKey == nil && message.BroadcastID == nil &&
+		message.Author.Kind == "user" && message.Author.Act == nil &&
+		(delivery == "aside" || delivery == "steer") && isSessionSwitchCommand(message.Body)
 }
 
 func validMessageUrgency(value string) bool {
@@ -657,7 +734,7 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message") {
 		return
 	}
-	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"))
+	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -705,7 +782,7 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
-	read, err := s.readMessage(r.Context(), "", rootID)
+	read, err := s.readMessage(r.Context(), "", rootID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
@@ -745,12 +822,12 @@ func (read messageRead) hasSession(session string) bool {
 
 // readMessage is one message, on issueKey when it is not empty, with its deliveries and every
 // message transitively replying to it.
-func (s *server) readMessage(ctx context.Context, issueKey, id string) (messageRead, error) {
+func (s *server) readMessage(ctx context.Context, issueKey, id string, trees bool) (messageRead, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, issueKey, id)
 	if err != nil {
 		return messageRead{}, err
 	}
-	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message})
+	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message}, trees)
 	if err != nil {
 		return messageRead{}, err
 	}
@@ -760,7 +837,11 @@ func (s *server) readMessage(ctx context.Context, issueKey, id string) (messageR
 // hydrateMessageThreads is each root as a thread: its own deliveries, every message transitively
 // replying to it, and the block each of those messages answers. Each side table is read once over
 // every root, never once per root, so a list of threads costs the same three queries one does.
-func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message) ([]messageRead, error) {
+// trees is whether the caller asked for the display trees (wantsDisplayTrees).
+//
+// Every read of a message passes here, so this is where a message's trees are taken from the
+// table and what the table did not hold is stored back (displayTreeReader).
+func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message, trees bool) ([]messageRead, error) {
 	rootIDs := make([]string, len(roots))
 	for index, root := range roots {
 		rootIDs[index] = root.ID
@@ -776,11 +857,15 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
 		return nil, err
 	}
-	reads := make([]messageRead, 0, len(roots))
-	for _, root := range roots {
+	reader := s.readDisplayTrees(ctx, trees)
+	reads := make([]messageRead, len(roots))
+	for index, root := range roots {
 		root.Deliveries = deliveries[root.ID]
-		reads = append(reads, messageRead{Message: root, Replies: replies[root.ID]})
+		reads[index].Message.Message = root
+		reads[index].Message.shape(reader)
+		reads[index].Replies = shapedMessages(replies[root.ID], reader)
 	}
+	reader.resolve()
 	return reads, nil
 }
 
@@ -825,7 +910,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots)
+	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -921,7 +1006,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots)
+	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

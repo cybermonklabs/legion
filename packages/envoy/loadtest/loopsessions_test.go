@@ -336,10 +336,11 @@ func TestDriverFollowsItsProposalsThenTheLargestDocuments(t *testing.T) {
 
 // --- a unit session's life ----------------------------------------------------------------------
 
-// TestUnitSessionStartsFollowsOneProposalAndStops: a unit session subscribes its proposal's topic
-// and asks its listener for consumer delivery, takes its relay frames as its own receipts,
-// heartbeats while it lives, publishes one exit message, unsubscribes the topics it held and
-// drops its subscriptions; the step records its start, its subscribe and its unsubscribe.
+// TestUnitSessionStartsFollowsOneProposalAndStops: a unit session subscribes its deliver subject
+// alone, registers its proposal's topic with its listener and asks it for consumer delivery,
+// takes its relay frames as its own receipts, heartbeats while it lives, publishes one exit
+// message, unsubscribes the topics it held and drops its subscription; the step records its
+// start, its subscribe and its unsubscribe.
 func TestUnitSessionStartsFollowsOneProposalAndStops(t *testing.T) {
 	ls := loopTestSeed(t)
 	fl := startFakeListener(t)
@@ -357,8 +358,9 @@ func TestUnitSessionStartsFollowsOneProposalAndStops(t *testing.T) {
 	<-s.ready
 
 	issue := issueTopicOf("LOOP-1")
-	// Its relay subject, its agent topic and its proposal's topic, which live reports sorted.
-	want := []string{contracts.AgentSubject(s.id), issue, bus.DeliverSubject(s.id)}
+	// Its deliver subject, and nothing else: it is delivered to by the relay of its own consumer
+	// alone, as every session at this head is.
+	want := []string{bus.DeliverSubject(s.id)}
 	if got := b.live(); !slices.Equal(got, want) {
 		t.Fatalf("the unit subscribed %v, want %v", got, want)
 	}
@@ -374,13 +376,16 @@ func TestUnitSessionStartsFollowsOneProposalAndStops(t *testing.T) {
 		t.Fatalf("the unit registered delivery %v, want consumer delivery", first[0].body["delivery"])
 	}
 
-	// Its relay frames are its receipts, under its own session id, each stream sequence once; the
-	// core copy of a relayed subject is not counted, as in the pi plugin.
+	// Its relay frames are its receipts, under its own session id, each stream sequence once. It
+	// subscribes the topic it follows nowhere, so a copy published on that topic reaches it not
+	// at all.
 	stored := time.Unix(1762160000, 0)
 	frame := loopFrame(issue, "7", stored, 10)
 	b.deliver(bus.DeliverSubject(s.id), frame)
 	b.deliver(bus.DeliverSubject(s.id), loopFrame(issue, "7", stored, 10))
-	b.deliver(issue, loopFrame(issue, "8", stored, 11))
+	if took := b.deliver(issue, loopFrame(issue, "8", stored, 11)); took != 0 {
+		t.Fatalf("a copy on %s reached %d subscriptions, want none", issue, took)
+	}
 	got := lp.receipts.snapshot()
 	if len(got) != 1 || got[0].Session != s.id || got[0].EventID != 10 || got[0].Published != stored.UnixNano() {
 		t.Fatalf("receipts %+v, want one of event 10 under %s with the stream's store time", got, s.id)

@@ -49,6 +49,17 @@ const server = Bun.serve({
         version: { number: 1 },
       });
     }
+    // What the issue holds, which the upload reads to refuse a name that exists: this issue
+    // holds no document, so every upload below writes a first version.
+    if (request.method === "GET" && pathname === ARTIFACTS) {
+      return Response.json([]);
+    }
+    // The markdown the store would hold for inline text: this stub stores it as it stands, so
+    // no upload below is refused for its spelling.
+    if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
+      const asked: { markdown?: string } = await request.json();
+      return Response.json({ markdown: asked.markdown });
+    }
     if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
       record(await request.json());
       return Response.json({

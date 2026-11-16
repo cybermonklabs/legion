@@ -6,7 +6,8 @@ import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 
 // tool_ran, tool_result_said and tool_result_answered, taken from stage4b-sandbox-tree.sh by name
-// and run over a session a real implementer pod wrote (testdata/stage4b-tools-session.jsonl): the
+// and run over a session a real implementer pod wrote (testdata/stage4b-tools-session.jsonl; one
+// word in one hover response was reworded after recording, and no test reads it): the
 // proof a tool ran and answered, where assistant_said only proves the model said so. Each test pins
 // one rule of lib/stage4b-tools.jq: a result is the tool's by the call it answers (a write to
 // xd://lsp records toolName write), an error result never counts, a tool that never ran has no

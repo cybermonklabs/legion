@@ -1,4 +1,6 @@
 import type { Actor, DispatchEvent } from "../../api/types";
+import { queuedWait } from "../conversation/delivery";
+import { blockInvalidDescription } from "../issue/event-description";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 export function dateKey(iso: string): string {
@@ -11,7 +13,10 @@ function localDate(key: string): Date {
   return new Date(year ?? 1970, (month ?? 1) - 1, day ?? 1);
 }
 
-function dayLabel(date: string, today: string): string {
+/** The heading a day falls under, in the reader's own words: Today, Yesterday, or the day
+ *  written out. Both arguments are `dateKey` days, and `today` is read once for a whole list,
+ *  so a reading that crosses midnight heads two entries of the same day alike. */
+export function dayLabel(date: string, today: string): string {
   if (date === today) return "Today";
 
   const yesterday = localDate(today);
@@ -47,6 +52,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `updated project ${event.payload.key}`;
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "removed" : "updated"} repository mapping ${event.payload.mapping.repo}`;
+    // No write clears a default now: a project always names the person its unowned work lands
+    // on. An event retained from before that rule can record a clear, and keeps its wording.
     case "settings.project_default_assignee.updated":
       return event.payload.assignee === null
         ? `cleared the default assignee of ${event.payload.project}`
@@ -71,6 +78,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "read a thread";
     case "decision.kept":
       return "kept a decision";
+    case "priority.updated":
+      return `${event.payload.change} priority ${event.payload.id}`;
     case "issue.created":
       return "created the issue";
     case "issue.updated":
@@ -101,6 +110,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return `added ${event.payload.artifact.name}`;
+    case "artifact.renamed":
+      return `renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
+    case "artifact.removed":
+      return `removed ${event.payload.artifact.name}`;
     case "artifact.version":
       return `saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":
@@ -113,8 +126,13 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `commented on ${event.payload.artifact_name}: “${event.payload.anchor?.quote ?? ""}”`;
     case "comment.answered":
       return "answered a comment";
-    // Same rule as the issue timeline's line: a repeat the stream recognised says so first.
+    // Same rule as the issue timeline's line. A queued mention is the listener holding it for a
+    // session that is not running, which is neither delivered nor refused, so it reads as queued
+    // first, a queued repeat included; a repeat the stream recognised says so next.
     case "comment.delivery":
+      if (event.payload.state === "queued") {
+        return `queued a comment mention for ${event.payload.target}, which ${queuedWait}`;
+      }
       if (event.payload.duplicate === true) {
         return `already delivered a comment mention to ${event.payload.target}`;
       }
@@ -153,7 +171,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `handed “${event.payload.question}” back for approval`;
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
-      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
+      // project's default assignee while the issue holds nobody.
       return `handed “${event.payload.question}” to ${event.payload.asked_of ?? "the issue's assignee"}`;
     case "ask.answered":
       return event.payload.previous_answer === undefined
@@ -162,6 +181,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "message.created":
       return "sent a message";
     case "message.delivery":
+      // A message the listener holds for a session that is not running is not delivered yet.
+      if (event.payload.state === "queued") {
+        return `queued a message for ${event.payload.target ?? `session:${event.payload.session_id}`}, which ${queuedWait}`;
+      }
       return "delivered a message";
     case "message.accepted":
       return "took a message as its own turn";
@@ -203,9 +226,13 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "block.repaired":
       return `repaired server-owned state on block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return blockInvalidDescription(event.payload);
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
+    case "result.retracted":
+      return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
+    case "issue.pull_request_attribution_changed":
+      return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }
 }
 

@@ -38,6 +38,7 @@ func issueChangedFields(before, after model.Issue) []string {
 	add("route", !stringPointersEqual(before.Route, after.Route))
 	add("repo", !stringPointersEqual(before.Repo, after.Repo) || !stringPointersEqual(before.ResolvedRepo, after.ResolvedRepo))
 	add("components", !issueComponentsEqual(before.Components, after.Components))
+	add("advances", !slices.Equal(before.Advances, after.Advances))
 	add("blocked_by", !slices.Equal(before.BlockedBy, after.BlockedBy))
 	add("external_links", !slices.Equal(before.ExternalLinks, after.ExternalLinks))
 	return changed

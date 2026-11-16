@@ -254,7 +254,7 @@ func TestListIssuesWithoutPagingAnswersEveryIssue(t *testing.T) {
 	}
 }
 
-// The seven filters narrow the listing as before, paged or not.
+// The nine filters narrow the listing as before, paged or not.
 func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 	roster := &fakeRoster{}
 	handler, database := routeStatusServer(t, roster)
@@ -282,6 +282,13 @@ func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 			t.Fatalf("set %s updated_at: %v", key, err)
 		}
 	}
+	// child closed the day before the watermark and labelled at it, so each closed bound keeps one.
+	for key, closedAt := range map[string]time.Time{child: watermark.Add(-24 * time.Hour), labelled: watermark} {
+		if _, err := database.Pool.Exec(context.Background(),
+			"update issues set status = 'done', closed_at = $2 where key = $1", key, closedAt); err != nil {
+			t.Fatalf("close %s at %s: %v", key, closedAt, err)
+		}
+	}
 
 	for _, filter := range []struct {
 		query string
@@ -293,6 +300,8 @@ func TestListIssuesFiltersStillApplyBesidePaging(t *testing.T) {
 		{"project=TEST&label=frontend", []string{labelled}},
 		{"project=TEST&priority=2", []string{child}},
 		{"project=TEST&updated_since=" + url.QueryEscape(watermark.Format(time.RFC3339)), []string{labelled}},
+		{"project=TEST&closed_since=" + url.QueryEscape(watermark.Format(time.RFC3339)), []string{labelled}},
+		{"project=TEST&closed_before=" + url.QueryEscape(watermark.Format(time.RFC3339)), []string{child}},
 		{"project=TEST&route_status=live", []string{routed}},
 	} {
 		if got := listedKeys(t, handler, filter.query); !slices.Equal(got, filter.want) {

@@ -10,6 +10,11 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   type InboxThreadKind,
+  NO_ROUTE_MESSAGE_PREFIX,
+  NO_ROUTE_ROLLING_RELEASE_MESSAGE,
+  retryNoRoute,
+  type Sleep,
+  sleep,
 } from "@legion/contracts";
 
 import {
@@ -32,7 +37,6 @@ import type {
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
-  BlockSchema,
   CreateArtifactInput,
   DispatchEvent,
   DispatchUser,
@@ -327,10 +331,40 @@ export function isCapExceeded(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "CAP_EXCEEDED";
 }
 
+// The server refusing a write because its text holds a decision block, which nobody can answer
+// where it stands (`itemblocks.DecisionBlock`, INFRA-1201). The refusal names the block and says
+// where the question belongs, so a page shows those words rather than wording of its own; a
+// retry of the same text is refused again, as it is for a bound.
+export function isDecisionBlockInBody(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "DECISION_BLOCK_IN_BODY";
+}
+
 // A document whose stored history cannot load at all: the state a rebuild from its latest saved
 // version repairs, and retrying the read cannot.
 export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
+}
+
+// A stored document holding an element this Dispatch process's build cannot read: a newer build
+// wrote it while two builds serve one database during a release. It is not a repairable state, and
+// a replacement would delete the element. A later read can reach a build that reads it, so the read
+// is retried like any transient failure.
+export function isDocumentNewerContent(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 409 && error.code === "DOC_NEWER_CONTENT";
+}
+
+// Whether `error` is a Dispatch process's answer that it has no route for the request (`404
+// NOT_FOUND`, NO_ROUTE_MESSAGE_PREFIX). While a release rolls out, two builds of Dispatch answer
+// the page, and the older one answers this way for a route only the newer one serves. No handler
+// ran, so the request is safe to send again whatever its method. A `404 NOT_FOUND` for a resource
+// the server does not know says "not found" instead.
+export function isNoRoute(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
+  );
 }
 
 /** What every view says while Envoy's agent list refills: the server's own `ENVOY_REFILLING`
@@ -347,8 +381,9 @@ export function isAgentListRefilling(error: unknown): boolean {
 // The retry policy every query in the app shares: an auth outcome (401), a missing architecture
 // source, an unconfigured credential broker or delivery timeline, a stored document outside
 // Proof's schema, or a stored history that cannot load is definitive and retrying it changes
-// nothing; any other failure (dropped connection, a read past its deadline, 5xx) is worth a couple
-// of automatic attempts before surfacing a Retry affordance to the user.
+// nothing; any other failure (dropped connection, a read past its deadline, 5xx, a document
+// holding content this build cannot read yet) is worth a couple of automatic attempts before
+// surfacing a Retry affordance to the user.
 export function isRetryableQueryError(error: unknown): boolean {
   return (
     !isUnauthorized(error) &&
@@ -500,7 +535,8 @@ export function issueStateRequest(
   return writeRequest("put", "/api/v1/me/issues/{key}/state", { key }, input);
 }
 
-/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`). */
+/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`) -
+ *  a Clear, a read mark, or the pin the rail's Agents list is drawn from (`pinned`). */
 export function agentStateRequest(
   sessionID: string,
   input: Body<"/api/v1/me/agents/{session_id}/state", "put">
@@ -540,12 +576,14 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
 }
 
 /** What an upload carries: the JSON body the document gives the three artifact routes for text
- *  written in the browser, and a multipart form - the body those same routes take as
- *  `multipart/form-data` - for a file picked, pasted or dropped. */
+ *  written in the browser and for a title typed with nothing under it, and a multipart form - the
+ *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
+ *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
+ *  the name alone. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
-  if ("content" in input) {
+  if (input.file === undefined) {
     return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
   }
   const form = new FormData();
@@ -670,10 +708,12 @@ function watchBody(response: Response, arrived: () => void): Response {
 
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
-   *  reports no upload progress, so an upload's deadline then runs from its send. */
+   *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
+   *  a no-route retry waits (`answered`). */
   constructor(
     private readonly fetchImpl: FetchImplementation,
-    private readonly upload?: UploadImplementation
+    private readonly upload?: UploadImplementation,
+    private readonly wait: Sleep = sleep
   ) {}
 
   /** One request to Dispatch, answered with what `read` makes of its response. It is held to a
@@ -729,35 +769,56 @@ export class DispatchApiClient {
    *  does, the body of a refusal included; `uploaded` is told how much of an upload's body has gone
    *  up. Any answer of Dispatch's own - one below 500, which no gateway gives for a Dispatch that
    *  is down - says it can be reached on that route (`reachable`), which matters only once it
-   *  could not be. */
-  private async answered(
+   *  could not be.
+   *
+   *  A no-route answer is sent again after each of `NO_ROUTE_RETRY_DELAYS_MS`, with the same
+   *  `init`, so the same body: while a release rolls out, the next attempt may reach the build
+   *  that serves the route. After the last attempt it throws
+   *  `NO_ROUTE_ROLLING_RELEASE_MESSAGE`. An abort of `init.signal` during a wait - the caller's,
+   *  or the deadline's - rejects at once with the abort's reason and sends nothing more. */
+  private answered(
     path: string,
     init: RequestInit,
     arrived?: () => void,
     uploaded?: (loaded: number, total: number) => void
   ): Promise<Response> {
-    const sent = { credentials: "same-origin", ...init } satisfies RequestInit;
+    // Every read and write of the page funnels through here, so this one line asks Dispatch for
+    // the display tree of every stored text it answers with (`Dispatch-Trees`); no other client
+    // sends it, and no other client's bytes change.
+    const sent = {
+      credentials: "same-origin",
+      ...init,
+      headers: [...new Headers(init.headers), ["Dispatch-Trees", "1"]],
+    } satisfies RequestInit;
     const progress = (part?: UploadProgress) => {
       arrived?.();
       if (part !== undefined) uploaded?.(part.loaded, part.total);
     };
-    let answer: Response;
-    try {
-      answer =
-        sent.body instanceof FormData && this.upload !== undefined
-          ? await this.upload(path, sent, progress)
-          : await this.fetchImpl(path, sent);
-    } catch (error) {
-      // An abort is the deadline's or the caller's (`exchange`), never the network's.
-      if (init.signal?.aborted === true) throw error;
-      unreachable(routeOf(init.method, path));
-      throw new NetworkError(path, error);
-    }
-    if (answer.status < 500) reachable("answer", routeOf(init.method, path));
-    arrived?.();
-    const response = arrived === undefined ? answer : watchBody(answer, arrived);
-    if (!response.ok) throw await errorFrom(response);
-    return response;
+    const attempt = async (): Promise<Response> => {
+      let answer: Response;
+      try {
+        answer =
+          sent.body instanceof FormData && this.upload !== undefined
+            ? await this.upload(path, sent, progress)
+            : await this.fetchImpl(path, sent);
+      } catch (error) {
+        // An abort is the deadline's or the caller's (`exchange`), never the network's.
+        if (init.signal?.aborted === true) throw error;
+        unreachable(routeOf(init.method, path));
+        throw new NetworkError(path, error);
+      }
+      if (answer.status < 500) reachable("answer", routeOf(init.method, path));
+      arrived?.();
+      const response = arrived === undefined ? answer : watchBody(answer, arrived);
+      if (!response.ok) throw await errorFrom(response);
+      return response;
+    };
+    return retryNoRoute(attempt, isNoRoute, {
+      exhausted: () =>
+        new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE }),
+      signal: init.signal,
+      sleep: this.wait,
+    });
   }
 
   /** The response itself, for a caller that reads its body: the deadline holds until the
@@ -841,7 +902,12 @@ export class DispatchApiClient {
 
   /** One read of a route the document holds, named by its own path pattern: `params` fills the
    *  pattern's `{name}`s and `query` its query parameters, and what it answers is the document's
-   *  `200` body for that route. No read states a response shape of its own. */
+   *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
+   *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
+   *  shaped read, so the trees are part of the body the document holds. A read states a response
+   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
+   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
+   *  with `routeUrl`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -887,17 +953,13 @@ export class DispatchApiClient {
     return this.send<Answer<Op<P, "delete">>>(writeRequest("delete", pattern, params), bounds);
   }
 
-  /** The block schema. The route answers pre-rendered JSON bytes (`pmdoc.SchemaJSON`), so the
-   *  document gives its body no schema at all; `BlockSchema` is generated from the same source
-   *  those bytes are rendered from, so this one read names what it is answered with. */
-  async getBlockSchema(): Promise<BlockSchema> {
-    return this.json<BlockSchema>(routeUrl("/api/v1/schema/blocks", {}));
-  }
-
   listProjects() {
     return this.read("/api/v1/projects", {});
   }
 
+  /** Answers `CreatedProject`: the project as created, with the default assignee the create
+   *  stored, which the project list leaves out (`listProjectDefaultAssignees` is the one read of
+   *  every project's default). */
   createProject(input: Body<"/api/v1/projects", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/projects", {}, input, bounds);
   }
@@ -923,15 +985,16 @@ export class DispatchApiClient {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
 
-  /** Only the projects that name a default; a project left out names nobody. Needs the
-   *  `person` scope. */
+  /** Every project with the person it defaults to: each one names somebody, so none is left out.
+   *  Needs the `person` scope. */
   listProjectDefaultAssignees() {
     return this.read("/api/v1/settings/project-default-assignees", {});
   }
 
-  /** Sets the person a project's unowned work lands on, or clears it with `{assignee: null}`.
-   *  Needs the `person` scope, and a login nobody has signed in as is refused
-   *  `400 ASSIGNEE_NOT_ALLOWED`. */
+  /** Moves the person a project's unowned work lands on, and the person a question on an issue
+   *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
+   *  blank is refused `400 INVALID_PROJECT`, so nothing clears a default. Needs the `person`
+   *  scope, and a login nobody has signed in as is refused `400 ASSIGNEE_NOT_ALLOWED`. */
   putProjectDefaultAssignee(
     project: string,
     input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
@@ -1108,8 +1171,9 @@ export class DispatchApiClient {
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
-   *  document order, each with every result recorded against it from any issue, newest first,
-   *  and each result's currency as the server judged it against the repository. */
+   *  document order, each with the commits and branches its results are compared with, whether a
+   *  pass of it stands, and every result recorded against it from any issue, newest first, each
+   *  with where its commit stands as the server judged it against the repository. */
   getIssueResults(key: string) {
     return this.read("/api/v1/issues/{key}/results", { key });
   }
@@ -1119,6 +1183,36 @@ export class DispatchApiClient {
    *  plan document - so a reader draws its answer rather than judging again. */
   getIssueCoverage(key: string) {
     return this.read("/api/v1/issues/{key}/coverage", { key });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order, each with the work that
+   *  advances it, and the two faults the page draws beside them - the open work under no
+   *  priority and the work parked under one. A priority belongs to no project, so this reads the
+   *  whole deployment; `project`, repeatable, counts only the work of those projects, and
+   *  `summary: true` answers the two fault counts alone, with no row and no issue list. */
+  listPriorities(query: Query<"/api/v1/priorities", "get"> = {}) {
+    return this.read("/api/v1/priorities", {}, query);
+  }
+
+  /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
+   *  id defaults to its title as a slug. */
+  createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/priorities", {}, input, bounds);
+  }
+
+  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
+   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
+   *  board's own drag names them). Each field left out is left alone. */
+  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
+  }
+
+  /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
+   *  write of its title, description, owner, order, state and visibility, and each `advances`
+   *  relation an issue asserted or retracted on it, with the actor who stated it and when. A
+   *  priority that was deleted still answers its history, the delete its newest act. */
+  getPriorityHistory(id: string) {
+    return this.read("/api/v1/priorities/{id}/history", { id });
   }
 
   getInbox(project?: string) {
@@ -1369,6 +1463,18 @@ export class DispatchApiClient {
       body,
       bounds
     );
+  }
+
+  /** Corrects a document's title. The write carries the name alone: the slug, the reference key
+   *  and the role do not move, so every citation of the document holds. */
+  renameArtifact(id: string, input: Body<"/api/v1/artifacts/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/artifacts/{id}", { id }, input, bounds);
+  }
+
+  /** Removes a document of an issue that is still untouched. Dispatch refuses one that holds
+   *  anything, in a sentence that names which test it failed. */
+  async deleteArtifact(id: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/artifacts/{id}", { id }, bounds);
   }
 
   getArtifact(id: string) {
@@ -1731,11 +1837,12 @@ export class DispatchApiClient {
  *  of its own sends them through it unless it is given an `upload` too. */
 export function createApiClient(
   fetchImpl?: FetchImplementation,
-  upload?: UploadImplementation
+  upload?: UploadImplementation,
+  wait: Sleep = sleep
 ): DispatchApiClient {
   return fetchImpl === undefined
-    ? new DispatchApiClient((...args) => fetch(...args), upload ?? xhrUpload())
-    : new DispatchApiClient(fetchImpl, upload);
+    ? new DispatchApiClient((...args) => fetch(...args), upload ?? xhrUpload(), wait)
+    : new DispatchApiClient(fetchImpl, upload, wait);
 }
 
 export const api = createApiClient();

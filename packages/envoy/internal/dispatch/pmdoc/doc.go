@@ -58,7 +58,7 @@
 //     character reference, and render_test.go's
 //     TestRenderMatchesMilkdownForFixtures compares the two only through plain(),
 //     which strips both.
-//   - packages/dispatch/e2e/unknown-directive.e2e.ts keeps bodies of its own,
+//   - packages/dispatch/e2e/unknown-directive.stub.e2e.ts keeps bodies of its own,
 //     because each carries a container the block schema does not know, and the
 //     generator's writing parse refuses such a document outright, as the document
 //     service does. A Conversation body is drawn by the read-only engine instead,

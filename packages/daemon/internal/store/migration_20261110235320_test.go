@@ -41,10 +41,9 @@ func TestTheOutboxTakesTheDesignGatesPublishKindWith20261110235320(t *testing.T)
 	}
 	for _, kind := range []string{
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "merge_queue_publish", "issue_branch", "issue_suspend",
-		"auto_merge_disable", "ready_merge", "check_wake", "check_look", "check_bound",
-		"phase_ended", "issue_bundle", "issue_release", "gated_steps_publish", "claim_release",
-		"hook_prompt", "design_gates_publish",
+		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
+		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish",
 	} {
 		if err := queue(kind, "LEGION-208"); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
@@ -53,6 +52,9 @@ func TestTheOutboxTakesTheDesignGatesPublishKindWith20261110235320(t *testing.T)
 	t.Logf("after the migration the outbox takes every kind, design_gates_publish among them")
 	if err := queue("quiesce", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
+	}
+	if err := queue("ready_merge", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing a ready_merge row = %v, want the constraint to refuse it: the merge lane's kinds went with the merge the daemon no longer submits", err)
 	}
 
 	err = queue("design_gates_publish", "LEGION-208")

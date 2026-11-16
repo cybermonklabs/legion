@@ -1,0 +1,5 @@
+kind: Changed
+body: '`dispatch ask`, `dispatch request-approval` and `dispatch project` print the person their write reached, and `dispatch project` takes `--default-assignee`.'
+time: 2026-11-12T09:58:13.834563338Z
+custom:
+    Issue: pr3707

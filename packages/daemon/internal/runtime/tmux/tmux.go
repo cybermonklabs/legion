@@ -136,12 +136,17 @@ type Options struct {
 	// overlays a pane of that role alone names in PI_CONFIG_FILES, after PiConfigFiles, so each
 	// outranks those, by role, the controller's pane included. Nil is none.
 	RoleConfigFiles map[claim.Role][]string
-	// MemoryConfigFiles is the project's `memory.config_files`: absolute paths of Oh My Pi
-	// settings overlays a pane whose tree is in the memory group (runtime.SpawnSpec.Memory) names
-	// last in PI_CONFIG_FILES, after PiConfigFiles and the role's own, so they outrank both. The
-	// daemon hands them over whatever the project's mode is, since a tree already drawn into the
-	// memory group names them under any mode; a project with no block names none. Nil is none.
-	MemoryConfigFiles []string
+	// ExperimentVariants is every arm of every experiment the project declares
+	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,
+	// within one experiment, the order it declares the arms. A pane names the overlays of the
+	// arms its own unit was drawn into (runtime.SpawnSpec.Variants) last in PI_CONFIG_FILES,
+	// after PiConfigFiles and the role's own, so they outrank both; this list is every arm any
+	// pane could be given, which is what New holds to a path PI_CONFIG_FILES can name. The daemon
+	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
+	// names its files under any mode. Every project declares the memory experiment, so the list
+	// always holds its two arms, and a project that writes no `memory` block and no experiment of
+	// its own names no file in any arm. Nil is none.
+	ExperimentVariants []runtime.Variant
 	// TakeOver is the operator's `runtime.tmux.take_over`: TakeOverKubernetes to take over the
 	// claims a daemon running the project under runtime kubernetes left in the store (foreign), ""
 	// to refuse them, as every locator of another runtime is refused without it.
@@ -204,9 +209,6 @@ type Runtime struct {
 	operatorEnv     map[string]string
 	piConfigFiles   []string
 	roleConfigFiles map[claim.Role][]string
-	// memoryConfigFiles are the project's memory overlays (Options.MemoryConfigFiles), named last
-	// in PI_CONFIG_FILES by a pane whose tree is in the memory group alone.
-	memoryConfigFiles []string
 	// takeOver is the runtime whose locators this runtime takes over (Options.TakeOver):
 	// runtime.RuntimeSandbox under TakeOverKubernetes, "" for none.
 	takeOver string
@@ -314,7 +316,7 @@ func New(opts Options) (*Runtime, error) {
 	for _, files := range opts.RoleConfigFiles {
 		overlays = append(overlays, files...)
 	}
-	overlays = append(overlays, opts.MemoryConfigFiles...)
+	overlays = append(overlays, runtime.VariantOverlays(opts.ExperimentVariants)...)
 	for _, path := range overlays {
 		if !filepath.IsAbs(path) || strings.Contains(path, ":") {
 			return nil, fmt.Errorf("tmux runtime: Oh My Pi overlay %q is not an absolute path PI_CONFIG_FILES can name", path)
@@ -362,7 +364,6 @@ func New(opts Options) (*Runtime, error) {
 		operatorEnv:          opts.PaneEnv,
 		piConfigFiles:        opts.PiConfigFiles,
 		roleConfigFiles:      opts.RoleConfigFiles,
-		memoryConfigFiles:    opts.MemoryConfigFiles,
 		takeOver:             takeOver,
 		readProc:             os.ReadFile,
 		tracked:              map[string]*trackedProcess{},
@@ -383,11 +384,11 @@ func New(opts Options) (*Runtime, error) {
 	sort.Strings(r.environ)
 	r.run = r.runTmux
 	if r.takeOver != "" {
-		// One line at boot, in the log an operator reads first: while the key is set the
-		// same-agent refusal is off for the whole project — every session found nowhere starts a
-		// fresh agent (takingOverSession) — and a forgotten key leaves it off with no other trace
-		// than a per-launch warning and `take_over` in `legion state --json`.
-		r.log.Warn("tmux runtime: runtime.tmux.take_over is set, so every session found nowhere starts a fresh agent and no launch is charged for it; remove the key once the move is done (docs/deployment.md, \"Moving a project onto tmux\", step 5)",
+		// One line at boot, in the log an operator reads first: while the key is set this runtime
+		// takes over the other runtime's locators, resuming a claim whose process it cannot see
+		// without waiting for that process, and a forgotten key leaves that on with no trace other
+		// than `take_over` in `legion state --json`.
+		r.log.Warn("tmux runtime: runtime.tmux.take_over is set, so this runtime resumes the other runtime's claims without waiting out their processes; remove the key once the move is done (docs/deployment.md, \"Moving a project onto tmux\", step 5)",
 			"takeOver", opts.TakeOver, "takesOver", r.takeOver)
 	}
 	return r, nil
@@ -419,12 +420,6 @@ func (r *Runtime) PodDrift(context.Context, runtime.Known) ([]string, error) { r
 // before.
 func (r *Runtime) ReplacePod(context.Context, runtime.Known, func(context.Context) error) error {
 	return nil
-}
-
-// RescueUnpushed checks nothing and answers nil: a pane's workspace is a directory on the daemon's
-// host, which no replacement deletes (ReplacePod does nothing here).
-func (r *Runtime) RescueUnpushed(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
-	return nil, nil
 }
 
 // CleanupTree holds nothing per tree: each pane is one claim's process, ended by its Release, and

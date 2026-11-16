@@ -108,7 +108,7 @@ func fixtureLoopSummary() summary {
 	return summary{
 		Config: summaryConfig{EventsPerS: ev, RequestsPerS: req, Sessions: 400, LoopFactor: fixFactor,
 			WarmupS: fixWarmupS, DurationS: fixDurationS, GraceS: 20, GeneratorRole: fixGenerator,
-			LoopSeed: "loopseed.seed.json", SessionDelivery: "consumer"},
+			LoopSeed: "loopseed.seed.json"},
 		Events:   events,
 		Requests: requests,
 		Populations: []populationSummary{

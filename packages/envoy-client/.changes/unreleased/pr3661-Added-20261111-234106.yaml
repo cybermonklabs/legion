@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+    Where the server offers questions of other projects that somebody answered, the `dispatch`
+    command prints them under the heading `Answered questions in other projects:`, after every item
+    of the asking project. Each row names the project its item is in and, for an ask, where that ask
+    stands. A server that offers none prints no heading.
+time: 2026-11-11T23:41:06.80041669Z
+custom:
+    Issue: pr3661

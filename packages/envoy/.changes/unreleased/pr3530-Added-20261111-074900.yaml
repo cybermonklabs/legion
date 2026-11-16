@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+    The three document text reads take `?blocks=true`: `GET /api/v1/artifacts/{id}/text`,
+    `GET /api/v1/issues/{key}/artifacts/{slug}/text` and
+    `GET /api/v1/projects/{key}/artifacts/{slug}/text` then carry the document's blocks beside the
+    markdown, the token and the version they already carry. The markdown, the token and the blocks
+    come from one rendering of one tree, so a write by another session cannot leave a block's byte
+    range indexing markdown it was not computed over, which two reads allow. Each block is what
+    `GET /api/v1/artifacts/{id}/blocks` reports, its anchored comment and ask counts and its
+    embedding state included, and that route still answers the bare array, so a client older than
+    the server reads it unchanged.
+time: 2026-11-11T07:49:00.000000000Z
+custom:
+    Issue: pr3530

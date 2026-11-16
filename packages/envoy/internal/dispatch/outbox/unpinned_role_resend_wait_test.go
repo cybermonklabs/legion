@@ -24,7 +24,7 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 
 	rig := newRoleRig(t)
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	claimant := rig.receiver(t, holder, true)
+	claimant := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)
@@ -88,7 +88,7 @@ func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 
 	rig := newRoleRig(t)
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	claimant := rig.receiver(t, holder, true)
+	claimant := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)

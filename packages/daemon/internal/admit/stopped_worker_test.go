@@ -32,10 +32,10 @@ func TestARetiredWorkersSlotIsNotRepaired(t *testing.T) {
 	const root, member = "LEGION-240", "LEGION-241"
 	// stopped records the fixture every row of slot_repair_test.go's first group is written from
 	// (seedSlotRepairRow), so the slot this test reads and the slots that hold the repair's rule
-	// to the stop are one fixture: the root waiting in accepting while its member works, so it
-	// holds no slot of its own and the member's is the one slot the cap gives out; the member
-	// slotted mid-testing at generation 1; the tester's phases row with the assignment a repair
-	// hands back; and the claim in state with suspendedBy, holding that phase's task confirmed.
+	// to the stop are one fixture: the root waiting in accepting while its member works, seeded
+	// with no slot of its own, so the member's is the one slot the cap gives out; the member
+	// slotted mid-testing at generation 1; the tester's phases row naming the entry whose work a
+	// repair hands back; and the claim in state with suspendedBy, holding that phase's task confirmed.
 	// Nothing else differs between the two runs: the claim's session, its task and the slot are
 	// the same in both.
 	stopped := func(t *testing.T, state supervise.ClaimState, suspendedBy supervise.SuspendSource) *pgxpool.Pool {

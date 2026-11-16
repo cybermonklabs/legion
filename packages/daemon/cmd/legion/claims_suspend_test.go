@@ -92,7 +92,7 @@ func TestClaimsSuspendWaitsForASuspensionHeldForTheTurn(t *testing.T) {
 	if code != 0 || errb != "" {
 		t.Fatalf("suspend exited %d; stderr %q", code, errb)
 	}
-	if want := "legion-legion-legion-208-architect architect LEGION-208 suspended 1 0 - - -\n"; out != want {
+	if want := "legion-legion-legion-208-architect architect LEGION-208 suspended - 1 0 - - - -\n"; out != want {
 		t.Fatalf("suspend printed %q, want %q", out, want)
 	}
 	if got := lists(); got != 3 {
@@ -156,7 +156,7 @@ func TestClaimsSuspendFailsWhenTheHeldSuspensionOutlastsTheWait(t *testing.T) {
 	if code != 1 || out != "" {
 		t.Fatalf("suspend exited %d printing %q, want 1 and nothing printed", code, out)
 	}
-	if want := "is still working after 1s, its suspension held"; !strings.Contains(errb, want) {
+	if want := "is still working after the --wait bound of 1s, its suspension held"; !strings.Contains(errb, want) {
 		t.Fatalf("suspend said %q, want %q", errb, want)
 	}
 }

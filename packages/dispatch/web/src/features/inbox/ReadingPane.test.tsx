@@ -14,13 +14,14 @@ import type {
   Artifact,
   ArtifactVersionText,
   AskSnooze,
+  DisplayTree,
   InboxRow,
   IssueDetails,
   MyReplyRow,
   MyReplyThreadRow,
   Version,
 } from "../../api/types";
-import { CHANGED_BLOCK_CLASS, changeMarksAgainst } from "../doc/change-marks";
+import { CHANGED_BLOCK_CLASS, type ChangeBaseline, changeMarksAgainst } from "../doc/change-marks";
 import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
@@ -108,14 +109,10 @@ function seedDocument(
     client.setQueryData(["asks", artifact.issue_key], []);
   }
   for (const [number, markdown] of Object.entries(versions)) {
-    client.setQueryData(["artifact", artifact.id, "version", Number(number)], {
-      authors: [{ id: "alice", kind: "user" }],
-      created_at: "2026-10-02T00:00:00Z",
-      markdown,
-      named: false,
-      number: Number(number),
-      summary: null,
-    });
+    client.setQueryData(
+      ["artifact", artifact.id, "version", Number(number)],
+      versionText(Number(number), markdown)
+    );
   }
 }
 
@@ -125,6 +122,24 @@ function renderedDocument(markdown: string): ProseMirrorNode {
   const parsed = loadedEngine()?.parse(markdown);
   if (parsed === undefined) throw new Error(`the engine rendered nothing for "${markdown}"`);
   return parsed;
+}
+
+/** The reading of `markdown` the server sends beside it, which is what the pane marks against
+ *  and what the version view draws rather than parsing the markdown again. */
+function treeOf(markdown: string): DisplayTree {
+  return renderedDocument(markdown).toJSON() as DisplayTree;
+}
+
+/** The baseline the pane carries into the version it draws: the approved version's own stored
+ *  text, with the reading the server sent of it. */
+function baselineOf(markdown: string): ChangeBaseline {
+  return { markdown, tree: treeOf(markdown) };
+}
+
+/** The same baseline as a pod of the build before this one answers it: the stored text, and no
+ *  reading at all. */
+function baselineWithoutTree(markdown: string): ChangeBaseline {
+  return { markdown, tree: undefined };
 }
 
 /** The first question block of `markdown`, as the engine parses it: the node the editor's own
@@ -144,8 +159,11 @@ function askNodeOf(markdown: string): ProseMirrorNode {
 /** Draws the question block of `markdown` in the version's editor, as the real editor draws one
  *  for every `ask` node of the text it holds: the fake editor installs the host's node views but
  *  constructs none itself, so the test constructs the one the version needs (`Inbox.test.tsx`
- *  does the same for a live document). The block is appended as the text lands, since
- *  `setMarkdown` replaces everything in the editor's root.  */
+ *  does the same for a live document). The block is appended as the text lands, under whichever
+ *  write puts it there: a version draws the reading the server sent (`setDocumentJSON`), and one
+ *  that arrived with no reading writes its own markdown instead (`setMarkdown`), which is the
+ *  fallback this change gives the version view. Either replaces everything in the editor's
+ *  root. */
 function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
   return (inner) => async (root, options) => {
     const handle: EditorHandle = await inner(root, options);
@@ -155,9 +173,14 @@ function drawAskBlock(markdown: string): (inner: CreateEditor) => CreateEditor {
     >;
     const construct = nodeViews.ask;
     if (construct === undefined) throw new Error("the ask node view was not installed");
-    const written = handle.setMarkdown;
+    const writtenMarkdown = handle.setMarkdown;
     handle.setMarkdown = (text: string) => {
-      written(text);
+      writtenMarkdown(text);
+      root.append(construct(askNodeOf(markdown)).dom);
+    };
+    const writtenDocument = handle.setDocumentJSON;
+    handle.setDocumentJSON = (json) => {
+      writtenDocument(json);
       root.append(construct(askNodeOf(markdown)).dom);
     };
     return handle;
@@ -390,9 +413,50 @@ test("an approval draws the latest version marked against the version it follows
     // The latest version, which is the version Approve approves.
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
     await waitFor(() => expect(drawn).toHaveLength(1));
-    const marks = changeMarksAgainst(baseline, renderedDocument(latest));
+    const marks = changeMarksAgainst(baselineOf(baseline), renderedDocument(latest));
     expect(marks.text.length).toBeGreaterThan(0);
     expect(drawn[0]).toEqual(marks);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A pod of the build before this one answers the baseline version with its markdown and no
+// reading, for as long as a rollout takes, and the server builds no tree for an empty text at
+// all. Read as a tree alone, such an answer left the approver with an unmarked document and a
+// "Next change" control with nothing to step to: the text is the baseline either way.
+test("an approval marks the version against a baseline answered with no reading", async () => {
+  await warmMarkdownRenderer();
+  const baseline = "# Plan\n\nThe plan ships behind a flag today.\n\nThe old note.\n";
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const drawn: ChangeDecorations[] = [];
+  const { view } = renderPane({
+    ask: approvalAsk(EARLIER_APPROVAL),
+    createEditor: recordMarks(latest, drawn, { paintMarks: true }),
+    seed: (client) => {
+      seedDocument(
+        client,
+        document({
+          approval: { latest_version: 4, state: "awaiting", version: 3 },
+          versions: [version(3), version(4)],
+        }),
+        { 4: latest }
+      );
+      client.setQueryData(
+        ["artifact", "artifact-1", "version", 3],
+        versionTextWithoutTree(3, baseline)
+      );
+    },
+  });
+
+  try {
+    expect(await screen.findByLabelText("Document version 4")).toBeDefined();
+    await waitFor(() => expect(drawn).toHaveLength(1));
+    const marks = changeMarksAgainst(baselineWithoutTree(baseline), renderedDocument(latest));
+    expect(marks.text.length).toBeGreaterThan(0);
+    expect(drawn[0]).toEqual(marks);
+    // The marked blocks are what the head offers to step through.
+    expect(await screen.findByRole("button", { name: "Next change" })).toBeDefined();
   } finally {
     view.unmount();
   }
@@ -757,16 +821,28 @@ test("an approval whose version cannot be read leaves the column where the reade
   }
 });
 
-/** The version text the read answers with, as the server answers it. */
+/** The version text the read answers with, as the server answers it: the markdown and the
+ *  reading the server made of it, which is what the version view draws rather than parsing the
+ *  markdown again. The page's own reading of that text is the same document, so a row that
+ *  needs no reading of its own takes this one. */
 function versionText(number: number, markdown: string): ArtifactVersionText {
   return {
     authors: [{ id: "alice", kind: "user" }],
     created_at: "2026-10-02T00:00:00Z",
     markdown,
+    markdown_tree: treeOf(markdown),
     named: false,
     number,
     summary: null,
   };
+}
+
+/** The same answer from a pod of the build before this one: the version's markdown, and no
+ *  reading of it at all. The server leaves `markdown_tree` out for a caller it does not read
+ *  trees for and for a text it builds none of (`text_trees.go`), so a reader on either side of
+ *  a rollout can be answered this way. */
+function versionTextWithoutTree(number: number, markdown: string): ArtifactVersionText {
+  return { ...versionText(number, markdown), markdown_tree: undefined };
 }
 
 /** An approval request whose version read is held, so a row decides when the column can be
@@ -848,6 +924,39 @@ test("an approval draws the ask card of a question block in the version it shows
     // the block carries, with no composer under it.
     expect(await within(drawn).findByText("Decision")).toBeDefined();
     expect(drawn.querySelector('[data-dispatch-ask-pill="high"]')).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same version as the row above, answered the way a pod of the build before this one
+// answers it: its markdown, and no reading. The column draws it by parsing that text
+// (`VersionView`), and the question block in it is hosted and carded as it is for a drawn
+// reading, so an approver mid-rollout reads the decision rather than a message about a document
+// the answer carried.
+test("an approval draws the ask card of a version answered with no reading", async () => {
+  await warmMarkdownRenderer();
+  const latest = '# Plan\n\n:::ask{urgency="high"}\nShip behind a flag?\n:::\n';
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    createEditor: drawAskBlock(latest),
+    seed: (client) => {
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] })
+      );
+      client.setQueryData(
+        ["artifact", "artifact-1", "version", 4],
+        versionTextWithoutTree(4, latest)
+      );
+    },
+  });
+
+  try {
+    const drawn = await screen.findByLabelText("Document version 4");
+    expect(await within(drawn).findByText("Decision")).toBeDefined();
+    expect(drawn.querySelector('[data-dispatch-ask-pill="high"]')).not.toBeNull();
+    expect(screen.queryByText("Could not load this document version.")).toBeNull();
   } finally {
     view.unmount();
   }

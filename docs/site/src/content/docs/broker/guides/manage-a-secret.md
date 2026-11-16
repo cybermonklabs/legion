@@ -1,6 +1,6 @@
 ---
 title: Manage a secret
-description: Create an agent secret, change its value or tags, and delete or restore it with agent-secrets secret under your own cloud sign-in.
+description: Create an agent secret, change its value or tags, and delete or restore it with agent-secrets secret under the cloud credential your environment gives it.
 sidebar:
   order: 9
 ---
@@ -9,9 +9,10 @@ An agent secret is a secret in the broker's own store - AWS Secrets Manager or G
 Manager, whichever the broker's deployment uses - under the broker's namespace, encrypted with
 its key, and tagged with owner, tier, optional kind and optional max grant
 ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
-`agent-secrets secret` manages them. It reads and writes the store itself, under your own cloud
-sign-in, so that cloud's own IAM decides what you may do; the broker never writes a secret. After
-every write the CLI asks the broker to reread that one secret, and the broker that answers tells
+`agent-secrets secret` manages them. It reads and writes the store itself, under whatever cloud
+credential its environment gives it, so that cloud's own IAM decides what it may do; the broker
+never writes a secret. After every write the CLI asks the broker to reread that one secret, and the
+broker that answers tells
 every other broker process serving the same database to reread it too, so the change is served
 across the whole deployment within seconds rather than at each process's next read of the
 namespace. The examples on this page are AWS's; GCP's
@@ -28,46 +29,47 @@ You need three things:
 - **`AGENT_SECRETS_URL`, the broker's address.** The CLI asks the broker for the namespace, the
   agent-secrets key, and that key's store and account/project (`GET /v1/settings`), so you
   configure none of them.
-- **A cloud sign-in in the broker's account or project.** AWS: every form takes it from
-  `--profile`, else `AWS_PROFILE`, else the AWS SDK's default credential chain; a write needs your
-  own IAM Identity Center sign-in. GCP: every form takes your own Google sign-in, and a write never
-  runs as a machine.
+- **A cloud credential that may reach the broker's account or project.** The CLI takes whatever
+  credential its environment gives it, a person's or a machine's, for every form, and refuses none
+  for what kind of identity it is: the store's IAM decides what each may read and write. AWS:
+  `--profile`, else `AWS_PROFILE`, else the AWS SDK's default credential chain, in the broker's
+  account. GCP: an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, else your Application Default
+  Credentials, of any type, else your gcloud login.
 
 ```sh
 export AGENT_SECRETS_URL=https://secrets.internal.example
 aws sso login --profile <profile>   # AWS
 export AWS_PROFILE=<profile>
-gcloud auth login                   # GCP, once
+gcloud auth login                   # GCP, once, where no other credential is set
 ```
 
-On GCP, `gcloud auth login` is all a laptop or a dev box needs. A read runs under your Application
-Default Credentials, and so does a write where they are your own Google Account sign-in. Where they
-are a machine's own identity - a dev box's workload identity federation credential, a service
-account key, or a VM's or pod's metadata-server identity - a write runs under your gcloud login
-instead, and so does every form on a machine with no Application Default Credentials. The CLI
-asks the first `gcloud` on your `PATH` for that login (`gcloud auth list`, then
-`gcloud auth print-access-token`), so gcloud keeps it fresh, and its own error says when you must
-run `gcloud auth login` again; the CLI reads none of gcloud's files, and `gcloud auth login`
-leaves the machine's Application Default Credentials as they are. gcloud runs with its log files
-off and prints the token to the CLI alone, and with impersonation, an access token and a
-credential file override cleared wherever they are set, so the token is your login's; a write
-whose token Google answers as anyone else's is refused.
+On GCP, `CLOUDSDK_AUTH_ACCESS_TOKEN` is the caller's own choice, so when it is set every form uses
+it, before any Application Default Credentials and any gcloud login: an agent session that holds a
+grant of a person's Google login writes with that token, and the store's IAM decides what it may
+change. Otherwise every form runs under your Application Default Credentials, whatever they are -
+your own Google Account sign-in, a dev box's workload identity federation credential, a service
+account key, or a VM's or pod's metadata-server identity - and only on a machine with none does it
+use your gcloud login. The CLI asks the first `gcloud` on your `PATH` for that login
+(`gcloud auth list`, then `gcloud auth print-access-token`), so gcloud keeps it fresh, and its own
+error says when you must run `gcloud auth login` again; the CLI reads none of gcloud's files.
+gcloud runs with its log files off and prints the token to the CLI alone, and with impersonation,
+an access token file and a credential file override cleared wherever they are set, so the token is
+that login's.
 
-Your gcloud login is the account `gcloud auth list` names by a plain email address: not a service
-account (`…gserviceaccount.com`), and not a workload or workforce identity federation login
-(`principal://…`). Where it lists more than one person, the command uses the one
-`CLOUDSDK_CORE_ACCOUNT` names, and a command it prints for running again keeps that variable:
+The login is the one gcloud itself would use: the one `CLOUDSDK_CORE_ACCOUNT` names, else the
+active one, whatever kind of account it is. An account `CLOUDSDK_CORE_ACCOUNT` names that gcloud
+holds no login for is refused, never replaced by another login. A command the CLI prints for
+running again keeps the variable:
 
 ```sh
 CLOUDSDK_CORE_ACCOUNT=ada@example.com agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
 ```
 
-`GOOGLE_APPLICATION_CREDENTIALS`, when you set it, names the credentials every form uses, and the
-CLI never replaces them with your gcloud login: a write under a machine's credentials named there
-is refused.
+`GOOGLE_APPLICATION_CREDENTIALS`, when you set it, names the Application Default Credentials every
+form uses, and the CLI never replaces them with your gcloud login.
 
-When you have made your writes, remove that sign-in from the machine, so nothing else that runs as
-your user there can use it:
+When you have made your writes, remove a sign-in you made for them from the machine, so nothing
+else that runs as your user there can use it:
 
 ```sh
 gcloud auth revoke '<your email>'
@@ -85,17 +87,20 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 Every line names the store it wrote to or read, so a secret is never taken for one of the same
 name in another store.
 
-On GCP the same command writes as you on a dev box too: it uses your gcloud login where the
-machine's Application Default Credentials are its own identity, and so does every write below.
+Every form below runs under the same credential, on GCP as on AWS, and a write the store's IAM
+refuses names the identity it refused ([Which sign-in may do what](#which-sign-in-may-do-what)).
 
 - **The name** is the one agents ask for, and the environment variable their command gets it in:
   uppercase letters, digits and single underscores, starting with a letter. In Secrets Manager it
   is `<namespace>demo-deploy-token`. Any other name is refused at once (exit 2).
-- **`--owner me`** writes your sign-in's email in lowercase: your Identity Center session name
-  (AWS) or the Google account the write runs as (GCP: your Application Default Credentials', or
-  your gcloud login's). It must be an email the broker accepts, or the command refuses before
-  writing. The broker matches it against the email a person signs in to the broker's approval page
-  with (and to Dispatch, for a machine login), so `me`
+- **`--owner me`** writes the email of the person your credential names, in lowercase: your
+  Identity Center session name (AWS) or the email Google's userinfo endpoint answers for the token
+  the command runs under (GCP). Where the credential names no person - a machine's role, a service
+  account, or a token minted without an email scope, which Google will not name - the command
+  refuses `me` before it reads the value, and **`--owner <email>`** names the owner outright,
+  written in lowercase whatever case you give it. Either must be an email the broker accepts, or
+  the command refuses before writing. The broker matches it against the email a person signs in to
+  the broker's approval page with (and to Dispatch, for a machine login), so `me`
   names you where that session name or Google account is the same email. **`--owner shared`**
   makes the secret everyone's. GCP stores owner and tier as the secret's **annotations**, never
   labels, so they never collide with a label someone else applies.
@@ -173,8 +178,16 @@ machine's Application Default Credentials are its own identity, and so does ever
   carries no shape tag loses that run only where the rest of it is not empty and holds no carriage
   return and no line feed. Where that rule removes nothing, one final line feed goes, so `echo`
   and a file that ends in a newline store the value without one. `secret set` reads the secret's
-  own shape tag first, so a document's owner stores a document. Empty values and
+  own kind and shape tags first, so a document's owner stores a document. Empty values and
   invalid UTF-8 are refused (exit 2) and write nothing.
+- **The value of a kind.** `create --kind` checks the value as the broker's minter for that kind
+  reads it, before it writes, and `set` does the same under the kind tag the secret holds. A value
+  that minter could not mint from is refused (exit 2) with the minter's own reason, such as
+  `GitHub App secret needs an app_id and private_key`, and nothing is written. The broker reads
+  every kind secret's value with the same decoder, so when a value stored some other way, such as
+  with `gcloud` or the AWS console, is one the decoder refuses, the broker refuses the secret as
+  `value-malformed` ([the value read](/legion/broker/operate/#the-value-read)). `set` on a secret
+  whose kind tag names no kind the broker mints is refused before it asks for the value.
 
 **Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
 nothing from its value. The CLI still removes one final line feed wherever the rule removes
@@ -260,39 +273,31 @@ $ agent-secrets secret list
 agent-secrets secret list: your AWS sign-in arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com is in account 999999999999, but the agent secrets are in account 111122223333: sign in to account 111122223333 (--profile or AWS_PROFILE names the sign-in)
 ```
 
-A write (`create`, `set`, `retag`, `delete`, `restore`) also refuses any sign-in that is not a
-person's own Identity Center sign-in in that account, naming what it found, so a machine's role,
-an assumed service role or an IAM user writes no secret:
+That account check is the one check the CLI makes of a sign-in. A write (`create`, `set`, `retag`,
+`delete`, `restore`) runs under any sign-in in that account - a person's Identity Center sign-in,
+a machine's role, an assumed service role, an IAM user - and on GCP under any credential the CLI
+found ([Before you start](#before-you-start)), since the store's IAM, not this CLI, decides what a
+sign-in may change. Where IAM refuses one, the refusal names the identity it refused - the AWS
+sign-in's ARN, or on GCP the lent token, the gcloud login, or what the Application Default
+Credentials are, never a file path:
+
+```console
+$ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
+agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused Application Default Credentials of type "external_account" acting as robot@example-project.iam.gserviceaccount.com; looked in GCP Secret Manager project 100000000001
+```
+
+`--owner me` is the one place a sign-in must name a person. Under one that names none, the command
+refuses `me` (exit 2) before it reads the value, and `--owner <email>` names the owner instead:
 
 ```console
 $ agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
-agent-secrets secret create: arn:aws:sts::111122223333:assumed-role/example-devbox-instance-role/i-0abc is not a person's Identity Center sign-in: a secret is written under your own sign-in to account 111122223333 (aws sso login, then --profile or AWS_PROFILE), never a machine's role
+agent-secrets secret create: --owner me: arn:aws:sts::111122223333:assumed-role/example-devbox-instance-role/i-0abc is no IAM Identity Center sign-in, so it names no person: name the owner with --owner <email>; looked in AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-GCP write checks are the same shape, with one difference: where the Application Default
-Credentials are not a person's own Google Account sign-in (a service account key file, a workload
-identity federation credential such as a dev box's, a workforce identity federation sign-in, or a
-GCE/GKE metadata-server identity), a write runs under your gcloud login
-([Before you start](#before-you-start)) rather than being refused, and leaves those credentials as
-they are. It is refused, naming what it found, only where gcloud has no login to lend:
-
-```console
-$ agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
-agent-secrets secret create: a secret is written under your own Google sign-in, never this machine's (its Application Default Credentials are credentials of type "external_account"), so a write uses your gcloud login, but gcloud holds no person's login: sign in once with `gcloud auth login`, which leaves this machine's own credentials as they are
-```
-
-A machine's credentials that `GOOGLE_APPLICATION_CREDENTIALS` names are refused for a write
-rather than replaced, since the variable is your own choice.
-
-GCP has no wrong-account read check: every call already names `projects/<project number>/...`
+GCP has no wrong-account check: every call already names `projects/<project number>/...`
 explicitly in the resource, so IAM on that resource, not this CLI, is what decides whether a read
-succeeds.
-
-A read (`list`, `show`) takes any sign-in the cloud's own IAM lets read the namespace's secrets, a
-machine's role or service account included. These
-checks are the CLI's own; what a sign-in may actually read or change is each cloud's IAM to decide,
-and [Operating the broker](/legion/broker/operate/#people-who-manage-secrets) lists the calls each
-form makes.
+or a write succeeds. [Operating the broker](/legion/broker/operate/#people-who-manage-secrets)
+lists the calls each form makes.
 
 ## See what is there
 
@@ -345,9 +350,10 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 ```
 
 `set` reads the value as `create` does: one line at a prompt with echo off, or all of standard
-input, which is how a value of more than one line goes in. The broker never keeps a value; it
-reads it from Secrets Manager each time a session reads a grant, so the next read of a live grant
-gets the new one.
+input, which is how a value of more than one line goes in. On a kind secret it checks the value
+under the secret's kind and shape tags before it writes. The broker never keeps a value; it reads
+it from Secrets Manager each time a session reads a grant, so the next read of a live grant gets
+the new one.
 
 ## Change its owner, tier, kind, requesters or max grant
 
@@ -382,13 +388,32 @@ retagged DEMO_LOGIN in AWS Secrets Manager account 111122223333 in us-east-1 (re
 broker: serving DEMO_LOGIN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-To make a stored secret a kind, retag it first, and only once the retag exits 0, showing
-`broker: serving NAME (kind <kind>)`, store the App key or the Google login with `secret set`. A
-reread can read the tags stale (Secret Manager's metadata can lag a write by hours), and while the
-broker still serves the secret as stored, a grant of it releases its stored value raw. So a retag
-whose reread answers another kind than the one it wrote exits 1: the broker still sees the old
-tags; run the retag again, and store no value until it exits 0. A release that finds the secret
-retagged while it reads the store releases nothing and ends that grant.
+A retag that changes the kind, or the shape of a secret that keeps a kind, first reads the value
+the secret holds and checks it as that kind's minter will read it once the tags are written. It
+never prints the value. A value the minter could not mint from refuses the retag (exit 2), and
+nothing is written. A read the store refuses your sign-in does not stop the retag: it writes the
+tags and prints one line on standard error that says the value was not checked and names the
+permission the read needs. The broker then reads the value with its own access, and refuses the
+secret as `value-malformed` when its minter could not mint from it. Any other failed read refuses
+the retag and writes nothing, and a secret with no value is one: it has no value to read.
+
+To make a stored secret a kind, retag it first, and store the App key or the Google login with
+`secret set` only once the broker reads the new tags. Where your sign-in may read the secret's
+value, that retag is refused while the value is not yet of that kind, and so is one of a secret
+with no value: create the kind secret under a new name instead, as below. Where your sign-in may
+not read the value, the retag writes the tags, and the broker refuses the secret as
+`value-malformed` until `set` stores a value of that kind. The retag then exits 1 on
+`reason=value-malformed`, which says the broker reads the new tags. A secret with no value is
+refused `no-current-value` whichever kind tag the broker reads, so there the retag exits 1 on
+`reason=no-current-value`, which says nothing of the tags: `set` is the next step, since it
+checks the value under the kind the retag wrote, and its reread prints
+`broker: serving NAME (kind <kind>)` once the broker reads the new tags. A reread can read the tags
+stale (Secret Manager's metadata can lag a write by hours), and while the broker still serves the
+secret as stored, a grant of it releases its stored value raw. So a retag whose reread answers
+another kind than the one it wrote exits 1: the broker still sees the old tags. Run the retag
+again, and store no value until the broker serves the secret as that kind
+(`broker: serving NAME (kind <kind>)`) or refuses it as `value-malformed`. A release that finds
+the secret retagged while it reads the store releases nothing and ends that grant.
 
 Exit 0 is the answer of the one broker process that served the reread, not of every process. That
 process tells the others over Postgres and they reread within seconds, so exit 0 is the usual case
@@ -417,12 +442,16 @@ Where you must convert, before you store an App key or a Google login:
 - Read the broker's log since the retag. **If any of those five lines appears, do not store yet** —
   not only one naming your secret. Three of the five carry no secret at all, so a process that
   logged one may be behind on yours and nothing in the line will say so.
-- Run the retag again and require another exit 0 with none of those lines after it. That says
-  **the answering process** has the new tags: its reread reads the one secret directly
+- Run the retag again and require another exit 0 with none of those lines after it, or, where the
+  retag wrote the tags without checking the value, exit 1 on `reason=value-malformed` alone. That
+  says **the answering process** has the new tags: its reread reads the one secret directly
   (`DescribeSecret`, `GetSecret`) rather than through a listing, and the retag exits 1 unless the
   kind it reads back is the one it wrote. On Secrets Manager that read answers a write at once;
   on Secret Manager a single read is eventually consistent like the listing, which is why a retag
-  there can need running more than once.
+  there can need running more than once. A secret with no value answers `reason=no-current-value`
+  whichever tags a process reads, so no retag of it says this. For such a secret, `secret set` is
+  the next step, and the line its own reread prints, `broker: serving NAME (kind <kind>)`, says
+  the answering process has the new tags.
 - **It says nothing about the peers, and no log line will.** A peer's reread reads the one name
   too, so on Secret Manager it can succeed while still reading the old tags: the broker warns
   only when that read returns an error, and a successful read of stale tags is not one. The

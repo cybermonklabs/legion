@@ -96,7 +96,7 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 // This is the server's one repository-resolution rule. The issue page resolves a page of issues
 // through these terms (api's issue reads), IssueRepository resolves one key through them, and
 // delivery's attribution splices them over the candidate keys of a pull request to hold its
-// issue to the repository it is in, so the currency mark and the pull-request head attribution
+// issue to the repository it is in, so the results read and the pull-request head attribution
 // can never disagree with the issue page.
 var IssueRepoTerms = `repo_chain as (
 		select s.key as start, i.parent_key, i.repo, 0 as depth

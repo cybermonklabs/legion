@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Every tool that writes a Dispatch body now states, beside the bounds on how long one block may
+  be and on how many blocks a body may hold, that a body holding a decision block (`:::ask`) is
+  refused however short it is, and where the question belongs: in the issue's own document, as a
+  decision block there, or in an ask opened with `dispatch ask`. The sentence is written once and
+  carried by each of those tools, so every one of them says it the same way. The bounds
+  themselves are unchanged.
+time: 2026-11-11T03:27:25.000000000Z
+custom:
+    Issue: pr3509

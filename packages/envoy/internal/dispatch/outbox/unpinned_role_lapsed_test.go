@@ -52,8 +52,8 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 
 	rig := newRoleRig(t)
 	rig.claim(t, mentioned, holder, session.SessionEntry{SelfSubscribed: true})
-	claimant := rig.receiver(t, holder, true)
-	wrote := rig.receiver(t, author, true)
+	claimant := rig.receiver(t, holder)
+	wrote := rig.receiver(t, author)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)

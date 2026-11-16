@@ -17,8 +17,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
+
+// failedClaim is issue's role failing as the daemon applies it (daemon's applyTerminal): the
+// agent never came up, launch after launch, until the launch budget ran out, with the counters
+// that failure left and the limits of the shipped daemon beside the cause.
+func failedClaim(issue string, role claim.Role) intake.ClaimFailed {
+	return intake.ClaimFailed{Issue: issue, Role: role, Cause: supervise.CauseNeverRegistered,
+		Budgets: supervise.Budgets{LaunchFailures: 3},
+		Limits:  supervise.Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2}}
+}
 
 // checkOpened is when every check rig's merge lands, and checkBound the rig's production check
 // bound, short enough to drive in a test.
@@ -72,7 +82,7 @@ func childCheckRig(t *testing.T) checkRig {
 func rootCheckRig(t *testing.T) checkRig {
 	t.Helper()
 	rig := newCheckRig(t)
-	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.AwaitingMerge, Generation: 7, Status: "retro", Rank: "U", LastDispatchSeq: 1})
+	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U", LastDispatchSeq: 1})
 	parent := "LEGION-208"
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 3, Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
@@ -172,8 +182,9 @@ func TestAPassOfARootsCheckClosesItsTesterAndSuspendsTheIssue(t *testing.T) {
 }
 
 // A report is refused, and changes nothing, on an issue with no open check (none, or one closed),
-// on a look that is not the open one (ended by its bound or a hold, or an earlier look), and with
-// a verdict other than pass, pending or fail.
+// on a look that is not the check's current one (an earlier look, the check having moved on), and
+// with a verdict other than pass, pending or fail. A report of the current look is taken however
+// that look ended (TestALateReportOfTheCurrentLookIsRecorded).
 func TestACheckReportIsRefusedWhereNoLookIsOpenToIt(t *testing.T) {
 	rig := childCheckRig(t)
 	if got := refusalCode(rig.apply("no-check", intake.CheckReport{Issue: "LEGION-208", Look: 1, Verdict: "pass"})); got != "CHECK_NOT_OPEN" {
@@ -183,15 +194,16 @@ func TestACheckReportIsRefusedWhereNoLookIsOpenToIt(t *testing.T) {
 		t.Fatalf("a report with verdict maybe = %q, want CHECK_VERDICT_REQUIRED", got)
 	}
 	if got := refusalCode(rig.apply("wrong-look", intake.CheckReport{Issue: "LEGION-209", Look: 2, Verdict: "pass"})); got != "CHECK_LOOK_NOT_OPEN" {
-		t.Fatalf("a report naming look 2 while look 1 is open = %q, want CHECK_LOOK_NOT_OPEN", got)
+		t.Fatalf("a report naming look 2 while the check is at look 1 = %q, want CHECK_LOOK_NOT_OPEN", got)
 	}
 	if check := productionCheck(t, rig.pool, "LEGION-209"); check == nil || !check.Open() || !check.LookOpen || check.Looks != 1 {
 		t.Fatalf("the check after the refused reports = %+v, want it untouched at look 1 open", check)
 	}
 	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "nothing in production yet"})
-	if got := refusalCode(rig.apply("old-look", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pass"})); got != "CHECK_LOOK_NOT_OPEN" {
-		t.Fatalf("a second report of look 1 = %q, want CHECK_LOOK_NOT_OPEN", got)
-	}
+	// A second report of look 1 is not refused here: the look it names is still the check's own,
+	// and a report of the current look counts however that look ended (dispatch://INFRA-714 R12,
+	// TestALateReportOfTheCurrentLookIsRecorded). What this case holds is the look that is not the
+	// check's, above and below.
 	rig.clock.now = checkOpened.Add(checkBound)
 	rig.apply("bound", intake.CheckBound{Issue: "LEGION-209"})
 	rig.apply("pass", intake.CheckReport{Issue: "LEGION-209", Look: 2, Verdict: "pass"})
@@ -272,11 +284,11 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 // check.
 func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 	rig := childCheckRig(t)
-	rig.apply("implementer-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleImplementer})
+	rig.apply("implementer-failed", failedClaim("LEGION-209", claim.RoleImplementer))
 	if check := productionCheck(t, rig.pool, "LEGION-209"); !check.LookOpen {
 		t.Fatalf("the check after the implementer's claim failed = %+v, want look 1 still open", check)
 	}
-	rig.apply("tester-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester})
+	rig.apply("tester-failed", failedClaim("LEGION-209", claim.RoleTester))
 	check := productionCheck(t, rig.pool, "LEGION-209")
 	if !check.Open() || check.Looks != 1 || check.LookOpen {
 		t.Fatalf("the check after the tester's claim failed = %+v, want it open at look 1 with the look ended", check)
@@ -374,7 +386,7 @@ func TestAReopenedRootsCheckStartsNoLookWhileItRunsAgain(t *testing.T) {
 	before := len(superviseRowsOf(t, rig.pool, "LEGION-208", "suspend"))
 	suspensions := len(issueSuspensions(t, rig.pool, "LEGION-208"))
 
-	rig.apply("implementer-failed", intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleImplementer})
+	rig.apply("implementer-failed", failedClaim("LEGION-208", claim.RoleImplementer))
 	if check := productionCheck(t, rig.pool, "LEGION-208"); !check.Open() || !check.LookOpen {
 		t.Fatalf("the check after the implementer's claim failed while the root runs again = %+v, want its look still open", check)
 	}
@@ -438,8 +450,8 @@ func TestADoneChildSetDoneAgainKeepsItsChecks(t *testing.T) {
 	}
 }
 
-// The check's bound starts its last look, told that it is the last and that production did not
-// carry the merge within the bound; a pending report of the last look closes the check as not run,
+// The check's bound starts its last look, told that it is the last and the check's own bound,
+// counted from the issue's close; a pending report of the last look closes the check as not run,
 // and so does its silence. A look open at the bound defers the bound by the look bound, and a bound
 // row that comes due before the check's bound — an earlier check's of the same issue — is deferred
 // to it.
@@ -470,12 +482,12 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 			rig.clock.now = rig.clock.now.Add(CheckLookBound)
 			rig.apply("bound", intake.CheckBound{Issue: "LEGION-209"})
 			check = productionCheck(t, rig.pool, "LEGION-209")
-			if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "production did not carry the merge within 2 days" {
+			if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the issue closed" {
 				t.Fatalf("the check at its bound = %+v, want its last look 2 open, woken by the bound", check)
 			}
 			starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
 			if len(starts) != 2 || starts[1].CheckLook != 2 || !strings.Contains(starts[1].Task, "This is the last look: no look follows.") ||
-				!strings.Contains(starts[1].Task, "woken by the bound: production did not carry the merge within 2 days.") || !strings.Contains(starts[1].Task, "did not run") {
+				!strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") || !strings.Contains(starts[1].Task, "did not run") {
 				t.Fatalf("start rows = %+v, want the last look's task saying so", starts)
 			}
 			rig.apply("end", tc.end)
@@ -494,6 +506,29 @@ func TestTheBoundStartsTheLastLookWhoseNothingClosesTheCheckAsNotRun(t *testing.
 				t.Fatalf("check_bound rows after the close = %d, want no more", len(bounds))
 			}
 		})
+	}
+}
+
+// The bound's look is told the check's own bound (BoundAt less OpenedAt), never the project's
+// bound of the daemon that reaches it: a check opened under a 2-day bound whose daemon is then
+// rebuilt with 3 days starts its last look at the bound it opened with, told 2 days since the
+// issue closed. Every other rig reaches the bound under the bound it opened with, where the two
+// read the same.
+func TestTheBoundsLookIsToldTheBoundTheCheckOpenedWith(t *testing.T) {
+	rig := childCheckRig(t)
+	rig.apply("pending", intake.CheckReport{Issue: "LEGION-209", Look: 1, Verdict: "pending", Summary: "not deployed yet"})
+	cfg := rig.engine.cfg
+	cfg.ProductionCheckBound = 3 * 24 * time.Hour
+	rebuilt := New(record.NewStore(), cfg, rig.engine.log)
+	rig.clock.now = checkOpened.Add(checkBound)
+	applyFacts(t, rig.pool, rebuilt)("bound", intake.CheckBound{Issue: "LEGION-209"})
+	check := productionCheck(t, rig.pool, "LEGION-209")
+	if check.Looks != 2 || !check.LookOpen || !check.Last || check.LastWakeKind != "bound" || check.LastWakeDetail != "2 days since the issue closed" {
+		t.Fatalf("the check at its bound under a rebuilt 3-day bound = %+v, want its last look 2 open, woken by its own 2-day bound", check)
+	}
+	starts := superviseRowsOf(t, rig.pool, "LEGION-209", "start")
+	if len(starts) != 2 || !strings.Contains(starts[1].Task, "woken by the bound: 2 days since the issue closed.") {
+		t.Fatalf("start rows = %+v, want the last look's task naming the check's own 2-day bound", starts)
 	}
 }
 
@@ -567,24 +602,24 @@ func TestReenterChildClosesItsOpenCheckAsNotRun(t *testing.T) {
 }
 
 // The boot's sweep closes a migrated issue that awaits a merge GitHub already reported, as the
-// merge would have: a root with no running child, and an issue held from awaiting_merge, whose
+// merge would have: a root with no running child, and an issue held from merging, whose
 // hold the close clears, each with a check opened on no merge commit yet. A root with a child still
 // in the workflow stays, and closes when that child leaves; an issue whose pull request is open,
 // and another project's, stay as they are. The boot writes its "closes" line only where it closed,
 // and no notice at all: the architect was told of the wait when the close entered it.
 func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t *testing.T) {
 	rig := newCheckRig(t)
-	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-301", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-301", Project: "LEGION", Title: "alone", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "A"})
+	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-301", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-301", Project: "LEGION", Title: "alone", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "A"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-301", Repo: "sjawhar/legion", Number: 1, Branch: "legion/LEGION-301", HeadSHA: "h1", Failing: []string{}})
-	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-302", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-302", Project: "LEGION", Title: "parent", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
+	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-302", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-302", Project: "LEGION", Title: "parent", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-302", Repo: "sjawhar/legion", Number: 2, Branch: "legion/LEGION-302", HeadSHA: "h2", MergeSHA: "m2", Failing: []string{}})
 	parent := "LEGION-302"
 	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-303", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-302", Project: "LEGION", Title: "running child", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "C", LastDispatchSeq: 1})
-	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-304", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-304", Project: "LEGION", Title: "held", Phase: phase.Held, Hold: &record.Hold{From: phase.AwaitingMerge}, Generation: 1, Status: "retro", Rank: "D"})
+	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-304", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-304", Project: "LEGION", Title: "held", Phase: phase.Held, Hold: &record.Hold{From: phase.Merging}, Generation: 1, Status: "retro", Rank: "D"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-304", Repo: "sjawhar/legion", Number: 4, Branch: "legion/LEGION-304", HeadSHA: "h4", Failing: []string{}})
-	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-305", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-305", Project: "LEGION", Title: "open", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "E"})
+	seedIssue(t, rig.pool, record.Issue{Key: "LEGION-305", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-305", Project: "LEGION", Title: "open", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "E"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-305", Repo: "sjawhar/legion", Number: 5, Branch: "legion/LEGION-305", HeadSHA: "h5", Failing: []string{}})
-	seedIssue(t, rig.pool, record.Issue{Key: "OTHER-1", Repo: "acme/other", DefaultBranch: "main", GitHubRepo: "acme/other", Tree: "OTHER-1", Project: "OTHER", Title: "elsewhere", Phase: phase.AwaitingMerge, Generation: 1, Status: "retro", Rank: "F"})
+	seedIssue(t, rig.pool, record.Issue{Key: "OTHER-1", Repo: "acme/other", DefaultBranch: "main", GitHubRepo: "acme/other", Tree: "OTHER-1", Project: "OTHER", Title: "elsewhere", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "F"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestMerged, Issue: "OTHER-1", Repo: "acme/other", Number: 6, Branch: "legion/OTHER-1", HeadSHA: "h6", Failing: []string{}})
 
 	rig.apply("boot", intake.DaemonBooted{Boot: 1})
@@ -604,7 +639,7 @@ func TestTheBootSweepClosesMigratedMergedIssuesAndLeavesARootWithARunningChild(t
 		phases[key], lingering[key] = p, lingers
 	}
 	rows.Close()
-	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Done, "LEGION-302": phase.AwaitingMerge, "LEGION-303": phase.Implementing, "LEGION-304": phase.Done, "LEGION-305": phase.AwaitingMerge, "OTHER-1": phase.AwaitingMerge} {
+	for key, want := range map[string]phase.Phase{"LEGION-301": phase.Done, "LEGION-302": phase.Merging, "LEGION-303": phase.Implementing, "LEGION-304": phase.Done, "LEGION-305": phase.Merging, "OTHER-1": phase.Merging} {
 		if phases[key] != want || lingering[key] != (want == phase.Done) {
 			t.Fatalf("%s after the boot = %s lingering %t, want %s", key, phases[key], lingering[key], want)
 		}

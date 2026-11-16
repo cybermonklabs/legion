@@ -70,7 +70,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if _, err := conn.Exec(ctx, `set enable_seqscan = off`); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := conn.Query(ctx, "explain (costs off) "+strings.Replace(driftedExcerptsQuery, "$1", "20", 1))
+	rows, err := conn.Query(ctx, "explain (costs off) "+strings.NewReplacer("$1", "20", "$2", "'{}'", "$3", "'{}'").Replace(driftedExcerptsQuery))
 	if err != nil {
 		t.Fatalf("explain drift query: %v", err)
 	}
@@ -117,7 +117,7 @@ func owedDocument(t *testing.T, database *store.Store, slug string) string {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('CORE', 'CORE project') on conflict (key) do nothing`); err != nil {
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('CORE', 'CORE project', 'alice') on conflict (key) do nothing`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	document, _ := createReferenceArtifact(t, tx, "", "CORE", slug)

@@ -5,10 +5,10 @@ unpack, extract or install anything the worker image does not carry. Every path 
 cybermonklabs/legion.
 
 The withheld row reads `installs or configures its own dependencies in the pod: Legion owns its
-dependencies` (`packages/daemon/internal/capabilities/capabilities.go`, ruling
+dependencies` (`packages/daemon/internal/capabilities/capabilities.go`, decision
 dispatch://LEGION-200). Read as a sentence on its own, that wording would also forbid `uvx`,
 `bunx --package` and `go run`, each of which fetches a package and writes a cache. It does not, and
-three artefacts in this repository are what draw the line — not a claim about what the ruling meant:
+three artefacts in this repository are what draw the line — not a claim about what the decision meant:
 
 - **What the image ships for a role to use.** `packages/daemon/docker/worker.Dockerfile` installs
   `uv` and `uvx`, `bun` with its `bunx` link, and the Go toolchain, and the `toolchain` capability

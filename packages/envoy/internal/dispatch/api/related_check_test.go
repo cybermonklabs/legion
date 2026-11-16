@@ -558,7 +558,7 @@ func TestRelatedCheckBoundsDecisionBlocksPastTheAllowanceAreRecordedTimeout(t *t
 	}
 	artifact := model.Artifact{ID: issue.PrimaryArtifactID, IssueKey: &issue.Key, Project: "DBTO"}
 	checks := srv.decisionBlockChecks(context.Background(), artifact, blocks,
-		model.Actor{Kind: "user", ID: "alice"})
+		model.Actor{Kind: "user", ID: "alice"}, false)
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
@@ -870,9 +870,8 @@ func checkThroughJSON(t *testing.T, srv *server, input relatedInput) testSuggest
 }
 
 // An ask whose answer was replaced shows its latest answer, who gave it, when and the options
-// chosen, on the item the ask route's check lists and on its decision. Only the person who gave
-// the current answer may change it, so both answers are alice's; the time, the option and the text
-// tell them apart.
+// chosen, on the item the ask route's check lists. Only the person who gave the current answer
+// may change it, so both answers are alice's; the time, the option and the text tell them apart.
 func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
 	fixture := newAskStateFixture(t, "LATEST")
 	first := fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}, "text": "Keep the brass one."})
@@ -896,11 +895,6 @@ func TestRelatedCheckShowsTheLatestAnswer(t *testing.T) {
 	if answer.User != "alice" || !answer.At.Equal(latest.Answer.At) || answer.At.Equal(first.Answer.At) ||
 		!slices.Equal(answer.Selected, []string{"Steel"}) || answer.Text == nil || *answer.Text != "Steel after all." {
 		t.Fatalf("answer = %+v, want alice's latest Steel answer at %s", answer, latest.Answer.At)
-	}
-	if suggestions.Decision == nil || suggestions.Decision.ID != fixture.asks["twice"] || suggestions.Decision.AnsweredBy != "alice" ||
-		suggestions.Decision.AnsweredAt == nil || suggestions.Decision.Ask == nil ||
-		!slices.Equal(suggestions.Decision.Ask.Answer.Selected, []string{"Steel"}) {
-		t.Fatalf("decision = %+v, want the re-answered ask with its latest answer", suggestions.Decision)
 	}
 }
 
@@ -944,9 +938,6 @@ func TestRelatedCheckShowsAnAskClosedWithNoAnswer(t *testing.T) {
 		item.Ask.Resolution.Kind != "resolved" || item.Ask.Resolution.Reason != "The roster settles it." {
 		t.Fatalf("ask state = %+v, want resolved with its resolution and no answer", item.Ask)
 	}
-	if suggestions.Decision != nil {
-		t.Fatalf("decision = %+v, want none: a closed ask settles nothing", suggestions.Decision)
-	}
 }
 
 // An open ask says it is open.
@@ -962,7 +953,7 @@ func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
 // A failure partway through reading the asks' states leaves no item an ask state. An ask answered
 // and then retracted keeps its answer only in its events, read after every row's state; with
 // events locked past the read's deadline, keeping the states already read would show that ask as
-// closed with no answer and still name the answered one the decision.
+// closed with no answer.
 func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
@@ -1025,9 +1016,6 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 				t.Fatalf("ask state = %+v, want resolved with alice's Steel answer", item.Ask)
 			}
 		}
-		if suggestions.Decision == nil || suggestions.Decision.ID != fixture.asks["twice"] {
-			t.Fatalf("decision = %+v, want the answered ask", suggestions.Decision)
-		}
 	})
 
 	t.Run("answers locked", func(t *testing.T) {
@@ -1054,9 +1042,6 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 			if _, ok := item["ask"]; ok {
 				t.Fatalf("related item %s = %v, want no ask key", id, item)
 			}
-		}
-		if suggestions.Decision != nil {
-			t.Fatalf("decision = %+v, want none once the ask states could not be read", suggestions.Decision)
 		}
 	})
 }

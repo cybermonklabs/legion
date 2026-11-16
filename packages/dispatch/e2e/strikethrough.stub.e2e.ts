@@ -1,5 +1,6 @@
-/** Tilde runs of different lengths, read in a past version of the spec: the engine's own parse of
- *  what the server stored, drawn from one fixed answer, so it runs against a recording
+/** Tilde runs of different lengths, read in a past version of the spec: the tree the server read
+ *  that version's markdown into, drawn by the engine from one fixed answer, so it runs against a
+ *  recording
  *  (packages/dispatch/AGENTS.md, "The stubbed layer").
  */
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
@@ -9,8 +10,9 @@ import { stubbed } from "./stub/stub-test";
 
 // A run of tildes strikes only when it pairs with a run of its own length, and a run may open
 // right after an escaped tilde. Three readers answer that, and only one of them needs a browser:
-// a past version hands the stored markdown to the live Milkdown editor (VersionView.tsx's
-// `setMarkdown`), so this row is the editor's own parse of what the server stored, and it reads
+// a past version draws the tree the server read that version's markdown into (VersionView.tsx,
+// which feeds the read-only editor `markdown_tree` and parses nothing in the browser), so this
+// row is the server's own reading drawn by the engine, and it reads
 // the document and its reading from the one fixture table. The spec editor binds to the Yjs
 // fragment the server writes, which `fixtures.json` pins without a browser (`pm_json`,
 // `yjs_update_v1_b64`); a comment parses through the headless engine, which

@@ -18,7 +18,7 @@ import (
 )
 
 // writePermissions is the permission set a role's write token is asked for, one per App role:
-// what that App's roles do to the one repository the token names, and nothing else. It is what
+// what that App's roles do to the repositories they work in, and nothing else. It is what
 // the mint asks for of an installation granted all of it; an installation granted less is asked
 // for what it is granted (exchangeGranted), since GitHub answers a request naming a permission
 // the installation is not granted HTTP 422, minting nothing rather than leaving that one out.
@@ -38,10 +38,19 @@ import (
 // approved is the account's, and the cut takes each mint's request down to it (exchangeGranted),
 // so an installation granted less than a set names is asked for less rather than refused.
 //
-// Issues, repository projects and packages are in neither set, though both Apps' installations
-// hold them: Legion writes no GitHub issue and no project, and a comment on a pull request needs
-// Issues write or Pull requests write (GitHub's own documentation of the create-comment endpoint,
-// read 2026-11-06), which both sets hold.
+// issues:write is in both sets, though the daemon itself reads and writes no GitHub issue: the
+// roles do, through their tokens. The implementer runs the work's own code, which may read an
+// issue of the repository it works in and post or edit a comment there, such as a release script
+// marking that an issue's run should stop or be tried again. The tester runs that same code under
+// the review App, so that App's set needs what the code needs. The write lease already holds
+// contents:write and pull_requests:write wherever it reaches, so issues:write adds no new kind of
+// harm; giving the review App's other roles issues read alone would mean keying the set by
+// workflow role rather than by App, a larger change for no measured risk. A token whose request
+// names no issues permission is refused an issue of a private repository with 403 "Resource not
+// accessible by integration" (readPermissions says where that was measured).
+//
+// Repository projects and packages are in neither set, though both Apps' installations hold
+// them: Legion writes no project and no package.
 //
 // security_events is the code-scanning alerts of the repository, and it differs by App as checks
 // does: the review App's set asks for write and the implement App's for read, its roles reading
@@ -59,8 +68,8 @@ import (
 // token carrying what the request names. A deployment in token mode asks its command for no
 // permissions at all (tokencommand.go), so this set decides nothing there (dispatch://INFRA-1639).
 var writePermissions = map[AppRole]map[string]string{
-	Implement: {"actions": "write", "checks": "read", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
-	Review:    {"actions": "write", "checks": "write", "contents": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
+	Implement: {"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"},
+	Review:    {"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "security_events": "write"},
 }
 
 // accessOrder ranks GitHub's three accesses, each holding every one below it: a permission
@@ -72,15 +81,15 @@ var accessOrder = map[string]int{"read": 1, "write": 2, "admin": 3}
 
 // grantShortfall is one permission a role's set asks for that the installation is not granted at
 // the access asked: the permission, the access the set asks for, and the access the installation
-// is granted, empty where it is granted none. It carries no token, and neither does the line it
-// is said on (shortfallMessage).
+// is granted, empty where it is granted none. It carries no token, and neither does the record it
+// is said in (sayShortfalls).
 type grantShortfall struct {
 	permission string
 	asked      string
 	granted    string
 }
 
-// granting is what the installation is granted of the permission, as a line says it.
+// granting is what the installation is granted of the permission, as the message says it.
 func (s grantShortfall) granting() string {
 	if s.granted == "" {
 		return "no " + s.permission
@@ -119,18 +128,18 @@ func narrowToGranted(asked, granted map[string]string) (map[string]string, []gra
 	return narrowed, short
 }
 
-// shortfallMessage is written to the daemon's stderr, once per App role, owner and shortfall,
-// when a mint asks for less than the role's set names because the installation is granted less:
-// the lease is served, and what the token cannot do is said once rather than at every mint. It
-// takes the role, the owner, what the installation is granted (granting), the permission and the
-// access asked for, what the request carries of it (minting), and the permission and access to
-// grant. It carries no token.
-const shortfallMessage = "appauth: the %s App's installation on %s is granted %s, where its token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account\n"
+// shortfallMessage is the message of the warn record a Manager logs once per App role, owner and
+// shortfall, when a mint asks for less than the role's set names because the installation is
+// granted less: the lease is served, and what the token cannot do is said once rather than at
+// every mint. It takes the role, the owner, what the installation is granted (granting), the
+// permission and the access asked for, what the request carries of it (minting), and the
+// permission and access to grant. It carries no token.
+const shortfallMessage = "appauth: the %s App's installation on %s is granted %s, where its token asks for %s: %s, so the token is minted %s; grant the App %s: %s and approve it on that account"
 
-// saidShortfall is the key one line of shortfallMessage is said under: the App role, the owner
+// saidShortfall is the key one record of a shortfall is logged under: the App role, the owner
 // lowercased as a scope's is, and what the installation is granted of the permission. A second
-// mint of any scope of that role and owner says nothing again, since the grant is the
-// installation's and the line is about the installation.
+// mint of any scope of that role and owner logs nothing again, since the grant is the
+// installation's and the record is about the installation.
 type saidShortfall struct {
 	role  AppRole
 	owner string
@@ -139,7 +148,7 @@ type saidShortfall struct {
 
 // exchangeGranted is exchange over what the installation is granted: the request's permissions
 // cut down to the access owner's account approved for the App (grantedPermissions,
-// narrowToGranted), with a line on stderr for each one left out or lowered (sayShortfalls). A
+// narrowToGranted), with a warn record for each one left out or lowered (sayShortfalls). A
 // permission the installation is not granted is left out, where asking for it would make GitHub
 // refuse the mint whole (a 422) and cost the role every other permission of its set, and the gh
 // bundle that mint belongs to (GitHubCredential).
@@ -147,11 +156,10 @@ type saidShortfall struct {
 // A cut that leaves no permission at all refuses the mint instead: GitHub reads a request with
 // no permissions as every permission the installation holds, so a body without them would mint
 // wider than the role's set asks for rather than narrower. The refusal names the role, the
-// owner, the repositories and the set asked for (askedFor), and carries no token.
+// owner and the set asked for (askedFor), and carries no token.
 //
-// A 422 from the exchange after this cut is a repository the installation does not reach, or a
-// grant that changed between the two calls (ErrNarrowingRefused): it stays the hard refusal it
-// is.
+// A 422 from the exchange after this cut is a grant that changed between the two calls
+// (ErrNarrowingRefused): it stays the hard refusal it is.
 func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string, request mintRequest) (Lease, error) {
 	granted, err := m.grantedPermissions(ctx, jwt, installation)
 	if err != nil {
@@ -161,9 +169,9 @@ func (m *Manager) exchangeGranted(ctx context.Context, jwt, installation string,
 	m.sayShortfalls(request.role, request.owner, short)
 	if len(permissions) == 0 {
 		return Lease{}, fmt.Errorf("the %s App's installation on %s is granted none of the permissions its token asks for (%s), and a token request naming no permission holds every permission the installation has",
-			request.role, request.owner, askedFor(request.repos, request.permissions))
+			request.role, request.owner, askedFor(request.permissions))
 	}
-	return m.exchange(ctx, jwt, installation, request.repos, permissions)
+	return m.exchange(ctx, jwt, installation, permissions)
 }
 
 // grantedPermissions is what owner's account approved for the App's installation: GET
@@ -208,9 +216,12 @@ func (m *Manager) grantedPermissions(ctx context.Context, jwt, installation stri
 	return payload.Permissions, nil
 }
 
-// sayShortfalls writes shortfallMessage for each of short the first time a mint of role for
-// owner meets it, and nothing on every mint after it, whatever repositories that mint or the
-// ones after it named: the grant is the installation's and the line is about the installation.
+// sayShortfalls logs shortfallMessage at warn for each of short the first time a mint of role for
+// owner meets it, and nothing on any mint after it: the grant is the installation's and the
+// record is about the installation, which the owner names. Beside the message the record carries
+// what it says as fields, so a reader filtering the daemon's log finds it by them: the App, the
+// owner, the permission, the access the set asks for and the access the installation is granted,
+// empty where it is granted none.
 func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfall) {
 	for _, shortfall := range short {
 		key := saidShortfall{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), grantShortfall: shortfall}
@@ -221,7 +232,9 @@ func (m *Manager) sayShortfalls(role AppRole, owner string, short []grantShortfa
 		if said {
 			continue
 		}
-		fmt.Fprintf(m.stderr, shortfallMessage, role, owner, shortfall.granting(),
-			shortfall.permission, shortfall.asked, shortfall.minting(), shortfall.permission, shortfall.asked)
+		m.log.Warn(fmt.Sprintf(shortfallMessage, role, owner, shortfall.granting(),
+			shortfall.permission, shortfall.asked, shortfall.minting(), shortfall.permission, shortfall.asked),
+			"app", string(role), "owner", owner, "permission", shortfall.permission,
+			"asked", shortfall.asked, "granted", shortfall.granted)
 	}
 }

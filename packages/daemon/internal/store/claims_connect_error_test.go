@@ -41,7 +41,7 @@ func TestTheOwedWriteErrorsOfAnUnreachableDatabaseCarryNoSQLSTATE(t *testing.T) 
 		t.Fatalf("build a pool at an address nothing listens on: %v", err)
 	}
 	defer pool.Close()
-	s := &Store{pool: pool}
+	s := &Store{pool: NewPool(pool)}
 
 	err = s.PutClaim(ctx, tmuxClaim("legion-LEGION-209-implementer"))
 

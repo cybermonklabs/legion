@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -19,6 +22,30 @@ func (s *Service) InjectSchemaInvalidForTest(ctx context.Context, artifactID str
 		fragment := doc.GetXmlFragment(fragmentName)
 		transact(func(transaction *crdt.Transaction) {
 			fragment.InsertElement(transaction, 0, crdt.NewYXmlElement("callout"))
+		})
+	})
+}
+
+// UnknownElementForTest is the type name of the element InjectUnknownElementForTest writes. No
+// build's manifest names it.
+const UnknownElementForTest = "test_newer_block"
+
+// InjectUnknownElementForTest appends to artifactID's live document an element whose type name
+// this build does not know (UnknownElementForTest), holding one paragraph. Two builds serve one
+// database during a release, and a newer build writes such an element where it creates an element
+// this build lacks. The element is well formed, so the document is newer content
+// (ErrDocNewerContent), not a tree outside the schema.
+func (s *Service) InjectUnknownElementForTest(ctx context.Context, artifactID string) error {
+	return s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		fragment := doc.GetXmlFragment(fragmentName)
+		transact(func(transaction *crdt.Transaction) {
+			element := crdt.NewYXmlElement(UnknownElementForTest)
+			fragment.InsertElement(transaction, len(fragment.Children()), element)
+			paragraph := crdt.NewYXmlElement("paragraph")
+			element.InsertElement(transaction, 0, paragraph)
+			text := crdt.NewYXmlText()
+			paragraph.InsertText(transaction, 0, text)
+			text.Insert(transaction, 0, "Written by a newer build.", nil)
 		})
 	})
 }
@@ -76,9 +103,11 @@ type OutsideSchemaCorruptionForTest struct {
 // OutsideSchemaCorruptionsForTest are the stored trees outside the Proof schema a document can
 // come to hold: one the reader refuses, one only the renderer refuses, one whose paragraph text
 // carries an embed, one whose text carries a mark nested past what ygo's text writers take, and the
-// malformed marks pmdoc's own tests refuse - a mark where the schema keeps marks off, an unknown
-// mark, and a mark whose value is not an object. Tests here and in package api put a document
-// through every one of them.
+// malformed marks pmdoc's own tests refuse - a mark where the schema keeps marks off, and a mark
+// whose value is not an object. A mark no manifest of this build names is not one of them: it is
+// an element this build does not know, which a newer build serving the same database can have
+// written, so it reads as newer content (NewerContentError) and no repair applies to it. Tests
+// here and in package api put a document through every one of them.
 var OutsideSchemaCorruptionsForTest = []OutsideSchemaCorruptionForTest{
 	{Name: "a tree the reader refuses", Corrupt: appendSchemaInvalidUpdate,
 		Refusal: `typed block "callout" content "block+" requires one or more blocks`},
@@ -90,8 +119,6 @@ var OutsideSchemaCorruptionsForTest = []OutsideSchemaCorruptionForTest{
 		Refusal: `mark "link" attribute "nested" nests more than 99 arrays and objects`},
 	{Name: "a mark on a code block's text", Corrupt: appendMarkedCodeBlock,
 		Refusal: `code block cannot contain mark "strong"`},
-	{Name: "an unknown mark", Corrupt: appendTextMark(crdt.Attributes{"unknown": map[string]any{}}),
-		Refusal: `mark "unknown"`},
 	{Name: "a mark whose value is not an object", Corrupt: appendTextMark(crdt.Attributes{"strong": true}),
 		Refusal: `mark "strong" attributes: want object, got bool`},
 }
@@ -239,6 +266,51 @@ func DocumentReadWeightForTest(markdown string) (int64, error) {
 		return 0, err
 	}
 	return read.weight, nil
+}
+
+// documentRenders is the record a test installs over every rendering of a document tree this
+// package makes, in place of a hook field on Service: the renders are made by the package's
+// render helpers (countDocumentRender), which hold no service. A render loads it and, outside a
+// test, finds it nil and does nothing else, so no production path changes. One test at a time
+// holds it, as the hook fields on Service are held, and clears it in t.Cleanup.
+var documentRenders atomic.Pointer[renderRecord]
+
+// renderRecord is what the renderings a test watches produced: the markdown of each, in the
+// order the renders finished. It is the markdown and not a count alone because what a write
+// costs is which documents it rendered and not only how many times it rendered one: a write
+// that renders the text it was given twice costs the same count as one that renders the
+// document it replaces and then that text. A document's writes render on the request's
+// goroutine and its room renders on the room's, so the lock is held for every record.
+type renderRecord struct {
+	mu       sync.Mutex
+	markdown []string
+}
+
+func (r *renderRecord) record(markdown string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.markdown = append(r.markdown, markdown)
+}
+
+// rendered is the markdown of every rendering recorded so far, a copy the caller may read while
+// later renders are recorded.
+func (r *renderRecord) rendered() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.markdown)
+}
+
+// countDocumentRender records one rendering of a document tree, and the markdown that rendering
+// produced, on the record a test installed. It runs after the render, so what it records is what
+// the render answered - the empty string for a render that failed, which is a rendering made all
+// the same. Every rendering of a whole document goes through one of its callers, so what a read
+// or a write costs in renderings is what it records. A rendering of a tree derived from a
+// document - the copy without ask blocks an approval carry compares (renderWithoutAskBlocks), a
+// single block (renderBlock) - is not one of them.
+func countDocumentRender(markdown string) {
+	if record := documentRenders.Load(); record != nil {
+		record.record(markdown)
+	}
 }
 
 // RoomCapsForTest is the service's room and connection caps (reserveRoom, reserveConnection).

@@ -96,7 +96,6 @@
     },
     "unit_life": "5m",
     "driver_topics": 614,
-    "receipt_deadline": "1s",
-    "session_delivery": "consumer"
+    "receipt_deadline": "1s"
   }
 }

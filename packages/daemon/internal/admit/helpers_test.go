@@ -140,12 +140,10 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // helpers are. A start that names no phase is no phase worker's — the architect start promotion
 // makes, the production check's look — and is left in.
 //
-// A supervise start carries an assignment the workflow mints fresh at each start
-// (record.SuperviseRequest.Assignment), so two runs of the same events never write the
-// same one and a comparison of two runs would fail on that id alone. Every such id is replaced
-// here by one sentinel, which drops only the value no run can repeat. It holds nothing about the
-// assignment itself: a start that carries none is left as it is, and what a start carries is
-// pinned by internal/api's completion route tests and by migration 0067's test.
+// A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
+// which the transition raised on the role's phases row: the record counts the entries a role has
+// been handed, so two runs of the same events write the same number and a comparison of two runs
+// reads it like any other field.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox order by id`)
@@ -167,10 +165,6 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 			if start.Op == "start" && start.Task == "" && start.Phase != "" {
 				continue
 			}
-			if start.Assignment != "" {
-				start.Assignment = mintedAssignment
-				payload = start
-			}
 		}
 		got = append(got, effect{kind: row.Kind, issue: row.Issue, payload: payload})
 	}
@@ -179,9 +173,6 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	}
 	return got
 }
-
-// mintedAssignment stands for the assignment a start minted, whatever it was (effects).
-const mintedAssignment = "<minted>"
 
 func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 	t.Helper()
@@ -197,11 +188,11 @@ func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 }
 
 // waitingLine is the waiting line of project, in its order, under the design gate of steps (nil
-// for the deployment's single step spec). It reads the line exactly as admission does, through
-// the one judgement it promotes from (blockers.JudgeLine): the mirror rows of every issue a
-// blocker can hold first, so the line leaves out an issue one of them holds where it stands
-// (record.LineFacts.Held), the children-first judgement next, so it leaves out a parent whose
-// own Dispatch children are still open (record.LineFacts.ChildWaits), and then the line.
+// for the deployment's single step spec). It reads the stored state and judges the line through
+// blockers.JudgeLine, the judgement admission promotes from: the held set
+// (record.LineFacts.Held), the children-first waits (record.LineFacts.ChildWaits) and the waits
+// of started issues (record.LineFacts.Waits), and then the line. It runs none of the releases a
+// pass runs before it judges the line, so it shows the line as the last pass left it.
 func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []record.DesignStep) []string {
 	t.Helper()
 	var got []string
@@ -219,7 +210,7 @@ func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []recor
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
+		_, _, line, _, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil, time.Now())
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -260,6 +251,17 @@ func issue(t *testing.T, pool *pgxpool.Pool, key string) record.Issue {
 	return *got
 }
 
+// withoutMovement is a record with the moment the daemon last saw the issue move taken off
+// (record.Issue.MovedAt). Every write of a record stamps it from the database's own clock and
+// every fact that moves the issue writes it again, so two runs of the same events never agree on
+// it and no fixture can name it: a test about what a fact records compares everything else. The
+// column's own rule is held to by TestTheRecordKeepsWhenAnIssueLastMoved, which is the one test
+// here that reads it.
+func withoutMovement(issue record.Issue) record.Issue {
+	issue.MovedAt = time.Time{}
+	return issue
+}
+
 func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 	t.Helper()
 	var got *record.Issue
@@ -294,9 +296,24 @@ func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 // that seed their own records (newAdmissionForProject).
 func seedSlottedForProject(t *testing.T, pool *pgxpool.Pool, project, key, rank string) {
 	t.Helper()
+	seedSlottedInPhase(t, pool, project, key, rank, phase.Admitted, nil)
+}
+
+// seedSlottedInPhase is the general form of seedSlotted: the root stands in the phase given
+// rather than at admitted, and shape is where a test says what else the record carries. It is
+// the package's one slotted-issue fixture, so a test of a started issue in a worker phase seeds
+// the record, the slot row and the tree lifecycle exactly as a test of one at admitted does.
+func seedSlottedInPhase(t *testing.T, pool *pgxpool.Pool, project, key, rank string, at phase.Phase, shape func(*record.Issue)) {
+	t.Helper()
+	issue := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: project, Title: key, Tree: key, Phase: at, Generation: 1, Status: "in_progress",
+		Rank: rank, HandedOver: true}
+	if shape != nil {
+		shape(&issue)
+	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: project, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: rank, HandedOver: true}); err != nil {
+		if err := records.PutIssue(context.Background(), tx, issue); err != nil {
 			t.Fatalf("put active issue: %v", err)
 		}
 		slots, err := records.Slots(context.Background(), tx)

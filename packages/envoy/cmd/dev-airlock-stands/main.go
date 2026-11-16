@@ -47,14 +47,16 @@
 // answers a token request is set while it runs by the same device as the model's: POST
 // <records URL>/answers/github, whose body is {"mode": "<word>", "repository": "<name>"}, where
 // the repository is the one the refuse-repository mode reads and every other mode leaves out.
-// The five modes are ordinary, the answer each body asked for; refuse, the HTTP 422 that mints
+// The six modes are ordinary, the answer each body asked for; refuse, the HTTP 422 that mints
 // nothing, as GitHub answers a body naming a permission the installation does not hold;
 // refuse-repository, that same 422 to a token request whose repositories name the one this body
 // named and the ordinary answer to every other, which is how a check drives a caller that asks
 // GitHub again with less of a narrowing to find the refused part; refuse-permissions, that 422
 // to a token request whose body names any permissions and the ordinary answer to every other;
-// and widen, a token wider than the body asked for, which the broker must refuse to release. A
-// refuse-repository that names no repository is refused 400, as a mode outside the five is. The
+// widen, a token wider than the body asked for, which the broker must refuse to release; and
+// fail-once, one HTTP 503 to the next token request, as a GitHub outage answers, before the
+// ordinary answer again, which the broker's minter retries. A refuse-repository that names no
+// repository is refused 400, as a mode outside the six is. The
 // report names that address (github_answer_url), and until a check calls it the stand answers
 // each token request what its body asked for.
 //
@@ -598,8 +600,9 @@ const (
 
 // githubAnswerRequest is the body POST <records URL>/answers/github takes.
 type githubAnswerRequest struct {
-	// Mode is which of the GitHub stand's five answers every token request from then on gets:
-	// ordinary, refuse, refuse-repository, refuse-permissions or widen
+	// Mode is which of the GitHub stand's six answers the token requests from then on get:
+	// ordinary, refuse, refuse-repository, refuse-permissions or widen for every one, or
+	// fail-once for the next one alone, after which the stand answers as ordinary
 	// (airlocktest.GitHubTokenAnswer).
 	Mode string `json:"mode"`
 	// Repository is the repository the refuse-repository mode refuses a token request for. It is
@@ -608,7 +611,7 @@ type githubAnswerRequest struct {
 }
 
 // githubAnswerOf is one such request as the answer it sets, and what is wrong with a request
-// that sets none: a mode outside the five is named back with the five, and a refuse-repository
+// that sets none: a mode outside the six is named back with the six, and a refuse-repository
 // that names no repository is named back with what it is missing, since a check that misspelled
 // a mode or left that name out must read it rather than drive its next case against the answer
 // still in place.
@@ -619,7 +622,8 @@ func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubAnswer, error) 
 	}
 	switch answer.Mode {
 	case airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused,
-		airlocktest.GitHubTokensRefusedPermissions, airlocktest.GitHubTokensWider:
+		airlocktest.GitHubTokensRefusedPermissions, airlocktest.GitHubTokensWider,
+		airlocktest.GitHubTokensFailOnce:
 		return answer, nil
 	case airlocktest.GitHubTokensRefusedRepository:
 		if answer.Repository == "" {
@@ -630,10 +634,10 @@ func githubAnswerOf(body githubAnswerRequest) (airlocktest.GitHubAnswer, error) 
 		return answer, nil
 	default:
 		return airlocktest.GitHubAnswer{}, fmt.Errorf(
-			"the mode %q is none of the GitHub stand's five answers: %s, %s, %s, %s and %s",
+			"the mode %q is none of the GitHub stand's six answers: %s, %s, %s, %s, %s and %s",
 			body.Mode, airlocktest.GitHubTokensOrdinary, airlocktest.GitHubTokensRefused,
 			airlocktest.GitHubTokensRefusedRepository, airlocktest.GitHubTokensRefusedPermissions,
-			airlocktest.GitHubTokensWider)
+			airlocktest.GitHubTokensWider, airlocktest.GitHubTokensFailOnce)
 	}
 }
 

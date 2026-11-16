@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch doc-edit` and `dispatch artifact` print one line when the version they stored took an open approval request back from the person it was waiting on: the ask, each document that stands above the version the request asks about with both versions, and the `dispatch request-approval` call that hands the request back.'
+time: 2026-11-11T23:02:16.439205111Z
+custom:
+    Issue: pr3678

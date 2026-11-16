@@ -87,7 +87,7 @@ func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *test
 				Tree: root, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 7,
 				Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
 			seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: root, Parent: &rootKey, Project: "LEGION", Title: "child", Phase: phase.AwaitingMerge, Generation: 7,
+				Tree: root, Parent: &rootKey, Project: "LEGION", Title: "child", Phase: phase.Merging, Generation: 7,
 				Status: "retro", DispatchStatus: "retro", Rank: "V1", LastDispatchSeq: 1})
 			seedIssue(t, pool, record.Issue{Key: held, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 				Tree: root, Parent: &childKey, Project: "LEGION", Title: "held", Phase: phase.Admitted, Generation: 7,
@@ -226,17 +226,17 @@ const (
 // again.
 //
 // A root a person or a controller parked hands over one member only: the one standing at
-// phase.AwaitingMerge whose pull request is still open. Such a root can be re-admitted, and the
+// phase.Merging whose pull request is still open. Such a root can be re-admitted, and the
 // re-admission resumes a member of any other phase where it stood (admit's startMidPhaseMembers),
-// so waiting strands nothing else. The one thing no re-admission does is arm again the merge the
-// park disarmed: the linger's start disarmed every member's open pull request (beginLinger), and
-// only a new READY from a merger arms one. So the member this rule rescues is exactly the one
-// holding an open, approved pull request with no live tree left to write that READY. Handed over,
-// it keeps its run and its pull request, and the merge still closes it; left behind, it lost its
-// claims and its workspace with the rest of the tree and stood at awaiting_merge for good, which
-// is where INFRA-1333 stood until a person merged it by hand.
+// so waiting strands nothing else. The one thing no re-admission does is make the merge the park
+// stopped: the merge is the merger's own call, made in its own turn, and that turn ended with the
+// park (unfinishedHandOvers). So the member this rule rescues is exactly the one holding an open,
+// approved pull request with no live tree left to merge it. Handed over, it keeps its run and its
+// pull request, its own merger merges it under its new tree, and that merge closes it. Left
+// behind, it lost its claims and its workspace with the rest of the tree and stood at
+// awaiting_merge for good, which is where INFRA-1333 stood until a person merged it by hand.
 func TestLingerHandsOver(t *testing.T) {
-	t.Run("a parked root hands over the member whose merge nothing can arm again", func(t *testing.T) {
+	t.Run("a parked root hands over the member whose merge nothing else will make", func(t *testing.T) {
 		pool, logged, apply := handsOverFixture(t)
 		apply("a-person-parks-the-root", intake.DispatchIssue{Key: handsOverRoot, ResolvedRepo: "sjawhar/legion", Seq: 2,
 			Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
@@ -253,8 +253,8 @@ func TestLingerHandsOver(t *testing.T) {
 		// It goes as a root of its own carrying its run: the hand-over writes nothing over the
 		// phase, so its new tree resumes where it stood (record.Issue.CarriesRun).
 		carried := issueRecord(t, pool, handsOverMergeReady)
-		if carried == nil || carried.Phase != phase.AwaitingMerge || !carried.CarriesRun() {
-			t.Fatalf("the handed-over member = %+v, want it still at awaiting_merge carrying its run: its new tree resumes the phase it stood in", carried)
+		if carried == nil || carried.Phase != phase.Merging || !carried.CarriesRun() {
+			t.Fatalf("the handed-over member = %+v, want it still in merging carrying its run: its new tree resumes the phase it stood in", carried)
 		}
 		// The decisions parked on it go with it, and the close says so rather than warning that it
 		// left them behind; the one on a member it keeps is the warning.
@@ -314,10 +314,10 @@ func TestLingerHandsOver(t *testing.T) {
 	})
 
 	// The pull_requests row is the fact the narrow rule turns on, and the phase alone is not it.
-	// Under a parked root, a member standing at awaiting_merge with no pull request recorded, one
+	// Under a parked root, a member standing in merging with no pull request recorded, one
 	// whose pull request merged and one whose pull request was closed unmerged are all left with
-	// the tree: none of them holds a merge a READY would ever arm, which is the only thing the
-	// re-admission of this root could not do for them.
+	// the tree: none of them holds an open pull request for a merger to merge, and that merge is
+	// the only thing the re-admission of this root could not do for them.
 	t.Run("a parked root reads the pull request and not the phase alone", func(t *testing.T) {
 		pool := migratedPool(t)
 		now := time.Date(2026, 11, 4, 4, 0, 0, 0, time.UTC)
@@ -337,7 +337,7 @@ func TestLingerHandsOver(t *testing.T) {
 			{key: "LEGION-214", rank: "X", state: record.PullRequestClosed},
 		} {
 			seedIssue(t, pool, record.Issue{Key: member.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: handsOverRoot, Parent: &rootKey, Project: "LEGION", Title: member.key, Phase: phase.AwaitingMerge,
+				Tree: handsOverRoot, Parent: &rootKey, Project: "LEGION", Title: member.key, Phase: phase.Merging,
 				Generation: handsOverGeneration, Status: "retro", DispatchStatus: "retro", Rank: member.rank, LastDispatchSeq: 1})
 			if member.state == "" {
 				continue
@@ -354,7 +354,7 @@ func TestLingerHandsOver(t *testing.T) {
 		apply("linger", intake.LingerExpired{Issue: handsOverRoot, Generation: handsOverGeneration})
 
 		if got := handoverFences(t, pool); len(got) != 0 {
-			t.Fatalf("hand-over fences = %v, want none: a parked root hands over a member at awaiting_merge only while its pull request is open", got)
+			t.Fatalf("hand-over fences = %v, want none: a parked root hands over a member in merging only while its pull request is open", got)
 		}
 	})
 }
@@ -362,8 +362,7 @@ func TestLingerHandsOver(t *testing.T) {
 // handsOverFixture records the tree check k5's two fixtures share and returns the pool, the
 // engine's log and the way to apply a fact to it. The park that makes the tree linger is the
 // person's own move, applied by the test, so the linger is the real one — every member's claim
-// suspended and every open pull request disarmed (beginLinger) — rather than a deadline a test
-// wrote onto the root.
+// suspended (beginLinger) — rather than a deadline a test wrote onto the root.
 func handsOverFixture(t *testing.T) (*pgxpool.Pool, *bytes.Buffer, func(id string, fact intake.Fact) intake.Result) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -384,8 +383,8 @@ func handsOverFixture(t *testing.T) (*pgxpool.Pool, *bytes.Buffer, func(id strin
 		rank   string
 		number int
 	}{
-		{key: handsOverMergeReady, at: phase.AwaitingMerge, status: "retro", rank: "V", number: 44},
-		{key: handsOverParkedAtTheMerge, at: phase.AwaitingMerge, status: "backlog", rank: "W", number: 45},
+		{key: handsOverMergeReady, at: phase.Merging, status: "retro", rank: "V", number: 44},
+		{key: handsOverParkedAtTheMerge, at: phase.Merging, status: "backlog", rank: "W", number: 45},
 		{key: handsOverWorking, at: phase.Implementing, status: "in_progress", rank: "X"},
 	} {
 		seedIssue(t, pool, record.Issue{Key: member.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

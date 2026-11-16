@@ -279,13 +279,15 @@ func askTheModel(t *testing.T, url string) string {
 }
 
 // TestTheGitHubStandsAnswerIsSetWhileItRuns is the command's own half of the GitHub stand's
-// five answers: the route the report names sets what the stand answers each token request from
-// then on, which is how one check drives the ordinary mint, each refusal and the widened token
-// against one running stack. The two answers that refuse one part of a request are read by what
-// the request names - the repository the answer named, and any permissions at all - so each is
-// driven with a request it refuses and one it mints. A mode outside the five, and a
-// refuse-repository naming no repository, are refused rather than quietly leaving the last
-// answer in place. What each answer holds is the stand-in package's own rows.
+// six answers: the route the report names sets what the stand answers each token request from
+// then on, which is how one check drives the ordinary mint, each refusal, the widened token and
+// the one outage a retry rides out against one running stack. The two answers that refuse one
+// part of a request are read by what the request names - the repository the answer named, and
+// any permissions at all - so each is driven with a request it refuses and one it mints. The
+// outage is the next token request's alone: the request after it is answered as ordinary with no
+// call to the route. A mode outside the six, and a refuse-repository naming no repository, are
+// refused rather than quietly leaving the last answer in place. What each answer holds is the
+// stand-in package's own rows.
 func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	out := startStands(t, "--dir", t.TempDir())
 	if out.GitHubAnswerURL != out.RecordsURL+"/answers/github" {
@@ -299,6 +301,8 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 		{name: "the answer it starts on", want: http.StatusCreated},
 		{name: "the refusal", mode: `{"mode":"refuse"}`, want: http.StatusUnprocessableEntity},
 		{name: "the token wider than asked", mode: `{"mode":"widen"}`, want: http.StatusCreated, all: true},
+		{name: "the one outage", mode: `{"mode":"fail-once"}`, want: http.StatusServiceUnavailable},
+		{name: "the answer after the outage", want: http.StatusCreated},
 		{name: "the ordinary answer again", mode: `{"mode":"ordinary"}`, want: http.StatusCreated},
 		{name: "the repository the refusing answer names", mode: `{"mode":"refuse-repository","repository":"missing"}`,
 			asked: `{"repositories":["missing"]}`, want: http.StatusUnprocessableEntity},
@@ -331,8 +335,9 @@ func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
 	}
 	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"sometimes"}`); status != http.StatusBadRequest ||
 		!strings.Contains(body, "ordinary") || !strings.Contains(body, "refuse-repository") ||
-		!strings.Contains(body, "refuse-permissions") || !strings.Contains(body, "widen") {
-		t.Errorf("a mode outside the five was answered %d %s; want 400 naming the five", status, body)
+		!strings.Contains(body, "refuse-permissions") || !strings.Contains(body, "widen") ||
+		!strings.Contains(body, "fail-once") {
+		t.Errorf("a mode outside the six was answered %d %s; want 400 naming the six", status, body)
 	}
 	if status, body := setTheAnswer(t, out.GitHubAnswerURL, `{"mode":"refuse-repository"}`); status != http.StatusBadRequest ||
 		!strings.Contains(body, "repository") {

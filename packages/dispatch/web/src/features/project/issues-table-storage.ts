@@ -1,5 +1,4 @@
 import type { ColumnOrderState, ColumnSizingState, VisibilityState } from "@tanstack/react-table";
-import { COLUMN_SIZES, PINNED } from "./issues-table-model";
 
 /**
  * The one owner of what the table keeps in the browser for a project: the layout the reader
@@ -41,7 +40,17 @@ export interface TableAction {
  *  discarded in Pending changes. */
 export const ACTION_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
-const EMPTY_LAYOUT: TableLayout = { sizing: {}, order: [], visibility: { updated: false } };
+/** What a table's stored layout is read for: the columns it has, the ones it opens hidden, and
+ *  the ones it keeps pinned in a wide box, whose visibility is not the reader's. */
+export interface StoredColumns {
+  /** Every column the table has: a stored width, place or visibility of any other is dropped. */
+  readonly ids: readonly string[];
+  /** The columns the table opens with hidden, until the reader shows them. */
+  readonly hiddenByDefault?: Readonly<VisibilityState>;
+  /** The columns the table keeps pinned in a wide box: a pinned column is not the reader's to
+   *  hide, so its stored visibility is dropped. */
+  readonly pins?: { readonly wide: { readonly columns: readonly string[] } };
+}
 
 function readStore(project: string): Record<string, unknown> {
   try {
@@ -64,39 +73,43 @@ function writeStore(project: string, fields: Record<string, unknown>): void {
   }
 }
 
-export function readLayout(project: string): TableLayout {
+export function readLayout(
+  project: string,
+  { hiddenByDefault, ids, pins }: StoredColumns
+): TableLayout {
   const saved = readStore(project);
   const asRecord = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
-  const sizing = Object.fromEntries(
-    Object.entries(asRecord(saved.sizing)).filter(
-      ([id, size]) =>
-        id in COLUMN_SIZES &&
-        typeof size === "number" &&
-        Number.isFinite(size) &&
-        size >= 36 &&
-        size <= 2000
+  const sizing: ColumnSizingState = Object.fromEntries(
+    Object.entries(asRecord(saved.sizing)).flatMap(([id, size]): [string, number][] =>
+      ids.includes(id) &&
+      typeof size === "number" &&
+      Number.isFinite(size) &&
+      size >= 36 &&
+      size <= 2000
+        ? [[id, size]]
+        : []
     )
   );
   const order = Array.isArray(saved.order)
     ? [
-        ...new Set<string>(
-          saved.order.filter((id: unknown) => typeof id === "string" && id in COLUMN_SIZES)
+        ...new Set(
+          saved.order.filter(
+            (id: unknown): id is string => typeof id === "string" && ids.includes(id)
+          )
         ),
       ]
     : [];
-  const visibility = Object.fromEntries(
-    Object.entries(asRecord(saved.visibility)).filter(
-      ([id, visible]) => id in COLUMN_SIZES && !PINNED.includes(id) && typeof visible === "boolean"
+  const visibility: VisibilityState = Object.fromEntries(
+    Object.entries(asRecord(saved.visibility)).flatMap(([id, visible]): [string, boolean][] =>
+      ids.includes(id) && !pins?.wide.columns.includes(id) && typeof visible === "boolean"
+        ? [[id, visible]]
+        : []
     )
   );
-  return {
-    sizing: sizing as ColumnSizingState,
-    order,
-    visibility: { ...EMPTY_LAYOUT.visibility, ...visibility } as VisibilityState,
-  };
+  return { sizing, order, visibility: { ...hiddenByDefault, ...visibility } };
 }
 
 export function writeLayout(project: string, { sizing, order, visibility }: TableLayout): void {

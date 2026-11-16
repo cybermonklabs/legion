@@ -55,6 +55,7 @@ func newSweepRigKeeping(t *testing.T, ttl time.Duration) *sweepRig {
 		sweep: &sessionConsumerSweep{
 			delivery: rig.deps.consumers,
 			sessions: rig.harness.sessions,
+			deps:     rig.deps,
 			relays:   relays,
 			logger:   rig.harness.config.logger,
 		},

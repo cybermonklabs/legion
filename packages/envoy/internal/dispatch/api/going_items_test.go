@@ -33,7 +33,7 @@ func seedGoingItemText(t *testing.T, database *store.Store) seededItemTexts {
 		issueTitle: "Ünïcödé title — 日本語",
 		issueSpec:  "The spec's own words: naïve café.",
 	}
-	mustExecItemText(t, database.Pool, `insert into projects (key, name) values ($1, 'Items')`, project)
+	mustExecItemText(t, database.Pool, `insert into projects (key, name, default_assignee) values ($1, 'Items', 'alice')`, project)
 	mustExecItemText(t, database.Pool, `
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ($1, $2, 1, $3, '{"kind":"user","id":"alice"}', 'A')

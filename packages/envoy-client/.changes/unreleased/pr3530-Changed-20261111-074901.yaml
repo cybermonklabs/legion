@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    `dispatch doc-read --blocks` and `readDocumentBlocks` read the document once, through
+    `DispatchClient.docReadWithBlocks` (`GET /api/v1/artifacts/{id}/text?blocks=true`), in place of
+    the text, the blocks and the text again. Neither refuses a document that another session wrote
+    to while it was read, because nothing can now split a listing across two reads, and the two
+    refusals that asked the caller to run the command again are gone. `doc-read --blocks` prints
+    `Document version: <n>` under the document token, the version the answer it listed carried.
+time: 2026-11-11T07:49:01.000000000Z
+custom:
+    Issue: pr3530

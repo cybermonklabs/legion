@@ -4,6 +4,7 @@ import { type ReactNode, type RefObject, useCallback, useRef, useState } from "r
 import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
+import type { RowNoun } from "../../components/DataTable";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
@@ -43,18 +44,24 @@ function FunnelIcon(): ReactNode {
 const filterTrigger = (active: boolean) =>
   `min-h-11 min-w-11 rounded p-1 md:min-h-8 md:min-w-8 ${active ? tableFilterActive : `${textMutedOnCanvas} ${surfaceMutedHoverBg}`}`;
 
-export function ColumnFilter({
+export function ColumnFilter<TData>({
   column,
   counts,
-  doneLoaded,
+  noun,
   open,
   onOpenChange,
+  unloaded,
 }: {
-  column: Column<Item, unknown>;
+  column: Column<TData, unknown>;
   counts: ReadonlyMap<string, number>;
-  doneLoaded: boolean;
+  /** What one row of this table is, as `IssueTablePager` takes it: this menu says how many
+   *  rows each value holds, and a table of priorities holds priorities. */
+  noun: RowNoun;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** The values whose rows are not loaded yet: each says `load` rather than count them as
+   *  none, as Status does for Done before the closed issues are read. */
+  unloaded: readonly string[];
 }): ReactNode {
   const meta = column.columnDef.meta;
   const name = String(column.columnDef.header);
@@ -92,9 +99,6 @@ export function ColumnFilter({
         : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
-  // The one option whose detail is not a count: Done is offered before the closed issues it
-  // would count have been read, and says so rather than claiming zero.
-  const unloadedDone = (value: string) => column.id === "status" && value === "done" && !doneLoaded;
   return (
     <MultiSelect
       emptyMessage="No matching value."
@@ -102,11 +106,12 @@ export function ColumnFilter({
       onChange={(next) => column.setFilterValue(next.length === 0 ? undefined : next)}
       onOpenChange={onOpenChange}
       open={open}
-      optionDetail={(value) => (unloadedDone(value) ? "load" : String(counts.get(value) ?? 0))}
+      // An option whose rows are not read yet says so rather than claim a count of zero.
+      optionDetail={(value) => (unloaded.includes(value) ? "load" : String(counts.get(value) ?? 0))}
       optionDetailLabel={(value) =>
-        unloadedDone(value)
+        unloaded.includes(value)
           ? "not loaded"
-          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? "issue" : "issues"}`
+          : `${counts.get(value) ?? 0} ${(counts.get(value) ?? 0) === 1 ? noun.one : noun.many}`
       }
       optionLabel={show}
       options={options}
@@ -188,7 +193,9 @@ export function Popover({
   );
 }
 
-export function ColumnsMenu({ columns }: { columns: Column<Item, unknown>[] }): ReactNode {
+/** The column control of a table of any row type: this table's rows are issues, and the
+ *  priorities pages hold priorities and fault rows (`priorities/priority-table-controls.tsx`). */
+export function ColumnsMenu<Row>({ columns }: { columns: Column<Row, unknown>[] }): ReactNode {
   return (
     <Popover align="right" label="Columns">
       {() =>
@@ -384,13 +391,16 @@ export function IssueTableToolbar({
   );
 }
 
-export function IssueTablePager({
+export function IssueTablePager<TData>({
+  noun,
   table,
-  items,
   pagerRef,
 }: {
-  table: Table<Item>;
-  items: readonly Item[];
+  /** What one row of this table is, singular and plural, for the count this pager prints: a
+   *  table of priorities counts priorities, and a reader told "22 of 22 issues" under a list
+   *  of priorities is told the wrong thing about what they are reading. */
+  noun: RowNoun;
+  table: Table<TData>;
   pagerRef: RefObject<HTMLDivElement | null>;
 }): ReactNode {
   const { pageIndex, pageSize } = table.getState().pagination;
@@ -398,6 +408,7 @@ export function IssueTablePager({
   const rowsOnPages = table.getPrePaginationRowModel().rows.length;
   const leafCount = table.getFilteredRowModel().rows.length;
   const groupCount = table.getGroupedRowModel().rows.length;
+  const total = table.options.data.length;
   return (
     <div
       ref={pagerRef}
@@ -405,7 +416,7 @@ export function IssueTablePager({
       className={`flex shrink-0 flex-wrap items-center gap-3 text-sm ${textSecondaryOnCanvas}`}
     >
       <span>
-        {leafCount} of {items.length} {items.length === 1 ? "issue" : "issues"}
+        {leafCount} of {total} {total === 1 ? noun.one : noun.many}
         {grouping.length > 0 ? ` in ${groupCount} ${groupCount === 1 ? "group" : "groups"}` : ""}
       </span>
       <span className="ml-auto">
@@ -453,7 +464,9 @@ export function IssueTableSelection({
   unansweredEpic: string | undefined;
   startNext: (keys: readonly string[], confirmFirst?: boolean) => void;
   moveTo: (keys: readonly string[], epic: string | null) => void;
-  newEpic: (keys: readonly string[]) => void;
+  /** How an epic is made of the selected issues; absent on a table that stands on no project,
+   *  since an epic is created in one and a cross-project selection names none. */
+  newEpic?: (keys: readonly string[]) => void;
 }): ReactNode {
   const selectedKeys = table.getSelectedRowModel().flatRows.map((row) => row.original.issue.key);
   const leafCount = table.getFilteredRowModel().rows.length;
@@ -514,12 +527,14 @@ export function IssueTableSelection({
           <Action disabled={busy} onClick={() => void moveTo(selectedKeys, null)}>
             Take out of epic
           </Action>
-          <Action
-            disabled={busy || unansweredEpic !== undefined}
-            onClick={() => void newEpic(selectedKeys)}
-          >
-            New epic from these
-          </Action>
+          {newEpic === undefined ? null : (
+            <Action
+              disabled={busy || unansweredEpic !== undefined}
+              onClick={() => void newEpic(selectedKeys)}
+            >
+              New epic from these
+            </Action>
+          )}
           <Action disabled={busy} onClick={() => setSelection({})}>
             Clear selection
           </Action>

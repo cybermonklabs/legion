@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -138,7 +137,7 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 type heldTaskRig struct {
 	t         *testing.T
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	engine    *workflow.Engine
 	admission *admit.Admission
@@ -153,7 +152,12 @@ type heldTaskRig struct {
 	decided   int
 }
 
-func newHeldTaskRig(t *testing.T) *heldTaskRig {
+// heldTaskOption sets a part of a heldTaskRig up before newHeldTaskRig launches its architect,
+// which is the last moment it can: each claim's machine copies the supervisor's deps when it is
+// made (supervise.NewMachine), so a dep changed after the launch reaches no machine of the rig.
+type heldTaskOption func(*heldTaskRig)
+
+func newHeldTaskRig(t *testing.T, options ...heldTaskOption) *heldTaskRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -192,6 +196,9 @@ func newHeldTaskRig(t *testing.T) *heldTaskRig {
 	}
 	rig.put(rig.root)
 	rig.put(rig.child)
+	for _, option := range options {
+		option(rig)
+	}
 	rig.launchArchitect()
 	return rig
 }
@@ -213,6 +220,17 @@ func (r *heldTaskRig) launchArchitect() {
 	if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
 		r.t.Fatalf("spawn the architect: %v", err)
 	}
+	r.bootArchitect(machine, "the architect")
+	if got := machine.Claim().State; !supervise.SaidReady(got) {
+		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
+	}
+}
+
+// bootArchitect brings the agent of the architect's current launch up: the shim's hello, the
+// agent's registration and its ready, as the architect's pod does. who names the architect in a
+// failure.
+func (r *heldTaskRig) bootArchitect(machine *supervise.Machine, who string) {
+	r.t.Helper()
 	launch := machine.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: r.token, Generation: launch},
@@ -220,13 +238,10 @@ func (r *heldTaskRig) launchArchitect() {
 		supervise.RequestReady{Claim: r.token, Generation: launch, Session: "ses-architect"},
 	} {
 		if err := machine.Handle(r.ctx, ev); err != nil {
-			r.t.Fatalf("handle %T for the architect: %v", ev, err)
+			r.t.Fatalf("handle %T for %s: %v", ev, who, err)
 		}
 	}
 	machine.Wait()
-	if got := machine.Claim().State; !supervise.SaidReady(got) {
-		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
-	}
 }
 
 // decide is a person deciding on an ask of issue while nobody in the root's tree hears it, kept

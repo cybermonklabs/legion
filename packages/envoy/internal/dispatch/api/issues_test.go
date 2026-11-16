@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -338,6 +342,160 @@ func TestListIssuesFiltersByUpdatedSince(t *testing.T) {
 	}
 }
 
+// A listing row carries closed_at, the closing time the issue's own read carries, or null while
+// the issue is open. closed_since and closed_before keep the issues closed in [closed_since,
+// closed_before): since is inclusive and before exclusive, an open issue was closed at no time so
+// either bound leaves it out, and both narrow beside the other filters, paged or not.
+func TestListIssuesFiltersByClosedWindow(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	for _, project := range []string{"TEST", "OTHER"} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": project, "name": project + " project",
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
+		}
+	}
+	createIssue := func(project, title string) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": project, "title": title, "force": true,
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response).Key
+	}
+	beforeWindow := createIssue("TEST", "Closed before the window")
+	atStart := createIssue("TEST", "Closed at the window's start")
+	atEnd := createIssue("TEST", "Closed at the window's end")
+	open := createIssue("TEST", "Open")
+	elsewhere := createIssue("OTHER", "Closed inside the window in another project")
+	closedAt := map[string]time.Time{
+		beforeWindow: time.Date(2026, time.November, 2, 23, 59, 59, 0, time.UTC),
+		atStart:      time.Date(2026, time.November, 3, 0, 0, 0, 0, time.UTC),
+		atEnd:        time.Date(2026, time.November, 4, 0, 0, 0, 0, time.UTC),
+		elsewhere:    time.Date(2026, time.November, 3, 12, 0, 0, 0, time.UTC),
+	}
+	for key, at := range closedAt {
+		if _, err := database.Pool.Exec(context.Background(),
+			"update issues set status = 'done', closed_at = $2 where key = $1", key, at); err != nil {
+			t.Fatalf("close %s at %s: %v", key, at, err)
+		}
+	}
+
+	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST", nil, "alice")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list TEST: status=%d body=%s", listed.Code, listed.Body.String())
+	}
+	rows := decodeBody[[]map[string]any](t, listed)
+	if len(rows) != 4 {
+		t.Fatalf("TEST lists %d issues, want 4: %v", len(rows), rows)
+	}
+	for _, row := range rows {
+		key, _ := row["key"].(string)
+		value, present := row["closed_at"]
+		if !present {
+			t.Errorf("%s lists no closed_at", key)
+			continue
+		}
+		read := decodeBody[map[string]any](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice"))
+		if value != read["closed_at"] {
+			t.Errorf("%s lists closed_at %#v, want its read's %#v", key, value, read["closed_at"])
+		}
+		want, closed := closedAt[key]
+		if !closed {
+			if value != nil {
+				t.Errorf("open %s lists closed_at %#v, want null", key, value)
+			}
+			continue
+		}
+		text, _ := value.(string)
+		if got, err := time.Parse(time.RFC3339, text); err != nil || !got.Equal(want) {
+			t.Errorf("%s lists closed_at %#v, want %s", key, value, want.Format(time.RFC3339))
+		}
+	}
+
+	since := "closed_since=" + url.QueryEscape("2026-11-03T00:00:00Z")
+	before := "closed_before=" + url.QueryEscape("2026-11-04T00:00:00Z")
+	for _, filter := range []struct {
+		query string
+		want  []string
+	}{
+		{"project=TEST&status=done&" + since + "&" + before, []string{atStart}},
+		{since + "&" + before, []string{atStart, elsewhere}},
+		{"project=TEST&" + since, []string{atStart, atEnd}},
+		{"project=TEST&" + before, []string{beforeWindow, atStart}},
+		{"project=TEST&open=true", []string{open}},
+		{"project=TEST&open=true&" + since, []string{}},
+	} {
+		want := slices.Sorted(slices.Values(filter.want))
+		if got := slices.Sorted(slices.Values(listedKeys(t, handler, filter.query))); !slices.Equal(got, want) {
+			t.Errorf("?%s lists %v, want %v", filter.query, got, want)
+		}
+		if page, ok := readPage(t, handler, filter.query+"&limit=1"); ok &&
+			(page.Total != len(want) || len(page.Issues) != min(1, len(want)) ||
+				(len(page.Issues) == 1 && !slices.Contains(want, page.Issues[0].Key))) {
+			t.Errorf("?%s&limit=1 pages %v total %d, want one of %v total %d", filter.query, summaryKeys(page.Issues), page.Total, want, len(want))
+		}
+	}
+
+	for query, code := range map[string]string{
+		"closed_since=yesterday":   "INVALID_CLOSED_SINCE",
+		"closed_since=":            "INVALID_CLOSED_SINCE",
+		"closed_before=2026-11-04": "INVALID_CLOSED_BEFORE",
+		"closed_before=":           "INVALID_CLOSED_BEFORE",
+		"closed_since=2026-11-04T00:00:00Z&closed_before=2026-11-03T00:00:00Z": "INVALID_CLOSED_WINDOW",
+		"closed_since=2026-11-03T00:00:00Z&closed_before=2026-11-03T00:00:00Z": "INVALID_CLOSED_WINDOW",
+	} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?project=TEST&"+query, nil, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"`+code+`"`) {
+			t.Errorf("?%s: status=%d body=%s, want 400 %s", query, response.Code, response.Body.String(), code)
+		}
+	}
+}
+
+// A bound finer than the microsecond Postgres stores keeps its meaning: an issue closed and
+// updated at …00.123456 is before …00.123456001, so `closed_since` and `updated_since` at that
+// bound leave it out and `closed_before` at it keeps it. pgx encodes a timestamptz by truncating
+// it to the microsecond, which would move each comparison onto the stored time itself.
+func TestListIssuesKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	key := createListedIssues(t, handler, "TEST", 1)[0]
+	at := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
+	if _, err := database.Pool.Exec(context.Background(),
+		"update issues set status = 'done', closed_at = $2, updated_at = $2 where key = $1", key, at); err != nil {
+		t.Fatalf("close %s at %s: %v", key, at, err)
+	}
+	const (
+		stored = "2026-11-03T00:00:00.123456Z"
+		after  = "2026-11-03T00:00:00.123456001Z"
+		later  = "2026-11-03T00:00:00.123456999Z"
+		before = "2026-11-03T00:00:00.123455999Z"
+	)
+	for _, filter := range []struct {
+		query string
+		want  []string
+	}{
+		{"closed_since=" + stored, []string{key}},
+		{"closed_since=" + after, []string{}},
+		{"closed_before=" + stored, []string{}},
+		{"closed_before=" + after, []string{key}},
+		{"closed_since=" + before + "&closed_before=" + after, []string{key}},
+		{"closed_since=" + after + "&closed_before=" + later, []string{}},
+		{"updated_since=" + stored, []string{key}},
+		{"updated_since=" + after, []string{}},
+	} {
+		query := "project=TEST&" + strings.ReplaceAll(filter.query, ":", "%3A")
+		if got := listedKeys(t, handler, query); !slices.Equal(got, filter.want) {
+			t.Errorf("?%s lists %v, want %v", query, got, filter.want)
+		}
+		if page, ok := readPage(t, handler, query+"&limit=1"); ok &&
+			(!slices.Equal(summaryKeys(page.Issues), filter.want) || page.Total != len(filter.want)) {
+			t.Errorf("?%s&limit=1 pages %v total %d, want %v", query, summaryKeys(page.Issues), page.Total, filter.want)
+		}
+	}
+}
+
 func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -575,7 +733,7 @@ func TestListIssuesQueryUsesAsksOpenIndex(t *testing.T) {
 	}
 
 	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", "", "", nil, []string{}, false, []int16{}, false).Scan(&planJSON); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+listIssuesQuery, "", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false).Scan(&planJSON); err != nil {
 		t.Fatalf("explain list query: %v", err)
 	}
 
@@ -789,15 +947,16 @@ func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
 	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"code":"ISSUE_CHANGED"`) {
 		t.Fatalf("stale additive label patch = %d %s, want ISSUE_CHANGED", stale.Code, stale.Body.String())
 	}
-	// Stage 4b probes whether Dispatch knows labels_add with this PATCH of a key no project numbers:
-	// this Dispatch decodes the field and answers 404, and one that predates it refuses the body by
-	// the field's name before it looks the issue up.
-	probe := sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+strings.Split(first.Key, "-")[0]+"-0", map[string]any{
-		"labels_add": []string{}, "actor": sessionActor(),
+	// A caller that needs to know whether Dispatch knows labels_add probes it by its effect. A
+	// Dispatch that predates the member ignores it, as it ignores every member its route does not
+	// declare, and answers the issue without the label; this Dispatch adds it.
+	probe := sessionRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+third.Key, map[string]any{
+		"labels_add": []string{"probed"}, "actor": sessionActor(),
 	})
-	if probe.Code != http.StatusNotFound {
-		t.Fatalf("labels_add probe of a missing issue = %d %s, want 404", probe.Code, probe.Body.String())
+	if probe.Code != http.StatusOK {
+		t.Fatalf("labels_add probe: status=%d body=%s", probe.Code, probe.Body.String())
 	}
+	expectLabels(decodeBody[model.Issue](t, probe).Labels, "backend", "docs", "probed")
 
 	eventsResponse := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+first.Key+"/events", nil, "alice")
 	if eventsResponse.Code != http.StatusOK {
@@ -831,6 +990,89 @@ func TestIssueLabelsCreateNormalizePatchAndFilter(t *testing.T) {
 	issues := decodeBody[[]model.IssueSummary](t, filtered)
 	if len(issues) != 1 || issues[0].Key != second.Key {
 		t.Fatalf("issues matching frontend and docs = %#v, want only %s (not %s)", issues, second.Key, third.Key)
+	}
+}
+
+// Two builds of Dispatch serve one database while a release rolls out, so a body built for the
+// newer build reaches the older one. A member the route does not declare is ignored: the issue is
+// stored exactly as the same body without it stores it.
+func TestIssueCreateIgnoresAMemberItDoesNotDeclare(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	create := func(body map[string]any) model.Issue {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("create %v: status=%d body=%s", body, response.Code, response.Body.String())
+		}
+		created := decodeBody[model.Issue](t, response)
+		read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+created.Key, nil, "alice")
+		if read.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", created.Key, read.Code, read.Body.String())
+		}
+		stored := decodeBody[model.Issue](t, read)
+		// What differs between any two issues, whatever their bodies said.
+		stored.Key, stored.Number, stored.Rank, stored.PrimaryArtifactID, stored.LastSeq = "", 0, "", "", 0
+		stored.CreatedAt, stored.UpdatedAt = time.Time{}, time.Time{}
+		return stored
+	}
+	// force: the second issue shares the first one's title, which is the point of the comparison.
+	body := func() map[string]any {
+		return map[string]any{"project": "CORE", "title": "Ship the widgets", "labels": []string{"api"}, "priority": 1, "force": true}
+	}
+	plain := create(body())
+	extended := body()
+	extended["due_date"] = "2026-11-01"
+	extended["reviewers"] = map[string]any{"required": 2}
+	withExtra := create(extended)
+	if !reflect.DeepEqual(withExtra, plain) {
+		t.Fatalf("issue created with members the route does not declare = %+v, want it stored as without them: %+v", withExtra, plain)
+	}
+}
+
+// The members a body carries that its route does not declare are logged at debug with the route,
+// so a client that sends one is found. encoding/json matches a member to a field ignoring case, so
+// `Title` is the declared `title`, not an ignored member.
+func TestAnIgnoredMemberIsLoggedAtDebugWithItsRoute(t *testing.T) {
+	handler := newTestHandler(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "CORE", "name": "Core",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	logs := &bytes.Buffer{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "CORE", "Title": "Ship the widgets", "reviewers": 2, "due_date": "2026-11-01",
+	}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var found []string
+	for line := range strings.Lines(logs.String()) {
+		var record struct {
+			Level   string   `json:"level"`
+			Msg     string   `json:"msg"`
+			Route   string   `json:"route"`
+			Members []string `json:"members"`
+		}
+		if json.Unmarshal([]byte(line), &record) != nil || record.Members == nil {
+			continue
+		}
+		if record.Level != "DEBUG" || record.Route != "POST /api/v1/issues" {
+			t.Fatalf("ignored members logged as %s", line)
+		}
+		found = append(found, record.Members...)
+	}
+	if !reflect.DeepEqual(found, []string{"due_date", "reviewers"}) {
+		t.Fatalf("ignored members logged = %v, want [due_date reviewers]; logs:\n%s", found, logs.String())
 	}
 }
 

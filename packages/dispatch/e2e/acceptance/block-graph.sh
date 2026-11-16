@@ -85,6 +85,7 @@ read_bearer
 # No child process inherits the bearer from here: read_bearer has unset it from the environment,
 # curl reads it from a header file, and the CLI gets it in an environment this script builds.
 
+# shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
 # The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
 # authenticates must name it (enforceCookieOrigin).
@@ -95,17 +96,11 @@ readonly project="$PROJECT"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 readonly script_dir
 readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
-bun_bin="$(command -v bun)"
-readonly bun_bin
-readonly saved_path="$PATH"
-readonly saved_tmpdir="${TMPDIR:-}"
 session="block-graph-$(date +%s)-$$"
 readonly session
 
-umask 077
-work="$(mktemp -d)"
-readonly work
-mkdir "$work/home" "$work/state"
+work_dir
+cli_env
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 key=""
@@ -148,41 +143,6 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-pass() { printf 'PASS: %s %s\n' "$1" "$2"; }
-fail() {
-  printf 'FAIL: %s %s: %s\n' "$1" "$2" "$3" >&2
-  exit 1
-}
-
-# The real `dispatch` CLI as an agent session runs it, in an environment holding only what this
-# driver names: nothing a calling shell exported (its Dispatch URL, token file or Envoy config)
-# reaches it.
-cli() {
-  (
-    set +x
-    local name
-    local -a exported
-    mapfile -t exported < <(compgen -e)
-    for name in "${exported[@]}"; do
-      unset "$name" 2>/dev/null || true
-    done
-    export PATH="$saved_path" HOME="$work/home" DISPATCH_STATE_DIR="$work/state"
-    if [[ -n "$saved_tmpdir" ]]; then
-      export TMPDIR="$saved_tmpdir"
-    fi
-    export DISPATCH_HOST=omp DISPATCH_SESSION_ID="$session" DISPATCH_URL="$base"
-    export DISPATCH_TOKEN="$token"
-    exec "$bun_bin" "$cli_entry" "$@"
-  )
-}
-
-# run SECTION WHAT ARGS...: runs the CLI with ARGS, its output in $work/out; a non-zero exit fails.
-run() {
-  local section="$1" what="$2"
-  shift 2
-  cli "$@" >"$work/out" 2>&1 || fail "$section" "$what" "dispatch $1 exited $?: $(<"$work/out")"
-}
 
 # posted SECTION WHAT KIND: sets $posted to the id of the KIND (comment or message) the last run
 # of `dispatch comment` or `dispatch message` posted.
@@ -247,9 +207,10 @@ doc_edit() {
 }
 
 # upload SECTION NAME FILE [ISSUE]: uploads FILE as the document NAME of ISSUE (default $key)
-# through `dispatch artifact`; sets $doc_ref and $doc_id.
+# through `dispatch artifact`; sets $doc_ref and $doc_id. --force writes the next version of a
+# name the issue already holds, so the helper uploads a name twice as it uploads a new one.
 upload() {
-  run "$1" "upload $2" artifact --issue "${4:-$key}" --name "$2" --path "$3"
+  run "$1" "upload $2" artifact --issue "${4:-$key}" --name "$2" --path "$3" --force
   [[ "$(<"$work/out")" =~ (dispatch://[^\);[:space:]]+)\) ]] ||
     fail "$1" "upload $2" "no reference in: $(<"$work/out")"
   doc_ref="${BASH_REMATCH[1]}"

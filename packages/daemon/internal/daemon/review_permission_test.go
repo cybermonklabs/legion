@@ -15,13 +15,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A review decides a round only from an account with write access or higher, which the daemon
@@ -404,7 +404,7 @@ func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRol
 
 // reviewPermissionPool is a store recording acme/widgets#42 for LEGION-208, and no other pull
 // request.
-func reviewPermissionPool(t *testing.T) *pgxpool.Pool {
+func reviewPermissionPool(t *testing.T) *store.Pool {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -417,14 +417,14 @@ func reviewPermissionPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func reviewPermissionRuntime(pool *pgxpool.Pool, githubAPI string, log *slog.Logger) *workflowRuntime {
+func reviewPermissionRuntime(pool *store.Pool, githubAPI string, log *slog.Logger) *workflowRuntime {
 	return reviewPermissionRuntimeRenamed(pool, githubAPI, log, ghrepo.Renames{})
 }
 
 // reviewPermissionRuntimeRenamed is reviewPermissionRuntime under the deployment's repository
 // equivalence renames (repositories.renames): the one line of the runtime a configured rename
 // changes.
-func reviewPermissionRuntimeRenamed(pool *pgxpool.Pool, githubAPI string, log *slog.Logger, renames ghrepo.Renames) *workflowRuntime {
+func reviewPermissionRuntimeRenamed(pool *store.Pool, githubAPI string, log *slog.Logger, renames ghrepo.Renames) *workflowRuntime {
 	tokens := &forgettingTokens{}
 	return &workflowRuntime{pool: pool, records: projectRecords{Store: record.NewStore(), project: "LEGION"}, tokens: tokens, forget: tokens,
 		githubAPI: githubAPI, log: log, reviewAppLogin: "legion-reviewer[bot]", repositories: newRepositories("LEGION", renames)}
@@ -476,7 +476,7 @@ func TestAReviewNamingARenamedRepositoryReadsThePermissionOfTheRecordedPullReque
 // whose pull request was open when its repository was transferred, and no other pull request:
 // both the issue and the pull request keep the name they were recorded under for their whole
 // life, which after the transfer is the name the repository moved away from.
-func reviewPermissionTransferredPool(t *testing.T) *pgxpool.Pool {
+func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

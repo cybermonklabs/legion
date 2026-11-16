@@ -64,7 +64,7 @@ func seedNothingToEmbed(t *testing.T, q querier, project string) (documentID, co
 	t.Helper()
 	ctx := context.Background()
 	issueKey := project + "-1"
-	mustExec(t, q, `insert into projects (key, name) values ($1, 'Test')`, project)
+	mustExec(t, q, `insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice')`, project)
 	mustExec(t, q, `
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ($1, $2, 1, 'A real title', '{"kind":"user","id":"alice"}', 'A')

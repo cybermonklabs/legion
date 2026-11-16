@@ -266,7 +266,7 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
-It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
+It is one of the nine slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
@@ -456,10 +456,13 @@ A test that let git or jj inherit them read and pushed the pod's own work: the s
   Guard unsets every `LEGION_*`, `GIT_*`, `JJ_*`, `GH_*` and `GITHUB_*` variable, `SSH_AUTH_SOCK` and `SSH_ASKPASS`, and the three names that place an Oh My Pi session (`OMP_SESSION_SQL_DSN_FILE`, `OMP_SESSION_STORAGE` and `OMP_SESSION_SQL_DSN`, which carries the same URL by value), keeping the tests' own inputs (`LEGION_TEST_*`, `LEGION_E2E*`, `GITHUB_ACTIONS`, and the names the package passes), and sets `GIT_ALLOW_PROTOCOL=file`, which a repository's own `protocol.<name>.allow` cannot override.
   The session store a pod names holds the conversation of every agent of the deployment, so a test that opened it would read and write what those agents are reading and writing.
   Code under test that names its own transport, as provisioning's `GIT_ALLOW_PROTOCOL=https` does, still uses it.
+  Guard also takes off the process's `PATH` every directory whose `git` is the image's git wrapper (`/opt/legion/bin/git`, or a link to it), which leads a pod's `PATH`: that git puts Legion's leak guard in front of every push, and that jj refuses a push whose git is any other, so a fixture's push to a local bare repository under the test's empty home was refused in a pod and passed on CI, whose `PATH` holds no such directory.
+  It is the process's `PATH` that matters, because `exec.Command` and `exec.LookPath` look a bare name up on it whatever `PATH` the command's `Env` holds.
   Guard does the same under the `e2e` build tag, whose untagged tests are the same fixtures.
   A live proof of that build, which reaches a real cluster and GitHub on purpose, calls `fixtureenv.Live(t)` first in its entry point: that gives the test the process's own values back of everything Guard took out or set, until the test ends.
 
-- A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's, and an identity.
+- A fixture command runs under `fixtureenv.Isolated(home)`: the same variables dropped, a home of the test's with its config and state homes (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`) under it, and an identity.
+  The state home is the test's because the leak guard caches public visibility answers there, and a test on the runner's would read answers other tests cached.
   A package whose code under test reads the process's home sets `fixtureenv.Home` on the process and gives its fixtures that same home (`packages/daemon/internal/workspace`'s `setupEnvironment`).
   Isolated keeps no test input either, so a fixture that needs one appends it after.
 
@@ -508,3 +511,96 @@ Those three causes are what GitHub can say, and none of them is a reading of you
 A job that carries `.github/scripts/disk_watch.py` through its steps prints the free disk, the memory the kernel reports available and the one-minute load of every second it watched, which is what tells the second cause from the other two on the next run that does store a log.
 `tool-fallback` and `tool-fallback-arm` carry it from before their first faulted install to after their last, and `envoy-smoke` carries it around its live-tests step alone.
 It says nothing about the run that was lost: the series goes to the log, and that run has none (dispatch://INFRA-2605).
+
+## A test asserts no count of work a broker may repeat
+
+A message broker that gives at-least-once delivery may hand one message to a handler twice. NATS
+JetStream is this repository's broker. Four facts decide when it hands one over a second time. The
+comment on `ConsumerSpec.HandlerLimit` (`packages/daemon/internal/intake/consume.go`) is where the
+mechanism is written whole, with the measurement behind each part.
+
+- The intake consumer asks for one message at a time, so no pull is outstanding while a handler
+  runs and nothing reaches the consumer then. A reconnect, which pulls again, is the one exception.
+- The progress keeper prevents a second delivery while each of its reports reaches the server
+  before the acknowledgement window lapses: each such report starts the window again.
+- A late signal lets the message fall due again. A late report lets it fall due while the handler
+  still runs. A late acknowledgement, which goes out only after the handler returns, lets it fall
+  due after that return.
+- A message that fell due is delivered again, and that redelivery races the acknowledgement or nak
+  the handler's return sends. Either side can win. Each measurement is of one condition: with the
+  progress keeper removed, the redelivery reached the consumer in 12 runs of 20; with a handler
+  step that ignored its cancelled context and held the message past the window, the redelivery won
+  all 15 runs on an idle machine and lost to the nak only under load. Neither is the rate under a
+  keeper whose reports arrive in time, nor under a cut whose step honours its cancelled context
+  while its reports and its nak all reach the server inside the window: the message then never
+  falls due, and the nak alone decides when it comes back. A nak the server works first resets the
+  redelivery timer, so the event comes one nak delay later instead.
+
+Every counter a handling moves then moves a second time: a statement counter, a request counter, a
+call counter in a fake. That second move is the broker's business and no part of what the code
+promises, so a test asserts no exact count of such work. Assert the effect the handler leaves
+behind instead: the record written, the fact applied once, the row a repeated handling does not
+add. A repeat is then invisible to the test, because the handler's effect is the same either way.
+
+Two kinds of row keep an exact count.
+
+- A count is sound behind a window far above the handler's own work and above the trip its
+  acknowledgement makes. The window is a hang guard then, and not a bet on timing: a redelivery
+  the count would see needs the whole window to pass before that acknowledgement reaches the
+  server. `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction`
+  (`packages/daemon/internal/intake/no_transaction_test.go`) sets `spec.AckWait = time.Minute`
+  over a handler whose own work is about `consumerSpec`'s 200 ms on a loaded runner. The margin
+  is what this carve-out rests on: that work, and the acknowledgement's trip to the server, which
+  the campaign of dispatch://INFRA-1113 measured at 516.8 ms at its largest, come to about 717 ms
+  together, a factor of about 80 below a minute. The progress keeper is no part of
+  it. At a minute its period is 20 s (`spec.AckWait/3` in `consume.go`) and that handler
+  acknowledges in about 200 ms, so the keeper never reports for that message at all. The
+  carve-out ends where the margin closes, and a reader finds that out by measuring the handler's
+  work and the acknowledgement's trip again, not by reading this sentence.
+- A row whose subject is the broker's own delivery behaviour must count deliveries, because the
+  count is what it proves. Such a row needs a window above the measured distribution of the first
+  report of the progress keeper, the goroutine that reports a running handler in progress so that
+  the server does not make its message due again. A window above the handler's own work is not
+  enough. Until the keeper has reported once, the window alone stands between the held message and
+  the server making it due again, and the count sees whatever repeat follows.
+  `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredOnceAndPreparedOnce` and its control
+  `TestAFactHeldPastItsAcknowledgementWindowIsDeliveredTwiceWithNoProgressSignal`
+  (`packages/daemon/internal/intake/ackprogress_test.go`) are of this kind.
+  This carve-out rests on the row's subject being the broker's delivery behaviour: the count is
+  the claim, so it needs the sized window whatever it is read from. A delivery count the daemon
+  records is no way out of that, since such a count moves with the same late signals, and the
+  daemon logs one: `delivered`, on `an intake fact outlived its acknowledgement window and was held
+  in progress while it ran` and on `an intake fact was delivered again and dropped as already
+  applied` beside it. The carve-out would end only where that behaviour can be seen through an
+  effect that does not itself move with delivery timing. There is no such effect today, those two
+  lines included.
+
+The comment beside such a count names the window and the measurement that sized it. A later reader
+changes the window, the handler or the keeper's period, and that comment is what tells the reader
+which number the count rests on.
+
+The rule is measured. `TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction` asserted an
+exact running total of the statements that take the fact lock. It failed in CI with `after its
+checks settlement the fact lock was taken 3 times, want 2: once for each event a record takes` (job
+126264090148 of run 41723103641, 2026-11-03). `ApplyFact`
+(`packages/daemon/internal/intake/facts.go`) takes the fact lock before `record.Store.MarkProcessed`
+deduplicates the event, so a second handling of a message whose fact is already applied costs one
+more lock statement. It writes no `processed_events` row and runs no handler. JetStream gives
+at-least-once delivery and the intake gives exactly-once application. The row asserted the first.
+
+The second handling happened because the progress keeper was starved. `keepInProgress`
+(`packages/daemon/internal/intake/ackprogress.go`) reports the handler in progress on a
+`time.Ticker` that ticks every third of the acknowledgement window. A ticker drops a tick its
+goroutine was not scheduled for, and by its own documentation it sends only after each tick, so the
+keeper reports nothing during the first period of a window (Go 1.27.3). Measured at a 200 ms window,
+whose period is 66.7 ms: the largest interval from the keeper's start to its first report was
+403.7 ms, which is 6.06 times the period, and the 99th percentile of that interval was 276.8 ms.
+That late first report is the late signal above. At the 200 ms window the row failed 2 of 1000
+runs in one campaign and 7 of about 2274 in another, which is 0.2 and 0.31 per cent. At the
+committed one-minute window it passed 800 of 800.
+
+Four issues record the same fault. dispatch://INFRA-456 was the daemon preparing one Dispatch issue
+event's repository more than once under redelivery, which is why `keepInProgress` exists.
+dispatch://INFRA-1471 was two rows of the intake counting work the broker repeats.
+dispatch://INFRA-1530 built the keeper itself. dispatch://INFRA-1113 measured the mechanism above
+and wrote this rule.

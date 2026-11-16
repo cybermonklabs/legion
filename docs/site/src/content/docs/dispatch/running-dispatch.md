@@ -264,9 +264,10 @@ Sign in, then open **Settings**:
   `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
-  and under no parent that names one, goes to that person; a project with no default leaves such
-  an issue unassigned. Only a person sets it, here — no agent command or flag does — and the
-  picker's **Unassigned** clears it.
+  and under no parent that names one, goes to that person, and so does every question on an issue
+  nobody holds. Every project names one, so the page moves a default from one person to another
+  and clears none. A person moves it here, and an agent names a project's first one in the call
+  that creates the project.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
@@ -331,9 +332,8 @@ It answers in the Prometheus text format with two counters.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
 grant, `refused` one NATS refuses however often it is retried, `unanswered` a forward NATS took
-whose answer never came - the role holder's receipt, or, for a holder whose entry an earlier
-listener stored with a port, the stream's acknowledgement of the stored copy - and `failed` any
-other failure. A denied publish
+whose stored copy the stream did not acknowledge - which is the whole of a forward's answer, for
+every holder alike - and `failed` any other failure. A denied publish
 also logs `dispatch outbox: publish event` at ERROR, naming the subject.
 
 `envoy_dispatch_outbox_role_forwards_held_total` counts a role-routed event the outbox held
@@ -396,22 +396,24 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 15 for the periodic work it runs once across the servers,
-up to 8 for saving what people type in documents, up to 4 for loading documents, up to 2 for
-compacting documents, one for the health check, two for publishing notifications, up to 2 for
-reading where the event log is safe to stream from (the event horizon), and one for its entry in
-the list of running servers, which it renews every five seconds. It also holds up to five more
-open for as long as it runs. Four of them wait on Postgres notifications: one for delivery, one
-for the live socket's event-feed relay, one for publishing notifications, and one that the server
-shares for everything else, its document sessions and the waking of its background work when the
-rows that work reads change included. The other servers on the same database find each server by
-the name of that shared connection. The fifth sends the cursors of the server's document sessions
-and its questions and answers to the other servers about a document. It opens the first time the
-server has one to send. A document edit's own notification goes out in the transaction that
-writes the edit, and needs no connection of its own. That is 104 connections for one server at
-its ceiling, and twice that for two, past a default Postgres's limit of 100. Check the database's
-connection limit before you start the second server: a limit sized for one server, with whatever
-else uses that database counted in, is the thing that runs out.
+to 64 connections for requests, up to 21 for the work it runs once across the servers and the
+delivery intakes' holds, up to 8 for saving what people type in documents, up to 4 for loading
+documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
+display trees, one for the health check, two for publishing
+notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
+and one for its entry in the list of running servers, which it renews every five seconds. It also
+holds up to five more open for as long as it runs. Four of them wait on Postgres notifications:
+one for delivery, one for the live socket's event-feed relay, one for publishing notifications,
+and one that the server shares for everything else, its document sessions and the waking of its
+background work when the rows that work reads change included. The other servers on the same
+database find each server by the name of that shared connection. The fifth sends the cursors of
+the server's document sessions and its questions and answers to the other servers about a
+document. It opens the first time the server has one to send. A document edit's own notification
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 112
+connections for one server at its ceiling, and twice that for two, past a default Postgres's
+limit of 100. Check the database's connection limit before you start the second server: a limit
+sized for one server, with whatever else uses that database counted in, is the thing that runs
+out.
 
 What a reader sees while two servers are serving:
 

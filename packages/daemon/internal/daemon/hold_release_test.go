@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -23,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -245,7 +245,10 @@ type failingPositionReader struct {
 
 // pilotDispatch answers ListIssues with a fixed summary list, as workflowRuntime.reconcile reads
 // it, and refuses everything else this test does not need.
-type pilotDispatch struct{ summaries []dispatch.IssueSummary }
+type pilotDispatch struct {
+	noArtifacts
+	summaries []dispatch.IssueSummary
+}
 
 func (d *pilotDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
 	return d.summaries, nil
@@ -255,6 +258,9 @@ func (d *pilotDispatch) GetIssue(context.Context, string) (dispatch.Issue, error
 }
 func (d *pilotDispatch) SetStatus(context.Context, string, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
+}
+func (d *pilotDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *pilotDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *pilotDispatch) HandOver(context.Context, dispatch.Issue, string) error {
@@ -287,7 +293,10 @@ func (d *pilotDispatch) PutDesignGates(context.Context, string, []dispatch.Desig
 // pilotDispatch above ignores that argument entirely, so it cannot catch a boot listing that
 // silently narrows its own status filter — only a stub that filters like Dispatch's real client
 // can.
-type filteringDispatch struct{ summaries []dispatch.IssueSummary }
+type filteringDispatch struct {
+	noArtifacts
+	summaries []dispatch.IssueSummary
+}
 
 func (d *filteringDispatch) ListIssues(_ context.Context, _ string, statuses []string) ([]dispatch.IssueSummary, error) {
 	if len(statuses) == 0 {
@@ -310,6 +319,9 @@ func (d *filteringDispatch) GetIssue(context.Context, string) (dispatch.Issue, e
 }
 func (d *filteringDispatch) SetStatus(context.Context, string, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
+}
+func (d *filteringDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *filteringDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *filteringDispatch) HandOver(context.Context, dispatch.Issue, string) error {
@@ -708,7 +720,7 @@ func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
 
 // reconcileAdmission runs admission's boot reconcile as the workflow runtime does (reconcile): in
 // its own transaction, running the commit hooks it registered once that commits.
-func reconcileAdmission(t *testing.T, pool *pgxpool.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
+func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admission, summaries []dispatch.IssueSummary, target int64, position intake.DispatchConsumerPosition) {
 	t.Helper()
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {

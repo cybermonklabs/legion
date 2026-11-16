@@ -235,6 +235,117 @@ func TestTableRowInsertPadsRowsToContainingTableWidth(t *testing.T) {
 	assertRenderedMarkdown(t, out, "| Key | Value |\n| --- | --- |\n| A10 | old |\n| A11 |  |\n")
 }
 
+// List content anchored on a block inside a list is spliced into that list, beside the item
+// holding the anchor: the boundary ListBoundary answers, where the splice's own fitting rule takes
+// the content as items of that list (fitReplacement).
+func TestListBoundaryPlacesContentBesideTheAnchoredItem(t *testing.T) {
+	doc, err := Parse("- a\n  - x\n  - y\n- b\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor, err := FindQuote(doc, "x", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := Parse("- z\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		after bool
+		want  string
+	}{
+		{after: true, want: "- a\n  - x\n  - z\n  - y\n- b\n"},
+		{after: false, want: "- a\n  - z\n  - x\n  - y\n- b\n"},
+	} {
+		position, inList, err := listBoundary(doc, anchor, test.after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !inList {
+			t.Fatalf("after=%v: the anchor reads as outside every list", test.after)
+		}
+		out, err := splice(doc, Range{From: position, To: position}, with)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRenderedMarkdown(t, out, test.want)
+	}
+}
+
+// A list's own block takes the content as an item of that list: its last for an after anchor and
+// its first for a before anchor. Beside the list, markdown would write a second list of the same
+// kind, which reads back as one list with it.
+func TestListBoundaryOnTheListsOwnBlockTakesTheContentAsAnItem(t *testing.T) {
+	sequentialBlockIDs(t)
+	doc := parseFixture(t, "- a\n- b\n")
+	target, err := blockRange(doc, "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := Parse("- c\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		after bool
+		want  string
+	}{
+		{after: true, want: "- a\n- b\n- c\n"},
+		{after: false, want: "- c\n- a\n- b\n"},
+	} {
+		position, inList, err := listBoundary(doc, target, test.after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !inList {
+			t.Fatalf("after=%v: the list's own block reads as outside every list", test.after)
+		}
+		out, err := splice(doc, Range{From: position, To: position}, with)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRenderedMarkdown(t, out, test.want)
+	}
+}
+
+// A target in no list has no boundary inside one, and its caller takes the document-level boundary.
+func TestListBoundaryAnswersNothingForATargetInNoList(t *testing.T) {
+	doc, err := Parse("Intro.\n\n- a\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor, err := FindQuote(doc, "Intro.", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, inList, err := listBoundary(doc, anchor, true); err != nil || inList {
+		t.Fatalf("list boundary of a paragraph anchor = inList %v, %v; want none", inList, err)
+	}
+}
+
+// ListContent is what the caller of ListBoundary weighs: a fragment holding lists alone.
+func TestListContentIsAFragmentOfListsAlone(t *testing.T) {
+	for markdown, want := range map[string]bool{
+		"- z\n":           true,
+		"1. z\n":          true,
+		"- z\n- w\n":      true,
+		"Plain.\n":        false,
+		"- z\n\nPlain.\n": false,
+		"## Heading\n":    false,
+		"> - z\n":         false,
+		"":                false,
+	} {
+		fragment, err := ParseFragment(markdown, false, NewWriteBudget())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ListContent(fragment); got != want {
+			t.Fatalf("ListContent(%q) = %v, want %v", markdown, got, want)
+		}
+	}
+}
+
 func renderedMarkdown(t *testing.T, doc *Node) string {
 	t.Helper()
 	markdown, err := Render(doc)

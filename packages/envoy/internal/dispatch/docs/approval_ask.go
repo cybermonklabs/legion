@@ -108,7 +108,7 @@ func RewriteApprovalAsk(
 	summary, serverURL string,
 ) (model.Event, error) {
 	previous := model.NewAskEditPrevious(*ask)
-	quiet := approvalMoves(ask.Approval.Documents, documents) && approvalAwaitsHandBack(ask.Approval.Documents)
+	quiet := approvalMoves(ask.Approval.Documents, documents) && ApprovalAwaitsHandBack(ask.Approval.Documents)
 	ask.Question = ApprovalQuestion(documents, summary)
 	ask.Approval.Documents = documents
 	approval, err := EncodeApproval(ask.Approval)
@@ -218,9 +218,18 @@ func approvalMoves(current, next []model.AskApprovalDocument) bool {
 	return false
 }
 
-// approvalAwaitsHandBack reports whether a version already moved one of the documents past the
-// version its agent last handed to the human, which is the state in which a further move is quiet.
-func approvalAwaitsHandBack(documents []model.AskApprovalDocument) bool {
+// ApprovalAwaitsHandBack reports whether a version already moved one of the documents past the
+// version its agent last handed to the human, which is the state in which a further move is
+// quiet, and the state a version write's own answer reports to the agent that wrote it
+// (api.movedApprovalRequestAdvice).
+//
+// It is the Go twin of the SQL approvalMoved in packages/envoy/internal/dispatch/api/
+// ask_rows.go, which asks the same of a stored row rather than of an ask already read. The two
+// are the server's only places `requested_version < version` is spelled, so nobody spells it a
+// third time here: a reader looking for the rule finds one of them and the other named beside
+// it. The client reads the same rule on its side, of the documents a report hands it
+// (packages/envoy-client/src/dispatch-execute.ts).
+func ApprovalAwaitsHandBack(documents []model.AskApprovalDocument) bool {
 	for _, document := range documents {
 		if document.RequestedVersion < document.Version {
 			return true

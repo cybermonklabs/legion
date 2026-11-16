@@ -168,14 +168,46 @@ type Config struct {
 	// the bound is up. Nothing waits on a deploy: a look is due at the moment the checking agent
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
-	// PodUpdateRetask is how long an open update round waits after it sent a worker the task
-	// before it asks that worker again (`pod_update_retask_hours`, an hour by default), and
-	// PodUpdateNotice how long after the round opened the controller is told the round is stalled
-	// (`pod_update_notice_hours`, four hours by default). Both are decimal numbers of hours, as
-	// `production_check_hours` is, so a live proof and the production check can drive each bound
-	// inside one run rather than wait out a day of real time.
-	PodUpdateRetask time.Duration
-	PodUpdateNotice time.Duration
+	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
+	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
+	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	PodUpdateGrace time.Duration
+	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
+	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
+	// runs has been quiet for longer than this and nothing of it is at work, the daemon tells the
+	// project's controller once for that tree, unless the tree waits by design (admit's
+	// tellStalledTrees, dispatch://INFRA-2560 R5). The quiet time and the work are what
+	// `record.QuietTrees` measures — the tree's own now less the newest movement of its root, of
+	// the issues under it the workflow still runs and of those issues' claims' steps — and it is
+	// the one measure both the admission pass and the
+	// state read, so a notice and a reported quiet time can never disagree. The pass that sends
+	// the notice is the admission pass (admit's tellStalledTrees), which reads this key on every
+	// pass it makes and tells the controller once for each stall: the root it names carries the
+	// movement it was told for, and the tree is told again only once it moves past that mark.
+	//
+	// No value turns the notice off: readHours refuses zero here as it does for every key in
+	// hours, and a deployment told about more trees than it wants to read raises the number, to
+	// 596 hours at most. Six is the default because a tree between two turns is quiet for minutes
+	// rather than hours, so a tree still quiet after six has stopped rather than paused.
+	StalledTreeNotice time.Duration
+	// WorkerSilence is how long a phase worker's last recorded step may be in the past before the
+	// daemon reads that worker as one nothing will prompt and sends it its phase's task again
+	// (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker takes it as
+	// the bound it judges a worker that is up, between turns and holding no task by. The key is a
+	// number of minutes rather than of hours because the bound is tens of minutes (readMinutes),
+	// and no deployment may set it under its floor (minWorkerSilence, checkWorkerSilence).
+	WorkerSilence time.Duration
+	// WorkerBackground is how long the background work a phase worker's own session reports may
+	// stand before the daemon tells that worker's architect of it (`worker_background_hours`,
+	// four hours by default). A worker whose session reports background work running is left
+	// alone by the silence repair above, because a bound cannot tell a worker with a
+	// forty-minute job from one whose job hung; this is the other half of that, and it sends
+	// nothing at all — the daemon names the worker to its architect once and the architect
+	// decides (internal/daemon's tellSilentPhaseWorkers, workflow's workerBackgroundStalled).
+	// The key is a number of hours because that bound is hours, and no deployment may set it at
+	// or under WorkerSilence (checkWorkerBackground).
+	WorkerBackground time.Duration
 	// PodUpdateMaxOpenRounds is how many issues may hold an open pod-update round at once
 	// (`pod_update_max_open_rounds`), and PodUpdateRoundsPerMinute how many rounds one sweep may
 	// open in a minute (`pod_update_rounds_per_minute`). Both are pointers because a file that
@@ -239,9 +271,10 @@ const (
 	defaultPort         = 13370
 	defaultBind         = "127.0.0.1"
 	defaultAdmissionCap = 4
-	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is a
-	// countKeys row, because that reader is the one that refuses a burst below 1; the rate is read
-	// on its own, since 0 is how an operator turns the pacing off.
+	// defaultWorkerWakesPerMinute is `worker_wakes_per_minute`'s default. The burst's default is
+	// on the key table's own row for it (keytable.go's positiveKey), because that reader is the
+	// one that refuses a burst below 1; the rate is read on its own, since 0 is how an operator
+	// turns the pacing off.
 	defaultWorkerWakesPerMinute = 8
 	defaultRuntimeName          = "tmux"
 	defaultEnvoyURL             = "http://127.0.0.1:9020"
@@ -252,44 +285,43 @@ const (
 	// accepts too.
 	maxTimerSeconds = 2_147_483
 	// maxTimerMinutes is that same bound for a key written in minutes
-	// (runtime.kubernetes.idle_release), computed from it so the two cannot drift. A key in
-	// minutes needs a bound of its own for a second reason: the daemon turns it into a
-	// time.Duration (IdleReleaseConfig.Idle, Backstop), and an unbounded number of minutes
-	// multiplied by time.Minute wraps negative, which is an idle period every pod has already
-	// passed.
+	// (runtime.kubernetes.idle_release, worker_silence_minutes, pod_update_grace_minutes),
+	// computed from it so the two cannot drift. A key in minutes needs a bound of its own for a
+	// second reason: the daemon turns it into a time.Duration (IdleReleaseConfig.Idle, Backstop),
+	// and an unbounded number of minutes multiplied by time.Minute wraps negative, which is an
+	// idle period every pod has already passed.
 	maxTimerMinutes = maxTimerSeconds / 60
+
+	// defaultWorkerSilence is `worker_silence_minutes`'s default (Config.WorkerSilence): half an
+	// hour with no step from a phase worker that is up, between turns and holding no task is
+	// longer than any quiet wait a healthy worker takes of its own accord, and short enough that
+	// an issue whose worker lost its task waits minutes rather than a working day.
+	defaultWorkerSilence = 30 * time.Minute
+	// minWorkerSilence is the floor under `worker_silence_minutes` (checkWorkerSilence). It is a
+	// floor against the longest wait a healthy worker takes in which nothing crosses the wire,
+	// so that to the daemon it reads exactly like silence: the worker's own phase reminder. A
+	// worker that answers a reminder with a WAITING line is reminded again only after
+	// DEFAULT_STALL_LIMITS.waitingMs (`packages/pi-shared/src/stall-limits.ts`), 15 minutes, and
+	// records no step in between. A bound at or below that would have the daemon send a second
+	// task for work the worker already holds, to a worker whose own reminder is about to start a
+	// turn. 16 minutes is the first whole minute past it.
+	minWorkerSilence = 16 * time.Minute
+
+	// defaultWorkerBackground is `worker_background_hours`'s default (Config.WorkerBackground):
+	// four hours is several times the longest background-work hold the reading this work was
+	// filed for measured — two holds of about three quarters of an hour on one pod
+	// (dispatch://INFRA-3163) — so a job of the length a healthy worker runs is never named,
+	// and short enough that a job which hung is named while the working day it hung in lasts.
+	// It has no floor of its own: its floor is the silence bound the deployment sets
+	// (checkWorkerBackground).
+	defaultWorkerBackground = 4 * time.Hour
+
+	// defaultPodUpdateGrace is `pod_update_grace_minutes`'s default (Config.PodUpdateGrace):
+	// four of the seven roles held on the morning this bound was set answered within about ten
+	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
+	// of a roll (dispatch://INFRA-2981 R2).
+	defaultPodUpdateGrace = 30 * time.Minute
 )
-
-// durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
-// and the new probe interval). Every one of them is held to the timer bound.
-var durationKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *time.Duration
-}{
-	{"worker_boot_timeout_seconds", 120, func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
-	{"worker_rpc_timeout_seconds", 5, func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
-	{"worker_stop_timeout_seconds", 10, func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
-	{"tree_stop_timeout_seconds", 60, func(c *Config) *time.Duration { return &c.TreeStopTimeout }},
-	{"slow_command_timeout_seconds", 300, func(c *Config) *time.Duration { return &c.SlowCommandTimeout }},
-	{"probe_interval_seconds", 30, func(c *Config) *time.Duration { return &c.ProbeInterval }},
-	{"controller_wake_interval_seconds", 3600, func(c *Config) *time.Duration { return &c.ControllerWakeInterval }},
-}
-
-// countKeys are the positive-integer keys with no unit, and their defaults: the registration
-// deadline's interval count (config.ts DEFAULT_WORKER_BOOT_REGISTRATION_DEADLINE_INTERVALS), the
-// supervision budgets, and the wake pacing's burst.
-var countKeys = []struct {
-	key          string
-	defaultValue int
-	field        func(*Config) *int
-}{
-	{"worker_boot_registration_deadline_intervals", 3, func(c *Config) *int { return &c.WorkerBootRegistrationDeadlineIntervals }},
-	{"launch_failure_limit", 3, func(c *Config) *int { return &c.LaunchFailureLimit }},
-	{"prompt_failure_limit", 3, func(c *Config) *int { return &c.PromptFailureLimit }},
-	{"prompt_retire_limit", 2, func(c *Config) *int { return &c.PromptRetireLimit }},
-	{"worker_wake_burst", 1, func(c *Config) *int { return &c.WorkerWakeBurst }},
-}
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
 // rather than ignored: an operator who sets one expects it to act, and the daemon has nothing that
@@ -309,7 +341,9 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
-	"max_fix_attempts": "nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"max_fix_attempts":        "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"pod_update_retask_hours": "no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+	"pod_update_notice_hours": "the controller is told of an update round that outlives its bound once that bound has passed, on no clock of its own; remove pod_update_notice_hours from legion.yaml, where pod_update_grace_minutes, measured from the round's opening, is that bound (dispatch://INFRA-2981 R6)",
 }
 
 // migrationKeys are the keys refused with a migration message, mapped to that message verbatim.
@@ -363,8 +397,14 @@ type fileConfig struct {
 	GitHubApps             *GitHubApps
 	Linger                 *time.Duration
 	ProductionCheckBound   *time.Duration
-	PodUpdateRetask        *time.Duration
-	PodUpdateNotice        *time.Duration
+	PodUpdateGrace         *time.Duration
+	StalledTreeNotice      *time.Duration
+	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
+	// pointers as every other duration key here is: a file that leaves a key out is
+	// distinguishable from one that sets it, so resolve leaves the default standing for the
+	// first and carries the operator's number for the second.
+	WorkerSilence    *time.Duration
+	WorkerBackground *time.Duration
 	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
 	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
 	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
@@ -445,8 +485,8 @@ func rootMapping(document *yaml.Node) (*yaml.Node, error) {
 	return root, nil
 }
 
-// readKeys walks the top-level keys in file order, reading the modelled ones and classifying the
-// rest.
+// readKeys walks the top-level keys in file order, dispatching each modelled one through the key
+// table (keytable.go) and classifying the rest.
 func readKeys(root *yaml.Node) (fileConfig, error) {
 	file := fileConfig{Durations: map[string]int{}, Counts: map[string]int{}}
 	if root == nil {
@@ -455,151 +495,23 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		key, value := root.Content[i].Value, root.Content[i+1]
 		var err error
-		switch key {
-		case "project":
-			file.Project, err = readString(value, key)
-		case "bind":
-			file.Bind, err = readString(value, key)
-		case "advertise_host":
-			file.AdvertiseHost, err = readAdvertiseHost(value, key)
-		case "postgres_dsn":
-			file.PostgresDSN, err = readString(value, key)
-		case "state_dir":
-			file.StateDir, err = readString(value, key)
-		case "port":
-			file.Port, err = readInt(value, key)
-		case "admission_cap":
-			file.AdmissionCap, err = readInt(value, key)
-		case "runtime":
-			file.Kubernetes, file.Tmux, err = readRuntime(value)
-		case "daemon_url":
-			file.DaemonURL, err = readString(value, key)
-		case "omp_invocation":
-			file.OmpInvocation, err = readNonEmptyString(value, key)
-		case "omp_launch_prefix":
-			file.OmpLaunchPrefix, err = readLaunchPrefix(value, key)
-		case "provider_keys":
-			file.ProviderKeys, err = readProviderKeys(value, key)
-		case "instructions":
-			file.Instructions, err = readNonEmptyString(value, key)
-		case "worker_stream_port":
-			file.WorkerStreamPort, err = readInt(value, key)
-		case "worker_wakes_per_minute":
-			file.WorkerWakesPerMinute, err = readInt(value, key)
-		case "operator_token_file":
-			file.OperatorTokenFile, err = readNonEmptyString(value, key)
-		case "envoy_url":
-			file.EnvoyURL, err = readString(value, key)
-		case "nats_urls":
-			file.NatsURLs, err = readNatsURLs(value, key)
-		case "envoy_token_file":
-			file.EnvoyTokenFile, err = readNonEmptyString(value, key)
-		case "nats_nkey_seed_file":
-			file.NatsNkeySeedFile, err = readNonEmptyString(value, key)
-		case "nats_daemon_nkey_seed_file":
-			file.NatsDaemonNkeySeedFile, err = readNonEmptyString(value, key)
-		case "dispatch_url":
-			file.DispatchURL, err = readString(value, key)
-		case "dispatch_token_file":
-			file.DispatchTokenFile, err = readNonEmptyString(value, key)
-		case "projects":
-			// The projects' own warnings join whatever a warned key above them raised, in file
-			// order: one list carries both, so neither producer may write over the other.
-			var raised []string
-			file.Projects, raised, err = readProjects(value, key)
-			file.Warnings = append(file.Warnings, raised...)
-		case "gates":
-			file.Gates, err = readGates(value, key)
-		case "github_apps":
-			file.GitHubApps, err = readGitHubApps(value, key)
-		case "linger_hours":
-			file.Linger, err = readHours(value, key)
-		case "production_check_hours":
-			file.ProductionCheckBound, err = readHours(value, key)
-		case "pod_update_retask_hours":
-			file.PodUpdateRetask, err = readHours(value, key)
-		case "pod_update_notice_hours":
-			file.PodUpdateNotice, err = readHours(value, key)
-		// Both round caps are read here rather than through countKeys, which carries a default
-		// for every key it holds and so could never report that the operator named neither.
-		case "pod_update_max_open_rounds":
-			file.PodUpdateMaxOpenRounds, err = readPositiveInteger(value, key, 0)
-		case "pod_update_rounds_per_minute":
-			file.PodUpdateRoundsPerMinute, err = readPositiveInteger(value, key, 0)
-		case "review_round_cap":
-			file.ReviewRoundCap, err = readPositiveInteger(value, key, 0)
-		case "controller":
-			file.Controller, err = readString(value, key)
-		case "capabilities":
-			file.Capabilities, err = readCapabilities(value, key)
-		case "worker_backends":
-			file.WorkerBackends, err = readWorkerBackends(value, key)
-		case "role_config_files":
-			file.RoleConfigFiles, err = readRoleConfigFiles(value, key)
-		case stallBackstopKey:
-			file.WorkerStallBackstops, err = readStallBackstops(value, key)
-		case repositoryRenamesKey:
-			file.RepositoryRenames, err = readRepositoryRenames(value, key)
-		case hooksKey:
-			file.Hooks, err = readHooks(value, key)
+		descriptor, modelled := topLevelByName[key]
+		switch {
+		case modelled:
+			err = descriptor.Read(value, key, &file)
+		case warnedKeys[key] != "":
+			// The value is read for nothing, so no shape of it is refused: the key changes
+			// nothing whatever it says.
+			file.Warnings = append(file.Warnings,
+				fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
 		default:
-			switch {
-			case isDurationKey(key) || isCountKey(key):
-				err = readPositive(value, key, file)
-			case warnedKeys[key] != "":
-				// The value is read for nothing, so no shape of it is refused: the key changes
-				// nothing whatever it says.
-				file.Warnings = append(file.Warnings,
-					fmt.Sprintf("setting %s changes nothing: %s", key, warnedKeys[key]))
-			default:
-				err = classify(key)
-			}
+			err = classify(key)
 		}
 		if err != nil {
 			return fileConfig{}, err
 		}
 	}
 	return file, nil
-}
-
-func isDurationKey(key string) bool {
-	for _, d := range durationKeys {
-		if d.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-func isCountKey(key string) bool {
-	for _, c := range countKeys {
-		if c.key == key {
-			return true
-		}
-	}
-	return false
-}
-
-// readPositive reads a duration or count key into the file's map: a positive integer and, for a
-// duration, at most the timer bound (config.ts readPositiveInteger, and loadConfigFromFile's
-// lifecycle keys).
-func readPositive(value *yaml.Node, key string, file fileConfig) error {
-	read, err := readInt(value, key)
-	if err != nil || read == nil {
-		return err
-	}
-	if *read <= 0 {
-		return fmt.Errorf("%s must be a positive integer", key)
-	}
-	if isDurationKey(key) {
-		if *read > maxTimerSeconds {
-			return fmt.Errorf("%s must be at most %d", key, maxTimerSeconds)
-		}
-		file.Durations[key] = *read
-	} else {
-		file.Counts[key] = *read
-	}
-	return nil
 }
 
 // classify refuses an unmodelled key, naming its class.
@@ -678,6 +590,23 @@ func stringOf(value *yaml.Node, key string) (string, error) {
 	return *read, nil
 }
 
+// cleanAbsolutePath is a path key's value, refused when it is relative or unclean, the empty
+// string (`instructions: ""`) among them: the daemon reads such a file at boot from wherever it
+// starts, where a relative path resolves against no directory of the operator's. A key written
+// with no value at all never reaches it, since describedMembers leaves a null member out and the
+// key then reads as unset. The `memory` block's `instructions` and a variant's read through it
+// alike, so the two keys answer one refusal.
+func cleanAbsolutePath(value *yaml.Node, key string) (string, error) {
+	path, err := stringOf(value, key)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("%s %q must be a clean absolute path: the daemon reads it at boot from wherever it starts", key, path)
+	}
+	return path, nil
+}
+
 // optionalString is a string key a blank value refuses, "" when it is unset.
 func optionalString(value *yaml.Node, key string) (string, error) {
 	read, err := readNonEmptyString(value, key)
@@ -697,27 +626,38 @@ func requiredString(value *yaml.Node, key, why string) (string, error) {
 	return read, err
 }
 
-// unknownKeyError is members' refusal of a name the mapping may not carry.
+// unknownKeyError is describedMembers' refusal of a name the mapping may not carry.
 type unknownKeyError struct{ key, name string }
 
 func (e unknownKeyError) Error() string { return fmt.Sprintf("unknown key %s.%s", e.key, e.name) }
 
-// members returns a mapping's members by name, refusing a name it does not know or names twice. A
-// member whose value is null is left out, as an unset key.
-func members(value *yaml.Node, key string, known ...string) (map[string]*yaml.Node, error) {
+// describedMembers returns a mapping's members by name, refusing a name it does not know or names
+// twice. A member whose value is null is left out, as an unset key. It is the one reader of a
+// mapping in the loader: group is the dotted path of one nestedKeys entry (keytable.go), whose
+// members are the names the mapping may carry, each with the line `legion config-reference --json`
+// prints for it, so every nested key the loader accepts is described. key is the path this mapping
+// was reached by, which a refusal names, and which differs from group where a project key or a
+// sequence index stands in it. A group nestedKeys does not hold panics: it is a reader naming a
+// mapping the configuration reference does not know, which is a bug TestNoKeyBypassesTheKeyTable
+// catches, never a value.
+func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Node, error) {
+	described, ok := nestedByPath[group]
+	if !ok {
+		panic("config: no nestedKeys group " + group)
+	}
 	found := map[string]*yaml.Node{}
 	seen := map[string]bool{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
-		name, member := value.Content[i].Value, value.Content[i+1]
-		if !slices.Contains(known, name) {
+		name, node := value.Content[i].Value, value.Content[i+1]
+		if !slices.ContainsFunc(described.Members, func(m member) bool { return m.Name == name }) {
 			return nil, unknownKeyError{key, name}
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("%s names %s twice", key, name)
 		}
 		seen[name] = true
-		if member.Tag != "!!null" {
-			found[name] = member
+		if node.Tag != "!!null" {
+			found[name] = node
 		}
 	}
 	return found, nil
@@ -906,27 +846,57 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 }
 
 // readHours is a key in hours (`linger_hours`, `production_check_hours`,
-// `pod_update_retask_hours`, `pod_update_notice_hours`): a positive number of hours, a decimal
-// among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in whole
-// hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never read
-// as zero: the engine arms the deadline it is given, so a zero would close a finished tree at
-// once and take its workspace with it, bound a check before its first look, or ask an update
-// round's worker again at every tick.
+// `worker_background_hours`, `stalled_tree_notice_hours`): a positive number of hours, a
+// decimal among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in
+// whole hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never
+// read as zero: the engine arms the deadline it is given, so a zero would close a finished tree
+// at once and take its workspace with it, bound a check before its first look, or tell a
+// project's controller about every tree of it that is between two turns.
 func readHours(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnit(value, key, time.Hour, maxTimerSeconds/3600)
+}
+
+// readMinutes is readHours' twin for a key written in minutes (`worker_silence_minutes`,
+// `pod_update_grace_minutes`): a positive number of minutes, a decimal among them, bounded by the
+// timer bound in whole minutes (maxTimerMinutes), and nil for a key the file writes with no value
+// at all.
+//
+// Why these keys are in minutes where readHours' keys are in hours: their bounds are tens of
+// minutes. In hours an operator writes half an hour as 0.5, and a key whose values are written as
+// fractions is a key whose floor gets read as a number of hours: worker_silence_minutes' 16-minute
+// floor would be 0.2666… there, which neither the file nor a refusal naming it could state
+// plainly, and 0.5 meant as half an hour is half a minute to a reader of such a key. The unit an
+// operator will write the bound in is therefore the unit the key takes.
+//
+// A value too small to hold a nanosecond is refused exactly as a non-positive one is, never read
+// as zero: a bound of zero or less is the repair switched off (workflow.SilentPhaseWorker names
+// no worker silent under one), so a value that rounded to zero would leave that deployment with
+// no silence repair at all while its file read as though it had set one. An update round with a
+// bound of zero would replace its pod at the tick that opens it, before any role read the ask.
+func readMinutes(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnit(value, key, time.Minute, maxTimerMinutes)
+}
+
+// readUnit is the body readHours and readMinutes share, for a key written as a number of unit
+// and bounded at most of them: a positive number, a decimal among them, refused above most and
+// refused when it is too small to hold a nanosecond of unit, and nil for a key the file writes
+// with no value at all. It is one function because the two keys differ in nothing but their unit
+// and their bound, and because the refusals a test compares whole are then written once.
+func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time.Duration, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
 	}
-	var hours float64
-	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&hours) != nil {
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a number", key)
 	}
-	if !(hours > 0) {
+	if !(read > 0) {
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}
-	if hours > maxTimerSeconds/3600 {
-		return nil, fmt.Errorf("%s must be at most %d", key, maxTimerSeconds/3600)
+	if read > float64(most) {
+		return nil, fmt.Errorf("%s must be at most %d", key, most)
 	}
-	duration := time.Duration(math.Round(hours * float64(time.Hour)))
+	duration := time.Duration(math.Round(read * float64(unit)))
 	if duration <= 0 {
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}
@@ -1007,8 +977,10 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Gates:                Gates{Design: DesignGateRootIssues.Steps()},
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
-		PodUpdateRetask:      time.Hour,
-		PodUpdateNotice:      4 * time.Hour,
+		PodUpdateGrace:       defaultPodUpdateGrace,
+		StalledTreeNotice:    6 * time.Hour,
+		WorkerSilence:        defaultWorkerSilence,
+		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       3,
 		Warnings:             file.Warnings,
 	}
@@ -1077,7 +1049,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if file.WorkerWakesPerMinute != nil {
 		cfg.WorkerWakesPerMinute = *file.WorkerWakesPerMinute
 	}
-	// 0 is the pacing off, which is why the rate is no countKeys row: that reader refuses it.
+	// 0 is the pacing off, which is why the rate's row names no positive default: that reader
+	// refuses it.
 	if cfg.WorkerWakesPerMinute < 0 {
 		return Config{}, errors.New("worker_wakes_per_minute must be 0 (the pacing off) or a positive integer")
 	}
@@ -1106,7 +1079,16 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := checkStallBackstops(cfg); err != nil {
 		return Config{}, err
 	}
+	if err := checkWorkerSilence(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := checkWorkerBackground(cfg); err != nil {
+		return Config{}, err
+	}
 	if err := checkMemory(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := checkExperiments(cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
@@ -1195,6 +1177,39 @@ func checkSlackChannels(cfg Config) error {
 	return nil
 }
 
+// checkWorkerSilence refuses a `worker_silence_minutes` under the floor every deployment shares
+// (minWorkerSilence, whose comment holds the wait the floor is reckoned from), in the
+// register checkStallBackstops refuses a backstop bound in: the key, the value it read and the
+// floor, since the operator's own number is the only one of the three in the file being read.
+// The default is above the floor, so a file that names the key nowhere is refused nothing, and a
+// value exactly at the floor is taken.
+func checkWorkerSilence(cfg Config) error {
+	if cfg.WorkerSilence >= minWorkerSilence {
+		return nil
+	}
+	return fmt.Errorf("worker_silence_minutes (%s) is below the %s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn",
+		cfg.WorkerSilence, minWorkerSilence)
+}
+
+// checkWorkerBackground refuses a `worker_background_hours` at or under `worker_silence_minutes`.
+// The floor is a relation rather than a number, so the refusal names both keys and both values:
+// which of the two the operator must move is theirs to choose, and neither number means anything
+// without the other.
+//
+// Under the silence bound the telling would be about a background job that has barely begun, and
+// it would race the silence repair of the same worker: the one sweep reads both bounds over one
+// claim (internal/daemon's tellSilentPhaseWorkers), so a worker whose session reports background
+// work would be named to its architect in the same minute the repair would otherwise have left
+// it alone for. Both defaults hold the relation (four hours against half an hour), so a file
+// that names neither key is refused nothing.
+func checkWorkerBackground(cfg Config) error {
+	if cfg.WorkerBackground > cfg.WorkerSilence {
+		return nil
+	}
+	return fmt.Errorf("worker_background_hours (%s) is at or below worker_silence_minutes (%s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again",
+		cfg.WorkerBackground, cfg.WorkerSilence)
+}
+
 // resolveStage2 settles the keys Stage 2 models. Each is read from the file alone: the shipped
 // loader's environment twins (`LEGION_DAEMON_URL`, `ENVOY_NATS_URL`, `LEGION_WORKER_*_SECONDS`, …)
 // are not read, because a daemon started from inside a Legion pane inherits that pane's values for
@@ -1238,19 +1253,12 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 		return fmt.Errorf("worker_stream_port must differ from port (both %d)", cfg.Port)
 	}
 
-	for _, d := range durationKeys {
-		seconds, ok := file.Durations[d.key]
-		if !ok {
-			seconds = d.defaultValue
+	// Every positive-integer key, each onto the field its own row names (keytable.go's
+	// positiveKey): the number the file carries, or that row's default where it carries none.
+	for _, row := range topLevelKeys {
+		if row.Positive != nil {
+			row.Positive.resolve(row.Name, file, cfg)
 		}
-		*d.field(cfg) = time.Duration(seconds) * time.Second
-	}
-	for _, c := range countKeys {
-		count, ok := file.Counts[c.key]
-		if !ok {
-			count = c.defaultValue
-		}
-		*c.field(cfg) = count
 	}
 	// The registration deadline is one timer for the product, so each factor fitting is not
 	// enough (resolveDaemonConfig in config.ts). The product is judged by dividing the bound

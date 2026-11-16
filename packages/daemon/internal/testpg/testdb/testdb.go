@@ -25,6 +25,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -33,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -102,12 +104,53 @@ func create(dsn, prefix string) (string, func() error, error) {
 	}
 	drop := func() error {
 		defer func() { _ = conn.Close(context.Background()) }()
-		if _, err := conn.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
+		if err := Drop(context.Background(), conn, name); err != nil {
 			return fmt.Errorf("drop %s: %w", name, err)
 		}
 		return nil
 	}
 	return database, drop, nil
+}
+
+// insufficientPrivilege is PostgreSQL's 42501, which a forced drop answers when a session of the
+// database belongs to another role.
+const insufficientPrivilege = "42501"
+
+// Execer is what Drop needs of a connection or a pool: one statement.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// Drop drops name, waiting an autovacuum worker out. `drop database ... with (force)` terminates
+// every other session of the database, which PostgreSQL refuses to a login that is neither
+// superuser nor a member of pg_signal_backend as soon as one session belongs to another role — an
+// autovacuum worker, which attaches to a database a test has just filled. Every Legion pod shares
+// one server whose test login holds neither privilege, so the refusal is waited out for 30
+// seconds; any other error is the caller's at once (dispatch://INFRA-714 round six).
+//
+// It lives here rather than in internal/testpg because this package imports nothing of the
+// module, so every package's tests can take it — internal/store's among them, whose own tests
+// cannot import internal/testpg at all.
+func Drop(ctx context.Context, admin Execer, name string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for attempt := 0; ; attempt++ {
+		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
+		if err == nil {
+			return nil
+		}
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != insufficientPrivilege {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w (still refused after %d attempts over 30s: a session of another role, an autovacuum worker, holds the database and this login may not terminate it)", err, attempt+1)
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

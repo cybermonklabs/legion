@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  The controller's `legion` tool says what the daemon's two claim recoveries reach now, and the
+  plugin declares daemon API contract 104. `fresh_session` reaches a claim stored working that no
+  process stands behind: the daemon reads that claim's process when the request arrives, suspends
+  the claim where it stands, and starts it again with the task its dead turn held, which is the
+  one recovery a project controller has for a dead architect. `compact` refuses that claim
+  (`CLAIM_NOT_RUNNING`) and names `fresh_session`, so the tool now says to try `compact` first
+  for a claim whose session a provider keeps refusing, and `fresh_session` for a claim no process
+  stands behind. `CLAIM_IN_A_TURN` is for a claim whose process the daemon reads as running, and
+  one whose session is being compacted. A claim whose process the runtime would not answer for,
+  one that records no process to read, and one that moved under the request are refused
+  `CLAIM_UNSETTLED`, each left exactly as the request found it: at `fresh_session` a moved claim
+  a later view finds no longer working or a second read finds gone once more, and at `compact` a
+  claim it refused as working that a later view finds no longer working. So is a claim
+  left working under a relaunch the wake pacing parked. A fresh session that stopped the claim
+  and then had the forget of its session or its start refused answers with that refusal in
+  `phaseNotRestarted`, and the sentence names the state the refused step left the claim in: ask
+  for a fresh session again only where that state is suspended, and read any other state in
+  `read_state`, since a claim left launching starts by itself.

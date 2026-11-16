@@ -17,12 +17,23 @@ import (
 
 // A Dispatch consumer recreated after messages already landed on the stream — deleted and
 // reopened, or a first boot against a stream that already carries history — starts at
-// DeliverNewPolicy: it will never receive those older messages, so its ack floor can never reach
-// a target the listing read against them. DispatchPosition's idle, not the ack floor alone, is
-// what tells Reconcile nothing more is ever coming for a record those messages already advanced
-// past.
+// DeliverNewPolicy: it will never receive those older messages. DispatchPosition's idle, not the
+// ack floor, is what tells Reconcile nothing more is ever coming for a record those messages
+// already advanced past.
+//
+// What the consumer's own ack floor reads there is the server's business and not the daemon's,
+// and the two servers this repository runs answer differently for exactly this consumer: on
+// nats-server 2.10.22, which `.github/ci-images.yaml` pins for CI, it stands at 0, behind the two
+// messages the consumer can never deliver; on 2.15.1, which `skill://legion-worker/references/
+// tools.md` tells a pod to run, it is initialised at the stream's last sequence, 2, level with the
+// target. Both readings carry the same facts — nothing pending and nothing awaiting an ack — so a
+// test that asserted the floor stood short of the target measured the server rather than this
+// code, and was red on the documented pod route while green in CI (dispatch://INFRA-3027).
+//
+// So the precondition is stated as what both servers hold: the consumer has delivered none of the
+// messages published before it and has none to deliver, which is the state idle is read from.
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
-	js, _ := testJetStream(t)
+	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
 	publish(t, js, "notifications.dispatch.issue.CAPTURE-3.comment.created", envelopeJSON(t, "dispatch-comment", "dispatch",
@@ -39,15 +50,33 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	if target < 2 {
 		t.Fatalf("target = %d, want at least 2 (the two messages already published)", target)
 	}
+	// The precondition, read off the consumer itself: it was created at DeliverNew over the two
+	// messages, so it has none pending and none awaiting an ack, and no delivery of its own will
+	// ever carry them. A consumer that could still deliver one would make the idle below true for
+	// another reason than the one this test is about.
+	consumer, err := stream.Consumer(context.Background(), dispatchConsumerName(spec.Project))
+	if err != nil {
+		t.Fatalf("read the Dispatch consumer: %v", err)
+	}
+	info, err := consumer.Info(context.Background())
+	if err != nil {
+		t.Fatalf("read the Dispatch consumer's info: %v", err)
+	}
+	if info.Config.DeliverPolicy != jetstream.DeliverNewPolicy {
+		t.Fatalf("deliver policy = %v, want %v: this test is about a consumer that can never deliver what came before it",
+			info.Config.DeliverPolicy, jetstream.DeliverNewPolicy)
+	}
+	if info.Delivered.Consumer != 0 || info.NumPending != 0 || info.NumAckPending != 0 {
+		t.Fatalf("the consumer has delivered %d, with %d pending and %d awaiting an ack; want it to have delivered none of the two and to have none to deliver",
+			info.Delivered.Consumer, info.NumPending, info.NumAckPending)
+	}
 	position, err := consumers.DispatchPosition(context.Background())
 	if err != nil {
 		t.Fatalf("DispatchPosition: %v", err)
 	}
 	if !position.Idle {
-		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true")
-	}
-	if position.AckFloorStream >= target {
-		t.Fatalf("ack_floor = %d, target = %d; want ack_floor short of target so idle is what closes the gap, not the floor", position.AckFloorStream, target)
+		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true: ack floor %d, target %d",
+			position.AckFloorStream, target)
 	}
 }
 
@@ -124,8 +153,9 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 	}
 }
 
-// A consumer that has applied nothing — here the GitHub consumer, whose only message was acknowledged
-// without a transaction, which records no position — is created at the next message when it is
+// A consumer that has applied nothing — here the GitHub consumer, whose only message was a push to
+// a tag, which is no fact of either kind and is acknowledged without a transaction, recording no
+// position — is created at the next message when it is
 // found missing, as a consumer created for the first time is: what was published before it is
 // not replayed.
 func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T) {
@@ -137,8 +167,8 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 	github := githubConsumerName(spec.Project)
 
 	stop := startConsume(t, js, spec, pool, factMarks())
-	push := strings.ReplaceAll(string(capturedGitHubEnvelope(t, "push.json")), "refs/heads/legion/LEGION-208", "refs/heads/main")
-	publish(t, js, "notifications.github.sjawhar.legion.push.branch.main", []byte(push))
+	tag := strings.ReplaceAll(string(capturedGitHubEnvelope(t, "push.json")), "refs/heads/legion/LEGION-208", "refs/tags/v1.0.0")
+	publish(t, js, "notifications.github.sjawhar.legion.push.tag.v1.0.0", []byte(tag))
 	waitDelivered(t, stream, github)
 	stop()
 	var positions int
@@ -172,7 +202,8 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 // stream keeps messages (72 hours), the stream was recreated, or the project was quiet, since only
 // an applied fact moves the position — starts the consumer at the stream's first message, and a
 // WARN line names the gap: the events published between may have been missed, the daemon applied
-// none of them, and the pass's read of each pull request heals those it would have acted on.
+// none of them, and the daemon's own read of each issue's pull request heals those it would have
+// acted on.
 func TestAStoredPositionOlderThanTheStreamWarnsOfEventsThatMayHaveBeenMissed(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)

@@ -29,6 +29,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listIssuePage: (client) => client.listIssuePage({}, { limit: 1, offset: 0 }),
   listAllIssues: (client) => client.listAllIssues({}),
   listProjectArtifacts: (client) => client.listProjectArtifacts("DSP"),
+  listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1"),
+  markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n"),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),
@@ -45,6 +47,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   ask: (client) => client.ask("DSP-1", { question: "Which?", actor } as never),
   openAsks: (client) => client.openAsks("session-1"),
   openAsksForProject: (client) => client.openAsksForProject("DSP"),
+  priorities: (client) => client.priorities(["DSP"]),
   sessionAnswers: (client) => client.sessionAnswers("session-1"),
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
@@ -60,6 +63,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
   planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),
+  reviewArtifact: (client) => client.reviewArtifact("artifact-1", 2, { state: "approved" }),
   recordResult: (client) =>
     client.recordResult("DSP-1", {
       actor,
@@ -69,6 +73,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       commit: "1111111111111111111111111111111111111111",
     }),
   issueResults: (client) => client.issueResults("DSP-1"),
+  retractResult: (client) =>
+    client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
   issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),
@@ -92,6 +98,7 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   artifact: (client) => client.artifact("DSP-1", file),
   getArtifact: (client) => client.getArtifact("artifact-1"),
   docRead: (client) => client.docRead("artifact-1"),
+  docReadWithBlocks: (client) => client.docReadWithBlocks("artifact-1"),
   fileVersion: (client) => client.fileVersion("artifact-1", 1),
   artifactBlocks: (client) => client.artifactBlocks("artifact-1"),
   issueArtifactBlocks: (client) => client.issueArtifactBlocks("DSP-1", "spec"),
@@ -143,8 +150,7 @@ test("every DispatchClient method reaches Dispatch through its one request funct
         "http://dispatch.test",
         bearerCredential("secret"),
         recording,
-        undefined,
-        DISPATCH_WRITE_RETRY
+        { writeRetry: DISPATCH_WRITE_RETRY }
       );
 
       await call(client).catch(() => undefined);

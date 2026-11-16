@@ -3,6 +3,7 @@ package admit
 import (
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -10,12 +11,13 @@ import (
 // A4's last clause, for a root that arrived from another tree: "a person's todo on a running root
 // that holds no slot does not put it in the line as a root that never ran."
 //
-// A handed-over root holds no slot once it is running and waiting for its merge, so a person who
-// moves it to todo on the dashboard leaves a record that reads, by status alone, exactly like one
+// A handed-over root can run with no slot row of its own — the row it holds is the row of the
+// tree it left, and this fixture seeds none — so a person who moves it to todo on the dashboard
+// leaves a record that reads, by status alone, exactly like one
 // that has still to be promoted. The hand-over mark used to say the tree had never been opened for
 // the whole life of that tree, so the line took it as a root that never ran and promoted it again:
 // a second in_progress write, a second architect start, a new issue branch, and a resume of every
-// mid-phase member, whose ResumePhase moves awaiting_merge to merging — where the merger's claim is
+// mid-phase member, whose ResumePhase leaves merging where it stands — where the merger's claim is
 // live, no task is queued, and the pull request's own merge no longer closes the issue.
 //
 // The promotion clears the mark, so the record says the tree is open and this is a running root.
@@ -24,10 +26,10 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 	admission := quiet(t, 4)
 
 	// The handed-over root as its own promotion left it: the tree opened, the phase it carried
-	// from the tree it left, and no slot, since a worker of it has no work in awaiting_merge.
+	// from the tree it left, and no slot, since the row it holds is the row of the tree it left.
 	const root = "LEGION-300"
 	putIssue(t, pool, record.Issue{Key: root, Tree: root, Repo: "acme/widgets", DefaultBranch: "main",
-		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root that ran", Phase: phase.AwaitingMerge,
+		GitHubRepo: "acme/widgets", Project: testProject, Title: "a carried root that ran", Phase: phase.Merging,
 		Generation: 2, Status: "todo", Rank: "A", HandedOver: true})
 	seedLifecycle(t, pool, root)
 	seedMirror(t, pool, root, "todo")
@@ -35,14 +37,20 @@ func TestAPersonsTodoOnARunningHandedOverRootDoesNotPromoteItAgain(t *testing.T)
 	assertWaiting(t, pool, nil)
 	tick(t, pool, admission, "tick")
 
-	if running := issue(t, pool, root); running.Phase != phase.AwaitingMerge {
-		t.Fatalf("%s stands in %s after the pass, want awaiting_merge: a running root a person set to todo is promoted by nothing", root, running.Phase)
+	if running := issue(t, pool, root); running.Phase != phase.Merging {
+		t.Fatalf("%s stands in %s after the pass, want merging: a running root a person set to todo is promoted by nothing", root, running.Phase)
 	}
 	if holders := slots(t, pool); len(holders) != 0 {
-		t.Fatalf("slots = %#v, want none: a root waiting for its merge has no worker with work", holders)
+		t.Fatalf("slots = %#v, want none: the fixture seeds no row, and the pass promotes nothing that would take one for a running root", holders)
 	}
-	if started := startsOf(t, pool, root); len(started) != 0 {
-		t.Fatalf("%d supervise rows were queued for %s, want none: nothing of a running root is started again", len(started), root)
+	// The repair of a worker with no task reaches an issue standing past its review, which holds
+	// no row of the cap's (record.PastReview, admit's resumeSlottedWorkers), so this root's
+	// merger is started again. What a second promotion would write is the architect's own start,
+	// and that is what must not be here.
+	for _, started := range startsOf(t, pool, root) {
+		if started.role != claim.RoleMerger {
+			t.Fatalf("a %s of %s was started, want the merger alone: nothing of a running root is promoted again", started.role, root)
+		}
 	}
 }
 

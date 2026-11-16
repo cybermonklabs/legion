@@ -115,6 +115,7 @@ func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
 	migrateThrough(t, store, beforeRefsGrammar)
 	fixture := writeRefsGrammarFixture(t, store)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -141,6 +142,7 @@ func TestTheRefsGrammarSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 		t.Fatalf("the triggers owed %v, want the comment among them", owed)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -169,6 +171,7 @@ func TestTheRefsGrammarTriggersOweWhatAnyBuildWrites(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 
 	document := owedSource{"artifact", fixture.document}

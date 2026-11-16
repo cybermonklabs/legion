@@ -1,4 +1,4 @@
-import type { BlockMark, EditorReferences } from "@legion/proof-editor";
+import type { BlockMark, DocumentJSON, EditorReferences } from "@legion/proof-editor";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
@@ -27,6 +27,9 @@ export interface FakeEditor {
   /** How many times the host asked to comment on the selection. */
   commented: number;
   destroyed: boolean;
+  /** The document the host drew with `setDocumentJSON`: the tree its server read, which the
+   *  fake holds as it came rather than parsing anything. */
+  documentJSON: DocumentJSON | undefined;
   focused: string[];
   markdown: string | undefined;
   focusedBlocks: string[];
@@ -54,6 +57,8 @@ interface FakeConnection extends DocumentConnection {
 
 export interface FakeDocumentRuntime {
   admit(readOnly: boolean): void;
+  /** What the page asked of each connection it opened, in order. */
+  callbacks: ConnectionCallbacks[];
   connections: FakeConnection[];
   editors: FakeEditor[];
   pending(state: PendingState): void;
@@ -66,20 +71,23 @@ export interface FakeDocumentRuntime {
   text: string;
 }
 
-const blockSchema = {
-  types: [
-    {
-      attributes: {
-        kind: { choices: ["note", "warning"], default: "note", kind: "enum" as const },
-        title: { default: "", kind: "string" as const },
-      },
-      content: "paragraph+" as const,
-      name: "callout",
-      render: "host" as const,
-    },
-  ],
-  version: 1,
-};
+/** The words of a document as JSON, its top-level blocks a line each: what the fake editor puts
+ *  into its root for a document the host drew, as `setMarkdown` puts the markdown it was
+ *  handed. */
+function textOf(tree: DocumentJSON): string {
+  if (tree.text !== undefined) return tree.text;
+  return (tree.content ?? []).map(textOf).join(tree.type === "doc" ? "\n" : "");
+}
+
+/** The text of every run of `tree` carrying a mark of `type`, in document order: what a mark a
+ *  host put into the document it drew reads over. */
+export function markedText(tree: DocumentJSON | undefined, type: string): string[] {
+  if (tree === undefined) return [];
+  if (tree.marks?.some((mark) => mark.type === type) === true && tree.text !== undefined) {
+    return [tree.text];
+  }
+  return (tree.content ?? []).flatMap((child) => markedText(child, type));
+}
 
 export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentRuntime {
   const callbacks: ConnectionCallbacks[] = [];
@@ -117,6 +125,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       blockMarks: [],
       commented: 0,
       destroyed: false,
+      documentJSON: undefined,
       focused: [],
       focusedBlocks: [],
       markdown: undefined,
@@ -165,6 +174,10 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         editor.blockMarks.push([...marks]);
       },
       setActiveMarks() {},
+      setDocumentJSON(tree: DocumentJSON) {
+        editor.documentJSON = tree;
+        root.textContent = textOf(tree);
+      },
       setMarkdown(markdown: string) {
         editor.markdown = markdown;
         root.textContent = markdown;
@@ -216,6 +229,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         callback.onAdmission(readOnly);
       }
     },
+    callbacks,
     connections,
     editors,
     pending(state) {
@@ -226,7 +240,7 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     refuse() {
       callbacks.at(-1)?.onOutsideSchema();
     },
-    runtime: { blockSchema, createEditor, loadTransport: async () => connect },
+    runtime: { createEditor, loadTransport: async () => connect },
     status(state) {
       for (const callback of callbacks) {
         callback.onStatus(state);

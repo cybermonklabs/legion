@@ -68,13 +68,11 @@ func (g Gates) Steps() []record.DesignStep {
 	return g.Design
 }
 
-// Project is a Dispatch project prefix's configuration: its optional merge-queue role, merge rules,
-// the Slack channels whose @-mentions reach its controller, and whether a merge that closes one of
-// its issues opens a production check at all. Its repositories are Dispatch's mapping (Settings →
-// Repositories → Projects), which the daemon reads at boot and when it changes, never this file.
+// Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
+// its controller, and whether a merge that closes one of its issues opens a production check at
+// all. Its repositories are Dispatch's mapping (Settings → Repositories → Projects), which the
+// daemon reads at boot and when it changes, never this file.
 type Project struct {
-	MergeQueueRole string
-	Merge          MergeRules
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
 	SlackChannels []string
@@ -86,6 +84,13 @@ type Project struct {
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
 	Memory Memory
+	// Experiments are `experiments`, the experiments the project declares, in the order its file
+	// declares them; nil when the file names none. The order is the file's and is kept as a slice
+	// rather than a mapping because a later reader loads a drawn unit's files in the order the
+	// project declares the experiments, and a mapping's iteration order is no contract. The
+	// `memory` block is an experiment too and is not in this list: ExperimentsDeclared maps the
+	// block in and answers the one list every reader below the loader asks.
+	Experiments []Experiment
 	// ProductionCheck is `production_check`, the role that works the production check a merge
 	// closing one of the project's issues opens: the tester, which a project that names no key
 	// gets, or the empty role, which is the file's `off` and opens no check at all. The key
@@ -107,33 +112,6 @@ func (p Project) ProductionCheckWord() string {
 		return ProductionCheckOff
 	}
 	return string(p.ProductionCheck)
-}
-
-// MergeRules is the project's `merge` policy. A path matching ByHand is never auto-armed.
-type MergeRules struct {
-	ByHand []PathPattern
-}
-
-// PathPattern is one validated regular expression from a project's merge policy.
-type PathPattern struct {
-	Expression string
-	Regexp     *regexp.Regexp
-}
-
-// MatchByHand reports whether any changed path matches a by-hand rule.
-func (rules MergeRules) MatchByHand(paths []string) bool {
-	return matchesPathPattern(rules.ByHand, paths)
-}
-
-func matchesPathPattern(patterns []PathPattern, paths []string) bool {
-	for _, pattern := range patterns {
-		for _, path := range paths {
-			if pattern.Regexp.MatchString(path) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // GitHubApp is one App's configuration. Load resolves a configured private-key source into
@@ -221,7 +199,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if value.Kind != yaml.MappingNode {
 		return Project{}, nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "commit_issue_trailer_repos", "deploys", "memory", "merge", "merge_queue_role", "mergeQueueRole", "production_check", "slack_channels")
+	fields, err := describedMembers(value, key, "projects.<KEY>")
 	var unknown unknownKeyError
 	if errors.As(err, &unknown) {
 		if unknown.name == "repo" {
@@ -235,7 +213,7 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// members has already refused the key named twice, so this is at most one line.
+	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		if value.Content[index].Value == "deploys" {
@@ -244,21 +222,6 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		}
 	}
 	var project Project
-	role := fields["merge_queue_role"]
-	if role == nil {
-		role = fields["mergeQueueRole"]
-	}
-	if project.MergeQueueRole, err = stringOf(role, key+".merge_queue_role"); err != nil {
-		return Project{}, nil, err
-	}
-	if project.MergeQueueRole != "" && !roleNamePattern.MatchString(project.MergeQueueRole) {
-		return Project{}, nil, fmt.Errorf("%s.merge_queue_role is a bare role name (no notifications.role. prefix)", key)
-	}
-	if merge := fields["merge"]; merge != nil {
-		if project.Merge, err = readMergeRules(merge, key+".merge"); err != nil {
-			return Project{}, nil, err
-		}
-	}
 	if channels := fields["slack_channels"]; channels != nil {
 		if project.SlackChannels, err = readSlackChannels(channels, key+".slack_channels"); err != nil {
 			return Project{}, nil, err
@@ -271,6 +234,17 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	}
 	if memory := fields["memory"]; memory != nil {
 		if project.Memory, err = readMemory(memory, key+".memory"); err != nil {
+			return Project{}, nil, err
+		}
+	}
+	if experiments := fields["experiments"]; experiments != nil {
+		if project.Experiments, err = readExperiments(experiments, key+".experiments"); err != nil {
+			return Project{}, nil, err
+		}
+		// The block and `experiments.memory` are one experiment spelled two ways, and only here
+		// are both spellings in view: the memory member is read by the mapping's own key rather
+		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
@@ -339,42 +313,6 @@ func readCommitIssueTrailerRepos(value *yaml.Node, key string) ([]ghrepo.Reposit
 	return repos, nil
 }
 
-func readMergeRules(value *yaml.Node, key string) (MergeRules, error) {
-	if value.Kind != yaml.MappingNode {
-		return MergeRules{}, fmt.Errorf("%s must be a mapping", key)
-	}
-	fields, err := members(value, key, "by_hand")
-	if err != nil {
-		return MergeRules{}, err
-	}
-	var rules MergeRules
-	if byHand := fields["by_hand"]; byHand != nil {
-		if rules.ByHand, err = readPathPatterns(byHand, key+".by_hand"); err != nil {
-			return MergeRules{}, err
-		}
-	}
-	return rules, nil
-}
-
-func readPathPatterns(value *yaml.Node, key string) ([]PathPattern, error) {
-	expressions, err := readStrings(value, key)
-	if err != nil || len(expressions) == 0 {
-		return nil, err
-	}
-	patterns := make([]PathPattern, 0, len(expressions))
-	for _, expression := range expressions {
-		if slices.Contains(expressions[:len(patterns)], expression) {
-			return nil, fmt.Errorf("%s names %q twice", key, expression)
-		}
-		compiled, err := regexp.Compile(expression)
-		if err != nil {
-			return nil, fmt.Errorf("%s entry %q is not a valid regular expression: %w", key, expression, err)
-		}
-		patterns = append(patterns, PathPattern{Expression: expression, Regexp: compiled})
-	}
-	return patterns, nil
-}
-
 func readGates(value *yaml.Node, key string) (*Gates, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
@@ -386,7 +324,7 @@ func readGates(value *yaml.Node, key string) (*Gates, error) {
 			return nil, errors.New(gatesMergeMessage)
 		}
 	}
-	fields, err := members(value, key, "design")
+	fields, err := describedMembers(value, key, "gates")
 	if err != nil {
 		return nil, err
 	}
@@ -447,7 +385,7 @@ func readGitHubApps(value *yaml.Node, key string) (*GitHubApps, error) {
 	if value.Tag == "!!null" || value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", key)
 	}
-	roles, err := members(value, key, "implement", "review")
+	roles, err := describedMembers(value, key, "github_apps")
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +409,7 @@ func readGitHubApp(value *yaml.Node, key string) (GitHubApp, error) {
 	if value.Kind != yaml.MappingNode {
 		return GitHubApp{}, fmt.Errorf("%s must be a mapping", key)
 	}
-	fields, err := members(value, key, "app_id", "private_key", "private_key_command", "private_key_secret", "token_command", "installations")
+	fields, err := describedMembers(value, key, "github_apps.<APP>")
 	if err != nil {
 		return GitHubApp{}, err
 	}
@@ -766,11 +704,17 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.ProductionCheckBound != nil {
 		cfg.ProductionCheckBound = *file.ProductionCheckBound
 	}
-	if file.PodUpdateRetask != nil {
-		cfg.PodUpdateRetask = *file.PodUpdateRetask
+	if file.PodUpdateGrace != nil {
+		cfg.PodUpdateGrace = *file.PodUpdateGrace
 	}
-	if file.PodUpdateNotice != nil {
-		cfg.PodUpdateNotice = *file.PodUpdateNotice
+	if file.StalledTreeNotice != nil {
+		cfg.StalledTreeNotice = *file.StalledTreeNotice
+	}
+	if file.WorkerSilence != nil {
+		cfg.WorkerSilence = *file.WorkerSilence
+	}
+	if file.WorkerBackground != nil {
+		cfg.WorkerBackground = *file.WorkerBackground
 	}
 	// Each round cap is carried across as the pointer it is: nil through, so a file that names
 	// neither key leaves the sweep with no limit rather than with a number nobody chose.
