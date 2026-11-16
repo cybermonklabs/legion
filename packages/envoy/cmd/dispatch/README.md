@@ -4021,6 +4021,7 @@ Each item below names a path with its method and identity, then its purpose.
   A person's document socket.
   A room the person may not read, a document of a project they do not see, is refused exactly as a room no document holds is (`404`).
   Once an owner, a visibility, an access list or a group changes, every process closes each document socket whose person no longer reads its room, with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects and that refusal answers it (`docs.Service.recheckAccess`, on the room-sync channel `dispatch_access_changed`).
+  A socket still being admitted when its person loses the room is refused before its upgrade with that same `404`, never upgraded onto the room.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
