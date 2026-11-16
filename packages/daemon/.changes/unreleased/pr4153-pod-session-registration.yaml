@@ -2,9 +2,15 @@ kind: Added
 body: |-
   With `runtime.kubernetes.agent_secrets.exchange_audience` set, the daemon registers each role's
   session for its pod at the secrets broker (`POST /v1/oauth/exchange/pod-sessions`, under the
-  daemon's own ServiceAccount token): an Oh My Pi role's when its agent registers, a Claude Code
-  role's at its shim's hello, and a relaunched role's for the session it resumes. It writes each
-  live registration again every 6 hours and retries a failed write at 15 seconds doubling to 5
-  minutes, `403 POD_REGISTRAR_NOT_LISTED` included. An answer that names another pod than the one
-  the daemon registered ends that registration's writes, logged with the session and both pod
-  uids. Unset, no registration is made.
+  daemon's own ServiceAccount token), bound to the role's own key: every write sends the
+  thumbprint the role's shim hello names, so the broker refuses a sibling role a trade for that
+  session. No registration is sent before the role's hello names its thumbprint: an Oh My Pi
+  role's is made when its agent registers, a Claude Code role's at its shim's hello, and a
+  relaunched role's for the session it resumes, at its new hello. It writes each live registration
+  again every 6 hours and retries a failed write at 15 seconds doubling to 5 minutes,
+  `403 POD_REGISTRAR_NOT_LISTED` included. When a role's process ends, the daemon waits for that
+  registration's write in flight, up to the RPC timeout, before the next process writes its own.
+  An answer that names another pod or another key than the daemon sent ends that registration's
+  writes, logged with the pod, the session and both values. The registration needs this
+  release's broker, which binds it; an earlier broker refuses the `thumbprint` field. Unset, no
+  registration is made.

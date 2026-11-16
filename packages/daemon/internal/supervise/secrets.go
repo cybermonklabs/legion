@@ -53,28 +53,31 @@ type ExpiredTokenError interface{ TokenExpired() bool }
 
 // Registrar is the secrets broker's pod-session registration as the machine uses it (Deps.Registrar):
 // KeepPodSession writes r's registration now, answering that first write's outcome, and keeps it
-// written, again and again on r.After, until ctx ends. The daemon's is agentsecrets.Client's own
-// KeepPodSession, which logs each write naming the pod and the session.
+// written, again and again on r.After, until stop is called or ctx ends. stop returns only once a
+// write in flight has been answered, without cancelling it. The daemon's is agentsecrets.Client's
+// own KeepPodSession, which logs each write naming the pod and the session.
 type Registrar interface {
-	KeepPodSession(ctx context.Context, r PodSession) error
+	KeepPodSession(ctx context.Context, r PodSession) (stop func(), err error)
 }
 
-// PodSession is one pod's registration to trade under one session name. Token answers the pod's
-// own projected token for the broker's audience, which is what names the pod to the broker; it is
-// asked once per write, and the first time inside the decision that starts the registration.
-// After is the machine's clock, and Bound the longest one write may take.
+// PodSession is one pod's registration to trade under one session name, bound to the role's own
+// key: Thumbprint is the RFC 7638 thumbprint the role's shim hello named, which every write sends.
+// Token answers the pod's own projected token for the broker's audience, which is what names the
+// pod to the broker; it is asked once per write, and the first time inside the decision that
+// starts the registration. After is the machine's clock, and Bound the longest one write may
+// take.
 type PodSession struct {
-	PodUID, Session string
-	Token           func(ctx context.Context) (string, error)
-	After           func(d time.Duration, f func()) (stop func() bool)
-	Bound           time.Duration
+	PodUID, Session, Thumbprint string
+	Token                       func(ctx context.Context) (string, error)
+	After                       func(d time.Duration, f func()) (stop func() bool)
+	Bound                       time.Duration
 }
 
-// podRegistration is the registration a machine keeps written: the process incarnation and the
-// session it is for, and the cancel that ends its renewal.
+// podRegistration is the registration a machine keeps written: the process incarnation, the
+// session and the key it is for, and the stop that ends its renewal.
 type podRegistration struct {
-	incarnation, session string
-	cancel               context.CancelFunc
+	incarnation, session, thumbprint string
+	stop                             func()
 }
 
 const (
@@ -171,27 +174,32 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 }
 
 // ensureRegistered registers the claim's current pod to trade under the claim's session at the
-// broker, and keeps that registration written while the process lives (Deps.Registrar), once the
-// machine holds what the registration names: a process in a pod (the Sandbox locator's pod uid),
-// the session, and the shim's hello for this incarnation, whose connection reads the pod's token.
-// The session is the one the claim records — the agent's registration, or the session a relaunch
-// resumes, so a relaunched pod's uid is registered for the session it resumes at its shim's first
-// hello, before the resumed agent registers again — or else the one the runtime chose for this
-// launch (runtime.LaunchSessionNamer): a Claude Code role's, registered at its shim's hello,
-// before its agent registers. An Oh My Pi role's fresh session is known at its registration, and
-// is registered there before the registration is answered (register). The first write is made
-// in this decision, bounded by the RPC timeout, and its refusal changes nothing the machine
-// decides; the renewal goes on on the machine's clock until the process is let go (letGo,
-// stopRegistration) or the claim moves to another session. Each pod and session is registered
-// once per incarnation: a later hello or observation of the same one starts nothing.
+// broker, bound to the role's own key, and keeps that registration written while the process lives
+// (Deps.Registrar), once the machine holds what the registration names: a process in a pod (the
+// Sandbox locator's pod uid), the session, and the shim's hello for this incarnation, which names
+// the thumbprint of the role's key and whose connection reads the pod's token. Nothing is
+// registered before that hello, nor for a hello that names no thumbprint: a registration without
+// one would leave the session to every role of the pod. The session is the one the claim records —
+// the agent's registration, or the session a relaunch resumes, so a relaunched pod's uid is
+// registered for the session it resumes at its shim's first hello, with that hello's thumbprint,
+// before the resumed agent registers again — or else the one the runtime chose for this launch
+// (runtime.LaunchSessionNamer): a Claude Code role's, registered at its shim's hello, before its
+// agent registers. An Oh My Pi role's fresh session is known at its registration, which its agent
+// makes after its shim's hello, and is registered there before the registration is answered
+// (register). The first write is made in this decision, bounded by the RPC timeout, and its refusal
+// changes nothing the machine decides; the renewal goes on on the machine's clock until the process
+// is let go (letGo, stopRegistration) or the claim moves to another session or key. Each pod,
+// session and key is registered once per incarnation: a later hello or observation of the same one
+// starts nothing.
 func (m *Machine) ensureRegistered() {
 	loc := m.claim.Locator
 	if m.deps.Registrar == nil || loc == nil || loc.Runtime != runtime.RuntimeSandbox || loc.Sandbox == nil {
 		return
 	}
-	if m.identity == nil || m.identity.incarnation != loc.Incarnation {
+	if m.identity == nil || m.identity.incarnation != loc.Incarnation || m.identity.Thumbprint == "" {
 		return
 	}
+	thumbprint := m.identity.Thumbprint
 	session := m.claim.Session
 	if session == "" {
 		if namer, ok := m.deps.Runtime.(runtime.LaunchSessionNamer); ok {
@@ -201,27 +209,30 @@ func (m *Machine) ensureRegistered() {
 	if session == "" {
 		return
 	}
-	if r := m.registration; r != nil && r.incarnation == loc.Incarnation && r.session == session {
+	if r := m.registration; r != nil && r.incarnation == loc.Incarnation && r.session == session && r.thumbprint == thumbprint {
 		return
 	}
 	m.stopRegistration()
 	// The renewal's context is the machine's own, not the decision's: the request that brought
-	// the session in ending does not end it, the process's let-go or the machine's end does. The
-	// first write's outcome is the registrar's to log; nothing here decides on it.
-	keeping, cancel := context.WithCancel(m.ctx)
-	m.registration = &podRegistration{incarnation: loc.Incarnation, session: session, cancel: cancel}
-	_ = m.deps.Registrar.KeepPodSession(keeping, PodSession{
-		PodUID: loc.Sandbox.PodUID, Session: session, Bound: m.deps.Timeouts.RPC,
+	// the session in ending does not end it, the process's let-go (its stop) or the machine's end
+	// does. The first write's outcome is the registrar's to log; nothing here decides on it.
+	stop, _ := m.deps.Registrar.KeepPodSession(m.ctx, PodSession{
+		PodUID: loc.Sandbox.PodUID, Session: session, Thumbprint: thumbprint, Bound: m.deps.Timeouts.RPC,
 		Token: m.podToken(m.identity.PodToken),
 		After: func(d time.Duration, f func()) func() bool { return m.deps.Clock.AfterFunc(d, f).Stop },
 	})
+	m.registration = &podRegistration{incarnation: loc.Incarnation, session: session, thumbprint: thumbprint, stop: stop}
 }
 
-// stopRegistration ends the renewal of the registration the machine keeps, if any. The broker
-// honours its last write for a day, past which an exchange naming the pod and session is refused.
+// stopRegistration ends the renewal of the registration the machine keeps, if any, and returns
+// once its write in flight, if any, has been answered: that write is not cancelled, so a new
+// incarnation's first write, which follows this in the same decision, reaches the broker after the
+// old incarnation's last and the row ends bound to the new key. The wait is bounded by the write's
+// own bound, the RPC timeout. The broker honours the last write for a day, past which an exchange
+// naming the pod and session is refused.
 func (m *Machine) stopRegistration() {
 	if m.registration != nil {
-		m.registration.cancel()
+		m.registration.stop()
 		m.registration = nil
 	}
 }

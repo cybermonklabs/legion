@@ -38,10 +38,11 @@ type expiringBroker struct {
 }
 
 // podSessionWrite is one registration the broker took: the pod, the session, the moment on the
-// test's clock, and the bearer it was authenticated with.
+// test's clock, the thumbprint it bound the registration to, and the bearer it was authenticated
+// with.
 type podSessionWrite struct {
-	pod, session, bearer string
-	at                   time.Time
+	pod, session, thumbprint, bearer string
+	at                               time.Time
 }
 
 func (b *expiringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -50,8 +51,9 @@ func (b *expiringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PodToken string `json:"pod_token"`
-		Session  string `json:"session"`
+		PodToken   string `json:"pod_token"`
+		Session    string `json:"session"`
+		Thumbprint string `json:"thumbprint"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		b.t.Errorf("the registration's body does not decode: %v", err)
@@ -64,10 +66,10 @@ func (b *expiringBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	at := b.clock.Now()
 	b.mu.Lock()
-	b.writes = append(b.writes, podSessionWrite{pod: pod, session: body.Session, bearer: r.Header.Get("Authorization"), at: at})
+	b.writes = append(b.writes, podSessionWrite{pod: pod, session: body.Session, thumbprint: body.Thumbprint, bearer: r.Header.Get("Authorization"), at: at})
 	b.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"pod_uid": pod, "session": body.Session, "expires_at": at.Add(podSessionRetention)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"pod_uid": pod, "session": body.Session, "thumbprint": body.Thumbprint, "expires_at": at.Add(podSessionRetention)})
 }
 
 // exchangeAdmitted is whether the broker's exchange, at the test clock's now, admits pod trading
@@ -103,13 +105,15 @@ func (enrollsEveryPod) Revoke(context.Context, string) error { return nil }
 // registrar (newRegistrar, with exchange_audience set) for 25 hours on the test's clock, against a
 // broker that holds each registration to the day past its last write. The daemon writes the
 // registration when the agent registers and again every agentsecrets.RegistrationRenewal, each
-// time under its own ServiceAccount token and presenting the token the pod's shim reads then, so
-// at 25 hours — past the first write's day — the broker still admits the pod's exchange under its
-// session. Once the claim ends, nothing more is written.
+// time under its own ServiceAccount token, bound to the thumbprint the role's hello named and
+// presenting the token the pod's shim reads then, so at 25 hours — past the first write's day —
+// the broker still admits the pod's exchange under its session. Once the claim ends, nothing more
+// is written.
 func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	const (
-		pod     = "pod-uid-renewed"
-		session = "ses_renewed"
+		pod        = "pod-uid-renewed"
+		session    = "ses_renewed"
+		thumbprint = "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
 	)
 	clock := newWaveClock()
 	broker := &expiringBroker{t: t, clock: clock}
@@ -155,7 +159,7 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 	conns.Register(token, conn)
 	for _, ev := range []supervise.Event{
 		supervise.RequestSpawn{Claim: token},
-		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: "tp", PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.at-the-hello"}},
+		supervise.StreamHello{Claim: token, Generation: 1, AgentSecrets: &supervise.AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.at-the-hello"}},
 		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: session},
 	} {
@@ -176,8 +180,8 @@ func TestRegistrationsAreRenewedBeforeTheyLapse(t *testing.T) {
 		t.Fatalf("the broker took %d writes of session %s in 25 hours, want at least four", len(writes), session)
 	}
 	for i, write := range writes {
-		if write.pod != pod || write.session != session || write.bearer != "Bearer the-daemon's-token" {
-			t.Errorf("write %d registered pod %s for session %s under %q, want pod %s for %s under the daemon's own token", i, write.pod, write.session, write.bearer, pod, session)
+		if write.pod != pod || write.session != session || write.thumbprint != thumbprint || write.bearer != "Bearer the-daemon's-token" {
+			t.Errorf("write %d registered pod %s for session %s bound to %q under %q, want pod %s for %s bound to the hello's thumbprint %q under the daemon's own token", i, write.pod, write.session, write.thumbprint, write.bearer, pod, session, thumbprint)
 		}
 		if gap := write.at.Sub(started); i > 0 && gap-writes[i-1].at.Sub(started) > agentsecrets.RegistrationRenewal {
 			t.Errorf("write %d came %s after the one before it, want at most %s", i, gap-writes[i-1].at.Sub(started), agentsecrets.RegistrationRenewal)

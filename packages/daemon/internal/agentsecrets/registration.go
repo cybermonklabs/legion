@@ -31,6 +31,9 @@ type PodSessionRenewal struct {
 	PodUID string
 	// Session is the session name the pod may trade under.
 	Session string
+	// Thumbprint is the RFC 7638 thumbprint of the role's own key, which the role's shim hello
+	// named: every write sends it, so the registration stays bound to that key alone.
+	Thumbprint string
 	// Token answers the pod token a write presents: the pod's own projected ServiceAccount token
 	// for the broker's audience. It is asked once per write, so a write hours after the pod
 	// started presents the token the pod holds then.
@@ -43,25 +46,35 @@ type PodSessionRenewal struct {
 	Bound time.Duration
 }
 
-// KeepPodSession writes r's registration now and keeps it written until ctx ends, on r.After: again
-// RegistrationRenewal after each write the broker takes, and after a write that failed or that the
-// broker refused for a reason a retry can change (IsPermanent false: a 5xx, a 429, an expired pod
-// token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a token the pod did not hand over) on a
-// backoff from registrationRetryInitial doubling to registrationRetryMax. A permanent refusal ends
-// it, and so does an answer the broker made for another pod than r.PodUID (PodMismatchError): no
-// later write of the same registration could be taken for that pod. Each write's outcome is logged,
-// naming the pod and the session and never a token. It returns once the first write is made, with
-// that write's error, having scheduled the next; the caller ends the renewal by ending ctx, which
-// stops the write scheduled next.
-func (c *Client) KeepPodSession(ctx context.Context, r PodSessionRenewal) error {
+// KeepPodSession writes r's registration now and keeps it written until stop is called or ctx
+// ends, on r.After: again RegistrationRenewal after each write the broker takes, and after a write
+// that failed or that the broker refused for a reason a retry can change (IsPermanent false: a
+// 5xx, a 429, an expired pod token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a token the
+// pod did not hand over) on a backoff from registrationRetryInitial doubling to
+// registrationRetryMax. Every write sends r.Thumbprint. A permanent refusal ends it, and so do an
+// answer the broker made for another pod or key than r's (AnswerMismatchError) and a renewal named
+// with no thumbprint (MissingThumbprintError): no later write of the same registration could be
+// taken. Each write's outcome is logged, naming the pod and the session and never a token.
+//
+// It returns once the first write is made, with that write's error, having scheduled the next,
+// and a stop. The stop stops the write scheduled next and returns only once a write in flight, if
+// any, has been answered: it does not cancel that write, which runs under r.Bound in ctx, so a
+// caller that writes the same session's next registration after the stop knows this one's last
+// write has landed before it. ctx's end cancels the write in flight and stops the renewal too.
+func (c *Client) KeepPodSession(ctx context.Context, r PodSessionRenewal) (stop func(), err error) {
 	k := &podSessionKeeper{client: c, r: r, ctx: ctx}
-	context.AfterFunc(ctx, k.stop)
-	return k.write()
+	unhook := context.AfterFunc(ctx, k.halt)
+	stop = func() {
+		unhook()
+		k.halt()
+		k.flying.Wait()
+	}
+	return stop, k.write()
 }
 
-// podSessionKeeper is one KeepPodSession's state: the write scheduled next, and how many writes
-// in a row have failed. Writes never overlap: each is scheduled by the one before it, after that
-// one ended.
+// podSessionKeeper is one KeepPodSession's state: the write scheduled next, how many writes in a
+// row have failed, whether the renewal has been stopped, and the scheduled write in flight.
+// Writes never overlap: each is scheduled by the one before it, after that one ended.
 type podSessionKeeper struct {
 	client *Client
 	r      PodSessionRenewal
@@ -69,7 +82,12 @@ type podSessionKeeper struct {
 
 	mu      sync.Mutex
 	pending func() bool
+	stopped bool
 	failed  int
+	// flying counts the scheduled write in flight. A write joins it under mu only while the
+	// renewal is not stopped, so once halt has set stopped no write joins, and a Wait after halt
+	// waits for exactly the write that had already started.
+	flying sync.WaitGroup
 }
 
 // write makes one write and schedules the next, answering the write's error. A write made or
@@ -112,23 +130,38 @@ func (k *podSessionKeeper) attempt(ctx context.Context) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("read the pod's token: %w", err)
 	}
-	return k.client.RegisterPodSession(ctx, k.r.PodUID, token, k.r.Session)
+	return k.client.RegisterPodSession(ctx, k.r.PodUID, token, k.r.Session, k.r.Thumbprint)
 }
 
-// schedule arms the next write after wait, unless ctx has ended.
+// schedule arms the next write after wait, unless the renewal is stopped or ctx has ended.
 func (k *podSessionKeeper) schedule(wait time.Duration) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if k.ctx.Err() != nil {
+	if k.stopped || k.ctx.Err() != nil {
 		return
 	}
-	k.pending = k.r.After(wait, func() { _ = k.write() })
+	k.pending = k.r.After(wait, k.fire)
 }
 
-// stop stops the write scheduled next; ctx's end calls it.
-func (k *podSessionKeeper) stop() {
+// fire is a scheduled write: it joins flying and writes, unless the renewal was stopped first.
+func (k *podSessionKeeper) fire() {
+	k.mu.Lock()
+	if k.stopped {
+		k.mu.Unlock()
+		return
+	}
+	k.flying.Add(1)
+	k.mu.Unlock()
+	defer k.flying.Done()
+	_ = k.write()
+}
+
+// halt stops the renewal: the write scheduled next never runs, and a write in flight schedules
+// nothing after it.
+func (k *podSessionKeeper) halt() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.stopped = true
 	if k.pending != nil {
 		k.pending()
 	}
