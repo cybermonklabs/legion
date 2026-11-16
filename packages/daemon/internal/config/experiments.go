@@ -106,13 +106,14 @@ type Variant struct {
 	// Weight is `weight`, the arm's share of a random draw against its siblings' weights: a whole
 	// number above zero, 1 where the block names none, so a list of plain variants is a fair coin.
 	Weight int
-	// ConfigFiles are `config_files`, the Oh My Pi settings overlays every role of a unit drawn
-	// into this arm names in PI_CONFIG_FILES, after the operator's own and the role's own
-	// (role_config_files), in the file's order; nil where the arm names none.
+	// ConfigFiles are `config_files`, the Oh My Pi settings overlays each role the experiment
+	// reaches (Experiment.Reaches) of a unit drawn into this arm names in PI_CONFIG_FILES, after
+	// the operator's own and the role's own (role_config_files), in the file's order; nil where
+	// the arm names none.
 	ConfigFiles []string
 	// InstructionsPath is `instructions`, the one markdown file the daemon reads at boot and
-	// appends to the system prompt of every role of a unit drawn into this arm, after the
-	// deployment's own instructions; empty where the arm names none.
+	// appends to the system prompt of each role the experiment reaches of a unit drawn into this
+	// arm, after the deployment's own instructions; empty where the arm names none.
 	InstructionsPath string
 	// ConfigFilesField is the key the operator wrote ConfigFiles under, whole:
 	// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, and
@@ -514,8 +515,9 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 
 // checkExperiments refuses what a project's declared variants name that no role could load as
 // named, once the rest of the file is settled: the two rules every declaration of overlays
-// answers — a harness other than Oh My Pi on an issue role, and an overlay outside the
-// operator's pod mounts (checkDeclaredOverlays), which the `memory` block answers too.
+// answers — a harness other than Oh My Pi on an issue role the experiment reaches (its `roles`),
+// and an overlay outside the operator's pod mounts (checkDeclaredOverlays), which the `memory`
+// block answers too.
 //
 // Both hold whatever the mode is, `off` included, for the reason checkMemory's own two do: the
 // mode decides which new units are drawn, and a unit already drawn keeps the files of the variant
@@ -542,7 +544,7 @@ func checkExperiments(cfg Config) error {
 				continue
 			}
 			for _, variant := range experiment.Variants {
-				if err := checkDeclaredOverlays(cfg, variant.ConfigFilesField, "the variant", variant.ConfigFiles); err != nil {
+				if err := checkDeclaredOverlays(cfg, variant.ConfigFilesField, "the variant", variant.ConfigFiles, experiment.Roles); err != nil {
 					return err
 				}
 			}

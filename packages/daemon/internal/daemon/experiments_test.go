@@ -155,17 +155,20 @@ func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
 		}
 		return memorySpawn(t, s, tree, issue, role)
 	}
-	wantVariants := []runtime.Variant{{Experiment: "cheaper-model", Name: "open", ConfigFiles: []string{"/etc/legion-experiments/open.yml"}}}
+	wantVariants := func(roles []claim.Role) []runtime.Variant {
+		return []runtime.Variant{{Experiment: "cheaper-model", Name: "open", ConfigFiles: []string{"/etc/legion-experiments/open.yml"}, Roles: roles}}
+	}
 	wantInstructions := []string{"/state/experiments/cheaper-model/open.md"}
 
-	named := declare([]claim.Role{claim.RolePlanner, claim.RoleImplementer})
+	roles := []claim.Role{claim.RolePlanner, claim.RoleImplementer}
+	named := declare(roles)
 	for _, role := range claim.Roles {
 		spec := spawn(named, role)
 		treated := role == claim.RolePlanner || role == claim.RoleImplementer
 		switch {
-		case treated && (!reflect.DeepEqual(spec.Variants, wantVariants) || !reflect.DeepEqual(spec.Prompt.VariantInstructionsPaths, wantInstructions)):
+		case treated && (!reflect.DeepEqual(spec.Variants, wantVariants(roles)) || !reflect.DeepEqual(spec.Prompt.VariantInstructionsPaths, wantInstructions)):
 			t.Errorf("the %s of a treated tree: variants = %+v, instructions = %q; want the arm %+v and %q",
-				role, spec.Variants, spec.Prompt.VariantInstructionsPaths, wantVariants, wantInstructions)
+				role, spec.Variants, spec.Prompt.VariantInstructionsPaths, wantVariants(roles), wantInstructions)
 		case !treated && (len(spec.Variants) != 0 || len(spec.Prompt.VariantInstructionsPaths) != 0):
 			t.Errorf("the %s of a treated tree, a role the experiment leaves out: variants = %+v, instructions = %q; want neither",
 				role, spec.Variants, spec.Prompt.VariantInstructionsPaths)
@@ -173,9 +176,9 @@ func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
 	}
 
 	for _, role := range claim.Roles {
-		if spec := spawn(declare(nil), role); !reflect.DeepEqual(spec.Variants, wantVariants) {
+		if spec := spawn(declare(nil), role); !reflect.DeepEqual(spec.Variants, wantVariants(nil)) {
 			t.Errorf("the %s of a treated tree under an experiment that names no roles: variants = %+v, want the arm %+v",
-				role, spec.Variants, wantVariants)
+				role, spec.Variants, wantVariants(nil))
 		}
 	}
 }

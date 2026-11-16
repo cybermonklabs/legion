@@ -121,6 +121,24 @@ func TestProjectExperimentsTakeTheRolesTheirArmsReach(t *testing.T) {
 	}
 }
 
+// An arm's overlays need Oh My Pi only on the roles its experiment reaches: a reviewer on Claude
+// Code beside an experiment that names only the implementer loads, since that reviewer never
+// starts on the arm's overlays, and the same file is refused once the experiment names the
+// reviewer, in words that name the fix its `roles` allows.
+func TestProjectExperimentsAskOhMyPiOnlyOfTheRolesTheyReach(t *testing.T) {
+	const extra = "worker_backends: {reviewer: claude}\n"
+	reach := func(roles string) string {
+		return "{alpha: {mode: random, roles: " + roles + ", variants: [{name: only, config_files: [/etc/a.yml]}, {name: other}]}}"
+	}
+	if _, err := Load(writeConfigFile(t, experimentsFile(reach("[implementer]"), extra)), noEnv); err != nil {
+		t.Fatalf("Load with the Claude reviewer outside the experiment's roles = %v, want it to load", err)
+	}
+	want := "projects.DEMO.experiments.alpha.variants.only names config_files, and worker_backends.reviewer is claude, which reads no PI_CONFIG_FILES: put every role its roles names on omp, or take the overlays out of the variant"
+	if _, err := Load(writeConfigFile(t, experimentsFile(reach("[implementer, reviewer]"), extra)), noEnv); err == nil || err.Error() != want {
+		t.Fatalf("Load with the Claude reviewer among the experiment's roles = %v, want %q", err, want)
+	}
+}
+
 // A project may declare the memory experiment under the key instead of the block, so long as its
 // variants are the two the wire enum takes.
 func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {

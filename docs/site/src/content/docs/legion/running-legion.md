@@ -449,17 +449,20 @@ What each part is for:
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms (`architect`, `planner`,
   `implementer`, `tester`, `reviewer`, `merger`, each once), and every issue role where the block
-  names none. A launch of a role the list leaves out runs on the deployment's own settings, while
-  its unit keeps the arm it drew. So an experiment that changes how the work is done can leave the
-  roles that judge the work, such as the reviewer, the tester and the architect who signs a merge
-  off, on the control's settings, and read their verdicts as its outcome; with every role in the
-  arm, a merge rate or a count of review rounds is partly the treated roles' own verdict.
+  names none. A launch of a role the list leaves out loads none of this experiment's overlays or
+  instructions, while its unit keeps the arm it drew; the deployment's and the role's own
+  settings, and the arms of any other experiment that reaches the role, still apply. So an
+  experiment that changes how the work is done can leave the roles that judge the work, such as
+  the reviewer, the tester and the architect who signs a merge off, out of its arms, and read
+  their verdicts as its outcome; with every role in the arm, a merge rate or a count of review
+  rounds is partly the treated roles' own verdict.
   `variants` are the arms it compares, and a mode other than `off` needs at least two of them,
   since a draw among one arm measures nothing.
   Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole
   number above zero, `1` where the arm names none), `config_files`, the Oh My Pi settings overlays
-  a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own
-  disk that the daemon reads at boot and appends to that role's system prompt.
+  a role of a unit drawn into it names where the experiment reaches that role, and
+  `instructions`, one markdown file on the daemon's own disk that the daemon reads at boot and
+  appends to that role's system prompt.
   Both file keys are absolute paths, and neither is required: the arm that names no file at all is
   the control the others are measured against.
   A role of a drawn unit that the experiment reaches names each arm's `config_files` in its

@@ -370,10 +370,11 @@ type ExperimentSettings struct {
 }
 
 // VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
-// random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
-// into it names, `[]` for an arm that names none, and the one instructions file such a role's
-// system prompt takes, absent where the arm names none. The paths are the operator's own file
-// names, which no credential rides in, as the `memory` block's are.
+// random draw gives it against its siblings, the Oh My Pi overlays each role its experiment
+// reaches of a unit drawn into it names, `[]` for an arm that names none, and the one
+// instructions file such a role's system prompt takes, absent where the arm names none. The
+// paths are the operator's own file names, which no credential rides in, as the `memory` block's
+// are.
 type VariantSettings struct {
 	Name         string   `json:"name"`
 	Weight       int      `json:"weight"`

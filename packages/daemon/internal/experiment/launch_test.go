@@ -143,7 +143,7 @@ func TestARoleAnExperimentLeavesOutTakesNoArmOfThatExperimentAlone(t *testing.T)
 	declared[0].Roles = []claim.Role{claim.RoleImplementer}
 	launch := ForLaunch(declared, "/state")
 	alpha := runtime.Variant{Experiment: "alpha", Name: "on", ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"},
-		ConfigFilesField: "projects.TEST.experiments.alpha.variants.on.config_files"}
+		ConfigFilesField: "projects.TEST.experiments.alpha.variants.on.config_files", Roles: []claim.Role{claim.RoleImplementer}}
 	beta := runtime.Variant{Experiment: "beta", Name: "on"}
 	for _, tc := range []struct {
 		role claim.Role
