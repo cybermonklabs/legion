@@ -142,7 +142,7 @@ is the tester's, on the pull request, where the project opens one.
 
 Necessary work remains your responsibility until it is complete, and deferral is not allowed.
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-Each review round re-reads a large pull request in full and repeats whole-change tests; one failure holds all the work, and the request merges late.
+Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
 It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.

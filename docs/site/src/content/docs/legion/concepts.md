@@ -101,7 +101,7 @@ admission to close. The architect:
 2. extends your issue's spec in place, writing each open question as a decision block for you to
    answer;
 3. asks you to approve the spec (the [design gate](#the-design-gate));
-4. decomposes the work into child issues and releases them with dependencies;
+4. decides how many pull requests deliver the work best, files any child issues that takes, and releases them with their dependencies;
 5. decides what to do when a phase gets stuck, a review round cap is reached, or CI keeps failing;
 6. accepts the issue once the reviewer approves it, reading the tester's and the implementer's evidence, or sends it back; the merge then closes it.
 
@@ -109,7 +109,7 @@ The architect writes no code. A child issue runs the same phases as its root, wi
 of its own, inside the same tree.
 
 Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-Each review round re-reads a large pull request in full and repeats whole-change tests; one failure holds all the work, and the request merges late.
+Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
 It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.

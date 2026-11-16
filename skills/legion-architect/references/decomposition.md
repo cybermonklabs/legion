@@ -44,10 +44,14 @@ EOF
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
   proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
   the root's pull request or an open child's. Weigh each separate pull request against combining
-  its work, using the sizing reasons below."* `wait` for its verdict, since it runs as a job of
-  its own.
+  its work. Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
+  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
+  It can also conflict with the default branch.
+  Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
+  They can conflict with each other, and dependent slices run in sequence."*
+  `wait` for its verdict, since it runs as a job of its own.
   Size pull requests to deliver the work most efficiently and reliably, with no preference on their number.
-  Each review round re-reads a large pull request in full and repeats whole-change tests; one failure holds all the work, and the request merges late.
+  Each round tests a large pull request whole again; one failure holds all the work, and the request merges late.
   It can also conflict with the default branch.
   Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
   They can conflict with each other, and dependent slices run in sequence.
@@ -105,7 +109,8 @@ issue `LEGION-41`, role `architect` is `legion-acme-legion-41-architect`.
 ## Across repositories
 
 Split a change across repositories into children, each in one repository.
-Size their pull requests by the reasons above:
+Size their pull requests by the reasons above.
+Create each child with:
 `dispatch issue --project <project> --parent <root> --repo <owner/name> …`.
 Choose the repository at creation, because the daemon fixes it when it records the child.
 
