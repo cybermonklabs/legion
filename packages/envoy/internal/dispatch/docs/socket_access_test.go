@@ -5,10 +5,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+	"weak"
 
 	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
@@ -16,8 +20,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // writeAccess runs write in a transaction of its own and commits it, as an access route does: the
@@ -144,5 +150,169 @@ func TestASocketAdmittedAcrossAnAccessCheckIsClosed(t *testing.T) {
 	}
 	if held := admissions.beginAccessCheck()["bob@outside.example"]; len(held) != 1 || held[0] != after {
 		t.Errorf("the next re-check walks %v, want the kept socket alone", held)
+	}
+}
+
+// TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive: everything the access
+// re-check added to the document socket - each admission's person and re-check count, the
+// re-check itself on its room-sync lane and called directly, the access-change listener, a socket
+// admitted while a re-check runs, a socket the re-check closes, and the 503 a socket gets past a
+// cap - leaves nothing holding the service once its sockets have closed and it has shut down. A
+// burst of sockets, alice's and bob's, opens at once against both caps while bob is taken off
+// DOC's list and put back on it, each change announced on access.ChangedChannel to the running
+// room sync, and while the re-check runs in a loop beside it. Once the subtest that built the
+// service has ended and its cleanups have run, the service must be collected within the leak
+// report's budget (leakWaitBudget), as TestMain requires of every service a test builds.
+func TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive(t *testing.T) {
+	var built weak.Pointer[Service]
+	t.Run("the burst", func(t *testing.T) { socketBurstDuringAccessRechecks(t, &built) })
+	requireServiceCollected(t, built)
+}
+
+// socketBurstDuringAccessRechecks runs the burst, and points built at the service it builds, weakly,
+// as soon as it is built: a burst that fails part way leaves a service to collect all the same.
+func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service]) {
+	// An odd number of changes, the first a removal, so bob ends off the list.
+	const bob, burst, changes = "bob@outside.example", 24, 7
+	database := storetest.Open(t)
+	service := New(Deps{
+		Store: database, Events: events.NewBroker(), Identity: headerIdentity(database), ServerURL: "https://dispatch.example",
+		Settle: time.Hour, MaxLiveRooms: 2, MaxDocConnections: 6,
+	})
+	*built = weak.Make(service)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown document service: %v", err)
+		}
+	})
+	service.srv.RoomIdleTimeout = time.Hour
+	ids := createDocuments(t, database, 4)
+	owner := model.Actor{Kind: "user", ID: "alice"}
+	setBob := func(listed bool) error {
+		ctx := context.Background()
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback(ctx)
+		if listed {
+			_, _, err = access.AddPrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, bob, owner)
+		} else {
+			_, _, err = access.RemovePrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, bob, owner)
+		}
+		if err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+		_, _, err := access.SetVisibility(ctx, tx, service.events, "DOC", model.ProjectPrivate, owner)
+		return err
+	})
+	if err := setBob(true); err != nil {
+		t.Fatalf("put bob on DOC's list: %v", err)
+	}
+	runRoomSync(t, newRoomSync(service))
+	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(server.Close)
+	// bob's socket, held through the burst, which the first removal closes.
+	held := connectPeer(t, server.URL, ids[0], bob)
+	if err := held.WaitForText(peerMarkdown, "Room cap probe.\n", roomWait(t)); err != nil {
+		t.Fatalf("bob reads the first document: %v", err)
+	}
+
+	var mu sync.Mutex
+	var admitted []*gws.Conn
+	refusals := map[int]int{}
+	var rechecks atomic.Int64
+	done := make(chan struct{})
+	var beside sync.WaitGroup
+	beside.Add(2)
+	go func() {
+		defer beside.Done()
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+			service.recheckAccess(context.Background())
+			rechecks.Add(1)
+		}
+	}()
+	go func() {
+		defer beside.Done()
+		for change := range changes {
+			if err := setBob(change%2 == 1); err != nil {
+				t.Errorf("change bob's place on DOC's list: %v", err)
+				return
+			}
+		}
+	}()
+	start := make(chan struct{})
+	var dials sync.WaitGroup
+	for i := range burst {
+		dials.Add(1)
+		go func() {
+			defer dials.Done()
+			<-start
+			login := "alice"
+			if i%2 == 1 {
+				login = bob
+			}
+			connection, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, ids[i%len(ids)]), http.Header{"X-Dispatch-User": []string{login}})
+			mu.Lock()
+			defer mu.Unlock()
+			if err == nil {
+				admitted = append(admitted, connection)
+				return
+			}
+			status := 0
+			if response != nil {
+				status = response.StatusCode
+				_ = response.Body.Close()
+			}
+			refusals[status]++
+		}()
+	}
+	close(start)
+	dials.Wait()
+	close(done)
+	beside.Wait()
+	for _, connection := range admitted {
+		_ = connection.Close()
+	}
+	select {
+	case <-held.Ended:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("bob's held socket was still open %s after he was taken off DOC's list", roomWait(t))
+	}
+	if refusals[http.StatusServiceUnavailable] == 0 || len(admitted) == 0 || rechecks.Load() == 0 {
+		t.Fatalf("the burst admitted %d sockets, refused %v, and ran %d re-checks beside them: want admissions, 503s at the caps and re-checks, or it tested nothing",
+			len(admitted), refusals, rechecks.Load())
+	}
+	t.Logf("the burst admitted %d sockets, refused %v, ran %d re-checks beside them, and closed bob's held socket with %d",
+		len(admitted), refusals, rechecks.Load(), held.CloseCode())
+}
+
+// requireServiceCollected fails unless built is collected within leakWaitBudget, forcing
+// collections as the package's leak report does (reportLeakedServices).
+func requireServiceCollected(t *testing.T, built weak.Pointer[Service]) {
+	t.Helper()
+	if built == (weak.Pointer[Service]{}) {
+		t.Fatal("no service was built, so its collection proves nothing")
+	}
+	began := time.Now()
+	for {
+		runtime.GC()
+		runtime.GC()
+		if built.Value() == nil {
+			t.Logf("the service was collected %s after its test ended", time.Since(began).Round(time.Millisecond))
+			return
+		}
+		if time.Since(began) >= leakWaitBudget {
+			t.Fatalf("the service is still alive %s after its test ended and shut it down", time.Since(began).Round(time.Millisecond))
+		}
+		time.Sleep(leakWaitStep)
 	}
 }
