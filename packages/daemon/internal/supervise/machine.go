@@ -854,10 +854,11 @@ type Deps struct {
 	// role sessions, and the session of the ended claim leaves the set. An end whose write the
 	// store refused tells no one, since the store still holds the claim live. Nil tells no one. It
 	// is called inside the machine's decision, so it returns at once and queues elsewhere, and a
-	// queue that fails there is logged and nothing else: such an end reaches Dispatch only at the
-	// daemon's next boot, or at the next ready or end of a claim on the same issue. In that time
-	// the ended session keeps its role on Dispatch, and a process whose stop failed can still write
-	// with the pane's Dispatch bearer.
+	// queue that fails there is logged and nothing else: such an end reaches Dispatch at the
+	// daemon's next boot only when that boot comes within seven days of the end, or else at the
+	// next ready or end of a claim on the same issue. In that time the ended session keeps its
+	// role on Dispatch, and a process whose stop failed can still write with the pane's Dispatch
+	// bearer.
 	ClaimEnded func(c Claim)
 	// SessionGone is told the Envoy session a claim recorded, once a probe has judged the agent
 	// process behind it gone (died), or a suspension has landed over a process a report found

@@ -1975,16 +1975,27 @@ The migration changes no column.
 
 The daemon and Dispatch deploy in either order.
 A Dispatch without the route answers `404 NOT_FOUND`, and the daemon retries the row until Dispatch has the route.
+The daemon also retries a `5xx`.
+A `400` from the route is final: the daemon ends the row and logs one ERROR line with the issue and Dispatch's code, and the next ready or end of a claim on that issue queues a fresh publication.
 
 **The session of an ended claim keeps its role for a time.**
 It keeps its role until the daemon's publication of the end lands.
 The daemon queues that publication on a goroutine, and it only logs a queue that fails.
-Such an end reaches Dispatch only at the next boot of the daemon, or at the next ready or end of a claim on the same issue.
+Such an end reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end, because the boot reads only the claims that are live or that changed in the last seven days.
+Otherwise it reaches Dispatch at the next ready or end of a claim on the same issue, and until then the session stays listed.
 In that time, a process whose stop failed can still write with the pane's Dispatch bearer, because a failed claim and a suspended claim can let go of such a process.
 
-**The rows of the new kind must go before the earlier image is pinned.**
-An earlier release puts the kind in no outbox lane, so it never runs such a row, and the row runs only at the roll forward.
-Run this with the daemon stopped, before the earlier image is pinned:
+**Who can write the set.**
+The route takes a write that names the actor `legion-daemon:<project>`.
+Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name that actor: the deployment's shared token, and a person's own agent token whatever its scopes.
+The airlock closes that case.
+
+**A row of the new kind can stay through a rollback.**
+An earlier release puts the kind in no outbox lane, so it never runs such a row.
+Observed on the release before this one: its daemon booted with such a row in the outbox and worked as before, and 60 s later the row was still there with 0 attempts, and no log line named it.
+At the roll forward, this release runs the row, and it sends the live set that it reads then, so the row does no harm.
+The boot of this release queues every recent issue in any case.
+To leave no row behind, you can run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
 -- The publication of an issue's role sessions to Dispatch.

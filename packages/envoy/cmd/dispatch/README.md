@@ -4367,27 +4367,35 @@ Each item below names a path with its method and identity, then its purpose.
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.
 
-- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; only the Legion daemon's session)
+- `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; the actor must be the Legion daemon's session)
 
   Publish the session that holds each Legion role of the issue: `{holders: [{role, session}], actor}`.
   The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`.
+  The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A pair that did not change keeps its `recorded_at`.
-  Only the Legion daemon of the issue's project writes the set, as session `legion-daemon:<project>`, the key up to its first `-`.
-  Every other caller is `403 ROLE_HOLDER_FORBIDDEN`.
-  This check reads the actor that the body names, so a caller that holds the deployment's bearer can name that session too.
+  The actor must be the session `legion-daemon:<project>`, the key up to its first `-`, which is the session that the daemon of the issue's project writes as.
+  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
+  Before the airlock, Dispatch takes the session that a bearer caller names as the caller names it.
+  So any caller whose Dispatch credential proves no session of its own can name the daemon's session and write the set: the deployment's shared token, and a person's own agent token whatever its scopes.
   The airlock closes that case.
-  A body without `holders`, a role that is not one of the six, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`.
+  A body without `holders`, a role that is not one of the six, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.
-  The answer is `200 {issue, holders}`, each holder `{role, session, recorded_at}`, in workflow order.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, in workflow order.
+
+  A write holds a lock of the issue row that a second write of the same issue waits for, so the stored set is always one whole set.
+  When two writes of one issue run at the same time, the one that finishes last wins.
+  The daemon sends one write of an issue at a time: its outbox holds one `role_holders_publish` row for each issue, and a lane runs the rows of its issue one at a time (`packages/daemon/internal/daemon/outbox_lanes.go`).
 
   The daemon publishes the set when a claim readies, when a claim ends and at each boot.
   The session of an ended claim keeps its role until the next publication lands.
   The daemon queues the publication of an end on a goroutine, and it only logs a queue that fails.
-  Such an end reaches Dispatch only at the next boot of the daemon, or at the next ready or end of a claim on the same issue.
+  Such an end reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end.
+  Otherwise it reaches Dispatch at the next ready or end of a claim on the same issue, and until then the session stays listed.
   In that time, a process whose stop failed can still write with the pane's Dispatch bearer, and its session keeps its role.
+  The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready or end of a claim on the issue queues a fresh publication of the live set.
 
 - `/api/v1/issues/{key}/role-holders` (GET; cookie, trusted header, or bearer)
 

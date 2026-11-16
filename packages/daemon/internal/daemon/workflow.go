@@ -550,18 +550,23 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 }
 
 // roleHoldersPublishWindow is how far back the boot looks for a claim change it may not have
-// published (queueRoleHoldersPublish).
+// published (queueRoleHoldersPublish): a claim whose last write is older and that is not live is
+// not read. No plan gives the number a reason beyond bounding the boot's read. Each issue inside
+// it costs the boot one outbox row and its lane one PUT, so a longer window costs a boot one more
+// of each for every issue whose claims last changed inside the longer span.
 const roleHoldersPublishWindow = 7 * 24 * time.Hour
 
 // queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
 // a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
 // in one transaction. A daemon that starts over running sessions has published nothing for them
 // yet, and an end whose queue failed (claimEnded) or that a crash lost before its queue is
-// published here, at the next boot: this pass is the one path that publishes such an end when no
-// later ready or end of the same issue comes first. A boot that cannot write the rows fails the
-// boot, as the design-gates pass does, and queueing rather than writing means a Dispatch that is
-// down refuses no boot. The lane is woken on commit (projectRecords), which before attach reaches
-// nothing: the outbox's first sweep runs whatever this pass left.
+// published here, at the next boot, when that boot comes within roleHoldersPublishWindow of the
+// end (the claim's last write). This pass is the one path that publishes such an end when no later
+// ready or end of the same issue comes first; an end older than the window stays listed on
+// Dispatch until the next ready or end of a claim on its issue. A boot that cannot write the rows
+// fails the boot, as the design-gates pass does, and queueing rather than writing means a Dispatch
+// that is down refuses no boot. The lane is woken on commit (projectRecords), which before attach
+// reaches nothing: the outbox's first sweep runs whatever this pass left.
 func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
 	now := time.Now().UTC()
 	scoped, committed := intake.WithCommitHooks(ctx)
@@ -607,11 +612,12 @@ func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Cl
 // failed or suspended (supervise's Deps.ClaimEnded) — so the ended session leaves the set Dispatch
 // holds. The machine calls it inside its own decision, so the queue runs on a goroutine of its own,
 // bounded by readyReleaseTimeout. A queue that fails is logged and nothing else: no caller is there
-// to refuse. Such an end reaches Dispatch only at the next boot (queueRoleHoldersPublish), or at
-// the next ready or end of a claim of the same issue. Until then the ended session keeps its role
-// on Dispatch, and the process of a failed or suspended claim whose stop the runtime refused can
-// still run and write with the pane's Dispatch bearer. A claim on no issue, and the controller,
-// hold no role of an issue.
+// to refuse. Such an end reaches Dispatch at the next boot (queueRoleHoldersPublish) only when that
+// boot comes within roleHoldersPublishWindow (seven days) of the end, or else at the next ready or
+// end of a claim of the same issue. Until then the ended session keeps its role on Dispatch, and
+// the process of a failed or suspended claim whose stop the runtime refused can still run and
+// write with the pane's Dispatch bearer. A claim on no issue, and the controller, hold no role of
+// an issue.
 func (w *workflowRuntime) claimEnded(c supervise.Claim) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return
@@ -622,7 +628,7 @@ func (w *workflowRuntime) claimEnded(c supervise.Claim) {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		if err := w.queueRoleHolders(ctx, c.Issue); err != nil {
-			w.log.Warn("queue the role-holder publication of an ended claim; the next boot publishes it",
+			w.log.Warn("queue the role-holder publication of an ended claim; a boot within seven days, or the next ready or end of a claim on the issue, publishes it",
 				"claim", c.Token, "issue", c.Issue, "state", c.State, "error", err)
 		}
 	}()

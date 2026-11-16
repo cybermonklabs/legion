@@ -359,12 +359,15 @@ Each item below names a task and where its code is, then notes on it.
 - **The session that holds each role of an issue**: `internal/dispatch/api/issue_role_holders.go`, `store/migrations/20261116163813_issue_role_holders.up.sql`
 
   The Legion daemon publishes the live role sessions of an issue with `PUT /api/v1/issues/{key}/role-holders`, as session `legion-daemon:<project>`.
-  Every other caller is `403 ROLE_HOLDER_FORBIDDEN`.
+  Any other actor is `403 ROLE_HOLDER_FORBIDDEN`.
+  Before the airlock, Dispatch takes the session that a bearer caller names, so any caller whose Dispatch credential proves no session of its own can name the daemon's session; the airlock closes that case.
   The body is the issue's whole set, and the write replaces the stored set, so a session that the body does not name holds no role of the issue.
+  Each session is a session id (`text.IsSessionID`) of at most 256 bytes; any other body is `400 INVALID_ROLE_HOLDER` and stores nothing.
+  A write locks the issue row (`for no key update`), so two writes of one issue store one whole set, the set of the one that finishes last, and each answers the set that it stored.
   The write appends no event, notifies nobody and takes a closed issue, and `GET` answers the set in workflow order.
   `heldRole` is the read that a later release of the results route makes in its own write transaction.
   The session of an ended claim keeps its role until the daemon's next publication lands.
-  An end whose queue failed reaches Dispatch only at the next boot of the daemon, or at the next ready or end on the same issue.
+  An end whose queue failed reaches Dispatch at the next boot of the daemon only when that boot comes within seven days of the end, and otherwise at the next ready or end on the same issue.
   In that time, a process whose stop failed can still write with the pane's Dispatch bearer.
 
 - **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
