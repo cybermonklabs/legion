@@ -1690,6 +1690,12 @@ GUARD_SCRIPT = ("go test -count=1 -run "
                 f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
                 f"{GUARD_PACKAGE}")
 
+# The private-projects acceptance job, the step that runs c-blob-unchanged's driver, and the build
+# of this tree that the driver's two-build harness makes (its whole line, so the pin is exact).
+PROJECT_ACCESS = "dispatch-project-access"
+PROJECT_ACCESS_BLOB_STEP = "Compare what every caller reads at the merge base and at this tree"
+TWO_BUILDS = "scripts/e2e/lib/two-builds.sh"
+TWO_BUILDS_HEAD_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/dispatch-head" ./cmd/dispatch ||'
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
@@ -2828,6 +2834,30 @@ GATES = [
     # reads, which a change to cmd/dispatch's untagged tests never needs.
     gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
          exact=[two_builds_go_step()], reads=two_builds_go_reads()),
+
+    # The private-projects acceptance drivers. The step runs project-access-blob.sh, which sources
+    # scripts/e2e/lib/two-builds.sh, whose head build compiles this tree's ./cmd/dispatch; its base
+    # build compiles the merge base's tree, taken out of git history, so it reads no file of this
+    # one.
+    gate("dispatch_project_access", PROJECT_ACCESS, runs=[
+        script_run(TWO_BUILDS, TWO_BUILDS_HEAD_BUILD, f"run by {at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)} "
+                   "through packages/dispatch/e2e/acceptance/project-access-blob.sh's two_builds_build",
+                   ENVOY, ["./cmd/dispatch"], mode="build"),
+        ceiling_run(PROJECT_ACCESS),
+    ], reads=reads(
+        ("packages/dispatch/e2e/acceptance/project-access-blob.sh", at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)),
+        ("packages/dispatch/e2e/fake-envoy.ts", f"{TWO_BUILDS}'s two_builds_fake_envoy runs it with bun"),
+        ("packages/dispatch/e2e/harness-ports.ts", "packages/dispatch/e2e/fake-envoy.ts:3 imports it"),
+        (CONTRACTS_SRC, "packages/dispatch/e2e/fake-envoy.ts:1 imports @legion/contracts, which Bun resolves to its "
+                        "src (packages/contracts/package.json's bun export)"),
+        ("packages/contracts/package.json", "Bun reads its exports to resolve the import of packages/dispatch/e2e/fake-envoy.ts:1"),
+        (TWO_BUILDS, "packages/dispatch/e2e/acceptance/project-access-blob.sh sources it"),
+        ("scripts/e2e/lib/rig.sh", f"{TWO_BUILDS} sources it"),
+        ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it"),
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh's _loopback_dsn runs it"),
+        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it"),
+    ) + ceiling_reads(PROJECT_ACCESS) + setup_go(PROJECT_ACCESS, f"{ENVOY}/go.mod")
+      + bun_job(PROJECT_ACCESS) + CI_SELF),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
