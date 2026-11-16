@@ -1438,14 +1438,17 @@ messages of different keys run at once, at most 4, the durable's `MaxAckPending`
 Its durable's `AckWait`, `MaxAckPending` and filter subject are unchanged.
 Every envelope is acknowledged once its handler has run, whatever the handler made of it, with one exception:
 a `pull_request` envelope whose pull request's head row could not be stored at all is handed back to NATS instead, after `delivery.headWriteRedeliverAfter` (10 s), for as many as `delivery.headWriteMaxDeliveries` (30) deliveries of it, and acknowledged at the last of them.
-No pass over the stored rows repairs a head row that was never written, since those passes read the rows that exist, so before it acknowledges such an envelope the intake records its pull request in `pull_request_reads_owed` as owed a read of kind `failure`: the repository and the number, and nothing else the envelope says.
+No pass over the stored rows repairs a head row that was never written, since those passes read the rows that exist.
+So at each delivery whose head write fails, the intake records the pull request in `pull_request_reads_owed` as owed a read of kind `failure`: the repository and the number, and nothing else the envelope says.
+A later delivery that writes the head deletes that record.
 A GitHub outage of about 5 minutes spends the 30 deliveries.
 Every hand-back has a limit, and an envelope no delivery can get past is final at its first delivery.
 An envelope that names no pull request a row can hold, a number outside 1 to 2147483647 or a repository name that is not `owner/name`, is acknowledged at its first delivery with one line, reads nothing and owes no read (`errNoPullRequestNamed`).
 A failure Postgres gives for the values themselves, a data exception (SQLSTATE class 22), a not-null or a check violation, is acknowledged at its first delivery with one ERROR line that names the repository and the number, and owes no read (`valuesRefused`); the pull request is read again at its next event.
 Any other failure, the database not answering and a rate limit included, is handed back up to the cap, and a rate limit's hand-back waits the limit's own wait.
-At the cap, where the owed record cannot be written either, the envelope is acknowledged with one ERROR line that names the repository and the number.
-That is the one limit of R4 (dispatch://INFRA-3992): when the database takes no write for the whole cap, Dispatch cannot keep which pull request changed, and that pull request's head waits for its next event.
+At the cap, the envelope is acknowledged.
+Where the owed record cannot be written at the cap's delivery either, one ERROR line names the repository and the number, and a record that an earlier delivery wrote still stands.
+That is the one limit of R4 (dispatch://INFRA-3992): when the database takes no write of the owed record at any delivery of the cap, Dispatch cannot keep which pull request changed, and that pull request's head waits for its next event.
 A message whose delivery count cannot be read is taken as having spent the cap, since no count could end its hand-backs.
 Each row says why its read is owed: `failure` where GitHub did not answer (a 5xx, a timeout, a rate limit, the delivery cap), and `refusal` where GitHub answered that it cannot give the pull request (a 404 or 410, or a repository the App cannot read).
 A write of GitHub's answer that replaces a newer row no read of GitHub wrote also owes a `failure` (the trigger `pull_request_heads_older_read`, `20261116182209`): during a roll the release before stores GitHub's newer answer from an envelope, and a slower read of this build can land an older answer after it.

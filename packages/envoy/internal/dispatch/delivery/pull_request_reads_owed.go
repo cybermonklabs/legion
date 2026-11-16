@@ -9,19 +9,20 @@ package delivery
 // reconcile has read it and when it was last owed, and nothing an envelope says: no head, no
 // state, no issue.
 //
-// Three writers record one. Intake.deliver records a failure before it acknowledges an envelope
-// at the delivery cap (headWriteMaxDeliveries), which a GitHub outage of about five minutes
-// reaches, and a rate limit after thirty of its waits. recordPullRequestHead records a refusal
-// for GitHub's refusal of a read, a pull request it does not know or a repository the App cannot
-// read, since GitHub's answer to a read made a moment after its own webhook may not know the pull
-// request yet. And upsertHeadRow records a failure in the same statement as a write of GitHub's
-// answer that replaces a row no read of GitHub wrote whose time is later than the answer's: during
-// a roll the release before stores GitHub's newer answer from an envelope, and a slower read of
-// this build can land an older answer after it, so GitHub is read again. A record the intake
-// cannot write leaves the envelope with NATS, handed back, so no envelope whose read did not
-// succeed is acknowledged with no record of it. Every other way an envelope leaves the intake
-// unacknowledged keeps it with NATS: a stop hands it back (Intake.deliver), and a hold that has
-// lapsed leaves it outstanding for the next holder.
+// Three writers record one. Intake.deliver records a failure at each delivery of an envelope whose
+// head write failed, so that one refused write at one moment is never the only record, and
+// acknowledges it at the delivery cap (headWriteMaxDeliveries), which a GitHub outage of about five
+// minutes reaches, and a rate limit after thirty of its waits; a later delivery that writes the
+// head deletes what the earlier ones owed (settleOwedReadsBefore). recordPullRequestHead records a
+// refusal for GitHub's refusal of a read, a pull request it does not know or a repository the App
+// cannot read, since GitHub's answer to a read made a moment after its own webhook may not know
+// the pull request yet. And upsertHeadRow records a failure in the same statement as a write of
+// GitHub's answer that replaces a row no read of GitHub wrote whose time is later than the answer's:
+// during a roll the release before stores GitHub's newer answer from an envelope, and a slower read
+// of this build can land an older answer after it, so GitHub is read again. An envelope leaves the
+// intake with no record of its pull request only where no delivery of the cap could write one.
+// Every other way an envelope leaves the intake unacknowledged keeps it with NATS: a stop hands it
+// back (Intake.deliver), and a hold that has lapsed leaves it outstanding for the next holder.
 //
 // The reconcile's head pass reads the owed pull requests from GitHub before the stored rows
 // (Reconcile.readOwedPullRequests): first the failures, at most PullRequestHeadBatch of them, then
@@ -113,6 +114,26 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 		on conflict (repo, number) do update set reason = excluded.reason, owed_at = excluded.owed_at
 	`, repoFull, number, reason); err != nil {
 		return fmt.Errorf("record the read %s#%d is owed: %w", repoFull, number, err)
+	}
+	return nil
+}
+
+// owedReadSettleMargin is how much earlier than its own read the intake's delete of an owed read
+// draws its line (settleOwedReadsBefore): a record a delivery of the same envelope wrote is at
+// least headWriteRedeliverAfter older, and the margin keeps a record another writer made just
+// after the read began, such as the trigger pull_request_heads_older_read, from being deleted.
+const owedReadSettleMargin = time.Second
+
+// settleOwedReadsBefore deletes the read repoFull's pull request number was owed before a read
+// of GitHub that began readAge ago, now that the intake wrote that read's answer. The line is the
+// database's own clock less readAge and owedReadSettleMargin, so no clock of this process is
+// compared with the database's; a record owed after the read began stays for the reconcile.
+func settleOwedReadsBefore(ctx context.Context, pool *store.Pool, repoFull string, number int, readAge time.Duration) error {
+	if _, err := pool.Exec(ctx, `
+		delete from pull_request_reads_owed
+		where repo = $1 and number = $2 and owed_at < now() - make_interval(secs => $3)
+	`, repoFull, number, (readAge + owedReadSettleMargin).Seconds()); err != nil {
+		return fmt.Errorf("settle the read %s#%d was owed: %w", repoFull, number, err)
 	}
 	return nil
 }

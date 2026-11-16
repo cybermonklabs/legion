@@ -1178,6 +1178,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 			return headRead{}, nil
 		}
 	}
+	readStarted := time.Now()
 	token, err := in.github.RepositoryToken(ctx, owner, repo)
 	if err != nil {
 		if repositoryUnreadable(err) {
@@ -1208,8 +1209,17 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		checkedAt = &now
 	}
 	read := headRead{pull: &pull, token: token, messages: attributed.messages}
-	return read, upsertHeadUnderCanonicalName(ctx, in.pool, in.events,
-		headRow(repoFull, pull, attributed, checkedAt), given)
+	if err := upsertHeadUnderCanonicalName(ctx, in.pool, in.events,
+		headRow(repoFull, pull, attributed, checkedAt), given); err != nil {
+		return read, err
+	}
+	// The head is GitHub's answer now, so the read an earlier delivery of this envelope owed is
+	// settled (Intake.deliver). A failure to delete it costs the reconcile one read, and no more.
+	if err := settleOwedReadsBefore(ctx, in.pool, repoFull, number, time.Since(readStarted)); err != nil {
+		slog.Warn("dispatch delivery: delete the read an earlier delivery owed; the reconcile reads the pull request once more",
+			"repo", repoFull, "number", number, "error", err)
+	}
+	return read, nil
 }
 
 // oweRefusedRead records that repoFull's pull request number is owed a read of kind refusal

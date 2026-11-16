@@ -7,8 +7,8 @@
 // five-minute reconcile", LEGION-567). The one failure that mechanism does not cover by itself
 // is a pull request's head row the envelope's read of GitHub could not write, since the passes
 // read the rows that exist: that envelope is handed back to NATS for a bounded number of
-// redeliveries instead, and at the bound the pull request is recorded as owed a read, which the
-// reconcile's next pass makes (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries,
+// redeliveries instead, and each failed delivery records the pull request as owed a read, which
+// the reconcile's next pass makes (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries,
 // owePullRequestRead).
 package delivery
 
@@ -412,16 +412,18 @@ func consumerGenerationMetadata() map[string]string {
 // hold (errNoPullRequestNamed), and one whose write Postgres refused for its values
 // (valuesRefused), are acknowledged at their first delivery with one line, and owe no read.
 //
-// Before it acknowledges an envelope at the bound, it records that the envelope's pull request
-// is owed a read of GitHub (owePullRequestRead), which the reconcile's next pass makes and makes
-// again every pass until GitHub answers (Reconcile.readOwedPullRequests): a GitHub outage of
-// about five minutes spends the bound, and R1 and R2 of dispatch://INFRA-3992 make GitHub's
-// answer the only source of a head, so an envelope acknowledged with no such record would lose
-// its pull request's head until its next event. The record names the pull request and nothing
-// else the envelope says. Where that record cannot be written either, the envelope is
-// acknowledged all the same with one ERROR line that names the repository and the number: that is
-// the one limit of R4, since a database that takes no write for the whole bound leaves Dispatch
-// nowhere to keep which pull request changed.
+// At each delivery whose head write failed, it records that the envelope's pull request is owed a
+// read of GitHub (owePullRequestRead), which the reconcile's next pass makes and makes again every
+// pass until GitHub answers (Reconcile.readOwedPullRequests): a GitHub outage of about five
+// minutes spends the bound, and R1 and R2 of dispatch://INFRA-3992 make GitHub's answer the only
+// source of a head, so an envelope acknowledged with no such record would lose its pull request's
+// head until its next event. The record names the pull request and nothing else the envelope says.
+// It is written at every failed delivery and not at the bound alone, so one refused write at one
+// moment is never the only record (acceptance of cybermonklabs/legion#4209, round 4, defect 7); a
+// later delivery that writes the head deletes it (recordPullRequestHead). Where no delivery could
+// write it, the envelope is acknowledged at the bound all the same with one ERROR line that names
+// the repository and the number: that is the one limit of R4, since a database that takes no write
+// of the record for the whole bound leaves Dispatch nowhere to keep which pull request changed.
 //
 // handling is read from the delivery, which is also what says whether that hand-back may be
 // made, and nothing else calls deliver.
@@ -475,10 +477,10 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		return
 	case errors.Is(err, ErrHeadNotStored):
 		delivered, spent := headWriteDeliveriesSpent(msg)
+		repo, number, oweErr := in.oweEnvelopesRead(handling, envelope.Payload)
 		if spent {
-			repo, number, oweErr := in.oweEnvelopesRead(handling, envelope.Payload)
 			if oweErr != nil {
-				slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed, and the read it is owed could not be recorded; acknowledging the envelope, so Dispatch keeps no record that this pull request changed until its next event",
+				slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed, and the read it is owed could not be recorded at this delivery; acknowledging the envelope, so Dispatch keeps which pull request changed only where an earlier delivery recorded it",
 					"subject", msg.Subject, "repo", repo, "number", number, "deliveries", delivered, "error", err, "record_error", oweErr)
 				return
 			}
@@ -493,7 +495,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		}
 		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
 			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
-			"redeliver_after", redeliverDelay, "error", err)
+			"redeliver_after", redeliverDelay, "error", err, "record_error", oweErr)
 		headNotStored = true
 		return
 	case err != nil:
@@ -524,7 +526,7 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 const headWriteRedeliverAfter = 10 * time.Second
 
 // headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be
-// stored gets before deliver records the read its pull request is owed and acknowledges it.
+// stored gets before deliver acknowledges it; each of them records the read its pull request is owed.
 // Without it there is no bound at all: the durable sets no MaxDeliver, and a delayed Nak holds
 // the message in the consumer's ack-pending set, so a write that fails the same way every time
 // is redelivered every headWriteRedeliverAfter for ever and holds an in-flight slot throughout.
