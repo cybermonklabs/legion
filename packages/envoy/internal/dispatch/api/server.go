@@ -595,11 +595,12 @@ type Background struct {
 }
 
 // waitBackground waits for every keyed handler and every delivery a request left running past
-// its client, then for every live socket and the subscriptions it ran, then for the hub's
-// goroutines, the relay's and the test hooks' listener. The detached work comes first because it
-// is the only work lifetime does not stop: a keyed handler is bounded by keyedHandlerLimit, a
-// delivery by the listener client's receipt timeout per recipient, and each reads and writes
-// through the database pool this wait is holding open for it.
+// its client, then for every live socket and the subscriptions it ran, serving none that opens from
+// then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
+// listener. The detached work comes first because it is the only work lifetime does not stop: a
+// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
+// timeout per recipient, and each reads and writes through the database pool this wait is holding
+// open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()
