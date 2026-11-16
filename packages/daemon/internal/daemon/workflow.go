@@ -55,7 +55,13 @@ type workflowRuntime struct {
 	// under them (rootTask, workflow.CatchUpTheTreesOwed). The empty list gates no step
 	// (config.Gates.Steps).
 	gatedSteps []record.DesignStep
-	tokens     appauth.Tokens
+	// tokens mints every lease the workflow's own reads and writes use. apps is that same token
+	// source whole, the leases and the owners each App is installed on (appauth.Source), which
+	// the daemon hands on to the runtime it builds and to the API's routes (run, serve): both
+	// build gh bundles, which need the owners too. The workflow itself asks for no owner list,
+	// so its own code and its tests hold the narrower type.
+	tokens appauth.Tokens
+	apps   appauth.Source
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
 	// (tokenRefused).
 	forget          appauth.Forgetter
@@ -158,15 +164,19 @@ type workflowRuntime struct {
 	// the reads asked for (requestMappingRead) and mappingApplied is the last request a finished
 	// read covers; awaiting is each held admission event's request (awaitMappingRead), by issue key
 	// and then the sequence it was delivered at, under awaitingMu. recovering is each repository,
-	// lowercased, a read of the mapping stopped leaving out for a read GitHub did not answer (its
-	// installation read, or its default-branch read past GitHub's rate limit), whose issues are still
-	// to recover from Dispatch's listing (markRecovered, recoverRepositories),
+	// lowercased, GitHub answered for again whose issues are still to recover from Dispatch's
+	// listing (recoverRepositories): one a read of the mapping stopped leaving out for a read
+	// GitHub did not answer (its installation read, or its default-branch read past GitHub's
+	// rate limit: markRecovered), and one no mapping names that a preparation left unread and
+	// whose reads a later preparation got answered (readAnswered),
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
 	// release_children left unrecorded on it (awaitRecovery), whose tree's architect the recovery
-	// tells of each it did not record; recoveryHeldSince is when a recovery's listing was first
-	// found held with waits to tell (zero for none), so a hold past recoveryHoldBound tells them.
+	// tells of each it did not record, and which leave with the repository's own marker where a
+	// pass stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is
+	// when a recovery's listing was first found held with waits to tell (zero for none), so a
+	// hold past recoveryHoldBound tells them.
 	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
 	// a test sees each wait through it.
 	repositories      *repositories
@@ -363,7 +373,7 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *s
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -398,7 +408,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),

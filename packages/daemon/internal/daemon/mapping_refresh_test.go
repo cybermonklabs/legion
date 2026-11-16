@@ -193,7 +193,7 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 				if err := w.refreshMapping(ctx); err == nil {
 					t.Fatal("the failed snapshot did not fail the read")
 				}
-				if _, _, leftOut, _ := w.repositories.lookup("zeta/tools"); !leftOut {
+				if !w.repositories.lookup("zeta/tools").leftOut {
 					t.Fatal("the failed refresh published zeta/tools as served")
 				}
 				if filters := githubFilterSubjects(t, stream); slices.Contains(filters, "notifications.github.zeta.tools.>") {
@@ -643,8 +643,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 					t.Fatalf("the first delivery = %v, want it held for the mapping", err)
 				}
 				testwait.Eventually(t, "the mapping read the held event asked for", func() bool {
-					_, refusal, _, _ := w.repositories.lookup("zeta/tools")
-					return refusal == ""
+					return w.repositories.lookup("zeta/tools").refusal == ""
 				})
 			}
 			github.fail.Store(true)
@@ -841,8 +840,7 @@ func quickInstallReads(t *testing.T) {
 
 // served is whether w serves repo now.
 func served(w *workflowRuntime, repo string) bool {
-	_, refusal, _, _ := w.repositories.lookup(repo)
-	return refusal == ""
+	return w.repositories.lookup(repo).refusal == ""
 }
 
 // repositoryNotes is every repository note the daemon queued on key.
@@ -880,8 +878,8 @@ func TestARepositoryWhoseInstallationReadFailedIsServedOnceARetryReadsIt(t *test
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository whose read failed")
 	}
-	if _, refusal, leftOut, unread := w.repositories.lookup("zeta/tools"); !leftOut || !unread || !strings.Contains(refusal, "the implement App's installation on zeta/tools could not be read") {
-		t.Fatalf("zeta/tools refusal = %q (left out %v), want it left out for its failed read", refusal, leftOut)
+	if held := w.repositories.lookup("zeta/tools"); !held.leftOut || !held.unread || !strings.Contains(held.refusal, "the implement App's installation on zeta/tools could not be read") {
+		t.Fatalf("zeta/tools refusal = %q (left out %v), want it left out for its failed read", held.refusal, held.leftOut)
 	}
 	testwait.Eventually(t, "zeta/tools' installation read again", func() bool { return installs.reads("implement zeta/tools") >= 3 })
 	if served(w, "zeta/tools") {
@@ -955,8 +953,8 @@ func TestANotInstalledRepositoryIsReadAgainAtTheNextPreparation(t *testing.T) {
 	}
 	installs.setFailing(nil, "review zeta/tools")
 	testwait.Eventually(t, "zeta/tools served", func() bool { return served(w, "zeta/tools") })
-	if _, refusal, leftOut, unread := w.repositories.lookup("acme/widgets"); !leftOut || unread || refusal != "the review App is not installed on acme/widgets" {
-		t.Fatalf("acme/widgets refusal = %q (left out %v), want the App it lacks", refusal, leftOut)
+	if held := w.repositories.lookup("acme/widgets"); !held.leftOut || held.unread || held.refusal != "the review App is not installed on acme/widgets" {
+		t.Fatalf("acme/widgets refusal = %q (left out %v), want the App it lacks", held.refusal, held.leftOut)
 	}
 	reads := installs.reads("review acme/widgets")
 	time.Sleep(10 * installReadRetry.Max)
@@ -1386,7 +1384,7 @@ func TestEventsDuringAnOutageEndWhereTheyWouldHaveServed(t *testing.T) {
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	read := w.requestMappingRead()
 	testwait.Eventually(t, "the read that finds zeta/tools unread", func() bool { return w.mappingApplied.Load() >= read })
-	if _, _, _, unread := w.repositories.lookup("zeta/tools"); !unread {
+	if !w.repositories.lookup("zeta/tools").unread {
 		t.Fatal("zeta/tools is not unread after the read whose installation read failed")
 	}
 	if _, err := intake.ApplyFact(context.Background(), w.pool, "test", z.Key+"-todo-1", prepared, w.handlers...); err != nil {
@@ -1513,12 +1511,12 @@ func TestARecoveryWhileTheConsumerIsBehindAdmitsOnceItCatchesUp(t *testing.T) {
 	}
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
 	readMappingNow("zeta/tools unmapped", func() bool {
-		_, refusal, leftOut, _ := w.repositories.lookup("zeta/tools")
-		return refusal != "" && !leftOut
+		held := w.repositories.lookup("zeta/tools")
+		return held.refusal != "" && !held.leftOut
 	})
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"})
-	readMappingNow("zeta/tools mapped again and unread", func() bool { _, _, _, unread := w.repositories.lookup("zeta/tools"); return unread })
+	readMappingNow("zeta/tools mapped again and unread", func() bool { return w.repositories.lookup("zeta/tools").unread })
 	client.show(issue(second, "zeta/tools", "todo", true, "", 1))
 	serveAndRecover(t, w, installs)
 	testwait.Eventually(t, second+" admitted by the second recovery", func() bool { return recordedIssue(t, w, second) != nil })

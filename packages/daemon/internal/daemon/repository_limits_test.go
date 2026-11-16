@@ -281,8 +281,8 @@ func TestABootLeavesOutARepositoryGitHubStillRateLimitsAndServesItOnceGitHubAnsw
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 
-	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
-		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
@@ -326,8 +326,8 @@ func TestABootLeavesOutARepositoryWhoseReadAfterARateLimitGetsNoAnswer(t *testin
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 
-	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
-		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")

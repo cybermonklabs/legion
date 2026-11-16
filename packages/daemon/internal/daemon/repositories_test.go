@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
@@ -716,16 +718,21 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 }
 
 // The state's repositories are every repository the daemon serves: the ones Dispatch's mapping
-// names and the ones the project's own records name, each carrying both role Apps as installed,
-// which is what each of the two doors admits a repository on (INFRA-2543 R6). A repository only
-// a record names is no repository the daemon serves no longer, so its cache is its own entry's
-// and not one of the caches listed apart, and the project's default is the mapping's alone. A
+// names and the ones the project's own live records name, each carrying both role Apps as
+// installed, which is what each of the two doors admits a repository on (INFRA-2543 R6). A
+// repository only a record names is no repository the daemon serves no longer, so its cache is
+// its own entry's and not one of the caches listed apart, and the project's default is the
+// mapping's alone. A read a preparation kept for a repository no record names puts nothing in
+// the state: the preparation of a person's own todo issue keeps one, and no tree works there. A
 // repository the mapping gains after an issue was recorded on it is served once, as the
-// mapping's entry, since that is the entry a default can stand on.
+// mapping's entry, since that is the entry a default can stand on, and one the mapping leaves
+// out stands under the refusals alone, with why, never beside them as one both Apps are
+// installed on.
 func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
 	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, nil)
-	repos.recordRepository("zeta/tools", ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
+	repos.addLive(ghrepo.MustParse("Zeta/Tools"))
+	repos.recordRepository("stranger/tools", ghbranch.Repository{Name: ghrepo.MustParse("Stranger/Tools"), DefaultBranch: "trunk"})
 	retained := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
 	caches := []sandbox.CacheStatus{
 		{Repo: ghrepo.MustParse("zeta/tools"), Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "cloning"},
@@ -755,6 +762,13 @@ func TestTheStatesRepositoriesHoldTheOnesOnlyARecordNames(t *testing.T) {
 	}
 	if !slices.Equal(view.Owners, []string{"acme", "zeta"}) {
 		t.Fatalf("owners = %v, want the owners of the repositories the mapping names", view.Owners)
+	}
+
+	missing := "the review App is not installed on zeta/tools"
+	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}}, []refusedRepository{{Repo: "zeta/tools", Reason: missing}})
+	view = repos.view(nil)
+	if len(view.Mapped) != 1 || view.Mapped[0].Repo != "Acme/Widgets" || !reflect.DeepEqual(view.Refused, []api.RefusedRepositoryView{{Repo: "zeta/tools", Reason: missing}}) {
+		t.Fatalf("view = %+v, want acme/widgets served and zeta/tools, which a live record names, left out for its review App alone", view)
 	}
 }
 
@@ -791,6 +805,133 @@ func TestResolveRepositoryAnswersAMappedRepositoryFromTheMappingsOwnRead(t *test
 	unmapped := workflow.Resolution{Repo: "Zeta/Tools", DefaultBranch: "main", GitHubRepo: "Zeta/Tools"}
 	if got, err := w.ResolveRepository("zeta/tools"); err != nil || got != unmapped {
 		t.Fatalf("ResolveRepository of a repository no mapping names = %+v, %v; want its recorded read %+v", got, err, unmapped)
+	}
+}
+
+// One lookup says which set answered for a repository, and every reader that treats a mapped
+// repository and one only a preparation read apart takes it from that lookup: what an issue on
+// it is recorded with (ResolveRepository), whether release_children waits for it
+// (repositoryUnread), and whether the preparation of a todo issue on it reads GitHub itself
+// (prepareUnrecorded). Each asked the mapping a second question of its own before, which the
+// pair's old name answered otherwise than the lookup had: a read kept under it from before the
+// mapping named the pair answered the lookup, while the mapping answered the second question
+// from the pair's other name, so the issue was prepared and resolved under a name GitHub no
+// longer holds the repository under. A repository neither set names is the one lookup answers
+// unread that release_children does not wait for, since nothing is reading GitHub for it.
+func TestEveryReaderOfARepositoryTakesTheSetThatAnsweredFromOneLookup(t *testing.T) {
+	ctx := context.Background()
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "Acme/Widgets@release/v7.1", "other/thing": "Other/Thing@main"})
+	installs := &installations{}
+	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets-legacy", "acme/widgets"))),
+		installs: installs, log: quietLogger(), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
+	unanswered := "the implement App's installation on acme/gadgets could not be read: GitHub answered 502; Legion reads it again"
+	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}},
+		[]refusedRepository{{Repo: "acme/gadgets", Reason: unanswered, readErr: errors.New("GitHub answered 502")}})
+	if _, err := w.defaultBranches.Named(ctx, ghrepo.MustParse("Acme/Widgets")); err != nil {
+		t.Fatalf("read the mapped repository's default branch: %v", err)
+	}
+	w.repositories.recordRepository("acme/widgets-legacy", ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets-legacy"), DefaultBranch: "trunk"})
+	w.repositories.recordRepository("zeta/tools", ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "main"})
+	mapped := workflow.Resolution{Repo: "Acme/Widgets", DefaultBranch: "release/v7.1", GitHubRepo: "Acme/Widgets"}
+	for _, tc := range []struct {
+		name, resolved string
+		source         repositorySource
+		resolution     workflow.Resolution
+		// unread is release_children's answer, and reads how many installation reads the
+		// preparation of a todo issue on the repository makes of its own.
+		unread bool
+		reads  int
+	}{
+		{name: "a served repository", resolved: "acme/widgets", source: fromMapping, resolution: mapped},
+		{name: "the pair's old name, which a preparation once kept a read under", resolved: "acme/widgets-legacy", source: fromMapping, resolution: mapped},
+		{name: "a mapped repository GitHub did not answer for", resolved: "acme/gadgets", source: fromMapping,
+			resolution: workflow.Resolution{Refusal: unanswered, LeftOut: true, Unread: true}, unread: true},
+		{name: "a repository only a preparation read", resolved: "zeta/tools", source: fromRecorded,
+			resolution: workflow.Resolution{Repo: "Zeta/Tools", DefaultBranch: "main", GitHubRepo: "Zeta/Tools"}},
+		{name: "a repository neither set names", resolved: "other/thing", source: fromNeither,
+			resolution: workflow.Resolution{Refusal: "GitHub has not been read for other/thing yet", Unread: true}, reads: len(appauth.Roles)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := w.repositories.lookup(tc.resolved).source; got != tc.source {
+				t.Fatalf("lookup(%s) answered from set %d, want %d", tc.resolved, got, tc.source)
+			}
+			if got, err := w.ResolveRepository(tc.resolved); err != nil || got != tc.resolution {
+				t.Fatalf("ResolveRepository(%s) = %+v, %v; want %+v", tc.resolved, got, err, tc.resolution)
+			}
+			if got := w.repositoryUnread(tc.resolved); got != tc.unread {
+				t.Fatalf("repositoryUnread(%s) = %v, want %v", tc.resolved, got, tc.unread)
+			}
+			asked := len(installs.asks())
+			fact := intake.DispatchIssue{Key: "LEGION-7", Seq: 1, Status: "todo", Title: "todo", Rank: "A", ResolvedRepo: tc.resolved}
+			if _, err := w.prepareUnrecorded(ctx, fact, false, 0); err != nil {
+				t.Fatalf("prepare a todo issue on %s: %v", tc.resolved, err)
+			}
+			if got := len(installs.asks()) - asked; got != tc.reads {
+				t.Fatalf("the preparation of a todo issue on %s made %d installation reads of its own, want %d", tc.resolved, got, tc.reads)
+			}
+		})
+	}
+}
+
+// A recovery's pass counts a repository as recovered, and tells its release waits, only where
+// GitHub answered for it, has not failed for it again, and no issue fell silent for it while the
+// pass ran. It lets a repository GitHub does not answer for go only where no preparation will
+// read GitHub for it again: no unrecorded todo issue is left on it, or the mapping answers for it
+// by now, and no issue fell silent for it since the pass began. What a release left to that
+// repository's recovery leaves with its marker, for the architects to be told once
+// (tellLetGoWaits), and stays exactly while the marker does. Every listed repository counted
+// as recovered before, and nothing but an answered read ever let one go.
+func TestARecoverySettlesOnlyTheRepositoriesGitHubAnsweredFor(t *testing.T) {
+	const repo = "stranger/tools"
+	waits := map[string]map[string]releaseWait{repo: {"LEGION-2": {tree: "LEGION-1", parent: "LEGION-1"}}}
+	for _, tc := range []struct {
+		name string
+		// unread and recovering are how the repository stands once the pass's listing has
+		// applied; silent is whether an issue fell silent for it since the pass began, todo
+		// whether the listing holds an unrecorded todo issue on it, and mapped whether the
+		// mapping names it by now.
+		unread, recovering, silent, todo, mapped bool
+		// answered is whether the pass recovered it, which is when its release waits are told,
+		// kept whether it is still left unread after the pass, and gone whether the pass took
+		// the release wait on it out with its marker, to tell.
+		answered, kept, gone bool
+	}{
+		{name: "GitHub answered and the pass left nothing silent", recovering: true, answered: true},
+		{name: "GitHub answered after an issue of the pass fell silent", recovering: true, silent: true},
+		{name: "GitHub answered once and fails again", recovering: true, unread: true, todo: true, kept: true},
+		{name: "GitHub does not answer for its todo issue", unread: true, todo: true, kept: true},
+		{name: "GitHub does not answer and no todo issue is left on it", unread: true, gone: true},
+		{name: "GitHub does not answer and an issue fell silent after the listing", unread: true, silent: true, kept: true},
+		{name: "GitHub does not answer and the mapping names it by now", unread: true, todo: true, mapped: true, gone: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
+			if tc.mapped {
+				w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("Stranger/Tools")}}, nil)
+			}
+			if tc.unread {
+				w.unread = map[string]string{repo: "GitHub answered 502"}
+			}
+			if tc.recovering {
+				w.recovering = map[string]bool{repo: true}
+			}
+			if tc.silent {
+				w.noteUnread("LEGION-3", repo)
+			}
+			w.releaseWaits = map[string]map[string]releaseWait{repo: maps.Clone(waits[repo])}
+			answered, told, dropped := w.settleRecovery([]string{repo}, waits, map[string]bool{repo: tc.todo})
+			if got := slices.Contains(answered, repo); got != tc.answered || (len(told) != 0) != tc.answered {
+				t.Fatalf("the pass recovered %v and tells %v, want %s recovered: %v, with its release wait told exactly then", answered, told, repo, tc.answered)
+			}
+			if _, kept := w.unread[repo]; kept != tc.kept {
+				t.Fatalf("%s is left unread after the pass: %v, want %v", repo, kept, tc.kept)
+			}
+			taken := len(waitingLetGo(dropped)) == 1 && len(w.releaseWaits[repo]) == 0
+			if taken != tc.gone {
+				t.Fatalf("the pass took %v out to tell, leaving %d waits on %s; want its release wait taken out with its marker: %v",
+					dropped, len(w.releaseWaits[repo]), repo, tc.gone)
+			}
+		})
 	}
 }
 

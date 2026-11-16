@@ -50,27 +50,29 @@ type repositories struct {
 	mu       sync.RWMutex
 	accepted map[string]mappedRepository
 	refused  map[string]refusedRepository
-	// recorded is each repository no mapping names that an issue was recorded on, by its
-	// lowercased <owner>/<name>: GitHub's own spelling of it and its default branch, as the
-	// preparation that first read GitHub for it read them (prepareUnmapped). An issue of any
-	// project may name any repository both role Apps are installed on (INFRA-2543), so what the
-	// mapping decides is the project's default repository and the repositories the daemon
-	// prepares before an issue names one, never which repositories an issue may be recorded on.
-	// The set is what makes one repository's reads happen once however many issues name it;
-	// nothing else of those reads is kept, no installation answer and no refusal, so a
-	// repository a role App is not installed on is read again at the next preparation of an
-	// issue on it and recorded the moment GitHub answers installed.
+	// recorded is GitHub's kept read of each repository no mapping names that the preparation of
+	// an issue on it found both role Apps installed on, by its lowercased <owner>/<name>:
+	// GitHub's own spelling of it and its default branch, as that preparation read them
+	// (prepareUnmapped). An issue of any project may name any repository both role Apps are
+	// installed on (INFRA-2543), so what the mapping decides is the project's default repository
+	// and the repositories the daemon prepares before an issue names one, never which
+	// repositories an issue may be recorded on. The set is what makes one repository's reads
+	// happen once however many issues name it; nothing else of those reads is kept, no
+	// installation answer and no refusal, so a repository a role App is not installed on is read
+	// again at the next preparation of an issue on it and recorded the moment GitHub answers
+	// installed. It says what GitHub answered and never what the project works in, which live
+	// holds: the preparation of a person's own todo issue, which Legion never records, keeps a
+	// read here as any other does.
 	//
 	// One read is held under two keys where GitHub answered the name an issue asked under with
 	// another: a repository GitHub itself renamed, whose old name it answers with a 301 the
 	// read follows (recordRepository). An issue keeps the name it resolves to for the whole of
 	// its preparation, so a read held under GitHub's name alone would be found by no lookup of
 	// that issue's own name, and the issue would stand unread for ever while GitHub answered
-	// every read it was asked. served is the one reader for which the two keys must not be two
-	// repositories, and it holds each entry under the name its read carries.
+	// every read it was asked.
 	//
 	// An entry is never dropped, so a repository a role App is uninstalled from after its first
-	// preparation still reads as installed here, and in held, until the process starts again and
+	// preparation still reads as installed here (lookup) until the process starts again and
 	// builds the map from the preparations that follow it. That is kept rather than fixed:
 	// check 8e6ff750 asks that the reads for one repository be made once and not once per issue,
 	// and a set that expired its entries would read GitHub again for every issue of a busy
@@ -79,13 +81,22 @@ type repositories struct {
 	// on and fails closed on a read that fails (internal/appauth/credential.go, "installations
 	// is read at every bundle, GitHub asked each time … failing closed is this rule's whole
 	// point"); the bundle's directories are built from that answer and from the mapping
-	// (Accepted), the repository caches from the mapping and the live records
-	// (workflowRuntime.cacheRepositories), and the only other reader, served, is the
-	// repositories block of legion state, a report. So a stale entry costs an issue admitted
-	// whose roles GitHub then answers 404 for, and whose App the next bundle build reads GitHub
-	// for again, naming the App where the installation has left the owner altogether
-	// (runtime.ErrNoGitHubOwner). No token reaches a repository because of it.
-	recorded          map[string]ghbranch.Repository
+	// (Accepted), and the repository caches and the repositories block of legion state from the
+	// mapping and the live records (workflowRuntime.cacheRepositories, served), neither from
+	// this set. So a stale entry costs an issue admitted whose roles GitHub then answers 404
+	// for, and whose App the next bundle build reads GitHub for again, naming the App where the
+	// installation has left the owner altogether (runtime.ErrNoGitHubOwner). No token reaches a
+	// repository because of it.
+	recorded map[string]ghbranch.Repository
+	// live is each repository a live issue record of the project names, by its lowercased
+	// <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo): the
+	// records' half of what the daemon serves (served), which legion state reports beside the
+	// mapping's. It is read from the records where the repository caches' set is, at the boot
+	// and at every read of the mapping (workflowRuntime.refreshCacheRepositories), and added to
+	// at each recording (cacheRepository). It is not recorded: a restart empties recorded while
+	// the records still name the repositories their trees work in, and recorded holds a read
+	// for the repository of an issue Legion never records.
+	live              map[string]ghrepo.Repository
 	unverified        []string
 	withoutWebhookApp []webhookAppGap
 }
@@ -119,7 +130,8 @@ type webhookAppGap struct {
 }
 
 func newRepositories(project string, renames ghrepo.Renames) *repositories {
-	return &repositories{project: project, renames: renames, accepted: map[string]mappedRepository{}, refused: map[string]refusedRepository{}, recorded: map[string]ghbranch.Repository{}}
+	return &repositories{project: project, renames: renames, accepted: map[string]mappedRepository{}, refused: map[string]refusedRepository{},
+		recorded: map[string]ghbranch.Repository{}, live: map[string]ghrepo.Repository{}}
 }
 
 // set replaces the mapping with accepted and refused, and reports the repositories that became
@@ -279,61 +291,92 @@ func (r *repositories) Refused() []refusedRepository {
 }
 
 // lookup is the repository resolved names, in any spelling, as Legion records an issue on it, or
-// why Legion does not: left out (leftOut) with its reason, or not read from GitHub yet. The
-// mapping is read first and the recorded set second (held), so the project's own mapping decides
-// a repository both name and the repositories of other projects' issues are answered for all the
-// same. unread is a repository Legion has no answer for now: one the mapping leaves out because
-// GitHub did not answer its installation read, or its default-branch read past GitHub's
-// rate limit (refusedRepository.readErr), and one neither set names, which is a
-// repository no preparation has read GitHub for yet — the preparation of an issue on it reads it
+// why Legion does not: left out (leftOut) with its reason, or not read from GitHub yet, and which
+// set gave the answer (source). The mapping is read first, under both names of a configured
+// rename, and the recorded set second, under both names too, so the project's own mapping
+// decides a repository both name and the repositories of other projects' issues are answered for
+// all the same. unread is a repository Legion has no answer for now: one the mapping leaves out
+// because GitHub did not answer its installation read, or its default-branch read past GitHub's
+// rate limit (refusedRepository.readErr), and one neither set names, which is a repository no
+// preparation has read GitHub for yet — the preparation of an issue on it reads it
 // (prepareUnmapped) and the issue is recorded or refused on what GitHub says then, so nothing is
 // refused here for the want of a mapping entry.
 //
-// Each set is read under the name resolved carries and then, when neither names it, under the
-// other name of the configured rename that names it (ghrepo.Under), so an issue resolved to the
-// repository as it was is recorded on the one GitHub holds now, under one name: Resolution.Repo
-// and Resolution.GitHubRepo agree, as a record demands (record.Store.PutIssue).
-func (r *repositories) lookup(resolved string) (mapped mappedRepository, refusal string, leftOut, unread bool) {
+// The source is what each caller that tells the two kinds of repository apart reads
+// (prepareUnrecorded, ResolveRepository, repositoryUnread), so the branch it takes and the answer
+// it acts on are one read of the sets. A second question asked of the mapping after this one reads
+// it again, and a refresh that publishes between the two reads answers them from two mappings.
+//
+// Each set is read under the name resolved carries and then, when that set does not name it,
+// under the other name of the configured rename that names it (ghrepo.Under), so an issue
+// resolved to the repository as it was is recorded on the one GitHub holds now, under one name:
+// Resolution.Repo and Resolution.GitHubRepo agree, as a record demands (record.Store.PutIssue).
+// The mapping is read under both names before the recorded set is read under either, since the
+// recorded set is written only for a repository no mapping names (prepareUnmapped) and is never
+// pruned: an entry kept from before Dispatch mapped the pair's other name would otherwise answer
+// for a repository the mapping now serves, from the one read made of it at its first preparation.
+func (r *repositories) lookup(resolved string) heldRepository {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	// The read is a map lookup under the lock already held, so it fails for no reason and its
-	// error is always nil; ghrepo.Under holds the order the two names are read in.
-	answer, _ := ghrepo.Under(r.renames, resolved, func(name string) (heldRepository, error) {
-		return r.held(name), nil
-	})
-	if answer.held {
-		return answer.mapped, answer.refusal, answer.leftOut, answer.unread
+	if answer := r.mappingAnswer(resolved); answer.source != fromNeither {
+		return answer
 	}
-	return mappedRepository{}, fmt.Sprintf("GitHub has not been read for %s yet", resolved), false, true
+	// As in mappingAnswer, the read is a map lookup that fails for no reason.
+	if read, _ := ghrepo.Under(r.renames, resolved, func(name string) (ghbranch.Repository, error) {
+		return r.recorded[strings.ToLower(name)], nil
+	}); read != (ghbranch.Repository{}) {
+		return heldRepository{mapped: mappedRepository{Repo: read.Name}, read: read, source: fromRecorded}
+	}
+	return heldRepository{refusal: fmt.Sprintf("GitHub has not been read for %s yet", resolved), unread: true}
 }
 
-// heldRepository is the answer for one name (held): the repository Legion records an issue on, or
-// the refusal that leaves it out, with whether either set names it at all. Its zero value is the
-// answer for a name neither set names, which is what ghrepo.Under reads the other name of the
-// pair on.
+// repositorySource is the set that answered a lookup.
+type repositorySource uint8
+
+const (
+	// fromNeither is a repository neither set names: no preparation has read GitHub for it yet,
+	// or GitHub's last answer for it refused it, which is not kept. Its preparation reads GitHub
+	// (prepareUnmapped).
+	fromNeither repositorySource = iota
+	// fromMapping is a repository Dispatch's mapping of the project names, served or left out,
+	// whose installations the mapping's own reads answer for (refreshMapping).
+	fromMapping
+	// fromRecorded is a repository no mapping names that a preparation read GitHub for and found
+	// both role Apps installed on, answered from that read (recordRepository), which nothing
+	// reads again.
+	fromRecorded
+)
+
+// heldRepository is lookup's answer: the repository Legion records an issue on, or the refusal
+// that leaves it out, and the set that answered (source). read is GitHub's kept read where the
+// recorded set answered, its spelling and default branch, which is what an issue on it is
+// recorded with. Its zero value is a name the set being read does not name, which is what
+// ghrepo.Under reads the other name of the pair on.
 type heldRepository struct {
 	mapped          mappedRepository
 	refusal         string
 	leftOut, unread bool
-	held            bool
+	read            ghbranch.Repository
+	source          repositorySource
 }
 
-// held is the answer for the repository name names exactly, in any spelling: the mapping's, and
-// then the recorded set's, which holds GitHub's own answer for a repository no mapping names that
-// an issue was recorded on, under GitHub's name for it and under the name the issue asked it
-// under (recordRepository). Its caller holds the read lock.
-func (r *repositories) held(name string) heldRepository {
-	key := strings.ToLower(name)
-	if mapped, ok := r.accepted[key]; ok {
-		return heldRepository{mapped: mapped, held: true}
-	}
-	if refused, ok := r.refused[key]; ok {
-		return heldRepository{refusal: refused.Reason, leftOut: true, unread: refused.readErr != nil, held: true}
-	}
-	if read, ok := r.recorded[key]; ok {
-		return heldRepository{mapped: mappedRepository{Repo: read.Name}, held: true}
-	}
-	return heldRepository{}
+// mappingAnswer is the mapping's answer for the repository resolved names, in any spelling and
+// under either name of a configured rename: served, left out, or, the zero value, not named.
+// Its caller holds the read lock.
+func (r *repositories) mappingAnswer(resolved string) heldRepository {
+	// Each read is a map lookup under the lock already held, so it fails for no reason and its
+	// error is always nil; ghrepo.Under holds the order the two names are read in.
+	answer, _ := ghrepo.Under(r.renames, resolved, func(name string) (heldRepository, error) {
+		key := strings.ToLower(name)
+		if mapped, ok := r.accepted[key]; ok {
+			return heldRepository{mapped: mapped, source: fromMapping}, nil
+		}
+		if refused, ok := r.refused[key]; ok {
+			return heldRepository{refusal: refused.Reason, leftOut: true, unread: refused.readErr != nil, source: fromMapping}, nil
+		}
+		return heldRepository{}, nil
+	})
+	return answer
 }
 
 // recordRepository keeps GitHub's answer for a repository no mapping names — its own spelling and
@@ -345,7 +388,7 @@ func (r *repositories) held(name string) heldRepository {
 // and asks for again at its apply and at every later preparation. Where GitHub answered under
 // another name — the 301 of a repository GitHub renamed, which the read follows — the answer is
 // kept under that name too, so the asked name finds it: one repository's one read, reached by
-// either name, and served holds it once (recorded).
+// either name.
 func (r *repositories) recordRepository(asked string, read ghbranch.Repository) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -356,33 +399,25 @@ func (r *repositories) recordRepository(asked string, read ghbranch.Repository) 
 	}
 }
 
-// recordedRead is GitHub's kept answer for the repository resolved names, in any spelling or
-// under a configured rename, and whether the recorded set holds one: what a preparation reads to
-// know it has nothing left to read, and what an issue on a repository no mapping names is
-// recorded with.
-func (r *repositories) recordedRead(resolved string) (ghbranch.Repository, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	read, _ := ghrepo.Under(r.renames, resolved, func(name string) (ghbranch.Repository, error) {
-		return r.recorded[strings.ToLower(name)], nil
-	})
-	return read, read != (ghbranch.Repository{})
+// setLive replaces the repositories the project's live issue records name (live) with repos, by
+// their lowercased <owner>/<name>, as a read of the records found them. The set owns repos from
+// here on.
+func (r *repositories) setLive(repos map[string]ghrepo.Repository) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.live = repos
 }
 
-// mapsRepository is whether Dispatch's mapping of the project names resolved at all, in any
-// spelling or under a configured rename, served or left out: the question a preparation asks
-// before it reads GitHub itself, since a mapped repository's installations are read by the
-// mapping's own reads and an issue on one waits for them (prepareUnrecorded).
-func (r *repositories) mapsRepository(resolved string) bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	named, _ := ghrepo.Under(r.renames, resolved, func(name string) (bool, error) {
-		key := strings.ToLower(name)
-		_, served := r.accepted[key]
-		_, refused := r.refused[key]
-		return served || refused, nil
-	})
-	return named
+// addLive adds repo to the repositories the project's live issue records name (live), for a
+// record that first names it between two reads of the records. One the set already holds keeps
+// the spelling it has.
+func (r *repositories) addLive(repo ghrepo.Repository) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := strings.ToLower(repo.String())
+	if _, held := r.live[key]; !held {
+		r.live[key] = repo
+	}
 }
 
 // setUnverified records the served repositories the last read of the mapping kept on their last
@@ -434,27 +469,36 @@ func (r *repositories) awaitingRead() []string {
 }
 
 // served is every repository the daemon serves, sorted by the lowercased <owner>/<name> each is
-// held under: the mapping's accepted entries and every repository an issue of this project was
-// recorded on that no mapping names (recorded). Since INFRA-2543 the mapping no longer decides
+// held under: the mapping's accepted entries and every repository a live issue record of the
+// project names that no mapping names (live). Since INFRA-2543 the mapping no longer decides
 // where the project may work — the App installation does — so the two sets are one served set
-// wherever the daemon reports what it works in, and the mapping alone is what the intake, the
-// credentials and the caches read (Accepted).
+// wherever the daemon reports what it works in. The mapping alone (Accepted) bounds none of
+// the intake, the caches and the credentials: GitHub intake hears it and every repository a
+// record names (heardRepositories), the caches cover it and the live records' repositories
+// (cacheRepositories), and a gh bundle reads it only to tell which configured renames resolve,
+// its directories being the owners the role's App is installed on (appauth's bundleDirs).
 //
-// A recorded repository is held here under the name its own read carries, never under the key
-// it is recorded by: a repository GitHub renamed is recorded under two keys, GitHub's name and
-// the name an issue asked it under (recorded), and the two keys are one repository, which the
-// daemon serves once. GitHub's name is also the key the mapping's own entries are held under
-// (set), so the merge below is between the same names.
+// The records' half is read from the records themselves, never from the reads the preparations
+// kept (recorded). A restart empties those reads, so a daemon that booted over a live tree on a
+// repository no mapping names would report it nowhere until some issue on it was prepared
+// again; and a preparation keeps a read for an issue Legion never records, a person's own todo
+// issue, so the state would name a repository no tree of the project works in.
 //
-// A repository both sets hold, which is one the mapping gained after an issue was recorded on
-// it, is served once as the mapping's entry: that is the entry carrying the project's default,
-// and the recorded set holds no default at all.
+// A repository a record names that the mapping names too, in either name of a configured
+// rename, is the mapping's to report and is left out here. Served, it is the mapping's own
+// entry, which carries the project's default where a record holds none, and under the name the
+// mapping serves it under: a record keeps the name it was written under for its whole life, so
+// after a configured rename's transfer it names the repository the mapping serves under the
+// pair's other name, which is one repository, served once. Left out, it stands under Refused
+// with why, and an entry of its own here would say both role Apps are installed on it (view).
 func (r *repositories) served() []mappedRepository {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	all := make(map[string]mappedRepository, len(r.recorded)+len(r.accepted))
-	for _, read := range r.recorded {
-		all[strings.ToLower(read.Name.String())] = mappedRepository{Repo: read.Name}
+	all := make(map[string]mappedRepository, len(r.live)+len(r.accepted))
+	for key, named := range r.live {
+		if r.mappingAnswer(named.String()).source == fromNeither {
+			all[key] = mappedRepository{Repo: named}
+		}
 	}
 	maps.Copy(all, r.accepted)
 	served := make([]mappedRepository, 0, len(all))
@@ -480,7 +524,7 @@ func (r *repositories) served() []mappedRepository {
 // repository either App is not installed on, or whose installation GitHub did not answer for,
 // is refused (checkMapping) and stands under Refused with the App named, and an issue on a
 // repository no mapping names is recorded only once GitHub answered that both Apps are
-// installed on it, which is what being in the recorded set means (prepareUnmapped).
+// installed on it, which is what a record on one means (prepareUnmapped).
 func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := map[string]sandbox.CacheStatus{}
 	for _, cache := range caches {
@@ -1078,8 +1122,9 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	var kept []mappedRepository
 	var unverified []string
 	refused = slices.DeleteFunc(refused, func(failed refusedRepository) bool {
-		mapped, refusal, _, _ := w.repositories.lookup(failed.Repo)
-		if failed.readErr == nil || refusal != "" {
+		last := w.repositories.lookup(failed.Repo)
+		mapped := last.mapped
+		if failed.readErr == nil || last.refusal != "" {
 			return false
 		}
 		kept = append(kept, mappedRepository{Repo: mapped.Repo, Default: failed.mappedDefault})
@@ -1439,8 +1484,9 @@ func (w *workflowRuntime) recoveringReasons() []string {
 	return reasons
 }
 
-// recoverRepositories recovers the repositories markRecovered named, after a read of the mapping
-// that published them as no longer unread: one read of Dispatch's project listing, applied as the
+// recoverRepositories recovers the repositories markRecovered and readAnswered named, after a
+// read of the mapping that published them as no longer unread or a preparation GitHub answered
+// for one no mapping names: one read of Dispatch's project listing, applied as the
 // boot's reconcile applies it (reconcileListing), scoped to the issues the workflow does not record
 // that resolve to one of them, whose parent chain in the listing reaches one that does (a child on
 // a served repository under a parent that was unread), or whose apply said nothing while one of
@@ -1464,12 +1510,24 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // loses the set, and the boot's reconcile is that recovery; what a release left waiting is told to
 // no one then.
 //
-// Every repository no mapping names whose reads GitHub has not answered (leaveUnread) is
-// recovered with them, at every pass while it is unread: its issues' applies said nothing and
-// recorded nothing, and the one thing that reads GitHub for such a repository is the preparation
-// of an issue on it, which this listing makes. The marker itself is not let go here — only an
-// answered read drops it (readAnswered) — so a repository GitHub still refuses is listed again on
-// the refresher's backoff and never in a loop.
+// Every repository no mapping names whose reads GitHub has not answered (leaveUnread) is listed
+// with them, at every pass while it is unread: its issues' applies said nothing and recorded
+// nothing, and the one thing that reads GitHub for such a repository is the preparation of an
+// issue on it, which this listing makes. Being listed is not being recovered. A repository is
+// recovered by a pass only once GitHub has answered for it (recovering, which readAnswered moves
+// it to, and not left unread again) and nothing fell silent for it while the pass ran
+// (settleRecovery): a pass whose own re-preparation GitHub failed again tells the architect
+// nothing, keeps its release waits and lists it again on the refresher's backoff, never in a
+// loop. The architect's notice says GitHub answered for the repository again, so a pass that ran
+// while GitHub still did not answer must not send it, nor drop the waits that it would tell.
+//
+// The silenced issues of every listed repository are taken out of the set for the pass and put
+// back only by a pass that does not finish (putBackSilenced). Each of them is in the listing's
+// scope, so its apply here either ends it or notes it again (noteUnread), and what the set holds
+// for a repository once the listing is applied is what fell silent for it since the pass began:
+// an issue GitHub failed for before another issue's preparation got GitHub's answer in the same
+// pass, or an event that fell silent meanwhile. That issue is in the next pass's scope, which
+// readAnswered's request runs at once.
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
@@ -1477,11 +1535,18 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	for repo := range w.unread {
 		repos[repo] = true
 	}
+	taken := make(map[string]map[string]bool, len(repos))
 	silenced := map[string]bool{}
-	waits := map[string]releaseWait{}
+	waits := make(map[string]map[string]releaseWait, len(repos))
 	for repo := range repos {
-		maps.Copy(silenced, w.silenced[repo])
-		maps.Copy(waits, w.releaseWaits[repo])
+		if keys := w.silenced[repo]; len(keys) != 0 {
+			taken[repo] = keys
+			maps.Copy(silenced, keys)
+			delete(w.silenced, repo)
+		}
+		if held := w.releaseWaits[repo]; len(held) != 0 {
+			waits[repo] = maps.Clone(held)
+		}
 	}
 	w.recoveringMu.Unlock()
 	if len(repos) == 0 {
@@ -1491,13 +1556,54 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	attempt, cancel := context.WithTimeout(ctx, appMintAttempt)
 	defer cancel()
 	issues, err := w.dispatch.ListIssues(attempt, w.dispatchProject, nil)
+	// todo is each repository, lowercased, that an unrecorded todo issue of the listing resolves
+	// to: the only issue whose preparation reads GitHub for a repository no mapping names
+	// (prepareUnrecorded passes every other by), so the only one that can drop its marker.
+	// keep is asked of every summary of the listing, against every record, which is where the
+	// records that say unrecorded are read.
+	todo := map[string]bool{}
 	if err == nil {
-		err = w.reconcileListing(attempt, issues, recoveredOn(repos, silenced, issues), false)
+		scope := recoveredOn(repos, silenced, issues)
+		err = w.reconcileListing(attempt, issues, func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
+			if records[summary.Key] == nil && summary.Status == "todo" {
+				todo[strings.ToLower(summary.ResolvedRepo)] = true
+			}
+			return scope(records, summary)
+		}, false)
 	}
-	if err == nil && len(waits) != 0 && w.admission != nil && w.admission.Held() {
+	if err != nil {
+		w.putBackSilenced(taken)
+		w.log.Warn("workflow: the issues of the repositories to recover were not recovered from Dispatch's listing; recovering them again",
+			"repositories", names, "error", err)
+		return
+	}
+	answered, told, dropped := w.settleRecovery(names, waits, todo)
+	held := w.admission != nil && w.admission.Held()
+	switch waiting := waitingLetGo(dropped); {
+	case len(waiting) == 0:
+	case held:
+		// The listing waits on the consumer (admission's pending), so a child it records is not
+		// recorded yet: telling an architect now that nothing will ever record one would be
+		// false of a child this very listing is about to record. Those repositories are left
+		// unread with their waits, and a later pass lets them go once the hold has released.
+		w.putBackLetGo(waiting)
+		w.log.Info("workflow: the recovery's listing waits on the Dispatch consumer, so the repositories it would stop reading GitHub for are read again until it is released",
+			"repositories", letGoNames(waiting))
+	default:
+		if err := w.tellLetGoWaits(attempt, waiting, issues); err != nil {
+			w.putBackLetGo(waiting)
+			w.putBackSilenced(taken)
+			w.log.Warn("workflow: the architects of the children left on repositories the daemon stops reading GitHub for were not told, so the repositories stay unread and a later pass tells them",
+				"repositories", letGoNames(waiting), "error", err)
+			return
+		}
+	}
+	if len(told) != 0 && held {
 		// The listing waits on the consumer (admission's pending), so a child it records is not
 		// recorded yet: the waits are told once it is released, or once the hold has lasted
-		// recoveryHoldBound, whichever comes first.
+		// recoveryHoldBound, whichever comes first. The recovery itself runs again until the
+		// hold releases, so its silenced issues stay in its scope.
+		w.putBackSilenced(taken)
 		w.recoveringMu.Lock()
 		if w.recoveryHeldSince.IsZero() {
 			w.recoveryHeldSince = time.Now()
@@ -1505,45 +1611,168 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		bounded := time.Since(w.recoveryHeldSince) >= recoveryHoldBound
 		w.recoveringMu.Unlock()
 		if !bounded {
-			w.log.Info("workflow: the recovery's listing waits on the Dispatch consumer; its release waits are told once it is released", "repositories", names)
+			w.log.Info("workflow: the recovery's listing waits on the Dispatch consumer; its release waits are told once it is released", "repositories", answered)
 			return
 		}
-		if err := w.tellReleaseWaits(attempt, names, waits); err != nil {
-			w.log.Warn("workflow: the release waits of a recovery held past its bound were not told; telling them again", "repositories", names, "error", err)
+		if err := w.tellReleaseWaits(attempt, answered, told); err != nil {
+			w.log.Warn("workflow: the release waits of a recovery held past its bound were not told; telling them again", "repositories", answered, "error", err)
 			return
 		}
 		w.log.Warn("workflow: the recovery's listing has waited on the Dispatch consumer past its bound, so its release waits still unrecorded are told now",
-			"repositories", names, "bound", recoveryHoldBound.String())
+			"repositories", answered, "bound", recoveryHoldBound.String())
 		w.recoveringMu.Lock()
-		for _, repo := range names {
-			for key := range waits {
+		for _, repo := range answered {
+			for key := range waits[repo] {
 				delete(w.releaseWaits[repo], key)
 			}
 		}
 		w.recoveringMu.Unlock()
 		return
 	}
-	if err == nil {
-		err = w.tellReleaseWaits(attempt, names, waits)
-	}
-	if err != nil {
-		w.log.Warn("workflow: the issues of the repositories GitHub answered for again were not recovered from Dispatch's listing; recovering them again",
-			"repositories", names, "error", err)
+	if err := w.tellReleaseWaits(attempt, answered, told); err != nil {
+		w.putBackSilenced(taken)
+		w.log.Warn("workflow: the release waits of the repositories GitHub answered for again were not told; recovering them again",
+			"repositories", answered, "error", err)
 		return
 	}
 	w.recoveringMu.Lock()
 	w.recoveryHeldSince = time.Time{}
-	for _, repo := range names {
+	for _, repo := range answered {
 		delete(w.recovering, repo)
-		for key := range silenced {
-			delete(w.silenced[repo], key)
-		}
-		for key := range waits {
+		for key := range waits[repo] {
 			delete(w.releaseWaits[repo], key)
 		}
 	}
 	w.recoveringMu.Unlock()
-	w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again", "repositories", names)
+	if len(answered) != 0 {
+		w.log.Info("workflow: recovered the issues of the repositories GitHub answered for again", "repositories", answered)
+	}
+}
+
+// settleRecovery is, of names, the repositories a pass whose listing has applied recovered, with
+// the release waits to tell for them (of waits, each repository's as the pass began): each
+// GitHub answered for (recovering) that is not left unread again and that nothing fell silent
+// for since the pass took its silenced issues (recoverRepositories). A repository still unread
+// is never one of them, whatever the pass did: its re-preparation's failure was swallowed
+// (prepareUnmapped), so the listing succeeded while GitHub answered nothing.
+//
+// It also lets go of each repository left unread that no preparation will ever read GitHub for
+// again, with nothing fallen silent for it: one the listing holds no unrecorded todo issue on
+// (todo), its only such issue having left todo before a read answered, and one the mapping or
+// the recorded set now answers for (lookup), which a preparation sends to the mapping's reads or
+// reads no further (prepareUnrecorded). Only an answered read drops a marker otherwise
+// (readAnswered), so for either kind the refresher would read the whole mapping and list the
+// whole project on its backoff, up to every 10 min, for ever. An issue that comes back to todo
+// on it is prepared afresh and leaves it unread again if GitHub still does not answer.
+//
+// What a release left to that repository's recovery is taken out with its marker, in this one
+// step, and returned for its architects to be told (letGo, tellLetGoWaits): the two belong
+// together, since once the marker is gone no pass lists the repository again, so a wait left
+// behind is one no recovery would ever read and no architect would ever hear of, while its
+// release_children answered that the child was released. A telling that fails puts both back
+// (putBackLetGo), so the next pass finds the repository as this one did.
+func (w *workflowRuntime) settleRecovery(names []string, waits map[string]map[string]releaseWait, todo map[string]bool) (answered []string, told map[string]releaseWait, dropped []letGo) {
+	// lookup takes the mapping's lock, so it is read before recoveringMu is taken.
+	readElsewhere := make(map[string]bool, len(names))
+	for _, repo := range names {
+		readElsewhere[repo] = w.repositories.lookup(repo).source != fromNeither
+	}
+	told = map[string]releaseWait{}
+	w.recoveringMu.Lock()
+	for _, repo := range names {
+		reason, unread := w.unread[repo]
+		quiet := len(w.silenced[repo]) == 0
+		switch {
+		case unread:
+			if quiet && (!todo[repo] || readElsewhere[repo]) {
+				gone := letGo{repo: repo, reason: reason, waits: w.releaseWaits[repo]}
+				delete(w.unread, repo)
+				delete(w.releaseWaits, repo)
+				dropped = append(dropped, gone)
+			}
+		case w.recovering[repo] && quiet:
+			answered = append(answered, repo)
+			maps.Copy(told, waits[repo])
+		}
+	}
+	w.recoveringMu.Unlock()
+	if len(dropped) != 0 {
+		w.log.Info("workflow: no issue is left for a preparation to read GitHub for on these repositories GitHub did not answer for, so the daemon stops reading them again",
+			"repositories", letGoNames(dropped))
+	}
+	return answered, told, dropped
+}
+
+// letGo is a repository a pass stopped waiting for GitHub to answer for (settleRecovery), with
+// everything that left the daemon's memory with its marker: the reason it was left unread, and
+// the children a release_children left to its recovery, by key.
+type letGo struct {
+	repo   string
+	reason string
+	waits  map[string]releaseWait
+}
+
+// waitingLetGo is each of dropped a release left a child to: the repositories whose letting go
+// an architect is owed a word about. A repository no release waits on is let go whatever the
+// pass found, since there is nobody to tell.
+func waitingLetGo(dropped []letGo) []letGo {
+	var waiting []letGo
+	for _, gone := range dropped {
+		if len(gone.waits) != 0 {
+			waiting = append(waiting, gone)
+		}
+	}
+	return waiting
+}
+
+// letGoNames is the repository of each of dropped, as the refresher logs them.
+func letGoNames(dropped []letGo) []string {
+	names := make([]string, 0, len(dropped))
+	for _, gone := range dropped {
+		names = append(names, gone.repo)
+	}
+	return names
+}
+
+// putBackLetGo leaves each repository of dropped unread again, with the children a release left
+// to its recovery, when the telling that goes with letting it go did not reach the architects
+// (tellLetGoWaits): the marker and those waits leave together or not at all, so a pass that
+// could not tell them leaves the next one exactly what it found.
+func (w *workflowRuntime) putBackLetGo(dropped []letGo) {
+	w.recoveringMu.Lock()
+	defer w.recoveringMu.Unlock()
+	for _, gone := range dropped {
+		if w.unread == nil {
+			w.unread = map[string]string{}
+		}
+		w.unread[gone.repo] = gone.reason
+		if len(gone.waits) == 0 {
+			continue
+		}
+		if w.releaseWaits == nil {
+			w.releaseWaits = map[string]map[string]releaseWait{}
+		}
+		if w.releaseWaits[gone.repo] == nil {
+			w.releaseWaits[gone.repo] = map[string]releaseWait{}
+		}
+		maps.Copy(w.releaseWaits[gone.repo], gone.waits)
+	}
+}
+
+// putBackSilenced returns to the silenced set the issues a pass took out of it
+// (recoverRepositories) when the pass does not finish, beside any noted since.
+func (w *workflowRuntime) putBackSilenced(taken map[string]map[string]bool) {
+	w.recoveringMu.Lock()
+	defer w.recoveringMu.Unlock()
+	for repo, keys := range taken {
+		if w.silenced == nil {
+			w.silenced = map[string]map[string]bool{}
+		}
+		if w.silenced[repo] == nil {
+			w.silenced[repo] = map[string]bool{}
+		}
+		maps.Copy(w.silenced[repo], keys)
+	}
 }
 
 // releaseWait is a child release_children left unrecorded while a repository was unread
@@ -1576,14 +1805,20 @@ func (w *workflowRuntime) noteUnread(key, resolved string) {
 // while unreadReasons names any) and recovers the issues it left from Dispatch's listing
 // (recoverRepositories) once a read answers.
 //
-// The read is asked for only when the repository was not already left unread, and the marker is
-// dropped only by an answer (readAnswered), so a GitHub that keeps failing is read again on the
-// backoff alone: the recovery's own re-preparation finds the marker still here and asks for
-// nothing, which is what keeps the two out of a loop.
+// The read is asked for only when nothing reads the repository again already: it was not left
+// unread before, and it is not among the repositories to recover (recovering), which the
+// refresher reads again of its own on the same backoff. The marker is dropped by an answer
+// (readAnswered), which asks for a read of its own, or by a recovery that finds nothing left on
+// the repository for a preparation to read GitHub for (settleRecovery). So a GitHub that keeps
+// failing is read again on the backoff alone, and one that fails and answers by turns runs at
+// most one recovery between two of the backoff's own: the recovery's own re-preparation finds the
+// marker still here, or the repository still to recover, and asks for nothing, which is what
+// keeps the two out of a loop.
 func (w *workflowRuntime) leaveUnread(repo ghrepo.Repository, reason string) {
 	key := strings.ToLower(repo.String())
 	w.recoveringMu.Lock()
 	_, waiting := w.unread[key]
+	recovering := w.recovering[key]
 	if w.unread == nil {
 		w.unread = map[string]string{}
 	}
@@ -1594,16 +1829,35 @@ func (w *workflowRuntime) leaveUnread(repo ghrepo.Repository, reason string) {
 	}
 	w.log.Warn("workflow: GitHub did not answer for a repository an issue names that no mapping names, so the issue is left and the repository read again",
 		"repo", repo.String(), "reason", reason)
-	w.requestMappingRead()
+	if !recovering {
+		w.requestMappingRead()
+	}
 }
 
 // readAnswered drops repo from the repositories left unread: GitHub answered the preparation's
-// reads, so the refresher waits for it no longer, whether the answer recorded the issue or
-// refused it.
+// reads, whether the answer recorded the issue or refused it, so nothing waits on a read of it
+// any longer. A repository that was left unread is moved to the repositories to recover
+// (recovering) and a read of the mapping is asked for, which runs that recovery
+// (refreshOnMappingChange), as markRecovered marks a mapped repository a read of the mapping
+// stops leaving out. The issues the earlier preparations left said nothing and recorded nothing,
+// and the preparation that got the answer may be another issue's event: dropping the marker
+// alone took the repository out of every recovery, and those issues stood unadmitted until the
+// next boot.
 func (w *workflowRuntime) readAnswered(repo ghrepo.Repository) {
+	key := strings.ToLower(repo.String())
 	w.recoveringMu.Lock()
-	defer w.recoveringMu.Unlock()
-	delete(w.unread, strings.ToLower(repo.String()))
+	_, waiting := w.unread[key]
+	if waiting {
+		delete(w.unread, key)
+		if w.recovering == nil {
+			w.recovering = map[string]bool{}
+		}
+		w.recovering[key] = true
+	}
+	w.recoveringMu.Unlock()
+	if waiting {
+		w.requestMappingRead()
+	}
 }
 
 // unreadReasons is every repository no mapping names whose reads GitHub has not answered, as the
@@ -1638,8 +1892,70 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) {
 
 // tellReleaseWaits tells each tree's architect, in one child-release-stalled notice, which of waits
 // the recovery of repos left unrecorded, each with whether its parent is recorded now: what to
-// release again. A child recorded since is told nothing; its record's own notices carry it.
+// release again.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
+	return w.tellWaitingArchitects(ctx, waits, fmt.Sprintf(
+		"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children your release_children released while it was unread are still not recorded",
+		strings.Join(repos, ", ")),
+		func(ctx context.Context, child string, wait releaseWait) (string, error) {
+			parent, err := w.recordOf(ctx, wait.parent)
+			if err != nil {
+				return "", err
+			}
+			if parent == nil {
+				return fmt.Sprintf("%s (its parent %s is not recorded: release %s first, then %s)", child, wait.parent, wait.parent, child), nil
+			}
+			return fmt.Sprintf("%s (its parent %s is recorded now: release %s again)", child, wait.parent, child), nil
+		})
+}
+
+// tellLetGoWaits tells each tree's architect, in the same one notice per tree, which children its
+// release_children left to the recovery of the repositories a pass has just let go
+// (settleRecovery): no todo issue names them now, so no preparation will read GitHub for them
+// again and no recovery will ever record these children. Each is named with the status listing,
+// Dispatch's own project listing of this pass, gives it, since that status is why nothing records
+// it: a child a person moved out of todo is recorded again only once it is todo again. A child
+// no wait is left for is told nothing, and so is a repository whose waits are empty.
+//
+// It is the pair of tellReleaseWaits and not a second telling of its kind: the two share one
+// body, which decides which children are still unrecorded and writes one notice per tree, and
+// differ in the reason's first sentence and in the line each child is named on alone. The
+// architect hears child-release-stalled either way, so no reader of the notices learns a new kind.
+func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, listing []dispatch.IssueSummary) error {
+	var repos []string
+	waits := map[string]releaseWait{}
+	for _, gone := range dropped {
+		if len(gone.waits) == 0 {
+			continue
+		}
+		repos = append(repos, gone.repo)
+		maps.Copy(waits, gone.waits)
+	}
+	if len(waits) == 0 {
+		return nil
+	}
+	listed := make(map[string]string, len(listing))
+	for _, summary := range listing {
+		listed[summary.Key] = summary.Status
+	}
+	return w.tellWaitingArchitects(ctx, waits, fmt.Sprintf(
+		"the daemon no longer waits for GitHub to answer for %s, because no todo issue names it now; these children your release_children released while it was unread were never recorded",
+		strings.Join(repos, ", ")),
+		func(_ context.Context, child string, _ releaseWait) (string, error) {
+			status := listed[child]
+			if status == "" {
+				status = "no longer listed"
+			}
+			return fmt.Sprintf("%s (%s in Dispatch now: release it again once it is todo)", child, status), nil
+		})
+}
+
+// tellWaitingArchitects is the body both tellings share: one child-release-stalled notice per
+// tree, naming every child of waits the workflow still does not record, as why opens the notice
+// and line names each child. A child recorded since is told nothing; its record's own notices
+// carry it. Nothing is written where every child is recorded.
+func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, waits map[string]releaseWait, why string,
+	line func(ctx context.Context, child string, wait releaseWait) (string, error)) error {
 	if len(waits) == 0 {
 		return nil
 	}
@@ -1653,15 +1969,11 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 		if recorded != nil {
 			continue
 		}
-		parent, err := w.recordOf(ctx, wait.parent)
+		said, err := line(ctx, child, wait)
 		if err != nil {
 			return err
 		}
-		line := fmt.Sprintf("%s (its parent %s is recorded now: release %s again)", child, wait.parent, child)
-		if parent == nil {
-			line = fmt.Sprintf("%s (its parent %s is not recorded: release %s first, then %s)", child, wait.parent, wait.parent, child)
-		}
-		byTree[wait.tree] = append(byTree[wait.tree], line)
+		byTree[wait.tree] = append(byTree[wait.tree], said)
 	}
 	if len(byTree) == 0 {
 		return nil
@@ -1670,9 +1982,8 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		for _, tree := range slices.Sorted(maps.Keys(byTree)) {
-			row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-				"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children your release_children released while it was unread are still not recorded: %s",
-				strings.Join(repos, ", "), strings.Join(byTree[tree], "; "))}, now)
+			row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
+				Reason: why + ": " + strings.Join(byTree[tree], "; ")}, now)
 			if err != nil {
 				return err
 			}
@@ -1723,19 +2034,23 @@ func recoveredOn(repos, silenced map[string]bool, listing []dispatch.IssueSummar
 // issue on it: release_children's answer for a child whose apply recorded nothing
 // (api.Options.RepositoryUnread), which that route reads as a recovery that is coming.
 //
-// Two readings make one answer. A repository the mapping names is unread when GitHub did not
-// answer its installation read, or its default-branch read past GitHub's rate limit, which lookup answers and the mapping's own retry clears. A repository no mapping
-// names is in no set at all once a preparation has refused it, since no refusal is kept
-// (prepareUnmapped), and lookup answers that as unread too; here it is not, because nothing is
-// reading GitHub for it and no recovery will record the child. It is unread only while a
-// preparation's reads went unanswered, which is the marker leaveUnread writes and readAnswered
-// drops, and which the refresher is reading GitHub again for. So a child left by a refusal is
-// answered as one the recovery will not record, and its architect is told to act rather than to
-// wait.
+// The answer is read from the set lookup answered from (source), so it is one read of the sets.
+// A repository the mapping answers for is unread when GitHub did not answer its installation
+// read, or its default-branch read past GitHub's rate limit, which the mapping's own retry
+// clears. One the recorded set answers for is never unread: GitHub answered for both its
+// installations and its name, and an issue on it is recorded from that answer. One neither set
+// names, never read or refused, since no refusal is kept (prepareUnmapped), is one lookup answers
+// unread, as Legion holds no answer for it; here it is unread only while a preparation's reads
+// went unanswered, which is the marker leaveUnread writes and readAnswered drops, and which the
+// refresher is reading GitHub again for. A refused one is not, because nothing is reading GitHub
+// for it and no recovery will record the child. So a child left by a refusal is answered as one
+// the recovery will not record, and its architect is told to act rather than to wait.
 func (w *workflowRuntime) repositoryUnread(resolved string) bool {
-	if w.repositories.mapsRepository(resolved) {
-		_, _, _, unread := w.repositories.lookup(resolved)
-		return unread
+	switch answer := w.repositories.lookup(resolved); answer.source {
+	case fromMapping:
+		return answer.unread
+	case fromRecorded:
+		return false
 	}
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
@@ -1912,6 +2227,12 @@ func (w *workflowRuntime) cacheRepositories() []ghrepo.Repository {
 // mapping, inside the transaction that publishes it — so a repository whose last issue is done
 // leaves the set at the next read of the mapping and its cache retires after its retention; a
 // repository a record first names joins it at the recording itself (cacheRepository).
+//
+// The same read gives the mapping the records' half of what the daemon serves
+// (repositories.setLive), which legion state reports beside the mapping's (served): the two are
+// one read of the records so the state names a repository only a record names for exactly as
+// long as the runtime keeps its cache as a served repository's, and a daemon that boots over a
+// live tree reports its repository from the records alone, before any event of it.
 func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.Tx, served []ghrepo.Repository) error {
 	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
 	if err != nil {
@@ -1921,19 +2242,25 @@ func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.T
 	for _, repo := range served {
 		cached[strings.ToLower(repo.String())] = repo
 	}
+	live := map[string]ghrepo.Repository{}
 	for _, issue := range issues {
 		if issue.GitHubRepo == "" {
 			continue
 		}
-		if _, held := cached[strings.ToLower(issue.GitHubRepo)]; held {
+		if _, held := live[strings.ToLower(issue.GitHubRepo)]; held {
 			continue
 		}
 		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo)
 		if err != nil {
 			return err
 		}
-		cached[strings.ToLower(repo.String())] = repo
+		key := strings.ToLower(repo.String())
+		live[key] = repo
+		if _, held := cached[key]; !held {
+			cached[key] = repo
+		}
 	}
+	w.repositories.setLive(live)
 	w.cacheReposMu.Lock()
 	defer w.cacheReposMu.Unlock()
 	w.storeCacheRepositories(cached)
@@ -1943,8 +2270,11 @@ func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.T
 // cacheRepository adds repo to the cache set, for a record that first names it: the sweep makes
 // its cache at its next pass, with no read of the mapping and no restart. Two records committed
 // at once run their commit hooks on two goroutines, so the read and the write are one step
-// (cacheReposMu) and neither loses the other's repository.
+// (cacheReposMu) and neither loses the other's repository. It adds repo to the repositories the
+// live records name as well (repositories.addLive), so the state reports it from the same
+// moment.
 func (w *workflowRuntime) cacheRepository(repo ghrepo.Repository) {
+	w.repositories.addLive(repo)
 	w.cacheReposMu.Lock()
 	defer w.cacheReposMu.Unlock()
 	cached := map[string]ghrepo.Repository{}
@@ -2398,7 +2728,14 @@ func parentKey(parent *string) string {
 //
 // A repository no mapping names is read from GitHub here instead (prepareUnmapped), and waits for
 // no read of the mapping: a read of the mapping would answer nothing about it, since the mapping
-// does not name it and never will (R4).
+// does not name it and never will (R4). One whose reads GitHub already answered installed is
+// read no further: the recorded set holds GitHub's spelling and its default branch
+// (repositories.recordRepository), so one repository is read once however many issues name it.
+//
+// The kind of repository is the source of the one lookup the rest of the preparation reads
+// (lookup), and the lookup a held admission makes again once a read of the mapping covers it is
+// read the same way: a read that stopped mapping the repository leaves it one GitHub is read for
+// here, rather than one whose apply says nothing while nothing reads GitHub for it.
 func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.DispatchIssue, await bool, held int64) (intake.DispatchIssue, error) {
 	if issue.ResolvedRepoMissing {
 		detail, err := w.dispatch.GetIssue(ctx, issue.Key)
@@ -2410,19 +2747,23 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 	if issue.Status != "todo" || issue.ResolvedRepo == "" {
 		return issue, nil
 	}
-	if !w.repositories.mapsRepository(issue.ResolvedRepo) {
-		return w.prepareUnmapped(ctx, issue)
-	}
-	mapped, refusal, _, unread := w.repositories.lookup(issue.ResolvedRepo)
-	if refusal != "" && !unread && await && admissionBound(issue) {
+	answer := w.repositories.lookup(issue.ResolvedRepo)
+	if answer.source == fromMapping && answer.refusal != "" && !answer.unread && await && admissionBound(issue) {
 		if err := w.awaitMappingRead(issue, held); err != nil {
 			return issue, err
 		}
-		mapped, refusal, _, _ = w.repositories.lookup(issue.ResolvedRepo)
+		answer = w.repositories.lookup(issue.ResolvedRepo)
 	}
-	if refusal != "" {
+	switch answer.source {
+	case fromNeither:
+		return w.prepareUnmapped(ctx, issue)
+	case fromRecorded:
 		return issue, nil
 	}
+	if answer.refusal != "" {
+		return issue, nil
+	}
+	mapped := answer.mapped
 	if w.repositories.kept(mapped.Repo.String()) {
 		if _, read := w.defaultBranches.Kept(mapped.Repo.String()); read {
 			return issue, nil
@@ -2443,12 +2784,11 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // only some of its repositories) and the repository's own name and default branch
 // (defaultBranches.Named).
 //
-// A repository an issue was already recorded on is read no further: the recorded set holds
-// GitHub's spelling and its default branch (repositories.recordRepository), so one repository is
-// read once however many issues name it. Every other one is read at each preparation, which is
-// what keeping no refusal means: an operator who installs the App, or a person who corrects a
-// misspelled repository, is taken at the next preparation of the issue, with no wait, no restart
-// and no mapping change.
+// It is called only for a repository neither set names (prepareUnrecorded), so it never reads
+// GitHub again for one whose read the recorded set keeps. Every other one is read at each
+// preparation, which is what keeping no refusal means: an operator who installs the App, or a
+// person who corrects a misspelled repository, is taken at the next preparation of the issue,
+// with no wait, no restart and no mapping change.
 //
 // The three answers. Both Apps installed and GitHub naming the repository: the read is kept and
 // the issue is recorded and admitted on it. A role App that is not installed, a repository GitHub
@@ -2467,9 +2807,6 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 // event, and every later preparation of an issue on it, ask under the name the issue resolves
 // to, which is the one GitHub renamed away from.
 func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error) {
-	if _, read := w.repositories.recordedRead(issue.ResolvedRepo); read {
-		return issue, nil
-	}
 	if w.installs == nil {
 		// A daemon with no GitHub Apps reads no installation, so nothing is recorded on a
 		// repository its mapping does not name: the issue's apply leaves it as an unread one.
@@ -2499,16 +2836,19 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 		w.leaveUnread(repo, fmt.Sprintf("the name and default branch of %s could not be read: %v; Legion reads it again", repo, err))
 		return issue, nil
 	}
-	w.readAnswered(repo)
+	// The read is kept before the marker is dropped: readAnswered starts the recovery of the
+	// issues the repository left, and each of those preparations is to find the read here rather
+	// than read GitHub again, which could fail and leave the repository unread once more.
 	w.repositories.recordRepository(repo.String(), read)
+	w.readAnswered(repo)
 	return issue, nil
 }
 
 // ResolveRepository answers the workflow (workflow.Repositories) from memory: the repository
 // resolved names as GitHub names it, at the default branch last read for it, or why Legion does
 // not record an issue on it. The mapping answers first and the recorded set second (lookup), and
-// a repository the recorded set names is answered with the read kept for it, which is the one
-// GitHub answer made for it however many issues name it. A served repository whose default
+// a repository the recorded set answers for is answered with the read kept for it, which is the
+// one GitHub answer made for it however many issues name it. A served repository whose default
 // branch was never read is an error: its event's preparation (prepareRepository) did not run.
 //
 // A repository GitHub renamed, which the issue resolves to under the name GitHub renamed it away
@@ -2516,26 +2856,23 @@ func (w *workflowRuntime) prepareUnmapped(ctx context.Context, issue intake.Disp
 // as under GitHub's own name (repositories.recordRepository), and the answer carries GitHub's
 // name and default branch, which is what the record keeps.
 //
-// The recorded set is read only for a repository no mapping names (mapsRepository), which is the
-// only kind of repository it is written for (prepareUnmapped), so that the two sets are read in
-// the order the sentence above says. Read first, it would answer a mapped repository from the
-// one GitHub read made at its first preparation for the life of the process — an answer no
-// later read of the default branch ever replaces (defaultBranches.Kept, whose TTL exists so a
-// branch renamed on GitHub is taken) — and would answer a repository whose mapped name a
-// configured pair moved under the name it moved away from.
+// A mapped repository is answered at the default branch last read for it (defaultBranches.Kept),
+// never from the recorded set, even where that set holds a read kept from before the mapping
+// named it: that read is the one GitHub made at its first preparation, which no later read of
+// the default branch ever replaces, while Kept's TTL exists so a branch renamed on GitHub is
+// taken. lookup's source says which of the two answered, and lookup reads the mapping under both
+// names of a configured pair before it reads the recorded set, so a repository whose mapped name
+// a configured pair moved is not answered under the name it moved away from.
 func (w *workflowRuntime) ResolveRepository(resolved string) (workflow.Resolution, error) {
-	mapped, refusal, leftOut, unread := w.repositories.lookup(resolved)
-	if refusal != "" {
-		return workflow.Resolution{Refusal: refusal, LeftOut: leftOut, Unread: unread}, nil
+	answer := w.repositories.lookup(resolved)
+	if answer.refusal != "" {
+		return workflow.Resolution{Refusal: answer.refusal, LeftOut: answer.leftOut, Unread: answer.unread}, nil
 	}
-	var read ghbranch.Repository
-	var ok bool
-	if !w.repositories.mapsRepository(resolved) {
-		read, ok = w.repositories.recordedRead(resolved)
-	}
-	if !ok {
-		if read, ok = w.defaultBranches.Kept(mapped.Repo.String()); !ok {
-			return workflow.Resolution{}, fmt.Errorf("the default branch of %s was never read before an issue on it was recorded", mapped.Repo)
+	read := answer.read
+	if answer.source == fromMapping {
+		var ok bool
+		if read, ok = w.defaultBranches.Kept(answer.mapped.Repo.String()); !ok {
+			return workflow.Resolution{}, fmt.Errorf("the default branch of %s was never read before an issue on it was recorded", answer.mapped.Repo)
 		}
 	}
 	return workflow.Resolution{Repo: read.Name.String(), DefaultBranch: read.DefaultBranch, GitHubRepo: read.Name.String()}, nil
