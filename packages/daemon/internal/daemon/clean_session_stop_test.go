@@ -366,7 +366,7 @@ func TestCleanSessionStopSendsNoDeleteWhenTheListenerHoldsNoRegistration(t *test
 // A read the listener refuses leaves unknown whether the entry names a client process, so a
 // delete sent then would rest on the moment alone for an entry that may name one (sessionStop.send
 // says why that is not sent). So nothing is deleted and nothing is tried again, and the
-// registration lapses at the gone horizon, which is the wait the session already had.
+// registration lapses when its record expires, which is the wait the session already had.
 func TestCleanSessionStopSendsNoDeleteWhenTheListenerRefusesTheRead(t *testing.T) {
 	listener := &listenerRecorder{readStatus: http.StatusInternalServerError}
 	server := listener.server(t)
@@ -592,10 +592,9 @@ func TestSessionStopsInFlightTakesAStopStartedFromZeroBesideTheFinalWait(t *test
 }
 
 // The daemon's stop waits for the clean stops sessionStopsInFlight counts, and each ends within
-// cleanSessionStopBudget of being sent. At half of stopBudget or less, a stop sent at the halt,
-// where the drain begins, ends with half the stop's budget still to run, and so does every stop
-// sent in the first half of that budget: only one sent later in the drain can still be in flight
-// when run stops waiting at the budget (awaitStop).
+// cleanSessionStopBudget of being sent. At half of stopBudget or less, a stop sent before the
+// halt or in the first half of the stop's budget ends inside that budget: only one sent later in
+// the drain can still be in flight when run stops waiting at the budget (awaitStop).
 func TestCleanSessionStopFitsTwiceInTheStopBudget(t *testing.T) {
 	if 2*cleanSessionStopBudget > stopBudget {
 		t.Fatalf("cleanSessionStopBudget is %s, more than half of stopBudget's %s: a clean stop sent in the first half of the daemon's stop budget could still be in flight when that budget runs out",
