@@ -1831,8 +1831,8 @@ func operatorPod() Pod {
 // worker's, the daemon-launched controller's and the image probe's — exactly as configured: its
 // volumes beside Legion's, its variables and mounts in the agent's container alone, never in an
 // init container, and its account as the pod's. The controller's account being the issue pods'
-// is what makes it the Legion daemon service's own pod to the secrets broker, which binds one
-// account per service, so its slack_post is granted the service's LEGION_SLACK_BOT_TOKEN.
+// is what makes it the Legion daemon service's own pod to the secrets broker, so it is granted the
+// secrets that service owns.
 func TestTheOperatorsPodReachesEveryPodLegionRuns(t *testing.T) {
 	opts := testOptions()
 	opts.Pod = operatorPod()

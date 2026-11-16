@@ -211,10 +211,11 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
   secret exists is recorded against your session with the reason you signed, and it reaches a
   person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
-- A secret that a service owns, such as `LEGION_SLACK_BOT_TOKEN`, goes to that service's own pods
-  and VMs and to nothing else: `Evaluate` in `packages/envoy/internal/broker/policy/policy.go`
-  grants a service-owned secret at once when the session's own service is the secret's owner, and
-  denies every other session, with no person asked.
+- A secret that a service owns goes to that service's own pods and VMs and to nothing else:
+  `Evaluate` in `packages/envoy/internal/broker/policy/policy.go` grants a service-owned secret at
+  once when the session's own service is the secret's owner, and denies every other session, with
+  no person asked. A shared agent secret, such as `LEGION_SLACK_BOT_TOKEN`, goes at once to every
+  session, a pod's and a person's alike.
 - The `agent-secrets secret` forms (`list`, `show`, `create`, `set`, `retag`, `delete`, `restore`)
   call the broker's store under whatever cloud credential the environment gives them, and the
   store's IAM decides what each may read and write.
@@ -271,9 +272,8 @@ messages of the thread. A `ts` that names no message answers
 `{"ok":false,"error":"thread_not_found"}`, also at exit 0, which is why the body decides and not the
 status. A thread read needs the app's `channels:history` scope in a public channel and
 `groups:history` in a private one; without them Slack answers `missing_scope`, which only a person
-in the Slack workspace can fix. A session with a broker identity that is not one of the
-`legion-daemon` service's own is denied this token, and the example exits 77; a session with no
-broker identity exits 2.
+in the Slack workspace can fix. `LEGION_SLACK_BOT_TOKEN` is a shared agent secret, so every session
+with a broker identity is granted it; a session with no broker identity exits 2.
 
 Paging: Slack recommends a `limit` of at most 200. While the answer's `has_more` is true, pass its
 `response_metadata.next_cursor` as `cursor` to the next call. Each page repeats the thread's root

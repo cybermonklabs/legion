@@ -1349,9 +1349,8 @@ func TestControllerStartDropsAnInheritedBootToken(t *testing.T) {
 }
 
 // A start from inside the daemon-launched controller's pod, or from any shell that exported it,
-// inherits LEGION_SLACK_CHANNELS: another project's channels, or ones its own operator controller
-// may not answer, since only the daemon's controller can reply in Slack. Neither the operator's
-// controller nor its load probe is handed it.
+// inherits LEGION_SLACK_CHANNELS: another project's channels, or this project's, whose mentions only
+// the daemon's controller hears. Neither the operator's controller nor its load probe is handed it.
 func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})

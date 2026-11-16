@@ -1692,6 +1692,40 @@ func streamFull(err error) error {
 	return err
 }
 
+// ErrDuplicateInProcess is wrapped by the error of a JetStream publish under a message id that a
+// clustered stream refused because an earlier publish under the same id is still in process: the
+// stream holds that id's dedupe entry with no sequence yet, so it neither stores this copy nor
+// names the one it will hold (nats-server's JSStreamDuplicateMessageConflict). It is not an
+// ErrRefused: the same publish sent again once the earlier one is stored is answered as a
+// duplicate with that copy's sequence, which is what a caller that reads the acknowledgement
+// retries for (PublishStoredAck; the listener's keep, cmd/listener/role_keep.go). The error still
+// matches nats-server's *nats.APIError.
+var ErrDuplicateInProcess = errors.New("a publish under the same message id is still in process")
+
+// jsStreamDuplicateMessageConflict is nats-server's code for a publish whose message id is a
+// duplicate of one still in process (JSStreamDuplicateMessageConflict). nats.go v1.53.1 names no
+// constant for it.
+const jsStreamDuplicateMessageConflict = 10158
+
+// duplicateInProcess names the server's answer to a JetStream publish whose message id is still
+// in process under an earlier publish as the ErrDuplicateInProcess it is, and returns any other
+// error as it is.
+func duplicateInProcess(err error) error {
+	var apiErr *nats.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode == jsStreamDuplicateMessageConflict {
+		return fmt.Errorf("%w: %w", ErrDuplicateInProcess, err)
+	}
+	return err
+}
+
+// storedRefusal names the server's answer to a publish of the stored path as the ErrStreamFull or
+// the ErrDuplicateInProcess it is, and returns any other error as it is. It is the mapping
+// sendStored makes after c.refused, in a function of its own so that its test
+// (duplicate_in_process_test.go) reads the mapping sendStored makes and not a copy of it.
+func storedRefusal(err error) error {
+	return duplicateInProcess(streamFull(err))
+}
+
 // maxSubjectBytes bounds a subject the bus publishes on, or a KV call builds from a key. The server
 // closes a connection whose protocol line runs past its max control line (4 KiB by default) and
 // nats.go does not check it, so a longer subject would close the connection every subscription and
@@ -1786,22 +1820,46 @@ func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contr
 	return c.publishJetStream(ctx, item)
 }
 
-// PublishStoredAs publishes item to the notification stream on subject, under Nats-Msg-Id msgID
+// StoredAck is the stream's acknowledgement of a stored publish (PublishStoredAck): the stream
+// sequence of the copy the stream holds under the publish's message id, and whether an earlier
+// publish stored that copy. A duplicate's Sequence is that earlier copy's, which nats-server names
+// in its answer, so a caller can read the copy the stream already holds (NextStoredMessage at that
+// sequence).
+type StoredAck struct {
+	Sequence  uint64
+	Duplicate bool
+}
+
+// PublishStoredAck publishes item to the notification stream on subject, under Nats-Msg-Id msgID
 // instead of the one publishJetStream derives, within ctx's bound as PublishWithin's, for a caller
-// that names both the subject it is stored on and the stored message itself:
-//   - the listener's exception about a stored message, published on the exception's own topic,
-//     which every listener that raises it from its own durable publishes under one id, so the
-//     stream keeps one copy;
-//   - a role message the listener could not deliver, stored on that role's kept subject
-//     (KeptRoleSubject) while the envelope keeps its own topic field, so the holder that later
-//     takes the role is handed the message as its sender sent it. Every listener that kept the
-//     same message writes it under one id (KeptMsgID).
+// that names both the subject it is stored on and the stored message itself, and returns the
+// stream's acknowledgement. It is how the listener keeps a role message it could not deliver:
+// stored on that role's kept subject (KeptRoleSubject) while the envelope keeps its own topic
+// field, so the holder that later takes the role is handed the message as its sender sent it.
+// Every listener that keeps the same message writes it under one id (KeptMsgID), and the keep
+// reads the acknowledgement to tell a new copy from one the stream already held, and which copy
+// that is (cmd/listener/role_keep.go).
 //
-// A duplicate the stream drops counts as published, which is the ordinary case for a kept copy
-// rather than a fault. Its refusals are publishJetStream's (ErrTooLarge, ErrRefused); subject must
-// be one the stream captures, or nothing answers the publish.
+// A duplicate is no error: it comes back Duplicate, with the sequence of the copy the stream
+// holds. Its refusals are publishJetStream's (ErrTooLarge, ErrRefused, ErrPublishDenied,
+// ErrStreamFull), and ErrDuplicateInProcess while a clustered stream is still storing an earlier
+// publish under the same id; subject must be one the stream captures, or nothing answers the
+// publish.
+func (c *Client) PublishStoredAck(ctx context.Context, subject string, item contracts.Envelope, msgID string) (StoredAck, error) {
+	ack, err := c.publishJetStreamOn(ctx, subject, item, msgID)
+	if err != nil {
+		return StoredAck{}, err
+	}
+	return StoredAck{Sequence: ack.Sequence, Duplicate: ack.Duplicate}, nil
+}
+
+// PublishStoredAs is PublishStoredAck for a caller that needs no acknowledgement: the listener's
+// exception about a stored message, published on the exception's own topic, which every listener
+// that raises it from its own durable publishes under one id, so the stream keeps one copy. A
+// duplicate the stream drops counts as published, which is the ordinary case for such an
+// exception rather than a fault. Its refusals are PublishStoredAck's.
 func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contracts.Envelope, msgID string) error {
-	_, err := c.publishJetStreamOn(ctx, subject, item, msgID)
+	_, err := c.PublishStoredAck(ctx, subject, item, msgID)
 	return err
 }
 
@@ -1825,7 +1883,7 @@ func (c *Client) PublishStoredAs(ctx context.Context, subject string, item contr
 //
 // A ctx that has already ended never puts the message on the wire here, and that protection is
 // the dependency's rather than this repository's: js.Publish under nats.Context is a request, and
-// nats.go's requestWithContext returns ctx.Err() before it sends anything (nats.go v1.50.0,
+// nats.go's requestWithContext returns ctx.Err() before it sends anything (nats.go v1.53.1,
 // context.go), on the first attempt, on each of its no-responders retries and on the reconnect
 // retry below alike. That read comes after ensureConnWithContext has returned, so it also refuses
 // a ctx cancelled as a reconnect wait ends. So the core path's own check (publishConfirmed's read
@@ -1841,42 +1899,43 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) 
 	if contracts.DedupeKeyNamesTheUpstreamEvent(item) {
 		msgID = ForwardMsgID(item.DedupeKey, item.Topic)
 	}
-	return c.publishJetStreamOn(ctx, item.Topic, item, msgID)
-}
-
-// publishJetStreamOn is publishJetStream to subject under Nats-Msg-Id msgID, none when it is
-// empty. Every publish of the envelope's own topic passes item.Topic; a kept role message passes
-// the subject it is stored on (PublishStoredAs), which leaves item.Topic the role topic it was
-// published on.
-func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bool, error) {
-	if err := checkSubject(subject); err != nil {
-		return false, err
-	}
-	data, err := json.Marshal(item)
-	if err != nil {
-		return false, err
-	}
-	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
-	defer cancel()
-	if err := c.ensureConnWithContext(ctx); err != nil {
-		return false, err
-	}
-	options := []nats.PubOpt{nats.Context(ctx)}
-	if msgID != "" {
-		options = append(options, nats.MsgId(msgID))
-	}
-	ack, err := c.sendStored(ctx, subject, data, options...)
+	ack, err := c.publishJetStreamOn(ctx, item.Topic, item, msgID)
 	if err != nil {
 		return false, err
 	}
 	return ack.Duplicate, nil
 }
 
+// publishJetStreamOn is publishJetStream to subject under Nats-Msg-Id msgID, none when it is
+// empty, and returns the stream's acknowledgement, which each caller reads for what it needs:
+// publishJetStream the duplicate verdict, PublishStoredAck the sequence beside it. Every publish
+// of the envelope's own topic passes item.Topic; a kept role message passes the subject it is
+// stored on (PublishStoredAck), which leaves item.Topic the role topic it was published on.
+func (c *Client) publishJetStreamOn(ctx context.Context, subject string, item contracts.Envelope, msgID string) (*nats.PubAck, error) {
+	if err := checkSubject(subject); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(item)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	defer cancel()
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return nil, err
+	}
+	options := []nats.PubOpt{nats.Context(ctx)}
+	if msgID != "" {
+		options = append(options, nats.MsgId(msgID))
+	}
+	return c.sendStored(ctx, subject, data, options...)
+}
+
 // sendStored publishes data to subject on the notification stream under options, once more if the
-// connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge or
-// ErrStreamFull it is. It is the one send of the stored path: its callers (publishJetStreamOn,
-// publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx) among the options, so
-// the acknowledgement wait ends with that bound.
+// connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
+// ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
+// (publishJetStreamOn, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
+// among the options, so the acknowledgement wait ends with that bound.
 func (c *Client) sendStored(ctx context.Context, subject string, data []byte, options ...nats.PubOpt) (*nats.PubAck, error) {
 	sentAt := time.Now()
 	ack, err := c.JS().Publish(subject, data, options...)
@@ -1891,7 +1950,7 @@ func (c *Client) sendStored(ctx context.Context, subject string, data []byte, op
 		if denied := c.deniedPublish(subject, sentAt); denied != nil {
 			return nil, denied
 		}
-		return nil, streamFull(c.refused(err, len(data)))
+		return nil, storedRefusal(c.refused(err, len(data)))
 	}
 	return ack, nil
 }

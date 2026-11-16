@@ -1,0 +1,42 @@
+-- 20261115091510_doc_closed_edit_sources.up.sql
+--
+-- INFRA-1138: the editor a settlement of a closed issue's document credited, kept for the
+-- settlement after the issue reopens (docs.clearSettlementPending, docs.settlementPendingStatement).
+--
+--   artifact_id  the document, one row at most.
+--   last_actor   the actor the document's latest settlement on its closed issue named on its
+--                events (docs.settlementAuthors), the jsonb of model.Actor that
+--                doc_settlements_pending.last_actor stores. Never SettlementActor: a settlement
+--                that names no editor deletes the row instead.
+--
+-- The release before this one settles no closed issue's document, so a document's
+-- doc_settlements_pending row, whose last_actor names the latest edit source, stands through the
+-- closed period, and the first settlement after the reopen names that editor on its events: an
+-- ask's rewording, a restored ask, a repaired block, and the move of an approval request. This
+-- release settles a closed issue's document, and that settlement deletes the row when it commits,
+-- as every settlement does. The reopen's own writes then write the row again naming no editor of
+-- their own (the ask-state write and the reopen's mark credit no one), and the settlement after
+-- the reopen would name SettlementActor, which wakes no route and no claimant. So the closed
+-- issue's settlement keeps, in the statement that deletes the row, the editor it credited here; a
+-- write that records no edit source of its own and finds no row takes this one into the row it
+-- inserts; and the reopen takes it as the mover of an approval request it moves
+-- (docs.Service.FollowClosedIssueVersions), then deletes the rows of the issue's documents that
+-- owe no settlement. A settlement of an open issue's document deletes the document's row. The
+-- latest person sender (doc_settlements_pending.last_person) is not kept: the edit notice after
+-- the reopen must not carry an edit the closed issue's settlement saved.
+--
+-- A new table: no existing row is read, refused or rewritten. The foreign key takes SHARE ROW
+-- EXCLUSIVE on artifacts for the migration's short transaction, which holds artifacts writes
+-- behind it for that long and no read, within pgmigrate.LockTimeout's five seconds; its on delete
+-- cascade keeps that release's document deletes working, a deleted document taking its row with
+-- it.
+--
+-- The release before this one neither reads nor writes the table, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). A settlement or a reopen by that release leaves
+-- a row as it is: the next settlement of the document by this release deletes it or writes it
+-- again. Rolling back past this migration is an image rollback alone; the table left behind is
+-- read by nothing.
+create table doc_closed_edit_sources (
+  artifact_id uuid primary key references artifacts(id) on delete cascade,
+  last_actor jsonb not null
+);

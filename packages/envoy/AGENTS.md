@@ -502,12 +502,23 @@ A free-text ask block (no bullet list) carries `options: []` on the wire, never 
 
 The closer's timer lives in memory, so the database says which documents still owe it:
 every durable document update writes the document's `doc_settlements_pending` row in its own transaction (`markSettlementPending`, migration 0063), and the settlement that has read every update deletes it in the transaction that commits its writes.
-A settlement that did not commit - one a shutdown's budget cut short or a room failure dropped - is armed again from that row two ways:
-a room's load arms one when the row is there (`onLoadDocument`, unless the load is a settlement's own warm-up), and `cmd/dispatch` runs `docs.Service.RunSettlementResumption`, which at start and every minute arms the settlement of each document whose row is a minute old and whose issue is open (`resumeOwedSettlements`), so a document nobody opens settles too.
+A settlement that did not commit - one a shutdown's budget cut short, a room failure dropped, or an issue's close stopped (`closeRecordLocked`) - is armed again from that row two ways:
+a room's load arms one when the row is there (`onLoadDocument`, unless the load is a settlement's own warm-up), and `cmd/dispatch` runs `docs.Service.RunSettlementResumption`, which at start and every minute arms the settlements of the documents whose row is a minute old (`resumeOwedSettlements`), so a document nobody opens settles too.
 It runs on an interval because a rolling deploy stops the old task after the new one has started.
 Each pass runs under the lease `settlement-resumption` (`duty.Exclusive`), so one process per minute arms the owed settlements:
 a settlement reads the store under the document's lock whichever process runs it.
-A closed issue's rooms arm none until it reopens.
+A document settles whether or not its issue is closed.
+Nothing that arms a settlement, or decides whether one goes on, reads the issue's state.
+The settlement reads that state only to decide what it writes, and it reads it from the issue row that it locks (`settlement.issueClosed`), not from the room's record, because the record of a process that has not heard of a close still reads open.
+One pass arms at most 50 documents (`settlementResumeBatch`), and the documents of closed and open issues share that bound.
+The pass takes first the rows that no pass tried, oldest `marked_at` first, and then the rows that a pass tried, oldest `tried_at` first.
+The statement that picks the rows also writes `tried_at` on them (migration `20261114100038`), and a settlement that commits deletes the row.
+So a document whose settlement fails each time waits behind every document not yet tried, and never holds the bound.
+`tried_at` is in the database, so each process that runs the pass reads the same value.
+The pick skips a row that another transaction holds (`for update skip locked`):
+a settlement or an append works on that document, and a later pass takes it.
+Each armed document loads its room, and cold room loads share the four connections of the rooms pool (`store/pool.go`).
+So the bound stops a large backlog from loading every room at once.
 `docs.Service.Shutdown` runs the settlement of each loaded room whose document has that row, and no other, inside its 9 s drain budget (`docs.ShutdownDrainBudget`, within the caller's deadline);
 a settled document's repeat would spend the budget for nothing.
 Each loaded room has a worker of its own that waits for the room's durable appends to land, then reads whether the room's document owes a settlement, settles it if so, and closes its editors:
@@ -522,6 +533,30 @@ Shutdown cancels the database work of any settlement the budget cuts short so it
 after shutdown` with `shutdown_budget_ended`).
 A settlement cut short is not an error; a caller's deadline that passes before Shutdown can read that back is, and its error names the documents that owed one.
 A 1 MiB `a_b*` document's settlement took 4.5-6.8 s at load 90-170 on the development machine, inside the 9 s drain budget, though a slower load or a bigger burst could still leave it to resume.
+
+On a closed issue the settlement saves the text that the store holds, but it changes no ask and wakes nobody.
+It opens, restores, retracts and edits no ask (`reconcileAskBlocks`).
+It writes `state="resolved"` into an ask block that has no ask row, and records the block's author in `doc_ask_block_authors` for the reopen.
+
+To wake nobody, a settlement on a closed issue records no edit notice, and when it writes a version it deletes the document's `document_edit_notices` row.
+It moves no approval request and carries no approval (`versionWrite.closedIssue`).
+Its `block.repaired` and `block.invalid` events carry `SettlementActor`, so they notify nobody.
+Its version still lists the people whose edits it saves, and its `artifact.version` event names the version's actor (`versionActor`): the actor of its credit, or `SettlementActor` where that credit is only the kept editor (below);
+the event of an unnamed version is quiet whoever its actor is (`events.Quiet`).
+It sweeps no marks, because `allowInject` refuses the unmark on a closed issue;
+the document's next settlement on the open issue sweeps them, and at the reopen one runs only for a document that the reopen writes or marks owed.
+Its commit deletes the document's `doc_settlements_pending` row, as every settlement's does, and keeps the editor it credited in `doc_closed_edit_sources` (migration `20261115091510`, `clearSettlementPending`), or deletes the one kept when it credits none (`SettlementActor`).
+A write that names no edit source of its own and finds no pending row inserts one naming that kept editor (`settlementPendingStatement`): the reopen's ask-state write and its mark credit no one, so the settlement after the reopen names, on the ask events of that editor's text, the editor whose edit the closed issue's settlement saved, as the settlement after a reopen did when the row stood through the closed period.
+The kept editor is credited with the text that editor wrote, and with no version that adds none of it.
+A settlement whose version lists no one, and whose latest edit source is only that kept editor (`readSettlementEditSource`, `settlementVersionCredit.kept`), writes its version in the name of `SettlementActor`, on its `artifact.version` event and as the version's actor, since that editor's text is in the version the closed issue's settlement wrote:
+the version after the reopen that holds only the reopen's ask-state write, and a closed issue's version of an ask repair's sweep, a rebuild or a copy marked owed, are such versions.
+On an open issue its derived events still name the kept editor (on a closed issue `planRepairs` gives every derived event `SettlementActor`), and so does its move of an approval request that names a version from before the versions written while the issue was closed (`versionWrite.keptEditor`), since that move spans those versions, which the rule takes to hold that editor's text because no stored version says whose text each added; a request that names the version before this one moves in the name of `SettlementActor`.
+A closed issue's settlement of such a write keeps that same editor in `doc_closed_edit_sources`, so the reopen still finds the editor of the text the closed issue's versions hold.
+The latest person sender (`last_person`) is not kept: no edit notice after the reopen reports those edits.
+The reopen then moves the approval request and carries the approval for the latest version of each document of the issue whose stored updates that version holds (`docs.Service.FollowClosedIssueVersions`), and deletes the kept editor of each document of the issue that owes no settlement.
+
+A settlement that meets an update that the append gate refused after the close margin saves nothing of that room (`endOnRefusedUpdate`).
+It fails no room and counts no failure, the room closes for its issue, and the resumption settles the document from the store.
 
 `cmd/dispatch/shutdown.go` orders the process's shutdown inside `stopGrace` (30 s:
 ECS's default stop timeout, which Dispatch's task definition leaves unset, `stop_grace_period` in `deploy/compose/dispatch.compose.yml`, and the pod `infra`'s `gcp:Dispatch` renders, whose `terminationGracePeriodSeconds` is this value plus its five-second pre-stop wait, which the kubelet spends inside the same period - `cmd/dispatch/pod_grace_period_test.go` fails when the pod's budget stops covering it).
@@ -749,7 +784,7 @@ The position is one derived field of those reads, so a document they cannot read
 the read answers 200 without `anchor_block` and with `anchor_block_error`, logged at WARN.
 `api.documentErrorCode` names that error for the read and for `writeHandlerError` alike, and both take its codes in one order, so `anchor_block_error` is the code the block route answers the same error with.
 `DOC_SERVICE_UNAVAILABLE` is a room or store that could not serve the document, taken before any cause the error carries:
-a failed room carries the error another operation failed it with (settlement's schema refusal, a settlement that failed three times - its warm-up refused because the issue had closed, among others - a writer's failed or cancelled commit, a failed store write or load, a history that did not decode), which says nothing of this request.
+a failed room carries the error another operation failed it with (settlement's schema refusal, a settlement that failed three times, a writer's failed or cancelled commit, a failed store write or load, a history that did not decode), which says nothing of this request.
 `DOCUMENT_UNLOADABLE` (409) is a stored history this request itself could not decode (`docs.ErrDocumentUnloadable`), the one state `POST /api/v1/artifacts/{id}/rebuild` repairs and the one code the dashboard offers that rebuild for;
 its message says what a rebuild discards (every edit after the latest saved version) and that a person decides.
 `DOC_NEWER_CONTENT` (409) is a tree the document holds with an element this build does not know (`pmdoc.ErrUnknownElement`:
@@ -852,7 +887,9 @@ The replica is listed for its document's reads (`Service.replicas`), the documen
 the update observer, which the document holds, is the replica's one strong holder, so the replica is collected with an evicted document, in the same collection, and the listing goes once the document is collected (`keepReplica`, `TestAnEvictedRoomsReplicaGoesWithIt`).
 A reader holding an evicted instance of a room reaches that instance's replica or none, never its successor's.
 `TestReadsOfALiveDocumentRunBesideItsPeers` runs each of these reads while a websocket peer types, until 50 of its runs have overlapped one of the peer's updates, and CI runs the `docs` and `api` packages under `-race`, each in a race job of its own, which reports a walk of the live tree beside a write;
-the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else: `envoy-go`'s unit step leaves both out, and the only plain run it keeps of them is its step "Test what the race build cannot run at all or at full size", which runs the few tests the detector makes impossible or shrinks.
+the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else, since `envoy-go`'s unit step leaves both out.
+The tests of those two packages that the race build cannot run, or runs smaller, have one plain run each:
+the `docs` package's few in `envoy-go`'s step "Test what the race build cannot run at all or at full size", and the API's source guards, which carry `//go:build !race`, in the `text-checks` job's step "Test the Dispatch API's source guards (no database)".
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
 — `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
@@ -956,7 +993,8 @@ Such a delta is stored, and the append that stored it closes the room at once, s
 no catch-up can bring that room to the head, and each later append of its browsers would decode the whole stored document.
 A refused delta is dropped and its browser resends it to the reloaded room, which a browser whose issue closed meanwhile cannot do: it reconnects read-only.
 It is also refused (`ErrIssueClosed`) when the document's issue is closed and the room took the delta more than `closeMargin` (2 s) after the close committed.
-A delta the room took before that is stored, even when its append reaches the gate after the close, and the issue's reopen settles it.
+A delta the room took before that is stored, even when its append reaches the gate after the close.
+The document's next settlement saves it, whether or not the issue is closed.
 A derived write (`appendDerived`: settlement's repair, a live write's fork, a version's capture, the block-id backfill) still needs the room at the head (`ErrRoomBehindHead`, `docs/append_gate.go`), the live write taking the cold path instead.
 A settlement whose room is behind catches it up under the document's lock it holds, reading through its own transaction, and proceeds:
 the caught-up rows re-arm it, and the re-armed settlement versions every update.
@@ -1940,22 +1978,23 @@ A document's own marker is `document_block_versions.windows_owed_at` (migration 
 `cmd/dispatch` runs `docs.Service.RunBlockIndexReconciliation` under the lease `block-index`:
 each tick indexes up to 20 owed documents, by a keyset cursor, up to 200 owed items, oldest first, then up to 200 comments, messages and asks owed their own blocks, oldest `owed_at` first (`refs.OwedItemBlocks`, one arm per kind), and last up to 200 sources owed an index with the whole grammar, oldest first, every 2 s while a batch is full and every 30 s after, and logs `dispatch: block index` with `documents=`, `items=`, `item_blocks=`, `texts=`, `owed_documents=`, `owed_items=`, `owed_item_blocks=`, `owed_texts=` and `live_ahead=`.
 It reads a document (`TextWithBlocks`) with no transaction held, then, under the document's owner lock, indexes it only while its latest version and its owed mark are the ones it listed, taking the version's time and the `source_seq` of the event that recorded the version (`stampVersionEvent`).
-A document that owes a settlement and whose live markdown differs from its latest version's is skipped, counted `live_ahead` and left owed, except on a closed issue, which no settlement runs on:
-its latest version's own rendering is indexed, with only the blocks the index's stored rows or the live document also hold, each under its stored row's id or its live id (`closedVersionBlocks`), while its pending settlement's `marked_at` is still the one the tick listed.
+A document that owes a settlement and whose live markdown differs from its latest version's is skipped, counted `live_ahead` and left owed, whatever its issue's status.
+A closed issue's document settles as an open one's does, and each settlement indexes the version that it writes, so a block is first indexed at the first version that holds it.
+The window arm windows such a document from its latest version (`heldVersionBlocks`):
+it uses the version's own rendering, with only the blocks that the index's stored rows or the live document also hold, each under its stored row's id or its live id (`closedVersionBlocks`).
 A typed block matches the live block of its id (the version's markdown names only typed blocks' ids;
-the close, its sweep and the repair write ask states with no version).
+the close, its sweep and the repair write ask states that no version holds until the document's next settlement).
 Every stored `document_blocks` row whose type and `text_sha256` the version holds claims its block before any live text is compared, so the block keeps its row, changed version and text under its own id:
 first the untyped blocks are aligned in document order (go-difflib, no junk heuristic) with the live blocks that have a row, by that row's type and `text_sha256`, so a block an unsettled edit changed keeps its place and each of several identical blocks its own row;
 then each version block still unmatched (moved across a first-step match, or deleted by an unsettled edit) takes the stored row of its type and text whose id no other block took, a live id first, else by id.
 Only then are the version blocks no row claimed aligned by type and live text with the live blocks whose id no row claimed, within the gaps between first-step matches (every block of a document the index holds none of yet), so a paragraph an edit deleted and retyped with the same text keeps the deleted block's row and the retyped one gets none.
 A text either side still holds more than once takes no part in that alignment.
 Last, the version blocks and live blocks of each text both still unmatched are paired in order wherever the two sides hold equally many:
-a text held more than once is matched only so, and otherwise not until a settlement, so a copy typed after the close is never dated to the version (an original left unmatched is dated to the reopen's version), and a text held once on each side keeps the version of a block an edit moved in a document with no row yet.
+a text held more than once is matched only so, and otherwise not until a settlement, so a copy typed since the version never takes an original's id and history (an original left unmatched waits for that settlement's version too), and a text held once on each side keeps the version of a block an edit moved in a document with no row yet.
 A live block that repeats an earlier block's id (a paste keeps its source's id until a settlement stamps a new one) takes part in no step, since `refs.IndexBlocks` indexes only the first holder of an id, and no step gives an id a block has taken.
-A stored row whose text the version does not hold (indexed at an older version this one changed) and whose live text it does not hold either is still recorded deleted at it.
-A live block only an unsettled edit made is not indexed until the reopen's settlement writes the version that holds it, so block history names only versions that hold a block's text.
-The loop remembers a skipped document only when its listing read the issue open, and counts it again without reading it while its latest version and its pending settlement's `marked_at` (which every update append moves) stay as they were, the listing still reads the issue open, and this server holds no room for it:
-the listing reads the issue with no lock while the skip is decided under the owner lock, a close can leave the version, the mark and the room as they were, and a closed issue's document is indexed, not skipped.
+A live block that only an unsettled edit made is not indexed until a settlement writes the version that holds it, so block history names only versions that hold a block's text.
+The loop remembers a skipped document, and counts it again without reading it while its latest version and its pending settlement's `marked_at` (which every update append moves) stay as they were and this server holds no room for it.
+The issue's status takes no part, so a close or a reopen that moves neither changes nothing that the loop remembers.
 An item is re-read `for no key update` and re-indexed with this build's grammar (`refs.ReindexOwed` on `refs.BlockGrammarOwed`), a new edge taking the time its text was written and no `source_seq`;
 its owed row is deleted before its text is written and only while it holds the `enqueued_at` the tick listed, so an edit that lands meanwhile leaves the item owed with nothing written for it, for the next tick to read and index.
 That re-index indexes a comment's or issue message's blocks and an ask's parts too (`refs.IndexAskParts`, read from the ask row it locked), so the batch of items owed their own blocks runs after it and finds such an item no longer owed.
@@ -2410,6 +2449,8 @@ That repair keeps the parts the block already asks, and rewrites the rest throug
 a block it cannot give the decided wording is left as it is, logged at ERROR, and the row still keeps its decided wording.
 A person who wants another question writes a new ask block;
 reopening the ask would put a new question in a person's Inbox for an edit they may not have meant as one.
+An ask an issue's close withdrew is not decided, since the reopen opens it again (`closeWithdrawn`, `model.AskResolutionWithdrawn`):
+while the issue is closed, settlement leaves the wording a person gives its block and the row keeps the question it was asked, and the settlement after the reopen takes the block's wording into the restored ask, as it takes an open ask's.
 An ask settlement restores after a retraction follows the state the restoration gives it:
 one restored open takes its block's text, one restored with its answer keeps the wording that answer was given on.
 A decided ask that a release before this rule reworded - its row holding a document's edit beside the decision made on the wording before it - gets back the wording its decision was given on, the previous wording of the first `ask.edited` after its latest `ask.answered` or `ask.resolved` with no `ask.opened` between, in code rather than by a migration, since the pre-deploy census refuses a migration that rewrites rows (`cmd/dispatch/README.md`, "Pre-deploy census"):
@@ -2518,18 +2559,31 @@ Every close - a person's Close or board drag, `dispatch issue-update --status do
 decision blocks, plain asks and approval requests.
 Each is recorded `resolved` with resolution `{kind: "withdrawn", actor: <the closer>, reason: "Withdrawn
 by the close of <KEY>.", at}` and gets one `ask.resolved` (actor the closer) before `issue.closed`;
-its block, and each copy of it in another document of the issue, is written `state="resolved"` into the live document, and no version is written while the issue is closed.
-An ask block that still has no ask row is written `state="resolved"` with no record, logged, and settlement indexes it as a new open ask when the issue reopens.
+its block, and each copy of it in another document of the issue, is written `state="resolved"` into the live document.
+The document's next settlement saves these block writes, and it writes a version when its rendering differs from the latest version.
+That settlement runs whether or not the issue is closed, and on a closed issue it opens no ask and wakes nobody (`settlement.issueClosed`).
+The close's final sweep writes `state="resolved"` into an ask block that still has no ask row, records nothing and logs the block.
+A settlement while the issue is closed keeps such a block resolved, opens no ask for it, and records its author in `doc_ask_block_authors`.
+The reopen marks owed each document that holds such a block, the block document of each open block ask once the reopen has restored the withdrawn asks, and each document that holds the block of an ask that a settlement retracted when the block left (`docs.Service.MarkReopenOwedAskDocuments`).
+The settlement after the reopen opens the block's ask, credited to the recorded author, retracts a restored ask whose block left its document while the issue was closed, and restores the retracted ask.
 A document of the issue whose stored history does not load (`docs.ErrDocumentUnloadable`), like one outside the schema, is left as it is and logged at WARN naming the issue and the document:
 nothing can read or open it, so the close, the reopen and the repair go on without it rather than answer `409 DOCUMENT_UNLOADABLE` for good;
 a failed room's `503` and a database error still fail them.
 Asks already answered or resolved are left as they were, and the close records no answer, review or approval.
 A reopen opens again exactly the asks whose resolution kind is `withdrawn`, with `state: open`, no answer and no resolution and everything else kept, each with one `ask.opened` (actor the reopener) before `issue.updated`, and their blocks read `state="open"` again.
+After those events, the reopen does for each document of the issue what a settlement while the issue was closed did not do (`docs.Service.FollowClosedIssueVersions`):
+it moves the open approval request that names the document to the document's latest version (`docs.MoveApprovalAsk`, with the mover the editor that a settlement while the issue was closed credited and kept in `doc_closed_edit_sources`, or `SettlementActor` where none is kept), and it carries an approval to that version (`docs.carryApproval`'s rules), as the version's own write does on an open issue.
+A document whose stored updates are ahead of its latest version is left to the settlement that it owes, whose version holds the text that the reopen leaves.
+The reopen's own ask-state write is such an update, so a reopen that writes back the text the person was asked about keeps the request with the person.
+Nothing moves or carries twice: the move does nothing when the request already names the latest version, and the carry runs only while the newest review approves an earlier version.
 The close's and the reopen's block writes (`docs.Service.WriteIssueAskStates`) are no edit:
-they credit no pending author and leave each document's latest edit source as it was, so the settlement a reopen leaves owed names the person who last edited the document, never the closer or the reopener.
+they credit no pending author and leave each document's latest edit source as it was, so the settlement that a close or a reopen leaves owed names the person who last edited the document, never the closer or the reopener.
+Where a settlement while the issue was closed deleted the pending row that named that person, the row the reopen's write inserts names the editor that settlement kept (`doc_closed_edit_sources`), and the reopen deletes the kept editor of each document that owes no settlement once it has moved the requests.
+That settlement names the kept editor on the ask events of the text that editor wrote and on its move of a request from a version before the closed issue's versions, but a version of it that lists no one adds none of that editor's text and is in the name of `SettlementActor` (`settlementVersionCredit.kept`).
 Only the server writes `withdrawn`: the resolve route accepts `retracted` and `resolved` alone, and an answer, resolution or retraction on a closed issue is still `409 ISSUE_CLOSED`.
 What a release older than this one closed or reopened is converged by `api.RepairIssueAsks`, at boot (bounded at 30 s) and then every `api.IssueAskRepairInterval` (10 minutes) under the lease `issue-ask-repair`, each interval pass bounded at 5 minutes.
 Per issue, under its row, a closed issue's open asks are withdrawn in the name of its latest `issue.closed` actor, an open issue's `withdrawn` asks are restored in the name of the event that reopened it, and a closed issue that has open asks, or whose documents owe a settlement marked since the last pass, gets the close's final sweep in the same write of each document, which writes block `state` attributes only.
+The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
 Each interval pass moves that bound to one interval before its own start whenever it listed its candidates, and carries every issue it did not repair - one that failed or one it ran out of time before - into the next pass, so one issue failing every pass does not make every pass sweep every closed issue.
 The bound and the carried issues live in the memory of the process that ran the pass:
 a pass on another process, once the lease moves, starts from that process's own and never sees them.
@@ -2544,9 +2598,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `GET /api/v1/issues` answers every issue its filters match (`project`, `status`, `parent`, `label`, `priority`, `open`, `updated_since`, `closed_since`, `closed_before`, `route_status`, and `pinned`, which needs the `person` scope since the pins are one person's) as an array, or one page of them when the caller names `limit` (1 to `contracts.MaxIssuePageLimit`, 250) or `offset` (0 or more;
   alone it pages `contracts.DefaultIssuePageLimit`, 50): `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
+
+- The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three time bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it; the window refusal judges the bounds as the caller wrote them.
+  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  the window refusal judges the bounds as the caller wrote them.
+
+- The listing's paging, which is `GET /api/v1/issues`' own.
   `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
@@ -2735,6 +2794,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   both are checked on every request, including one that opens nothing, and a request without one gets the bare question.
   An open approval ask follows every document version in the same transaction, preserving its thread and summary:
   the move rewords its question to the new version, stamps `edited_at` and appends `ask.edited`, while `requested_version` remains the version the agent last handed to the human, so a moved request is Waiting on agents.
+  The one exception is a settlement's version (the settlement's own `writeVersionTx`, `versionWrite.settlement`, or an issue's reopen following a version written while the issue was closed, which a settlement or a comment anchor's snapshot wrote and which no stored version tells apart) of a document that waits on the human (its `requested_version` is the version the request names) whose new version stores byte for byte the text of that version (`docs.restoresVersionText`):
+  the move then sets `requested_version` to the new version too and carries `quiet: true`, so the request keeps its turn as if it had not moved, because the text the person was asked about did not change.
+  A version a route writes - a named version, an upload, an edit or a summary edit - moves the request to its agent whatever text it stores (`MoveApprovalAsk`'s `bySettlement` is false), as every move did before the exception, since the Legion daemon answers an agent's gate wait with that version's `artifact.version` as the request handed back to the agent.
   Only the first move since the request was opened or handed back wakes anyone, even when a thread reply had already left the request waiting on the agent:
   a later move, while `requested_version` is already below the version it named, carries `quiet: true` (`model.AskEditEventPayload.Quiet`), so `events.Broker.Notify` records it with `notify` false and the outbox routes it to no follower, as a human's unnamed `artifact.version` is recorded;
   the log and the live event feed still carry it, so a person typing in the document wakes the asker once rather than at every settled version.
@@ -2746,10 +2808,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   While it is `human` the call hands nothing back:
   the same summary, or none, writes nothing, and a different one is `409 APPROVAL_WAITS_ON_HUMAN`, naming the question the human is reading, since rewording it would rewrite that card with no turn of theirs and refuse an answer they had started.
   The route answers 201 when it wrote anything and 200 when it wrote nothing, with the document's `approval` as the call left it.
-  `docs.OpenApprovalAsk` locks that one row, `docs.RewriteApprovalAsk` is the one rewording a version move and a new summary share, and `handBackApprovalAsk` (`api/reviews.go`) the one hand-back.
+  `docs.OpenApprovalAsk` locks that one row, `docs.rewriteApprovalAsk` is the one rewording a version move (`docs.MoveApprovalAsk`) and a new summary (`docs.RewriteApprovalAsk`) share, and `handBackApprovalAsk` (`api/reviews.go`) the one hand-back.
   Every writer passes `MoveApprovalAsk` the actor whose edit moved the request:
   a route passes its own actor, settlement its latest known browser editor, and ambiguous browser content `SettlementActor`, `{kind: "system", id: "document-settlement"}`;
-  how many authors the version credits does not choose the mover.
+  an issue's reopen, for a version that a settlement wrote while the issue was closed (`docs.Service.FollowClosedIssueVersions`), passes the editor that settlement credited and kept (`doc_closed_edit_sources`), or `SettlementActor` where it kept none, since the reopener did not make that edit;
+  a settlement whose version lists no one and whose latest edit source is only that kept editor (`settlementVersionCredit.kept`) passes `SettlementActor`, but the kept editor where the request names a version from before the versions written while the issue was closed (`docs.moveApprovalAsk`'s `keptEditor`), since that move spans those versions, which the rule takes to hold that editor's text;
+  apart from that case, where a version that lists no one is what names `SettlementActor`, how many authors the version credits does not choose the mover.
   What resolving an ask stores is written in one place, `docs.WriteAskResolution`, which settlement's retraction of a removed ask block, an issue's close, the resolve route and the decline route all call.
   A request while the latest version is approved returns the approval and opens nothing.
 
@@ -2764,7 +2828,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Each writes its row through `docs.WriteReview`, which appends the review's event and keeps that event's sequence on the owner in the row (`artifact_reviews.event_seq`, migration 0120, in the same transaction; null for a review recorded before it).
   Migration 0120's deferred constraint trigger `artifact_reviews_event_seq` writes the same column at the commit of any transaction that inserted a review without it - the release before 0120, still serving during a rollout and again during a rollback, inserts every review naming no `event_seq` - from that transaction's own event of the review's type, document and version on the owner, which the owner's row lock keeps the newest there until the commit;
   a row `WriteReview` already sequenced is left as it is.
-  The third review is the carry (`docs.carryApproval`, `docs/approval_carry.go`, run by `writeVersionTx` after `MoveApprovalAsk` inside the version's own transaction):
+  The third review is the carry (`docs.carryApproval`, `docs/approval_carry.go`, run by `writeVersionTx` after `MoveApprovalAsk` inside the version's own transaction, and by an issue's reopen for a version that a settlement wrote while the issue was closed, after the reopen's move of the request):
   a human's answer to a decision block, when it is the whole change since the version he approved, carries his approval to the version it writes rather than leaving it stale and asking him to approve again what he just decided.
   Who answered what is the asks rows of this document (`block_artifact_id` and `block_id`, read and locked by `loadAskBlocks` as settlement reads them, under the owner row every version write holds), never N's block attributes:
   a peer on the document socket writes those as it likes, and settlement writes them back from the row only for a block it can read.
@@ -2789,15 +2853,28 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   An edit outside the blocks before the answer, an approval by someone else only, H's latest review requesting changes, a newer `changes_requested` by another person, a block added since A left open or resolved, a block A held open that another person answered since (or that was resolved since), a block A held that the agent removed, an agent's reword of a decided block or a selection forged onto one landing in the version his answer writes (the version settlement then writes the row back into is compared on its own), an approved version that showed a decided block other than its row (a reword or a selection the human approved inside the settle window, before settlement wrote the row back), a block he answered deleted and inserted again, whether A held it or not, two people's answers in one version, a copy's document when its source is answered, and a copy planted in the document since A (answered in H's name through its source, but no row of this document's) all carry nothing by the answer, and the approval reads `stale` or `changes_requested` as before unless the version's text is the approved text (the restore, below);
   a stored version this release's parser or renderer refuses (`pmdoc.ErrSchema`) is logged at WARN and carries nothing rather than failing the version write.
 
-- The carry's second rule is the restore (`restoresApprovedText`), which runs when the answer carries nothing, and alone on the one route that writes a later document version outside `writeVersionTx`, an upload replacing a document (`storeArtifact` calls `docs.CarryRestoredApproval` after `MoveApprovalAsk`; an upload writes no answer, since the server takes a block's server-owned attributes off it):
-  a version whose stored markdown is byte for byte that of the version the document's newest review approved, A - an accidental edit undone exactly, or a version a route wrote over a document that changed nothing - and whose every ask block is as its row has it (`askNodes` and `rowBackedBlocks` over the version's own tree, the upload's read-back on that route, read only once the bytes match) carries that approval, since it holds nothing its reviewer has not agreed to.
+- The carry's second rule is the restore (`restoresVersionText`), which runs when the answer carries nothing, and alone on the one route that writes a later document version outside `writeVersionTx`, an upload replacing a document (`storeArtifact` calls `docs.CarryRestoredApproval` after `MoveApprovalAsk`; an upload writes no answer, since the server takes a block's server-owned attributes off it):
+  a version whose stored markdown is byte for byte that of the version the document's newest review approved, A - an accidental edit undone exactly, or a version a route wrote over a document that changed nothing - and whose every ask block is as its row has it (`askNodes` and `rowBackedBlocks` over the version's own tree, read once for all three rules on a version write, `versionBlocks`, and on the upload route over its read-back only once the bytes match) carries that approval, since it holds nothing its reviewer has not agreed to.
   The row test is what the bytes cannot say: a block A showed open that someone answered since comes back in A's bytes, showing open, while its row holds that answer, which settlement writes into the next version, so it carries nothing, and an approval request open then stays open.
   Only the newest review carries so: a newest `changes_requested` leaves no approval standing, and an older approval was superseded by the newest one.
   Only a stored A of N's size is read (`octet_length`, which reads a stored text's size without decompressing it), so the write of any other text reads no document.
-  A's markdown is compared as it was stored, so a renderer change between A and N leaves N a change, as N's diff against A shows, and a version whose decision blocks differ from A's is the answer carry's alone to judge.
+  A's markdown is compared as it was stored, so a renderer change between A and N leaves N a change, as N's diff against A shows, and a version whose decision blocks differ from A's is the answer carry's to judge, or the third rule's.
   The restore writes the review, the event and the request's answer the answer carry writes, with `reason` `Carried forward from the approval of version <A>: this version's text is that version's, unchanged.`, whose opening is the daemon's `intake.CarriedApprovalReasonPrefix`, so the restored approval queues no parked root and reopens a design gate as a carried approval does;
   the write that restores supersedes no approval, so its advice carries no `superseded_approval`.
   A carried review records the `kind` of the review it carries, since it is that review's approval it follows: the newest review of a `plan.md` is the plan review that approved A, so a restored plan version reads `kind` `plan_review` and its chip still says "Approved by plan review", never a person's approval in the restoring session's name.
+
+- The carry's third rule is the reopen carry (`reopenedApproval`), which runs when the restore carries nothing:
+  a version N whose every ask block is as its row has it, that holds a block whose row is open, that renders, with every such block shown `state="resolved"` as an issue's close writes it (`withOpenBlocksResolved`), byte for byte as the version the document's newest review approved, A (`restoresVersionText`, which reads only a stored A of that rendering's size), and whose every open row is an ask the close withdrew before A was written and the reopen restored after it (`reopenRestoredSince`), carries that approval.
+  It is the approval a person gives from the document's header after a reopen and before the settlement the reopen left owed: the review names the latest version, which a settlement while the issue was closed wrote with the close's resolved blocks, and the next version differs from it only in the blocks that the reopen wrote open.
+  Before a closed issue's document settled, such an approval named the version from before the close and the settlement after the reopen wrote no version, so it stood.
+  So the rule carries over exactly the questions the close withdrew and the reopen opened again, each open when the issue closed, and no other question:
+  an open row passes only when, of its ask's state events (`ask.opened`, `ask.answered` and `ask.resolved`, read through `events_ask_payload_id`), the last before the `artifact.version` that recorded A is the close's `ask.resolved` of kind `withdrawn` and the one after it is the `ask.opened` that `restoreIssueAsksTx` appended;
+  every transaction appending an issue's event locks the issue's row first, so those events' ids follow the order their transactions committed in.
+  A block A shows resolved for any other reason carries nothing, though the settlement after the reopen opens it:
+  a block the closed issue's settlement saved resolved with no ask (typed inside the close margin, written by a process that had not heard the close, or left unindexed by a settlement before the close that stopped short), whose ask that settlement opens new, and the block of an ask a settlement retracted, back inside the close margin, which that settlement restores;
+  a block A did not hold, or held open, makes the rendering differ from A.
+  The asks' events are read first, and N is rendered with its open blocks resolved only once every open row passes, so a version write whose open blocks hold any other ask renders nothing more.
+  Its review, event and request's answer are the restore's, with `reason` `Carried forward from the approval of version <A>: this version's text is that version's, with the questions it showed resolved open again.`
 
 - Every document read carries `approval` (`draft | awaiting | approved | stale | changes_requested`, with `latest_version`, the latest review's `version/by/at/reason/ask_id` and `seq`, and `requested_by` and `waiting_on` while awaiting, the request's turn by `waitingOnExpression`, so an agent whose own revision moved its request, which sends it no event, reads that the request waits on it);
   `at` is the review's `created_at`, which its event shares, and `seq` that event's sequence on the document's owner, absent for a review recorded before migration 0120 and on every read the release before it serves during a rollout or a rollback, so a missing `seq` does not prove an older review:
@@ -3368,16 +3445,17 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - Role messages use core NATS, not JetStream:
   `notifications.role.>` is not a stream subject.
-  A role message no live holder can take is kept for the role's next holder (`cmd/listener/role_keep.go`, and Dispatch's outbox for a role-routed event: "Dispatch's outbox" below), on a stored subject of the listener's own, `notifications.envoy.kept.role.<role>`.
+  A role message no live holder can take is kept for one hour for the role's next live holder (`cmd/listener/role_keep.go`, and Dispatch's outbox for a role-routed event: "Dispatch's outbox" below), on a stored subject of the listener's own, `notifications.envoy.kept.role.<role>`.
   That subject is the listener's alone:
   no session may register it, no replay hands it out, and no consumer of the notification stream delivers it, since the stream's own subject list carries the prefix (`bus.StreamCarriedSubjects`) where the consumer list every filter takes does not (`bus.StreamSubjects`), so a kept copy never re-enters the delivery path it was taken out of.
   `POST /v1/messages/publish` delivers a role topic itself (`sendToRole`, `cmd/listener/confirmed.go`) and does not publish it on the role lane.
   Its first resolution of the holder reads the claim as `GET /v1/roles/<role>` does (`roles.ResolveHolder`, `internal/roles`, whose one rule is that the holder's own record reads `session.Live`), within `sendRequestBudget` (3.5 s) of the request's arrival, and gives that route's answers:
-  the 202 of a message it kept for a role nobody claims, the 404 `unclaimed` or `holder_lapsed` when nothing was kept, the bus-unavailable 503 with `Retry-After: 1` for a read that did not answer, the 500 for a claim record no read can decode.
+  the 202 of a message it kept for a role with no live holder, the 404 `unclaimed` or `holder_lapsed` when nothing was kept, the bus-unavailable 503 with `Retry-After: 1` for a read that did not answer, the 500 for a claim record no read can decode.
   Every later attempt resolves the holder again by that same rule, so a holder that relaunched under a new session between attempts gets the next one, and publishes the forward to that holder's agent subject, which the stream captures, waiting only for the stream's acknowledgement that it stored it (`bus.Client.StartRequestStoredTo`, `startRoleForward`) for two seconds or what is left of the send;
   after a forward the stream did not acknowledge it waits 100 ms (`publishRetryPause`) and tries again, until the stream stores one or 4 s from the request's arrival have passed (`publishDeliveryWindow`, which bounds every read, forward and pause of the send, and keeps the answer inside envoy-client's 5 s attempt and the Legion daemon's 10 s client).
   No holder answers a receipt: the stored copy is the delivery, which the holder's own session consumer relays.
-  A later attempt that finds the role unclaimed is answered 404 as the first resolution is, since the claim itself is gone, while one that finds the holder past the live window leaves that claim exactly where it is and fails that attempt alone, as a read that failed does, so a holder that comes back inside the window still gets the message.
+  A later attempt that finds the role unclaimed is answered as the first resolution answers an unclaimed role, since the claim itself is gone.
+  A later attempt that finds the holder past the live window leaves that claim exactly where it is and fails that attempt alone, as a read that failed does, so a holder that comes back inside the window still gets the message.
   Every attempt forwards the same envelope, one `event_id` under the dedupe key `envoy.role.forward.<key>`, so a holder that took two copies drops the second.
   `StartRequestStoredTo` refuses a forward with no `Nats-Msg-Id` (`bus.ErrNoForwardMsgID`, an `ErrRefused`), since the stored copy is the whole delivery and an unnamed one is stored again by every attempt:
   the route passes the forward's dedupe key and subject (`bus.ForwardMsgID`) on every attempt, so the stream, which captures agent subjects, keeps one copy per message and recipient however many attempts it makes, and the role lane passes the name `roleForward.msgID` chooses (below): the forward's dedupe key and subject when the original envelope's key names its event (`contracts.DedupeKeyNamesTheUpstreamEvent`, asked of the envelope as it arrived, before the forward is keyed), and its `event_id` and subject otherwise, since two distinct envelopes can share a key their sender chose and the stream must store each.
@@ -3385,9 +3463,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A role send has three answers, and its sender tells them apart by status.
   200 is a live holder that took the message, named by `holder`.
-  202 is the kept answer:
-  nobody holds the role at all, and the body is the envelope with `kept: true` and `kept_reason: "unclaimed"`, the one state a copy is kept for (`roleKeepable`).
-  A lapsed claim is never kept for, so no 202 names `holder_lapsed` and none carries a `holder`.
+  202 is the kept answer: no live session holds the role, and the listener kept the message on the role's kept lane for one hour (`roleKeepable`, `roleSend.kept`).
+  The body is the envelope with `kept: true`, `kept_reason` and `kept_until`, the end of that hour in Unix milliseconds, counted from the time the stream stored the copy.
+  `kept_reason` is `unclaimed` for a role no claim names, and `holder_lapsed` for a claim whose holder is `unresponsive` or `gone`.
+  A `holder_lapsed` answer also names the `holder`, its `holder_state` and its `last_seen`, as the 404 does, and the claim stands.
+  A repeat of a dedupe key whose copy is still on the lane inside its hour stores nothing new, and the answer names that first copy's `event_id` and `kept_until` (`storeKeptRoleCopy`).
+  A repeat after that copy ended is kept as a new copy, with an hour of its own.
   404 is today's refusal body (`reason` `unclaimed` or `holder_lapsed`), and it means nothing was kept and the sender's own fallback must run.
   A sender asks for the 404 with `keep: false` in the publish body, which is for a sender that keeps a queue of its own;
   the Legion daemon does.
@@ -3400,21 +3481,49 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One walk of the lane (`walkKeptRole`) hands the new holder at most `roleKeepDrainMax` (20) copies, each once and in the order they were kept, reads at most `roleKeepScanMax` (200) of them, lives `roleKeepDrainWindow` (60 s), and moves the role's cursor, `notifications.envoy.kept.cursor.<role>`, which holds the listener's own bookkeeping rather than an envelope and carries one walk's claim of the lane, so two listeners walking it never forward one copy twice.
   Before each copy it reads, a walk reads the role's claim record from the role bucket (`roleKeepDrainHolds`, `readRoleClaimHolder`) and goes on only while that record names the holder it forwards to:
   a record naming another session or none ends the walk as one whose holder moved, and a read that did not answer ends it as a failed walk, so no copy is forwarded on a claim no read answered.
-  The handover walks the lane again - for the role's holder as it resolves it at the top of every pass, after the pause the walk before it earned - until the lane is empty, the role has no live holder, or `roleKeepDrainIdleRounds` (3) walks running forward nothing and pass nothing over.
+  The handover walks the lane again - for the role's holder as it resolves it at the top of every pass, after the pause the walk before it earned - until the lane is empty, a walk with no live holder stops at a copy inside its hour, or `roleKeepDrainIdleRounds` (3) walks running forward nothing and end nothing.
+  A pass that finds no live holder walks the lane with no holder: that walk ends each copy whose hour ended and stops at the first copy inside its hour.
   A walk that failed is waited out on a widening cadence (`roleKeepDrainBackoff`, 1 s to 30 s), and the error of the handover's last walk is the handover's, reported at Error.
   A read of the lane or of the holder that did not answer, on any pass including the first, is waited out the same way while the role's claim record names a session, live or lapsed, and ends the handover at Debug otherwise, a record that could not be read included (`readRoleClaimHolder`, within `roleHolderReadTimeout`).
   Both wait inside `roleKeepHandoverWindow` (10 min), whose passing inside a read or a walk carries that failure out as any other does.
   A shutdown that cancels a read ends the handover with nothing above Debug, and so does one that cancels a walk that left no copy it forwarded unconfirmed, which the next walk forwards again;
   a shutdown that lands in a pause still reports the failure that pause was waiting out.
-  A handover this process loses - a restart, a rolling deploy - is picked up by `sweepKeptRoleLanes`, which runs at the listener's start and every five minutes beside the reapers and hands over every lane holding copies after its cursor whose role has a live holder (`bus.Client.KeptRoleLanes`, one `STREAM.INFO` with a `notifications.envoy.kept.role.>` filter), so no lane waits for a claim a live holder will not make.
-  The sweep reads each such role's claim record from the role bucket (`readRoleClaimHolder`), and a read that did not answer passes that lane over until the next pass.
+  A handover this process loses - a restart, a rolling deploy - is picked up by `sweepKeptRoleLanes`, which runs at the listener's start and every five minutes beside the reapers and hands over every lane holding copies after its cursor (`bus.Client.KeptRoleLanes`, one `STREAM.INFO` with a `notifications.envoy.kept.role.>` filter), whether the role has a live holder, a holder that is not live or no claim at all.
+  The sweep reads no claim record itself: each handover it starts resolves the role's holder, and a lane whose head read did not answer is passed over until the next pass.
   The walk, the handover and the sweep never read the registry's watched copy of `envoy_roles` for a holder, since that copy can lack a claim the bucket holds or keep one the bucket dropped.
-  Each forwarded copy carries `kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the message's age.
-  A copy older than `roleKeepWindow` (one hour) when the claim reads it is not forwarded:
-  it is dropped, logged and counted on `envoy_role_kept_expired_total`.
   Keeping added no NATS grant and no stream subject to the role lane itself, so the legacy purge and the migration off the stream stand as they were, and `GET /v1/roles/<role>` still answers 404 for an unheld or lapsed role.
   A forward the stream did not store keeps nothing and still answers 504:
   keeping is the answer of the two give-up branches alone, which find no live holder to forward to.
+
+- A kept copy ends at the end of its hour.
+  Each forwarded copy carries `kept_at`, the Unix-millisecond time the listener kept it, so the holder can judge the message's age.
+  No walk forwards a copy whose hour ended (`roleKeepWindow`, one hour from the time the stream stored it).
+  The first walk that reads such a copy drops it, whether or not any session holds the role (`judgeKeptRoleCopy`).
+  The walk counts the drop once on `envoy_role_kept_expired_total`, with the labels `kept_by` (`listener` or `dispatch_outbox`) and `stale`, and logs it once as `listener dropped a kept role message older than the keep window`.
+  When the listener kept the copy and its publish named a sender session, the walk sends that session a dead letter before it writes the cursor past the copy (`keptRoleDeadLetter`, `envoy_role_dead_letters_total`).
+  The walk also sends that session a dead letter for such a copy inside its hour whose live holder does not take the copy's delivery mode, and `envoy_role_dead_letters_total` counts both.
+  The dead letter is a stored envelope from source `envoy` on the sender's agent subject.
+  It names the role, the copy's event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it.
+  Its message id is `envoy.dead-letter.<role>.<copy's stream sequence>`, so the stream holds one dead letter for each copy, however many walks and listeners send it.
+  A copy whose hour ended more than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead letter (`roleKeepStaleAge`).
+  A copy that Dispatch's outbox kept, and a copy whose publish named no session, get no dead letter either.
+
+- A kept copy wakes its role again while there is time to take it.
+  While a lane holds a copy the listener kept with at least 20 minutes of its hour left, and no live session holds the role, each sweep raises the role's wake report again on `notifications.legion.wake` (`raiseKeptRoleWake`, `publishSweptRoleWake`).
+  The report's message id names the role and the five-minute interval, so the stream holds at most one such report for a role in each interval across every listener.
+  A copy of Dispatch's outbox raises no report.
+
+- A released Legion role gets the copies kept for it when it comes back.
+  The release ends the role's process and leaves its claim standing.
+  The session's record is gone at most about five minutes after its last heartbeat, or at the stop once the daemon's clean stop runs.
+  A message to the role is then kept as `holder_lapsed`, and as `unclaimed` once the role claim reaper releases the claim at its next pass (`internal/store/reaper.go`).
+  Either way it is kept and raises the role's wake report.
+  When the role comes back, its session registers again or claims the role, and either one hands it each copy kept for the role whose hour has not ended, as an Envoy card that carries `kept_at` (`subscribeHandler`, `roleSetHandler`).
+  The card can arrive before the task the daemon gives the woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`).
+  `envoy_inbox` lists it, but the inbox is the memory of the running process, so in a new pod it starts empty and holds only what that process received.
+  To check one message, read the session's transcript for the card with that event id and `kept_at`.
+  The listener's log holds the forward of that event id, `listener role forwarded` with `kept_at`, or the drop line `listener dropped a kept role message older than the keep window`.
+  The sender's session holds the dead letter that names that event id, when the publish named that session and the copy was not dropped as stale.
 
 - The role lane stays the transport for a role topic published straight onto NATS (a listener of an earlier release during a rollout, an operator's `nats pub`):
   each listener holds one core subscription to `notifications.role.>`, on a connection of its own (`bus.ConnectRoleLane`), in the queue group every listener shares, `envoy-roles` (`bus.RoleLaneQueue`), so NATS hands each role message to one listener of all of them.
@@ -3439,19 +3548,22 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One the stream did not acknowledge storing (`bus.ErrForwardNotStored`), and one not known to have left this process (the publish failed, the flush timed out or failed on a stalled connection, or the server denied it under the listener's grant, `bus.ErrPublishDenied`), are both `delivery_failed`, as a stale holder and an unadvertised or unreadable delivery mode are (`finishRoleForward`); `no_holder` is no claim at all.
   There is no `receipt_timeout` reason here any more.
   `bus.confirmPublished` holds how an accepted forward is told from one that is not.
-  Of the lane's own two give-up branches, an unclaimed role keeps the message for the role's next holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`), and a lapsed holder keeps nothing and is `delivery_failed`, since its claim stands and no claim follows for a kept copy to wait for (`roleKeepable`).
+  Both of the lane's own give-up branches keep the message for the role's next live holder first (`keepRoleLaneMessage`, `resolveCoreRoleHolder`, `roleKeptReason`).
+  An unclaimed role keeps it under the reason `unclaimed`, and a holder that is not live keeps it under `holder_lapsed`, with that holder named on the kept line, and its claim stands.
   A message that was kept publishes no delivery exception, because it is not lost, and it counts and logs as `kept`.
-  A keep that failed leaves the unclaimed branch exactly as it was, `no_holder`.
+  A keep that failed leaves each branch exactly as it was: `no_holder` for an unclaimed role, and `delivery_failed` for a holder that is not live.
   A claim read that did not answer keeps the message too, under the reason `claim_unread` (`roleClaimUnread`), and forwards nothing:
   a failed read is no evidence that the role has no holder, nor that it has the holder a copy of the bucket names, and the lane has no redelivery, so a kept copy is how the message waits for a read that answers.
   The handover that keep starts resolves the holder again once a read answers and forwards the copy only to a live holder, and the kept-role sweep starts a handover when that one could not.
-  A holder that resolves lapsed ends that handover, and the one the sweep starts, with no outcome (`handOverKeptRole`):
-  the copy is not forwarded, no delivery exception is published for it, and it waits on the kept lane until a handover - a claim's, a keep's or the sweep's - finds a live holder, the holder answering again or a successor that claimed the role.
-  That handover forwards the copy while it is inside the one-hour keep window (`roleKeepWindow`) and drops it with a WARN once it is older.
+  A handover that resolves no live holder forwards nothing (`handOverKeptRole`):
+  the copy waits on the kept lane, with no delivery exception published for it, until a handover finds a live holder, the holder answering again or a successor that claimed the role: a claim's, a keep's, the one a registration that makes the holder's session live again starts for each role whose claim record it read for that session, renewed or not, so a session a new process resumed under its old claim is handed its copies too (`subscribeHandler`), the one the claim route's refresh of a claimant it read not live starts for each role the session holds, whatever the claim's answer (`roleSetHandler`), or, as the fallback, the sweep's.
+  That handover forwards the copy while it is inside its hour (`roleKeepWindow`).
+  Once the copy is older, the first walk that reads it drops it with a WARN, whether or not a session holds the role, and sends the dead letter above when the copy names a sender session.
   A claim read whose keep failed is `delivery_failed`, as before.
   Every other reason emits an exception.
-  The lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
-  keeping is chosen on the publish route alone, and the senders that opt out of it - the Legion daemon's notice queue and a phase worker's stall reminder - publish through that route.
+
+- The role lane reads no `keep` field, because a raw role publish carries none and the envelope has no such field:
+  keeping is chosen on the publish route alone, and the one sender that opts out of it, the Legion daemon's notice queue, publishes through that route.
   The lane's attempt cache holds an entry only while a forward is in flight and a failure rolls it back, while the dedupe cache, which the route shares, records a forward only once the stream stored it
   — so a publish that re-uses a `dedupe_key` after a failure is forwarded again, while one after a stored forward is skipped.
   An agent delivery this listener cannot place clears its own attempt entry before each NAK (`clearAttempt`, `agentSubjectDelivery`), because the redelivery that NAK asks for would otherwise find the entry still there and be dropped as `listener attempt-dedupe skip` before it reached the session at all.
@@ -3477,7 +3589,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   and a role an older client handed back comes free one live window plus up to one reap interval later — about ten minutes with the shipped defaults — while that client is still registering.
 
 - A holder that is `unresponsive` — past the live window, inside the gone horizon — keeps its claim and its `claimed_at` through any number of resolutions, and the paths that need a live holder report it instead:
-  the publish route's and the lookup's 404 `holder_lapsed`, which carries `holder_state`, `last_seen` and `claim_released: false`, and a `delivery_failed` exception on the role lane.
+  the lookup's 404 `holder_lapsed`, which carries `holder_state`, `last_seen` and `claim_released: false`, and the publish route's 202 with `kept_reason` `holder_lapsed`, which names the holder and its state, while the role lane keeps its message the same way.
+  A publish with `keep: false` still gets the 404 `holder_lapsed`.
   What still moves such a role is a successor's soft claim, which replaces the holder rather than releasing the claim (`roleSupersessionVerdict`; `/v1/roles/set` in the Listener API below).
   A claim restored at a listener restart gets one live window from that listener's own start before its reaper may release it (the grace `store.Registry.ReapRoleClaims` holds a restored claim for, which `main.go` passes as the registry's live window), so a holder that registers again in time keeps its role — unless the hand-back marked that claim, which takes no grace at all.
   The grace is there for a holder to register again, and no registration renews a marked claim (`store.Registry.releaseReadExpiredRoleClaim`), so over a marked claim it could do nothing but hold the role past the bound the reaper's own rule sets.
@@ -3609,7 +3722,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The same holds for a refusal whose resolution of the recipient failed, a session whose entry is gone (`session.ErrNoSessionRecord`) among them.
   The cost is that session's exception dedupe: a session on consumer delivery is sent one `delivery_failed` per stored copy of the event and per redelivery of each, up to the durable's `consumerMaxDeliver` (20), where a recorded refusal gives one per dedupe key per attempt window.
 
-- A role send through `/v1/messages/publish` answers its sender instead, with 202 for a role message it kept, with the unheld role's 404 when it kept nothing, and with 403 or 504 for a holder that did not take it (the Listener API);
+- A role send through `/v1/messages/publish` answers its sender instead, with 202 for a role message it kept for one hour, with the role's 404 when it kept nothing, and with 403 or 504 for a holder that did not take it (the Listener API);
   an ad-hoc topic raises none at all.
 
 - The one bus signal the route adds is the role send's own refusal: a 404 whose reason is a shared no-holder reason (`roleholder`: `unclaimed`, no recipient; or `holder_lapsed`, the lapsed holder as `recipient_session`) also raises one role-lane exception, in the delivery path's own envelope (`deliveryExceptionEnvelope`), over core NATS (`publishRefusalException`, `cmd/listener/role_lane_refusal.go`).
@@ -3703,8 +3816,10 @@ A send NATS denied (`bus.ErrPublishDenied`) is backed off with its attempt count
 no acknowledgement in time, no responders, no acknowledgement of a role forward's stored copy), unless a probe of that connection then fails, which releases it and gives the hold up.
 A `role:` route is not published to `notifications.role.<role>`:
 the outbox resolves the holder with `roles.ResolveHolder` (`internal/roles`), the one resolution the listener's role routes and its role lane read too, and forwards to the holder's `notifications.agent.<holder>` with a window Request under the role forward's dedupe key and a MsgId (`bus.ForwardMsgID`), counting it reached on the stream's acknowledgement of the one copy it stores, for every holder alike, since a holder is delivered that copy from its own session consumer by the listener's relay and answers the forward with nothing.
-A role no live holder can take is kept for the role's next holder instead (`forwardOf`, `internal/dispatch/outbox/role.go`): a role with no claim, and a claim whose holder is gone, whose claim the listener's role-claim reaper does release, so a next holder comes to be handed the copy.
-The listener's own route and lane keep for the first of those alone (`roleKeepable`) and refuse a lapsed claim of either state with nothing kept, so the gone holder's route is the one resolution the two keep differently.
+A role no live holder can take is kept on the role's kept lane for the role's next live holder instead (`forwardOf`, `internal/dispatch/outbox/role.go`): a role with no claim, and a claim whose holder is gone, whose claim the listener's role-claim reaper releases.
+The copy waits there for one hour, as the listener's own copies do: the listener's walk hands it to the role's next live holder inside that hour and drops it at the end of the hour.
+Nobody is sent a dead letter for an outbox copy, so the person or session that wrote the Dispatch event is not told, and an outbox copy raises no wake report.
+The listener's own route and lane keep for both of those and also for a holder that is only unresponsive (`roleKeepable`), so the unresponsive holder is the one resolution the two keep differently.
 The keep is one JetStream publish of the envelope on the role's kept lane, under the id every writer of that lane keeps the message under (`bus.KeptRoleSubject`, `bus.KeptMsgID`), so it is the copy `keepRoleMessage` writes.
 Acknowledged, the route is reached; anything else leaves the event pending for the outbox's own retry, which that MsgId makes idempotent at the stream.
 The acknowledgement also starts a handover: the batch reads the role's claim once more, and when it names a live holder and the copy just kept is the first on that role's lane past the drain cursor with no walk's claim outstanding, it forwards the event to that holder (`handOverKept`), because a role claimed between the batch's resolution of it and its keep leaves a copy on a lane whose claimant's own drain had already read it empty, which nothing walks again until the listener's sweep, up to five minutes later, while the issue's next event resolves that holder live and goes straight to its agent subject.
@@ -3718,8 +3833,10 @@ That handover goes under the id the drain's own forward of that copy would carry
 It carries the time of the keep as `kept_at`, as the drain's forward carries the stream's store time of the copy, since every holder is reached through the stream, which keeps whichever of the two arrives first, which is this one unless a drain that read the cursor before the handover reaches the agent subject ahead of it.
 A keep is keyed on its role topic, no holder being known when the batch planned its chains, so an event of the same owner that the same batch sends to that session on a key of its own - an author or follower route among them - races the handover as two keys of one owner always do, where before it that copy waited for the sweep and lost to every one of them.
 The copy stays on the lane for a holder that claims later, and a read or a forward of the handover that failed is logged at Warn and nothing else, a read the process's own stop cancelled excepted: the route was reached when the stream acknowledged the keep, so the failure is not counted among the destinations a publish did not reach and nothing retries the handover, and what it costs is that issue's order at the holder, the copy reaching it only at the role's next claim, keep or the listener's sweep, behind every event the holder takes meanwhile.
-A holder that is only unresponsive is not kept for and stays pending, as it was before the kept lane: it keeps its claim and writes no new one, so a copy kept for it would wait for a claim that never comes, and the stream holds the forward for the session itself (dispatch://INFRA-392).
-Neither is a role token no claim can name (`roles.Valid`), which the listener's keep refuses too, and the holder that is the event's own actor, which is the echo skip.
+A holder that is only unresponsive is not kept for and stays pending (dispatch://INFRA-392).
+The outbox sends a pending event again until the holder answers and the forward reaches it, or until the holder's record passes the gone horizon and the copy is kept as it is for a gone holder.
+A copy kept for the unresponsive holder would wait one hour at most, and the end of that hour would tell nobody, since an outbox copy gets no dead letter.
+A role token no claim can name (`roles.Valid`), which the listener's keep refuses too, is not kept for either, and neither is the holder that is the event's own actor, which is the echo skip.
 Each retry line (`dispatch outbox: publish event`) names the destination by label and target (`publish owner topic "<subject>"` for the event's own topic, `publish route "role:reviewer"` or `publish route "session:<id>"` for the issue's route, `publish author route to "<session>"`, `publish follower route to "<session>"`, `publish claim change to "<session>"`);
 a core denial, which only a `role:` route can be since of the outbox's destinations only the role lanes take core transport (`bus.Client.UsesCoreTransport`), adds the subject and the server's violation.
 The listener's own core publishes (a role message's forward, a fanout exception) count as published only once a flush has shown the server accepted them (`bus.confirmFlushed` and `bus.confirmPublished` hold how), and one the server denies (`bus.ErrPublishDenied`) answers the API publish 403 opening with `publishDeniedPrefix`;
@@ -4455,7 +4572,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   every host drops a repeat of a dispatch key, and Dispatch's outbox keys are sequential, so a chosen `dispatch-<next id>` would make hosts drop the real event;
   Dispatch's outbox publishes to the bus and its sends take the listener's key, so it never sets one here), and an empty string is absent; without either key the key is minted.
   An optional `keep` means something for a role topic alone, and it defaults to true:
-  a role message no live holder can take is then kept on the role's kept lane and answered `202`, and the role's next holder is handed it.
+  a role message no live holder can take is then kept on the role's kept lane for one hour and answered `202`, and the next session to hold the role live in that hour is handed it.
   A sender that keeps a queue of its own, as the Legion daemon does, sends `keep: false`:
   nothing is kept, and the role's `404` below is the answer.
   A role topic's first resolution of its holder reads it as `GET /v1/roles/<role>` does, within the same 3.5 s budget:
@@ -4466,13 +4583,16 @@ Each item below names an endpoint and its method, then its contract, and an item
   one naming no holder, or JSON that is not a claim) is `500 {"error":"envoy: the claim record of role <role> is unreadable: <reason>"}` with no `Retry-After` (`writeRoleClaimUnreadable`), because the bus answered and a retry reads the same record.
 
 - A role topic answers `200` with the envelope and `holder`, the session that took it, once the stream stored the forward for that holder, and also, forwarding nothing, when `source_session` holds the role or the route had already stored this dedupe key for the holder.
-  It answers `202` with the envelope, `kept: true` and `kept_reason` (`unclaimed`) when no session holds the role at all and the listener kept the message on the role's kept lane;
-  the role's next claim is handed each kept copy once, in the order the copies were kept, and drops one the listener kept more than an hour before (the "Role messages use core NATS" rule).
-  It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` with the `holder`, its `holder_state` (`unresponsive` inside the gone horizon, `gone` past it), `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (`session.LastSeenMemory`, 2 hours), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
-  A later attempt gives that `unclaimed` 404 too, the claim being gone, but never `holder_lapsed`:
-  a holder it finds past the live window keeps its claim and fails that attempt alone.
-  Three cases keep nothing and are answered that way: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed.
-  A lapsed claim keeps nothing either, since it stands (`roleKeepable`): its holder keeps the role and writes no new claim for a drain to follow.
+  It answers `202` with the envelope, `kept: true`, `kept_reason` and `kept_until` when no live session holds the role and the listener kept the message on the role's kept lane.
+  `kept_reason` is `unclaimed` when no claim names the role, and `holder_lapsed` when the claim's holder is not live, which also carries the `holder`, its `holder_state` and its `last_seen`.
+  `kept_until` is the end of the copy's hour, in Unix milliseconds.
+  The next session to hold the role live before then is handed each kept copy once, in the order the copies were kept (the "Role messages use core NATS" rule).
+  At the end of the hour the listener drops a copy that no session took, and sends a dead letter to the sender's session when the publish named one, unless no walk had claimed the copy and its hour ended more than an hour before the walk that drops it (`roleKeepStaleAge`).
+  A repeat of the dedupe key while its first copy is still on the lane inside its hour stores nothing new, and is answered with that copy's `event_id` and `kept_until`.
+  It answers `404 {"error":…,"reason":"unclaimed","claim_revision":0}` for a role with no claim nothing was kept for, or `reason: "holder_lapsed"` for a lapsed claim nothing was kept for, with the `holder`, its `holder_state` (`unresponsive` inside the gone horizon, `gone` past it), `claim_released: false`, since nothing here releases a claim, a `last_seen` whenever the listener can still name one (`session.LastSeenMemory`, 2 hours), and the `claim_revision` of the claim that still stands, which a conditional claim takes as its `if_claim_revision`.
+  A later attempt that finds the role unclaimed is answered as the first resolution answers an unclaimed role, the claim being gone.
+  A later attempt never answers `holder_lapsed`: a holder it finds past the live window keeps its claim and fails that attempt alone.
+  Three cases keep nothing and are answered 404: the request sent `keep: false`; the role's token is one `roles.PatternString` refuses (`roles.Valid`), which no claim can ever name; or the keep itself failed.
 
 - A role topic's refusals, each keeping nothing.
   It answers `403 {"error":…,"reason":"capability","holder":…}`, forwarding nothing, when the holder does not advertise the payload's delivery mode or the mode cannot be read unambiguously, as `/v1/messages/send` refuses it.
@@ -5545,8 +5665,8 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   a role no live holder can take is kept on that role's kept lane for its next holder instead ("Dispatch's outbox"), which is also no publish on `notifications.role.*`.
   An ask-scoped event - `ask.answered`, `ask.edited`, `ask.handed_back`, `ask.resolved`, and `comment.created`, `comment.resolved`, `comment.reopened` or `comment.edited` carrying an `ask_id` - is additionally published straight to each follower's `notifications.agent.<session_id>` regardless of `notify` and of the issue's route, so a session-authored reply on an ask reaches its followers even though it wakes nobody through the issue topic;
   the acting session is skipped, and so is a follower whose own mention of a new comment (`comment.created`) delivers it (the mention rule below) - the comment's edit, resolution and reopening reach every follower - and a session already reached by the issue's route is not sent the envelope twice.
-  A quiet `ask.edited` (a version move of an approval request that an earlier version already moved since it was opened or last handed back, `quiet: true`) has `notify` false and reaches no follower, as a human's unnamed `artifact.version` reaches nobody;
-  the first move after an opening or a hand-back is not quiet.
+  A quiet `ask.edited` (a version move of an approval request that an earlier version already moved since it was opened or last handed back, or a settlement's version move that keeps a request waiting on the human because the new version holds byte for byte the text of the version it names, `quiet: true`) has `notify` false and reaches no follower, as a human's unnamed `artifact.version` reaches nobody;
+  the first move after an opening or a hand-back is not quiet, unless it keeps the request waiting on the human.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
   a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
@@ -5654,7 +5774,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   The destination stays in the event's list marked waiting (`destination.waiting`), sends nothing, and the event is marked `mentionPending`, so `settleEvent` blocks it for `mentionPendingDelay` and it is read again (`resolveRoleHolders`).
   Without the keep's wait a comment whose role route is published in the same instant it was written - the outbox reads the event within a millisecond of the commit - is kept before either mention has settled, so `settledKeys` is empty, the copy carries no `mention_dedupe_keys` at all, and the mentioned session that claims the role next is handed it under the prefixed stored key beside the mention its own host already took, which is the duplicate the map above closes (`TestACopyKeptForARoleWaitsForTheCommentsLiveMentions`).
   Without the forward's wait the copy reaches a holder the comment mentions under `contracts.RoleForwardDedupePrefix` and `dispatch-<event id>` - a key that host never claimed, the holder's own mention being in no settled map while its only attempt is live - and that mention lands after it, so the host shows the comment twice (`TestAForwardToALiveHolderWaitsForThatHoldersOwnMention`); nothing else protects that holder, the comment's `suppressed_route_session_id` naming whoever the route resolved to when it was written and not whoever holds the role now.
-  A holder with no live mention of its own is forwarded to at once, and no session waits on a kept copy, which waits for the role's next claim however soon it is stored.
+  A holder with no live mention of its own is forwarded to at once, and no session waits on a kept copy, which waits for the role's next live holder however soon it is stored, and for one hour at most: the listener's walk drops it at the end of that hour and tells nobody (`.dispatch/architecture/dispatch-outbox.md`).
   For every wait but that one the bound is the attempt's own lease and nothing longer (`model.DeliveryClaimLapse`): past it a pending attempt reads resumed (`model.MentionResumedSQL`) or abandoned rather than live, no mention of the comment is live any more, and the copy is kept or forwarded with whatever `settledKeys` holds then - a partial map, or an empty one, under the prefixed event key for a forward - the copy's wait being bounded by the attempt and never the attempt's by the copy.
   The one exception is the forward above that carries no key for an unpinned mention: past the lease a copy under the event's own key would be a copy no key drops at that host, so that forward waits on until the attempt settles, is abandoned (`model.MentionAbandonedSQL`), or reaches the bound the next item sets, which closes the double `TestAForwardWaitsForTwoUnnamedMentionsPastTheirLease` holds shut.
   The fallback pass's own keep waits the same way (`decideFallbackCopy`, `mentionDeliveries.anyLive`), and its row does not already say so: that row was written because the attempt of its own key had lapsed past that attempt's lease, which is no reading of the comment's other mentions, and a mention of another session can be live still - a Retry of it opens a fresh attempt at any time - so a copy kept then names that session in no `mention_dedupe_keys` and shows it the comment a second time when it claims the role (`TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions`).
@@ -5664,7 +5784,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   At the bound the copy is held as a `comment_fallback_copies` row of the role's own topic keyed by the holder, rather than published under the event's own key, which would re-open that double (`holdsTheForwardAsARow`, `destination.heldAsARow`): the event settles, the holder's later events of the issue flow again, and the row is published by the fallback pass only once no send of that mention is owed and under the holder's own settled mention's key where it has one, so the holder is shown the comment once (`decideFallbackCopy`, `roleFallbackKey`).
   What the bound gives up is the owner's order to that one holder for that one comment: a later event of the issue can reach it before the row does (`TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents`).
 
-- A waiting copy holds its destination key against the owner's later events, where a mentioned session's own held-back copy is left out of the event's list entirely (`planChains`, `destinations.leftTo`): nothing else delivers a role copy, a keep waiting for the role's next claim and a forward being the holder's one copy, so a later event let past it would reach the role's holder first - the kept lane is drained in stream order (`walkKeptRole` in `cmd/listener/role_keep.go`) and a forward goes straight to the holder's agent subject - while a mentioned session's copy is overtaken by nothing, the mention itself delivering that comment to that very session (`TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions`).
+- A waiting copy holds its destination key against the owner's later events, where a mentioned session's own held-back copy is left out of the event's list entirely (`planChains`, `destinations.leftTo`): nothing else delivers a role copy, a keep waiting up to its hour for the role's next live holder and a forward being the holder's one copy, so a later event let past it would reach the role's holder first - the kept lane is drained in stream order (`walkKeptRole` in `cmd/listener/role_keep.go`) and a forward goes straight to the holder's agent subject - while a mentioned session's copy is overtaken by nothing, the mention itself delivering that comment to that very session (`TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions`).
   The copy of a session the owner's own work names carries that same mark while an attempt that names no session yet, and whose role the read could name no holder for, may yet be pinned to it (`destinations.addWorkingSession`): nothing says that mention delivers the comment to this session rather than another, so it stays in the list and holds its key, and `planChains` reads a hold for the owner's later events alone (`by.event != event`), the role route to that same session being due in the very pass that copy waits in (`TestAWaitingCopyHoldsNoCopyOfItsOwnEvent`).
   A copy held as a `comment_fallback_copies` row carries no such mark, because it is out of the event's list altogether (`destinations.leftTo`'s resending arm): it holds nothing of the owner's back, and the owner's later events reach that session while the row waits.
   So a session the comment's own thread names, whose copy was first read past the attempt's lease, is shown that comment after those later events when the resend pins another session and the pass publishes the row - the comment out of order at that host, by as long as the resend and the pass take.
@@ -5723,6 +5843,8 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A version whose latest edit names no person names nobody new (`docs.holdEditNotice`):
   an open window keeps its actor and gains the version, its people and a new due time;
   with no window open the version holds a row with no actor and no due time, and the next version that names a person sends one notice covering both.
+  A settlement of a closed issue's document records no notice.
+  When it writes a version, it deletes the document's `document_edit_notices` row in the same transaction, so neither a reopen inside the quiet time nor the first notice after the reopen reports the edits that it saved.
 
 - Dispatch project events use `notifications.dispatch.project.<PROJECT>.<type>` and are retained in JetStream.
   They have no issue route; project, repository-setting, and user-interface state consumers refresh through the live socket's events subscription.
@@ -7224,7 +7346,7 @@ That person carries both claim shapes Dispatch reads:
 a Google Workspace account of the email's domain, and a Cognito pool user federated from `DevIdP`, a member of `--sign-in-group <group>`'s group when that flag is given.
 Dispatch accepts `DISPATCH_SIGNIN_DOMAIN` only under Google's issuer, so a local Dispatch signs in through this issuer with `DISPATCH_SIGNIN_GROUP` set to that group.
 Each `dev-broker.sh` run creates and drops its own isolated database, on the shared `dispatch-pg` container, which it boots through `dev-postgres.sh` (so a `dispatch-pg` off that script's pinned image is refused before anything is created), or, with `DEV_BROKER_POSTGRES_URL` set, through `psql` on the server that URL names (no Docker), so concurrent instances never see each other's enrollments, requests or grants, and listens on the port its own `cmd/broker` binds and logs (`BROKER_LISTEN_ADDR=127.0.0.1:0`), so concurrent instances can never collide on a shared port either.
-`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, its exchange account and its read entry, exports the caller token that issuer wrote, has that issuer write the read entry's pod token at the exchange's audience and names that file in its banner, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go` job.
+`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, its exchange account and its read entry, exports the caller token that issuer wrote, has that issuer write the read entry's pod token at the exchange's audience and names that file in its banner, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go-checks` job.
 `scripts/github-narrowing-check.sh` drives that stack end to end, as `airlock-check.sh` and `judge-check.sh` drive theirs: it starts `dev-broker.sh`, enrols one pod session of the registered service, runs checks k1, k2 and k4 of `dispatch://INFRA-2687` and k1 of `dispatch://INFRA-3099` — the narrowing the broker refuses before it opens the approval request a person must decide, and, as that one's control, the same request for a repository the stand-in reaches, approved on the broker's page as the person does — against it, and prints one PASS or FAIL line for each property with `all <n> assertions passed` as its last line.
 `DEV_BROKER_POSTGRES_URL` is required there, where `dev-broker.sh` takes it as an option, and a run without it exits 2 and starts nothing:
 one property is about what the broker itself wrote, so the script reads the broker's own database, putting the database name `dev-broker.sh` logged in place of that URL's path, which keeps every password out of what it parses.
