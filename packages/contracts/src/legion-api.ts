@@ -180,7 +180,7 @@ const legionStepView = z.object({
 });
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
- * `dueAt`, the moment the pacing gave it, which is when it runs (contract 145). The claim view's
+ * `dueAt`, the moment the pacing gave it, which is when it runs (contract 154). The claim view's
  * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
  * cannot drift apart. The kind is read as a plain string, so a lane a later daemon adds is read
  * rather than refused. */
@@ -280,12 +280,12 @@ const legionClaimView = z.object({
   /** Why the daemon must replace this pod, as it found the drift, and absent while no round is
    * open: the worker answering a round is told to act on it. */
   updateReasons: nonEmptyString.optional(),
-  /** Where the claim's update round stands, read from the claim's own columns (contract 145):
+  /** Where the claim's update round stands, read from the claim's own columns (contract 154):
    * `none` when no round is open, `open` when a round is open and its ask has not gone out,
    * `asked` when the round published its ask on this worker's role topic, and `answered` once
    * the worker answered. A reader takes this rather than spelling the same reading out of
    * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
-   * one nobody asked. A caller in a pod whose plugin declares a contract below 145 is served the
+   * one nobody asked. A caller in a pod whose plugin declares a contract below 154 is served the
    * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
    * takes it as optional. */
   updateState: z.enum(["none", "open", "asked", "answered"]).optional(),
@@ -318,8 +318,8 @@ const legionClaimView = z.object({
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
   /** The wake the daemon's pacing holds for this claim, absent where it holds none: the same
-   * wake `wakesWaiting` names beside this claim (contract 145). The kinds are the daemon's three
-   * paced lanes, as `legionWakeWaiting` below names them. A caller below 145 is served no such
+   * wake `wakesWaiting` names beside this claim (contract 154). The kinds are the daemon's three
+   * paced lanes, as `legionWakeWaiting` below names them. A caller below 154 is served no such
    * key (`withoutClaimRoundReport`). */
   wake: z.object(legionPacedWake).optional(),
   /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
@@ -806,14 +806,58 @@ const legionIssue = z.object({
    * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
-   * has still to reach. Both are absent together for an issue whose current phase names no phase
-   * worker role — a root writing its design — and each is absent where it is 0, which is a role
-   * no entry has been raised for and one the daemon holds no claim row of; a daemon before
-   * contract 94 writes neither, and a caller in a pod whose plugin declares a contract below 94
-   * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
-   * takes both as optional. */
+   * has still to reach. A root carries them as a child does, since the architect is the role
+   * that works `admitted` (contract 146); both are absent together for a phase no role works —
+   * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
+   * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
+   * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
+   * the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader takes both
+   * as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
+  /** The two times of a claim's handshake of the last entry it was queued a task of (contract
+   * 146): when a task of that entry was first queued to the claim, and when a turn of that
+   * claim's worker first confirmed one. The claim keeps both in a record of its own, so they
+   * outlast the task, which the end of the confirming turn retires. A tree's own root carries its
+   * architect's handshake whatever phase it stands in — through `awaiting_person` and the phases
+   * a phase role works, where `phaseEntry` and `givenEntry` are that role's — and any other issue
+   * the handshake of the role of its current phase. Both are absent where no entry was queued to
+   * that claim in the issue's current generation — a role the daemon holds no claim row of, a
+   * re-admitted root whose new architect entry is not queued yet, and a root of the release
+   * before contract 146, which carries the two numbers and no handshake — and `entryConfirmedAt`
+   * alone is absent while no turn has confirmed a task of the entry. A daemon before contract
+   * 146 writes neither, and a caller in a pod whose plugin declares a contract below 146 is
+   * served the state with neither (the daemon's `withoutEntryTimes`), which is why a reader takes
+   * both as optional. */
+  entryQueuedAt: timestamp.optional(),
+  entryConfirmedAt: timestamp.optional(),
+  /** For a tree's own root, every arm of the daemon's architect-stalled reading that holds for its
+   * architect at this read, in the order the controller is told them (contract 146):
+   * `took-nothing`, the task of the entry its `phases` row names was first queued to its claim more
+   * than ten minutes ago and no turn confirmed it, counted from that first queueing however many
+   * times the daemon sent that entry's task again, where a task whose turn ended with the claim's
+   * process (a death, or a replacement the daemon made) counts only while the claim is ready,
+   * working or idle, and from the relaunched agent's ready where that is later, and where a task
+   * the root's own record has superseded — one that carries an entry, of a run before its
+   * generation or of an entry the row has moved past — raises the arm not at all, nor does a task
+   * of no entry, such as a wake's; `claim-unreachable`, the claim is failed or
+   * retired and no start of the root's run is the daemon's next move for it (a start the outbox is
+   * running is, and so is a start queued in the last ten minutes unless it has already run against
+   * the claim and left it failed or retired, after which the outbox only runs it again on its
+   * backoff), or no architect claim stands, no start of one was queued in the last ten minutes,
+   * and the work of its entry has waited the same ten minutes, which holds of a root waiting on a
+   * person as of any root, since the daemon queues the next start of such a root's architect only
+   * when that wait is answered; `slow-before-gate`, it stands at `admitted` with no design-gate
+   * step registered 90 minutes after the later of its admission and its architect's last raised
+   * entry. The daemon reads the arms by the predicates its own `architect-stalled` wake uses and
+   * serves them whether or not the controller was told, and `legion state`'s plain line prints
+   * them and names a root for nothing else. Absent for a root no arm holds for and for every issue
+   * that is not a tree's root; a daemon before contract 146 writes none, and a caller in a pod
+   * whose plugin declares a contract below 146 is served the state without it (the daemon's
+   * `withoutEntryTimes`), which is why a reader takes it as optional. */
+  architectStalls: z
+    .array(z.enum(["took-nothing", "claim-unreachable", "slow-before-gate"]))
+    .optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
    * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which
@@ -857,10 +901,10 @@ const daemonInfo = z.object({
 
 /** `api.ContractView` — the mark of the narrowing, beside the daemon's own block: `daemon` is the
  * contract the daemon declares and served this body at (its `DaemonAPIVersion`), and `caller` the
- * contract the daemon shaped this body to (contract 75). From contract 145 on the daemon writes
+ * contract the daemon shaped this body to (contract 75). From contract 154 on the daemon writes
  * `caller` for every reader. A reader served the body whole — the operator's
  * `legion state --json`, a tmux pane, a pod whose claims record no contract, a reader at the
- * daemon's own contract — is told the daemon's own number. Before contract 145 a daemon from 75 on
+ * daemon's own contract — is told the daemon's own number. Before contract 154 a daemon from 75 on
  * left `caller` off for such a reader, which is why the key stays optional.
  *
  * The daemon serves a caller below 75 the state with this key gone, as it strips the nine fields
@@ -1141,7 +1185,7 @@ export const LegionStateResponse = z.object({
   settings: legionSettings.optional(),
   consumers: z.array(legionConsumerLag).optional(),
   // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
-  // process and record one, absent where no claim does (contract 145). No plugin code reads the
+  // process and record one, absent where no claim does (contract 154). No plugin code reads the
   // value — it is a number for an operator and for the serving-down's own reckoning — so it is
   // optional here, and a reader that finds it absent learns that nothing of the project runs a
   // plugin it knows the contract of.
@@ -1151,14 +1195,14 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
-/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 145): one
+/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 154): one
  * issue's record, equal field for field to the value the whole-project body holds under
  * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
  * readers cannot drift apart. The daemon answers 404 with the code `RECORD_NOT_FOUND` for an
  * issue it records nothing of, which is the client's absent-record branch and no body at all. */
 export const LegionIssueRecordResponse = legionIssue;
 
-/** `api.Health`, the body of `GET /healthz` (contract 145): that the daemon is serving, and the
+/** `api.Health`, the body of `GET /healthz` (contract 154): that the daemon is serving, and the
  * project it serves. `project` is required because the controller's boot check reads it
  * (`packages/pi-legion/src/controller-session.ts`), which is the one word that read the whole
  * state before. `status` is a word for an operator: no plugin code takes its value. */

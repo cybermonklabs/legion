@@ -1452,9 +1452,9 @@ test("a claim carries the leak check's cause beside its failure", () => {
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
 // all, since a key added to a narrowed body is exactly what the narrowing exists to prevent. The
-// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 145 on,
+// daemon writes that narrowing to its own log instead (`api.recordShaping`). From contract 154 on,
 // a reader served the body whole, the operator's `legion state --json` among them, is told the
-// daemon's own number as the caller's too, which is the golden's mark. Before contract 145 a daemon
+// daemon's own number as the caller's too, which is the golden's mark. Before contract 154 a daemon
 // from 75 on served that reader the daemon's number alone, and the schema reads that mark as well.
 test("the state says which contract it was built at", () => {
   const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };
@@ -2291,12 +2291,12 @@ test("the state golden shows a claim's capability report beside its locator", ()
   expect(LegionStateResponse.safeParse(blank.document).success).toBeFalse();
 });
 
-// The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
-// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
-// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
-// 56) — three keys each, neither the released nor the retired one wider than the failed one —
-// and a state with none carries an empty list rather than none.
+// The claims nothing will wake (contract 23): the golden's list is written by hand, one entry for
+// each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
+// failed implementer, whose issue is held, LEGION-211's suspended one, and LEGION-212's retired
+// tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
+// relaunch (contract 56) — three keys each, neither the suspended nor the retired one wider than
+// the failed one — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list may be left out", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([

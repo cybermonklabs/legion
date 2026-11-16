@@ -360,6 +360,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork, record.HeldUnclassified}
 	roleWords := []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger}
+	stallWords := []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable,
+		record.ArchitectSlowBeforeGate}
 
 	// claimView is a claim that failed with cause, whose pending cause is the next word of the
 	// list and whose held task was queued for taskPhase: every key of a failure and of a held
@@ -425,6 +427,8 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Why:            &WhyView{State: whyWords[i%len(whyWords)], Reason: "The body carries this state."},
 			MemoryGroup:    groupWords[i%len(groupWords)],
 			MemoryDrawMode: string(modeWords[i%len(modeWords)]),
+			// One arm of the architect-stalled reading on each issue, so the twelve carry all three.
+			ArchitectStalls: []record.ArchitectStallArm{stallWords[i%len(stallWords)]},
 		}
 		if i < len(roleWords) {
 			wakes = append(wakes, WakeWaiting{Claim: claim.Token("legion-values-" + key), Issue: key, Role: roleWords[i],
@@ -1304,7 +1308,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
-	// arrived at 145 and carries all nine values of `answeredBy` from its first record — since a
+	// arrived at 154 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields {
 		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {

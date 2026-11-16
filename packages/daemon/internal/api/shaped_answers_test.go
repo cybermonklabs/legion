@@ -232,7 +232,7 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 }
 
 // The pod a roll makes, holding one build at the floor and one at this daemon's own contract,
-// is served the floor's shape and not the union of the two. The build at 145 states its
+// is served the floor's shape and not the union of the two. The build at 154 states its
 // contract in the header, so contractsFor answers it there and it never reads the body the pod
 // decides; the build at 46 does read it, and it is the only process that does. Counting the
 // newer one would serve that reader `admission.trees`, the memory fields and the rest, which
@@ -261,7 +261,7 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 		t.Errorf("the rolled pod logged %s, want no line: the floor is a shape this daemon describes", logs)
 	}
 
-	// The 145 build of that same pod is served this contract's own body, by its header.
+	// The 154 build of that same pod is served this contract's own body, by its header.
 	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
 }
 
@@ -277,7 +277,7 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 // highest contract and does not reach it. A pod at 133 alone is served neither old key, so the
 // mixed pod's stand-ins are its older process's. What the 111 process requires of these two keys
 // is the record of its own contract, which carries both: no plugin code reads either
-// (version.go's 145), and the stand-ins keep the body served to such a process that record's
+// (version.go's 154), and the stand-ins keep the body served to such a process that record's
 // shape.
 //
 // It is a test of its own rather than a second pod of the {46, 73} case above. That pod's two
@@ -764,7 +764,7 @@ func TestAClaimThatStatesItsOwnContractIsInNoPodsReckoning(t *testing.T) {
 	}
 	mixedLowest, mixedHighest, _ := podContracts(mixedPodClaims(ServingFloor, DaemonAPIVersion), statePodUID)
 	if mixedLowest != ServingFloor || mixedHighest != ServingFloor {
-		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 145 build reads no body this decides",
+		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 154 build reads no body this decides",
 			mixedLowest, mixedHighest)
 	}
 }

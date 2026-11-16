@@ -481,6 +481,13 @@ RULES = {
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
+    # The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
+    # it moved here because it walks every .go file of the module, test files included, and a row
+    # keyed on a file of internal/workflow would put every test file of packages/daemon - this
+    # package's and the live tests' among them - on daemon-go's filter (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/textcheck/role_for_readers_test.go": reads(
+        (f"{DAEMON}/**/*.go", "internal/textcheck/role_for_readers_test.go:88 walks every .go file under packages/daemon (../.., :84) "
+                              "and :101 parses each one")),
     # main's #4092 read these three pages in internal/prompts's production-check test; that half
     # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).
@@ -505,14 +512,18 @@ RULES = {
          "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../../cmd/legion/troubleshooting_refusals_extract.txt "
          "for troubleshooting_refusals_doc_test.go:36, the committed copy it holds the page's refusal table to (quotedBody)")),
     # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
-    # any more and has no row: upgrade_way_back_extract.txt stands in its own directory, and this
-    # row is what holds that copy to the guide, in the text-check job (dispatch://INFRA-1413).
+    # any more and has no row: upgrade_way_back_extract.txt and
+    # upgrade_architect_entry_way_back_extract.txt stand in its own directory, and this row is what
+    # holds those copies to the guide, in the text-check job (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
-                               "for way_back_doc_test.go:68 (shippedText)"),
+                               "for way_back_doc_test.go:94 (shippedText)"),
         (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
          "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/upgrade_way_back_extract.txt for "
-         "way_back_doc_test.go:45, the committed copy it holds the guide's block to (quotedBody)")),
+         "way_back_doc_test.go:70, the committed copy it holds the guide's block to (quotedBody)"),
+        (f"{DAEMON}/internal/daemon/upgrade_architect_entry_way_back_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/upgrade_architect_entry_way_back_extract.txt "
+         "for way_back_doc_test.go:70, the committed copy it holds the guide's contract 146 block to (quotedBody)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -2083,9 +2094,10 @@ GATES = [
         # rather than the superset ./...: the race step's Run below claims the three packages
         # this step leaves out, which are this job's own, while the text checks are the
         # text-check job's, and a Run saying ./... would keep what only their tests read -
-        # docs/kubernetes.md - on this job's filter. Only they read it: the way back's check in
-        # internal/daemon, which the race step runs, reads upgrade_way_back_extract.txt beside it
-        # instead, and internal/textcheck's way_back_doc_test.go holds that copy to the guide.
+        # docs/kubernetes.md - on this job's filter. Only they read it: the way back checks in
+        # internal/daemon, which the race step runs, read upgrade_way_back_extract.txt and
+        # upgrade_architect_entry_way_back_extract.txt beside them instead, and internal/textcheck's
+        # way_back_doc_test.go holds those copies to the guide.
         pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, packages_kept(DAEMON, DAEMON_PLAIN_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps, the "

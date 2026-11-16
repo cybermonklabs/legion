@@ -163,19 +163,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 145
+        "since": 154
       },
       {
         "value": "asked",
-        "since": 145
+        "since": 154
       },
       {
         "value": "none",
-        "since": 145
+        "since": 154
       },
       {
         "value": "open",
-        "since": 145
+        "since": 154
       }
     ]
   },
@@ -185,19 +185,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 145
+        "since": 154
       },
       {
         "value": "asked",
-        "since": 145
+        "since": 154
       },
       {
         "value": "none",
-        "since": 145
+        "since": 154
       },
       {
         "value": "open",
-        "since": 145
+        "since": 154
       }
     ]
   },
@@ -993,6 +993,24 @@
   },
   {
     "answer": "state",
+    "keyPath": "issues.*.architectStalls.*",
+    "values": [
+      {
+        "value": "claim-unreachable",
+        "since": 146
+      },
+      {
+        "value": "slow-before-gate",
+        "since": 146
+      },
+      {
+        "value": "took-nothing",
+        "since": 146
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "admission.held.*.reason",
     "values": [
       {
@@ -1205,19 +1223,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 145
+        "since": 154
       },
       {
         "value": "asked",
-        "since": 145
+        "since": 154
       },
       {
         "value": "none",
-        "since": 145
+        "since": 154
       },
       {
         "value": "open",
-        "since": 145
+        "since": 154
       }
     ]
   },
@@ -1227,19 +1245,19 @@
     "values": [
       {
         "value": "answered",
-        "since": 145
+        "since": 154
       },
       {
         "value": "asked",
-        "since": 145
+        "since": 154
       },
       {
         "value": "none",
-        "since": 145
+        "since": 154
       },
       {
         "value": "open",
-        "since": 145
+        "since": 154
       }
     ]
   },
@@ -1846,6 +1864,24 @@
       {
         "value": "waiting",
         "since": 85
+      }
+    ]
+  },
+  {
+    "answer": "issue-record",
+    "keyPath": "architectStalls.*",
+    "values": [
+      {
+        "value": "claim-unreachable",
+        "since": 146
+      },
+      {
+        "value": "slow-before-gate",
+        "since": 146
+      },
+      {
+        "value": "took-nothing",
+        "since": 146
       }
     ]
   },

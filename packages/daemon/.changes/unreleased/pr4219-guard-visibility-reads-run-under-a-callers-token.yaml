@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    `legion gh` lets the leak guard's own visibility reads run under a caller's `GH_TOKEN` or
+    `GITHUB_TOKEN`, with that token. Before, it refused them, so the pre-push guard could not read
+    the destination's visibility and refused every push a pod made with a token. This change lets
+    through only the guard's REST and GraphQL reads, each exactly for the repository
+    `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names. Under a caller's token, `legion gh` runs these calls
+    and refuses every other one: the guard's two visibility reads, the shared check's own
+    visibility read, which `legion gh` answers itself, the exact `gh api rate_limit`, and
+    `gh auth git-credential`, which answers from the bundle.
+time: 2026-11-16T15:49:10Z
+custom:
+    Issue: pr4219
