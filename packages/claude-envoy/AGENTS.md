@@ -416,7 +416,10 @@ above says how to run it).
   bytes (Claude Code's bound on `HttpInit.socketPath`), which is why the name is the id's hash:
   a macOS `/Users/<name>/.claude` makes 62 bytes and a Legion pane's `CLAUDE_CONFIG_DIR` 78,
   while the id spelled out passed 100 on a macOS temp directory. A path past the bound is
-  refused with that reason, never served out of a shared base.
+  refused with that reason, never served out of a shared base. A test that hands the server or a
+  mod a scratch directory as `XDG_RUNTIME_DIR` takes it from `tests/mod-socket-scratch.ts`, which
+  makes it under `tmpdir()` when the socket fits there and under `/tmp` otherwise, so a long
+  `TMPDIR` cannot refuse the test's own socket.
 - One link serves one mod: the first instance to name itself in `MOD_INSTANCE_HEADER` holds it
   and every other post is refused with `MOD_STATUS_TAKEN`, which stops that mod. Two Claude Code
   processes can boot on one session id (`claude -c`, `claude --resume <id>` in a second

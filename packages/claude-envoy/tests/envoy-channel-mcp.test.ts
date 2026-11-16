@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test"
-import { mkdtemp, rm, stat } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { rm, stat } from "node:fs/promises"
+import { resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -10,6 +9,7 @@ import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
+import { modSocketScratch } from "./mod-socket-scratch"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -53,7 +53,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-mcp-"))
+  const stateDirectory = await modSocketScratch("claude-envoy-mcp-")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
     command: "bun",
@@ -157,7 +157,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
       return Response.json({ error: "not found" }, { status: 404 })
     },
   })
-  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-quiet-"))
+  const stateDirectory = await modSocketScratch("claude-envoy-quiet-")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
     command: "bun",
