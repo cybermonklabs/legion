@@ -678,10 +678,11 @@ func TestGuestNamesNoneOfMoreProcessesShowingTheKillThanKillsPending(t *testing.
 }
 
 // Processes a pass set aside because more showed the kill than kills were pending go on counting
-// while they are in /proc: the tester's cc1 and ld both show SIGKILL at a rise of one, and the pass
-// names neither. Later in the same wait another sender's SIGKILL reaches the tester's sleep, which
-// the watch holds. sleep is then one candidate beside two counted processes against one kill: the
-// pass reads the counter again, finds no rise, and names none, and the kill has its unnamed line.
+// until the first scan after they have left /proc: the tester's cc1 and ld both show SIGKILL at a
+// rise of one, and the pass names neither. Later in the same wait another sender's SIGKILL reaches
+// the tester's sleep, which the watch holds. sleep is then one candidate beside two counted
+// processes against one kill: the pass reads the counter again, finds no rise, and names none,
+// and the kill has its unnamed line.
 func TestGuestCountsWhatAPassSetAsideAgainstAnotherSendersSIGKILLInTheWait(t *testing.T) {
 	const cc1, ld, sleep = 817, 819, 820
 	pod := newFakePod(t)
@@ -977,7 +978,8 @@ func TestGuestNamesNoProcessFirstReadAfterItsKill(t *testing.T) {
 }
 
 // A process that a scan first reads after the kernel killed it counts against the kill pending
-// while it is in /proc, so a SIGKILL another sender sends in the same wait is named for no kill.
+// until the first scan after it has left /proc, so a SIGKILL another sender sends in the same wait
+// is named for no kill.
 // The tester's cc1 starts after a scan, and before the next scan the kernel kills it: the counter
 // reads one, and cc1 shows SIGKILL pending. That scan's pass has no candidate, since the watch does
 // not know cc1 yet, and its snapshot first reads cc1 with SIGKILL pending. During the wait the
