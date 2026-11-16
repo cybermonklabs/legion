@@ -308,6 +308,29 @@ wait_for() {
   poll_until "$seconds" 0.2 "$@"
 }
 
+# listening_port PID VAR: assigns VAR the port of the one TCP socket on 127.0.0.1 that process PID
+# holds in state LISTEN, read from its descriptors (/proc/PID/fd, `socket:[INODE]`) against the
+# kernel's socket tables of its network namespace (/proc/PID/net/tcp and tcp6, whose second field
+# is the local address and port in hexadecimal, fourth the state, 0A for LISTEN, and tenth the
+# inode); 127.0.0.1 is 0100007F there, and ::ffff:127.0.0.1 ends in it. It reads, and never binds
+# or connects to, anything. It fails while PID holds no such socket or more than one.
+listening_port() {
+  local pid=$1 inode address state rest ports=()
+  local -A held=()
+  while IFS= read -r inode; do
+    held[$inode]=1
+  done < <(find "/proc/${pid}/fd" -mindepth 1 -lname 'socket:*' -printf '%l\n' 2>/dev/null |
+    sed -n 's/^socket:\[\([0-9]*\)\]$/\1/p')
+  ((${#held[@]} > 0)) || return 1
+  while read -r _ address _ state _ _ _ _ _ inode rest; do
+    [[ "$state" == 0A && -n "${held[$inode]:-}" ]] || continue
+    [[ "${address%:*}" == 0100007F || "${address%:*}" == *FFFF00000100007F ]] || continue
+    ports+=($((16#${address##*:})))
+  done < <(cat "/proc/${pid}/net/tcp" "/proc/${pid}/net/tcp6" 2>/dev/null)
+  ((${#ports[@]} == 1)) || return 1
+  printf -v "$2" '%s' "${ports[0]}"
+}
+
 # ---- the results -------------------------------------------------------------------------------
 # One row of R8's table (or one of A5's own claims), its outcome and the evidence for it. A failed
 # check never stops the run: every row is driven, so one run says which rows hold and which do not.
@@ -429,13 +452,19 @@ listener_env+=(
 )
 (exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
   "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
-service_pids+=($!)
+listener_pid=$!
+service_pids+=("$listener_pid")
 listener_port=""
 wait_for 90 reported_port "${work}/logs/listener.log" "$listener_line" listener_port ||
   refuse "the listener logged no address it listens on: $(tail -n 5 "${work}/logs/listener.log")"
-# A listener built before it logged the address it bound logs the one it was given, port 0.
-[[ "$listener_port" != 0 ]] ||
-  refuse "${listener_under_test} logged port 0, the PORT it was given, rather than the port it bound: it is older than the listener this smoke can start"
+# A listener built before it logged the address it bound (a5f0cf479b, which a --base-rev or a
+# --listener-bin control can run) logs the one it was given, port 0. Its port is then read from the
+# listener's own process: the one loopback socket it holds that listens.
+if [[ "$listener_port" == 0 ]]; then
+  wait_for 90 listening_port "$listener_pid" listener_port ||
+    refuse "${listener_under_test} logged port 0 and process ${listener_pid} holds no one loopback socket that listens: $(tail -n 5 "${work}/logs/listener.log")"
+  note "${listener_under_test} logged port 0, the PORT it was given; its process listens on ${listener_port}"
+fi
 readonly listener_port
 readonly envoy_url="http://127.0.0.1:${listener_port}"
 wait_for 90 listener_healthy "$envoy_url" ||
