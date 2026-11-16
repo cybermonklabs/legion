@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -25,6 +26,10 @@ type Gate struct {
 	t       testing.TB
 	address string
 	server  string
+	// claim and reservation hold the gate's port from StartGate to the test's end, open or closed
+	// (holdGatePort).
+	claim       net.Listener
+	reservation int
 
 	mu sync.Mutex
 	// relay is the gate's listener and its copies while the gate is open, and nil while it is
@@ -32,14 +37,26 @@ type Gate struct {
 	relay *relay
 }
 
-// A gate's port is one no :0 bind can be handed. While the gate is closed nothing listens at its
-// address, and it cannot hold the port instead: nats.go runs ReconnectErrCB only for a reconnect
-// whose dial failed, so a held or accepting port would let the test the gate serves pass while
-// testing nothing. Its port is therefore free whenever it is closed, and every :0 bind on the
-// machine - each relay of this rig, each server's client and monitoring listener at every start,
-// another test binary's - takes its port from the kernel's ephemeral range, so a gate port inside
-// that range can be taken while the gate is closed, and Open then fails or the client's dials
-// reach someone else's listener.
+// While a gate is closed nothing listens at its address, since a listening or accepting port would
+// let the test the gate serves pass while testing nothing. The port is never free all the same:
+// from StartGate to the test's end the gate holds it twice over (holdGatePort).
+//
+//   - A reservation: a socket bound to the gate's address with SO_REUSEADDR that never listens.
+//     A dial of it is refused, and the gate's listener binds beside it at each Open, since Go's
+//     listeners set SO_REUSEADDR too and Linux refuses a bind beside a socket with SO_REUSEADDR
+//     only when that socket listens (net/ipv4/inet_connection_sock.c, inet_bind_conflict). A
+//     program that binds the port without SO_REUSEADDR is refused, closed gate or open.
+//   - A claim: the abstract unix socket gateClaim(port), which one socket of the machine's network
+//     namespace can hold at a time. Every gate's own sockets set SO_REUSEADDR, so the reservation
+//     alone would let a second gate bind beside a closed one; the claim keeps every other gate off
+//     the port.
+//
+// What neither stops is another program that picks the number itself and binds it with
+// SO_REUSEADDR. Docker does that for a container's published random host port inside the
+// kernel's ephemeral range: it picks the number from its own allocator over that range and binds
+// it with SO_REUSEADDR before it listens (moby daemon/libnetwork/portallocator,
+// OSAllocator.RequestPortsInRange and bindTCPOrUDP). So a gate's port lies below that range, where
+// no :0 bind, no connect and no Docker host port is given.
 //
 // That range is the machine's, not a constant: Linux's default is 32768-60999, and in a Legion
 // worker pod (gVisor) it is 16000-65535. So the gate reads it from ephemeralRangePath and picks
@@ -76,8 +93,9 @@ func gatePorts(text string) (first, count int, err error) {
 	return first, gatePortCount, nil
 }
 
-// StartGate opens a gate on a free port of the band gatePorts chooses from this machine's
-// ephemeral range, relaying to srv, and closes it when the test ends.
+// StartGate opens a gate on a port of the band gatePorts chooses from this machine's ephemeral
+// range that no other gate and no listener holds, relaying to srv, and closes it and gives up the
+// port when the test ends.
 func StartGate(t testing.TB, srv *Server) *Gate {
 	t.Helper()
 	// An unreadable file is empty text, which gatePorts reads as the fallback range.
@@ -87,22 +105,71 @@ func StartGate(t testing.TB, srv *Server) *Gate {
 		t.Fatalf("choose a gate port: %v", err)
 		return nil
 	}
-	g := &Gate{t: t, server: strings.TrimPrefix(srv.URL(), "nats://")}
 	var last error
 	for range 100 {
-		address := fmt.Sprintf("127.0.0.1:%d", first+rand.IntN(count))
-		listener, err := net.Listen("tcp", address)
+		port := first + rand.IntN(count)
+		claim, reservation, err := holdGatePort(port)
 		if err != nil {
 			last = err
 			continue
 		}
-		g.address = address
+		g := &Gate{t: t, address: fmt.Sprintf("127.0.0.1:%d", port), server: strings.TrimPrefix(srv.URL(), "nats://"), claim: claim, reservation: reservation}
+		listener, err := net.Listen("tcp", g.address)
+		if err != nil {
+			g.release()
+			last = err
+			continue
+		}
 		g.relay = newRelay(listener, g.target, false)
+		// Cleanups run last first: the gate closes, then gives up its port.
+		t.Cleanup(g.release)
 		t.Cleanup(g.Close)
 		return g
 	}
 	t.Fatalf("hold a gate port: %v", last)
 	return nil
+}
+
+// gateClaim is the abstract unix socket a gate on port holds for its whole life, so no other gate
+// of the machine's network namespace takes the port.
+func gateClaim(port int) string { return "@legion-testnats-gate-" + strconv.Itoa(port) }
+
+// holdGatePort takes port for a gate: its claim, then its reservation on 127.0.0.1, as the comment
+// above ephemeralRangePath describes. It fails when another gate holds the claim, or when a socket
+// already on the address refuses the reservation: one that listens, or one without SO_REUSEADDR.
+func holdGatePort(port int) (net.Listener, int, error) {
+	claim, err := net.Listen("unix", gateClaim(port))
+	if err != nil {
+		return nil, -1, fmt.Errorf("claim port %d: %w", port, err)
+	}
+	// Close-on-exec, under ForkLock as package net opens its sockets where SOCK_CLOEXEC is missing,
+	// so no process a test starts inherits the reservation.
+	syscall.ForkLock.RLock()
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
+	if err == nil {
+		err = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		if err == nil {
+			err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
+		}
+		if err != nil {
+			_ = syscall.Close(fd)
+		}
+	}
+	if err != nil {
+		_ = claim.Close()
+		return nil, -1, fmt.Errorf("reserve 127.0.0.1:%d: %w", port, err)
+	}
+	return claim, fd, nil
+}
+
+// release gives up the gate's port: its reservation and its claim.
+func (g *Gate) release() {
+	_ = syscall.Close(g.reservation)
+	_ = g.claim.Close()
 }
 
 // target is the address the gate's relay dials: the server's relay, whose port the server's URL
@@ -112,10 +179,10 @@ func (g *Gate) target() (string, error) { return g.server, nil }
 // URL is the client URL of the gate's address, which is the same for the test's whole life.
 func (g *Gate) URL() string { return "nats://" + g.address }
 
-// Close stops listening, so every dial of the gate's address is refused. It does nothing when the
-// gate is already closed. It does not break a connection already joined through the gate, which
-// keeps copying until one side ends, so a test that needs a connected client to lose its
-// connection stops the server too.
+// Close stops listening, so every dial of the gate's address is refused; the gate keeps its port
+// (holdGatePort). It does nothing when the gate is already closed. It does not break a connection
+// already joined through the gate, which keeps copying until one side ends, so a test that needs a
+// connected client to lose its connection stops the server too.
 func (g *Gate) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -126,8 +193,9 @@ func (g *Gate) Close() {
 	g.relay = nil
 }
 
-// Open listens on the gate's address again, so dials reach the server once more. It does nothing
-// when the gate is already open, and fails the test when the address cannot be taken.
+// Open listens on the gate's address again, beside its reservation, so dials reach the server once
+// more. It does nothing when the gate is already open, and fails the test when the address cannot
+// be taken.
 func (g *Gate) Open() {
 	g.t.Helper()
 	g.mu.Lock()

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -380,6 +381,58 @@ func TestEveryGatePortLiesJustBelowThisMachinesEphemeralRange(t *testing.T) {
 			t.Errorf("a gate took port %d, want one of the %d ports below %d, the first port of this machine's ephemeral range (%s holds %q)", port, gatePortCount, low, ephemeralRangePath, text)
 		}
 	}
+}
+
+// A closed gate keeps its port. While it is closed a dial of its address is refused, as a client's
+// failed reconnect needs, a program that binds the port without SO_REUSEADDR is refused, and no
+// other gate can take the port; Open then listens on the same address again and a client connects
+// through it. Each row is the control of one hold: with the reservation gone the bind succeeds and
+// Open fails, with the claim gone the second gate's hold succeeds, and with the reservation
+// listening the dial succeeds.
+func TestAClosedGateKeepsItsPort(t *testing.T) {
+	server, _ := Start(t)
+	gate := StartGate(t, server)
+	address, err := net.ResolveTCPAddr("tcp", gate.address)
+	if err != nil {
+		t.Fatalf("resolve the gate's address %s: %v", gate.address, err)
+	}
+	gate.Close()
+
+	conn, err := net.DialTimeout("tcp", gate.address, 5*time.Second)
+	if err == nil {
+		_ = conn.Close()
+	}
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		t.Errorf("a dial of the closed gate at %s: %v, want connection refused", gate.address, err)
+	}
+
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err != nil {
+		t.Fatalf("open the other program's socket: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte{127, 0, 0, 1}})
+	if err == nil {
+		// The port was free: hold it listening, as a program that took it would, so the Open below
+		// meets it.
+		_ = syscall.Listen(fd, 16)
+		t.Errorf("another program bound the closed gate's port %d", address.Port)
+	} else if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("another program's bind of the closed gate's port %d: %v, want address already in use", address.Port, err)
+	}
+
+	if claim, reservation, err := holdGatePort(address.Port); err == nil {
+		_ = syscall.Close(reservation)
+		_ = claim.Close()
+		t.Errorf("a second gate held the closed gate's port %d", address.Port)
+	}
+
+	gate.Open()
+	nc, err := natsgo.Connect(gate.URL(), natsgo.Timeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("connect through the reopened gate at %s: %v", gate.URL(), err)
+	}
+	nc.Close()
 }
 
 // Terminate ends the server for good and gives up the port its URL named, so nothing answers there
