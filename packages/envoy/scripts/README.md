@@ -319,20 +319,40 @@ own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test
 so a store or use change cannot pass on one backend alone.
 
 ```bash
-BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/backend-count.sh TEST...
+packages/envoy/scripts/backend-count.sh TEST...
 ```
 
 It runs only the named tests, `go test -json -count=1 -timeout 5m -run '^(TEST|…)$'
-./cmd/agent-secrets/`, and prints `TEST aws=N gcp=M` for each, then
-`broker_test_database_url=set` or `unset` and `go_test_exit=E`. It exits 1 when no test is
-named, when a name is not a Go test name, when a named test has no passing run on either
-backend, when `BROKER_TEST_DATABASE_URL` is unset (every database broker suite skips without
-it, and the job's unit step runs them), or when go test failed. It counts only the tests it
-names, so the `aws` and `gcp` subtests of other tests cannot stand in for a new test's.
+./cmd/agent-secrets/`, and prints `TEST aws=N gcp=M` for each, then `go_test_exit=E`. It
+exits 1 when no test is named, when a name is not a Go test name, when a named test has no
+passing run on either backend, or when go test failed. It counts only the tests it names,
+so the `aws` and `gcp` subtests of other tests cannot stand in for a new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend".
+
+## database-skips.sh
+
+Counts the tests of the broker's packages (`internal/broker/...`) that skipped, and fails on
+any: every database broker suite skips, which go test counts as a pass, when
+`BROKER_TEST_DATABASE_URL` is unset, and a `t.Skip` left in one skips it with the variable
+set.
+
+```bash
+BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
+packages/envoy/scripts/database-skips.sh --report REPORT.json
+```
+
+With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
+reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
+prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
+`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
+`database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
+broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
+script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
+replaces the 15-minute `-timeout`; `ci.yaml`'s `envoy-go` job runs it as "Count the
+database broker suites' skips" and counts that bound in its time budget.
 
 ## aws-moto-check.sh
 

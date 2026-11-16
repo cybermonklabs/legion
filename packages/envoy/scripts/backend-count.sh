@@ -8,17 +8,15 @@
 #   go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|...)$' [-skip "$GO_TEST_SKIP"] ./cmd/agent-secrets/
 #
 # and prints one line per named test, `TEST aws=N gcp=M`, N and M counting the `pass` events of
-# `TEST/aws` and `TEST/gcp`, then `broker_test_database_url=set|unset` and `go_test_exit=E`. It
-# counts only the tests it is given, so the `aws` and `gcp` subtests of other tests cannot stand in
-# for a named test's. The database broker suites are not run here, since the job that runs this
-# runs them in its unit step: each skips exactly when BROKER_TEST_DATABASE_URL is unset
-# (packages/envoy/AGENTS.md, the Postgres-backed tests), so this refuses a run in which it is unset.
+# `TEST/aws` and `TEST/gcp`, then `go_test_exit=E`. It counts only the tests it is given, so the
+# `aws` and `gcp` subtests of other tests cannot stand in for a named test's. The database broker
+# suites' skips are database-skips.sh's count, not this one's.
 #
 # It exits 1 when no test is named, when a name is not a Go test name, when a named test has no
-# passing run on either backend, when BROKER_TEST_DATABASE_URL is unset, or when go test failed;
-# 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to take the
-# `aws` subtests away ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout, 5m unless
-# set: the named tests take seconds, and CI's job budget counts this step at that bound.
+# passing run on either backend, or when go test failed; 0 otherwise. GO_TEST_SKIP is go test's
+# -skip pattern, which a negative control sets to take the `aws` subtests away
+# ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout, 5m unless set: the named tests
+# take seconds, and CI's job budget counts this step at that bound.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -56,14 +54,6 @@ for test in "$@"; do
   done
   echo "$test ${counts[*]}"
 done
-
-if [ -n "${BROKER_TEST_DATABASE_URL:-}" ]; then
-  echo "broker_test_database_url=set"
-else
-  echo "broker_test_database_url=unset"
-  echo "backend-count.sh: BROKER_TEST_DATABASE_URL is unset, so the database broker suites skip" >&2
-  status=1
-fi
 
 echo "go_test_exit=$go_test_exit"
 if [ "$go_test_exit" -ne 0 ]; then
