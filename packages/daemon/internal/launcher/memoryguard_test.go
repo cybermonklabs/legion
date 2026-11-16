@@ -259,9 +259,21 @@ type guardRig struct {
 // the role of each process the test gives one, over the classifier's answer: a launcher started
 // with no role's generation has no role-init the classifier could find a role by, and what the
 // classifier answers on its own is TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace's.
+//
+// A launcher taken for the container's first process builds the pod's cache trimmer too
+// (serveVolumeTrim), over VolumeRoot and the machine's /proc, and an answer carrying trimmer
+// settings would set it sweeping the volume this test runs on, which in an issue pod is the
+// roles' own. So the trimmer's loop is held to the launcher's context and runs nothing, unless
+// the case puts a fixture into it (useLauncherTrimmer, which calls this first and sets the loop
+// after it). Measured at e8356e5d in an issue pod without this: a guard case answered with
+// trimmer settings logged "volume trim: started: … volume /legion" and read the pod's volume
+// once a second.
 func useGuardPod(t *testing.T, pod *guardPod, roles map[int]string) *guardRig {
 	t.Helper()
 	useContainerInit(t, true)
+	previousTrimmer := podTrimmer
+	podTrimmer = func(ctx context.Context, _ *trimmer) { <-ctx.Done() }
+	t.Cleanup(func() { podTrimmer = previousTrimmer })
 	rig := &guardRig{t: t, pod: pod, clock: newGuardClock(), signal: &guardSignal{proc: pod.proc}}
 	previous := newMemoryGuard
 	newMemoryGuard = func(cfg memoryguard.Config) *memoryguard.Guard {
