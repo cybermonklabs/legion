@@ -1,8 +1,8 @@
 # proxy-connect-carried: serveBound no longer refuses a CONNECT on a connection the proxy
 # decrypted, so under an entry that allows any method one is decided like any request and handed
-# to the service. Caught by the airlockproxy suite: the CONNECT stream of
-# TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn, TestNoProtocolSwitchIsCarriedOnADecryptedConnection
-# and the protocol-switch row of TestEveryRefusalOfTheAirlockWritesOneRecord.
+# to the service.
+# must fail: TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn
+# must fail: TestNoProtocolSwitchIsCarriedOnADecryptedConnection
 # Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go

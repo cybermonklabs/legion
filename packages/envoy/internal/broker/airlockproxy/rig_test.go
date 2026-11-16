@@ -116,6 +116,44 @@ func storedValues(name, value string) map[string]requests.AirlockSecret {
 	return map[string]requests.AirlockSecret{name: {Slots: map[string]string{requests.SlotValue: value}}}
 }
 
+// The github-app shape of the rig's one name, for the rows about a slot the broker stops
+// releasing: one token per installation, acme's and zed's, and the worker placeholder is acme's.
+const (
+	githubAcmeSlot  = requests.SlotGitHubPrefix + "acme"
+	githubZedSlot   = requests.SlotGitHubPrefix + "zed"
+	githubZedHolder = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed02"
+	githubAcmeToken = "ghs_the-real-acme-installation-token"
+	githubZedToken  = "ghs_the-real-zed-installation-token"
+)
+
+// useGitHubAppGrant makes the rig's one name a github-app name holding acme's and zed's tokens,
+// with the worker placeholder as acme's, so a call that carries it is handled for (workerName,
+// acme).
+func (r *rig) useGitHubAppGrant() {
+	conn := testConnection()
+	conn.Names = map[string]requests.AirlockGrantName{
+		workerName: {Kind: "github-app", Slots: map[string]string{githubAcmeSlot: workerPlaceholder, githubZedSlot: githubZedHolder}},
+	}
+	r.grants.setConnection(workerPlaceholder, conn)
+	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
+		workerName: {Kind: "github-app", Slots: map[string]string{githubAcmeSlot: githubAcmeToken, githubZedSlot: githubZedToken}},
+	})
+}
+
+// removeAcmeInstallation is the broker's read of that name once acme's installation has gone:
+// zed's token alone, and the name's reread, which drops what this pod holds of it (DropName). The
+// grant still holds acme's placeholder, as a release made before the installation went does.
+func (r *rig) removeAcmeInstallation() {
+	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
+		workerName: {Kind: "github-app", Slots: map[string]string{githubZedSlot: githubZedToken}},
+	})
+	r.proxy.DropName(workerName)
+}
+
+// noAcmeValue is the words a call for acme's slot is refused or ended with once the broker no
+// longer releases it.
+const noAcmeValue = "the broker released no " + githubAcmeSlot + " value for " + workerName
+
 // databaseDown is a grant read that failed in the shape the store fails in: pgx puts the
 // database's user, its name and its address in the text of a connect error, which is why a row
 // about such a failure asserts that no answer of this port carries a word of it.

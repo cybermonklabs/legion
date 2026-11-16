@@ -1,9 +1,9 @@
 # proxy-host-from-header-field: the Host the decision reads is the request's host header field
 # rather than r.Host. An HTTP/2 stream carries its authority in :authority, which net/http puts in
 # r.Host, and keeps a host field beside it in r.Header, so a stream naming another authority with
-# a host field naming the bound host is carried. Caught by the airlockproxy suite: the second
-# stream of TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn, and every call to a bound host, whose
-# HTTP/1.1 Host net/http moves out of r.Header. Applied with patch -p1 from a copy.
+# a host field naming the bound host is carried.
+# must fail: TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn
+# Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go
 +++ b/packages/envoy/internal/broker/airlockproxy/bound.go

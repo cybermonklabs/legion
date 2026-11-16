@@ -14,12 +14,15 @@
 #   - a model mutant (lean-*.patch) must fail `lake build` in the copy, because a proof no
 #     longer holds, or, when it still builds, fail that same comparison against the mutated
 #     model. The line says which of the two caught it;
-#   - a proxy mutant (proxy-*.patch, internal/broker/airlockproxy/testdata/mutants) must fail a
-#     test of the proxy's own suite, run as `go test ./internal/broker/airlockproxy/`, which
-#     runs every row once with an HTTP/1.1 client and once with an h2-only one. These are the
-#     defects of what the model does not cover: how a request on the wire, an HTTP/2 stream
-#     among them, reaches the decision, and what the proxy carries after it. The line names
-#     the first test that failed.
+#   - a proxy mutant (proxy-*.patch, internal/broker/airlockproxy/testdata/mutants) must fail the
+#     tests its own header names, one `# must fail: <Test>` line each, run as
+#     `go test -run '^(<Test>|...)$' ./internal/broker/airlockproxy/`, which runs each once with
+#     an HTTP/1.1 client and once with an h2-only one. It is caught only when every named test ran
+#     and failed: a failure of any other test is not counted, a named test that passed is a hole,
+#     a named test that did not run (a misspelt or removed name) is refused, and a patch that names
+#     no test is refused. These are the defects of what the model does not cover: how a request on
+#     the wire, an HTTP/2 stream among them, reaches the decision, and what the proxy carries
+#     after it.
 #
 # A mutant nothing catches is a hole in the tests or in the proofs, and this script fails on
 # it. The patches are never applied to this repository: every one is applied inside the copy,
@@ -52,8 +55,9 @@ Applies each mutant of internal/broker/airlock/testdata/mutants and of
 internal/broker/airlockproxy/testdata/mutants to a copy of packages/envoy under $TMPDIR and
 requires that copy to fail: a go-*.patch must fail the comparison fuzz test over the committed
 seed corpus, a lean-*.patch must fail `lake build`, because a proof no longer holds, or that
-same comparison against the mutated model, and a proxy-*.patch must fail a test of
-`go test ./internal/broker/airlockproxy/`.
+same comparison against the mutated model, and a proxy-*.patch must fail every test of
+./internal/broker/airlockproxy/ its own `# must fail: <Test>` lines name, and is counted by
+those tests alone.
 
   <name>   a patch's file name, with or without the .patch suffix (for example
            go-carries-value or proxy-connect-carried); with no name, every mutant of both
@@ -179,23 +183,30 @@ failing_seed() {
 	sed -n 's|^ *--- FAIL: FuzzAirlock/\([^ ]*\).*|\1|p' "$1" | head -n 1
 }
 
-# proxy_suite runs the proxy's own suite in <copy> and answers 0 when a test failed, 1 when every
-# test passed, 2 when the suite did not run: a copy that does not build is a broken run, not a
-# catch.
-proxy_suite() {
-	local copy="$1" log="$2"
-	if (cd "$copy/packages/envoy" && GOWORK=off go test -count=1 ./internal/broker/airlockproxy/) >"$log" 2>&1; then
-		return 1
-	fi
-	if grep -q -- '--- FAIL: ' "$log"; then
-		return 0
-	fi
-	return 2
+# must_fail is the tests a proxy mutant's header names, one `# must fail: <Test>` line each, one
+# per output line.
+must_fail() {
+	sed -n 's|^# must fail: \(Test[A-Za-z0-9_]*\)[[:space:]]*$|\1|p' "$1"
 }
 
-# failing_test names the first test the proxy's suite failed, for the PASS: line.
-failing_test() {
-	sed -n 's|^ *--- FAIL: \([^ ]*\).*|\1|p' "$1" | head -n 1
+# proxy_tests runs <tests>, the named tests of a proxy mutant, in <copy> and answers 0 when every
+# one of them ran and failed, 1 when one of them passed, 2 when one of them did not run - a copy
+# that does not build, or a name no test of the suite has. MISSED is set to the ones that passed or
+# did not run.
+proxy_tests() {
+	local copy="$1" log="$2" tests="$3" test verdict=0
+	(cd "$copy/packages/envoy" && GOWORK=off go test -count=1 -v -run "^($(paste -sd '|' <<<"$tests"))\$" ./internal/broker/airlockproxy/) >"$log" 2>&1
+	MISSED=""
+	while read -r test; do
+		if ! grep -q "^=== RUN   $test\$" "$log"; then
+			MISSED="$MISSED $test (did not run)"
+			verdict=2
+		elif ! grep -q "^--- FAIL: $test " "$log"; then
+			MISSED="$MISSED $test (passed)"
+			[ "$verdict" = 2 ] || verdict=1
+		fi
+	done <<<"$tests"
+	return "$verdict"
 }
 
 failures=0
@@ -214,18 +225,24 @@ for name in "${mutants[@]}"; do
 	fi
 
 	if [[ "$name" == proxy-* ]]; then
+		tests="$(must_fail "$(mutant_file "$name")")"
+		if [ -z "$tests" ]; then
+			echo "FAIL: $name — the patch names no test that must fail (a '# must fail: <Test>' line), so nothing it could catch would count"
+			failures=$((failures + 1))
+			continue
+		fi
 		set +e
-		proxy_suite "$copy" "$log"
+		proxy_tests "$copy" "$log" "$tests"
 		verdict=$?
 		set -e
 		case "$verdict" in
-		0) echo "PASS: $name — caught by the proxy's suite, first in $(failing_test "$log") ($((SECONDS - started))s)" ;;
+		0) echo "PASS: $name — caught by each test it names: $(tr '\n' ' ' <<<"$tests")($((SECONDS - started))s)" ;;
 		1)
-			echo "FAIL: $name — nothing caught it: every test of the proxy's suite passed ($((SECONDS - started))s)"
+			echo "FAIL: $name — not caught by every test it names:$MISSED ($((SECONDS - started))s)"
 			failures=$((failures + 1))
 			;;
 		*)
-			echo "FAIL: $name — the proxy's suite did not run: $(tail -n 3 "$log" | tr '\n' ' ')"
+			echo "FAIL: $name — a test it names did not run:$MISSED; $(tail -n 3 "$log" | tr '\n' ' ')"
 			failures=$((failures + 1))
 			;;
 		esac

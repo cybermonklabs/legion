@@ -340,11 +340,15 @@ func TestTrustBundleWithoutASystemOneIsTheProxyAlone(t *testing.T) {
 // NO_PROXY sends every host no entry binds direct, so a bundle without it fails them. A variable
 // naming a file that cannot be read names no trust the command would have had either, and the
 // run goes on without it; a second variable naming a file already in the bundle adds nothing.
+// GRPC_DEFAULT_SSL_ROOTS_FILE_PATH is one of them: gRPC's C core reads its roots from that file
+// alone, as curl, Python requests, git and the AWS SDKs read theirs from their own variable alone,
+// and its authority joins the bundle as theirs do.
 func TestTrustBundleKeepsEveryBundleVariablesTrust(t *testing.T) {
 	const (
 		systemRoots = "-----BEGIN CERTIFICATE-----\nMIIINHERITEDROOT\n-----END CERTIFICATE-----\n"
 		nodeRoot    = "-----BEGIN CERTIFICATE-----\nMIIICORPORATEROOT\n-----END CERTIFICATE-----\n"
 		pythonRoot  = "-----BEGIN CERTIFICATE-----\nMIIILABORATORYROOT\n-----END CERTIFICATE-----\n"
+		grpcRoot    = "-----BEGIN CERTIFICATE-----\nMIIIGRPCSERVICEROOT\n-----END CERTIFICATE-----\n"
 	)
 	dir := t.TempDir()
 	write := func(name, body string) string {
@@ -354,7 +358,7 @@ func TestTrustBundleKeepsEveryBundleVariablesTrust(t *testing.T) {
 		}
 		return path
 	}
-	roots, node, python := write("roots.pem", systemRoots), write("corp.pem", nodeRoot), write("lab.pem", pythonRoot)
+	roots, node, python, grpcRoots := write("roots.pem", systemRoots), write("corp.pem", nodeRoot), write("lab.pem", pythonRoot), write("grpc.pem", grpcRoot)
 	unreadable := filepath.Join(dir, "not-there.pem")
 	runtimeDir := t.TempDir()
 	environ := []string{
@@ -364,6 +368,7 @@ func TestTrustBundleKeepsEveryBundleVariablesTrust(t *testing.T) {
 		"REQUESTS_CA_BUNDLE=" + python,
 		"AWS_CA_BUNDLE=" + node, // the same file twice: its certificate goes in once
 		"CURL_CA_BUNDLE=" + unreadable,
+		"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=" + grpcRoots,
 	}
 	expires := time.Now().Add(time.Hour)
 	files, err := prepareAirlock(environ, testRelease("AIRLOCK_ME", nil, nil), "grant-one", &expires)
@@ -377,10 +382,11 @@ func TestTrustBundleKeepsEveryBundleVariablesTrust(t *testing.T) {
 	bundle := string(data)
 	t.Logf("the bundle is:\n%s", bundle)
 	for what, want := range map[string]string{
-		"the trust SSL_CERT_FILE named":       systemRoots,
-		"the trust NODE_EXTRA_CA_CERTS named": nodeRoot,
-		"the trust REQUESTS_CA_BUNDLE named":  pythonRoot,
-		"the proxy's own certificate":         testAirlockCertificate,
+		"the trust SSL_CERT_FILE named":                    systemRoots,
+		"the trust NODE_EXTRA_CA_CERTS named":              nodeRoot,
+		"the trust REQUESTS_CA_BUNDLE named":               pythonRoot,
+		"the trust GRPC_DEFAULT_SSL_ROOTS_FILE_PATH named": grpcRoot,
+		"the proxy's own certificate":                      testAirlockCertificate,
 	} {
 		if !strings.Contains(bundle, want) {
 			t.Errorf("the bundle does not hold %s:\n%s", what, bundle)

@@ -1,19 +1,20 @@
-# proxy-cut-leaves-command-open: a grant's end cancels the carried call's context and nothing
-# else, so a write of the service's answer that waits for the command to read - an HTTP/2
-# stream whose window the client keeps shut - goes on waiting, and hands the client the
-# answer's bytes when it opens the window. Caught by the airlockproxy suite:
-# TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings. Applied with patch -p1 from a
-# copy.
+# proxy-cut-leaves-command-open: a grant's end cancels the carried call's context and ends the
+# command's upload, and leaves a write of the service's answer that waits for the command to
+# read - an HTTP/2 stream whose window the client keeps shut - waiting, so the client gets the
+# answer's bytes when it opens the window.
+# must fail: TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings
+# Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go
 +++ b/packages/envoy/internal/broker/airlockproxy/bound.go
-@@ -440,7 +440,8 @@
- 	// to read - an HTTP/2 stream whose window the client keeps shut - waits on regardless.
- 	toCommand := &commandSide{w: served}
- 	defer toCommand.finish()
--	end, message := func(why *cutCall) { cut(why); toCommand.stop() }, cutMessage
-+	// MUTANT: the watcher cancels the call's context alone, as before the command's side was reset.
-+	end, message := func(why *cutCall) { cut(why) }, cutMessage
- 	if decrypted, ok := r.Context().Value(decryptedKey{}).(net.Conn); ok && upgrading(r) {
- 		// An upgrade is the one request whose connection outlives it. ReverseProxy joins the
- 		// two connections inside the call below and copies bytes until one end closes, so it is
+@@ -578,9 +578,7 @@
+ 	}
+ 	controller := http.NewResponseController(c.w)
+ 	_ = controller.SetReadDeadline(pastDeadline)
+-	if c.started {
+-		_ = controller.SetWriteDeadline(pastDeadline)
+-	}
++	// MUTANT: no write deadline, so a write of the answer waiting on the command waits on.
+ }
+ 
+ // finish marks serveBound as returned, after which stop leaves the writer alone.

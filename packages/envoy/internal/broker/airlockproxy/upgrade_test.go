@@ -471,6 +471,38 @@ func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing
 	}
 }
 
+// TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot: a joined connection decided
+// for one github-app installation's slot is closed once the broker's read of the name no longer
+// releases that slot - the installation has gone - on the rule a new call of that slot is refused
+// by (serveBound): the frames stop, and a frame written after that reaches no service. Before
+// this, the watcher read the name alone, and the join ran on with the gone installation's token.
+// The named revert: proxy-carry-ignores-slot.
+func TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
+	const carried = "a frame while the broker releases this slot"
+	r := newRig(t, Options{Watch: watchFast})
+	r.useGitHubAppGrant()
+	stand, conn, reader := joinedThrough(t, r)
+	frame(t, conn, reader, carried)
+
+	r.removeAcmeInstallation()
+	waitClosed(t, conn, reader)
+	_, _ = conn.Write([]byte("a frame after the broker stopped releasing the slot\n"))
+	time.Sleep(5 * watchFast)
+	if frames := stand.read(); !slices.Equal(frames, []string{carried}) {
+		t.Fatalf("the service read %q; want the one frame from before the broker stopped releasing the slot", frames)
+	}
+	lines := r.logs.joins()
+	if len(lines) != 1 {
+		t.Fatalf("the proxy wrote %d lines for the close; want the one", len(lines))
+	}
+	if got := lines[0].fields["reason"]; got != noAcmeValue {
+		t.Errorf("the close logged the reason %v; want %q", got, noAcmeValue)
+	}
+	if got := lines[0].fields["slot"]; got != githubAcmeSlot {
+		t.Errorf("the close logged the slot %v; want %s", got, githubAcmeSlot)
+	}
+}
+
 // TestAJoinedConnectionIsClosedAtItsGrantsExpiry: when a grant ends is a time the broker already
 // holds, so a joined connection is closed at it without reading anything.
 func TestAJoinedConnectionIsClosedAtItsGrantsExpiry(t *testing.T) {

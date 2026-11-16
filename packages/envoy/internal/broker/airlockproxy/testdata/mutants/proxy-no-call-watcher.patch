@@ -1,13 +1,13 @@
 # proxy-no-call-watcher: only a joined connection is watched, so a gRPC call whose answers
-# stream, a streamed answer and a long poll run on after their grant has ended. Caught by the
-# airlockproxy suite: TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt,
-# TestACarriedStreamEndsWhenItsGrantStopsCarryingIt,
-# TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds and the cut rows of the refusal and clip
-# tables. Applied with patch -p1 from a copy.
+# stream, a streamed answer and a long poll run on after their grant has ended.
+# must fail: TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt
+# must fail: TestACarriedStreamEndsWhenItsGrantStopsCarryingIt
+# must fail: TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds
+# Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go
 +++ b/packages/envoy/internal/broker/airlockproxy/bound.go
-@@ -447,7 +447,10 @@
+@@ -446,7 +446,10 @@
  		// the connection the watcher ends, the command's side first (cutJoined).
  		end, message = func(*cutCall) { cutJoined(info.cut, decrypted) }, joinMessage
  	}

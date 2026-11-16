@@ -1,0 +1,21 @@
+# proxy-carry-ignores-slot: the watcher reads the name a carried call was decided for and not
+# its slot, so a call or a joined connection for a github-app installation whose token the broker
+# no longer releases runs on, where a new call for it is refused.
+# must fail: TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot
+# must fail: TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/broker/airlockproxy/bound.go
++++ b/packages/envoy/internal/broker/airlockproxy/bound.go
+@@ -706,9 +706,8 @@
+ 	if !carried {
+ 		return &cutCall{http.StatusForbidden, codeNoValue, chosen.name + " is no longer a name of this grant"}
+ 	}
+-	if !slotReleased(secret, chosen.slot) {
+-		return &cutCall{http.StatusForbidden, codeNoValue, noSlotValue(chosen)}
+-	}
++	// MUTANT: the slot the call was decided for is not read again.
++	_ = secret
+ 	return nil
+ }
+ 

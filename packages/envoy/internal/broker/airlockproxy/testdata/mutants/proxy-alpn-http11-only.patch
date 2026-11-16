@@ -1,7 +1,7 @@
 # proxy-alpn-http11-only: the decrypted connection offers http/1.1 alone again, so a client whose
 # handshake offers h2 and nothing else - every gRPC client - fails it with "tls: no application
-# protocol". Caught by the airlockproxy suite: TestAClientOfferingOnlyH2IsAnsweredInHTTP2, the gRPC
-# rows, TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn and every row of TestMain's h2 run.
+# protocol".
+# must fail: TestAClientOfferingOnlyH2IsAnsweredInHTTP2
 # Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/broker/airlockproxy/proxy.go

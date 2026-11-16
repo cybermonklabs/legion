@@ -1,12 +1,13 @@
-# proxy-hop-by-hop-forwarded: the swap's headers are written over the request httputil.ReverseProxy
-# stripped of its hop-by-hop headers, so the command's Connection header and every header it names
-# reach the service, and a service that speaks HTTP/2 fails the call with a 502. Caught by the
-# airlockproxy suite: TestAHopByHopHeaderTheCommandNamesStopsAtTheProxy.
+# proxy-hop-by-hop-forwarded: the swap's headers are written over the request
+# httputil.ReverseProxy stripped of its hop-by-hop headers, so the command's Connection header
+# and every header it names reach the service, and a service that speaks HTTP/2 fails the call
+# with a 502.
+# must fail: TestAHopByHopHeaderTheCommandNamesStopsAtTheProxy
 # Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/broker/airlockproxy/bound.go
 +++ b/packages/envoy/internal/broker/airlockproxy/bound.go
-@@ -469,6 +469,9 @@
+@@ -468,6 +468,9 @@
  				RawQuery: rawQuery,
  			}
  			pr.Out.Host = hostHeaderOf(info.target)

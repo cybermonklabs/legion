@@ -614,6 +614,207 @@ func TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds(t *testing.T) {
 	}
 }
 
+// serveBoundHost puts handler behind the bound host in place of the stand-in service: in TLS with
+// a certificate of the stand-in authority, the one the proxy trusts upstream, speaking HTTP/2 and
+// HTTP/1.1 as the stand-in does. The stand-in reads a request's whole body before it answers,
+// which a row about a body still on its way cannot use. The row's cleanup closes the server and
+// every connection it holds, so a handler still reading a body ends with the row.
+func serveBoundHost(t *testing.T, r *rig, handler http.HandlerFunc) {
+	t.Helper()
+	certificate, _, err := r.service.Authority().Leaf([]string{boundHost})
+	if err != nil {
+		t.Fatalf("the bound host's certificate: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind the bound host: %v", err)
+	}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
+	go func() {
+		_ = server.Serve(tls.NewListener(listener, &tls.Config{
+			Certificates: []tls.Certificate{*certificate},
+			NextProtos:   []string{protocolH2, protocolHTTP1},
+		}))
+	}()
+	t.Cleanup(func() { _ = server.Close() })
+	r.dialTo[net.JoinHostPort(boundHost, "443")] = listener.Addr().String()
+}
+
+// TestACallStillUploadingIsCutWhenItsGrantEnds: a call whose body is still on its way - an upload
+// the service reads as it comes, and answers once it has all of it - is carried to the service as
+// the command sends it, so when the grant stops carrying the call the upload is cut at the service
+// too: the service's read of the body ends in an error, not at the body's end, and the command is
+// answered the refusal every call of that grant now gets, since nothing of the service's answer
+// has reached it. The row runs in both of TestMain's runs, so the body is a chunked HTTP/1.1 body
+// in one and HTTP/2 DATA frames in the other. The named revert: the watcher ending only the
+// command's side (proxy-cut-leaves-upload-open), which leaves the service reading the upload, and
+// the command waiting, until the row's deadline.
+func TestACallStillUploadingIsCutWhenItsGrantEnds(t *testing.T) {
+	r := newRig(t, Options{Watch: watchFast})
+	uploading := make(chan struct{})
+	var firstBytes sync.Once
+	uploadEnded := make(chan error, 1)
+	serveBoundHost(t, r, func(_ http.ResponseWriter, request *http.Request) {
+		buffer := make([]byte, 1024)
+		for {
+			n, err := request.Body.Read(buffer)
+			if n > 0 {
+				firstBytes.Do(func() { close(uploading) })
+			}
+			if err != nil {
+				uploadEnded <- err
+				return
+			}
+		}
+	})
+	body, feed := io.Pipe()
+	t.Cleanup(func() { _ = feed.Close() })
+	request, err := http.NewRequest(http.MethodPost, "https://"+boundHost+"/v1/upload", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
+	client := r.client(workerPlaceholder)
+	client.Timeout = 0
+	type result struct {
+		status int
+		body   string
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		response, err := client.Do(request)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		defer response.Body.Close()
+		read, err := io.ReadAll(response.Body)
+		done <- result{status: response.StatusCode, body: string(read), err: err}
+	}()
+	go func() { _, _ = feed.Write([]byte("the first part of an upload that goes on\n")) }()
+	select {
+	case <-uploading:
+	case <-time.After(cutWait):
+		t.Fatal("the upload's first bytes never reached the service")
+	}
+
+	r.grants.refuseConnection(workerPlaceholder, requests.ErrGrantNotLive)
+	select {
+	case err := <-uploadEnded:
+		if errors.Is(err, io.EOF) {
+			t.Fatalf("the service read the upload to its end; want it cut, with the command still sending")
+		}
+	case <-time.After(cutWait):
+		t.Fatalf("the service was still reading the upload %v after its grant ended; want it cut within that, the watch interval being %v", cutWait, watchFast)
+	}
+	var got result
+	select {
+	case got = <-done:
+	case <-time.After(cutWait):
+		t.Fatalf("the command was still waiting %v after its grant ended", cutWait)
+	}
+	if got.err != nil || got.status != http.StatusProxyAuthRequired || !strings.Contains(got.body, requests.ErrGrantNotLive.Error()) {
+		t.Fatalf("the upload was answered %d %q (%v), want 407 in the grant read's own words", got.status, got.body, got.err)
+	}
+	if cuts := r.logs.cuts(); len(cuts) != 1 {
+		t.Fatalf("the proxy logged %d lines for the cut, want 1", len(cuts))
+	}
+}
+
+// TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot: a github-app name holds one token per
+// installation, and a call is handled for the (name, slot) pair whose placeholder it carries. Once
+// the broker's read of the name no longer releases that slot - the installation on that owner has
+// gone - a new call for it is refused (serveBound), and a call already carried for it ends on the
+// same rule: the watcher reads the slot as well as the name. It ends at the service and at the
+// command, with one line in the words the new call is refused with. The named revert: the watcher
+// reading the name alone (proxy-carry-ignores-slot), which leaves the call streaming with the
+// gone installation's token.
+func TestACarriedCallEndsWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
+	r := newRig(t, Options{Watch: watchFast})
+	r.useGitHubAppGrant()
+	ended := streamStandIn(r)
+	client := r.client(workerPlaceholder)
+	client.Timeout = 0
+	ctx, cancel := context.WithTimeout(context.Background(), 2*cutWait)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+boundHost+"/v1/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
+	answer, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("the streamed call through the proxy: %v", err)
+	}
+	defer answer.Body.Close()
+	reader := bufio.NewReader(answer.Body)
+	if line, err := reader.ReadString('\n'); err != nil || line != "a line of the stream\n" {
+		t.Fatalf("the stream's first line is %q (%v), want the service's", line, err)
+	}
+	if got := r.requests()[0].Header.Get("Authorization"); got != "Bearer "+githubAcmeToken {
+		t.Fatalf("the service received Authorization %q, want acme's installation token", got)
+	}
+
+	r.removeAcmeInstallation()
+	cut := time.Now()
+	_, err = io.Copy(io.Discard, reader)
+	if took := time.Since(cut); err == nil || errors.Is(err, context.DeadlineExceeded) || took > cutWait {
+		t.Fatalf("the stream went on %v after the broker stopped releasing its slot and then ended with %v; want it cut within %v, the watch interval being %v", took, err, cutWait, watchFast)
+	}
+	select {
+	case err := <-ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("the service's answer ended with %v, want it cancelled", err)
+		}
+	case <-time.After(cutWait):
+		t.Fatal("the service went on streaming after the proxy cut the command's side")
+	}
+	cuts := r.logs.cuts()
+	if len(cuts) != 1 {
+		t.Fatalf("the proxy logged %d lines for the cut, want 1", len(cuts))
+	}
+	if got := cuts[0].fields["reason"]; got != noAcmeValue {
+		t.Errorf("the cut logged the reason %v, want %q", got, noAcmeValue)
+	}
+	if got := cuts[0].fields["status"]; got != int64(http.StatusForbidden) {
+		t.Errorf("the cut logged the status %v, want 403", got)
+	}
+	// A new call for the same slot is refused in those words: the open call and the new one are
+	// held to one rule.
+	refused, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/stream", "Authorization", "Bearer "+workerPlaceholder)
+	if refused.StatusCode != http.StatusForbidden || !strings.Contains(body, noAcmeValue) {
+		t.Fatalf("a new call for acme's slot was answered %d %q, want 403 naming %q", refused.StatusCode, body, noAcmeValue)
+	}
+}
+
+// TestAnAnswerWithNoBodyReachesTheCommandWhole: an answer whose Content-Length is 0 reaches the
+// command as one HEADERS frame that ends the stream, however long its service takes to end it,
+// because the proxy flushes nothing of such an answer before the call returns
+// (statusWriter.FlushError). A gRPC service's Trailers-Only answer - the status of a call that
+// failed, alone in one HEADERS frame - is such an answer, and a gRPC client reads a status that
+// arrives in a frame the stream does not end with as no status at all. The stand-in here sends its
+// headers and ends its stream 300 ms later, so ReverseProxy's own flush, which runs at once, runs
+// while the answer is still open every time; the gRPC row meets the same race only when the
+// scheduler lets it. The named revert: FlushError flushing every answer
+// (proxy-trailers-only-flushed), which sends the headers alone and the end of the stream after.
+func TestAnAnswerWithNoBodyReachesTheCommandWhole(t *testing.T) {
+	r := newRig(t, Options{})
+	r.answerWith(func(w http.ResponseWriter, _ *http.Request, _ airlocktest.Request) bool {
+		w.Header().Set("Content-Length", "0")
+		w.WriteHeader(http.StatusOK)
+		_ = http.NewResponseController(w).Flush()
+		time.Sleep(300 * time.Millisecond)
+		return true
+	})
+	c := h2Through(t, r)
+	got := c.stream(h2Fields(http.MethodGet, "https", boundHost, "/v1/things",
+		hpack.HeaderField{Name: "authorization", Value: "Bearer " + workerPlaceholder}))
+	if got.reset || got.status != "200" || !got.headersEnded {
+		t.Fatalf("the answer arrived as status %q in a HEADERS frame that ended the stream: %v (reset %v, %v); want 200 in one frame that ends it", got.status, got.headersEnded, got.reset, got.code)
+	}
+}
+
 // h2Conn is one HTTP/2 connection to the bound host through the proxy, written frame by frame,
 // which is how a row sends a stream an HTTP/2 client library would not: a CONNECT, a :protocol, a
 // second authority, a :scheme of http.
@@ -655,12 +856,14 @@ func h2Through(t *testing.T, r *rig) *h2Conn {
 }
 
 // h2Answer is what one stream was answered: its status and its body, or the code the stream was
-// reset with.
+// reset with, and whether the HEADERS frame that carried its status ended the stream, which is how
+// an answer with no body arrives whole.
 type h2Answer struct {
-	status string
-	body   string
-	reset  bool
-	code   http2.ErrCode
+	status       string
+	body         string
+	reset        bool
+	code         http2.ErrCode
+	headersEnded bool
 }
 
 // stream sends one stream of these header fields, its request ended with them, and reads the
@@ -705,6 +908,7 @@ func (c *h2Conn) stream(fields []hpack.HeaderField) h2Answer {
 		case *http2.MetaHeadersFrame:
 			if f.StreamID == id {
 				got.status = f.PseudoValue("status")
+				got.headersEnded = f.StreamEnded()
 				if f.StreamEnded() {
 					return got
 				}

@@ -1,0 +1,18 @@
+# proxy-h2c-carried: serveBound no longer refuses an upgrade to h2c on a connection the
+# proxy decrypted, so one is decided like any request and handed on.
+# must fail: TestNoProtocolSwitchIsCarriedOnADecryptedConnection
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/broker/airlockproxy/bound.go
++++ b/packages/envoy/internal/broker/airlockproxy/bound.go
+@@ -231,9 +231,7 @@
+ 	case r.Method == http.MethodConnect:
+ 		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeProtocolSwitch, "refusing a CONNECT inside a connection the proxy decrypted: it would open a tunnel to the service whose bytes the proxy does not read")
+ 		return
+-	case httpguts.HeaderValuesContainsToken(r.Header["Upgrade"], "h2c"):
+-		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeProtocolSwitch, "refusing an upgrade to h2c: it would carry HTTP/2 in the clear past the requests the proxy reads")
+-		return
++	// MUTANT: an upgrade to h2c is decided and carried like any request.
+ 	}
+ 	// The grant behind this connection's password, read again for this request. A grant that
+ 	// has ended, been revoked, had its enrollment's lease lapse or had this name withheld
