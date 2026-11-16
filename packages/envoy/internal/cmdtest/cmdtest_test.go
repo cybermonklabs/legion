@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -146,9 +146,9 @@ func socketInode(t *testing.T, file *os.File) uint64 {
 }
 
 // checkSocket fails the test, naming when, unless each pid in copies holds the socket of inode on
-// that many descriptors (sockettest.Descriptors), and /proc/net/tcp and /proc/net/tcp6 list it in
-// rows rows: one while any process holds it listening, none once every holder has closed it. A
-// process that has exited and been reaped holds none. It reads /proc, so off Linux it checks
+// that many descriptors (sockettest.Descriptors), and the TCP tables list it in rows rows
+// (sockettest.TCPRows): one while any process holds it listening, none once every holder has closed
+// it. A process that has exited and been reaped holds none. It reads /proc, so off Linux it checks
 // nothing and says so.
 func checkSocket(t *testing.T, when string, inode uint64, copies map[int]int, rows int) {
 	t.Helper()
@@ -165,33 +165,14 @@ func checkSocket(t *testing.T, when string, inode uint64, copies map[int]int, ro
 			t.Errorf("%s: process %d holds the held socket on descriptors %v, want %d of them", when, pid, got, want)
 		}
 	}
-	if got := socketRows(t, inode); len(got) != rows {
-		t.Errorf("%s: /proc/net/tcp lists the held socket in %d rows %q, want %d", when, len(got), got, rows)
+	all, err := sockettest.TCPRows()
+	if err != nil {
+		t.Fatalf("%s: read the TCP tables: %v", when, err)
 	}
-}
-
-// socketRows returns the local address and state of each row of /proc/net/tcp and /proc/net/tcp6
-// whose inode, its tenth field, is inode. A machine with IPv6 off has no /proc/net/tcp6.
-func socketRows(t *testing.T, inode uint64) []string {
-	t.Helper()
-	want := strconv.FormatUint(inode, 10)
-	var rows []string
-	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		data, err := os.ReadFile(table)
-		if table == "/proc/net/tcp6" && errors.Is(err, fs.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("read %s: %v", table, err)
-		}
-		for _, line := range strings.Split(string(data), "\n")[1:] {
-			fields := strings.Fields(line)
-			if len(fields) > 9 && fields[9] == want {
-				rows = append(rows, fields[1]+" "+fields[3])
-			}
-		}
+	listed := slices.DeleteFunc(all, func(row sockettest.Row) bool { return row.Inode != inode })
+	if len(listed) != rows {
+		t.Errorf("%s: the TCP tables list the held socket in %d rows %+v, want %d", when, len(listed), listed, rows)
 	}
-	return rows
 }
 
 // StartThen runs afterExit once the process has exited and before it closes Exited, so a test

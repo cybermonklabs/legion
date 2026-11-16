@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -193,8 +193,9 @@ func requireFailedNaming(t *testing.T, process *cmdtest.Process, socket string) 
 }
 
 // requireTheTestsAlone fails the test when a process other than the test's holds the socket held
-// listens on, then closes the test's copy and requires a bind of its address to succeed: nothing
-// kept the port.
+// listens on, then closes the test's copy and requires the socket gone from the TCP tables: no
+// process kept it. It reads the socket by its inode, not a bind of its address, which any other
+// process on the machine may take once the socket is closed.
 func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	t.Helper()
 	addr := held.Addr().String()
@@ -223,44 +224,35 @@ func requireTheTestsAlone(t *testing.T, held net.Listener) {
 	if err := held.Close(); err != nil {
 		t.Fatalf("close the test's copy of the socket on %s: %v", addr, err)
 	}
-	again, err := net.Listen("tcp", addr)
+	rows, err := sockettest.TCPRows()
 	if err != nil {
-		t.Fatalf("bind %s once the test closed its copy: %v", addr, err)
+		t.Fatalf("read the TCP tables: %v", err)
 	}
-	_ = again.Close()
+	if listed := slices.DeleteFunc(rows, func(row sockettest.Row) bool { return row.Inode != inode }); len(listed) != 0 {
+		t.Fatalf("the TCP tables still list the socket on %s once the test closed its copy: %+v", addr, listed)
+	}
 }
 
-// listeningInode returns the inode of the socket listening on 127.0.0.1:port, from /proc/net/tcp.
+// listeningInode returns the inode of the one socket listening on 127.0.0.1:port.
 func listeningInode(t *testing.T, port int) uint64 {
 	t.Helper()
-	file, err := os.Open("/proc/net/tcp")
+	rows, err := sockettest.TCPRows()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
-	// local_address is the IPv4 address as the host's byte order prints it (127.0.0.1 is 0100007F
-	// on the little-endian machines the tests run on) and the port, in hexadecimal; st 0A is LISTEN,
-	// and the tenth field is the inode.
+	// The local address as the host's byte order prints it (127.0.0.1 is 0100007F on the
+	// little-endian machines the tests run on) and the port, in hexadecimal; state 0A is LISTEN.
 	local := fmt.Sprintf("0100007F:%04X", port)
-	var inodes []string
-	lines := bufio.NewScanner(file)
-	for lines.Scan() {
-		fields := strings.Fields(lines.Text())
-		if len(fields) > 9 && fields[1] == local && fields[3] == "0A" {
-			inodes = append(inodes, fields[9])
+	var inodes []uint64
+	for _, row := range rows {
+		if row.Local == local && row.State == "0A" {
+			inodes = append(inodes, row.Inode)
 		}
 	}
-	if err := lines.Err(); err != nil {
-		t.Fatal(err)
-	}
 	if len(inodes) != 1 {
-		t.Fatalf("/proc/net/tcp lists %d sockets listening on 127.0.0.1:%d, want exactly one", len(inodes), port)
+		t.Fatalf("the TCP tables list %d sockets listening on 127.0.0.1:%d, want exactly one", len(inodes), port)
 	}
-	inode, err := strconv.ParseUint(inodes[0], 10, 64)
-	if err != nil {
-		t.Fatalf("/proc/net/tcp lists the socket listening on 127.0.0.1:%d with inode %q", port, inodes[0])
-	}
-	return inode
+	return inodes[0]
 }
 
 // closeOnExec reports whether descriptor fd of process pid is close-on-exec, from the octal flags
