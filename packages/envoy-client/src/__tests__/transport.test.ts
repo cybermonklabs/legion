@@ -1067,21 +1067,20 @@ describe("EnvoyClient", () => {
   });
 
   // Inline rather than in the fixture: the fixture states what a listener on main writes, and
-  // these two rows — null roles and capabilities, and both keys absent — are what a tolerant
-  // reader must also accept from a listener it does not deploy with.
-  test("reads null and absent roles and capabilities as empty lists", async () => {
+  // these two rows — every list null, and every list's key absent — are what a tolerant reader
+  // must also accept from a listener it does not deploy with.
+  test("reads null and absent topics, roles and capabilities as empty lists", async () => {
     const base = {
       session_id: "ses_null",
       machine_id: "host-a",
       dir: "/work",
       port: 13381,
       title: "Envoy QA",
-      topics: [],
       self_subscribed: false,
     };
     const recorded = recordFetch([
       jsonResponse([
-        { ...base, roles: null, capabilities: null },
+        { ...base, topics: null, roles: null, capabilities: null },
         { ...base, session_id: "ses_absent" },
       ]),
     ]);
@@ -1089,9 +1088,10 @@ describe("EnvoyClient", () => {
 
     const sessions = await client.listSessions();
 
+    const empty = { topics: [], roles: [], capabilities: [] };
     expect(sessions).toEqual([
-      { ...base, state: "live", roles: [], capabilities: [] },
-      { ...base, session_id: "ses_absent", state: "live", roles: [], capabilities: [] },
+      { ...base, state: "live", ...empty },
+      { ...base, session_id: "ses_absent", state: "live", ...empty },
     ]);
   });
 
