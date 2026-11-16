@@ -2,7 +2,7 @@ import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
@@ -1633,6 +1633,164 @@ test("a reply the docked composer holds refused is posted as a new comment after
     view.unmount();
     createComment.mockRestore();
     stub.restore();
+  }
+});
+
+/** The Conversation at a phone width over one comment, `Comment A`, whose comment writes
+ *  `createComment` answers. */
+function phoneOverCommentA(createComment: Mock<typeof api.createComment>) {
+  const restoreViewport = stubMatchMedia(true);
+  const stub = stubLists({
+    comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  return {
+    restore: () => {
+      view.unmount();
+      createComment.mockRestore();
+      stub.restore();
+      restoreViewport();
+    },
+    turn: () => {
+      const element = view.container.querySelector<HTMLElement>('[data-turn="comment:comment-a"]');
+      if (element === null) throw new Error("expected comment-a's turn");
+      return element;
+    },
+  };
+}
+
+/** Opens the thread of `turn`'s comment with its Reply, and writes `body` in the thread
+ *  composer. Answers the thread view. */
+async function writeInThread(
+  user: UserEvent,
+  turn: HTMLElement,
+  body: string
+): Promise<HTMLElement> {
+  await user.click(within(turn).getByRole("button", { name: "Reply" }));
+  const dialog = await screen.findByRole("dialog", { name: "Thread" });
+  const field = within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+  await user.clear(field);
+  await user.click(field);
+  await user.paste(body);
+  return dialog;
+}
+
+// On a phone a comment's Reply answers in its thread, by a composer of its own that Cancel reply
+// ends. Cancel reply is the reader's own move to the issue's address all the same, so a reply
+// Dispatch refused goes with it, as it goes with the docked composer's own Cancel reply: the
+// docked composer the reader comes back to shows the text and the refusal, and its Retry posts a
+// new comment under a key of its own.
+test("on a phone, a thread reply refused is posted as a new comment from the docked composer after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }))
+    .mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    await within(dialog).findByText(refusedText);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(field.value).toBe("Reply meant for A");
+    expect(within(composer).getByText(refusedText)).toBeTruthy();
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(within(composer).queryByText(/This message was written/)).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+
+    await user.click(within(composer).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply meant for A", reply_to: "comment-a" },
+      { body: "Reply meant for A" },
+    ]);
+    const [first, retried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(retried).not.toBe(first);
+  } finally {
+    phone.restore();
+  }
+});
+
+// The draft goes with the reader's own move whether or not it was ever sent: a reply typed in the
+// thread and cancelled is the docked composer's draft, and nothing goes until Send there.
+test("on a phone, a thread reply never sent is the docked composer's draft after Cancel reply", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(comment("comment-b"));
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const dialog = await writeInThread(user, phone.turn(), "Reply never sent");
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(field.value).toBe("Reply never sent");
+    expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    expect(createComment).not.toHaveBeenCalled();
+
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
+      { body: "Reply never sent" },
+    ]);
+  } finally {
+    phone.restore();
+  }
+});
+
+// A docked composer holding a draft of its own is never written over. The thread composer's
+// Cancel reply then puts it away as it stands, its refusal with it: Back keeps both, the docked
+// draft is as the reader left it, the docked composer says the reply is kept and how to go on with
+// it, and the comment's Reply brings the thread's reply back and the line goes.
+test("on a phone, Cancel reply over a docked draft of its own keeps both, and the comment's Reply brings the thread reply back", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValueOnce(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const phone = phoneOverCommentA(createComment);
+
+  try {
+    await screen.findByText("Comment A");
+    const composer = screen.getByRole("form", { name: "Comment composer" });
+    const docked = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(docked);
+    await user.paste("Docked draft");
+    let dialog = await writeInThread(user, phone.turn(), "Reply meant for A");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+    await within(dialog).findByText(refusedText);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel reply" }));
+    expect(within(dialog).queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Back" }));
+    expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+    expect(docked.value).toBe("Docked draft");
+    expect(within(composer).queryByText(refusedText)).not.toBeInTheDocument();
+    // The thread covers the docked composer until Back, so this is the line's first time on
+    // screen; a status the reader cannot see is no role the query finds.
+    expect(within(composer).getByRole("status").textContent).toBe(
+      "Your reply to the comment by alice is kept. Press Reply on that comment to go on with it."
+    );
+
+    await user.click(within(phone.turn()).getByRole("button", { name: "Reply" }));
+    dialog = await screen.findByRole("dialog", { name: "Thread" });
+    expect(
+      within(dialog).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value
+    ).toBe("Reply meant for A");
+    expect(within(dialog).getByText(refusedText)).toBeTruthy();
+    expect(docked.value).toBe("Docked draft");
+    expect(within(composer).queryByText(/is kept/)).not.toBeInTheDocument();
+    expect(createComment).toHaveBeenCalledTimes(1);
+  } finally {
+    phone.restore();
   }
 });
 

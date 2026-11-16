@@ -985,7 +985,12 @@ export function ConversationTab({
   );
   const [filter, setFilter] = useState<ConversationFilter>("all");
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
-  const phone = usePhoneThread({ isPhoneViewport, sendKey, sendingNow });
+  const phone = usePhoneThread({
+    isPhoneViewport,
+    owner: { issueKey, kind: "issue" },
+    sendKey,
+    sendingNow,
+  });
   // The comments whose thread the reader has open inline.
   const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
   const setThreadOpen = useCallback((id: string, open: boolean) => {
@@ -1076,8 +1081,19 @@ export function ConversationTab({
     setReplyTo(reply);
     return reply.id === target.id;
   };
+  // The thread composer shows in the thread its reply answers, unless the reader's Cancel reply
+  // put it away there (`parked`).
   const phoneReplyTargetsThread =
-    phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id;
+    phoneThread !== undefined && phone.replyTo?.id === phoneThread.root.id && !phone.parked;
+  // A thread reply put away over the docked composer's own draft is out of sight, so the docked
+  // composer says it is kept, whose comment it answers, and how to go on with it.
+  const parkedNotice =
+    phone.parked && phone.replyTo !== null ? (
+      <>
+        Your reply to the comment by <AgentName actor={phone.replyTo.actor} inline /> is kept. Press
+        Reply on that comment to go on with it.
+      </>
+    ) : undefined;
   // The list is on the page only once all four reads answer: `loading` and `failed` both hide it
   // (the early returns below) and withhold `latestItemSeq`, so the two cannot drift apart. The
   // number is the newest activity's own millisecond, since the list is ordered by activity.
@@ -1232,12 +1248,14 @@ export function ConversationTab({
           send's refusal and its reply are all still there on Back. A closed issue takes comments
           and message replies, so it shows and sends there as on an open one (`closed` hides only
           the kinds a closed issue refuses). `contents`, so the composer's own box stays the one
-          that sticks. */}
+          that sticks. The thread composer's Cancel reply puts its draft here (`intake`). */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
           closed={isClosed}
           docked
+          intake={phone.dockedIntake}
           mutationKey={sendKey}
+          notice={parkedNotice}
           onCancelReply={() => setReplyTo(null)}
           onClose={() => setReplyTo(null)}
           onSent={() => {
@@ -1430,7 +1448,11 @@ export function ConversationTab({
       </ol>
       {/* The thread view stays mounted, hidden, while its reply composer holds a reply: Back, or
           another comment's thread, leaves that composer - its draft, a send it has out and the
-          send's refusal - where reopening the comment's thread finds it. */}
+          send's refusal - where reopening the comment's thread finds it. Its Cancel reply is the
+          reader's own move to the issue's address, so the draft goes to the docked composer
+          (`cancelReply`), or, while that one holds a draft of its own, stays put away here for
+          the comment's Reply; a send that landed, or a Discard, leaves nothing to carry
+          (`endReply`). */}
       {phoneThread === undefined && phone.replyTo === null ? null : (
         <section
           aria-label="Thread"
@@ -1493,7 +1515,7 @@ export function ConversationTab({
                 closed={isClosed}
                 frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
                 mutationKey={phone.composerKey}
-                onCancelReply={phone.endReply}
+                onCancelReply={phone.cancelReply}
                 onClose={phone.endReply}
                 onSent={() => {
                   phone.endReply();

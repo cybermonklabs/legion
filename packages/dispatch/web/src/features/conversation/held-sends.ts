@@ -409,6 +409,25 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
     .at(-1);
 }
 
+/** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
+ *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
+ *  whose key is used only at its own address. */
+function carriedTo(
+  { stoppedSend, ...detail }: ComposerSend,
+  refusal: Error,
+  to: CarriedAddress
+): ComposerSend {
+  const carried = { ...detail.request, ...to };
+  const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
+  if (stopped === undefined) return { ...detail, request: carried };
+  if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
+  return {
+    ...detail,
+    request: { ...carried, sendKey: stoppedSend === undefined ? newSendKey() : carried.sendKey },
+    stoppedSend: stopped,
+  };
+}
+
 /**
  * The app's held sends, as its composers read and make them, over the one write store
  * (`writesOf`): one send per composer's name, which a composer that mounts under that name shows,
@@ -524,21 +543,22 @@ export class HeldSends {
   carry(mutationKey: MutationKey, to: CarriedAddress): void {
     const held = this.get(mutationKey);
     if (held?.status !== "refused") return;
-    this.#writes.amend(held.id, composerSend, ({ stoppedSend, ...detail }) => {
-      const carried = { ...detail.request, ...to };
-      const stopped =
-        stoppedSend ?? (held.refusal instanceof SendStoppedError ? detail.request : undefined);
-      if (stopped === undefined) return { ...detail, request: carried };
-      if (sameAddress(stopped, carried)) return { ...detail, request: stopped };
-      return {
-        ...detail,
-        request: {
-          ...carried,
-          sendKey: stoppedSend === undefined ? newSendKey() : carried.sendKey,
-        },
-        stoppedSend: stopped,
-      };
-    });
+    this.#writes.amend(held.id, composerSend, (detail) => carriedTo(detail, held.refusal, to));
+  }
+
+  /** Carries the refused send under `mutationKey` to `to` as `carry` does, and into the composer
+   *  named `into`, and says whether it did: the reader's own move ended the composer the send was
+   *  made in - the phone thread composer's Cancel reply - and `into` is the one that shows `to`,
+   *  the docked composer at the issue's own address. A composer holds one draft, so a send `into`
+   *  holds already, out or refused, is never written over: the send stays where it is. */
+  carryInto(mutationKey: MutationKey, into: MutationKey, to: CarriedAddress): boolean {
+    const held = this.get(mutationKey);
+    if (held?.status !== "refused" || this.get(into) !== undefined) return false;
+    this.#writes.amend(held.id, composerSend, (detail) => ({
+      ...carriedTo(detail, held.refusal, to),
+      mutationKey: sendName(into),
+    }));
+    return true;
   }
 
   /** Sends the refused send under `mutationKey` again as a press of its own. Every Retry but a

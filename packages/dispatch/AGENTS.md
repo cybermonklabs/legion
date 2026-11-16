@@ -152,8 +152,13 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   thread opened or left while a send is out leaves that send's composer, its draft and its refusal
   where the reader finds them. A refusal the thread shows is the reader's to leave: Back, Escape
   and Collapse thread drop it, its draft with it - the card's reply's, and the thread composer's,
-  whose reply ends with it - and so does the thread composer's Cancel reply, as an inline reply's
-  does (`usePhoneThread`'s `leave` and `endReply`). A composer's refusal is its own target's, not
+  whose reply ends with it (`usePhoneThread`'s `leave`). The thread composer's Cancel reply, and
+  Escape in its field, are the reader's own move to the issue's address, so its draft does as the
+  docked composer's does: the text, and a refused or stopped send with it, go to the docked
+  composer (`usePhoneThread`'s `cancelReply`, `HeldSends.carryInto`, `MentionComposer`'s
+  `intake`), or, while that one holds a draft of its own, stay in the thread composer, put away
+  for that comment's Reply, and the docked composer says so (`notice`). A composer's refusal is
+  its own target's, not
   whatever Reply is tapped next: every held send under one name - the docked composer's, which
   every message's Reply answers at every width and every comment's above the phone layout, and the
   phone thread composer's, which every comment's Reply answers on a phone - redirects a later

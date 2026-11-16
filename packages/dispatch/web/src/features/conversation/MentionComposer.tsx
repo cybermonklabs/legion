@@ -5,10 +5,12 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
   type SyntheticEvent,
   useCallback,
   useEffect,
   useId,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -98,6 +100,7 @@ import { ReplyQuote } from "./ReplyQuote";
 import {
   type Address,
   addressWords,
+  type CarriedAddress,
   carriedIdsOf,
   DELIVERY_COMMANDS,
   type DeliveryPlan,
@@ -106,6 +109,7 @@ import {
   mentionText,
   requestFor,
   type SaveCommentEdit,
+  type SentDraft,
   type SentRequest,
   sameAddress,
   saveCommentEdit,
@@ -521,6 +525,15 @@ function landedFor(owner: ArtifactOwner, files: number): string {
         "Their references join the message when you go back to it.";
 }
 
+/** A composer's field as its host hands it a draft the reader carried there from another
+ *  composer with that composer's own control (`intake`). */
+export interface DraftIntake {
+  /** Puts `draft`, which the reader carried to `to`, in the field, and says whether it did: a
+   *  composer takes it only while it shows `to`, and only while it holds nothing of its own - a
+   *  draft typed, or a send out or refused - which it never writes over. */
+  readonly take: (draft: SentDraft, to: CarriedAddress) => boolean;
+}
+
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
   readonly anchor?: ComposerAnchor;
@@ -549,6 +562,10 @@ interface MentionComposerProps {
    *  nothing of its own to show renders neither. */
   readonly frame?: string;
   readonly edit?: { readonly body: string; readonly id: string };
+  /** Where the host hands this composer a draft the reader carried from another one with that
+   *  composer's own control: the phone thread composer's Cancel reply, whose draft goes to the
+   *  docked composer at the issue's own address (`usePhoneThread`'s `cancelReply`). */
+  readonly intake?: Ref<DraftIntake>;
   /** The channel's own mentions: seeded at mount, again by every reset (a send, Discard), and
    *  into the live draft whenever they change (`seededDraft`). */
   readonly seedMentions?: readonly { readonly target: string; readonly title: string }[];
@@ -561,10 +578,14 @@ interface MentionComposerProps {
    *  starts (`SentRequest`), whatever those controls do. A composer with none names its sends
    *  after its own mount. */
   readonly mutationKey?: MutationKey;
-  /** Ends the reply. An inline reply's Cancel reply also drops its draft, and a refusal with it,
-   *  as the thread it answers closes: the reply composer that mounts when the thread opens again
-   *  would otherwise show it. */
-  readonly onCancelReply?: () => void;
+  /** A line the host says in the composer, as the composer says where an upload went: the
+   *  Conversation's note that a phone thread reply the reader cancelled over this composer's own
+   *  draft is kept, and how to go on with it (`usePhoneThread`'s `parked`). */
+  readonly notice?: ReactNode;
+  /** Ends the reply, handed the draft the field holds as the reader ends it. An inline reply's
+   *  Cancel reply also drops its draft, and a refusal with it, as the thread it answers closes:
+   *  the reply composer that mounts when the thread opens again would otherwise show it. */
+  readonly onCancelReply?: (draft: SentDraft) => void;
   readonly onClose: () => void;
   readonly onSent: () => void;
   readonly owner: ComposerOwner;
@@ -605,8 +626,10 @@ export function MentionComposer({
   edit,
   seedMentions = [],
   inline = false,
+  intake,
   kind = "comment",
   mutationKey,
+  notice,
   onCancelReply,
   onClose,
   onKindChange,
@@ -900,18 +923,35 @@ export function MentionComposer({
   /** How many times the reader has ended the reply here (Cancel reply, or Escape): a move of the
    *  address with the composer's own control, which the draft goes with (`ownMoves`). */
   const [cancels, setCancels] = useState(0);
-  /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
+  /** Ends the reply, handing the host the draft as the field holds it; an inline reply's draft
+   *  and refusal end with it (`onCancelReply`). */
   const cancelReply = () => {
     if (inline) {
       clearDraft();
       outgoing.discard();
     }
     setCancels((count) => count + 1);
-    onCancelReply?.();
+    onCancelReply?.({ body, mentions, replacement });
   };
   // The Escape listener below reads it as it stands, so it is not re-bound each render for it.
   const cancelReplyNow = useRef(cancelReply);
   cancelReplyNow.current = cancelReply;
+  // A draft the reader carried here from another composer goes in the field only while nothing
+  // of this composer's own is there to be written over (`DraftIntake`). The host's handle reads
+  // the field as it stands, so it is made once.
+  const takeDraft = useRef<DraftIntake["take"]>(() => false);
+  takeDraft.current = (draft, to) => {
+    if (
+      holdsSend ||
+      hasUnsavedInput(body, replacement, askOptions) ||
+      !sameAddress({ anchor, edit, owner, replyTo }, { ...to, anchor: undefined, edit: undefined })
+    ) {
+      return false;
+    }
+    replaceDraft(draft);
+    return true;
+  };
+  useImperativeHandle(intake, () => ({ take: (draft, to) => takeDraft.current(draft, to) }), []);
   // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
   // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
   // draft is the only copy of that message, and the entry it is kept in is what survives the
@@ -1826,6 +1866,11 @@ export function MentionComposer({
           {landedFor(pastedFor, files)}
         </p>
       ))}
+      {notice === undefined ? null : (
+        <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+          {notice}
+        </p>
+      )}
       {refusal === undefined ? null : (
         <div className="flex flex-wrap items-center gap-3">
           <QueryError

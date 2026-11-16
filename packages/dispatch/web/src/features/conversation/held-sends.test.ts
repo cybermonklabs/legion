@@ -926,3 +926,91 @@ test("a stopped send carried away goes on under a new key, and carried back is i
     }
   });
 });
+
+/** The phone thread composer's send name, and the docked composer's, which the thread composer's
+ *  Cancel reply carries its draft into (`HeldSends.carryInto`). */
+const threadKey: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
+const dockedKey: MutationKey = ["conversation-composer", "CORE-1"];
+
+// The reader's own move can end the composer a refusal was made in - the phone thread composer's
+// Cancel reply - while another composer shows the address they took the draft to. The refusal
+// goes into that one (`carryInto`): a press from there is its Retry, a new write under a key of
+// its own, and nothing is left under the name it left. A composer holds one draft, so one holding
+// a send of its own takes none, and both stay where they are.
+test("a refused reply carried into another composer goes from there, and never over a send it holds", async () => {
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(verdict)
+    .mockRejectedValueOnce(verdict)
+    .mockResolvedValue({} as never);
+  const { held } = heldOf();
+  const docked: SentRequest = {
+    ...request,
+    draft: { body: "Docked", mentions: [], replacement: "" },
+    sendKey: "send-docked",
+  };
+  const sent = replySend("comment-1");
+  const to = { owner: sent.owner, replyTo: null };
+  try {
+    held.send(dockedKey, docked);
+    await waitFor(() => expect(held.get(dockedKey)?.status).toBe("refused"));
+    held.send(threadKey, sent);
+    await waitFor(() => expect(held.get(threadKey)?.status).toBe("refused"));
+    expect(held.carryInto(threadKey, dockedKey, to)).toBe(false);
+    expect(held.get(threadKey)?.request).toEqual(sent);
+    expect(held.get(dockedKey)?.request).toEqual(docked);
+
+    expect(held.discard(dockedKey)).toBe(true);
+    expect(held.carryInto(threadKey, dockedKey, to)).toBe(true);
+    expect(held.get(threadKey)).toBeUndefined();
+    expect(pressOver(held, dockedKey, shownAs(sent))).toBe(false);
+    expect(pressOver(held, dockedKey, shownAs(sent, { replyTo: null }))).toBe(true);
+    await waitFor(() => expect(held.get(dockedKey)).toBeUndefined());
+    expect(createComment.mock.calls.map(([issue, input]) => [issue, input])).toEqual([
+      ["CORE-1", { body: "Docked" }],
+      ["CORE-1", { body: "Held", reply_to: "comment-1" }],
+      ["CORE-1", { body: "Held" }],
+    ]);
+    const [, first, carried] = createComment.mock.calls.map(([, , bounds]) => bounds.key);
+    expect(carried).not.toBe(first);
+  } finally {
+    createComment.mockRestore();
+  }
+});
+
+/** What a stopped reply says once the reader has carried its draft into another composer. */
+const STOPPED_AS_REPLY =
+  "Dispatch has not confirmed this message, sent as a reply: it may have been delivered there. " +
+  "Sending it from here is a new message, which can be delivered a second time if the first one was.";
+
+// A stopped reply may have been delivered where it went, whichever composer shows its draft next:
+// carried into another composer, it goes on there under a key nothing has gone out under, and its
+// refusal says the first may have been delivered.
+test("a stopped reply carried into another composer goes on there under a new key", async () => {
+  await onFakeClock(async () => {
+    const createComment = spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(503, { code: "UNAVAILABLE", error: "down" })
+    );
+    const { held } = heldOf();
+    const sent = replySend("comment-1");
+    try {
+      held.send(threadKey, sent);
+      for (let left = SEND_DEADLINE_MS + 1_000; left > 0; left -= 500) {
+        jest.advanceTimersByTime(500);
+        await settle();
+      }
+      expect(held.stop(threadKey)).toBe(true);
+      await settle();
+      jest.advanceTimersByTime(60_000);
+      await settle();
+
+      expect(held.carryInto(threadKey, dockedKey, { owner: sent.owner, replyTo: null })).toBe(true);
+      expect(held.get(threadKey)).toBeUndefined();
+      const carried = held.get(dockedKey);
+      expect(carried?.request.replyTo).toBeNull();
+      expect(carried?.request.sendKey).not.toBe(sent.sendKey);
+      expect(carried?.status === "refused" && carried.refusal.message).toBe(STOPPED_AS_REPLY);
+    } finally {
+      createComment.mockRestore();
+    }
+  });
+});

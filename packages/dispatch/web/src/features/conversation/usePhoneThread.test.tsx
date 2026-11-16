@@ -70,6 +70,7 @@ function renderPhoneThread() {
     ({ isPhoneViewport }: { isPhoneViewport: boolean }) =>
       usePhoneThread({
         isPhoneViewport,
+        owner: { issueKey: "CORE-1", kind: "issue" },
         sendKey,
         sendingNow: () => queryClient.isMutating({ mutationKey: sendKey }) > 0,
       }),
@@ -219,9 +220,9 @@ test("Back from another thread keeps the thread composer's refusal for its own t
   }
 });
 
-// Cancel reply, and Escape in the composer's field, end the reply and with it the composer: a
-// refusal it holds goes too, as an inline reply's Cancel reply drops one, rather than coming back
-// under the next comment's Reply.
+// A send that landed, and the reader's Discard, end the reply and with it the composer: nothing of
+// it is left to carry, and a refusal it still holds goes too rather than coming back under the
+// next comment's Reply. Cancel reply carries the draft instead (`ConversationTab.test.tsx`).
 test("ending the thread composer's reply drops a refusal it holds", async () => {
   const { queryClient, view } = renderPhoneThread();
 
