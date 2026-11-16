@@ -485,15 +485,17 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
-// leftStandingVersion is the highest migration neither way back deletes,
-// 20261114031356_merge_queue_removal (dispatch://INFRA-3274, which main carries above the phase
-// entry), which is the version the store reports once both ways back have run.
+// leftStandingVersion is the highest migration neither way back deletes, which is the version the
+// store reports once both ways back have run: 20261114082752_design_news (dispatch://INFRA-175),
+// which comes after this change's four. A rollback past this change first rolls that later
+// release back, and its own rollback restores no schema (docs/kubernetes.md, "Rolling back the
+// release that tells a holder of an approved new version"), so its row stands under both blocks.
 const (
 	phaseEntryVersion     = 20261111225552
 	stalledNoticesVersion = 20261113181500
 	claimHandshakeVersion = 20261114020537
 	entryVerbatimVersion  = 20261114061900
-	leftStandingVersion   = 20261114031356
+	leftStandingVersion   = 20261114082752
 )
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
@@ -511,8 +513,8 @@ const (
 // One architect-stalled wake stands unsent before the ways back, as a rollback can find one: the
 // release before this one refuses its kind and would retry it for ever, so the block drops it and
 // none stands after the two blocks. The store between the blocks and the roll-forward is that
-// release's: it reports that release's own version and holds no marks' table, no handshake column
-// and no column of the mark.
+// release's: it reports the highest version neither block deletes (leftStandingVersion) and holds
+// no marks' table, no handshake column and no column of the mark.
 //
 // The record is the one the older release leaves after the rollback, written with that release's
 // own statements: two roots at admitted with no design gate registered, each holding an architect
