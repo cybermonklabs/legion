@@ -4000,9 +4000,6 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   A subscription nats.go re-sent on the reconnected connection is kept as it is; one on a replaced connection is bound again.
   Every reconnect recreates the interest, role claim, session and CI KV watchers on the reconnected connection, because a server restart loses their ordered consumers and nats.go would replace them only after missed heartbeats, and a connection the bus dials to replace a closed one moves them onto itself.
 
-- No run of the reconnect hooks is on nats.go's one callback goroutine: the reconnect callback (`bus.Client.onReconnect`) reports the reconnect, marks the hooks due and hands the re-subscribe and the run to a goroutine of its own (`afterReconnect`).
-  A hook's request on a connection that drops again waits out its whole bound (10 s for most), and every callback queued behind it, the next disconnect's, its hooks and Dispatch's outbox wake among them, would wait too (`TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce`).
-
 - After each of those connection events a run of the reconnect hooks that do this begins that covers it, whatever re-subscribing returned, since a listener waiting out the task that holds its durable has that durable's re-subscribe refused by design while `/v1` and the role lane already read the caches.
   A run covers every event counted before it began, so an event that lands between runs gets a run of its own and a burst of events that land before one begins gets one.
   Runs take turns (`bus.Client.rewatch`), so a recovery retrying that re-subscribe waits for a run in progress rather than starting a second beside it.
@@ -4022,6 +4019,9 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   The first start runs in the background.
   When it fails with no watcher current, it records the failure and releases the cache's readiness;
   when a Rewatch's watcher is current, it does neither, and that watcher releases readiness once it has delivered every existing key.
+
+- No run of the reconnect hooks is on nats.go's one callback goroutine: the reconnect callback (`bus.Client.onReconnect`) reports the reconnect, marks the hooks due and hands the re-subscribe and the run to a goroutine of its own (`afterReconnect`).
+  A hook's request on a connection that drops again waits out its whole bound (10 s for most), and every callback queued behind it, the next disconnect's, its hooks and Dispatch's outbox wake among them, would wait too (`TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce`).
 
 - A rewatch opens the bucket on the connection it is given, so a store bound to a replaced connection moves to the new one.
   Every watcher a watch installs reads the whole bucket again, and nothing empties the cache first (`kvwatch.Cache`):
