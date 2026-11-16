@@ -3099,6 +3099,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
   `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
   and `Parse` validates the set.
+  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check` and `cmd/spec-check`.
   `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
@@ -3118,7 +3119,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
   `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
   Every rule it applies is the notes package's, as `githubapp`'s are:
-  `notes.FileKind` and `notes.IsNote` decide which entries are notes, `notes.CheckSize` bounds every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
+  `notes.ReadSet` reads the directory by them, `notes.FileKind` and `notes.IsNote` deciding which entries are notes and `notes.CheckSize` bounding every note before any is read and each note again once read, and `notes.Parse` judges the set, so no second reader of the rules exists.
   A valid set is exit 0 and one line on stdout, `architecture-check: <directory>: <n> notes, the set is valid` (`note` for one).
   A refused set is exit 1:
   one line on stderr for each problem, `architecture-check: <directory>: <problem>`, then `architecture-check: <directory>: <n> notes, the set is refused` on stdout.
@@ -3128,7 +3129,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   neither prints a count line.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
-  `say` writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `printable` escapes the rest of the line:
+  `runnerlog.Say` (`internal/runnerlog`, which imports only the standard library) writes every line but the usage, starting it with the fixed text `architecture-check: ` whatever the format, and `runnerlog.Printable` escapes the whole line, so a `##[` that the fixed text and the rest make together is escaped too:
   each control character (Cc), since a GitHub runner ends a line at `\n` and `\r` and reads a command from a line starting `::` after its leading white space and from a `##[` anywhere;
   the `[` of every `##[` as `\x5b`, since only a literal `##[` names a command: the runner's search can pass over an ignorable character, but it reads the name three characters after the match's start and accepts only a name of its registered commands, compared without regard to case, so a name read through an ignorable character starts at `#`, `[` or that character, and no command the runner defines has that name (actions/runner at `8cfa1049f86781d141056082d73802d56cd2b433`: `ActionCommand.TryParse` reads it at `cmdIndex = prefixIndex + Prefix.Length`, and `ActionCommandManager`'s `_registeredCommands` is a `StringComparer.OrdinalIgnoreCase` set);
   and each format character (Cf, invisible or reordering text), the line separator U+2028 (Zl) and the paragraph separator U+2029 (Zp), which the runner does not end a line at (it reads lines with `StreamReader.ReadLine`) but a log viewer can show as a line break, and each byte not UTF-8, for a log reader.
@@ -3138,12 +3139,69 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The composite action `.github/actions/architecture-check` is how another repository runs `cmd/architecture-check` (`README.md` there is that caller's guide):
   it builds the command from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, runs it over its `path` input (default `.dispatch/architecture`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number to the caller as its `count` output, on exit 0 and on exit 1.
+  Its `check.sh build` runs `.github/scripts/build-envoy-command.sh`, the one build of the commands of both composite actions, which holds the settings that keep the caller's job out of the build: `GOWORK=off`, `GOTOOLCHAIN=local`, an empty `GOFLAGS` with `GOENV=off`, `GOOS` and `GOARCH` unset, and the action's own module and build caches.
   Right after its setup-go it removes the `go` problem matcher that setup-go adds (`::remove-matcher owner=go::`), since that matcher reads every later line of the job and would make an error annotation, with the author's text, of a check line holding `.go: `, such as one naming a file `cmd.go: forged annotation`;
   the runner keeps one matcher per owner, so in a caller's job that set up Go earlier the action's setup-go replaces that job's `go` matcher and the removal deletes it for every later step, and the README sends a caller to a job of its own or to a place before the job's own setup-go, which adds the matcher again.
   Any other matcher an earlier step of the job added reads the check's lines too, one more reason for a job of its own.
-  `ci.yaml`'s `envoy-go-checks` runs the notes package's and the command's tests, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
+  `ci.yaml`'s `envoy-go-checks` runs the tests of the notes package, of `internal/runnerlog` and of the command, runs the action over this repository's own notes first, right after its checkout and before the job's own setup-go, which adds the Go matcher again for every later step, and fails unless `count` is a positive whole number;
   `ci-caches.yaml`'s `architecture-check` job, a job of its own, runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>-<hash>` cache entry in main's scope (`<hash>` is the SHA-256 of `packages/envoy/go.sum`, and on a miss the action restores the newest entry of the same Go version and still saves the new key), since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
   a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
+
+- `internal/dispatch/specgraph` reads the spec files of a repository, the `*.md` files directly in its `.dispatch/spec`, and judges the tree they hold.
+  It is logic over bytes and values, with no store, no route and no database (`TestSpecgraphReachesNoStore` runs `go list -deps` over it), so `cmd/spec-check`, Dispatch's importer and the pilot can call the same rules.
+  `Parse` reads the four blocks, statements (`requirement`), checks (`check`), components (`component`) and terms (`term`), with `pmdoc.ParseTypedDirectiveOpen`, the one reader of a typed block's opening line, and refuses any attribute a block does not take;
+  it does not call `pmdoc.Parse`, whose block schema lacks the attributes these files need.
+  It refuses a file that is not UTF-8 or holds a NUL byte at its first such line (`bad-encoding`), as the architecture importer refuses such a file.
+  It refuses a claim of more than one sentence (`bad-field: a claim is one sentence`) and a heading that names code (`code-in-text`).
+  `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
+  `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
+  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name among them (`CodeNames`).
+  A claim and a purpose are split into sentences as ste-lint splits a line: after `.`, `!` or `?` and any white space that Python's `\s` matches.
+  `CodeNames` reads a word as a name of code by its shape alone, such as a Go test's name, `readSet` or `pmdoc.ReadSet`, so it refuses a plain word or a product name of that shape too: a slash between two ASCII letters (`I/O`, `and/or`, `client/server`, `https://example.com/docs`, but not `https://example.com/2024`), small ASCII letters and then an ASCII capital and a small letter in a word of ASCII letters and digits only (`mmHg` and `ownCloud`, but not `mmHg-based` or `véloCity`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`, `https://bun.sh`) and the form of a Go test's name (`TestFlight`), which the writer says in other words, such as "input and output";
+  of the words of such a shape, only the product names that `productNames` lists, such as `Node.js`, pass;
+  a word with a capital at the start of each part, such as `ReadSet`, unless it has the form of a Go test's name, and a bare package word, such as `pmdoc`, have the shapes of product names such as GitHub and of plain words, so `CodeNames` reads no shape for them and they are left to the reviewer.
+  `Changes` lists each statement that only one of two trees holds, or whose text, parent, relations or checks differ between them;
+  a statement that only moved to another file is no change.
+
+- `specgraph.ReadGoTestJSON` reads a `go test -json` report, or the report that `go tool test2json` writes for a test binary run with `-test.v=test2json`, and `specgraph.MatchTests` matches a check's selector to its one test.
+  The reader reads exactly those two forms, because only in them does the marker separate go test's own lines from what a test prints;
+  a report of another form, as of a test binary run with `-test.v=true` or the text of `go test -v` through `go tool test2json`, lets a test write an end line with no marker, and the reader cannot see which form made a report.
+  In CI, the job's own `go test -json` command makes the report that the reporter reads.
+  The outcome of a run of a test is its one end event of its own (`pass`, `fail` or `skip`), which counts only after go test's own end line of its kind for the test, a frame of the run (`OutputType` `frame`) such as `--- PASS: <name> (0.00s)`;
+  in the two forms, what a test prints with no marker decides no outcome, go test's kill line and its end lines included.
+  A run reads `could_not_run`, and never a pass or a failure, when it has no end event (go test killed it at its `-timeout`, or its process ended inside it, by `os.Exit` with a status that is not 0 or by a fatal error of the runtime), when its end has no end line before it (the end event that `go tool test2json` writes at its exit for the test it named last), when it has two or more end events (a result line that a test printed with the testing package's marker byte), and when it overlaps another run of its name in its package (two parallel tests of one name in `p` and `p_test`, or a test that prints a marked run line of its own name, whose two entries both read `could_not_run`).
+  A test's pass stays when a goroutine that outlives the test fails the package later.
+  The report is the test binary's own account, and the reader trusts its order, so a report that someone changed or put in another order can give a run the wrong outcome;
+  a line that the binary prints with the marker, or before its first test, can still make a whole run, and a test that prints, with the marker, an end line of its own name, or of another test of its package that is running, can still give that test an outcome when that test then does not end by itself.
+  For its own name, under `go test -json` the kind of its line when go test kills it or its process ends with a status that is not 0, and under `go tool test2json` `fail` for a fail line when its process ends with an error and `pass` for a pass line when it calls `os.Exit(0)`;
+  for another test, a parallel test that prints the pass line of a running test that go test then kills gives that test `pass`, in both forms.
+  A run's output is the output events that the converter gave it, which can hold a parallel sibling's line or go test's kill trace, whole up to 64 KiB, and a longer one keeps its first 4 KiB and its last 60 KiB with one line between them that says how many bytes are cut; the reader finds an end line in each event before it cuts.
+  A value that is no JSON object, a `null` and an object with no `Action` are refused, and so is a report that holds a run and no frame, as the converter of a Go before 1.27 writes;
+  any other report that names no test, an empty one included, reads as a run of no tests: `MatchTests` then gives no entry for a check, and a reporter must read a check with no entry as a check with no result, which R9 of the spec reads as unknown and never true.
+
+- `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
+  It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
+  `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
+  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
+  a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
+  a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
+  with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2.
+  `--retired` names a file of the ids the approved spec removed, one id a line;
+  without it, a line on stderr says that no id was checked against them.
+  `spec-check changes --base <dir> --dir <dir>` prints one line for each changed statement, `spec-check: <id>: text, checks`, or `spec-check: no statement changed`.
+  `spec-check checks --dir <dir> --job <job>` prints the program checks that name the job as one line of JSON, `[]` for none.
+  Those two exit 2, with the problems on stderr, when a tree they read has any problem, and every subcommand exits 2 for a directory or a file it cannot read and for arguments it does not take.
+  Those two read a directory that does not exist as the empty tree, with a line on stderr that says so, since git keeps no empty directory:
+  the first change that adds a spec file lists each statement as `added`, and a checkout with no spec file has no program check.
+  Each entry that is not a spec file is a warning on stderr, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
+  `runnerlog.Say` writes every line but the usage and the JSON, with the fixed text `spec-check: `, escaped as the `cmd/architecture-check` item says, and `checks` writes the `[` of each `##[` in its JSON as `\u005b`.
+  It opens no database and reaches no network.
+
+- The composite action `.github/actions/spec-check` runs `spec-check tree` as `.github/actions/architecture-check` runs its command (its own `README.md` is the caller's guide):
+  it builds `cmd/spec-check` from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, removes setup-go's `go` problem matcher, runs over its `path` input (default `.dispatch/spec`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number of statements to the caller as its `count` output, on exit 0 and on exit 1.
+  Its cache entry is `spec-check-<os>-<arch>-go<version>-<hash>`, saved only on a miss in a `push`, `schedule` or `workflow_dispatch` run, and `ci-caches.yaml`'s `spec-check` job, a job of its own, fills it on every push to main.
+  `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
+  a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.
