@@ -905,6 +905,7 @@ The version is the latest settled one by default.
 A covered document prints that Dispatch refuses its approval request and each finding as `- <kind> <node>: <detail>.`, or what Dispatch read.
 A document out of scope first says why Dispatch refuses nothing for it, by its scope, and still lists its findings.
 With no `--artifact`, it reads the spec and the Verification document of the issue, and names a document that has no version yet.
+It reads them from the issue's own read, so for a key that names no issue it prints what `dispatch read` prints (`NOT_FOUND: not found`) and exits 1.
 An answer about a covered document ends with `Before you request approval, have a fresh reviewer read it with skill://spec-statement-review.`, once for the issue when it reads more than one: a program decides the form, and that skill tells a reviewer what no program decides.
 `dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
 It ends with the count of issues and documents it read.
@@ -913,6 +914,7 @@ It ends with the count of issues and documents it read.
 Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it.
 The lines keep the server's order, sorted by term.
 With no `--artifact`, it reads the list from the spec of the issue, or from its Verification document while the spec has no version.
+It reads them from the issue's own read too, so for a key that names no issue it prints what `dispatch read` prints and exits 1.
 A document that no root holds has no list, and `--terms` goes with no `--root`.
 
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>

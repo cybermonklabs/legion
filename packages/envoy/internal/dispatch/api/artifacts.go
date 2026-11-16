@@ -671,9 +671,10 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval when its text is the approved text again and
 		// its decision blocks are as their rows have them, as every version the document service
-		// writes does (docs.carryApproval): an exact undo uploaded is the approved document.
+		// writes does (docs.carryApproval): an exact undo uploaded is the approved document,
+		// unless its text breaks the form of The Spec (carryBreaksForm).
 		carried, err := docs.CarryRestoredApproval(
-			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, s.carryBreaksForm, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)

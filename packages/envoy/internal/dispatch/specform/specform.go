@@ -1,9 +1,12 @@
 // Package specform decides the form of the texts of The Spec (R49): the sentences and words of
 // each statement, check, component purpose and definition of a term, the hard findings of the
 // ASD-STE100 program, and the links, incidents, pull requests and people that no text may name.
-// It also decides the rules of the terms (R50): a definition has one sentence, and a term has one
-// definition. It works on plain texts and reads no store: ExtractDocument reads the texts of one
-// document's markdown, Check judges them, and Message and ChangesReason write the refusal.
+// It also decides the rules of the terms (R50): a line under a heading Terms is a term line, a
+// term name holds only the letters a to z, the digits, spaces and hyphens, a definition has one
+// sentence, and a term has one definition, by its name in one Unicode form (TermKey), wherever a
+// line in the form of a term line stands. It works on plain texts and reads no store:
+// ExtractDocument reads the texts of one document's markdown, Check judges them, and Message and
+// ChangesReason write the refusal.
 package specform
 
 import "strings"
@@ -19,9 +22,15 @@ const (
 	KindName           Kind = "name"            // a component's or interface's name; reference rules only
 	KindPurpose        Kind = "purpose"
 	KindDefinition     Kind = "definition"
+	KindLine           Kind = "line"      // a line under a heading Terms that is no term line; the rule term-line only
+	KindHeading        Kind = "heading"   // a heading that reads as Terms in another form; the rule terms-heading only
+	KindTermLine       Kind = "term_line" // a line in the form of a term line outside Terms; the rule of a second definition only
 )
 
-// kinds is every Kind, in the order a count of them is written.
+// kinds is every Kind that ExtractDocument counts in each document, in the order a count of them
+// is written. A line under Terms that is no term line (KindLine) is a break of the form, not a text
+// to read, so its count is written only for a document that holds one. A line in the form of a
+// term line outside Terms (KindTermLine) adds no term, so no count holds it.
 var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, KindName, KindPurpose, KindDefinition}
 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".
@@ -71,8 +80,10 @@ const excerptRunes = 160
 
 // Check judges each text of in, and each proposed definition as a text of Kind definition
 // named by its term, by the rules of R49, in the order of the texts. A proposed definition first
-// takes the rules of R50: it has one sentence, and it is the one definition of its term, in the
-// list and in the proposal.
+// takes the rules of R50: its name holds only the letters a to z, the digits, spaces and hyphens,
+// it has one sentence, and it is the one definition of its term, in the list and in the proposal.
+// A text of Kind term_line, a line in the form of a term line outside Terms, takes only the rule
+// of a second definition: it adds no term, but it defines its term again.
 func Check(c Context, in Input) []Finding {
 	texts := make([]Text, 0, len(in.Texts)+len(in.Proposed))
 	texts = append(texts, in.Texts...)
@@ -83,9 +94,14 @@ func Check(c Context, in Input) []Finding {
 	terms := indexTerms(in)
 	var findings []Finding
 	for at, text := range texts {
-		found := breaks(c, people, text)
-		if proposed := at - len(in.Texts); proposed >= 0 {
-			found = append(terms.breaks(proposed, in.Proposed[proposed]), found...)
+		var found []broken
+		switch proposed := at - len(in.Texts); {
+		case proposed >= 0:
+			found = append(terms.breaks(proposed, in.Proposed[proposed]), breaks(c, people, text)...)
+		case text.Kind == KindTermLine:
+			found = terms.lineBreaks(at, text)
+		default:
+			found = breaks(c, people, text)
 		}
 		for _, broken := range found {
 			findings = append(findings, Finding{

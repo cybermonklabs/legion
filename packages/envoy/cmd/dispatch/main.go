@@ -444,13 +444,16 @@ func main() {
 		Identity:  requestIdentity,
 		ServerURL: serverURL,
 	})
+	// The restoration below schedules settlements, whose version writes carry approvals, before
+	// the API is built: the form gate is set first, so no carry passes it (api.FormGate).
+	formGate, err := api.FormGate(boot.SpecRoots, serverURL)
+	if err != nil {
+		slog.Error("dispatch: read the roots of The Spec", "error", err)
+		os.Exit(1)
+	}
+	documentService.SetFormGate(formGate)
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
-	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
-	// interval below. It appends events and takes no copy lock, so it runs after
-	// restoreDecidedWordings, which takes the copy lock (see below).
-	issueAskRepairDeps := api.Deps{Store: database, Docs: documentService, Events: broker}
-	repairIssueAsks(ctx, issueAskRepairDeps, issueAskRepairBootTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
 	// The seed appends events, so it runs after restoreDecidedWordings, which takes the copy lock:
 	// TestCopyLockComesBeforeEveryPendingRowAndEvent reads main as one transaction.
@@ -536,6 +539,12 @@ func main() {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
 	}
+	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
+	// interval below. The pass restores an approval request as a reopen does, so it runs on the
+	// API's own dependencies (appCtx.APIDeps), which the routes run on, and never on a set built
+	// here beside them that could leave a field out. It appends events and takes no copy lock, so
+	// it runs after restoreDecidedWordings, which takes the copy lock (see above).
+	repairIssueAsks(ctx, appCtx.APIDeps(), issueAskRepairBootTimeout)
 
 	// Two or more envoy-dispatch processes serve one Postgres and one NATS, so each background
 	// loop below either runs once overall or is deliberately per-process. The ones that must run
@@ -860,7 +869,7 @@ func main() {
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
-	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
+	go api.RunIssueAskRepair(ctx, appCtx.APIDeps(), issueAskRepairLeases)
 
 	sweeper, err := webhookSweeper(natsClient, database, appCfg, boot.GitHubAPIBase, boot.NATSReplicas)
 	if err != nil {

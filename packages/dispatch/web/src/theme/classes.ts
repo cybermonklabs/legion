@@ -677,6 +677,11 @@ export function inputClasses(recessed: boolean): string {
     : "border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400";
 }
 
+/** A text field that grows with its text up to half the height of the window (`field-sizing`).
+ *  Past that, the field scrolls. It is the reason of Request changes, in the dialog of the
+ *  document header and on the card of an ask. Each field sets its own height for an empty field. */
+export const growingField = "field-sizing-content max-h-[50vh]";
+
 /** The compact secondary button the Architecture lists, the component picker and the broadcast
  *  Sends strip share: a 44 px tap target through phone widths, 28 px from `sm`. */
 export const secondaryButtonCompact = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`;

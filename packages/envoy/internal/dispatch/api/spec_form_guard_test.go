@@ -157,22 +157,31 @@ var askOpeningWriterCensus = map[string]string{
 	"writeAsks":           "cmd/dispatch-seed/write_items.go",
 }
 
-// approvalCallers is each call the gate's census rests on, by the functions of the api package
-// that make it, one entry for each call.
+// approvalCallers is each call the gate's census rests on, by the functions that make it, one
+// entry for each call: the api package's calls, and the docs package's writer of a person's review,
+// the carry of an approval, beside its call of the form gate.
 var approvalCallers = map[string][]string{
 	"openApprovalAsk":                         {"requestArtifactApproval"},
 	"renewApprovalAsk":                        {"requestArtifactApproval"},
 	"docs.WriteReview(docs.ReviewKindPerson)": {"writeApprovalReviews"},
 	"refuseSpecForm":                          {"requestArtifactApproval", "writeApprovalReviews"},
-	"specFormOf":                              {"getArtifactSpecForm", "refuseSpecForm", "restoreIssueAsksTx"},
+	"specFormOf":                              {"carryBreaksForm", "getArtifactSpecForm", "refuseSpecForm", "restoreIssueAsksTx"},
+	"docs: WriteReview(ReviewKindPerson)":     {"writeCarriedReview"},
+	"docs: gate":                              {"writeCarriedReview"},
 }
 
-// approvalCallerProblems names each call of approvalCallers that the api package of sources makes
-// from another function, or does not make from a function the census names.
+// approvalCallerProblems names each call of approvalCallers that the api and docs packages of
+// sources make from another function, or do not make from a function the census names.
 func approvalCallerProblems(sources []moduleSource) []string {
 	callers := map[string][]string{}
 	for _, source := range sources {
-		if path.Dir(moduleRelative(source.path)) != "internal/dispatch/api" {
+		var callee func(*ast.CallExpr) string
+		switch path.Dir(moduleRelative(source.path)) {
+		case "internal/dispatch/api":
+			callee = approvalCallee
+		case "internal/dispatch/docs":
+			callee = docsApprovalCallee
+		default:
 			continue
 		}
 		for _, declared := range source.file.Decls {
@@ -182,8 +191,8 @@ func approvalCallerProblems(sources []moduleSource) []string {
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
 				if call, ok := node.(*ast.CallExpr); ok {
-					if callee := approvalCallee(call); callee != "" {
-						callers[callee] = append(callers[callee], function.Name.Name)
+					if name := callee(call); name != "" {
+						callers[name] = append(callers[name], function.Name.Name)
 					}
 				}
 				return true
@@ -198,6 +207,34 @@ func approvalCallerProblems(sources []moduleSource) []string {
 		}
 	}
 	return problems
+}
+
+// docsApprovalCallee is the entry of approvalCallers that call, in the docs package, makes, or "":
+// a write of a review whose kind can be a person's (ReviewKindPerson among its arguments, at any
+// depth), and a call of the form gate a carry holds (gate).
+func docsApprovalCallee(call *ast.CallExpr) string {
+	function, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	switch function.Name {
+	case "gate":
+		return "docs: gate"
+	case "WriteReview":
+		person := false
+		for _, argument := range call.Args {
+			ast.Inspect(argument, func(node ast.Node) bool {
+				if ident, ok := node.(*ast.Ident); ok && ident.Name == "ReviewKindPerson" {
+					person = true
+				}
+				return !person
+			})
+		}
+		if person {
+			return "docs: WriteReview(ReviewKindPerson)"
+		}
+	}
+	return ""
 }
 
 // approvalCallee is the entry of approvalCallers call makes, or "".
@@ -303,6 +340,20 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 		problems := approvalCallerProblems(append(slices.Clone(sources), planted))
 		if len(problems) != 1 || !strings.Contains(problems[0], "plantedApprove") {
 			t.Fatalf("the caller part with a second person's review planted = %q, want one problem naming plantedApprove", problems)
+		}
+	})
+	t.Run("control: a carry in the docs package that writes a person's approval with no gate", func(t *testing.T) {
+		positions := token.NewFileSet()
+		const planted = "../../../internal/dispatch/docs/planted.go"
+		file, err := parser.ParseFile(positions, planted, "package docs\n\n"+
+			"func plantedCarry(ctx context.Context, tx pgx.Tx, artifact model.Artifact, review model.ArtifactReview) error {\n"+
+			"\t_, _, err := WriteReview(ctx, tx, nil, artifact, 2, \"approved\", cmp.Or(review.Kind, ReviewKindPerson), review.Actor, nil, nil)\n\treturn err\n}\n", 0)
+		if err != nil {
+			t.Fatalf("parse the planted source: %v", err)
+		}
+		problems := approvalCallerProblems(append(slices.Clone(sources), moduleSource{path: planted, file: file, positions: positions}))
+		if len(problems) != 1 || !strings.Contains(problems[0], "plantedCarry") {
+			t.Fatalf("the caller part with an ungated carry planted = %q, want one problem naming plantedCarry", problems)
 		}
 	})
 }

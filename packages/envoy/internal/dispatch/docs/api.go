@@ -29,6 +29,8 @@ type API interface {
 	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
 	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
+	// SetFormGate is the form gate of The Spec that each carry of an approval asks first.
+	SetFormGate(gate FormGate)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
 	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error

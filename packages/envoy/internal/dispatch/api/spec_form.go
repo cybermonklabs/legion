@@ -1,12 +1,15 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -19,19 +22,29 @@ import (
 // The form of The Spec (R49) and its list of terms (R50) as the server holds them. A setting names
 // the roots of The Spec (DISPATCH_SPEC_ROOTS); a document under one of them is covered, and this
 // file is the one place that judges its form. The list of a root is the term lines of the latest
-// version of each covered document under it that a person approved, its terms.md among them, and
-// a covered document that defines a term of the list again is refused. Two calls refuse:
-// refuseSpecForm, at the two call sites, the opening or hand-back of an approval request
-// (requestArtifactApproval) and a person's approval (writeApprovalReviews). Two calls read
+// version of each covered document under it that a person approved, its terms.md among them, with
+// one definition of each term (approvedSpecTexts), and a covered document that defines a term of
+// the list again is refused. Three calls refuse: refuseSpecForm, at the two call sites, the
+// opening or hand-back of an approval request (requestArtifactApproval) and a person's approval
+// (writeApprovalReviews); and carryBreaksForm, which the carry of an approval to a new version
+// asks before it writes that approval in the person's name (docs.FormGate), and which carries
+// nothing over a break. A person's approval decides against the list and then changes it, so it
+// takes the lock of the root's list before it reads the list (lockSpecTerms), and two approvals
+// under one root take turns. A move into a root changes the list too, and takes the same lock
+// before it appends its event (lockSpecTermsOfMove), and the list reads that event. Two calls read
 // findings and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen
 // and of the repair pass (restoreIssueAsksTx), which leaves a broken approval request resolved
-// rather than open it again. Every route that opens an approval request or answers one reaches one
-// of these calls; TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
+// rather than open it again. Every route that opens an approval request or answers one reaches
+// one of these calls;
+// TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.
 //
-// Two ways past the gate stay open, and both are known. The carry (docs/approval_carry.go) copies
-// an earlier approval to a new version in the person's name, and an approval given before the
-// setting named the root never passed the gate. A reparent out of a root takes an issue's
-// documents out of scope with one write; the read route's scope says so.
+// One way past the gate stays open, and it is known: an approval given before the setting named
+// the root, or while the issue stood outside it, never passed the gate, and a reparent out of a
+// root takes an issue's documents out of scope with one write; the read route's scope says so. A
+// reparent into a root is not refused either, and it can bring a second definition of a term under
+// the root, as an approval from before the setting named the root can. The list still holds one
+// definition of that term, the one that joined it first (approvedSpecTexts), and the read of the
+// other document names it as a finding.
 
 // specFormCode is the code of the refusal.
 const specFormCode = "SPEC_FORM"
@@ -300,13 +313,18 @@ func (r *specFormRefusal) body() specFormError {
 // markdown, the projects (a bare key of a project is a link), the emails of the people who signed
 // in (a piece of one is a name) and, under a root, the approved covered documents under it
 // (approvedSpecTexts): the names of their components and interfaces, which are nouns of the
-// system and no person, and their terms, which are the root's list of terms (R50).
+// system and no person, and their terms, which are the root's list of terms (R50). A person's
+// approval (specform.ActApproval) judges in the transaction that writes it, and it takes the lock
+// of each root's list before it reads that list (lockSpecTerms).
 func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
 	var result specFormResult
 	if len(s.deps.SpecRoots) == 0 && act != actRead {
 		return result, nil
 	}
-	judge := &specFormJudge{server: s, q: q, skip: map[string]bool{}, approved: map[string]approvedSpec{}, proposed: map[string][]specform.Term{}}
+	judge := &specFormJudge{
+		server: s, q: q, lock: act == specform.ActApproval,
+		skip: map[string]bool{}, approved: map[string]approvedSpec{}, proposed: map[string][]specform.Term{},
+	}
 	for _, document := range documents {
 		judge.skip[document.ArtifactID] = true
 	}
@@ -344,11 +362,36 @@ func (s *server) refuseSpecForm(ctx context.Context, tx pgx.Tx, documents []mode
 	return result, nil
 }
 
+// carryBreaksForm is the form gate on the version that a carry of an approval would approve in
+// the person's name (docs.FormGate): whether a text of that version of artifactID breaks the form,
+// judged as a person's approval is (specFormOf). A document no root covers reads nothing more.
+func (s *server) carryBreaksForm(ctx context.Context, tx pgx.Tx, artifactID string, version int) (bool, error) {
+	result, err := s.specFormOf(ctx, tx, []model.AskApprovalDocument{{ArtifactID: artifactID, Version: version}}, specform.ActApproval)
+	if err != nil {
+		return false, err
+	}
+	return result.refusal(specform.ActApproval) != nil, nil
+}
+
+// FormGate is the gate of the carry (carryBreaksForm) for a document service that a process
+// builds before its API: the roots that specRoots names, as DISPATCH_SPEC_ROOTS writes them, and
+// the server's address. NewDeps sets the same gate on the service it is given.
+func FormGate(specRoots, serverURL string) (docs.FormGate, error) {
+	roots, err := parseSpecRoots(specRoots)
+	if err != nil {
+		return nil, err
+	}
+	return (&server{deps: Deps{SpecRoots: roots, ServerURL: strings.TrimSuffix(serverURL, "/")}}).carryBreaksForm, nil
+}
+
 // specFormJudge judges the documents of one specFormOf call, reading what every document shares
 // once.
 type specFormJudge struct {
 	server *server
 	q      queryer
+	// lock is whether the judgment takes the lock of each root's list before it reads the list:
+	// a person's approval does, because it writes in q what it decides against the list.
+	lock bool
 	// skip is every document the call names: the version it names stands in for an approved one.
 	skip map[string]bool
 	// base is the context every document shares, read at the first judgment.
@@ -364,7 +407,9 @@ type specFormJudge struct {
 
 // judge reads document's named version and judges its texts, each definition of a term among
 // them, and under a root each definition against the root's list (R50): the approved terms of the
-// documents the call does not name, and the terms of the documents it judged before this one.
+// documents the call does not name, and the definitions of the documents it judged before this
+// one, a line of the term-line form outside Terms among them, since one request holds one
+// definition of each term.
 func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) error {
 	markdown, err := specFormMarkdown(ctx, j.q, document.artifact, document.version)
 	if err != nil {
@@ -397,9 +442,15 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 		})
 	}
 	if document.root != nil {
+		where := listedWhere(document.artifact.Name, document.version, *document.artifact.IssueKey)
 		for _, term := range extracted.Terms {
-			term.Where = listedWhere(document.artifact.Name, document.version, *document.artifact.IssueKey)
+			term.Where = where
 			j.proposed[*document.root] = append(j.proposed[*document.root], term)
+		}
+		for _, text := range extracted.Texts {
+			if text.Kind == specform.KindTermLine {
+				j.proposed[*document.root] = append(j.proposed[*document.root], specform.Term{Name: text.Node, Definition: text.Body, Where: where})
+			}
 		}
 	}
 	return nil
@@ -426,10 +477,16 @@ func (j *specFormJudge) baseContext(ctx context.Context) (specform.Context, erro
 	return *j.base, nil
 }
 
-// approvedUnder is what the approved covered documents under root hold (approvedSpecTexts).
+// approvedUnder is what the approved covered documents under root hold (approvedSpecTexts). A
+// judgment that locks takes the lock of root's list first (lockSpecTerms).
 func (j *specFormJudge) approvedUnder(ctx context.Context, root string) (approvedSpec, error) {
 	if approved, read := j.approved[root]; read {
 		return approved, nil
+	}
+	if j.lock {
+		if err := lockSpecTerms(ctx, j.q, root); err != nil {
+			return approvedSpec{}, err
+		}
 	}
 	approved, err := j.server.approvedSpecTexts(ctx, j.q, root)
 	if err != nil {
@@ -439,11 +496,25 @@ func (j *specFormJudge) approvedUnder(ctx context.Context, root string) (approve
 	return approved, nil
 }
 
+// lockSpecTerms takes the lock of the list of terms of root until the transaction of q ends. A
+// person's approval of a covered document decides against the list and then changes it, so it
+// takes this lock before it reads the list: of two approvals under one root at one time, the
+// second reads the list once the first committed, with the first one's terms in it, and a second
+// definition in it is refused. It is the single-key form, keyed as the api package's other
+// transaction locks are (lockProjectRankAllocation).
+func lockSpecTerms(ctx context.Context, q queryer, root string) error {
+	if err := q.QueryRow(ctx, `select pg_advisory_xact_lock(hashtext('spec-terms:' || $1))`, root).Scan(nil); err != nil {
+		return fmt.Errorf("lock the list of terms of %s: %w", root, err)
+	}
+	return nil
+}
+
 // approvedSpec is what the approved covered documents under a root hold that a judgment of
 // another document reads: the names of the components and interfaces they define, which are
-// nouns of the system, and the terms they define, which are the root's list of terms, sorted by
-// term. Each keeps the document that holds it, because a judgment leaves out the documents it
-// names: their named versions stand in for their approved ones.
+// nouns of the system, and the terms they define, which are the root's list of terms, one
+// definition of each term, sorted by term. Each keeps the document that holds it, because a
+// judgment leaves out the documents it names: their named versions stand in for their approved
+// ones.
 type approvedSpec struct {
 	names []approvedName
 	terms []approvedTerm
@@ -468,7 +539,9 @@ func (a approvedSpec) systemNames(skip map[string]bool) []string {
 }
 
 // list is the root's list of terms as Check compares a definition with it, less the terms of the
-// documents skip names. Each term's Where is "<document> version <n> of <issue key>".
+// documents skip names. The list holds one definition of each term before those are left out, so
+// a second definition that it does not hold does not come back when skip names the document of
+// the first. Each term's Where is "<document> version <n> of <issue key>".
 func (a approvedSpec) list(skip map[string]bool) []specform.Term {
 	var list []specform.Term
 	for _, term := range a.terms {
@@ -500,6 +573,22 @@ func listedWhere(document string, version int, issue string) string {
 // a person approves a covered document: a plan review approves a plan document alone
 // (createArtifactPlanReview), whose role its slug gives (documentRole). So an agent's version adds
 // nothing to the list until the person approves it.
+//
+// The list holds one definition of each term (R50), by specform.TermKey. The root's terms.md comes
+// first, then each other document in the order in which its definitions joined this root's list:
+// at the later of its first approval and the move that last brought its issue under the root. The
+// move is read from the events (readParentHistory, parentHistory.arrival), which every build of
+// Dispatch writes for every move, so the build that handled a move changes no order, and a
+// rollback changes none. So a definition that the list holds is never displaced by an arrival,
+// and a change of a listed definition waits for the person's approval. Two documents that joined
+// at one move come in the order of their first approvals, then in the order in which Dispatch
+// created them. The first definition of a term in that order is the one that the list holds. A
+// reparent into the root, or an approval from before the setting named the root, can put a second
+// definition under the root, and the read of its document names the definition that the list
+// holds as a finding. When the document that the list keeps a term from leaves the root, the list
+// holds the definition that joined next: the person approved each, and a move changes the tree and
+// no text. The setting decides which issues are roots at every event: an issue named today is a
+// root for the moves before it was named too.
 func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) (approvedSpec, error) {
 	issues, err := refs.IssueDescendants(ctx, q, root)
 	if err != nil {
@@ -530,20 +619,64 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 	if err != nil {
 		return approvedSpec{}, fmt.Errorf("list the covered documents under %s: %w", root, err)
 	}
-	var approved approvedSpec
+	type approvedDocument struct {
+		artifact model.Artifact
+		version  int
+		order    joinOrder
+	}
+	var documents []approvedDocument
 	for _, artifact := range covered {
 		review, err := docs.LatestApprovedReview(ctx, q, artifact.ID)
 		if err != nil {
 			return approvedSpec{}, err
 		}
-		if review == nil {
-			continue
+		if review != nil {
+			documents = append(documents, approvedDocument{artifact: artifact, version: review.Version})
 		}
-		markdown, err := specFormMarkdown(ctx, q, artifact, review.Version)
+	}
+	ids := make([]string, len(documents))
+	var moved []string
+	for index, document := range documents {
+		ids[index] = document.artifact.ID
+		if issue := *document.artifact.IssueKey; issue != root && !slices.Contains(moved, issue) {
+			moved = append(moved, issue)
+		}
+	}
+	approvals, err := firstApprovals(ctx, q, ids)
+	if err != nil {
+		return approvedSpec{}, err
+	}
+	history, err := readParentHistory(ctx, q, moved)
+	if err != nil {
+		return approvedSpec{}, err
+	}
+	for index := range documents {
+		document := &documents[index]
+		document.order = joinOrder{approved: approvals[document.artifact.ID]}
+		if event, arrived := history.arrival(*document.artifact.IssueKey, root, s.deps.SpecRoots); arrived {
+			document.order.arrived = &moment{event: event}
+		}
+	}
+	isTermsMd := func(artifact model.Artifact) bool { return *artifact.IssueKey == root && artifact.Slug == termsSlug }
+	slices.SortFunc(documents, func(a, b approvedDocument) int {
+		if aTerms, bTerms := isTermsMd(a.artifact), isTermsMd(b.artifact); aTerms != bTerms {
+			if aTerms {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Or(a.order.joined().compare(b.order.joined()), a.order.approved.compare(b.order.approved),
+			a.artifact.CreatedAt.Compare(b.artifact.CreatedAt), strings.Compare(a.artifact.ID, b.artifact.ID))
+	})
+	var approved approvedSpec
+	listed := map[string]bool{}
+	for _, document := range documents {
+		artifact := document.artifact
+		markdown, err := specFormMarkdown(ctx, q, artifact, document.version)
 		if err != nil {
 			return approvedSpec{}, err
 		}
-		extracted, err := specform.ExtractDocument(artifact.Name, review.Version, markdown)
+		extracted, err := specform.ExtractDocument(artifact.Name, document.version, markdown)
 		if err != nil {
 			return approvedSpec{}, err
 		}
@@ -553,15 +686,267 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string) 
 			}
 		}
 		for _, term := range extracted.Terms {
-			approved.terms = append(approved.terms, approvedTerm{artifactID: artifact.ID, specFormTerm: specFormTerm{
-				Term: term.Name, Definition: term.Definition, Document: artifact.Name, Version: review.Version, Issue: *artifact.IssueKey,
-			}})
+			if key := specform.TermKey(term.Name); !listed[key] {
+				listed[key] = true
+				approved.terms = append(approved.terms, approvedTerm{artifactID: artifact.ID, specFormTerm: specFormTerm{
+					Term: term.Name, Definition: term.Definition, Document: artifact.Name, Version: document.version, Issue: *artifact.IssueKey,
+				}})
+			}
 		}
 	}
 	slices.SortStableFunc(approved.terms, func(a, b approvedTerm) int {
 		return strings.Compare(strings.ToLower(a.Term), strings.ToLower(b.Term))
 	})
 	return approved, nil
+}
+
+// moment is a place in the order of Dispatch's writes: the id of an event (events.id), which
+// orders the writes that the lock of a root's list serialises (lockSpecTerms), or, for an
+// approval written before reviews kept their event (migration 0120), no event and its time. Such
+// an approval comes before every write that has an event.
+type moment struct {
+	event int64
+	at    time.Time
+}
+
+func (m moment) compare(other moment) int {
+	return cmp.Or(cmp.Compare(m.event, other.event), m.at.Compare(other.at))
+}
+
+// joinOrder is when a covered document's definitions joined the list of a root: its first
+// approval, and the move that last brought its issue under the root, if a move did.
+type joinOrder struct {
+	approved moment
+	arrived  *moment
+}
+
+// joined is the later of the first approval and the arrival.
+func (o joinOrder) joined() moment {
+	if o.arrived != nil && o.arrived.compare(o.approved) > 0 {
+		return *o.arrived
+	}
+	return o.approved
+}
+
+// firstApprovals reads the first approval of each document that ids names and that a person
+// approved: the event of the review (its event_seq on the document's issue), or, for a document
+// with an approval from before reviews kept their event, the time of the first such approval.
+func firstApprovals(ctx context.Context, q queryer, ids []string) (map[string]moment, error) {
+	approvals := map[string]moment{}
+	if len(ids) == 0 {
+		return approvals, nil
+	}
+	rows, err := q.Query(ctx, `
+		select a.id::text, coalesce(min(e.id), 0), bool_or(e.id is null),
+			coalesce(min(r.created_at) filter (where e.id is null), 'epoch')
+		from artifacts a
+		join artifact_reviews r on r.artifact_id = a.id and r.state = 'approved'
+		left join events e on e.issue_key = a.issue_key and e.seq = r.event_seq
+		where a.id = any($1::uuid[])
+		group by a.id
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the first approval of each covered document: %w", err)
+	}
+	var (
+		id         string
+		firstEvent int64
+		legacy     bool
+		legacyAt   time.Time
+	)
+	if _, err := pgx.ForEachRow(rows, []any{&id, &firstEvent, &legacy, &legacyAt}, func() error {
+		approvals[id] = moment{event: firstEvent}
+		if legacy {
+			approvals[id] = moment{at: legacyAt}
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the first approval of each covered document: %w", err)
+	}
+	return approvals, nil
+}
+
+// parentChange is one write of an issue's parent that the issue's events hold: the id of the
+// event, and the parent the write left ("" for none).
+type parentChange struct {
+	event  int64
+	parent string
+}
+
+// parentHistory is the parents of the issues it holds as their events wrote them, each issue's
+// changes in the order of its events: the parent it was made with, then each parent a write set.
+type parentHistory map[string][]parentChange
+
+// parentHistoryQuery reads each change of the parent of each issue that $1 names from its
+// issue.created, issue.updated and issue.closed events. Each of them holds the issue as the write
+// left it, its parent among the fields, in every release that writes them, so the events are the
+// one record of a move whichever build made it. Every write of parent_key appends one of them
+// (issue_create.go, issue_patch.go), and the parent a write left alone is no change.
+const parentHistoryQuery = `
+	select issue_key, id, coalesce(parent, '') from (
+		select issue_key, id, payload->>'parent' as parent,
+			lag(payload->>'parent') over (partition by issue_key order by id) as previous,
+			row_number() over (partition by issue_key order by id) as n
+		from events
+		where issue_key = any($1::text[]) and type in ('issue.created', 'issue.updated', 'issue.closed')
+	) written
+	where n = 1 or parent is distinct from previous
+	order by issue_key, id
+`
+
+// readParentHistory reads the parent history of each issue keys names, and of each issue that was
+// ever a parent of one of them, and so on up, so that the parents of every ancestor an issue had at
+// any event are known: one query for each step up. An issue with no such event, which only a
+// direct write to the database can make, has no parent in the history, so no path to a root
+// passes it, and a document under it joins the list at its first approval.
+func readParentHistory(ctx context.Context, q queryer, keys []string) (parentHistory, error) {
+	history := parentHistory{}
+	for len(keys) > 0 {
+		rows, err := q.Query(ctx, parentHistoryQuery, keys)
+		if err != nil {
+			return nil, fmt.Errorf("read the parents of %d issues from their events: %w", len(keys), err)
+		}
+		var (
+			issue  string
+			change parentChange
+		)
+		if _, err := pgx.ForEachRow(rows, []any{&issue, &change.event, &change.parent}, func() error {
+			history[issue] = append(history[issue], change)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the parents of %d issues from their events: %w", len(keys), err)
+		}
+		for _, key := range keys {
+			if _, read := history[key]; !read {
+				history[key] = nil // no event: read, so no later step asks again
+			}
+		}
+		var next []string
+		for _, key := range keys {
+			for _, change := range history[key] {
+				if _, read := history[change.parent]; change.parent != "" && !read && !slices.Contains(next, change.parent) {
+					next = append(next, change.parent)
+				}
+			}
+		}
+		keys = next
+	}
+	return history, nil
+}
+
+// parentAt is the parent of issue once the events up to event were written: the parent of its
+// last change at or before event, and before its first change the parent it was made with.
+func (h parentHistory) parentAt(issue string, event int64) string {
+	changes := h[issue]
+	if len(changes) == 0 {
+		return ""
+	}
+	parent := changes[0].parent
+	for _, change := range changes {
+		if change.event > event {
+			break
+		}
+		parent = change.parent
+	}
+	return parent
+}
+
+// lastChange is the id of the last event at or before event that changed the parent of issue, 0
+// for none.
+func (h parentHistory) lastChange(issue string, event int64) int64 {
+	var last int64
+	for _, change := range h[issue] {
+		if change.event <= event {
+			last = change.event
+		}
+	}
+	return last
+}
+
+// pathTo is issue and each issue above it, up to the first named root of roots, once the events
+// up to event were written, and whether that root is root. It climbs at most parentDepthCap
+// links, as every walk of the issue tree does.
+func (h parentHistory) pathTo(issue, root string, event int64, roots []string) ([]string, bool) {
+	path := []string{issue}
+	for parent := h.parentAt(issue, event); parent != ""; parent = h.parentAt(parent, event) {
+		if slices.Contains(roots, parent) {
+			return path, parent == root
+		}
+		if len(path) > parentDepthCap {
+			break
+		}
+		path = append(path, parent)
+	}
+	return path, false
+}
+
+// arrival is the event at which issue last came under root, by the parents as the events left
+// them at each move: the last event after which the nearest named root of roots above issue was
+// root and before which it was not. It walks back from the present: the last change of a parent
+// on the path from issue to root is an arrival when the path before it led to no root or to
+// another one, and is a move inside the root when it led to root too, which it then walks past.
+// A move of root itself, or of an issue above it, changes no path to it. An issue that has been
+// under root since it was made, and one whose events put it under no root now, has no arrival.
+func (h parentHistory) arrival(issue, root string, roots []string) (int64, bool) {
+	for event := int64(math.MaxInt64); ; {
+		path, under := h.pathTo(issue, root, event, roots)
+		if !under {
+			return 0, false
+		}
+		var last int64
+		for _, key := range path {
+			last = max(last, h.lastChange(key, event))
+		}
+		if last == 0 {
+			return 0, false
+		}
+		if _, under := h.pathTo(issue, root, last-1, roots); !under {
+			return last, true
+		}
+		event = last - 1
+	}
+}
+
+// lockSpecTermsOfMove takes the lock of the list of terms of the root that a reparent from the
+// parent before to the parent after brings the moved issue under, in tx, which holds the move,
+// when the move changes the nearest named root above it (lockSpecTerms). It takes the lock before
+// the move appends its event, so the event's id orders the arrival among the approvals that the
+// list reads (approvedSpecTexts). A move inside one root, or out of every root, takes none. It
+// writes nothing: the list reads each arrival from the move's event, which every build writes.
+func (s *server) lockSpecTermsOfMove(ctx context.Context, tx pgx.Tx, before, after *string) error {
+	if len(s.deps.SpecRoots) == 0 {
+		return nil
+	}
+	left, err := s.nearestSpecRoot(ctx, tx, before)
+	if err != nil {
+		return err
+	}
+	joined, err := s.nearestSpecRoot(ctx, tx, after)
+	if err != nil || joined == "" || joined == left {
+		return err
+	}
+	return lockSpecTerms(ctx, tx, joined)
+}
+
+// nearestSpecRoot is the named root that an issue under parent has as its nearest named ancestor:
+// parent itself, or the nearest named one of its ancestors, "" for none.
+func (s *server) nearestSpecRoot(ctx context.Context, q queryer, parent *string) (string, error) {
+	if parent == nil {
+		return "", nil
+	}
+	if slices.Contains(s.deps.SpecRoots, *parent) {
+		return *parent, nil
+	}
+	ancestors, err := refs.IssueAncestors(ctx, q, *parent)
+	if err != nil {
+		return "", fmt.Errorf("read the ancestors of %s: %w", *parent, err)
+	}
+	for _, ancestor := range ancestors {
+		if slices.Contains(s.deps.SpecRoots, ancestor) {
+			return ancestor, nil
+		}
+	}
+	return "", nil
 }
 
 // specFormMarkdown is the stored markdown of version of artifact. A version the document does not
@@ -578,9 +963,9 @@ func specFormMarkdown(ctx context.Context, q queryer, artifact model.Artifact, v
 	return markdown, nil
 }
 
-// specFormStrings is the one text column query selects, row by row.
-func specFormStrings(ctx context.Context, q queryer, query string) ([]string, error) {
-	rows, err := q.Query(ctx, query)
+// specFormStrings is the one text column query selects with args, row by row.
+func specFormStrings(ctx context.Context, q queryer, query string, args ...any) ([]string, error) {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

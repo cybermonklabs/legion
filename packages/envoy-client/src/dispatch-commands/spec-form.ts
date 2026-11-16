@@ -1,4 +1,9 @@
-import type { ApprovalRequestResponse, Artifact, SpecFormRead } from "@legion/contracts";
+import type {
+  ApprovalRequestResponse,
+  Artifact,
+  SpecFormFinding,
+  SpecFormRead,
+} from "@legion/contracts";
 import type { DispatchClient } from "../dispatch-http";
 import {
   type CommandContext,
@@ -66,6 +71,17 @@ function scopeLine(form: SpecFormRead): string {
 }
 
 /**
+ * How many texts hold one of `findings`, which the read route answers whole. The findings of one
+ * text name its node, its kind, its place and its excerpt, as in the head of the server's refusal
+ * (`textsOf` in packages/envoy/internal/dispatch/specform/message.go).
+ */
+function textsBreaking(findings: readonly SpecFormFinding[]): number {
+  return new Set(
+    findings.map(({ excerpt, kind, node, where }) => JSON.stringify([where, kind, node, excerpt]))
+  ).size;
+}
+
+/**
  * The form of one document as Dispatch read it. A document an approval request is judged on
  * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
  * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
@@ -81,7 +97,8 @@ function documentLines(form: SpecFormRead): string[] {
       : [scopeLine(form), "The findings below are for you to read.", ...listed];
   }
   if (findings.length === 0) return [read];
-  const breaks = form.findings_total === 1 ? "1 text breaks" : `${form.findings_total} texts break`;
+  const texts = textsBreaking(findings);
+  const breaks = texts === 1 ? "1 text breaks" : `${texts} texts break`;
   return [
     `Dispatch refuses an approval request of ${form.name} version ${form.version}, because ${breaks} the form of The Spec.`,
     ...listed,
@@ -156,20 +173,25 @@ async function latestForm(
   }
 }
 
-/** The spec and the Verification document of one issue, each read at its latest settled version. */
+/** The spec and the Verification document among `artifacts`, each read at its latest settled version. */
 async function coveredForms(
   client: DispatchClient,
-  issue: string
+  artifacts: readonly Artifact[]
 ): Promise<{ readonly artifact: Artifact; readonly form: SpecFormRead | undefined }[]> {
-  const artifacts = (await client.listIssueArtifacts(issue)).filter(playsSpecOrVerification);
   return Promise.all(
-    artifacts.map(async (artifact) => ({ artifact, form: await latestForm(client, artifact) }))
+    artifacts
+      .filter(playsSpecOrVerification)
+      .map(async (artifact) => ({ artifact, form: await latestForm(client, artifact) }))
   );
 }
 
-/** `dispatch spec-form --issue KEY` with no `--artifact`: each document the issue's form plays. */
+/**
+ * `dispatch spec-form --issue KEY` with no `--artifact`: each document the issue's form plays,
+ * from the issue's own read. The documents route lists no document for a key that names no issue
+ * and refuses nothing, so the issue's read is what refuses such a key, as `dispatch read` does.
+ */
 async function issueForms(client: DispatchClient, issue: string): Promise<DispatchToolResult> {
-  const read = await coveredForms(client, issue);
+  const read = await coveredForms(client, (await client.getIssue(issue)).artifacts ?? []);
   const lines = read.flatMap(({ artifact, form }) =>
     form === undefined
       ? [noVersionLine(artifact.name)]
@@ -203,10 +225,13 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
 /**
  * `dispatch spec-form --issue KEY --terms` with no `--artifact`: the list of terms of the issue's
  * root, read from its spec or its Verification document, whichever has a settled version first.
- * Every document under one root carries the same list, so one read is enough.
+ * Every document under one root carries the same list, so one read is enough. The documents come
+ * from the issue's own read, which refuses a key that names no issue, as `dispatch read` does.
  */
 async function issueTerms(client: DispatchClient, issue: string): Promise<DispatchToolResult> {
-  const artifacts = (await client.listIssueArtifacts(issue)).filter(playsSpecOrVerification);
+  const artifacts = ((await client.getIssue(issue)).artifacts ?? []).filter(
+    playsSpecOrVerification
+  );
   const lines: string[] = [];
   for (const artifact of artifacts) {
     const form = await latestForm(client, artifact);
@@ -246,7 +271,7 @@ async function rootForms(client: DispatchClient, root: string): Promise<Dispatch
     for (const child of await client.listAllIssues({ parent })) {
       if (seen.has(child.key)) continue;
       seen.add(child.key);
-      const read = await coveredForms(client, child.key);
+      const read = await coveredForms(client, await client.listIssueArtifacts(child.key));
       const totals: Record<string, number> = {};
       let issueFindings = 0;
       const documentRows = read.map(({ artifact, form }) => {
