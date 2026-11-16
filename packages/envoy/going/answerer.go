@@ -404,3 +404,4 @@ func estimateTokens(request ChatRequest) int {
 	}
 	return chars / charsPerToken
 }
+// selection probe, never merged
