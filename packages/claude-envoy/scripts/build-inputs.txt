@@ -20,7 +20,7 @@
 #   what bun install puts in node_modules, and the skills and agents buildLegionPlugin reads. The
 #   rest is listed by hand and no test checks it: .bun-version, bunfig.toml, the
 #   .gitattributes files, scripts/third-party-notices.ts (and any other module build.ts imports
-#   from outside the packages below), scripts/pi-plugin-prepack.sh and the three .github paths at
+#   from outside the packages below), scripts/pi-plugin-prepack.sh and the two .github paths at
 #   the end. A change that makes build.ts or verify-build.sh read a new file adds it here.
 #
 # The rule: whole package directories are listed and only known non-inputs are excluded, so a file
@@ -79,6 +79,5 @@ scripts/third-party-notices.ts
 scripts/pi-plugin-prepack.sh
 
 # The build jobs run these through verify-build.sh, which runs check-built.
-.github/scripts/check-private-names.sh
 .github/scripts/release-push.sh
 .github/actions/setup-bun

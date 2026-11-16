@@ -308,6 +308,7 @@ jobs:
       ci_tools_proof_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_tools_proof_test }}
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
+      check_private_names_terms_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_terms_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
@@ -1118,10 +1119,8 @@ jobs:
             # that job's lint and typecheck in no step, and no other test of the package.
             claude_envoy_build: &claude_envoy_build
               - 'packages/claude-envoy/**'
-              # verify-build.sh checks the build with check-private-names.sh and release-push.sh
-              # check-built, and the claude-envoy job puts it in place with release-push.sh
-              # extract-built.
-              - '.github/scripts/check-private-names.sh'
+              # verify-build.sh checks the build with release-push.sh check-built, and the
+              # claude-envoy job puts it in place with release-push.sh extract-built.
               - '.github/scripts/release-push.sh'
               # packages/claude-envoy/tests/build-inputs.test.ts:146-153 holds release.yaml's
               # $CLAUDE_ENVOY_VERSION_ARGS equal to scripts/build-inputs.txt, so a change to either
@@ -1169,6 +1168,8 @@ jobs:
               # 0.0.0 placeholder and admits the first release. No step of the test job runs that
               # test, so the entry is this job's alone.
               - '.claude-plugin/marketplace.json'
+              # The private-names job of ci-job-claude-envoy.yaml checks the packed plugin with it.
+              - '.github/scripts/check-private-names.sh'
             contracts:
               - *ci_router
               - '.github/workflows/ci-job-contracts.yaml'
@@ -1378,8 +1379,18 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-private-names.test.sh'
+              # The fixtures, name pieces and stand-in GitHub API the harness sources.
+              - '.github/scripts/check-private-names-test-lib.sh'
               - '.github/scripts/check-private-names.sh'
-              # :21 runs the guard's other surface, a pull request's text, with it.
+              # The library runs the guard's other surface, a pull request's text, with it.
+              - '.github/scripts/check-pr-text.sh'
+            check_private_names_terms_test: &check_private_names_terms_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-private-names-terms.test.sh'
+              - '.github/scripts/check-private-names-test-lib.sh'
+              - '.github/scripts/check-private-names.sh'
               - '.github/scripts/check-pr-text.sh'
             check_plugin_names_test: &check_plugin_names_test
               - *ci_router
@@ -1611,6 +1622,7 @@ jobs:
               - *ci_tools_proof_test
               - *check_action_pins_test
               - *check_private_names_test
+              - *check_private_names_terms_test
               - *check_plugin_names_test
               - *check_fireevent_reasons_test
               - *check_daemon_api_contract_test
@@ -4629,6 +4641,7 @@ jobs:
       ci_tools_proof_test: ${{ needs.changes.outputs.ci_tools_proof_test }}
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
+      check_private_names_terms_test: ${{ needs.changes.outputs.check_private_names_terms_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
@@ -4651,8 +4664,6 @@ jobs:
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
-    secrets:
-      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
   # Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,
@@ -4707,8 +4718,6 @@ jobs:
     uses: ./.github/workflows/ci-job-private-names-port.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-    secrets:
-      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # Builds the documentation site (docs/site) on every pull request and merge group that could
   # change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes

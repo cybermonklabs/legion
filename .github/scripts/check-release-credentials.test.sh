@@ -865,35 +865,52 @@ check "names the whole secrets context" \
 check "the listener's docker job, whose login holds secrets.GITHUB_TOKEN, is not named" \
   "$(is "$(contains "$out" "job 'docker'")" false)"
 
-echo "case: the deployment's term list, in the env of a build job's step that runs the private-name check"
+echo "case: check-private-names.sh, at its own path, is no dependency code, so a job running it may hold the term list"
+# The step release.yaml's claude_envoy_names runs, in the fixture's plain job. Only that one
+# script, invoked at its own path, is classed so: another scripts/ path beside it, a script of the
+# same name elsewhere, or its path in a comment or an argument leaves the job a build job, which
+# holds no secret.
 terms_env=$'        env:\n          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}\n'
-verify_step=$'      - name: Build, check and pack the plugin\n'"$terms_env"$'        run: bun run verify-build "$RUNNER_TEMP/plugin.tar"\n'
-root=$(fixture build-terms-allowed)
-mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' $'        run: bun install --frozen-lockfile\n'"$verify_step" 1
+names_step=$'      - name: Check the packed plugin names nothing private\n'"$terms_env"$'        run: .github/scripts/check-private-names.sh packages/claude-envoy/dist packages/claude-envoy/legion\n'
+terms_refused="job 'changes' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; a build job holds no secret but GITHUB_TOKEN"
+root=$(fixture terms-names-job)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$names_step"
 run_check "$root"
-check "is allowed: exits 0" "$(is "$status" 0)"
+check "the check at its own path, with the list in its step: exits 0" "$(is "$status" 0)"
+check "names no problem in that job" "$(is "$(contains "$out" "job 'changes'")" false)"
 
-root=$(fixture build-terms-other-step)
-mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' "$terms_env"$'        run: bun install --frozen-lockfile\n' 1
+root=$(fixture terms-names-job-other-script)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "$names_step"$'      - name: Check the plugin names\n        run: .github/scripts/check-plugin-names.sh\n'
 run_check "$root"
-check "in a step that runs no private-name check: exits 1" "$(is "$status" 1)"
-check "names the secret at its line" \
-  "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" 'PRIVATE_NAME_TERMS:'): job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; a build job holds no secret but GITHUB_TOKEN")"
+check "another scripts/ path in the same job: exits 1" "$(is "$status" 1)"
+check "refuses the list in what is now a build job" "$(contains "$out" "$terms_refused")"
 
-root=$(fixture build-terms-other-form)
-odd_terms_env=$'        env:\n          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS || secrets.NPM_TOKEN }}\n'
+root=$(fixture terms-same-name-elsewhere)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' "${names_step/.github\/scripts\/check-private-names.sh/packages\/x\/scripts\/check-private-names.sh}"
+run_check "$root"
+check "a script of the same name under another scripts/ directory: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-comment-only)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' $'      - name: Install\n'"$terms_env"$'        run: bun install --frozen-lockfile # .github/scripts/check-private-names.sh\n'
+run_check "$root"
+check "the path in a comment only: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+root=$(fixture terms-argument-only)
+mutate "$root/$RELEASE" $'      - run: echo hello\n' $'      - name: Install\n'"$terms_env"$'        run: ./scripts/build.sh .github/scripts/check-private-names.sh\n'
+run_check "$root"
+check "the path as another command's argument only: exits 1" "$(is "$status" 1)"
+check "refuses the list" "$(contains "$out" "$terms_refused")"
+
+echo "case: the term list in a build job's verify-build step is refused, as any secret but GITHUB_TOKEN is"
+root=$(fixture terms-in-build-job)
 mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' \
-  $'        run: bun install --frozen-lockfile\n      - name: Build, check and pack the plugin\n'"$odd_terms_env"$'        run: bun run verify-build "$RUNNER_TEMP/plugin.tar"\n' 1
+  $'        run: bun install --frozen-lockfile\n      - name: Build, check and pack the plugin\n'"$terms_env"$'        run: bun run verify-build "$RUNNER_TEMP/plugin.tar"\n' 1
 run_check "$root"
-check "in another form, which could carry another secret, in that same step: exits 1" "$(is "$status" 1)"
-check "names the secret" "$(contains "$out" "job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; ")"
-
-root=$(fixture build-terms-job-env)
-mutate "$root/$RELEASE" $'    if: github.ref == \'refs/heads/main\'\n    steps:\n' \
-  $'    if: github.ref == \'refs/heads/main\'\n    env:\n      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}\n    steps:\n' 1
-run_check "$root"
-check "in the job's env, which reaches every step: exits 1" "$(is "$status" 1)"
-check "names it" "$(contains "$out" "job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS")"
+check "exits 1" "$(is "$status" 1)"
+check "names the list at its line" \
+  "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" 'PRIVATE_NAME_TERMS:'): job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; a build job holds no secret but GITHUB_TOKEN")"
 
 echo "case: docker run in a credentialed job (docker buildx imagetools, docker login and docker buildx version stay allowed)"
 root=$(fixture docker-run)

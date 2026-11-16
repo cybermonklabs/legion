@@ -20,12 +20,7 @@
 #    every job, so the key there is never allowed.
 # 2. A build job — one that runs dependency code — holds none of those four write scopes and no
 #    `secrets` reference but `secrets.GITHUB_TOKEN`, in its own text or the workflow's `env:` (so
-#    no deploy key, by dot or by index, no other secret and no `toJSON(secrets)`), with one
-#    exception: `PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}` (that form, exactly) in the
-#    step-level `env:` of a step whose `run:` runs the private-name check (PRIVATE_NAME_CHECKS:
-#    check-private-names.sh, or verify-build, which runs it). That secret is the deployment's own
-#    list of names the check refuses, which grants no access, and the check fails a push's run
-#    without it (its header). It also declares
+#    no deploy key, by dot or by index, no other secret and no `toJSON(secrets)`), declares
 #    `permissions` of its own when the workflow declares none (a job with neither runs under
 #    whatever the repository grants, which this check cannot read), carries no
 #    `continue-on-error:` (GitHub reports such a job as a success to the jobs that need it, failed
@@ -80,10 +75,17 @@
 # DOCKER_DEPENDENCY_LONG (`docker container run`, `docker image build`, `docker buildx build`, …),
 # past docker's global options (`--config /tmp/c`, `-H tcp://x`, `-D`), is a path with a
 # `scripts/` or `out/` component (`./scripts/x`, `../../scripts/x`, `out/x`,
-# `"$GITHUB_WORKSPACE/out/x"`), other than .github/scripts/release-push.sh itself, or is
-# `release-push.sh fold-notes`, at any path or none (`.github/scripts/release-push.sh
-# fold-notes`), which runs changie: release-push.sh's other commands are not dependency code, and
-# fold-notes is. Command position is found by one quote-aware scan of the `run:` (its `${{ … }}`
+# `"$GITHUB_WORKSPACE/out/x"`), other than the two repository shell scripts NOT_DEPENDENCY_SCRIPTS
+# names, each at that exact path (.github/scripts/release-push.sh and
+# .github/scripts/check-private-names.sh), or is `release-push.sh fold-notes`, at any path or none
+# (`.github/scripts/release-push.sh fold-notes`), which runs changie: release-push.sh's other
+# commands are not dependency code, and fold-notes is. check-private-names.sh is not dependency
+# code: it sources nothing, and runs bash builtins and dirname, mktemp, rm, git (ls-files, grep),
+# grep, find, sort, wc, cut and cat, all the runner's own; it is the one script a job holding the
+# deployment's term list runs (release.yaml's claude_envoy_names). The classification is of a
+# command a step runs, never of a word a comment or another command's argument holds: a script
+# named only that way is no exemption. Command position is found by one quote-aware scan of the
+# `run:` (its `${{ … }}`
 # expressions elided first), as bash reads it: a `#` starts a comment only at word start — the
 # start of the run, after unquoted whitespace or a newline, or after an unquoted `;`, `&`, `|`,
 # `(`, `)`, `<`, `>` or backtick, not `{` (`${#x}`, `$#` and `a#b` are words) — and the comment
@@ -169,6 +171,10 @@ DEPLOY_KEY_REF = re.compile(
 )
 DEPLOY_KEY_VALUE = re.compile(r"\$\{\{\s*secrets\.DEPLOY_KEY\s*\}\}", re.IGNORECASE)
 RELEASE_PUSH = ".github/scripts/release-push.sh"
+PRIVATE_NAMES_CHECK = ".github/scripts/check-private-names.sh"
+# The repository shell scripts under a scripts/ directory that are no dependency code, each at
+# this exact path (the header says what each runs).
+NOT_DEPENDENCY_SCRIPTS = (RELEASE_PUSH, PRIVATE_NAMES_CHECK)
 TRIPWIRE = f"{RELEASE_PUSH} no-credential"
 # The one release-push.sh command a step holding the deploy key may run: a release pushes its
 # tag, and nothing else pushes.
@@ -186,12 +192,6 @@ OTHER_SECRET = re.compile(
     r"|\$\{\{(?:(?!\}\}).)*?(?<![\w./-])secrets\b(?!\s*[.\[])(?:(?!\}\}).)*\}\}",
     re.IGNORECASE,
 )
-
-# Rule 2's one exception: the deployment's own term list, in the env of a step whose run names one
-# of PRIVATE_NAME_CHECKS, as exactly this value. The secret name stays exact, a stricter form than
-# GitHub's case-insensitive one, so the exception reads as one string wherever it is grepped.
-TERMS_VALUE = re.compile(r"\$\{\{ secrets\.PRIVATE_NAME_TERMS \}\}")
-PRIVATE_NAME_CHECKS = ("check-private-names.sh", "verify-build")
 
 # What makes a step run dependency code. changie is a third-party binary, which `release-push.sh
 # fold-notes` runs in each release's build job to render that release's changelog entries.
@@ -441,10 +441,10 @@ def dependency_command(words: list[str]) -> str | None:
     path = PATH_PREFIX.sub("", command)
     if is_release_push(command) and words[1:2] == ["fold-notes"]:
         return f"'{command} fold-notes' (it runs changie)"
-    # The exemption is the checkout's own path, not the name is_release_push counts at any path:
-    # release-push.sh's other commands are no dependency code, and a script under some other
-    # scripts/ directory is not this one, whatever it is called.
-    if DEPENDENCY_PATH.search(path) and path != RELEASE_PUSH:
+    # The exemptions are the checkout's own paths, not a name counted at any path: release-push.sh's
+    # other commands and check-private-names.sh are no dependency code, and a script under some
+    # other scripts/ directory is not one of them, whatever it is called.
+    if DEPENDENCY_PATH.search(path) and path not in NOT_DEPENDENCY_SCRIPTS:
         return f"'{command}'"
     return None
 
@@ -525,17 +525,6 @@ def texts_of(node, path=(), line=0) -> list[tuple[tuple, int, str]]:
     elif isinstance(node, str):
         texts.append((path, line, node))
     return texts
-
-
-def terms_allowed(steps: list, path: tuple, text: str) -> bool:
-    """`PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}` in the env of a step that runs the
-    private-name check, and nothing else: rule 2's one exception, exactly that form."""
-    if len(path) != 4 or path[0] != "steps" or path[2:] != ("env", "PRIVATE_NAME_TERMS"):
-        return False
-    if not TERMS_VALUE.fullmatch(text.strip()):
-        return False
-    run = steps[path[1]].get("run")
-    return isinstance(run, str) and any(check in run for check in PRIVATE_NAME_CHECKS)
 
 
 def deploy_key_allowed(steps: list, path: tuple, text: str) -> bool:
@@ -709,9 +698,7 @@ def check_job(
             if "permissions" not in job:
                 held += " through the workflow's permissions, having none of its own"
             problem(path, line, f"job '{name}' runs dependency code ({what}), but {held}")
-        for site, line, text in texts:
-            if terms_allowed(steps, site, text):
-                continue
+        for _, line, text in texts:
             if secret := OTHER_SECRET.search(text):
                 problem(
                     path, line,

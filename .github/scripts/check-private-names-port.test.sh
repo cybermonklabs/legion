@@ -82,12 +82,12 @@ chmod +x "$PUBLIC_LEAK_CHECK"
 remote_url="$work/remote.git"
 
 # The frozen script's fifth rule, the deployment's own term list (PRIVATE_NAME_TERMS, an Actions
-# secret), has no port: no rule file of a public repository can spell those terms. So every case
-# runs the frozen script with no list on a pull request's event, where it runs the four rules it
-# spells and warns that it did (a line read_frozen does not read), and the last case alone runs
-# it under the job's own event and list, which are kept here.
-job_event=${GITHUB_EVENT_NAME-}
-job_terms=${PRIVATE_NAME_TERMS-}
+# secret), has no port: no rule file of a public repository can spell those terms, and this job
+# holds no secret. So every case runs the frozen script with no list on a pull request's event,
+# where it runs the four rules it spells and warns that it did (a line read_frozen does not read).
+# Whatever list or event the job's own environment holds is replaced, never read, and with no
+# tracing, which would print a term once a case sets one.
+set +x
 export GITHUB_EVENT_NAME=pull_request
 unset PRIVATE_NAME_TERMS
 
@@ -836,8 +836,7 @@ echo "rule case 16: the suite's own output never names a private thing"
 exec 1>&3 2>&4
 wait "$tee_pid" 2> /dev/null || true
 frozen_self=0
-GITHUB_EVENT_NAME=$job_event PRIVATE_NAME_TERMS=$job_terms "$frozen_script" "$self_log" > /dev/null 2>&1 ||
-  frozen_self=$?
+"$frozen_script" "$self_log" > /dev/null 2>&1 || frozen_self=$?
 engine_self=0
 "$engine" leak-check text "this suite's own log" < "$self_log" > /dev/null 2>&1 || engine_self=$?
 check "the frozen script clears this suite's own log" "$(is "$frozen_self" 0)"

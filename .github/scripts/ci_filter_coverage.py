@@ -1084,9 +1084,10 @@ ENV_ALLOWED = frozenset({
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN", "PREVIOUS_COMMIT",
     "TESTCONTAINERS_RYUK_DISABLED",
-    # The deployment's term list .github/scripts/check-private-names.sh reads, which each step
-    # that runs that check maps from the secret of that name (lint's, test's and the
-    # private-name port's among them, beside their go commands). go reads it nowhere.
+    # The deployment's term list .github/scripts/check-private-names.sh reads. The private-names
+    # jobs of ci-job-lint.yaml and docs-site.yaml map it from the secret of that name, and this
+    # check reads every step of a called file beside the go commands its other job runs. go reads
+    # it nowhere.
     "PRIVATE_NAME_TERMS",
 })
 
