@@ -9,8 +9,6 @@ import (
 	"log/slog"
 	"maps"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -33,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -1146,9 +1145,8 @@ func TestALaunchThatWaitsOutItsPodSaysWhatTheSandboxReports(t *testing.T) {
 // a refused watch itself without ever calling that handler, so a runtime that trusted it could
 // boot with two stores nothing was feeding.
 func TestBootRefusesWhenTheAPIServerRefusesTheConnection(t *testing.T) {
-	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	address := dead.URL
-	dead.Close()
+	// An API server at a port the test holds and nothing listens on: every dial is refused.
+	address := "http://" + testport.Refused(t)
 	boot, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
