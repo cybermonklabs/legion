@@ -361,7 +361,6 @@ func TestANamedTokenWithNoProjectUsesPublicProjectsOnly(t *testing.T) {
 				}
 			})
 			t.Run("writes on PRIV's issue as missing", func(t *testing.T) {
-				t.Skip("needs t-a-19 (writes)")
 				if wrote := serve(http.MethodPost, "/api/v1/issues/"+priv+"/comments", map[string]any{"body": "Never lands."}); wrote.Code != http.StatusNotFound {
 					t.Fatalf("POST /api/v1/issues/%s/comments under %s = %d %s, want 404", priv, named.name, wrote.Code, wrote.Body.String())
 				}

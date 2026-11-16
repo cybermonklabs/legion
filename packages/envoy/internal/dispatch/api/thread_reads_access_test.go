@@ -41,7 +41,7 @@ func seedThreads(t *testing.T) threadSeed {
 		threads.message[project] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+key+"/messages",
 			map[string]any{"body": "The message of " + project + "."}))
 	}
-	createdID(t, seed.request(t, callerSharedToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+	createdID(t, seed.request(t, callerCarolPrivToken, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "s1 works on PRIV.", "actor": map[string]any{"kind": "session", "id": "s1"}}))
 	threads.aliceDirect = createdID(t, postAgentMessage(t, seed.handler, "s1",
 		map[string]any{"body": "alice asks s1 something.", "delivery": "aside"}, seedAlice))
