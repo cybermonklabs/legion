@@ -166,6 +166,47 @@ type wirePodSession struct {
 	PodUID     string `json:"pod_uid"`
 	Session    string `json:"session"`
 	Thumbprint string `json:"thumbprint"`
+	Generation *int64 `json:"generation"`
+}
+
+// TestTheRegistrationRouteAnswersTheStoredGeneration: the route answers the registration as
+// stored, its generation included. A write of generation 2 with kB is answered generation 2; a
+// later write of generation 1 with kA, an old incarnation's committed late, changes nothing and
+// is answered the stored row, kB at generation 2; a write that sends no generation is answered
+// generation 0, never an absent field; and a negative generation is 400 GENERATION_INVALID and
+// writes nothing.
+func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
+	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
+	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
+	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	register := func(fields map[string]any) (int, []byte) {
+		fields["pod_token"] = podToken
+		return ts.req(t, http.MethodPost, "/v1/oauth/exchange/pod-sessions",
+			map[string]string{"Authorization": "Bearer " + registrar}, fields)
+	}
+	answered := func(what string, status int, body []byte, thumbprint string, generation int64) {
+		t.Helper()
+		got := decode[wirePodSession](t, body)
+		if status != http.StatusOK || got.Thumbprint != thumbprint || got.Generation == nil || *got.Generation != generation {
+			t.Fatalf("%s = %d %s, want 200 answering the stored row: thumbprint %s at generation %d", what, status, body, thumbprint, generation)
+		}
+	}
+
+	status, body := register(map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})
+	answered("a write of generation 2 with kB", status, body, kB, 2)
+	status, body = register(map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
+	answered("a late write of generation 1 with kA after generation 2", status, body, kB, 2)
+	status, body = register(map[string]any{"session": "watched-session"})
+	answered("a write that sends no generation", status, body, "", 0)
+
+	status, body = register(map[string]any{"session": "refused-session", "thumbprint": kA, "generation": -1})
+	if code := decode[wireError](t, body).Code; status != http.StatusBadRequest || code != "GENERATION_INVALID" {
+		t.Fatalf("a write of generation -1 = %d %s, want 400 GENERATION_INVALID", status, body)
+	}
+	if rows := ts.column(t, `select session from oauth_pod_sessions where session = 'refused-session'`); len(rows) != 0 {
+		t.Fatalf("the refused write of generation -1 wrote %v", rows)
+	}
 }
 
 // TestTheRegistrationRouteHoldsTheThumbprintsShape: a registration's thumbprint is an RFC 7638
