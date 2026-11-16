@@ -758,9 +758,11 @@ async function createJjWorkspace(): Promise<string> {
  * (`user.name = "…"`), or `""` when the repository scope does not set it. `--repo` is the scope;
  * `-R` names the repo, which is also where it runs. `--include-overridden` (its `# ` marker
  * stripped) keeps the answer the same when the process running the tests — a Legion pane —
- * carries `JJ_USER`/`JJ_EMAIL`, which would otherwise hide the repository value. */
+ * carries `JJ_USER`/`JJ_EMAIL`, which would otherwise hide the repository value. It runs with the
+ * environment this process started with (`runTool` with no `env`), not `process.env`, whose HOME
+ * this file points at a directory that does not exist, where jj cannot read a repository's config. */
 async function jjRepoConfig(directory: string, key: string): Promise<string> {
-  const listed = await runTool(jjProgram, directory, process.env, [
+  const listed = await runTool(jjProgram, directory, undefined, [
     "config",
     "list",
     "--repo",
@@ -773,7 +775,7 @@ async function jjRepoConfig(directory: string, key: string): Promise<string> {
 }
 
 async function setJjRepoConfig(directory: string, key: string, value: string): Promise<void> {
-  await runTool(jjProgram, directory, process.env, [
+  await runTool(jjProgram, directory, undefined, [
     "config",
     "set",
     "--repo",
