@@ -1325,8 +1325,6 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 		"boot token secret":   {func(s *runtime.SpawnSpec) { s.Secrets[bootTokenKey] = "x" }, "is a variable the runtime sets itself"},
 		"provisioning secret": {func(s *runtime.SpawnSpec) { s.Secrets[provisionTokenKey] = "x" }, "a key the runtime writes itself"},
 		"dispatch secret":     {func(s *runtime.SpawnSpec) { s.Secrets[dispatchTokenKey] = "x" }, "DISPATCH_TOKEN_FILE is a variable the runtime sets itself"},
-		"prompt past its model's context": {func(s *runtime.SpawnSpec) { s.ModelContextBytes = 64 },
-			"larger than the 64 bytes model_context_bytes.tester gives its model's context"},
 		"prompt past one start frame": {func(s *runtime.SpawnSpec) { s.Prompt.Addressing = strings.Repeat("x", shimwire.MaxFrameBytes) },
 			"the start frame that carries it to its pod's launcher would be"},
 	} {

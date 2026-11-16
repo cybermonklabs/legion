@@ -3,37 +3,26 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A claim whose launch was refused because the role's system prompt is larger than its model's
-// context is read in the claim view read_state serves, with no fresh_session asked for: the
-// refusal's sentence, which names the role, the prompt's size and the bound, is the view's
-// `lastStartFailure` and its `failure.detail`, under the cause `launch_refused`, with no launch
-// failure among its `attempts`. The claim is the one supervise leaves (its promptRefused, held by
-// TestAPromptTooLargeForItsModelFailsTheClaimChargingNoLaunchFailure); the sentence is the runtime's
-// own, over a real 200,000-byte prompt and a 150,000-byte bound.
-func TestTheClaimViewOfAPromptRefusalNamesTheRoleTheSizeAndTheBound(t *testing.T) {
-	role := filepath.Join(t.TempDir(), "architect.md")
-	if err := os.WriteFile(role, []byte(strings.Repeat("x", 200_000)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+// A claim whose launch was refused because the start frame carrying its role's system prompt to
+// the pod's launcher would pass the one frame a launcher reads is read in the claim view read_state
+// serves, with no fresh_session asked for: the refusal's sentence, which names the role, the
+// prompt's size and the limit, is the view's `lastStartFailure` and its `failure.detail`, under the
+// cause `launch_refused`, with no launch failure among its `attempts`. The claim is the one
+// supervise leaves (its promptRefused, held by
+// TestAPromptPastTheStartFrameFailsTheClaimChargingNoLaunchFailure).
+func TestTheClaimViewOfAPromptRefusalNamesTheRoleTheSizeAndTheLimit(t *testing.T) {
 	token := claim.Token("legion-legion-legion-208-architect")
-	_, refusal := runtime.SystemPrompt(runtime.SpawnSpec{
-		Claim: token, Role: claim.RoleArchitect, ModelContextBytes: 150_000,
-		Prompt: runtime.PromptParts{RolePromptPaths: []string{role}},
-	})
-	if refusal == nil {
-		t.Fatal("runtime.SystemPrompt composed a 200,000-byte prompt under a 150,000-byte bound")
-	}
+	refusal := &runtime.PromptTooLarge{Role: claim.RoleArchitect, Bytes: 1_100_000, Frame: 1_100_400, Bound: shimwire.MaxFrameBytes}
 	started := fmt.Sprintf("sandbox launch %s: %v", token, refusal)
 	refused := supervise.Claim{
 		Token: token, Role: claim.RoleArchitect, State: supervise.StateFailed,
@@ -58,7 +47,7 @@ func TestTheClaimViewOfAPromptRefusalNamesTheRoleTheSizeAndTheBound(t *testing.T
 	if err := json.Unmarshal(encoded, &view); err != nil {
 		t.Fatal(err)
 	}
-	for _, named := range []string{"the architect's system prompt", "200000 bytes", "150000 bytes", "model_context_bytes.architect"} {
+	for _, named := range []string{"the architect's system prompt", "1100000 bytes", "1048576 bytes"} {
 		if !strings.Contains(view.LastStartFailure, named) || !strings.Contains(view.Failure.Detail, named) {
 			t.Errorf("the claim view %s does not name %q in both lastStartFailure and failure.detail", encoded, named)
 		}

@@ -25,7 +25,7 @@
 //     the tmux runtime's own `<pid>:<start ticks>`, read from /proc, so a reissued pid is told from
 //     the process the locator recorded exactly as it is there.
 //   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
-//     prompt file as a pane's does: the prompt composed (runtime.SystemPrompt) and written to
+//     prompt file as a pane's does: the prompt composed (runtime.ComposePrompt) and written to
 //     runtime.SystemPromptPath, and that path as the one `--append-system-prompt` value.
 //   - No GitHub credential is minted and no `gh` bundle is written: the pane of this proof pushes
 //     nothing, so its spec carries no repository and PaneInputs names no owners directory, which
@@ -328,7 +328,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err := runtime.WriteSecretFiles(r.stateDir, []runtime.SecretFile{bootToken}); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	prompt, err := runtime.SystemPrompt(spec)
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}

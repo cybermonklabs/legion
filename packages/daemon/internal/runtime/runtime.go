@@ -347,10 +347,7 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of). ModelContextBytes is the context the deployment gives the role's
-// model, in bytes of system prompt (`model_context_bytes`, which internal/daemon's specs reads): a
-// launch whose composed prompt is larger is refused before anything starts (SystemPrompt,
-// PromptTooLarge); 0 for a role the deployment gives no such bound.
+// Backends); "" is Oh My Pi (Of).
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -369,7 +366,6 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
-	ModelContextBytes int
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the

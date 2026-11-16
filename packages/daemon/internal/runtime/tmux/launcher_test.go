@@ -203,14 +203,6 @@ func TestLaunchRefusesWhatItsLaunchersCannotRun(t *testing.T) {
 		t.Errorf("Resume from a missing session = %v, want %q", err, want)
 	}
 
-	tooLarge := spec
-	tooLarge.ModelContextBytes = len("tester") - 1
-	want = "spawn legion-omp-legion-43-tester: the tester's system prompt is 6 bytes, larger than the 5 bytes model_context_bytes.tester gives its model's context"
-	var large *runtime.PromptTooLarge
-	if _, err := rt.Spawn(context.Background(), tooLarge); !errors.As(err, &large) || err.Error() != want {
-		t.Errorf("Spawn of a prompt larger than its model's context = %v, want %q", err, want)
-	}
-
 	unreadable := spec
 	unreadable.Prompt.RolePromptPaths = []string{filepath.Join(t.TempDir(), "absent.md")}
 	want = "spawn legion-omp-legion-43-tester: prompt file: open " + unreadable.Prompt.RolePromptPaths[0] + ": no such file or directory"

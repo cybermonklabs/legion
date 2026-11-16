@@ -3,8 +3,6 @@ package supervise
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,36 +10,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
-// architectPromptRefusal is the refusal a runtime answers a launch of the tree's root architect
-// with when its composed system prompt, 200,000 bytes, is larger than the 150,000 bytes the
-// deployment gives its model's context: runtime.SystemPrompt's own, over a real prompt file,
-// wrapped as the sandbox runtime wraps every refusal of its own.
-func architectPromptRefusal(t *testing.T) error {
-	t.Helper()
-	role := filepath.Join(t.TempDir(), "architect.md")
-	if err := os.WriteFile(role, []byte(strings.Repeat("x", 200_000)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, refusal := runtime.SystemPrompt(runtime.SpawnSpec{
-		Claim: rootToken, Role: rootClaim().Role, ModelContextBytes: 150_000,
-		Prompt: runtime.PromptParts{RolePromptPaths: []string{role}},
-	})
-	if refusal == nil {
-		t.Fatal("runtime.SystemPrompt composed a 200,000-byte prompt under a 150,000-byte bound")
-	}
-	return fmt.Errorf("sandbox launch %s: %w", rootToken, refusal)
+// architectFrameRefusal is the refusal the sandbox runtime answers a launch of the tree's root
+// architect with when the start frame carrying its 1,100,000-byte system prompt to the pod's
+// launcher would be 1,100,400 bytes, past the 1,048,576 bytes a launcher reads in one frame
+// (shimwire.MaxFrameBytes), wrapped as that runtime wraps every refusal of its own.
+func architectFrameRefusal() error {
+	return fmt.Errorf("sandbox launch %s: %w", rootToken,
+		&runtime.PromptTooLarge{Role: rootClaim().Role, Bytes: 1_100_000, Frame: 1_100_400, Bound: 1 << 20})
 }
 
-// A start the runtime refuses because the role's system prompt is larger than its model's context
-// is no launch failure: it is tried once, charged nothing, and fails the claim at once rather than
-// after the launch budget's three tries, with the refusal's sentence — the role, the prompt's size
-// and the bound — as the claim's failure and its last start failure, the two fields read_state
-// serves (api.ClaimViewOf's `failure.detail` and `lastStartFailure`), in the store as well as in
-// memory.
-func TestAPromptTooLargeForItsModelFailsTheClaimChargingNoLaunchFailure(t *testing.T) {
+// A start the runtime refuses because the role's system prompt would not fit the one frame a pod's
+// launcher reads is no launch failure: it is tried once, charged nothing, and fails the claim at
+// once rather than after the launch budget's three tries, with the refusal's sentence — the role,
+// the prompt's size and the limit — as the claim's failure and its last start failure, the two
+// fields read_state serves (api.ClaimViewOf's `failure.detail` and `lastStartFailure`), in the
+// store as well as in memory.
+func TestAPromptPastTheStartFrameFailsTheClaimChargingNoLaunchFailure(t *testing.T) {
 	h := newHarnessOf(t, rootClaim())
-	refusal := architectPromptRefusal(t)
-	h.rt.ScriptSpawn(fake.SpawnResult{Err: refusal})
+	h.rt.ScriptSpawn(fake.SpawnResult{Err: architectFrameRefusal()})
 	since := h.clock.Now()
 
 	err := h.handle(RequestSpawn{Claim: rootToken})
@@ -54,7 +40,7 @@ func TestAPromptTooLargeForItsModelFailsTheClaimChargingNoLaunchFailure(t *testi
 	h.wantCalls("Spawn", 1)
 	h.wantBudgets(Budgets{})
 	h.wantFailure(CauseLaunchRefused, "charged no launch failure", since)
-	const sentence = "the architect's system prompt is 200000 bytes, larger than the 150000 bytes model_context_bytes.architect gives its model's context"
+	const sentence = "the architect's system prompt is 1100000 bytes, and the start frame that carries it to its pod's launcher would be 1100400 bytes, larger than the 1048576 bytes a launcher reads in one frame"
 	for name, got := range map[string]Claim{"the machine's claim": h.claim(), "the stored claim": h.store.load(rootToken)} {
 		if !strings.Contains(got.Failure, sentence) || !strings.Contains(got.LastStartFailure, sentence) {
 			t.Errorf("%s fails with %q after the last start failure %q, want both to name %q", name, got.Failure, got.LastStartFailure, sentence)

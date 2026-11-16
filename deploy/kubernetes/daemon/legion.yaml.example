@@ -268,16 +268,6 @@ github_apps:
 #                                      # without fallback keep the capability report's model-fallback row
 #                                      # open; record that with capabilities.decided.model-fallback
 #                                      # (docs/kubernetes.md, Operator configuration).
-# model_context_bytes:                 # the context window of the model each role runs, in bytes
-#   implementer: 800000                # of system prompt. The daemon cannot read a model's context
-#   controller: 400000                 # for itself, since your overlays (or Claude Code's
-#                                      # environment) name the model, so state it here. A launch of
-#                                      # that role whose composed system prompt is larger is refused
-#                                      # before it starts: its claim fails at once (cause
-#                                      # launch_refused), charged no launch failure, and read_state
-#                                      # shows the sentence as the claim's lastStartFailure and
-#                                      # failure.detail. Keys: an issue role, or controller; values:
-#                                      # whole numbers above zero. A role left out has no bound.
 # worker_stall_backstop_hours:         # the daemon's own backstop under a worker whose turn has
 #   implementer: 6                     # stopped: how long after that role's last recorded step the
 #   controller: 1.5                    # daemon ends the turn that step belongs to, so the task that

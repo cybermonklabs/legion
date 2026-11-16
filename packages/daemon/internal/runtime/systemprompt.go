@@ -54,28 +54,15 @@ func ComposePrompt(parts PromptParts) (string, error) {
 	return strings.Join(fragments, "\n\n"), nil
 }
 
-// SystemPrompt is spec's composed prompt (ComposePrompt), refused as PromptTooLarge when it is
-// larger than the context the deployment gives the role's model (SpawnSpec.ModelContextBytes,
-// `model_context_bytes`). A runtime calls it before it writes or starts anything of the launch.
-func SystemPrompt(spec SpawnSpec) (string, error) {
-	text, err := ComposePrompt(spec.Prompt)
-	if err != nil {
-		return "", err
-	}
-	if spec.ModelContextBytes > 0 && len(text) > spec.ModelContextBytes {
-		return "", &PromptTooLarge{Role: spec.Role, Bytes: len(text), Bound: spec.ModelContextBytes}
-	}
-	return text, nil
-}
-
-// PromptTooLarge is a launch refused because its role's composed system prompt is larger than a
-// bound that still applies to it: the context the deployment gives the role's model
-// (`model_context_bytes`, SystemPrompt), or, in a pod, the one start frame that carries the prompt
-// to the pod's launcher (Frame set: the frame's size, Bound then being the most a launcher reads in
-// one frame). Nothing of the launch was started, and every try composes the same text from the
-// same files until the deployment changes them, so supervise charges it no launch failure and
-// fails the claim at once with this sentence, which names the role, the prompt's size and the
-// bound (launchNow).
+// PromptTooLarge is a pod's launch refused because the one start frame that carries its role's
+// composed system prompt to the pod's launcher would be larger than a launcher reads in one frame
+// (Frame the frame's size, Bound that limit, shimwire.MaxFrameBytes): the one bound left on a
+// prompt once it no longer rides an argument, and one the daemon must meet itself. The daemon sets
+// no bound of its own on a model's context, which it cannot read; Oh My Pi answers a request too
+// large for its model. Nothing of the launch was started, and every try composes the same text
+// from the same files until the deployment changes them, so supervise charges it no launch
+// failure and fails the claim at once with this sentence, which names the role, the prompt's size
+// and the limit (launchNow).
 type PromptTooLarge struct {
 	Role  claim.Role
 	Bytes int
@@ -84,10 +71,6 @@ type PromptTooLarge struct {
 }
 
 func (e *PromptTooLarge) Error() string {
-	if e.Frame == 0 {
-		return fmt.Sprintf("the %s's system prompt is %d bytes, larger than the %d bytes model_context_bytes.%s gives its model's context",
-			e.Role, e.Bytes, e.Bound, e.Role)
-	}
 	return fmt.Sprintf("the %s's system prompt is %d bytes, and the start frame that carries it to its pod's launcher would be %d bytes, larger than the %d bytes a launcher reads in one frame",
 		e.Role, e.Bytes, e.Frame, e.Bound)
 }

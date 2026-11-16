@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // writePromptFiles writes each name's text under dir and returns the paths, in the order given.
@@ -61,35 +59,6 @@ func TestComposePrompt(t *testing.T) {
 	if _, err := ComposePrompt(PromptParts{RolePromptPaths: []string{filepath.Join(dir, "missing.md")}}); !errors.Is(err, os.ErrNotExist) ||
 		!strings.HasPrefix(err.Error(), "prompt file: ") {
 		t.Errorf("ComposePrompt over a missing role prompt = %v, want the prompt file's own error", err)
-	}
-}
-
-// A prompt larger than the context the deployment gives the role's model is refused with the
-// role, the prompt's size and the bound; one at the bound, and every prompt of a role the
-// deployment gives no bound, is composed.
-func TestSystemPromptRefusesAPromptLargerThanTheModelsContext(t *testing.T) {
-	role := writePromptFiles(t, t.TempDir(), [2]string{"architect.md", strings.Repeat("x", 2000)})
-	spec := SpawnSpec{Role: claim.RoleArchitect, Prompt: PromptParts{RolePromptPaths: role}}
-
-	for _, bound := range []int{0, 2000} {
-		spec.ModelContextBytes = bound
-		if got, err := SystemPrompt(spec); err != nil || len(got) != 2000 {
-			t.Errorf("SystemPrompt under a bound of %d = %d bytes, %v; want the whole 2000-byte prompt", bound, len(got), err)
-		}
-	}
-
-	spec.ModelContextBytes = 1999
-	_, err := SystemPrompt(spec)
-	var refused *PromptTooLarge
-	if !errors.As(err, &refused) {
-		t.Fatalf("SystemPrompt under a bound of 1999 = %v, want PromptTooLarge", err)
-	}
-	if *refused != (PromptTooLarge{Role: claim.RoleArchitect, Bytes: 2000, Bound: 1999}) {
-		t.Errorf("the refusal = %+v, want the architect's 2000 bytes over 1999", *refused)
-	}
-	const want = "the architect's system prompt is 2000 bytes, larger than the 1999 bytes model_context_bytes.architect gives its model's context"
-	if err.Error() != want {
-		t.Errorf("the refusal reads %q, want %q", err, want)
 	}
 }
 

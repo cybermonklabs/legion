@@ -279,7 +279,7 @@ type launch struct {
 	// Secret's own (Options.ProvidersSecrets, which the runtime points at the providers mount
 	// whatever the spec carries), and the Dispatch bearer when Dispatch is configured.
 	secrets map[string]string
-	// prompt is the launch's composed system prompt (runtime.SystemPrompt), which reaches the agent
+	// prompt is the launch's composed system prompt (runtime.ComposePrompt), which reaches the agent
 	// as a file and never as an argv string: launcherCommand carries it in the start command's
 	// Files as runtime.SystemPromptFile, the launcher writes it 0600 into the generation's 0700
 	// directory on the role's own memory-backed private volume before the child starts and removes
@@ -503,10 +503,9 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // controller's claim (`controller: daemon`) runs the controller's pod, every workflow claim
 // its issue's pod, which refuses a spec with no repository (issuePod.prepare). The labels the kind
 // gives the pod must name that kind back (podKindOf), so a launch and the Sandbox it leaves cannot
-// disagree on the pod's roles. The system prompt is composed here (runtime.SystemPrompt), which
-// refuses one larger than the role's model context, and a prompt whose start frame no launcher
-// would read is refused here too (runtime.PromptTooLarge, both wrapped so the supervisor can tell
-// them from a launch that failed).
+// disagree on the pod's roles. The system prompt is composed here (runtime.ComposePrompt), and a
+// prompt whose start frame no launcher would read is refused here too (runtime.PromptTooLarge,
+// wrapped so the supervisor can tell it from a launch that failed).
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if err := runtime.ValidateSpawnSpec(spec, runtimeOwnedOrComposed); err != nil {
 		return launch{}, err
@@ -550,7 +549,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		return launch{}, refuse("its pod's labels %v name another kind of pod than the one it builds", r.labels(l))
 	}
 	l.roles = named.roles()
-	prompt, err := runtime.SystemPrompt(spec)
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return launch{}, refuse("%w", err)
 	}

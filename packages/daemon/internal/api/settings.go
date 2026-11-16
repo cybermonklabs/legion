@@ -115,11 +115,6 @@ type Settings struct {
 	// RoleConfigFiles is `role_config_files`, the Oh My Pi overlays one role names and no other
 	// does, by role, `{}` while the file names none.
 	RoleConfigFiles map[string][]string `json:"role_config_files"`
-	// ModelContextBytes is `model_context_bytes`, the context window the deployment gives each
-	// role's model, in bytes of system prompt, by role, `{}` while the file names none: a launch
-	// of a role it names whose composed system prompt is larger is refused before it starts, and
-	// a role it leaves out has no bound.
-	ModelContextBytes map[string]int `json:"model_context_bytes"`
 	// WorkerStallBackstopHours is `worker_stall_backstop_hours`, how long after a role's last
 	// recorded step the daemon ends that turn itself, by role, in hours as the file names them,
 	// 0 being the backstop off for that role. It is absent while the file names no role's
@@ -496,7 +491,6 @@ func SettingsOf(cfg config.Config) Settings {
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),
-		ModelContextBytes:                       make(map[string]int, len(cfg.ModelContextBytes)),
 		RepositoryRenames:                       repositoryRenamesOf(cfg.RepositoryRenames),
 		Hooks:                                   hooksSettingsOf(cfg.Hooks),
 	}
@@ -531,9 +525,6 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for role, files := range cfg.RoleConfigFiles {
 		settings.RoleConfigFiles[string(role)] = stringsOf(files)
-	}
-	for role, bound := range cfg.ModelContextBytes {
-		settings.ModelContextBytes[string(role)] = bound
 	}
 	for role, bound := range cfg.WorkerStallBackstops {
 		if settings.WorkerStallBackstopHours == nil {

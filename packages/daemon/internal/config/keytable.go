@@ -292,11 +292,6 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readRoleConfigFiles, func(f *fileConfig, v map[claim.Role][]string) { f.RoleConfigFiles = v }),
 		},
 		{
-			Name: "model_context_bytes", Default: "no role's system prompt has a bound", RequiredBy: "no",
-			Description: "The context window of the model each role runs, in bytes of system prompt, which the daemon cannot read for itself: each key a role, each value a whole number above zero; a launch of that role whose composed system prompt is larger is refused before it starts, and its claim fails at once with no launch failure charged.",
-			Read:        reads(readModelContextBytes, func(f *fileConfig, v map[claim.Role]int) { f.ModelContextBytes = v }),
-		},
-		{
 			Name: "capabilities", Default: "every capability the deployment leaves open is reported open", RequiredBy: "no",
 			Description: "The worker capabilities this deployment decides rather than closes: under `decided`, each capability the report would leave open mapped to the reason the boot, `legion state` and the controller's tick then show in the gap's place.",
 			Read:        reads(readCapabilities, func(f *fileConfig, v *Capabilities) { f.Capabilities = v }),

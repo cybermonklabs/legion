@@ -11,7 +11,7 @@ import (
 // itself: Oh My Pi handed a path it cannot open would take the path's text for its prompt.
 func writeLaunchPrompt(t *testing.T, spec runtime.SpawnSpec, host Host) {
 	t.Helper()
-	prompt, err := runtime.SystemPrompt(spec)
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		t.Fatal(err)
 	}

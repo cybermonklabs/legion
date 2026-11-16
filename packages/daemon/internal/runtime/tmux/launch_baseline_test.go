@@ -118,7 +118,7 @@ func pairValue(variables []string, name string) (string, bool) {
 // The pairs are read from panePairs, the pane's own -e pairs, and are proven to be what
 // PaneVariables tells a caller that runs Oh My Pi under the pane's environment itself; the prompt
 // word is read from the command the Oh My Pi launcher gives the shim (ompLauncher.Launch,
-// innerCommand), and the text is runtime.SystemPrompt's, the one call launch writes the file from.
+// innerCommand), and the text is runtime.ComposePrompt's, the one call launch writes the file from.
 // Nothing here starts tmux, so the capture runs on a host that has no tmux binary.
 func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 	launcher := NewOmpLauncher(nil, baselineInvocation)
@@ -155,7 +155,7 @@ func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 		if !ok || word == "" {
 			t.Fatalf("the %s's pane command names no --append-system-prompt word:\n%s", role, inner)
 		}
-		text, err := runtime.SystemPrompt(spec)
+		text, err := runtime.ComposePrompt(spec.Prompt)
 		if err != nil || text == "" {
 			t.Fatalf("the %s's system prompt = %q, %v", role, text, err)
 		}

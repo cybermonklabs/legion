@@ -108,7 +108,6 @@ pod_update_rounds_per_minute: 2
 review_round_cap: 4
 controller: daemon
 worker_backends: {tester: omp}
-model_context_bytes: {implementer: 800000, controller: 400000}
 repository_renames:
   - {from: acme/widgets-legacy, to: acme/widgets}
 capabilities:

@@ -449,31 +449,12 @@ provider_keys:
   every launch of that role fail. `docs/kubernetes.md` ("Operator configuration") has the rest of
   the key's rules. Every pane runs as the daemon's Unix user, so each role can read every role's
   overlay file; only loading is per role, so never put a secret in one.
-- **`model_context_bytes`**, a top-level key beside the block, states the context window of the
-  model each role runs, in bytes of system prompt
-  (`model_context_bytes: {implementer: 800000, controller: 400000}`).
-  The daemon cannot read a model's context itself: the model is named by the operator's Oh My Pi
-  overlays (or Claude Code's own environment), and nothing there tells the daemon how much it holds,
-  so the operator states it in bytes.
-  Each key is a role (`architect`, `planner`, `implementer`, `tester`, `reviewer`, `merger`, or
-  `controller`), each value a whole number above zero, and a role the key leaves out has no bound.
-  The loader refuses a value that is not a mapping, a role that is not Legion's, a role named twice,
-  and a value that is not a whole number or is below 1, naming the key or the entry.
-  Each launch's composed system prompt — the role's prompt files, the sentence that says which
-  claim it is, the deployment's `instructions`, then each drawn arm's — is written to a file the
-  role's process reads, and Oh My Pi is passed that file's path as `--append-system-prompt <path>`,
-  Claude Code as `--append-system-prompt-file <path>`, so no prompt travels as one long argument.
-  A pane's file is `<state_dir>/secrets/<claim token>-system-prompt.md`, kept beside the claim's
-  other secret files and pruned with them.
-  A launch whose composed prompt is larger than its role's bound is refused before anything
-  starts, with the sentence `the <role>'s system prompt is <N> bytes, larger than the <B> bytes
-  model_context_bytes.<role> gives its model's context`.
-  The refusal charges no launch failure and is not tried again, since every try would compose the
-  same text: the claim fails at once with cause `launch_refused` (or `died`, where the refused
-  launch was the relaunch of a process that died), and `read_state` carries the sentence as the
-  claim's `lastStartFailure` and as its `failure.detail`.
-  Cut the deployment's instructions or the role's prompt, or raise the bound if the model takes
-  more, and restart the daemon; then `legion claims retry --claim <token>` starts the claim again.
+- **A role's system prompt is a file.** Each launch's composed system prompt — the role's prompt
+  files, the sentence that says which claim it is, the deployment's `instructions`, then each drawn
+  arm's — is written to `<state_dir>/secrets/<claim token>-system-prompt.md`, kept beside the
+  claim's other secret files and pruned with them, and Oh My Pi is passed that file's path as
+  `--append-system-prompt <path>`, Claude Code as `--append-system-prompt-file <path>`, so no
+  prompt travels as one argument and none is bounded by the 131,072 bytes Linux allows one.
 - **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`
   (`memory: {mode: random, config_files: [/etc/legion-memory/memory.yml], instructions: /etc/legion-daemon/memory-instructions.md}`).

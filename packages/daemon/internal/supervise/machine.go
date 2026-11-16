@@ -2320,13 +2320,13 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 }
 
 // promptRefused is a start the runtime refused because the role's composed system prompt is larger
-// than a bound that still applies to it (runtime.PromptTooLarge): the context the deployment gives
-// the role's model (`model_context_bytes`), or the start frame a pod's launcher reads. Nothing was
+// than the one bound that still applies to it (runtime.PromptTooLarge): the start frame a pod's
+// launcher reads, which the sandbox runtime measures before anything starts. Nothing was
 // started, and every later try would compose the same text from the same files and be refused
 // the same way until the deployment changes them, which takes a restart of the daemon. So it is
 // charged no launch failure and not tried again: the claim fails at once, under the cause the
 // charged path at its limit would name (launchNow), with the refusal's sentence — the role, the
-// prompt's size and the bound — as its failure and as LastStartFailure, which read_state serves as
+// prompt's size and the limit — as its failure and as LastStartFailure, which read_state serves as
 // the claim view's `failure.detail` and `lastStartFailure`. The process the launch let go is
 // stopped first, as every refused start's is.
 func (m *Machine) promptRefused(ctx, starting context.Context, refusal error) error {

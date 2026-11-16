@@ -714,49 +714,6 @@ func TestSpawnSpecPluginsSkipsAClaudeClaimAndNoOther(t *testing.T) {
 	}
 }
 
-// Every launch carries its own role's `model_context_bytes` bound, the daemon's own controller's
-// among them, so the runtime refuses a prompt larger than that role's model takes before anything
-// starts; a role the key leaves out, and every role of a daemon whose file names no key, carries
-// 0, which is no bound.
-func TestSpawnSpecCarriesItsRolesModelContextBound(t *testing.T) {
-	composer, err := prompts.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("compose the shipped prompts: %v", err)
-	}
-	worker := func(role claim.Role) supervise.Claim {
-		token, err := claim.NewToken("s1", "S1-2", role)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role}
-	}
-	controller := supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController}
-	// `model_context_bytes: {implementer: 800000, controller: 400000}`.
-	named := map[claim.Role]int{claim.RoleImplementer: 800000, claim.RoleController: 400000}
-	for _, tc := range []struct {
-		name    string
-		context map[claim.Role]int
-		claim   supervise.Claim
-		want    int
-	}{
-		{"a worker the key names", named, worker(claim.RoleImplementer), 800000},
-		{"the controller the key names", named, controller, 400000},
-		{"a worker the key leaves out", named, worker(claim.RoleTester), 0},
-		{"a daemon whose file names no key", nil, worker(claim.RoleImplementer), 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView, modelContext: tc.context}
-			spec, err := s.SpawnSpec(context.Background(), tc.claim)
-			if err != nil {
-				t.Fatalf("SpawnSpec: %v", err)
-			}
-			if spec.ModelContextBytes != tc.want {
-				t.Errorf("ModelContextBytes = %d, want %d", spec.ModelContextBytes, tc.want)
-			}
-		})
-	}
-}
-
 func withSession(c supervise.Claim, session string) supervise.Claim {
 	c.Session = session
 	return c

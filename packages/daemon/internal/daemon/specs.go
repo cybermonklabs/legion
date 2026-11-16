@@ -86,11 +86,6 @@ type specs struct {
 	// backend is the backend a role runs on (config.Config.BackendFor); nil runs every role on Oh
 	// My Pi.
 	backend func(claim.Role) runtime.Backend
-	// modelContext is `model_context_bytes` (config.Config.ModelContextBytes): the context window
-	// the deployment gives each role's model, in bytes of system prompt, which every launch of that
-	// role carries as runtime.SpawnSpec.ModelContextBytes so the runtime refuses a larger prompt
-	// before anything starts. A role it leaves out, and every role when it is nil, has no bound.
-	modelContext map[claim.Role]int
 	// hostWorkspaces is the runtime leaving each claim's workspace to the daemon's own host
 	// (runtime.Runtime.ProvisionsWorkspaces false: tmux). ensureWorkspace then provisions an
 	// issue's workspace a launch finds missing or not checked out there (outbox.ensureWorkspace,
@@ -116,8 +111,6 @@ func rolePromptPath(stateDir string, token claim.Token) string {
 // any claim.
 // Env carries the stall limits the daemon's own environment holds, merged after the fork
 // (stallLimitVariables), so the controller's launch is told them exactly as a worker's is.
-// ModelContextBytes is the role's own bound from `model_context_bytes` (modelContext), set after
-// the fork too, so the controller's prompt is held to its bound as every worker's is to its own.
 func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
 	var spec runtime.SpawnSpec
 	var err error
@@ -141,7 +134,6 @@ func (s specs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnS
 		spec.Prompt.RolePromptPaths = append(spec.Prompt.RolePromptPaths, part)
 	}
 	spec.Plugins = s.stalePluginInstall(c, spec.Backend)
-	spec.ModelContextBytes = s.modelContext[c.Role]
 	return spec, nil
 }
 
