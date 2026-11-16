@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    `legion gh` lets the leak guard's own visibility reads run under a caller's `GH_TOKEN` or
+    `GITHUB_TOKEN`, with that token. Before, it refused them as it refuses every call under a token,
+    so the pre-push guard could not read the destination's visibility and refused every push a pod
+    made with a token. Only the guard's REST and GraphQL reads, each exactly for the repository
+    `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, get past that refusal. Every other call under a token
+    is still refused.
+time: 2026-11-16T15:49:10Z
+custom:
+    Issue: pr4219
