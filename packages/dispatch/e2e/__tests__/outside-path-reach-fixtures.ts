@@ -195,10 +195,12 @@ export function reachFixtures() {
   const scratch = temporaryDirectory("outside-path-reach");
 
   /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
-   *  given, PATH the host's unless given, and run by bash unless `shell` names another program. */
+   *  given, PATH the host's unless given, run by bash unless `shell` names another program, and
+   *  `stdin`, when given, on its standard input through a pipe. Bun hands a child's stdin over as
+   *  a memfd or a socket, neither of which reads as a pipe does, so a bash pipeline makes the pipe. */
   async function drive(
     env: Record<string, string>,
-    options: { path?: string; curlrc?: string; shell?: string } = {}
+    options: { path?: string; curlrc?: string; shell?: string; stdin?: string } = {}
   ): Promise<Run> {
     const home = join(scratch, `home-${randomUUID()}`);
     if (options.curlrc !== undefined) {
@@ -206,7 +208,19 @@ export function reachFixtures() {
       writeFileSync(join(home, ".curlrc"), options.curlrc);
     }
     const started = performance.now();
-    const child = Bun.spawn([options.shell ?? bash, script], {
+    const argv =
+      options.stdin === undefined
+        ? [options.shell ?? bash, script]
+        : [
+            bash,
+            "-c",
+            'printf "%s" "$1" | "$2" "$3"',
+            "drive",
+            options.stdin,
+            options.shell ?? bash,
+            script,
+          ];
+    const child = Bun.spawn(argv, {
       env: {
         HOME: home,
         PATH: options.path ?? process.env.PATH ?? "",

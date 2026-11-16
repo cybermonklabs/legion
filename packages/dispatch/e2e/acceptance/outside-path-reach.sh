@@ -12,19 +12,22 @@
 # --connect-timeout and --max-time bound every probe. No curl it runs reads the terminal (stdin is
 # /dev/null), the device's curl configuration (`-q` ignores ~/.curlrc, whose `header`, `proxy`,
 # `resolve` or `connect-to` lines could send a credential or aim a probe elsewhere) or a proxy
-# (`--noproxy '*'`, since a proxy's connect is not the device's): it measures what this device
-# itself reaches. A run takes about 29 seconds.
+# (`--noproxy '*'`, since a proxy's connect is not the device's), and none reads `[`, `]`, `{` or
+# `}` in its URL as a pattern of several URLs (`-g`): it measures what this device itself reaches.
+# A run takes about 29 seconds.
 #
 # Inputs, each refused by name when missing:
 #   OUTSIDE_ORIGIN        the chosen path's origin, https://<host>[:<port>], the host a name, an
-#                         IPv4 address or a bracketed IPv6 address.
-#   OUTSIDE_PATH_TARGETS  a file of `name host port` lines, one per internal target (the hub, the
-#                         listeners, the secrets broker, the other Dispatch origin). `#` starts a
-#                         comment. `host` is a name or a literal address: an IPv4 address written
-#                         as four numbers of 0 to 255 with no leading zero, or an IPv6 address that
-#                         holds no dotted IPv4 part and is not IPv4-mapped however written (its
-#                         text must not start with ffff: once its leading zeros and colons are
-#                         dropped, as ::ffff:a00:1 and 0:0::ffff:a00:1 do: write 10.0.0.1); never
+#                         IPv4 address or a bracketed IPv6 address, on the rule a target's host
+#                         follows.
+#   OUTSIDE_PATH_TARGETS  a file, or a pipe, of `name host port` lines, one per internal target
+#                         (the hub, the listeners, the secrets broker, the other Dispatch origin).
+#                         `#` starts a comment. `host` is a name or a literal address: an IPv4
+#                         address written as four numbers of 0 to 255 with no leading zero, or an
+#                         IPv6 address of hexadecimal digits and colons alone, not IPv4-mapped
+#                         however written (its text must not start with ffff: once its leading
+#                         zeros and colons are dropped, as ::ffff:a00:1 and 0:0::ffff:a00:1 do:
+#                         write 10.0.0.1); never
 #                         a `svc:` selector, which resolves nowhere. The list is ASCII, comments
 #                         included: every byte must be printable ASCII, a tab or LF, but a CR that
 #                         comes directly before an LF (CRLF line endings) and a UTF-8 byte-order
@@ -45,20 +48,23 @@
 # control and one per target, then its verdict:
 #   PASS     exit 0: Dispatch answered at the origin (/healthz 200, and /api/v1/projects with no
 #            credential 401 with Dispatch's own NO_IDENTITY refusal), the probe connected to the
-#            origin, and every target was unreachable.
+#            origin in every round, and every target was unreachable.
 #   FAIL     exit 1: a target was reached, or the origin served a read with no credential.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, curl
 #            or sleep missing or curl too old, the origin not answering as Dispatch, the probe
-#            unable to connect to the origin itself, a target that did not resolve or that no rule
-#            classifies, an empty target list, or rounds that sleep could not spread apart.
+#            unable to connect to the origin in some round, a target that did not resolve or that
+#            no rule classifies, an empty target list, or rounds that sleep could not spread apart.
 #
 # Every host and port is probed in five rounds, started 0, 6, 12, 18 and 24 s into the probing, all
 # hosts of a round at once, by one command, and each probe is judged by whether TCP connected, not
 # by curl's exit code alone: every target this check exists for (NATS, an HTTP listener, a TLS
 # port) accepts and then holds the connection waiting for the client, so a reached target ends at
-# --max-time with exit 28, the same exit a blackholed address gives. A target is REACHED when any
-# of its rounds connected, unreachable only when all five were, and otherwise takes the class of
-# its first round that was neither. Five rounds, so a network that loses packets does not hide a
+# --max-time with exit 28, the same exit a blackholed address gives. A target's round counts only
+# when the probe connected to the origin in that same round: a round in which the device reached
+# not even the origin proves nothing of a target, which reads `uncounted` there unless it
+# connected. A target is REACHED when any of its rounds connected, unreachable only when all five
+# counted and were, and otherwise takes the class of its first round that was neither. Five
+# rounds, so a network that loses packets does not hide a
 # target; 6 s apart, so neither does a tunnel whose first handshake packet was lost: WireGuard
 # sends it again only after its RekeyTimeout of 5 s plus up to 334 ms, and probes started at once
 # would all fall inside that. Heavy loss can still miss all five, though none of our runs did: with
@@ -80,6 +86,9 @@ LC_ALL=C
 
 # rounds: how many rounds of probes each host gets, started 6 s apart (see the header).
 rounds=5
+# gated: set once the origin's own rounds are read; `judge` then counts a target's round only when
+# the origin connected in it (`origin_connected`).
+gated=''
 
 # unknown MESSAGE: the verdict for anything that proved nothing.
 unknown() {
@@ -136,6 +145,23 @@ v4_in_v6() {
   done
   case $rest in [fF][fF][fF][fF]:*) return 0 ;; esac
   return 1
+}
+
+# check_host WHO HOST: refuses HOST, the origin's host or a target's, unless it is a name, an IPv6
+# address of hexadecimal digits and colons alone, or an IPv4 address in its canonical form; WHO
+# begins each message (`target hub:`, `OUTSIDE_ORIGIN host`). curl reads no such host as a URL
+# pattern, and a dot in an IPv6 address is a dotted IPv4 part, which `v4_in_v6` refuses.
+check_host() {
+  case $2 in
+    *:*)
+      case $2 in *[!0-9A-Fa-f:.]*) unknown "$1 $2 is neither a host name nor an address" ;; esac
+      ;;
+    *[!A-Za-z0-9.-]* | .* | *..*) unknown "$1 $2 is neither a host name nor an address" ;;
+  esac
+  ! v4_in_v6 "$2" ||
+    unknown "$1 $2 is an IPv6 form of an IPv4 address; write the IPv4 address itself"
+  host_ok "$2" ||
+    unknown "$1 $2 is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
 }
 
 # pop: moves the first line of `rest` into `line`, splitting a text already in memory with no
@@ -210,10 +236,11 @@ classify() {
 }
 
 # judge EXIT NAMELOOKUP CONNECT (once per round, one target's rounds in order): sets `class` to
-# the target's class and `detail` to what its line says after the address. REACHED when any round
-# connected, unreachable only when all of them were, and otherwise the class of the first round
-# that was neither; `detail` gives curl's answer in the round that decided, then every round's
-# class in order.
+# the target's class and `detail` to what its line says after the address. Once `gated` is set, a
+# round in which the origin did not connect counts for nothing but a connect: it reads `uncounted`
+# unless the target connected in it. REACHED when any round connected, unreachable only when all
+# of them were, and otherwise the class of the first round that was neither; `detail` gives curl's
+# answer in the round that decided, then every round's class in order.
 judge() {
   local round=0 each code lookup connect decided='' seen='' f1 f2 f3
   class=''
@@ -221,6 +248,9 @@ judge() {
     code=$1 lookup=$2 connect=$3
     shift 3
     each=$(classify "$code" "$lookup" "$connect")
+    if [ -n "$gated" ] && [ "$each" != REACHED ] && [ -z "${origin_connected[round]-}" ]; then
+      each="uncounted (round $((round + 1)) of $rounds: the probe could not connect to the origin in that round, so it proves nothing of this target)"
+    fi
     seen="$seen, ${each%% *}"
     if [ "$each" = REACHED ]; then
       [ "$class" = REACHED ] || {
@@ -310,12 +340,11 @@ esac
 # The authority alone, no user, path, query or fragment: a host name or IPv4 address and an
 # optional port, or a bracketed IPv6 address and an optional port.
 case $authority in
-  \[*\] | \[*\]:*)
+  \[*:*\] | \[*:*\]:*)
     origin_host=${authority#\[}
     origin_host=${origin_host%%\]*}
     origin_port=${authority#*\]}
     origin_port=${origin_port#:}
-    case $origin_host in '' | *[!0-9A-Fa-f:.]*) origin_host='' ;; esac
     case $authority in *\]) origin_port=$default_port ;; esac
     ;;
   '' | *[!A-Za-z0-9.:-]* | *:*:*) origin_host='' ;;
@@ -331,37 +360,46 @@ esac
 if [ -z "$origin_host" ] || ! is_port "$origin_port"; then
   unknown "OUTSIDE_ORIGIN must be an origin alone, https://<host>[:<port>] with a port of 1 to 65535 and no user, path, query or fragment, not $origin"
 fi
-host_ok "$origin_host" ||
-  unknown "OUTSIDE_ORIGIN host $origin_host is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
-! v4_in_v6 "$origin_host" ||
-  unknown "OUTSIDE_ORIGIN host $origin_host is an IPv6 form of an IPv4 address; write the IPv4 address itself"
+check_host "OUTSIDE_ORIGIN host" "$origin_host"
 case $origin in http://*)
   [ "$origin_host" = 127.0.0.1 ] ||
     unknown "OUTSIDE_ORIGIN may be http only at 127.0.0.1, for this script's own tests, not $origin"
   ;;
 esac
 
-# The target list, read whole before anything goes on the network: a file it cannot read whole is
-# a refusal, never a target left out. A read error ends a `read` loop exactly as the end of the
-# file does, and `$(<file)` and curl's file:// both pass one over in silence; only `read` says so,
-# on stderr. So each line that ended in an LF comes back marked `L`, a last line with no LF after it
-# `E`, and bash's own words come back unmarked, and any unmarked line refuses the run. Row 0 is the
-# origin itself, the positive control.
+# The target list, read whole and once before anything goes on the network (a pipe can be read
+# only once): a list it cannot read whole is a refusal, never a target left out. One `read -d ''`
+# reads it all: it stops at a NUL byte and succeeds only when it found one, fails at the end of the
+# list, and says so on stderr only for a read error, which ends it as the end of the list would
+# (`$(<file)` and curl's file:// pass one over in silence). So `listed` holds the read's stderr,
+# then an LF, the read's status, an LF and the text: anything before that first LF is bash's own
+# words, and refuses the run. Row 0 is the origin itself, the positive control.
 targets=$OUTSIDE_PATH_TARGETS
+listed=$({
+  text=''
+  IFS= read -r -d '' text 2>&1
+  printf '\n%s\n%s.' "$?" "$text"
+} <"$targets") ||
+  unknown "OUTSIDE_PATH_TARGETS names $targets, which this device could not read whole: could not open it"
+listed=${listed%.}
+case $listed in "$newline"*) ;; *)
+  unknown "OUTSIDE_PATH_TARGETS names $targets, which this device could not read whole: ${listed%%"$newline"*}"
+  ;;
+esac
+listed=${listed#"$newline"}
 bom=$'\xef\xbb\xbf'
-# outside: one byte that is not printable ASCII or a tab. LF never reaches a row, since `read`
-# splits on it; NUL never reaches one either, since bash cannot hold it in a string.
+# outside: one byte that is not printable ASCII or a tab. LF never reaches a row, since rows are
+# split on it; NUL never reaches one either, since the read stops at it.
 outside=$'[!\t -~]'
 
-# byte_hex BYTE: sets `hex` to the two hexadecimal digits of BYTE, one byte other than NUL.
+# byte_hex BYTE: sets `hex` to the two hexadecimal digits of BYTE, one byte other than NUL. printf
+# gives 'c for a byte above 0x7F as a signed char in bash 3.2 (builtins/printf.def, asciicode()),
+# -123 for 0x85, and as U+DF85 in bash 5.2 on musl's C locale; each keeps the byte in its low eight
+# bits, hence the mask.
 byte_hex() {
-  local n=1 each
-  while [ "$n" -le 255 ]; do
-    printf -v hex '%02X' "$n"
-    printf -v each '%b' "\\x$hex"
-    [ "$each" != "$1" ] || return 0
-    n=$((n + 1))
-  done
+  local n
+  printf -v n '%d' "'$1"
+  printf -v hex '%02X' $((n & 255))
 }
 
 # refuse_byte LINE OFFSET HEX: the verdict for the byte 0xHEX at OFFSET of the list, counted from
@@ -370,16 +408,13 @@ refuse_byte() {
   unknown "line $1 of $targets holds byte 0x$3 at offset $2, which is not printable ASCII, a tab or LF: write the list in ASCII, one target per line, with LF or CRLF line endings"
 }
 
-# `read -d ''` stops at a NUL byte and succeeds only when it found one, holding what came before.
-if IFS= read -r -d '' before <"$targets" 2>/dev/null; then
-  lfs=${before//[!$newline]/}
-  refuse_byte $((${#lfs} + 1)) "${#before}" 00
+# The read succeeded only at a NUL byte, and `text` holds what came before it.
+text=${listed#*"$newline"}
+if [ "${listed%%"$newline"*}" = 0 ]; then
+  lfs=${text//[!$newline]/}
+  refuse_byte $((${#lfs} + 1)) "${#text}" 00
 fi
-row=''
-rest=$({ while IFS= read -r row; do
-  printf 'L%s\n' "$row"
-done <"$targets" && { [ -z "$row" ] || printf 'E%s\n' "$row"; }; } 2>&1) ||
-  rest="$rest${newline}could not open it"
+rest=$text
 hosts[0]=$origin_host
 ports[0]=$origin_port
 count=0
@@ -387,13 +422,11 @@ addresses=0
 number=0
 offset=0
 while [ -n "$rest" ]; do
+  # ended: the line ends in an LF, so a CR at its end comes directly before one.
+  case $rest in *"$newline"*) ended=yes ;; *) ended=no ;; esac
   pop
-  case $line in
-    L* | E*) ;;
-    *) unknown "OUTSIDE_PATH_TARGETS names $targets, which this device could not read whole: $line" ;;
-  esac
   number=$((number + 1))
-  row=${line#?}
+  row=$line
   start=$offset
   offset=$((offset + ${#row} + 1))
   # The byte-order mark is dropped at offset 0 alone, and a CR only where an LF follows it at once;
@@ -403,7 +436,7 @@ while [ -n "$rest" ]; do
     start=$((${#row} - ${#stripped}))
     row=$stripped
   fi
-  case $line in L*) row=${row%$'\r'} ;; esac
+  [ "$ended" = no ] || row=${row%$'\r'}
   # shellcheck disable=SC2254 # $outside is a bracket expression on purpose, so it stays unquoted
   case $row in *$outside*)
     # shellcheck disable=SC2295 # the same bracket expression, as a pattern on purpose
@@ -423,14 +456,7 @@ while [ -n "$rest" ]; do
     unknown "target $1: $2 is a Tailscale service selector, which resolves nowhere; write a name that resolves on this network, or the address it stands for"
     ;;
   esac
-  case $2 in *[!A-Za-z0-9.:-]* | .* | *..*)
-    unknown "target $1: $2 is neither a host name nor an address"
-    ;;
-  esac
-  ! v4_in_v6 "$2" ||
-    unknown "target $1: $2 is an IPv6 form of an IPv4 address; write the IPv4 address itself"
-  host_ok "$2" ||
-    unknown "target $1: $2 is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
+  check_host "target $1:" "$2"
   is_port "$3" || unknown "target $1: $3 is not a TCP port of 1 to 65535"
   count=$((count + 1))
   names[count]=$1
@@ -471,7 +497,7 @@ printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"
 # status, 000 when none came.
 fetch() {
   local answer
-  answer=$(curl -q --noproxy '*' -sS -o - --connect-timeout 3 --max-time 10 \
+  answer=$(curl -q --noproxy '*' -g -sS -o - --connect-timeout 3 --max-time 10 \
     -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
   [ "${#answer}" -ge 3 ] || answer=000
   printf '%s' "$answer"
@@ -498,7 +524,7 @@ printf 'dispatch: GET /healthz %s, GET /api/v1/projects with no credential %s, c
 # on one line.
 probe() {
   local times code
-  times=$(LC_ALL=C curl -q --noproxy '*' -sS -o /dev/null --connect-timeout 3 --max-time 5 \
+  times=$(LC_ALL=C curl -q --noproxy '*' -g -sS -o /dev/null --connect-timeout 3 --max-time 5 \
     -w '%{time_namelookup} %{time_connect}' "telnet://$(address "${hosts[$1]}" "${ports[$1]}")" \
     </dev/null 2>/dev/null)
   code=$?
@@ -555,6 +581,18 @@ report() {
 
 report 'control origin' 0
 control=$class
+# The rounds in which the origin connected: only they count for a target that did not connect.
+missed='' missed_count=0 round=0
+while [ "$round" -lt "$rounds" ]; do
+  if [ "$(classify "${codes[round]-}" "${lookups[round]-}" "${connects[round]-}")" = REACHED ]; then
+    origin_connected[round]=1
+  else
+    missed="${missed:+$missed, }$((round + 1))"
+    missed_count=$((missed_count + 1))
+  fi
+  round=$((round + 1))
+done
+gated=yes
 reached=''
 unclear=''
 index=1
@@ -576,5 +614,9 @@ done
 }
 [ "$spread" = yes ] || unknown "sleep failed between the rounds of probes, so they were not 6 s apart"
 [ "$control" = REACHED ] || unknown "the probe could not connect to the origin itself"
+if [ -n "$missed" ]; then
+  if [ "$missed_count" -eq 1 ]; then word=round; else word=rounds; fi
+  unknown "the probe could not connect to the origin in $word $missed of $rounds, and a round without the origin proves nothing of the targets"
+fi
 [ -z "$unclear" ] || unknown "${unclear# } unresolved or unknown"
 printf 'PASS: every target is unreachable from this device, and %s answered as Dispatch\n' "$origin"

@@ -31,6 +31,7 @@ async function blackholeDrops(): Promise<string | null> {
       "-q",
       "--noproxy",
       "*",
+      "-g",
       "-sS",
       "-o",
       "/dev/null",

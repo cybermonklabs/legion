@@ -137,8 +137,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       const origin = fakeDispatch();
       // A curl that answers HTTP as the host's does but whose probe of the origin's own port is
       // refused, as behind a proxy that carries the HTTP requests while the device's own connects
-      // go nowhere: every target then reads unreachable, and only the control stands between
-      // that and a PASS.
+      // go nowhere: every round of every target then proves nothing, and reads `uncounted`.
       const path = pathWithCurl(
         `case "$*" in *telnet://127.0.0.1:${origin.port}*) printf '0.000010 0.000000'; exit 7 ;; esac`
       );
@@ -148,7 +147,8 @@ describe.concurrent("outside-path-reach.sh", () => {
           { path }
         );
         expect(lineFor(run, "origin")).toContain(" unreachable; curl exit 7,");
-        expect(lineFor(run, "closed-a")).toContain(" unreachable; ");
+        expect(lineFor(run, "closed-a")).toContain(" uncounted (round 1 of 5: ");
+        expect(probesOf(lineFor(run, "closed-a"))).toEqual(Array(5).fill("uncounted"));
         expect(verdict(run)).toBe("UNKNOWN: the probe could not connect to the origin itself");
         expect(run.code).toBe(2);
       } finally {
@@ -305,13 +305,104 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A round in which the device reached not even the origin proves nothing of a target. Here the
+  // hub listens: round 1 loses its SYN and from round 2 on the device reaches nothing, the case the
+  // review reproduced, where judging each target on its own rounds printed PASS. A second run
+  // loses only the origin's third probe.
+  row(withoutTools)(
+    "counts a target's round only when the probe connected to the origin in that same round",
+    async () => {
+      const origin = fakeDispatch();
+      const hub = holdingTarget();
+      const claims = join(scratch, `claims-${randomUUID()}`);
+      mkdirSync(claims);
+      const mkdir = hostTool("mkdir") ?? "mkdir";
+      const refused = "printf '0.000010 0.000000'; exit 7";
+      const origin1 = `*telnet://127.0.0.1:${origin.port}`;
+      try {
+        const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
+        const [down, once] = await Promise.all([
+          drive(
+            { ...env, OUTSIDE_PATH_TARGETS: await list(`hub 127.0.0.1 ${hub.port}`) },
+            {
+              path: pathWithCurl(
+                'case "$*" in\n' +
+                  `  ${origin1}) ${mkdir} ${claims}/origin 2>/dev/null || { ${refused}; } ;;\n` +
+                  `  *telnet://127.0.0.1:${hub.port}) ${mkdir} ${claims}/hub 2>/dev/null && ` +
+                  `{ printf '0.000020 0.000000'; exit 28; }; ${refused} ;;\n` +
+                  `  *telnet://*) ${refused} ;;\n` +
+                  "esac"
+              ),
+            }
+          ),
+          drive(
+            { ...env, OUTSIDE_PATH_TARGETS: await list() },
+            {
+              path: pathWithCurl(
+                `case "$*" in ${origin1}) ` +
+                  `if ${mkdir} ${claims}/1 2>/dev/null || ${mkdir} ${claims}/2 2>/dev/null; then :; ` +
+                  `elif ${mkdir} ${claims}/3 2>/dev/null; then ${refused}; fi ;; esac`
+              ),
+            }
+          ),
+        ]);
+        expect(probesOf(lineFor(down, "origin"))).toEqual([
+          "REACHED",
+          "unreachable",
+          "unreachable",
+          "unreachable",
+          "unreachable",
+        ]);
+        expect(lineFor(down, "hub")).toStartWith(
+          `target hub 127.0.0.1:${hub.port} uncounted (round 2 of 5: the probe could not connect ` +
+            "to the origin in that round, so it proves nothing of this target); curl exit 7, "
+        );
+        expect(probesOf(lineFor(down, "hub"))).toEqual([
+          "unreachable",
+          "uncounted",
+          "uncounted",
+          "uncounted",
+          "uncounted",
+        ]);
+        expect(verdict(down)).toBe(
+          "UNKNOWN: the probe could not connect to the origin in rounds 2, 3, 4, 5 of 5, and a " +
+            "round without the origin proves nothing of the targets"
+        );
+        expect(down.code).toBe(2);
+        expect(probesOf(lineFor(once, "origin"))).toEqual([
+          "REACHED",
+          "REACHED",
+          "unreachable",
+          "REACHED",
+          "REACHED",
+        ]);
+        expect(probesOf(lineFor(once, "closed-a"))).toEqual([
+          "unreachable",
+          "unreachable",
+          "uncounted",
+          "unreachable",
+          "unreachable",
+        ]);
+        expect(verdict(once)).toBe(
+          "UNKNOWN: the probe could not connect to the origin in round 3 of 5, and a round " +
+            "without the origin proves nothing of the targets"
+        );
+        expect(once.code).toBe(2);
+      } finally {
+        origin.stop(true);
+        hub.stop(true);
+      }
+    }
+  );
+
   // A tunnel that lost its first handshake packet stays down until WireGuard sends it again, after
   // its RekeyTimeout of 5 s plus up to 334 ms; probes started together would all fall inside that.
-  // The hub's port refuses until 3.5 s after the first probe of it, and its listener then stamps
-  // each connect with this process's own clock, so the row needs nothing of the shell's and runs
-  // on any bash. The fake curl marks the first probe with a builtin, which a watch here sees. The
-  // 3.5 s is on the real clock on purpose: the script is another process, timed by its own sleep,
-  // so no fake timer here can stand in for it.
+  // The hub's port refuses until 3.5 s after the first probe of it, which the fake curl marks with a
+  // builtin and a watch here sees, so the row needs nothing of the shell's and runs on any bash. The
+  // hub's listener stamps each connect with this process's own clock, and the row reads the gaps
+  // between those stamps alone, each stamped the same way: rounds 4 s apart would give 4 s gaps,
+  // so 5 s leaves a second for this host's scheduling. The 3.5 s is on the real clock on purpose:
+  // the script is another process, timed by its own sleep, so no fake timer here can stand in.
   row(withoutTools)(
     "starts its five rounds 6 s apart, so a path down for the first 3.5 s cannot hide a target",
     async () => {
@@ -362,9 +453,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
         expect(connects.length).toBe(4);
-        const starts = [first ?? 0, ...connects];
-        const gaps = starts.slice(1).map((start, at) => (start - (starts[at] ?? 0)) / 1000);
-        expect(gaps.map((gap) => gap >= 5.8)).toEqual([true, true, true, true]);
+        const gaps = connects.slice(1).map((connect, at) => (connect - (connects[at] ?? 0)) / 1000);
+        expect(gaps.map((gap) => gap >= 5)).toEqual([true, true, true]);
       } finally {
         watcher.close();
         origin.stop(true);
@@ -462,6 +552,29 @@ describe.concurrent("outside-path-reach.sh", () => {
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
           OUTSIDE_PATH_TARGETS: targets(`\ufeffhub 127.0.0.1 ${listening.port}`),
         });
+        expect(lineFor(run, "hub")).toContain(" REACHED; ");
+        expect(verdict(run)).toBe("FAIL: reached hub");
+        expect(run.code).toBe(1);
+      } finally {
+        origin.stop(true);
+        listening.stop(true);
+      }
+    }
+  );
+
+  row(withoutTools)(
+    "reads a target list given on a pipe, which it can read only once",
+    async () => {
+      const origin = fakeDispatch();
+      const listening = closingTarget();
+      try {
+        const closed = await closedPort();
+        const run = await drive(
+          { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: "/dev/stdin" },
+          { stdin: `closed 127.0.0.1 ${closed}\nhub 127.0.0.1 ${listening.port}\n` }
+        );
+        expect(run.stdout).toContain("outside-path-reach: targets /dev/stdin (2)\n");
+        expect(lineFor(run, "closed")).toContain(" unreachable; ");
         expect(lineFor(run, "hub")).toContain(" REACHED; ");
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);

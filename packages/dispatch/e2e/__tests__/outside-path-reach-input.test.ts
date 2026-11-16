@@ -144,6 +144,13 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["https://[::127.0.0.1]:8443", "1"],
         ["https://[0:0::ffff:7f00:1]", "1"],
         ["https://[0000:0000:0000:0000:0000:ffff:7f00:0001]:8443", "1"],
+        // One rule for the origin's host and a target's: no empty label, and an IPv6 address is
+        // hexadecimal digits and colons alone, so curl reads none as a URL range.
+        ["https://a..b", "1"],
+        ["https://.example", "1"],
+        ["https://[1-1:1]", "1"],
+        ["https://[fd00::g]", "1"],
+        ["https://[1.2.3.4]", "1"],
         ["ftp://dispatch-outside.example", "1"],
       ] as const) {
         const run = await drive({
@@ -345,6 +352,10 @@ describe.concurrent("outside-path-reach.sh", () => {
             "target hub: svc:envoy-hub is a Tailscale service selector",
           ],
           [await list("hub host_name 4222"), "target hub: host_name is neither a host name"],
+          // curl reads [1-1:1] as a range, and would probe telnet://1:4222 in its place.
+          [await list("hub 1-1:1 4222"), "target hub: 1-1:1 is neither a host name nor an address"],
+          [await list("hub fd00::g 4222"), "target hub: fd00::g is neither a host name nor an"],
+          [await list("hub a..b 4222"), "target hub: a..b is neither a host name nor an address"],
           [await list("hub 127.0.0.1 0"), "target hub: 0 is not a TCP port"],
           [await list("hub 127.0.0.1 0443"), "target hub: 0443 is not a TCP port"],
           [await list("hub 127.0.0.1 65536"), "target hub: 65536 is not a TCP port"],

@@ -629,18 +629,21 @@ probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a 
 bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
 `sh` of macOS is bash, and runs it. Its inputs:
 
-- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets;
-- `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
-  listeners, the secrets broker, the other Dispatch origin), ending in LF or CRLF. `#` starts a
-  comment, and comments are ASCII like the rest of the list. `host` is a name or a literal
-  address; an IPv4 address must be four numbers of 0 to 255 with no leading zero (curl reads
-  `172.020.000.021` in octal, another host); an IPv6 address
-  must hold no dotted IPv4 part and must not be IPv4-mapped however it is written: its text must
-  not start with `ffff:` once its leading zeros and colons are dropped, as `::ffff:a00:1` and
-  `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no mapped address; and a
-  `svc:` selector, which resolves nowhere, is refused. **The list must hold each of our services'
-  addresses on the path as lines of their own, not names alone**: a name line proves only where
-  that name resolves on the person's device, so a name that resolves elsewhere there says nothing
+- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets, its
+  host on the rule a target's host follows;
+- `OUTSIDE_PATH_TARGETS`, a file, or a pipe such as `/dev/stdin`, of `name host port` lines, one
+  per internal target (the hub, the listeners, the secrets broker, the other Dispatch origin),
+  ending in LF or CRLF. `#` starts a comment, and comments are ASCII like the rest of the list.
+  `host` is a name or a literal address; a name has no empty label (`a..b`, `.example`); an IPv4
+  address must be four numbers of 0 to 255 with no leading zero (curl reads `172.020.000.021` in
+  octal, another host); an IPv6 address must be hexadecimal digits and colons alone, so curl reads
+  none as a URL range (it reads `[1-1:1]` as one), and must not be IPv4-mapped however it is
+  written: its text must not start with `ffff:` once its leading zeros and colons are dropped, as
+  `::ffff:a00:1` and `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no
+  mapped address; and a `svc:` selector, which resolves nowhere, is refused. **The list must hold
+  each of our services' addresses on the path as lines of their own, not names alone**: a name
+  line proves only where that name resolves on the person's device, so a name that resolves
+  elsewhere there says nothing
   of the address behind it. A list of names alone prints a warning. **The list is ASCII**: every
   byte must be printable ASCII, a tab or LF, but a CR that comes directly before an LF and a UTF-8
   byte-order mark at offset 0, which the script drops before anything parses the list. Any other
@@ -660,13 +663,15 @@ in five rounds started 6 s apart (0, 6, 12, 18 and 24 s), every host of a round 
 rounds are 6 s apart because a tunnel whose first handshake packet was lost stays down until
 WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
 together would all fall inside that.
-Its curls ignore the device's `~/.curlrc` and any proxy, so the run measures what that device
-itself reaches. Each probe is judged by whether TCP connected, not by curl's exit code alone,
-since our services accept a connection and then wait for the client:
+Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
+the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
+not by curl's exit code alone, since our services accept a connection and then wait for the
+client:
 
 | curl's answer | Class |
 |---|---|
 | a completed connect (`time_connect` above zero), whatever the exit | `REACHED` |
+| no connect, in a round in which the origin did not connect either | `uncounted` |
 | exit 7, refused | `unreachable` |
 | exit 28, timed out, with no lookup completed | `unresolved (lookup timed out)` |
 | exit 28 after a lookup of under a second | `unreachable` |
@@ -674,15 +679,18 @@ since our services accept a connection and then wait for the client:
 | exit 6, the name does not resolve | `unresolved` |
 | anything else | `UNKNOWN` |
 
-A target is `REACHED` when any of its five rounds connected and `unreachable` only when all five
-were, so a network that loses packets does not hide one easily. Measured with a reachable listener
-whose incoming packets were dropped at random, 120 runs per row: at 70% loss no run printed `PASS`
-under bash 3.2 or 5.2 (194 and 201 of 600 rounds missed), where the same rig with three rounds
-printed `PASS` in 8 of 240; at 50% loss three rounds already printed none in 240. Heavier or
-longer loss can still miss all five. `PASS` (exit 0) needs Dispatch's
-answers, a connect to the origin itself and every target unreachable; `FAIL` (exit 1) names each
-target reached, or an origin that served a read with no credential; every run that proved
-nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
+A target's round counts only when the probe connected to the origin in that same round: a round
+in which the device reached not even the origin proves nothing of a target, which reads
+`uncounted` there unless it connected, so `PASS` needs the origin reached in every round. A
+target is `REACHED` when any of its five rounds connected and `unreachable` only when all five
+counted and were, so a network that loses packets does not hide one easily. Measured with a
+reachable listener whose incoming packets were dropped at random, 120 runs per row: at 70% loss
+no run printed `PASS` under bash 3.2 or 5.2 (194 and 201 of 600 rounds missed), where the same
+rig with three rounds printed `PASS` in 8 of 240; at 50% loss three rounds already printed none
+in 240. Heavier or longer loss can still miss all five. `PASS` (exit 0) needs Dispatch's
+answers, a connect to the origin itself in every round and every target unreachable; `FAIL`
+(exit 1) names each target reached, or an origin that served a read with no credential; every
+run that proved nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
 `OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"`, classifies one recorded probe, and five
 of them separated by `;` are judged as one target's rounds in order; that mode exits 4, never
 `PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
