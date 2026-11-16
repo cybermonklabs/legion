@@ -7,7 +7,8 @@
 // Then it speaks OMP's RPC frames on stdin and stdout: negotiate_protocol, get_state, and a
 // prompt, acknowledged and followed by one turn (agent_start, agent_end).
 //
-// It records what it was started with — its argv, the session, whether it resumed — in
+// It records what it was started with — its argv, the session, whether it resumed, and each
+// --append-system-prompt value with the text Oh My Pi takes from it (systemPromptText) — in
 // <cwd>/standin-<pid>.json once registered, for the test to read. A prompt whose message is
 // "ignore SIGTERM" makes it ignore SIGTERM from then on: a process that will not end itself, so a
 // stop has to fall back to killing its pane.
@@ -32,16 +33,19 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// Report is what the stand-in writes once registered.
+// Report is what the stand-in writes once registered. SystemPromptArgs are the
+// --append-system-prompt values as its argv holds them, SystemPrompt the text it took from each,
+// in the same order.
 type Report struct {
-	Pid          int      `json:"pid"`
-	Argv         []string `json:"argv"`
-	Mode         string   `json:"mode"`
-	SystemPrompt []string `json:"systemPrompt"`
-	Resumed      bool     `json:"resumed"`
-	SessionID    string   `json:"sessionId"`
-	SessionFile  string   `json:"sessionFile"`
-	ClaimToken   string   `json:"claimToken"`
+	Pid              int      `json:"pid"`
+	Argv             []string `json:"argv"`
+	Mode             string   `json:"mode"`
+	SystemPromptArgs []string `json:"systemPromptArgs"`
+	SystemPrompt     []string `json:"systemPrompt"`
+	Resumed          bool     `json:"resumed"`
+	SessionID        string   `json:"sessionId"`
+	SessionFile      string   `json:"sessionFile"`
+	ClaimToken       string   `json:"claimToken"`
 }
 
 func main() {
@@ -63,7 +67,8 @@ func run() error {
 			report.Mode = os.Args[i]
 		case arg == "--append-system-prompt" && i+1 < len(os.Args):
 			i++
-			report.SystemPrompt = append(report.SystemPrompt, os.Args[i])
+			report.SystemPromptArgs = append(report.SystemPromptArgs, os.Args[i])
+			report.SystemPrompt = append(report.SystemPrompt, systemPromptText(os.Args[i]))
 		}
 	}
 
@@ -132,6 +137,19 @@ func run() error {
 		return err
 	}
 	return serve(os.Stdin, os.Stdout)
+}
+
+// systemPromptText is the text Oh My Pi 18.16.0 takes from one --append-system-prompt value: a
+// value holding no newline names a file, whose contents are the text when it opens; a value it
+// cannot open, and one holding a newline, is the text itself.
+func systemPromptText(value string) string {
+	if strings.Contains(value, "\n") {
+		return value
+	}
+	if text, err := os.ReadFile(value); err == nil {
+		return string(text)
+	}
+	return value
 }
 
 // post sends body as JSON and decodes a 2xx answer into out; any other status ends the process,

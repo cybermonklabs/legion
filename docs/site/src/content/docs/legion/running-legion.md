@@ -457,7 +457,7 @@ What each part is for:
   the control the others are measured against.
   A role of a drawn unit names each arm's `config_files` in its `PI_CONFIG_FILES` after the
   operator's own and the role's own, in the order the project's file declares the experiments, and
-  ends its one `--append-system-prompt` value with each arm's `instructions` in that same order.
+  ends its system prompt with each arm's `instructions` in that same order.
   The draw is made once, when the unit is opened, and is recorded with the arm, the mode in force
   and the instant; the launch then follows that record and not the mode, so moving a mode to `off`
   stops new draws and takes nothing from a unit already running.
@@ -736,6 +736,37 @@ What each part is for:
   first launch into it). Add it when no role of an affected issue is mid-turn and every role has
   pushed. The repository's `docs/kubernetes.md` ("Operator
   configuration") shows the overlay and its mount.
+- **`model_context_bytes`** (optional) states the context window of the model each role runs, in
+  bytes of system prompt. It is a mapping, the shape `worker_backends` and `role_config_files`
+  give a per-role key:
+
+  ```yaml
+  model_context_bytes:
+    implementer: 800000
+    controller: 400000
+  ```
+
+  Each key is a Legion role (`architect`, `planner`, `implementer`, `tester`, `reviewer`,
+  `merger`, or `controller`), each value a whole number above zero, and a role you leave out has
+  no bound. The daemon cannot read a model's context itself: the model is the one your Oh My Pi
+  overlays name (or Claude Code's own environment, for a role on `claude`), and nothing there tells
+  the daemon how much it holds, so you state it in bytes. The loader refuses a value that is not a
+  mapping, a role that is not Legion's, a role named twice, and a value that is not a whole number
+  or is below 1, naming the entry. Every launch writes its role's composed system prompt — the
+  role's prompt files, the sentence that says which claim it is, your `instructions`, then the
+  instructions of each experiment arm its unit was drawn into — to a file and passes the agent
+  that file's path, so a long prompt never travels as one argument. A launch whose composed prompt
+  is larger than its role's bound is refused before anything starts, and its claim fails at once,
+  charged no launch failure, since every try would compose the same text: its `failure` has the
+  cause `launch_refused` (`died` where the refused launch was the relaunch of a process that died),
+  and `read_state` shows the sentence as the claim's `lastStartFailure` and `failure.detail`:
+  `the <role>'s system prompt is <N> bytes, larger than the <B> bytes model_context_bytes.<role>
+  gives its model's context`
+  ([Troubleshooting](/legion/legion/troubleshooting/#an-issue-is-held)). Cut your instructions or
+  the role's prompt, or raise the bound if the model takes more, and restart the daemon. Under
+  `runtime: kubernetes` a prompt is refused the same way, whatever the key says, when the start
+  frame that carries it to its pod's launcher would be larger than the 1048576 bytes a launcher
+  reads in one frame; the sentence then names the frame, and the prompt is what to cut.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
   turn has stopped: how long after a role's last recorded step the daemon ends the turn that step
   belongs to, so the task that turn was serving goes back to waiting and the session comes back

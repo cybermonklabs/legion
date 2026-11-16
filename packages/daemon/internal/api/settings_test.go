@@ -94,6 +94,7 @@ var settingsEmitted = map[string]string{
 	"Config.Capabilities":                            "capabilities",
 	"Config.WorkerBackends":                          "worker_backends",
 	"Config.RoleConfigFiles":                         "role_config_files",
+	"Config.ModelContextBytes":                       "model_context_bytes",
 	"Config.WorkerStallBackstops":                    "worker_stall_backstop_hours",
 	"Config.RepositoryRenames":                       "repository_renames",
 	"Runtime.Name":                                   "runtime.name",
@@ -330,8 +331,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"pod_update_grace_minutes", "stalled_tree_notice_hours", "worker_silence_minutes",
 		"worker_background_hours",
 		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
-		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
-		"hooks",
+		"controller", "capabilities", "worker_backends", "role_config_files", "model_context_bytes",
+		"repository_renames", "hooks",
 	}
 	top := keysOf(t, encoded)
 	assertKeys(t, "settings", top, wantTop)
@@ -424,6 +425,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if want := map[string]string{"tester": "omp"}; !maps.Equal(settings.WorkerBackends, want) {
 		t.Errorf("worker_backends = %q, want %q", settings.WorkerBackends, want)
+	}
+	if want := map[string]int{"implementer": 800000, "controller": 400000}; !maps.Equal(settings.ModelContextBytes, want) {
+		t.Errorf("model_context_bytes = %v, want the file's %v", settings.ModelContextBytes, want)
 	}
 	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}}; !slices.Equal(settings.RepositoryRenames, want) {
 		t.Errorf("repository_renames = %+v, want the file's pair %+v", settings.RepositoryRenames, want)
@@ -526,7 +530,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("github_apps = %+v, want none", settings.GitHubApps)
 	}
 	top := keysOf(t, encoded)
-	for key, want := range map[string]string{"provider_keys": "[]", "omp_launch_prefix": "[]", "nats_urls": "[]", "repository_renames": "[]", "projects": "{}", "capabilities": `{"decided":{}}`} {
+	for key, want := range map[string]string{"provider_keys": "[]", "omp_launch_prefix": "[]", "nats_urls": "[]", "repository_renames": "[]", "projects": "{}", "capabilities": `{"decided":{}}`, "model_context_bytes": "{}"} {
 		if got := string(top[key]); got != want {
 			t.Errorf("%s = %s, want %s", key, got, want)
 		}

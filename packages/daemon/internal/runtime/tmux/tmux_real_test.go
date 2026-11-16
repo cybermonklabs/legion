@@ -876,13 +876,17 @@ func TestRealTmuxLifecycle(t *testing.T) {
 		}
 	}
 
-	// One --append-system-prompt word, its $(cat)s expanded by the pane's shell, the addressing
-	// text literal.
+	// One --append-system-prompt value, the claim's prompt file, and the text Oh My Pi takes from
+	// it the whole composed prompt, the addressing text literal.
 	report := readReport(t, r.workspace(spec.Issue), omp)
+	args, _ := report["systemPromptArgs"].([]any)
+	if promptFile := runtime.SystemPromptPath(r.stateDir, spec.Claim); len(args) != 1 || args[0] != promptFile {
+		t.Errorf("OMP's --append-system-prompt values = %q, want exactly one: the claim's prompt file %s", args, promptFile)
+	}
 	prompts, _ := report["systemPrompt"].([]any)
 	want := "You are the stand-in tester.\n\n" + spec.Prompt.Addressing + "\n\n# Deployment instructions (demo)\n\nRun the checks."
 	if len(prompts) != 1 || prompts[0] != want {
-		t.Errorf("OMP's system prompt arguments = %q, want exactly one: %q", prompts, want)
+		t.Errorf("OMP's system prompt texts = %q, want exactly one: %q", prompts, want)
 	}
 	if report["mode"] != "rpc" || report["resumed"] != false {
 		t.Errorf("OMP ran with mode %v resumed %v, want rpc and fresh", report["mode"], report["resumed"])

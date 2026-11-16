@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -766,7 +767,16 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
-// launch credentials it writes into its private directory, and the session a resume continues.
+// launch credentials and files it writes into its private directory, and the session a resume
+// continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
+// whose path the agent's argv names (systemPromptPath), Oh My Pi's and Claude Code's alike: the
+// launcher writes each Files entry 0600 into the 0700 directory it makes for the generation on
+// the role's own memory-backed private volume before the child starts, and removes the directory
+// when the child ends (internal/launcher's writeFiles). In an issue pod each role's namespace
+// binds only its own private volume back at LauncherPrivateDir (role-init), so no other role's
+// process can read or change the prompt, and it exists before the agent that names it starts —
+// Oh My Pi would read a path it cannot open as the prompt's text.
+//
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
 // which the launcher kills it. A tree role's shim is told --warm-codegraph: once its Oh My Pi has
@@ -782,11 +792,9 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // a Spawn's, a Resume's and a replaced pod's alike. A Claude Code launch is wrapped whatever else
 // it carries, for the `mkdir -p` of its configuration directory (claudeConfigDir) and the install
 // of the pinned Claude Code its agent command names (claudeCodeBlock: the image carries the pin
-// and never the binary), and adds one file to the generation's credentials: the MCP document its
-// agent command reads
-// (claudeMCPFile), which the launcher writes 0600 into the 0700 private directory it makes for
-// the generation and removes with the rest when the generation ends (internal/launcher). It
-// travels in Files and never in spec.Secrets, which would be two wrongs: every secret name also
+// and never the binary), and adds one more file to the generation's: the MCP document its agent
+// command reads (claudeMCPFile), which the launcher writes and removes as it does the prompt. Both
+// travel in Files and never in spec.Secrets, which would be two wrongs: every secret name also
 // gets a `<NAME>_FILE` pointer in the worker's environment (mainEnvironment), and
 // ValidateSpawnSpec refuses a credential-shaped name outright.
 //
@@ -826,6 +834,7 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		files = map[string]string{}
 	}
 	files[bootTokenKey] = l.spec.BootToken
+	files[runtime.SystemPromptFile] = l.prompt
 	claudeDir := ""
 	if l.runsClaude() {
 		claudeDir = claudeConfigDir(l.spec.Role)
@@ -838,4 +847,27 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
 		ResumeFile: l.spec.ResumeSessionFile,
 	}
+}
+
+// startFrameBytes is the length of the line command reaches its role's launcher as: the frame
+// shimwire's Writer writes for it (launchers.request, shimwire.NewWriter and WriteFrame), JSON
+// with HTML escaping off, and the newline that ends it. A launcher reads no line longer than
+// shimwire.MaxFrameBytes, and the writer refuses to send one (prepare).
+func startFrameBytes(command shimwire.LauncherStart) (int, error) {
+	var line byteCount
+	encoder := json.NewEncoder(&line)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(shimwire.Frame(command)); err != nil {
+		return 0, err
+	}
+	return int(line), nil
+}
+
+// byteCount is an io.Writer that keeps nothing of what it is written but its length, so a frame
+// is measured without a copy of the prompt it carries.
+type byteCount int
+
+func (c *byteCount) Write(p []byte) (int, error) {
+	*c += byteCount(len(p))
+	return len(p), nil
 }

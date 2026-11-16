@@ -17,8 +17,8 @@ import (
 )
 
 // A broken role sequence drops the shared core, uses a root prompt for a child, or makes the Go
-// daemon's instructions win before the shared role instructions. The prompt paths are what the
-// tmux runtime gives OMP in one --append-system-prompt word, so their order is the contract. The
+// daemon's instructions win before the shared role instructions. The prompt paths are what every
+// launch concatenates into the one prompt file its agent reads, so their order is the contract. The
 // Go daemon's text is the role's own part, then the part every architect or every phase worker
 // shares.
 func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
@@ -95,10 +95,10 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 					t.Errorf("the snapshot's %s is not the embedded part", part)
 				}
 			}
-			// The runtimes join the parts byte for byte ($(cat …)), so the role's Go daemon part and
-			// the shared one must meet at one blank line, as the paragraphs within a part do. The
-			// phrases each role is held to are read from the whole composed prompt, shared parts and
-			// the Go daemon's alike.
+			// Every launch joins the parts byte for byte (runtime.ComposePrompt), so the role's Go
+			// daemon part and the shared one must meet at one blank line, as the paragraphs within a
+			// part do. The phrases each role is held to are read from the whole composed prompt,
+			// shared parts and the Go daemon's alike.
 			var text strings.Builder
 			for i, path := range parts.RolePromptPaths {
 				body, err := os.ReadFile(path)

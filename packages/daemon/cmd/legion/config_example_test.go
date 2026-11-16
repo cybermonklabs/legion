@@ -46,6 +46,25 @@ func TestShippedLegionYAMLExamplesRoleConfigFilesPassCheckConfig(t *testing.T) {
 	}
 }
 
+// The example's commented model_context_bytes, uncommented, passes the same check and gives the
+// implementer and the controller the bounds it names, and no other role any.
+func TestShippedLegionYAMLExamplesModelContextBytesPassCheckConfig(t *testing.T) {
+	config := checkShippedExample(t, func(example string) string {
+		return uncommentExample(t, example,
+			"# model_context_bytes:",
+			"#   implementer: 800000",
+			"#   controller: 400000",
+		)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ModelContextBytes) != 2 || cfg.ModelContextBytes["implementer"] != 800000 || cfg.ModelContextBytes["controller"] != 400000 {
+		t.Errorf("ModelContextBytes = %v, want the implementer's 800000 and the controller's 400000", cfg.ModelContextBytes)
+	}
+}
+
 // The example's commented memory block, uncommented with the operator-memory volume and mount it
 // points to, passes the same check, and names the project's mode and overlay. The block's
 // `instructions` stays commented: boot reads that file from the daemon's own disk, and the example

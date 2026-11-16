@@ -1016,6 +1016,10 @@
       "tester": "omp"
     },
     "role_config_files": {},
+    "model_context_bytes": {
+      "controller": 400000,
+      "implementer": 800000
+    },
     "repository_renames": [
       {
         "from": "acme/widgets-legacy",

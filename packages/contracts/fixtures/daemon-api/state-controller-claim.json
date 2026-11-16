@@ -248,6 +248,7 @@
     },
     "worker_backends": {},
     "role_config_files": {},
+    "model_context_bytes": {},
     "repository_renames": [],
     "hooks": [
       {

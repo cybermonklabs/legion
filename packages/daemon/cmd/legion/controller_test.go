@@ -654,11 +654,11 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 }
 
 // Oh My Pi runs through the launch prefix, interactive (no --mode rpc, no --resume), with one
-// --append-system-prompt holding the controller prompt, the daemon's design gate steps, and the
-// deployment instructions, then the one word daemon.ControllerStartCommand; under the operator's own
-// environment plus exactly the shared controller environment — the secrets as file pointers, never
-// values — including LEGION_CONTROLLER_START_MESSAGE, which that pi-legion command sends as the
-// session's first turn.
+// --append-system-prompt naming the file that holds the controller prompt, the daemon's design
+// gate steps, and the deployment instructions, then the one word daemon.ControllerStartCommand;
+// under the operator's own environment plus exactly the shared controller environment — the
+// secrets as file pointers, never values — including LEGION_CONTROLLER_START_MESSAGE, which that
+// pi-legion command sends as the session's first turn.
 func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
@@ -685,14 +685,22 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	if err != nil {
 		t.Fatalf("read the deployment instructions: %v", err)
 	}
-	// `$(cat …)` drops each file's trailing newlines, as a shell does. The start message travels
-	// as LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
-	wantArgv := []string{"--append-system-prompt",
-		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. The project's repositories are acme/widgets.\n\n" +
-			strings.TrimRight(string(instructions), "\n"),
-		"/legion-controller-start"}
+	// The one value of --append-system-prompt is the controller's own prompt file under the
+	// secrets directory, never the text. The start message travels as
+	// LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
+	promptFile := filepath.Join(c.defaultDir, "secrets", "legion-demo-controller-system-prompt.md")
+	wantArgv := []string{"--append-system-prompt", promptFile, "/legion-controller-start"}
 	if got := c.argv(); !slices.Equal(got, wantArgv) {
 		t.Fatalf("Oh My Pi's argv = %q\nwant %q", got, wantArgv)
+	}
+	// Each file's trailing newlines are dropped where the parts join.
+	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. The project's repositories are acme/widgets.\n\n" +
+		strings.TrimRight(string(instructions), "\n")
+	if got, err := os.ReadFile(promptFile); err != nil || string(got) != wantPrompt {
+		t.Fatalf("the controller's prompt file holds %q (%v)\nwant %q", got, err, wantPrompt)
+	}
+	if got := modeOf(t, promptFile); got != 0o600 {
+		t.Errorf("the controller's prompt file has mode %o, want 0600", got)
 	}
 
 	env := c.env()

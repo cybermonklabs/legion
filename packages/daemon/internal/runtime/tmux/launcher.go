@@ -44,9 +44,11 @@ type ompLauncher struct {
 	invocation string
 }
 
-// Launch is innerCommand; an Oh My Pi pane carries no pairs of its own.
-func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host) (string, []string, error) {
-	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, spec.Prompt), nil, nil
+// Launch is innerCommand on the claim's prompt file under host's state directory
+// (runtime.SystemPromptPath), the one launch writes before the pane opens; an Oh My Pi pane
+// carries no pairs of its own.
+func (l ompLauncher) Launch(spec runtime.SpawnSpec, host Host) (string, []string, error) {
+	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, runtime.SystemPromptPath(host.StateDir, spec.Claim)), nil, nil
 }
 
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.

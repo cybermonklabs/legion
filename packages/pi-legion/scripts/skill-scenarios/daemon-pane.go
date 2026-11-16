@@ -106,15 +106,16 @@ type paneRequest struct {
 	// Path, refused when that is a script.
 	GHPath string `json:"ghPath"`
 	// SystemPrompt asks for the pane's system prompt, composed from the role prompts the daemon
-	// module embeds.
+	// module embeds and written to the claim's prompt file under StateDir, as a pane's launch
+	// writes it (runtime.SystemPromptPath).
 	SystemPrompt bool `json:"systemPrompt"`
 }
 
 type paneResponse struct {
 	// Env is every variable the daemon tells the pane, PATH included.
 	Env map[string]string `json:"env"`
-	// SystemPromptArgument is the pane's one --append-system-prompt argument, as shell text; ""
-	// without SystemPrompt.
+	// SystemPromptArgument is the pane's one --append-system-prompt argument, as shell text: the
+	// flag and the path of the file the prompt was written to; "" without SystemPrompt.
 	SystemPromptArgument string `json:"systemPromptArgument,omitempty"`
 }
 
@@ -223,7 +224,9 @@ func firstBytes(path string, n int) ([]byte, error) {
 }
 
 // systemPromptArgument composes the pane's role prompt as the daemon does (specs.SpawnSpec): the
-// role prompts snapshotted under the state directory, the role's parts, then its addressing.
+// role prompts snapshotted under the state directory, the role's parts, then its addressing; it
+// writes the text to the claim's prompt file, as a pane's launch does, and answers the argument
+// that names that file.
 func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	role := claim.Role(req.Role)
 	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
@@ -249,5 +252,13 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return omplaunch.SystemPromptArgument(runtime.PromptParts{RolePromptPaths: parts.RolePromptPaths, Addressing: addressing}), nil
+	prompt, err := runtime.ComposePrompt(runtime.PromptParts{RolePromptPaths: parts.RolePromptPaths, Addressing: addressing})
+	if err != nil {
+		return "", err
+	}
+	promptFile := runtime.SystemPromptPath(req.StateDir, token)
+	if err := runtime.WriteSystemPrompt(promptFile, prompt); err != nil {
+		return "", err
+	}
+	return omplaunch.SystemPromptArgument(promptFile), nil
 }
