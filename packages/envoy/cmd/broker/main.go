@@ -622,7 +622,7 @@ func main() {
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: cfg.SecretsStore, SecretsPrefix: cfg.SecretsPrefix,
 		SecretsKMSKey:              cfg.SecretsKMSKey,
-		GoogleExchangeAudience:     cfg.GoogleOIDCAudience,
+		GoogleExchangeAudience:     googleExchangeAudience(cfg),
 		KubernetesExchangeAudience: cfg.ExchangeK8sAudience,
 		TrustedProxyHeader:         cfg.TrustedProxyHeader,
 		Approval:                   page,
@@ -1157,6 +1157,18 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	m.Judge = runner.Consider
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", cfg.JudgeDispatchURL, "skip_checks", cfg.JudgeTestSkipChecks)
+}
+
+// googleExchangeAudience is the Google audience GET /v1/settings publishes: BROKER_GOOGLE_OIDC_AUDIENCE
+// where BROKER_VM_SERVICES lists a machine the exchange may mint a launcher credential for, and ""
+// where the audience is set for an API caller alone (a google: entry in BROKER_API_ACCOUNTS). The
+// exchange refuses every machine then, and a client that read the audience would mint a token, be
+// refused and stop on every command, where with none published it skips the machine source.
+func googleExchangeAudience(cfg config.Config) string {
+	if len(cfg.ExchangeGoogleAccounts) == 0 {
+		return ""
+	}
+	return cfg.GoogleOIDCAudience
 }
 
 // serviceNames is every registered service, sorted and each once: BROKER_SERVICES' and

@@ -37,8 +37,9 @@ type settingsResponse struct {
 	// prefix names; absent otherwise.
 	GCPProject string `json:"gcp_project,omitempty"`
 	// The audience a machine's Google identity token must carry at the token exchange
-	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where the broker accepts none. A
-	// machine's `agent-secrets` mints its identity token for this audience with no setting.
+	// (BROKER_GOOGLE_OIDC_AUDIENCE), on either store; absent where no machine can trade one, which
+	// is a broker that lists no VM service (cmd/broker's googleExchangeAudience). A machine's
+	// `agent-secrets` mints its identity token for this audience with no setting.
 	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
 	// The audience a pod's projected Kubernetes service-account token must carry at the token
 	// exchange (BROKER_EXCHANGE_K8S_AUDIENCE), on either store; absent where the broker accepts
