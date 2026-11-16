@@ -59,10 +59,33 @@ test("a socket that fits under neither is refused, naming both", () => {
   );
 });
 
-test("socketPathRefusal takes a path of 107 bytes and refuses one of 108", () => {
-  const fits = `/${"x".repeat(106)}`;
-  expect(socketPathRefusal(fits)).toBeUndefined();
-  expect(socketPathRefusal(`${fits}y`)).toBe(
-    `${fits}y is 108 bytes, past the 107 a unix socket path holds`
+test.each([
+  ["linux", 107],
+  ["darwin", 103],
+] as const)("on %s, socketPathRefusal takes a path of %d bytes and refuses one a byte longer", (platform, limit) => {
+  const fits = `/${"x".repeat(limit - 1)}`;
+  expect(socketPathRefusal(fits, platform)).toBeUndefined();
+  expect(socketPathRefusal(`${fits}y`, platform)).toBe(
+    `${fits}y is ${limit + 1} bytes, past the ${limit} a unix socket path holds on ${platform}`
   );
+});
+
+test("a 105-byte path, which Linux takes, is refused on macOS, whose sun_path holds 104 bytes", () => {
+  const path = `/${"x".repeat(104)}`;
+  expect(socketPathRefusal(path, "linux")).toBeUndefined();
+  expect(socketPathRefusal(path, "darwin")).toBe(
+    `${path} is 105 bytes, past the 103 a unix socket path holds on darwin`
+  );
+});
+
+test("a system with no limit of its own takes macOS's, the smaller", () => {
+  const path = `/${"x".repeat(103)}`;
+  expect(socketPathRefusal(path, "freebsd")).toBe(
+    `${path} is 104 bytes, past the 103 a unix socket path holds on freebsd`
+  );
+});
+
+test("with no platform named, socketPathRefusal measures against this process's", () => {
+  const path = `/${"x".repeat(104)}`;
+  expect(socketPathRefusal(path)).toBe(socketPathRefusal(path, process.platform));
 });

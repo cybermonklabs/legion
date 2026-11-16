@@ -243,11 +243,12 @@ interface SocketDirectory {
 }
 
 /** The directory the unix socket of the binaries server whose log is in `serverDir` goes in:
- *  `serverDir` itself, under the run's own directory, when the socket's path there fits the 107
- *  bytes a socket path holds. A long `TMPDIR` leaves it no room, and a server whose only listener
- *  cannot be made does not start, so the socket then goes in a fresh directory of its own under a
- *  root where it fits (`socketRoot`: `TMPDIR`, else `/tmp`), which `release` removes. The data
- *  directory stays under the run's own either way. */
+ *  `serverDir` itself, under the run's own directory, when the socket's path there fits what a
+ *  socket path holds on this machine (`socketPathRefusal`: 107 bytes on Linux, 103 on macOS). A
+ *  long `TMPDIR` leaves it no room, and a server whose only listener cannot be made does not
+ *  start, so the socket then goes in a fresh directory of its own under a root where it fits
+ *  (`socketRoot`: `TMPDIR`, else `/tmp`), which `release` removes. The data directory stays under
+ *  the run's own either way. */
 function socketDirectory(serverDir: string): SocketDirectory {
   if (socketPathRefusal(join(serverDir, socketName)) === undefined) {
     return { dir: serverDir, release: () => {} };

@@ -76,7 +76,7 @@ afterEach(() => {
 });
 
 // The tmux server's socket is TMUX_TMPDIR/tmux-<uid>/teardown, and a unix socket's path holds at
-// most 107 bytes (docs/testing.md, "Unix sockets in Go tests"): under `dir` it came to TMPDIR's
+// most 107 bytes on Linux and 103 on macOS (`socketPathRefusal`): under `dir` it came to TMPDIR's
 // length plus 68, so a TMPDIR over 39 bytes, such as a devbox's 45-byte one, had tmux refuse it
 // (`error connecting to … (Filename too long)`) before the pane existed. Its directory is made
 // under TMPDIR when the socket fits there and under /tmp otherwise, which says so (`socketRoot`).

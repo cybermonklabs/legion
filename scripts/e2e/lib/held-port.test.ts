@@ -19,7 +19,8 @@ const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
 const work = temporaryDirectory("held-port");
 // A keeper's unix socket goes in a directory of its own, made under TMPDIR when the longest
 // socket path fits there and under /tmp otherwise, which says so (`socketRoot`): a socket path
-// holds 107 bytes, and a long TMPDIR passes it. The maker names a directory <prefix>-XXXXXX.
+// holds 107 bytes on Linux (`socketPathRefusal`), and a long TMPDIR passes it. The maker names a
+// directory <prefix>-XXXXXX.
 const socketPrefix = "held-port-sockets";
 const socketDirectory = temporaryDirectories(socketPrefix, {
   root: socketRoot("held-port.test.ts's keeper sockets", (root) =>
