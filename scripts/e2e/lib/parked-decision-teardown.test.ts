@@ -1,8 +1,12 @@
-import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -29,24 +33,62 @@ if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`
 // Read once, at module scope: a call inside the test body would print the warning per row.
 const skip = skipWithout("tmux");
 
+// The code under test reads the host's whole process table, as it reads a devbox's: run_processes
+// (lib/rig.sh) a cwd link and a command line for every process, stop_agent_daemons
+// (parked-decision-devbox.sh) a stat for every process and run_processes once more. The row runs
+// four such walks (run_processes before and after, and stop_agent_daemons's two), so its work grows
+// with the machine's processes, which no test owns: CI's runner has a few hundred, a devbox tens of
+// thousands, and with the row held to a ninth of one CPU on a devbox of about 20,000 the fixed 30 s
+// it had ran out inside stop_agent_daemons in 20 runs of 20. Its deadline is the code's own instead:
+// stop_agent_daemons's wait for its TERM to land (50 polls 0.2 s apart, 10 s); a millisecond for
+// each process the host has when this file loads, for each of the four walks, where a walk costs
+// about 35 µs of CPU a process (run_processes over 19,830 took 0.70 s of CPU), so the row may run at
+// a twenty-eighth of one CPU; and 30 s for the rest, the row's tmux, stand-in broker and bystanders
+// and the waits on their events, a second for each of them. It is set as the file's default above
+// every hook, since Bun 1.4.4 gives a hook the default in force where it is registered, and the
+// hooks end what the row started.
+const hostProcesses = readdirSync("/proc").filter((name) => /^\d+$/.test(name)).length;
+setDefaultTimeout(10_000 + 4 * hostProcesses + 30_000);
+
 const dir = temporaryDirectory("parked-decision-teardown-test");
 const started: number[] = [];
 // What the test started that no pid of its own names: a tmux server to kill, a session a process
 // writes its own pid file for. Each is registered the moment the test starts it, before the waits
-// that can time out, so an unfinished test body still leaves nothing of the run alive.
+// that can time out, so an unfinished test body still leaves nothing of the run alive. The hook is
+// an afterEach registered above the tmux server's directory below: Bun 1.4.4 runs a scope's
+// afterEach hooks in the order they were registered, a timed-out row's too, and all of them before
+// an afterAll, so the server is stopped through its socket before that directory or `dir` goes.
 const teardowns: (() => void)[] = [];
-afterAll(() => {
-  for (const teardown of teardowns.reverse()) {
+afterEach(() => {
+  for (const teardown of teardowns.splice(0).reverse()) {
     try {
       teardown();
     } catch {}
   }
-  for (const pid of started) {
+  for (const pid of started.splice(0)) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {}
   }
 });
+
+// The tmux server's socket is TMUX_TMPDIR/tmux-<uid>/teardown, and a unix socket's path holds at
+// most 107 bytes (docs/testing.md, "Unix sockets in Go tests"): under `dir` it came to TMPDIR's
+// length plus 68, so a TMPDIR over 39 bytes, such as a devbox's 45-byte one, had tmux refuse it
+// (`error connecting to … (Filename too long)`) before the pane existed. Its directory is made
+// under TMPDIR when the socket fits there and under /tmp otherwise, which says so, as the Go
+// modules' internal/testtmp does. The maker names a directory <prefix>-XXXXXX.
+const tmuxPrefix = "parked-decision-teardown-tmux";
+const tmuxSocket = join(`tmux-${process.getuid?.() ?? 0}`, "teardown");
+const fitsSocket = (root: string) =>
+  Buffer.byteLength(join(root, `${tmuxPrefix}-XXXXXX`, tmuxSocket)) <= 107;
+const tmuxRoot = fitsSocket(tmpdir()) ? tmpdir() : "/tmp";
+if (tmuxRoot !== tmpdir()) {
+  console.error(
+    `parked-decision-teardown.test.ts: the tmux socket would pass 107 bytes under TMPDIR ${tmpdir()}, so its directory is under /tmp`
+  );
+}
+const tmuxDirectory = temporaryDirectories(tmuxPrefix, { root: tmuxRoot });
 
 const alive = (pid: number) => {
   try {
@@ -75,6 +117,27 @@ const membersOf = (sid: number) =>
         return false;
       }
     });
+// The broker LEADER and every live process it started that is still in its session, by the
+// kernel's children lists (/proc/<pid>/task/<pid>/children): the row's waits on the broker, which
+// a scan of every process on the host, as membersOf makes, would hold to the host's size. The
+// stand-in's members are its own children; the teardown, which must also reach a member a dead
+// broker left behind, keeps membersOf.
+const familyOf = (leader: number) => {
+  const family: number[] = [];
+  const visit = (pid: number) => {
+    let children: string[];
+    try {
+      if (sessionOf(pid) !== leader || !alive(pid)) return;
+      children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").split(" ");
+    } catch {
+      return;
+    }
+    family.push(pid);
+    for (const child of children.filter(Boolean)) visit(Number(child));
+  };
+  visit(leader);
+  return family;
+};
 // Every live pid whose command line holds TEXT: how a teardown finds a process the test started
 // in a session of its own before that process has named itself in a file.
 const namingPids = (text: string) =>
@@ -137,8 +200,7 @@ test.skipIf(skip)(
     const home = join(work, "home");
     const runtime = join(home, ".local/state/omp/profiles/p/run/daemons/0123456789abcdef");
     const stale = join(work, "state/omp/profiles/p/run/daemons/fedcba9876543210");
-    for (const d of [ws, home, runtime, stale, join(work, "tmux")])
-      mkdirSync(d, { recursive: true });
+    for (const d of [ws, home, runtime, stale]) mkdirSync(d, { recursive: true });
     // The stand-in broker lives outside $work, so only its working directory ties it to the run.
     const broker = join(dir, "fake-broker.sh");
     writeFileSync(
@@ -175,7 +237,7 @@ wait
       [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
     );
 
-    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: join(work, "tmux") };
+    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: tmuxDirectory() };
     const pidFile = join(runtime, "broker.pid");
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.
     // Ending that session is registered before the pane that starts it, so a wait below that times
@@ -209,8 +271,8 @@ wait
     );
     await until("the stand-in broker to write broker.pid", () => existsSync(pidFile));
     const leader: number = JSON.parse(readFileSync(pidFile, "utf8")).pid;
-    await until("the broker and its two members", () => membersOf(leader).length === 3);
-    const members = membersOf(leader);
+    await until("the broker and its two members", () => familyOf(leader).length === 3);
+    const members = familyOf(leader);
 
     // The pane goes, as cleanup-is-complete's kill-server takes it.
     Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
@@ -236,6 +298,5 @@ wait
       .filter(Boolean)
       .map(Number);
     expect(after).toEqual([bystander.pid]);
-  },
-  30_000
+  }
 );

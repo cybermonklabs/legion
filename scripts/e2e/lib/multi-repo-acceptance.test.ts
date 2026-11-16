@@ -13,11 +13,13 @@ import {
   mutableDaemonStub,
   newFakeDir,
   nextRun,
+  observerReadDeadlineMs,
   run,
   script,
   servers,
   spawnScript,
   stateBody,
+  useRowDeadline,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
 
@@ -25,6 +27,10 @@ import {
 // run; this file covers every observation but second-owner (multi-repo-second-owner.test.ts) and
 // the `negative` ones (multi-repo-negative.test.ts). The stubs and fakes it runs against are in
 // multi-repo-acceptance-harness.ts.
+// A row runs the observer, and its stubs and fakes answer at once or when the row lets them: its
+// bound is the observer's read deadline and the margin for its work (useRowDeadline), set above
+// every hook so the hooks have it too.
+useRowDeadline(observerReadDeadlineMs);
 useScratchDirectory();
 
 afterEach(() => {
