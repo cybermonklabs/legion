@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1077,14 +1078,28 @@ func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 // listener's cache does not hold it (session.SessionRegistry.Refresh), which is how a test
 // counts those reads, fails one, or stalls them all. The field the handle hangs off is the
 // registry's own, so one helper holds the reflection that reaches it and a rename of it breaks
-// here alone.
+// here alone. The field is written under the registry's own mutex, which sessionCache.Apply holds
+// while it reads the field (SessionRegistry.following): stopping the watcher first does not wait
+// for an apply already past its generation check, and that apply still reads the field after
+// the swap (review 5911599468 of cybermonklabs/legion#4087 made that interleaving with a delay).
 func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
 	t.Helper()
-	field := reflect.ValueOf(sessions).Elem().FieldByName("watcher")
+	registry := reflect.ValueOf(sessions).Elem()
+	field := registry.FieldByName("watcher")
 	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	old := watcher.Interface().(*kvwatch.Watcher).KV()
 	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
-	watcher.Set(reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{})))
+	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
+	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
+	// would compile, and RWMutex.Lock would write past it into the next field.
+	muField := registry.FieldByName("mu")
+	if muField.Type() != reflect.TypeOf(sync.RWMutex{}) {
+		t.Fatalf("session.SessionRegistry.mu is %s, want sync.RWMutex: swapSessionBucket locks it as one", muField.Type())
+	}
+	mu := (*sync.RWMutex)(unsafe.Pointer(muField.UnsafeAddr()))
+	mu.Lock()
+	watcher.Set(replacement)
+	mu.Unlock()
 }
 
 // stallSessionReads makes every bucket read of sessions stall until the test ends, keeping its

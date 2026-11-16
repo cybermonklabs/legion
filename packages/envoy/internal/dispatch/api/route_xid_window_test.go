@@ -58,6 +58,13 @@ var routeXidWindowTable = []routeXidWindowCase{
 		name: "the review route", route: "POST /api/v1/artifacts/{id}/reviews (createArtifactReview)",
 		ready: readyArtifactReview, window: storetest.XidBatchedWindow,
 	},
+	// The review naming the version its caller read shares that handler (recordArtifactReview):
+	// the version it names is compared in the read phase, before anything is queued, so its write
+	// phase is that same batch.
+	{
+		name: "the version review route", route: "POST /api/v1/artifacts/{id}/versions/{number}/reviews (createArtifactVersionReview)",
+		ready: readyArtifactVersionReview, window: storetest.XidBatchedWindow,
+	},
 	// Answering the open request adds the ask's answer, its block state, its parts' index and
 	// ask.answered to that batch (closeAskTx queues them on the ledger), and nothing to the
 	// window.

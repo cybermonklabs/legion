@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The dispatch skill now says that markdown uploads to Dispatch as a `.md` document whatever its
+  local name, never as `.txt`, which Dispatch stores as plain text and does not preview. To keep
+  the three Dispatch skills inside their word bound, the stop-work bullet no longer repeats that a
+  wait on a person goes in an ask, which `dispatch-first` already says.

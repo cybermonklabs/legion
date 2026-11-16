@@ -67,6 +67,7 @@ func (b routeFixture) issue(t *testing.T, title string) itemRowFixture {
 // routeOwnerLockTable is the route table.
 var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the review route", route: "POST /api/v1/artifacts/{id}/reviews (createArtifactReview)", ready: readyArtifactReview},
+	{name: "the version review route", route: "POST /api/v1/artifacts/{id}/versions/{number}/reviews (createArtifactVersionReview)", ready: readyArtifactVersionReview},
 	{name: "the plan review route", route: "POST /api/v1/artifacts/{id}/plan-reviews (createArtifactPlanReview)", ready: readyPlanReview},
 	{name: "the title correction route", route: "PATCH /api/v1/artifacts/{id} (renameArtifact)", ready: readyArtifactRename},
 	{name: "the title correction route on a project document", route: "PATCH /api/v1/artifacts/{id} on a project document (renameArtifact)", ready: readyProjectDocumentRename},
@@ -108,6 +109,34 @@ func readyArtifactReview(t *testing.T, base routeFixture) lockedItemWrite {
 			if answer.Code != http.StatusCreated {
 				t.Fatalf("review the spec once the lock was released: status=%d body=%s",
 					answer.Code, answer.Body.String())
+			}
+			if reviews := fixture.reviewCount(t, fixture.artifactID); reviews != 1 {
+				t.Fatalf("the spec holds %d reviews, want the one the route wrote", reviews)
+			}
+		})
+}
+
+// readyArtifactVersionReview drives POST /api/v1/artifacts/{id}/versions/{number}/reviews, the
+// review `dispatch review` sends, naming the spec's one settled version with no approval request
+// open. It shares the review route's handler (recordArtifactReview), so it inserts the review
+// under the issue's owner lock that handler takes before it reads the settled version and compares
+// the version the request names with it.
+func readyArtifactVersionReview(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	fixture := base.issue(t, "Version review")
+	waitForArtifactVersion(t, fixture.handler, fixture.artifactID, 1)
+	return fixture.routeWrite(t, "the review it inserts",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodPost,
+				versionReviewPath(fixture.artifactID, "1"), map[string]any{"state": "approved"}, "alice")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("review version 1 of the spec once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if review := decodeBody[model.ArtifactReview](t, answer); review.Version != 1 || review.State != "approved" {
+				t.Fatalf("the review = %#v, want an approval of version 1", review)
 			}
 			if reviews := fixture.reviewCount(t, fixture.artifactID); reviews != 1 {
 				t.Fatalf("the spec holds %d reviews, want the one the route wrote", reviews)
