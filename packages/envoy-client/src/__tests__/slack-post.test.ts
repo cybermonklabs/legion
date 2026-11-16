@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { postSlackReply, SLACK_BOT_TOKEN_SECRET } from "../slack-post";
 
@@ -30,6 +31,9 @@ if [ "$FAKE_BROKER" = crash-after-inject ]; then
 fi
 LEGION_SLACK_BOT_TOKEN=xoxb-granted exec "$@"
 `;
+
+/** The Slack the row that gets no answer dials. */
+const refusingSlack = refusingOrigin();
 
 interface SlackCall {
   readonly path: string;
@@ -360,10 +364,9 @@ describe("postSlackReply", () => {
   });
 
   test("a Slack that does not answer is a failure that says the reply may have been posted", async () => {
-    // Port 1 of loopback, which an unprivileged process cannot bind, so the poster's request is
-    // refused after the grant. The port of a server this test stopped would be free for any other
-    // process to bind, and an answer from it would be another failure than the one this row reads.
-    const { env } = brokerEnvironment("granted", "http://127.0.0.1:1/api");
+    // A port this file holds bound and never listens on (`refusingOrigin`), so the poster's request
+    // is refused after the grant, and no other process can bind it to give an answer of its own.
+    const { env } = brokerEnvironment("granted", `${refusingSlack}/api`);
 
     await expect(postSlackReply(reply, { env })).rejects.toThrow(
       "Slack did not answer chat.postMessage: the reply may have been posted, and posting it again may put it in the thread twice"

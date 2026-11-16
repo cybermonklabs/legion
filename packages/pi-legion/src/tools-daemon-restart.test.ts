@@ -5,6 +5,7 @@ import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { refusingOrigin } from "@legion/test-fixtures/refused-port";
 import { z } from "zod";
 import { createLegionTool } from "./tools";
 
@@ -82,9 +83,9 @@ function liveDaemon(refuse?: { path: string; status: number; body: object }) {
 }
 
 /** A port nothing listens on: a connection to it is refused, as it is while a daemon restarts.
- *  Port 1 of loopback, which an unprivileged process cannot bind: the port of a server this file
- *  stopped would be free for any other process to bind, and its answer would be no refusal. */
-const REFUSING_ORIGIN = "http://127.0.0.1:1";
+ *  This file holds it bound and never listens on it (`refusingOrigin`), so no other process can
+ *  bind it and answer in the daemon's place. */
+const REFUSING_ORIGIN = refusingOrigin();
 
 /** A listener that accepts each connection and closes it once the request arrives, before any
  * response: the daemon going down mid-request. */
