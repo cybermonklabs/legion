@@ -1025,8 +1025,12 @@ func olderBuildReadsTheGraph(t *testing.T) {
 // holds it: a read that gained a join, lost an index or started reading the store would name a
 // different set. They are pinned rather than derived, because a derivation from the same
 // statement would move with it.
+//
+// The comment read also reads issues and artifacts: a comment holds no project of its own, so its
+// project clause reads its owner's (access.ItemOwnerClause, dispatch://INFRA-3862), one keyed probe
+// of the issue or document the comment hangs from. Nothing else the read touches changed.
 var readRelations = map[string][]string{
-	"GET /api/v1/comments/{id}":         {"comment_deliveries", "comment_mentions", "comments", "doc_updates"},
+	"GET /api/v1/comments/{id}":         {"artifacts", "comment_deliveries", "comment_mentions", "comments", "doc_updates", "issues"},
 	"GET /api/v1/artifacts/{id}/blocks": {"artifacts", "asks", "comments", "doc_updates", "embeddings"},
 }
 
