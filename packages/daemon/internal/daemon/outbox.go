@@ -386,11 +386,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
 	case record.RoleHoldersPublish:
-		// Nobody is told, for the design-gates publish's reason: the one refusal that ends this
-		// row is an issue Dispatch does not know (permanentRefusal, ISSUE_NOT_FOUND).
-		refusal, _ := dispatch.PermanentRefusal(cause)
+		// Nobody is told, and the line is what says the row ended. Two refusals end it
+		// (permanentRefusal): an issue Dispatch does not know, a WARN, since nothing of this
+		// daemon is wrong; and a 400 that refuses the set, an ERROR, since this daemon read a set
+		// from its own claims that Dispatch will never take. The issue's next ready or end of a
+		// claim queues a fresh publication of the live set (roleHoldersChanged, claimEnded).
+		// permanentRefusal ended the row only on a coded *dispatch.Error, so refusal is set.
+		var refusal *dispatch.Error
+		errors.As(cause, &refusal)
+		log := r.log.Warn
+		if refusal.Status == http.StatusBadRequest {
+			log = r.log.Error
+		}
 		told = func() {
-			r.log.Warn("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
+			log("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took, and the next ready or end of a claim on the issue publishes again",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
 	}
@@ -607,7 +616,7 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
-	case record.OutboxKindDesignGatesPublish, record.OutboxKindRoleHoldersPublish:
+	case record.OutboxKindDesignGatesPublish:
 		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
 		// is one it will not know on the retry either, and nothing an operator does here would
 		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
@@ -617,6 +626,16 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
 		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
+	case record.OutboxKindRoleHoldersPublish:
+		// The design-gates rule, and a 400 that carries Dispatch's code besides: the route refuses
+		// a set it will never store (INVALID_ROLE_HOLDER), and the set is read from the same claims
+		// on the retry, so a retry would send it for as long as the issue lives. A 400 with no code
+		// is from whatever stands in front of Dispatch, and it is retried as an outage.
+		var refusal *dispatch.Error
+		if !errors.As(err, &refusal) || refusal.Code == "" {
+			return false
+		}
+		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
 	default:
 		return false
 	}
@@ -1159,8 +1178,8 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // Dispatch holds, so a role whose claim ended leaves the set with no delete route.
 //
 // A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
-// and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
-// alone), so the daemon and Dispatch deploy in either order.
+// and nothing here treats that as final, nor a 5xx (permanentRefusal, which ends the row on
+// ISSUE_NOT_FOUND and on a coded 400 alone), so the daemon and Dispatch deploy in either order.
 func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
 	if r.dispatch == nil {
 		return errors.New("role holders executor has no Dispatch client")

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -249,6 +250,8 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	issue := createScratchDispatchIssue(t, baseURL)
 	r := newRoleHoldersRig(t)
 	r.runner.dispatch = dispatch.New(baseURL, token)
+	logs := &syncBuffer{}
+	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
 	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
 
 	holders := func() []dispatch.RoleHolder {
@@ -303,6 +306,27 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	run()
 	if got := holders(); len(got) != 0 {
 		t.Fatalf("after the tester retired, Dispatch lists %+v, want no holder", got)
+	}
+
+	// A set the route refuses ends the row on the first answer, rather than being sent for as long
+	// as the issue lives: a claim whose session is no session id, which the route answers 400
+	// INVALID_ROLE_HOLDER. The daemon logs one ERROR line naming the issue and the code, and
+	// Dispatch keeps the set it holds.
+	r.seedClaim(issue, claim.RoleReviewer, "ses reviewer", "ready", time.Minute)
+	r.enqueue(issue)
+	run()
+	if got := holders(); len(got) != 0 {
+		t.Fatalf("after the refused publication, Dispatch lists %+v, want the set it held, no holder", got)
+	}
+	var refused []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "role-holders publish refused by Dispatch") {
+			refused = append(refused, line)
+		}
+	}
+	if len(refused) != 1 || !strings.Contains(refused[0], "level=ERROR") || !strings.Contains(refused[0], "issue="+issue) ||
+		!strings.Contains(refused[0], "code=INVALID_ROLE_HOLDER") {
+		t.Fatalf("the refusal was logged as %q, want one ERROR line naming %s and INVALID_ROLE_HOLDER", refused, issue)
 	}
 }
 

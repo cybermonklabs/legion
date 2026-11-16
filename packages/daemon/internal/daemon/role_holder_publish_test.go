@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -232,6 +233,19 @@ func TestBootQueuesEveryRecentIssue(t *testing.T) {
 	}
 }
 
+// The boot itself runs the pass: a daemon that starts over a running session queues the
+// publication of its issue in openWorkflow, before the outbox attaches, so the first sweep sends
+// it. A boot that skips the pass, or a pass that queues nothing, leaves the session unpublished
+// until its next ready or end.
+func TestTheWorkflowsBootQueuesTheRolePublicationOfALiveClaim(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedSilentPhaseWorker(t, pool, "CAPTURE-701", time.Now().UTC())
+	bootedTickWorkflow(t, pool)
+	if issues, rows := queuedRoleHolders(t, pool); rows != 1 || issues[0] != "CAPTURE-701" {
+		t.Fatalf("after the boot the outbox holds role-holder publications for %v, want the one of CAPTURE-701, whose implementer runs", issues)
+	}
+}
+
 // failingRoleHolders is a record whose queue of a role-holder publication fails, as a store that
 // refuses the write does.
 type failingRoleHolders struct {
@@ -297,37 +311,79 @@ func TestBootPublishesAnEndWhoseQueueFailed(t *testing.T) {
 	}
 }
 
-// What becomes of a row is decided by Dispatch's answer alone. Only the route's own 404
-// ISSUE_NOT_FOUND ends it: every other answer is an outage the row rides out, and the 404 a
-// Dispatch without the route answers is the one that matters most, since its router writes it
-// under the code NOT_FOUND. So the daemon and Dispatch deploy in either order.
+// What becomes of a row is decided by Dispatch's answer alone. An outage is retried: a transport
+// failure, a 5xx, a 400 with no code (from whatever stands in front of Dispatch), and the 404 that
+// a Dispatch without the route answers under its router's code
+// NOT_FOUND, so the daemon and Dispatch deploy in either order. A refusal that no retry changes
+// ends the row: the route's 404 ISSUE_NOT_FOUND, and a 400 with Dispatch's code, which names a set
+// that Dispatch will never take. A 400 ends the row with one ERROR line that names the issue and
+// Dispatch's code, and nothing else: the issue's next ready or end of a claim queues a fresh
+// publication, which reads the live set again.
 func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	const issue = "LEGION-208"
 	r := newRoleHoldersRig(t)
+	logs := &syncBuffer{}
+	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
 	r.seedClaim(issue, claim.RoleTester, "ses-1", supervise.StateWorking, time.Minute)
 	r.client.answers = []error{
 		fmt.Errorf("publish the role holders of %s: %w", issue, errors.New("Dispatch is down")),
 		&dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/" + issue + "/role-holders"},
+		&dispatch.Error{Status: http.StatusInternalServerError, Code: "INTERNAL", Message: "internal server error"},
+		&dispatch.Error{Status: http.StatusBadRequest, Message: "<html>400 Bad Request</html>"},
+		&dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ROLE_HOLDER", Message: "the session of tester is not a session id."},
 		&dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue " + issue},
 	}
 	r.enqueue(issue)
 
 	sent := roleHoldersPublished{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses-1"}}}
 	for _, step := range []struct {
-		what  string
-		rows  int
-		after time.Duration
+		what    string
+		rows    int
+		after   time.Duration
+		requeue bool
 	}{
 		{what: "a Dispatch that is down", rows: 1},
 		{what: "the router's 404 NOT_FOUND of a Dispatch with no such route", rows: 1, after: time.Minute},
-		{what: "the 404 that names the issue as unknown", rows: 0, after: time.Minute},
+		{what: "a 500", rows: 1, after: time.Minute},
+		{what: "a 400 with no code, from whatever stands in front of Dispatch", rows: 1, after: time.Minute},
+		{what: "the 400 that refuses the set", rows: 0, after: time.Minute},
+		{what: "the 404 that names the issue as unknown, on the row the next ready queued", rows: 0, requeue: true},
+		{what: "a publication Dispatch takes, on the row the next end queued", rows: 0, requeue: true},
 	} {
 		r.ahead += step.after
+		if step.requeue {
+			r.enqueue(issue)
+		}
 		if got := r.published(); !reflect.DeepEqual(got, []roleHoldersPublished{sent}) {
 			t.Fatalf("after %s, published %+v, want %+v", step.what, got, sent)
 		}
 		if rows := outboxRows(t, r.pool); rows != step.rows {
 			t.Fatalf("after %s the outbox holds %d rows, want %d", step.what, rows, step.rows)
 		}
+	}
+	if answers := len(r.client.answers); answers != 0 {
+		t.Fatalf("%d of the answers were never given, so the rows never met them", answers)
+	}
+
+	var refused, failed []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "role-holders publish refused by Dispatch") {
+			refused = append(refused, line)
+		}
+		if strings.Contains(line, `msg="outbox row failed"`) {
+			failed = append(failed, line)
+		}
+	}
+	if len(failed) != 4 {
+		t.Errorf("logged %d failed rows, want the four retried answers:\n%s", len(failed), logs.String())
+	}
+	if len(refused) != 2 {
+		t.Fatalf("logged %d refusals, want the 400 and the ISSUE_NOT_FOUND once each:\n%s", len(refused), logs.String())
+	}
+	if line := refused[0]; !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "issue="+issue) || !strings.Contains(line, "code=INVALID_ROLE_HOLDER") {
+		t.Errorf("the 400's line is %q, want one ERROR that names the issue and Dispatch's code", line)
+	}
+	if line := refused[1]; !strings.Contains(line, "level=WARN") || !strings.Contains(line, "code="+dispatch.IssueNotFound) {
+		t.Errorf("the ISSUE_NOT_FOUND line is %q, want a WARN that names the code", line)
 	}
 }
