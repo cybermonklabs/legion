@@ -944,15 +944,19 @@ own CI job, `dispatch-two-builds` in `.github/workflows/ci.yaml`, which builds t
 release and the first-rollout release and caches each build by its commit. The earlier build is a
 directory `packages/envoy/scripts/build-dispatch-build.sh`
 writes, named by `DISPATCH_PREVIOUS_BUILD`, and the first-rollout row's is named by
-`DISPATCH_FIRST_ROLLOUT_BUILD` (`firstRolloutRelease` in `twobuild_harness_test.go`, the newest
-release before the first that registers its schema numbers): a row skips when its variable is
-unset, and fails when the directory lacks a part it reads. The helpers both process suites share
-are in `processes_test.go`, beside those every build of the tests shares in
+`DISPATCH_FIRST_ROLLOUT_BUILD`: a row skips when its variable is unset, and fails when the
+directory lacks a part it reads. The first-rollout build is the newest release before the first
+that registers its schema numbers, the release tagged `legion-envoy-v30.20.2`. That tag is
+lightweight and can move, so the pin is its commit, `edb69e0d7588ec037847182e74a04a343a0664c9`:
+`firstRolloutRelease` in `twobuild_harness_test.go` holds it, and the first-rollout row fails
+when the build's `COMMIT` is another commit. The CI job holds the same commit in
+`FIRST_ROLLOUT_COMMIT`, and fails when the tag names another commit. The helpers both process
+suites share are in `processes_test.go`, beside those every build of the tests shares in
 `nats_unreachable_test.go`.
 
 ```sh
 bash packages/envoy/scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"   # from the repository root
-bash packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --out "$TMPDIR/dispatch-first-rollout"
+bash packages/envoy/scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"   # legion-envoy-v30.20.2
 env DISPATCH_TEST_DATABASE_URL=… DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch
 ```
 

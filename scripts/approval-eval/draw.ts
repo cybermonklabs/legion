@@ -23,6 +23,7 @@ import {
   type DrawnSlices,
   type DrawRecord,
   drawPath,
+  type FinalTestDraw,
   rootFactsOf,
   rootReadingOf,
   SLICES,
@@ -40,6 +41,7 @@ import {
 } from "./never-decide";
 import { type RenderGuard, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
+import { RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
 
 /**
  * Draws the post-cut cases of a corpus into the four slices the pre-analysis plan's table names:
@@ -67,6 +69,17 @@ import { replayCase } from "./replay";
  * case of this corpus carries the option the person chose, so one that does not is the corpus
  * read wrongly and not a case to pass over.
  *
+ * The report slice is the final test (`analyze.ts` calls it "the test set"), and the rule of
+ * INFRA-2897's next final test (`reserve.ts`, item 4) draws that test from the reserved requests
+ * only, its development and calibration sets from all others. So a draw over a corpus read under
+ * a registered read of the reserve puts a group into report only when the reserve holds every
+ * case of it after the cut, counting the cases the draw leaves out, and such a group tries report
+ * before the other slices. A group holding one case the reserve does not hold, which a live
+ * scorer may have read, never goes into report: it goes to a development slice whole, and the
+ * reserved cases it holds are named there. A reserved case the draw leaves out is counted where
+ * every left-out case is. A draw that reads no reserve draws as before, and `draw.json` records
+ * that its report slice is no final test.
+ *
  * What is pinned and what is live. The cases are the corpus's, and each document is read at the
  * version the corpus pins, so those are the same bytes on every run. The one live reading is
  * the list of roots carrying the `legion` label that stand on the backlog or in icebox, which
@@ -91,7 +104,10 @@ import { replayCase } from "./replay";
 const USAGE = `usage: bun scripts/approval-eval/draw.ts --corpus <dir> --cut <date> --out <dir> \\
   [--seed <n>] [--backlog-roots <file>] [--cache <dir>]
 
-Draws the post-cut cases of a corpus into the fit, report, anchor and reserve slices.
+Draws the post-cut cases of a corpus into the fit, report, anchor and reserve slices. Under a
+registered read of INFRA-2897's reserve (APPROVAL_EVAL_RESERVE, claim.ts), which takes the
+--seed its registration names, report, the final test, takes only the groups the reserve holds
+whole, and they try it first.
 
 Options:
   --corpus <dir>          Required. A directory holding corpus.jsonl and snapshot.json.
@@ -262,6 +278,17 @@ export interface Draw {
   undrawable: ExcludedCase[];
   undrawableByKind: Record<UndrawableKind, number>;
   anchors: AnchorDescriptor[];
+  /** Where report, the final test, came from; null for a draw that read no reserve. */
+  finalTest: FinalTestDraw | null;
+}
+
+/**
+ * What a draw under a registered read of the reserve is given: the read's reference, and which
+ * cases the reserve holds. Only a group whose every case it holds may go into report.
+ */
+export interface FinalTestSource {
+  reference: string;
+  holds: (row: CaseRow) => boolean;
 }
 
 /** One group of cases, which goes into one slice whole. */
@@ -319,20 +346,48 @@ function emptyDraw(seed: number): Draw {
     undrawable: [],
     undrawableByKind: { "too-few-options": 0, "no-option-chosen": 0, "rule-unreadable": 0 },
     anchors: [],
+    finalTest: null,
   };
 }
+
+/** The slices a group the reserve holds whole tries, in order: report, the final test, first. */
+const FINAL_TEST_ORDER: readonly SliceName[] = [
+  "report",
+  ...SLICES.filter((slice) => slice !== "report"),
+];
+
+/** The slices any other group of a draw under a read of the reserve tries: never report. */
+const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !== "report");
 
 /**
  * The draw itself: the cases the rule holds and the questions no arm could be scored on are left
  * out, the rest are grouped, the groups are shuffled under `seed`, and each group goes into the
  * first slice its whole size still fits.
  *
+ * Under `finalTest`, a draw over a registered read of the reserve, report takes only a group
+ * whose every case the reserve holds, the cases left out above counted too, and such a group
+ * tries report first; every other group skips report. The reserved cases that went to another
+ * slice are named in `finalTest.heldOutsideReport`.
+ *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
  * read wrongly rather than a case to leave out.
  */
-export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
+export function drawSlices(
+  cases: readonly DrawCase[],
+  seed: number,
+  finalTest: FinalTestSource | null = null
+): Draw {
   const draw = emptyDraw(seed);
   const drawable: DrawCase[] = [];
+  // The groups holding a case the reserve does not hold, read over every case given, so a case
+  // the draw leaves out below still keeps its group out of the final test: a scorer may have
+  // read it, and a group goes to one set whole.
+  const readGroups = new Set<string>();
+  if (finalTest !== null) {
+    for (const drawCase of cases) {
+      if (!finalTest.holds(drawCase.row)) readGroups.add(groupKeyOf(drawCase));
+    }
+  }
   const leaveOut = (row: CaseRow, undrawableKind: UndrawableKind, reason: string): void => {
     draw.undrawable.push({ caseId: row.caseId, kind: row.kind, reason, undrawableKind });
     draw.undrawableByKind[undrawableKind] += 1;
@@ -406,11 +461,17 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
     }
   }
   const ordered = [...groups.values()].sort((one, other) => (one.key < other.key ? -1 : 1));
+  let finalTestGroups = 0;
+  const heldOutsideReport: string[] = [];
   for (const group of shuffled(ordered, seed)) {
     draw.groupCount += 1;
     for (const kind of KINDS) if (group.counts[kind] > 0) draw.groups[kind] += 1;
+    const wholeInReserve = finalTest !== null && !readGroups.has(group.key);
+    if (wholeInReserve) finalTestGroups += 1;
+    const order =
+      finalTest === null ? SLICES : wholeInReserve ? FINAL_TEST_ORDER : DEVELOPMENT_ORDER;
     let taken: SliceName = "reserve";
-    for (const slice of SLICES) {
+    for (const slice of order) {
       if (slice === "reserve") break;
       // A group holding both kinds goes where both still fit: one group, one slice, whole.
       const fits = KINDS.every(
@@ -422,6 +483,11 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
       }
     }
     for (const kind of KINDS) draw.counts[taken][kind] += group.counts[kind];
+    if (finalTest !== null && taken !== "report") {
+      for (const drawCase of group.cases) {
+        if (finalTest.holds(drawCase.row)) heldOutsideReport.push(drawCase.row.caseId);
+      }
+    }
     for (const drawCase of group.cases) {
       draw.slices[taken].push(drawCase.row.caseId);
       if (taken !== "anchor") continue;
@@ -434,6 +500,13 @@ export function drawSlices(cases: readonly DrawCase[], seed: number): Draw {
         sha256: drawCase.sha256,
       });
     }
+  }
+  if (finalTest !== null) {
+    draw.finalTest = {
+      reference: finalTest.reference,
+      groups: finalTestGroups,
+      heldOutsideReport: { total: heldOutsideReport.length, cases: heldOutsideReport },
+    };
   }
   return draw;
 }
@@ -667,6 +740,13 @@ function countsTable(draw: Draw): string {
 }
 
 async function draw(flags: Flags): Promise<number> {
+  if (readReferenceOf(process.env[RESERVE_VARIABLE]) && flags.seed === undefined) {
+    // The rule's item 4: the final test is drawn by a seed registered then, so a draw that asks to
+    // read the reserve takes the one its registration's digest holds, and stops before the read.
+    throw new UsageError(
+      `a draw that reads the reserve takes --seed, the seed its registration names\n\n${USAGE}`
+    );
+  }
   const corpus = await readCorpus(flags.corpus);
   const directory = await outDirectory(flags.out);
   const cut = cutTime(flags.cut);
@@ -699,7 +779,13 @@ async function draw(flags: Flags): Promise<number> {
     `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
   );
   const rendered = await drawCasesOf(post, issues, config, ruleOptions);
-  const drawn = drawSlices(rendered.cases, seed);
+  // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
+  // claim's, and its report slice is the final test the rule draws from the reserve alone.
+  const finalTest: FinalTestSource | null =
+    corpus.reserve.readUnder === null
+      ? null
+      : { reference: corpus.reserve.readUnder, holds: (row) => reserveOf(row) === "held" };
+  const drawn = drawSlices(rendered.cases, seed, finalTest);
   console.log("");
   console.log(countsTable(drawn));
   console.log("");
@@ -727,6 +813,14 @@ async function draw(flags: Flags): Promise<number> {
       `${holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0)} written`
   );
   console.log(`documents that could not be read ${rendered.unread}`);
+  console.log(
+    drawn.finalTest === null
+      ? "final test        none: the reserve was not read, so report holds cases a live scorer " +
+          "may have read"
+      : `final test        report from the reserve alone, read under ${drawn.finalTest.reference}: ` +
+          `${drawn.finalTest.groups} groups the reserve holds whole; ` +
+          `${drawn.finalTest.heldOutsideReport.total} reserved cases went to another slice`
+  );
   console.log("");
   for (const slice of SLICES) {
     const ids = drawn.slices[slice].slice(0, IDS_SHOWN);
@@ -779,6 +873,7 @@ async function draw(flags: Flags): Promise<number> {
         cases: drawn.undrawable,
       },
     },
+    finalTest: drawn.finalTest,
   };
   await write(drawPath(directory), record);
   console.log("");

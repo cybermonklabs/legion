@@ -109,7 +109,7 @@ func holdsNothingOf(t *testing.T, release Release, secret string) {
 // policy granted it at once.
 func grantOf(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, reason string, names ...string) (requestID, grantID string) {
 	t.Helper()
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, reason, names...), "")
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, reason, names...), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%v) = %+v, %v; want a grant at once", names, request, err)
 	}
@@ -327,7 +327,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 	m.Minters = map[string]Minter{policy.KindAzureLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: azureMint}, nil
 	}}
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in to Azure", "AZURE_LOGIN"), "")
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in to Azure", "AZURE_LOGIN"), "", nil)
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want a pending request", request, err)
 	}
@@ -423,7 +423,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 			}
 			var grantID string
 			if c.approve {
-				request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in", "SHAPE_KEY"), "")
+				request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "sign in", "SHAPE_KEY"), "", nil)
 				if err != nil || request.RecordID == nil {
 					t.Fatalf("Create = %+v, %v; want a pending request", request, err)
 				}

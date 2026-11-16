@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor, typeAtEnd } from "./editor";
+import { firstRolloutCommit, firstRolloutRefusal, type LiveFleet } from "./first-rollout";
 import {
   apiPinCookie,
   binaryB,
@@ -49,6 +50,14 @@ import { signIn } from "./users";
  * `index.html` names (`entryChunkOf`), so a direction whose server is the previous release but
  * whose page this tree served is a failure here rather than a row that passes unnoticed.
  *
+ * With `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` set (CI's second run of this spec;
+ * e2e/first-rollout.ts), Dispatch B is the first-rollout build, the newest release before the
+ * first that registers its schema numbers, and the variable holds the run to that build: B's
+ * `COMMIT` file, beside `DISPATCH_E2E_BINARY_B`, must hold that commit, and the live registry must
+ * read a lowest schema version of 0 while B is live. Each direction checks both before it reads
+ * `pageWritable`, and fails with a sentence that names what it read. A run that sets the variable
+ * but not `DISPATCH_E2E_BINARY_B` fails before any row starts.
+ *
  * Each seed call names the process it runs on (`process` in e2e/api.ts, which pins its sign-in
  * there too), so the build that wrote a row and the build that reads it back are both known.
  */
@@ -56,7 +65,12 @@ import { signIn } from "./users";
 /** What a message calls each process's build. */
 const builds: Record<DispatchProcess, string> = {
   a: "this tree's build (Dispatch A)",
-  b: binaryB === undefined ? "this tree's build (Dispatch B)" : "the previous build (Dispatch B)",
+  b:
+    binaryB === undefined
+      ? "this tree's build (Dispatch B)"
+      : firstRolloutCommit === undefined
+        ? "the previous build (Dispatch B)"
+        : "the first-rollout build (Dispatch B)",
 };
 
 const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
@@ -66,6 +80,23 @@ const seedAgent = { kind: "session", id: "e2e-cross-build" } as const;
  *  `webDistOf`'s to name, which this spec and e2e/two-builds.multiprocess.e2e.ts share. */
 const envoyDir = fileURLToPath(new URL("../../envoy", import.meta.url));
 const buildB = binaryB === undefined ? undefined : dirname(binaryB);
+
+if (firstRolloutCommit !== undefined && buildB === undefined) {
+  throw new Error(
+    `DISPATCH_E2E_FIRST_ROLLOUT_COMMIT holds Dispatch B to the first-rollout build, commit ` +
+      `${firstRolloutCommit}. DISPATCH_E2E_BINARY_B is unset, so Dispatch B runs this tree. ` +
+      "Set DISPATCH_E2E_BINARY_B to that build's envoy-dispatch, or unset " +
+      "DISPATCH_E2E_FIRST_ROLLOUT_COMMIT."
+  );
+}
+
+/** The commit build-dispatch-build.sh wrote beside B's binary (`COMMIT`), read only in the
+ *  first-rollout run, which holds it to `firstRolloutCommit`. Undefined when B has no such file. */
+const commitFileB = buildB === undefined ? undefined : resolve(buildB, "COMMIT");
+const commitB =
+  firstRolloutCommit !== undefined && commitFileB !== undefined && existsSync(commitFileB)
+    ? readFileSync(commitFileB, "utf8").trim()
+    : undefined;
 
 /** The schema manifest a build's server reads and admits a page by, and its page carries. A
  *  manifest before the typed blocks names no `types`, which reads here as none. */
@@ -122,7 +153,7 @@ function pageNumbers(
  *  `processes.LiveWindow` (`packages/envoy/internal/dispatch/processes/processes.go`), which the
  *  servers read. A row of a build before the fleet columns holds no numbers, and its zeros are
  *  what it counts as. */
-async function liveFleet(): Promise<{ minVersion: number; maxCreatable: number }> {
+async function liveFleet(): Promise<LiveFleet> {
   const read = await sql(
     `select count(*), coalesce(min(schema_version), 0), coalesce(max(schema_creatable), 0)
      from server_processes where heartbeat_at > now() - make_interval(secs => 15)`
@@ -220,6 +251,15 @@ for (const pageProcess of dispatchProcesses) {
     browser,
   }) => {
     test.setTimeout(120_000);
+    // The first-rollout run holds B to its commit and to a registry that reads version 0 while B
+    // is live. The harness starts both servers before any row, so both serve and both register
+    // here, and pageWritable below reads the same registry.
+    if (firstRolloutCommit !== undefined) {
+      const refusal = firstRolloutRefusal(firstRolloutCommit, commitB, await liveFleet());
+      if (refusal !== undefined) {
+        throw new Error(refusal);
+      }
+    }
     const on = { process: server };
     await createProject({ key: "XB", name: "Cross build" }, on);
     const issue = await createIssue(

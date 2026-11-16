@@ -29,10 +29,27 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   `--github-token`, the secret's name holds that one account's token, the string an
   `Authorization` header carries. Without `--github-token` the name holds the JSON object of
   installations, and a command that sends that object to GitHub reads `401`.
+- The broker checks a narrowing before the approval request, so a narrowing it cannot serve costs
+  nobody an approval. It refuses the request, nothing runs, and the status is 1, in five cases:
+
+  - an account the secret's `github-owners` tag does not list,
+  - a run that names no GitHub App secret,
+  - a name behind the airlock (the bullet below),
+  - a narrowing GitHub itself refuses, such as a repository the App's installation does not
+    reach, or read access the App does not hold,
+  - an account the App is not installed on, which the message says in the words `has no
+    installation on`. Install the App on that account, or narrow to an account it is on.
+
+  The message says which of the five it is. Two cases keep the older behaviour, where the
+  refusal comes when the grant is read instead: a request every name of which is granted at
+  once, which no person decides, and a request on which the broker reaches no verdict, for
+  example because GitHub is out of reach or refuses the App itself, or because the check passes
+  its own time bounds.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
-  a secret behind the airlock (below) and the broker refuses the release, naming that secret;
-  nothing runs. Ask for the GitHub App secret in a run of its own, with no airlocked name beside
-  it.
+  a secret behind the airlock (below) and nothing runs: where a person decides the request,
+  the broker refuses the request, naming that secret, and where the policy grants every name
+  at once, the same refusal comes when the grant is read. Ask for the GitHub App secret in a
+  run of its own, with no airlocked name beside it.
 
 ## The command reads the value, your shell does not
 

@@ -291,6 +291,85 @@ describe("drawSlices", () => {
 });
 
 /**
+ * A draw under a registered read of the reserve: report, the final test, takes only the groups
+ * the reserve holds whole (`reserve.ts`, item 4 of the rule). Which cases the reserve holds is
+ * handed to the draw, so these cases need no reserved key or creation time: here it holds every
+ * case whose id starts `r-`.
+ */
+describe("drawSlices under a read of the reserve", () => {
+  const source = {
+    reference: "claim:test",
+    holds: (row: CaseRow) => row.caseId.startsWith("r-"),
+  };
+
+  /** `count` issues the reserve holds whole, three approval cases each. */
+  function reserved(count: number): DrawCase[] {
+    const cases: DrawCase[] = [];
+    for (let group = 0; group < count; group += 1) {
+      for (let at = 0; at < 3; at += 1) {
+        cases.push(drawCase(caseRow(`r-${group}-${at}`, "approval", `RES-${group}`)));
+      }
+    }
+    return cases;
+  }
+
+  test("report takes every group the reserve holds whole, before fit, and no other group", () => {
+    const held = reserved(10);
+    const draw = drawSlices([...corpus(), ...held], 7, source);
+    expect([...draw.slices.report].sort()).toEqual(held.map((one) => one.row.caseId).sort());
+    expect(draw.finalTest).toEqual({
+      reference: "claim:test",
+      groups: 10,
+      heldOutsideReport: { total: 0, cases: [] },
+    });
+    expect(draw.counts.fit.approval).toBeGreaterThan(TARGETS.approval.fit - 3);
+  });
+
+  test("a group holding a case the reserve does not hold never reaches report", () => {
+    const cases = [...corpus(), ...reserved(10)];
+    cases.push(drawCase(caseRow("x-0", "approval", "RES-0")));
+    const draw = drawSlices(cases, 7, source);
+    const where = placement(draw);
+    expect(where.get("x-0")).not.toBe("report");
+    expect(where.get("r-0-0")).toBe(where.get("x-0"));
+    expect(draw.slices.report).toHaveLength(27);
+    expect(draw.finalTest?.groups).toBe(9);
+    expect(draw.finalTest?.heldOutsideReport.cases.sort()).toEqual(["r-0-0", "r-0-1", "r-0-2"]);
+  });
+
+  test("a case the draw leaves out still keeps its group out of report", () => {
+    const cases = [...corpus(), ...reserved(10)];
+    cases.push(drawCase(caseRow("x-1", "question", "RES-1", 1)));
+    const draw = drawSlices(cases, 7, source);
+    const where = placement(draw);
+    expect(where.has("x-1")).toBe(false);
+    expect(where.get("r-1-0")).not.toBe("report");
+    expect(draw.finalTest?.groups).toBe(9);
+    expect(draw.finalTest?.heldOutsideReport.total).toBe(3);
+  });
+
+  test("a reserved group report has no room for goes to another slice and is named", () => {
+    const draw = drawSlices(reserved(90), 7, source);
+    expect(draw.counts.report.approval).toBe(249);
+    expect(draw.finalTest?.groups).toBe(90);
+    expect(draw.finalTest?.heldOutsideReport.total).toBe(21);
+  });
+
+  test("with no case the reserve holds, report stays empty", () => {
+    const draw = drawSlices(corpus(), 7, source);
+    expect(draw.slices.report).toEqual([]);
+    expect(draw.finalTest?.groups).toBe(0);
+  });
+
+  test("the registered seed draws the same final test whatever order the cases come in", () => {
+    const cases = [...corpus(), ...reserved(90)];
+    const draw = drawSlices(cases, 12345, source);
+    expect(drawSlices([...cases].reverse(), 12345, source).slices).toEqual(draw.slices);
+    expect(drawSlices(cases, 12346, source).slices.report).not.toEqual(draw.slices.report);
+  });
+});
+
+/**
  * The roots a draw is given, over fixtures: the recorded corpus's own draw records 122 roots
  * and not one of them is malformed under any field, so what a reader does with a malformed one
  * is shown here and nowhere else.
