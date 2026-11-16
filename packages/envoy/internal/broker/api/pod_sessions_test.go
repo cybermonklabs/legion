@@ -172,9 +172,10 @@ type wirePodSession struct {
 // TestTheRegistrationRouteAnswersTheStoredGeneration: the route answers the registration as
 // stored, its generation included. A write of generation 2 with kB is answered generation 2; a
 // later write of generation 1 with kA, an old incarnation's committed late, changes nothing and
-// is answered the stored row, kB at generation 2; a write that sends no generation is answered
-// generation 0, never an absent field; and a negative generation is 400 GENERATION_INVALID and
-// writes nothing.
+// is answered the stored row, kB at generation 2; a write that sends no generation is answered no
+// generation field, as before generations existed (R9;
+// TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore holds the whole answer); and a
+// negative generation is 400 GENERATION_INVALID and writes nothing.
 func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
@@ -198,7 +199,9 @@ func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
 	status, body = register(map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
 	answered("a late write of generation 1 with kA after generation 2", status, body, kB, 2)
 	status, body = register(map[string]any{"session": "watched-session"})
-	answered("a write that sends no generation", status, body, "", 0)
+	if got := decode[wirePodSession](t, body); status != http.StatusOK || got.Thumbprint != "" || got.Generation != nil {
+		t.Fatalf("a write that sends no generation = %d %s, want 200 answering no thumbprint and no generation", status, body)
+	}
 
 	status, body = register(map[string]any{"session": "refused-session", "thumbprint": kA, "generation": -1})
 	if code := decode[wireError](t, body).Code; status != http.StatusBadRequest || code != "GENERATION_INVALID" {

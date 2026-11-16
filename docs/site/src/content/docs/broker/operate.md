@@ -270,10 +270,11 @@ your daemon and its pods.
 A registration may also name its `generation` (0 or more, 0 when absent; a negative one is
 `400 GENERATION_INVALID`), the registrar's own order of its writes for that pod and session. The
 broker applies a write only when its generation is at least the registration's, and answers the
-registration as it stands after the write, its generation included. The Legion daemon sends a
-role's launch generation, so a write its old incarnation sent, which the broker commits only
-after the new incarnation's, changes nothing and cannot put the old key back. A registrar that
-sends none, as a session watch does, writes 0 as before.
+registration as it stands after the write, its generation included when it is not 0. The Legion
+daemon sends a role's launch generation, so a write its old incarnation sent, which the broker
+commits only after the new incarnation's, changes nothing and cannot put the old key back. A
+registrar that sends none, as a session watch does, writes 0 as before and is answered no
+generation, exactly as before.
 
 Rolling the broker back past the release that brought migration 0032 drops the binding without a
 word: an older broker reads no key or generation, so it admits a trade for a bound session proved

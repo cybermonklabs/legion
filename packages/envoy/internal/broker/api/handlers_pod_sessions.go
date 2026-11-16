@@ -51,8 +51,10 @@ type podSessionResponse struct {
 	// pod alone.
 	Thumbprint string `json:"thumbprint,omitempty"`
 	// The generation of the write that last set the registration, as it now stands: a write of a
-	// lower one is answered the row it did not change. 0 for one no registrar gave a generation.
-	Generation int64 `json:"generation"`
+	// lower one is answered the row it did not change. Absent for one no registrar gave a
+	// generation, so a registrar that sends none, as the session watch does, is answered exactly
+	// the fields it was answered before generations existed (R9); a reader takes absent as 0.
+	Generation int64 `json:"generation,omitempty"`
 	// When the broker stops honouring the registration unless it is written again.
 	ExpiresAt time.Time `json:"expires_at"`
 }
