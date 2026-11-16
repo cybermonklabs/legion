@@ -894,13 +894,18 @@ func (r *sessionsRun) token(member *sessionsMember, role claim.Role) claim.Token
 	return token
 }
 
-// checkArm reads the prompt the pane of role on member was launched with from its own command
-// line and fails the run's harness when it is not the arm's: the head arm's carries mark and the
-// base arm's does not.
+// checkArm reads the prompt the pane of role on member was launched with from the file its own
+// command line names and fails the run's harness when it is not the arm's: the head arm's carries
+// mark and the base arm's does not. A file that holds no prompt at all, empty or whitespace alone,
+// is neither arm's, so it fails the harness in either arm rather than pass as the base commit's
+// prompt, which would make the control bite for a reason the prompts under test do not give.
 func (r *sessionsRun) checkArm(member *sessionsMember, role claim.Role, mark string) {
 	r.t.Helper()
 	token := r.token(member, role)
 	prompt := r.launchedPrompt(token)
+	if strings.TrimSpace(prompt) == "" {
+		r.t.Fatalf("the %s arm's %s was launched with a prompt file of %d bytes that holds no prompt", r.arm, token, len(prompt))
+	}
 	carries := strings.Contains(prompt, mark)
 	if carries != (r.arm == sessionsHead) {
 		r.t.Fatalf("the %s arm's %s was launched with a prompt of %d bytes that carries the head's sentence %q: %t", r.arm, token, len(prompt), mark, carries)
