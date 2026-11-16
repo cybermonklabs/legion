@@ -240,8 +240,11 @@ type hubGeneration struct {
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
-	// feeds hands the intake the relay subscription seedEvents took; one slot, as one runs at a
-	// time.
+	// feeds hands the intake the relay subscription seedEvents took. It has no slot: a hand-over
+	// completes only as the intake takes it, so a subscription is always either the intake's, which
+	// it cancels as it returns, or still seedEvents', which cancels it once g has ended. A slot
+	// could hold one the intake never took past g's end, which neither would cancel, and the relay
+	// would keep its generation, its LISTEN connection and its reads of the event log for it.
 	feeds chan hubEventFeed
 
 	views map[string]*deliveryView // by canonical view key
@@ -371,15 +374,15 @@ type deliveryFreshnessVerdict struct {
 
 // deliveryHubNote is one thing the hub did, for a test's observe.
 type deliveryHubNote struct {
-	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "events seeded", "event", "feed closed"
+	what  string // "recompute begin", "recompute position", "recompute read", "recompute end", "connected", "feed ready", "events seeded", "event", "feed closed"
 	view  string // the view's key
 	cause string
 	sent  int
 	// through is the newest change position a recompute's read took, which a "recompute position"
 	// note makes as the read takes it and a "recompute read" note carries on.
 	through int64
-	// eventID is the event an "event" note applied, or the head an "events seeded" note's feed
-	// began at.
+	// eventID is the event an "event" note applied, or the head a "feed ready" or "events seeded"
+	// note's feed began at.
 	eventID int64
 }
 
@@ -428,7 +431,7 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		ready:    make(chan struct{}),
 		wakeWork: make(chan struct{}, 1), wakeChanges: make(chan struct{}, 1), connected: make(chan struct{}, 1),
 		barrier: make(chan chan struct{}),
-		feeds:   make(chan hubEventFeed, 1),
+		feeds:   make(chan hubEventFeed),
 		views:   map[string]*deliveryView{},
 		conns:   map[deliveryLiveConn]map[string]*deliverySub{},
 		p0:      map[string]struct{}{},
