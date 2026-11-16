@@ -6212,6 +6212,8 @@ each issue's pod (every role of it alike) and the image probe's.
 
   - Every registration is made at or after the role's shim hello, with that hello's thumbprint, and never before it: none is sent for a role whose hello has not arrived or names no thumbprint.
 
+  - A registration's thumbprint is the one its process's first hello names: a later hello of the same process that names another key is logged, and the registration keeps the first key.
+
   - The registration needs a broker that binds it to the key: a broker before this release refuses the `thumbprint` field as `400 INVALID_REQUEST`, which the daemon logs and does not write again.
     Until t-e-54 holds each session id to the claim that first recorded it, and t-e-53 makes a role trade with its own key (dispatch://INFRA-840), the daemon registers whatever session id a role's agent reports, so a role can still have its own claim registered under another claim's session, and a role's own trade is refused; set no `exchange_audience` before both are in your daemon and its pods.
 

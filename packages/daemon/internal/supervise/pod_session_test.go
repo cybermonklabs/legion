@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -224,5 +225,74 @@ func TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite(t *testing.T) {
 	}
 	if row != newKey {
 		t.Fatalf("the broker's row of %s for %s ends bound to %q, want the new incarnation's key, %q (events %v)", pod, session, row, newKey, events)
+	}
+}
+
+// keyRecorder is a Registrar that records the thumbprint of every registration a machine starts.
+type keyRecorder struct {
+	mu   sync.Mutex
+	keys []string
+}
+
+func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys = append(r.keys, s.Thumbprint)
+	return func() {}, nil
+}
+
+func (r *keyRecorder) registered() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.keys)
+}
+
+// TestARegistrationKeepsTheKeyItsProcessFirstHelloNamed: a registration's thumbprint is pinned at
+// the first hello of its process (incarnation) that names one. A later hello of the same process
+// naming another key — which only the holder of that claim's boot token can send, and which an
+// honest shim, caching its thumbprint, never does — is logged naming both keys and changes no
+// registration: one already made is not made again with the new key, and one made after it uses
+// the first.
+func TestARegistrationKeepsTheKeyItsProcessFirstHelloNamed(t *testing.T) {
+	const (
+		pod    = "pod-uid-7"
+		first  = "first-hello-key-thumbprint-aaaaaaaaaaaaaaaa"
+		second = "second-hello-key-thumbprint-bbbbbbbbbbbbbbb"
+	)
+	for name, registerBetween := range map[string]bool{
+		"a later hello once registered":    true,
+		"a later hello before registering": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.withSecrets()
+			recorder := &keyRecorder{}
+			h.deps.Registrar = recorder
+			h.start(h.store.load(h.token))
+			h.rt.ScriptSpawn(fake.SpawnResult{Locator: runtime.Locator{
+				Runtime: runtime.RuntimeSandbox, Claim: h.token, Incarnation: runtime.SandboxIncarnation(pod, 1),
+				Sandbox: &runtime.SandboxLocator{Namespace: "legion", Name: "legion-legion-209", PodUID: pod, Container: "roles", Generation: 1},
+			}})
+			hello := func(thumbprint string) {
+				t.Helper()
+				h.conns.Register(h.token, h.conn)
+				h.must(StreamHello{Claim: h.token, Generation: h.generation(), AgentSecrets: &AgentSecretsIdentity{Thumbprint: thumbprint, PodToken: testIdentity.PodToken}})
+			}
+			h.launch()
+			hello(first)
+			if registerBetween {
+				h.register()
+			}
+			hello(second)
+			if !registerBetween {
+				h.register()
+			}
+			if got := recorder.registered(); !slices.Equal(got, []string{first}) {
+				t.Fatalf("the session of pod %s was registered with %q, want once, with the key the process's first hello named, %s, and never with %s", pod, got, first, second)
+			}
+			if logged := h.logs.String(); !strings.Contains(logged, first) || !strings.Contains(logged, second) {
+				t.Errorf("the later hello's other key was not logged naming both keys:\n%s", logged)
+			}
+		})
 	}
 }
