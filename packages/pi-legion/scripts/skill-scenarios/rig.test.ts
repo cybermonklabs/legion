@@ -1,6 +1,15 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
+import { gitBinary } from "@legion/pi-shared/test/omp-harness";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -356,12 +365,20 @@ function freshDir(name: string): string {
 }
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
-// no .jj, and jj alone printed an empty commit line for it.
+// no .jj, and jj alone printed an empty commit line for it. The git these rows and checkout_commit
+// run is the binary this host's `git` runs (`gitBinary`), linked into a directory first on their
+// PATH: a git wrapper on the host's PATH may change what git does, as the dotfiles git shim gives
+// an agent session's commits a trailer.
 describe("checkout_commit", () => {
+  let bin = "";
+  beforeAll(async () => {
+    bin = freshDir("checkout-commit-bin");
+    symlinkSync(await gitBinary(bin), path.join(bin, "git"));
+  });
   const git = (dir: string, ...args: string[]) => {
     const result = Bun.spawnSync(
       [
-        "git",
+        path.join(bin, "git"),
         "-C",
         dir,
         "-c",
@@ -372,7 +389,7 @@ describe("checkout_commit", () => {
         "commit.gpgsign=false",
         ...args,
       ],
-      { env: childEnv }
+      { cwd: dir, env: { ...childEnv, PATH: `${bin}:${childEnv.PATH}` } }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
     return result.stdout.toString().trim();
@@ -389,7 +406,10 @@ describe("checkout_commit", () => {
     git(dir, "commit", "-qm", "second");
     return { dir, first, head: git(dir, "rev-parse", "HEAD") };
   }
-  const commit = (dir: string) => bash(`${fn("checkout_commit")}\ncheckout_commit "$1"`, [dir]);
+  const commit = (dir: string) =>
+    bash(`${fn("checkout_commit")}\ncheckout_commit "$1"`, [dir], {
+      PATH: `${bin}:${childEnv.PATH}`,
+    });
 
   // Catches: a checkout_commit that reads jj alone (an empty line for git), or names no parents.
   test("a clean git checkout prints its HEAD and HEAD's parents", () => {

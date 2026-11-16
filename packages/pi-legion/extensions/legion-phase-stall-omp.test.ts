@@ -5,6 +5,8 @@ import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
   call,
+  gitBinary,
+  jjBinary,
   type LegionPane,
   type LegionPaneOptions,
   ompNatsGuard,
@@ -12,6 +14,7 @@ import {
   type Request,
   runLegionPane,
 } from "@legion/pi-shared/test/omp-harness";
+import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -107,15 +110,16 @@ const STALL_RECORD = {
   created_at: "2026-10-09T08:00:00Z",
 };
 
-/** Runs `jj` in `cwd` as the pane's identity, failing loudly on a non-zero exit, and answers its
- * stdout. */
-async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<string> {
-  const child = Bun.spawn([jj, ...args], {
-    cwd,
-    env: { ...process.env, ...PANE_IDENTITY },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+/** Runs `jj` in `cwd` with `env` — the pane's identity, a home of the test's and no configuration
+ * of the machine's (`versionControlEnvironment`) — failing loudly on a non-zero exit, and answers
+ * its stdout. */
+async function runJj(
+  jj: string,
+  env: Record<string, string>,
+  cwd: string,
+  args: readonly string[]
+): Promise<string> {
+  const child = Bun.spawn([jj, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -252,18 +256,26 @@ async function stallPane(
         ...options.env,
       },
       prepare: async ({ workspace, bin }) => {
-        // The pane's PATH is the harness's fixed one plus `bin`: the jj this test process finds is
-        // linked into `bin`, so the pane's `handoff_complete` runs the one that made its workspace.
-        const jj = Bun.which("jj");
-        if (jj === null) throw new Error("jj is not on PATH");
+        // The pane's PATH is the harness's fixed one plus `bin`: the jj and git binaries this test
+        // process's `jj` and `git` run (`jjBinary`, `gitBinary`) are linked into `bin`, so the
+        // pane's `handoff_complete` runs the ones that made its workspace. The fixtures below run
+        // them too, with `bin` first on their PATH, so the git `jj git push` runs is that git.
+        const scratch = path.dirname(workspace);
+        const jj = await jjBinary(scratch);
+        const git = await gitBinary(scratch);
         await symlink(jj, path.join(bin, "jj"));
-        const origin = path.join(path.dirname(workspace), "origin.git");
-        if ((await Bun.spawn(["git", "init", "--bare", "--quiet", origin]).exited) !== 0) {
-          throw new Error(`git init --bare ${origin} failed`);
-        }
-        await runJj(jj, path.dirname(workspace), ["git", "init", workspace]);
+        await symlink(git, path.join(bin, "git"));
+        const env = {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          ...versionControlEnvironment(path.join(scratch, "fixture-home")),
+          ...PANE_IDENTITY,
+        };
+        const origin = path.join(scratch, "origin.git");
+        const bare = Bun.spawn([git, "init", "--bare", "--quiet", origin], { cwd: scratch, env });
+        if ((await bare.exited) !== 0) throw new Error(`git init --bare ${origin} failed`);
+        await runJj(jj, env, scratch, ["git", "init", workspace]);
         // From here on, every command runs in the workspace, as the pane's own shell does.
-        const jjIn = (...args: string[]) => runJj(jj, workspace, args);
+        const jjIn = (...args: string[]) => runJj(jj, env, workspace, args);
         await jjIn("git", "remote", "add", "origin", origin);
         await writeFile(path.join(workspace, "main.py"), 'print("stall")\n');
         await jjIn("describe", "-m", "implement: the change");

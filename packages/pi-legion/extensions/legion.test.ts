@@ -57,7 +57,7 @@ import {
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
-import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import { deliveryFor, jjBinary } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
@@ -383,6 +383,11 @@ const jjHomeDirectory = temporaryDirectory("legion-jj-home");
  * `jj` process, whose run time is the machine's load, would otherwise spend. */
 let jjTemplate = "";
 
+/** The jj binary this host's `jj` runs (`jjBinary`), which every jj of this file's own runs: the
+ * first `jj` on PATH can be a wrapper that finds its jj from the HOME and PATH it is given, which
+ * here are the test's, and may change what jj does. */
+let jjProgram = "";
+
 // The template the beforeAll below builds is `jj git init`'s, and every workspace a row here runs
 // in is a copy of it, so a host with no jj builds nothing and runs none of them. Read once, at
 // module scope: a call per row would print the warning per row. The environment probe's hook,
@@ -392,8 +397,10 @@ const skip = skipWithout("jj");
 
 beforeAll(async () => {
   if (skip) return;
+  jjProgram = await jjBinary(jjHomeDirectory);
   jjTemplate = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-template-"));
-  const child = Bun.spawn(["jj", "git", "init", jjTemplate], {
+  const child = Bun.spawn([jjProgram, "git", "init", jjTemplate], {
+    cwd: jjHomeDirectory,
     stdout: "ignore",
     stderr: "pipe",
     env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
@@ -759,13 +766,13 @@ async function createJjWorkspace(): Promise<string> {
 
 /** `key` at repository scope for the repo `directory` belongs to, as `jj config list` prints it
  * (`user.name = "…"`), or `""` when the repository scope does not set it. `--repo` is the scope;
- * `-R` names the repo. `--include-overridden` (its `# ` marker stripped) keeps the answer the same
- * when the process running the tests — a Legion pane — carries `JJ_USER`/`JJ_EMAIL`, which would
- * otherwise hide the repository value. */
+ * `-R` names the repo, which is also where it runs. `--include-overridden` (its `# ` marker
+ * stripped) keeps the answer the same when the process running the tests — a Legion pane —
+ * carries `JJ_USER`/`JJ_EMAIL`, which would otherwise hide the repository value. */
 async function jjRepoConfig(directory: string, key: string): Promise<string> {
   const child = Bun.spawn(
-    ["jj", "config", "list", "--repo", "--include-overridden", "-R", directory, key],
-    { stdout: "pipe", stderr: "pipe" }
+    [jjProgram, "config", "list", "--repo", "--include-overridden", "-R", directory, key],
+    { cwd: directory, stdout: "pipe", stderr: "pipe" }
   );
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
@@ -778,8 +785,8 @@ async function jjRepoConfig(directory: string, key: string): Promise<string> {
 
 async function setJjRepoConfig(directory: string, key: string, value: string): Promise<void> {
   const child = Bun.spawn(
-    ["jj", "config", "set", "--repo", "-R", directory, key, JSON.stringify(value)],
-    { stdout: "ignore", stderr: "pipe" }
+    [jjProgram, "config", "set", "--repo", "-R", directory, key, JSON.stringify(value)],
+    { cwd: directory, stdout: "ignore", stderr: "pipe" }
   );
   if ((await child.exited) !== 0) {
     const stderr = await new Response(child.stderr as ReadableStream<Uint8Array>).text();

@@ -4,6 +4,7 @@ import * as path from "node:path";
 import {
   type Cleanup,
   call,
+  jjBinary,
   type LegionPane,
   ompNatsGuard,
   type Reply,
@@ -11,6 +12,7 @@ import {
   type ToolResult,
   toolResultsIn,
 } from "@legion/pi-shared/test/omp-harness";
+import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 
 // Acceptance 1 of LEGION-630, and LEGION-631's deletion of the tool_call hook, on the real Oh My
 // Pi: no Legion role is refused a tool, and nothing a pane runs is refused. A root architect runs
@@ -39,10 +41,18 @@ afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
-/** Runs `jj` with a test identity, so it commits in CI too, failing loudly on a non-zero exit. */
-async function runJj(jj: string, args: readonly string[]): Promise<void> {
+/** Runs `jj` in `cwd` with a test identity, so it commits in CI too, with `home` as its home and no
+ * configuration of the machine's (`versionControlEnvironment`), failing loudly on a non-zero
+ * exit. */
+async function runJj(
+  jj: string,
+  home: string,
+  cwd: string,
+  args: readonly string[]
+): Promise<void> {
   const child = Bun.spawn([jj, ...args], {
-    env: { ...process.env, JJ_USER: "Legion Test", JJ_EMAIL: "legion-test@example.invalid" },
+    cwd,
+    env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(home) },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -81,13 +91,14 @@ async function toolsPane(
       },
       prepare: async ({ workspace, bin }) => {
         // The pane's PATH is the harness's fixed one plus `bin`, and CI's jj lives in ~/.local/bin
-        // (.github/actions/install-jj): the jj this test process finds is linked into `bin`, so
-        // the pane's `jj log` runs the one that made its workspace.
-        const jj = Bun.which("jj");
-        if (jj === null) throw new Error("jj is not on PATH");
+        // (.github/actions/install-jj): the jj binary this test process's `jj` runs (`jjBinary`) is
+        // linked into `bin`, so the pane's `jj log` runs the one that made its workspace.
+        const scratch = path.dirname(workspace);
+        const jj = await jjBinary(scratch);
         await symlink(jj, path.join(bin, "jj"));
-        await runJj(jj, ["git", "init", workspace]);
-        await runJj(jj, ["-R", workspace, "describe", "-m", "role tools scratch"]);
+        const fixtureHome = path.join(scratch, "fixture-home");
+        await runJj(jj, fixtureHome, scratch, ["git", "init", workspace]);
+        await runJj(jj, fixtureHome, workspace, ["describe", "-m", "role tools scratch"]);
       },
     },
     cleanup
