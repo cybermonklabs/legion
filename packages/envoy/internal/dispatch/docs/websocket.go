@@ -969,9 +969,10 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // garbage is the Go memory limit's to bound, which the collector steers the whole heap to, not
 // the pool's. Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, the fewest bytes of five
 // answers against the most live heap a collection marked (liveHeapPeak): the grant covered what
-// each answer of 1,000 structs or more held, 1.06 to 4.21 times over - the smaller rooms read
-// within the 10 KB or so the reading adds in a busy process, where the seeded paragraph read
-// 13,000 bytes against 2,800 to 3,296 in a process of its own - while it fell short of what the
+// each answer held - 1.06 to 4.21 times over in rooms of 1,000 structs and more, and in smaller
+// ones by its fixed 4,096 bytes, which cover the 3,504 at most such a room held past the terms
+// that grow with it (TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant) -
+// while it fell short of what the
 // answer allocated in every room of small or many-client structs: a run of GC structs of one
 // client by 0.18 to 0.69 of its allocation, from 256 structs to a million (82,698,000 bytes
 // allocated against 16,002,248 granted, 12,046,320 held); rooms of one GC struct a client, and

@@ -1132,7 +1132,7 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // An update it does not apply is neither stored nor relayed to the room's other browsers, and the
 // *websocket.PeerClose it refuses with closes that one browser with that code and reason.
 //
-// It refuses two updates before the apply, and every other refusal is the apply's own. The first
+// It refuses three updates before the apply, and every other refusal is the apply's own. The first
 // is an update carrying a client group of the history a rebuild replaced - a group of a client the
 // rebuilt history lists as retired, starting below the clock it had reached (retiredMapName),
 // read from the update's own header (crdt.ParseUpdateMeta, which decodes no content). It comes
@@ -1152,6 +1152,12 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // clear it can need is a room no update will make converge, and where it stands near a cap the
 // browser is closed DOC_NEEDS_REBUILD (refusedStuckBacklog); a room far from every cap is left to
 // take the update, since the route would refuse the rebuild that close offers.
+//
+// The third is an update that can release a drain of the room's parked content where that drain
+// would take the room's rendering to the creep cap (refusedDrainPastTheCreep): the allowance there
+// leaves the update no content, but ygo counts against it only the content the update carries and
+// never what its drain lands (crdt.ApplyBudget), so a fill carrying none of its own would land all
+// of it.
 //
 // Everything else is the apply's. The hook builds the allowance this update applies under
 // (peerApplyAllowance) and the roots it may name (peerAllowedRoots), hands both to the room's
@@ -1251,8 +1257,14 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// is charged to the state cap where it happens, which is what holds the room's memory down
 	// (crdt.WithApplyBudget, TestTheAllowanceChargesWhatAnUpdateParksAndTheKeyItCarries); the
 	// document bound is of what the document renders, and the drain is where parked content
-	// starts rendering, so that is where this bound weighs it.
-	rendering += s.drainWouldRender(info, weighing, parked, rendering, measured)
+	// starts rendering, so that is where this bound weighs it. Where it would take the room to
+	// the creep cap, which leaves the update no content of its own, the update is refused here
+	// whatever it carries, since the allowance counts none of the drain (refusedDrainPastTheCreep).
+	drain := s.drainWouldRender(info, weighing, parked, rendering, measured)
+	rendering += drain
+	if refusal := s.refusedDrainPastTheCreep(info, drain, rendering); refusal != nil {
+		return refusal
+	}
 	// The pressure is read once for this update: whether the open rooms are past their budget,
 	// and what the room's own growth under that pressure has left it to cut with
 	// (splitsUnderPressure), which the mark that reading makes is what bounds.
@@ -1443,6 +1455,40 @@ func (s *Service) refusedStuckBacklog(info websocket.PeerUpdateInfo, weighing *r
 		"parked_structs", parked.Items, "parked_ranges", parked.DeleteRanges,
 		"drain_splits", splits, "split_limit", left,
 		"structs", ceiling, "struct_rule_limit", maxUpdateItems)
+	return refusal
+}
+
+// refusedDrainPastTheCreep is the third refusal the hook makes without applying: an update that
+// can release a drain of the room's parked content (drain, drainWouldRender) where the rendering
+// that drain would leave, rendering, is at or past the creep cap, past which the allowance leaves
+// an update no content at all (peerApplyAllowance, ruleCreepCap).
+//
+// The allowance cannot hold such an update to that. Its content count is of what the update
+// carries, parked or integrated, and never of what its drain lands: ygo charges parked content to
+// the apply that parked it and the apply that fills its gap nothing for it (crdt.ApplyBudget), so
+// an allowance of no content refuses a fill that carries a character and admits one that carries
+// none. A fill of no content is easy to write - a character the same update deletes is an item ygo
+// counts as none, and a GC struct at the gap's clock carries none at all - and either released the
+// whole drain: after eight frames of 900 KiB parked, either fill was admitted and left the room
+// rendering 7,372,824 bytes against a document bound of 1,048,576
+// (TestAGapFillCarryingNoContentDrainsNoRoomPastTheDocumentBound).
+//
+// So the update is refused before its apply, whatever it carries, with the close the allowance
+// gives a fill that carries content there: the document's own DOC_TOO_LARGE. It is the drain that
+// is refused, not anything the update carries, so no field of the allowance names it. A drain
+// that leaves the rendering short of the creep cap is the allowance's, as it was: the update may
+// then carry what the byte bound leaves it, and the room ends within the creep cap and that
+// update's own content, as after any update at the bound. What stays parked is what the room had
+// already taken and charged as it parked - the state cap and the decode cap count it and the room
+// budget charges it - and every update that would fill its gap is refused alike.
+func (s *Service) refusedDrainPastTheCreep(info websocket.PeerUpdateInfo, drain, rendering int64) error {
+	if drain <= 0 || rendering < pmdoc.MaxDocumentBytes+maxPeerByteCreep {
+		return nil
+	}
+	refusal := documentTooLarge()
+	logRefusal(info, refusal, "dispatch: refused a browser's update that would release a drain of parked content past the document's byte bound",
+		"rule", "the drain of the room's parked content this update can release would take the document past its byte bound and its creep",
+		"parked_bytes", drain, "rendering_bytes", rendering, "rule_limit", pmdoc.MaxDocumentBytes+maxPeerByteCreep)
 	return refusal
 }
 

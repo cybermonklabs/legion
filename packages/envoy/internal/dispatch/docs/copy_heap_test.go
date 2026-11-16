@@ -595,6 +595,96 @@ func TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt(t *testing.T) {
 	}
 }
 
+// A room of under a thousand structs holds no more live heap than its grant either, and what it
+// holds beyond the grant's terms that grow with the room - answerHeapAClient a client and
+// answerHeapAStruct a struct of the update being packed - is covered by the term that does not,
+// answerHeapAnAnswer's 4,096 bytes. In these rooms that variable part alone is what sets the
+// grant beside the fixed term, so what the answer holds past it is the figure the fixed term has
+// to cover, and each row asserts that figure is no more than 4,096.
+//
+// The rooms are the small ones TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt leaves
+// out: the seeded paragraph, runs of 64 and 256 keystrokes, runs of 64, 256 and 512 GC structs of
+// one client, 100 clients of one GC struct each, and 7 clients of 127 GC structs each, 899
+// structs. They are measured as that test measures, in a process of its own whose collections
+// stop the world (liveHeapPeak), and at these sizes the measurement's own floor matters: a cut
+// that holds nothing and drops 64 KiB of garbage read 4,432 to 18,832 bytes over five readings,
+// the most in the first two. So each row is read five times, after one reading the process
+// discards, and the fewest of the five is the figure, as answerAllocation takes the fewest
+// allocation: what else the process holds live can only add to a reading, and each reading's
+// hundreds of collections over thousands of answers find the answer's own peak. Measured
+// 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, the answers held, past their variable
+// terms, from below nothing to 3,360 and 3,504 bytes in two runs (the run of 256 GC structs,
+// 27,448 and 27,592 against a grant of 28,184), where single readings of that room read up to
+// 31,480 and one of the run of 512 GC structs 328 bytes past its grant: the measurement's floor,
+// which the fewest of five sets aside.
+func TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant(t *testing.T) {
+	skipUnderRace(t)
+	godebug := "gcstoptheworld=1"
+	if inherited := os.Getenv("GODEBUG"); inherited != "" {
+		godebug = inherited + "," + godebug
+	}
+	t.Setenv("GODEBUG", godebug)
+	if !measuredAlone(t) {
+		return
+	}
+	step1 := ygsync.EncodeSyncStep1(crdt.New())
+	keystrokes := func(count int) func(t *testing.T) *crdt.Doc {
+		return func(t *testing.T) *crdt.Doc {
+			doc := seededDocumentCopy(t)
+			chainedRun(t, doc, lastCharacter(t, doc), 1_000, count)
+			return doc
+		}
+	}
+	warmed := false
+	for _, shape := range []struct {
+		name string
+		doc  func(t *testing.T) *crdt.Doc
+	}{
+		{"the seeded paragraph", seededDocumentCopy},
+		{"a run of 64 keystrokes", keystrokes(64)},
+		{"a run of 256 keystrokes", keystrokes(256)},
+		{"a run of 64 GC structs of one client", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 0, 0, 64) }},
+		{"a run of 256 GC structs of one client", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 0, 0, 256) }},
+		{"a run of 512 GC structs of one client", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 0, 0, 512) }},
+		{"100 clients of one GC struct each", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 100, 1, 0) }},
+		{"7 clients of 127 GC structs each", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 7, 127, 0) }},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			doc := shape.doc(t)
+			if parks(doc) {
+				t.Fatal("the document parks something, so its answer reads that back beside its cut")
+			}
+			state, structs, clients := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount()), int64(doc.ClientCount())
+			if structs >= 1_000 {
+				t.Fatalf("the room holds %d structs, not under a thousand", structs)
+			}
+			grant := answerWeight(doc, state, structs)
+			variable := clients*answerHeapAClient + min(structs, answerFrameStructs)*answerHeapAStruct
+			if grant != variable+answerHeapAnAnswer {
+				t.Fatalf("the room is granted %d, not its variable terms' %d and the fixed %d: its state term sets the grant, so the fixed term is not what this row weighs",
+					grant, variable, answerHeapAnAnswer)
+			}
+			cut := func() any { return answerFrames(t, doc, step1) }
+			if !warmed {
+				liveHeapPeak(t, cut)
+				warmed = true
+			}
+			fewest, most := int64(math.MaxInt64), int64(0)
+			for range 5 {
+				peak := liveHeapPeak(t, cut).peak
+				fewest, most = min(fewest, peak), max(most, peak)
+			}
+			beyond := fewest - variable
+			t.Logf("%d structs of %d clients, %d-byte state: held %d to %d bytes of live heap above the document over five readings, against a %d-byte grant; %d past its %d-byte variable terms, against the fixed %d",
+				structs, clients, state, fewest, most, grant, beyond, variable, answerHeapAnAnswer)
+			if beyond > answerHeapAnAnswer {
+				t.Errorf("the answer held %d bytes of live heap, %d past its variable terms, more than the fixed %d-byte term covers: %d past its %d-byte grant",
+					fewest, beyond, answerHeapAnAnswer, fewest-grant, grant)
+			}
+		})
+	}
+}
+
 // An answer to a small room is granted near what it holds, and not the update a cut can pack at
 // its fullest: what that update holds is bounded by the room's own structs (answerFrameWeight),
 // so a room of ten structs is charged for ten. The guard is what the answer allocates in all,
