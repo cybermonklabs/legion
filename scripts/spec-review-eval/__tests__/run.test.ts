@@ -486,16 +486,52 @@ describe("the fixtures", () => {
     ]);
   });
 
-  // The control of the noun test of the skill's step 4: each statement names, beside the terms
-  // of the list, only the common nouns of the skill's examples and two more, so a reviewer that
-  // takes a common noun for a noun of the system fails the run.
-  test("fixture 12 plants nothing, and each of its statements must not be named", () => {
+  // The control of the noun test of the skill's step 4: beside the terms of the list, each
+  // statement names only a unit of time in its usual meaning, a noun that the system does not
+  // make, keep, send or show. A reviewer that takes such a noun for a noun of the system fails
+  // the run. A word for a thing that the system shows, keeps or sends, such as page, file or
+  // message, is not in it: step 4 can read it either way.
+  test("fixture 12 plants nothing, names only units of time beside its terms, and each of its statements must not be named", () => {
     const twelve = fixture("12-common-nouns");
     expect(twelve.planted).toEqual([]);
     expect(twelve.mustNotName.map((item) => item.node)).toEqual(blockIds(twelve.specText));
-    for (const noun of ["page", "minutes", "file", "database", "list", "message"]) {
+    for (const noun of ["hours", "minutes", "days", "seconds"]) {
       expect(twelve.specText, noun).toContain(` ${noun}`);
     }
+    for (const noun of ["page", "file", "database", "list", "message"]) {
+      expect(twelve.specText, noun).not.toContain(noun);
+    }
+  });
+
+  // Fixture 3 is fixture 2's request under a list that defines its noun. The list's definition
+  // holds the same asks as the statement, so the statement uses the term with the meaning of its
+  // definition, and no reader can take the use for a narrower one.
+  test("fixture 3's list defines digest with the asks that its statement names", () => {
+    const asks = "each ask that waited more than 24 hours";
+    expect(fixture("3-defined-noun").specText).toContain(asks);
+    expect(rootTerms(fixture("3-defined-noun").root)).toContain(
+      `- **digest**: One message that Dispatch sends the person each day, with ${asks}.`
+    );
+  });
+
+  // A claim is narrower than its statement (R6). The statement of v-kiosk-memory writes the last
+  // 100 pickup codes, so its claim holds those and no other code.
+  test("the claim of v-kiosk-memory holds the last 100 pickup codes, as its statement does", () => {
+    for (const id of ["7-check-faults", "8-check-shape-passing"]) {
+      const text = fixture(id).specText;
+      expect(blockText(text, "kiosk-memory"), id).toContain("the last 100 pickup codes");
+      expect(blockText(text, "v-kiosk-memory"), id).toContain(
+        "The kiosk writes the last 100 pickup codes"
+      );
+    }
+  });
+
+  // The list defines the kiosk as the screen and the keypad, which print nothing, so fixture 9
+  // gives the printing to the locker.
+  test("fixture 9's voucher statement gives the printing to the locker, not to the kiosk", () => {
+    const statement = blockText(fixture("9-decided-findings").specText, "voucher-print");
+    expect(statement).toContain("The locker prints one voucher");
+    expect(statement).not.toContain("kiosk");
   });
 
   // The Spec's own documents write each statement as an entry line, and its how-to puts the terms
