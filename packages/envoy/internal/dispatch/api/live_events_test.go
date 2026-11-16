@@ -24,7 +24,7 @@ import (
 // a heartbeat, a subscription's end, a replay sent out of what a subscription already read, the
 // hub's own reads - so a frame that never arrives fails the test by name rather than holding it
 // until the package's own timeout, which would take every other test's result with it. A wait for
-// work behind the horizon keys on the horizon instead (eventFeedFrame, waitBehindHorizon).
+// work behind the horizon keys on the horizon instead (eventFeedFrame, horizontest.WaitInProcess).
 const eventFeedWait = 30 * time.Second
 
 // The event feed stands behind the event horizon: a subscription's events_start is the last thing
@@ -66,20 +66,6 @@ func eventFeedEvent(t *testing.T, client *socketClient, sub string) LiveEventFra
 func (c *socketClient) servedBy(database *store.Store) *socketClient {
 	c.database = database
 	return c
-}
-
-// waitBehindHorizon is horizontest.WaitInProcess on the server reading database: the one result
-// arrived delivers, from work that waits on that server's event horizon.
-func waitBehindHorizon[T any](t *testing.T, database *store.Store, what string, arrived <-chan T) T {
-	t.Helper()
-	return horizontest.WaitInProcess(t, what, arrived, database)
-}
-
-// pollBehindHorizon is horizontest.PollInProcess on the server reading database: a condition on
-// work that waits on that server's event horizon.
-func pollBehindHorizon(t *testing.T, database *store.Store, what string, condition func() bool) {
-	t.Helper()
-	horizontest.PollInProcess(t, what, database, condition)
 }
 
 // eventHead is the newest committed event id: what a page resuming now would name as its since.
@@ -591,7 +577,7 @@ func (stream *gatedStream) next(t *testing.T, what string) any {
 // event feed, which stands behind that server's event horizon, so the wait is the horizon's.
 func (stream *gatedStream) feedNext(t *testing.T, database *store.Store, what string) any {
 	t.Helper()
-	return waitBehindHorizon(t, database, what, stream.frames)
+	return horizontest.WaitInProcess(t, what, stream.frames, database)
 }
 
 // A subscription the relay drops, because it fell more than the relay holds for one subscriber
@@ -610,7 +596,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
 	relay := served.eventRelay
-	pollBehindHorizon(t, database, "the subscription subscribes to the relay", func() bool { return relaySubscribers(relay) == 1 })
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
 	// More events in one commit than the relay holds for one subscriber, and fewer than the
 	// replay's bound, so the catch-up covers the whole of what the drop lost.
@@ -618,7 +604,7 @@ func TestARelayDropWithinTheBoundsCatchesTheSubscriptionUp(t *testing.T) {
 	if head > maxLiveReplay {
 		t.Fatalf("the backlog of %d events is past the replay's bound of %d", head, maxLiveReplay)
 	}
-	pollBehindHorizon(t, database, "the relay drops the subscription that fell behind", func() bool {
+	horizontest.PollInProcess(t, "the relay drops the subscription that fell behind", database, func() bool {
 		return relaySubscribers(relay) == 0
 	})
 
@@ -662,12 +648,12 @@ func TestARelayDropPastTheBoundsEndsTheSubscriptionAsBehind(t *testing.T) {
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
 	relay := served.eventRelay
-	pollBehindHorizon(t, database, "the subscription subscribes to the relay", func() bool { return relaySubscribers(relay) == 1 })
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool { return relaySubscribers(relay) == 1 })
 
 	// More events in one commit than the relay holds for one subscriber, and past the replay's
 	// bound, so nothing can catch the subscription up.
 	seedEvents(t, database, issue, liveEventsBuffer+maxLiveReplay+2, 0)
-	pollBehindHorizon(t, database, "the relay drops the subscription that fell behind", func() bool {
+	horizontest.PollInProcess(t, "the relay drops the subscription that fell behind", database, func() bool {
 		return relaySubscribers(relay) == 0
 	})
 
@@ -761,7 +747,7 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	stream := newGatedStream()
 	running := served.startEventsSubscription(ctx, stream, "feed", new(int64(0)))
 	t.Cleanup(running.stop)
-	pollBehindHorizon(t, database, "the subscription subscribes to the relay", func() bool {
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 

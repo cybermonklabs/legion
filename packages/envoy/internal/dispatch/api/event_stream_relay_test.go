@@ -128,7 +128,7 @@ func receiveRelayed(t *testing.T, database *store.Store, subscription <-chan rel
 		event, open := <-subscription
 		received <- relayReceipt{event: event, open: open}
 	}()
-	receipt := waitBehindHorizon(t, database, "the relay's next event", received)
+	receipt := horizontest.WaitInProcess(t, "the relay's next event", received, database)
 	if !receipt.open {
 		t.Fatal("the relay's subscription ended")
 	}

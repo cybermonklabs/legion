@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -79,7 +80,7 @@ func TestTheBackgroundWaitHoldsForTheEventStreamRelay(t *testing.T) {
 	close(stream.gate)
 	running := served.startEventsSubscription(ctx, stream, "feed", nil)
 	t.Cleanup(running.stop)
-	pollBehindHorizon(t, database, "the subscription subscribes to the relay", func() bool {
+	horizontest.PollInProcess(t, "the subscription subscribes to the relay", database, func() bool {
 		return relaySubscribers(served.eventRelay) == 1
 	})
 	requireBackgroundWaitHoldsUntilTheSubscriberLeaves(t, served, "the event stream relay", func() {
