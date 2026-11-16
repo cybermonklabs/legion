@@ -200,10 +200,13 @@ async function issueForms(client: DispatchClient, issue: string): Promise<Dispat
 /**
  * `dispatch spec-form --issue KEY --terms` with no `--artifact`: the list of terms of the issue's
  * root, read from its spec or its Verification document, whichever has a settled version first.
- * Every document under one root carries the same list, so one read is enough.
+ * Every document under one root carries the same list, so one read is enough. The documents come
+ * from the issue's own read, which refuses a key that names no issue, as `dispatch read` does.
  */
 async function issueTerms(client: DispatchClient, issue: string): Promise<DispatchToolResult> {
-  const artifacts = (await client.listIssueArtifacts(issue)).filter(playsSpecOrVerification);
+  const artifacts = ((await client.getIssue(issue)).artifacts ?? []).filter(
+    playsSpecOrVerification
+  );
   const lines: string[] = [];
   for (const artifact of artifacts) {
     const form = await latestForm(client, artifact);

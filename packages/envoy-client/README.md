@@ -913,6 +913,7 @@ It ends with the count of issues and documents it read.
 Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it.
 The lines keep the server's order, sorted by term.
 With no `--artifact`, it reads the list from the spec of the issue, or from its Verification document while the spec has no version.
+It reads them from the issue's own read too, so for a key that names no issue it prints what `dispatch read` prints and exits 1.
 A document that no root holds has no list, and `--terms` goes with no `--root`.
 
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>

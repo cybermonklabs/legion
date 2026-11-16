@@ -696,6 +696,23 @@ describe("dispatch spec-form --terms", () => {
     expect(formReads()).toEqual([]);
   });
 
+  test("an issue that does not exist is refused as dispatch read refuses it, and no list is read", async () => {
+    const read = await run(["read", "--issue", "ACME-999"]);
+    expect(read).toEqual({ code: 1, stdout: "NOT_FOUND: not found\n", stderr: "" });
+
+    for (const argv of [
+      ["spec-form", "--issue", "ACME-999", "--terms"],
+      ["spec-form", "ACME-999", "--terms"],
+    ]) {
+      requests.length = 0;
+
+      const answered = await run(argv);
+
+      expect(answered, argv.join(" ")).toEqual(read);
+      expect(formReads(), argv.join(" ")).toEqual([]);
+    }
+  });
+
   test.each([
     ["no_root", "This server names no root of The Spec, so it holds no list of terms."],
     ["outside", "spec.md is not under a root of The Spec, so it has no list of terms."],
