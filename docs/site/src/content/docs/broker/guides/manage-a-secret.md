@@ -231,7 +231,14 @@ value, since another writer may have filled or replaced the secret during the pr
 read or list keeps the secret, and the delete carries the read's `etag`, so a secret replaced
 since is not deleted. One case remains: Secret Manager offers no delete conditional on a secret
 holding no version, so a version another writer adds between the version list and the delete is
-deleted with the secret.
+deleted with the secret. A cleanup that deletes the empty secret says so: the failure the command
+prints ends with `the empty secret … is deleted, so nothing stays in the store`. Where the store's
+answer to the delete leaves open whether it deleted the secret - a lost answer, a deadline, an
+outage - the CLI reads the secret back: none found is the delete done, said as above; the secret
+still there is said to stay, with the `gcloud secrets delete` command that clears it; and a read
+back that fails says the store may still hold it, naming `agent-secrets secret show NAME` and that
+command. Only a delete the store refused, or a read back that found the secret, is said to leave it
+in the store.
 
 While the secret waits for its value, for ten minutes from its making, the broker serves it to
 nobody, logs that it waits, and refuses a request for it `PENDING_VALUE`, which says the secret
@@ -264,11 +271,15 @@ sets none; each `gcloud auth print-access-token` that refreshes a gcloud login's
 deadline of its own. That bound is per call, not per signal: a signal waits out the call in
 flight, and then its cleanup makes its own calls - a read back, a version list, a delete - each
 with the same deadline, so a first signal against a store that answers nothing can take a few
-minutes to return. A second signal while the first one still waits ends the command at once, by
-that second signal, with one line naming what the store may be left holding and the command that
-clears or checks it: on GCP the empty secret, or the secret empty or holding the value, with the
-`gcloud secrets delete` command, and `agent-secrets secret show NAME` for the second; on AWS the
-secret with its value or nothing, with `agent-secrets secret show NAME`.
+minutes to return. The first signal's cleanup says what the create left, as the command would have:
+a value the store stored meanwhile is said stored (`created NAME in …`) and the broker asked to
+reread the name; a store call that failed is named with what the store may hold, such as an AWS
+`CreateSecret` that ran out of time and may have made the secret. A second signal while the first
+one still waits ends the command at once, by that second signal, with one line naming what the
+store may be left holding and the command that clears or checks it: on GCP the empty secret, or the
+secret empty or holding the value, with the `gcloud secrets delete` command, and `agent-secrets
+secret show NAME` for the second; on AWS the secret with its value or nothing, with `agent-secrets
+secret show NAME`.
 
 Where the store's answer to the add of the value leaves open whether it stored it - a lost answer,
 a deadline, an outage - the CLI never deletes the secret, since the add may have stored the value or

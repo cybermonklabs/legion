@@ -1,13 +1,16 @@
 kind: Fixed
 body: |-
   `agent-secrets secret create` puts a 60-second deadline on each store call it makes from the
-  create until the value is stored or the empty secret is deleted: Secret Manager's
-  `CreateSecret`, `AddSecretVersion`, `ListSecretVersions` and `DeleteSecret`, and Secrets
-  Manager's `CreateSecret`. Sixty seconds is the Secret Manager Go client's own default for these
+  create until the value is stored or the empty secret is deleted: Secret Manager's `GetSecret`,
+  `CreateSecret`, `TestIamPermissions`, `AddSecretVersion`, `ListSecretVersions` and
+  `DeleteSecret`, and Secrets Manager's `CreateSecret`. Sixty seconds is the Secret Manager Go client's own default for these
   calls; the AWS SDK sets none, so before this an AWS create the store never answered waited
   forever. The bound is per store call, not per signal: a signal waits out the call in flight, and
   its cleanup then makes its own calls, each with the same deadline, so a first signal against a
-  store that answers nothing takes a few minutes. A second hang-up, Ctrl-C, Ctrl-\ or SIGTERM
+  store that answers nothing takes a few minutes. The first signal's cleanup says what the create
+  left, as the command would have: a value the store stored meanwhile is said stored and the broker
+  asked to reread the name, and a store call that failed, an AWS `CreateSecret` that ran out of
+  time among them, is named with what the store may hold. A second hang-up, Ctrl-C, Ctrl-\ or SIGTERM
   while the first one waits ends the
   command at once, by that second signal, with one line naming what the store may be left holding
   and the command that clears or checks it: on Google Cloud an empty secret, or one that may hold

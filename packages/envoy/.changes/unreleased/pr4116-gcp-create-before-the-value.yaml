@@ -10,6 +10,10 @@ body: |-
   the add leaves that open (a lost answer, a deadline, an outage), it always keeps the secret,
   even when a list of its versions shows none, since the add may still land; it says what that list
   showed (a version there: the value may have been stored, and it rereads the name; none: a late add
-  may still land; the list failed: the state is unknown) and how to settle it. Where the store
-  refuses the delete of an empty secret, the command names it and gives the
-  `gcloud secrets delete` command that clears it. On AWS the create is still the one call it was.
+  may still land; the list failed: the state is unknown) and how to settle it. A cleanup that
+  deletes the empty secret says that it is deleted and nothing stays in the store. Where the store
+  refuses the delete of an empty secret, the command names it and gives the `gcloud secrets delete`
+  command that clears it; where the delete's answer leaves open whether the store acted, it reads
+  the secret back and says the delete is done, that the secret stays, or, where that read fails
+  too, that the store may still hold it, never that it stays. On AWS the create is still the one
+  call it was.

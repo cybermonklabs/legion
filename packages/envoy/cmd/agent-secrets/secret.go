@@ -1102,38 +1102,14 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 	}
 	// Install cleanup before the first store call: a signal can arrive after the store has
 	// created the empty secret but before its answer reaches the form.
-	pending := &pendingCreate{s: s, form: form, name: name, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
-	endStretch := pending.watch()
-	defer endStretch()
-	// Where begin makes a secret that waits for its value (madeBeforeValue), the value is read until
-	// valueReadWindow after the store is asked to make it: the broker holds it as waiting for that
-	// long from its making, so the create gives up, and discards it, no later than the broker stops
-	// waiting. Where begin makes nothing (AWS), nothing waits, and the read has no bound.
-	asked := time.Now()
-	if err := pending.begin(); err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
-	var deadline time.Time
-	if pending.created.madeBeforeValue() {
-		deadline = asked.Add(valueReadWindow)
-	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, deadline, stderr)
-	if err == nil && policy.ValidKind(*kind) {
-		err = checkValueFor(*kind, *shape, value)
-	}
-	if err == nil {
-		err = pending.store(value)
-	}
-	if err != nil {
-		err = pending.abandon(err)
-	}
-	endStretch()
-	if err != nil {
-		return secretFailIn(stderr, form, s, err)
-	}
-	fmt.Fprintf(stdout, "created %s in %s (owner=%s, tier=%s)\n", name, s.storeName(), ownerValue, *tier)
-	noteEdgeSpaces(stderr, form, name, value)
-	return rereadAfter(s, stdout, stderr, form, name, true, nil)
+	pending := &pendingCreate{s: s, form: form, name: name, owner: ownerValue, tier: *tier, stdout: stdout, stderr: stderr, created: s.backend.prepareCreate(slug, tags)}
+	return runCreate(pending, func(deadline time.Time) (string, error) {
+		value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, deadline, stderr)
+		if err == nil && policy.ValidKind(*kind) {
+			err = checkValueFor(*kind, *shape, value)
+		}
+		return value, err
+	})
 }
 
 // ---------------------------------------------------------------------------

@@ -102,7 +102,8 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 // it then does not store - one it reads empty, one the minter of its kind refuses, one the store
 // refuses outright to add - leaves no secret behind: the create verifies the creation label,
 // lists versions in case another writer added one, and deletes the empty secret it made. It
-// exits as that failure does and asks the broker to reread the name once.
+// exits as that failure does, says the empty secret it made is deleted and nothing stays, and
+// asks the broker to reread the name once.
 func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
 	for _, row := range []struct {
 		name   string
@@ -128,8 +129,11 @@ func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
 			useStdin(t, row.stdin)
 
 			_, stderr, code := runSecret(append([]string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, row.args...)...)
-			if code != row.code || !strings.Contains(stderr, row.want) || strings.Contains(stderr, "stays in the store") {
+			if code != row.code || !strings.Contains(stderr, row.want) || strings.Contains(stderr, "an empty secret named") {
 				t.Fatalf("exit %d, stderr %q; want %d naming %q and no secret left in the store", code, stderr, row.code, row.want)
+			}
+			if deleted := "the empty secret " + newTestID + " is deleted, so nothing stays in the store"; !strings.Contains(stderr, deleted) {
+				t.Fatalf("stderr %q; want it to say %q", stderr, deleted)
 			}
 			requireNothingLeft(t, fake, broker, "NEW_TEST")
 			calls := fake.called()
@@ -765,11 +769,12 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 	}
 }
 
-// TestCreateSignalAfterAFailedBeginPrintsNothingMore: a begin that failed and left nothing - here a
-// lost create answer whose settle deleted the empty secret it made - has its error printed by the
-// form; a signal that comes after it, before the form exits, prints nothing more, so the failure
-// prints once.
-func TestCreateSignalAfterAFailedBeginPrintsNothingMore(t *testing.T) {
+// TestCreateSignalAfterAFailedBeginPrintsItsFailure: a begin that failed - here a lost create
+// answer whose settle deleted the empty secret it made, which leaves nothing - ends the stretch
+// before the form prints that failure, so a signal that comes first, whose cleanup the form then
+// never outruns, is the one to print it: the failure, with what it left, prints once, by the
+// signal's cleanup.
+func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 	fake := newFakeSecretManager()
 	fake.answerAfter = map[string]codes.Code{"CreateSecret": codes.Unavailable}
 	startFakeSecretManager(t, fake)
@@ -786,7 +791,126 @@ func TestCreateSignalAfterAFailedBeginPrintsNothingMore(t *testing.T) {
 		t.Fatalf("begin = %v with %d secrets held; want the lost answer's failure and the empty secret deleted", err, fake.written())
 	}
 	p.interrupted()
-	if stderr.Len() != 0 {
-		t.Fatalf("a signal after the failed begin printed %q; want nothing, the form prints that failure once", stderr.String())
+	if out := stderr.String(); strings.Count(out, "agent-secrets secret create: ") != 1 || !strings.Contains(out, "Unavailable") || !strings.Contains(out, "so it is deleted again and nothing stays") {
+		t.Fatalf("a signal after the failed begin printed %q; want that failure, and what it left, once", out)
+	}
+}
+
+// signalAtFirstWrite is a standard error that runs onSignalDeath, as a signal would, at the form's
+// first write to it, while that is set.
+type signalAtFirstWrite struct {
+	strings.Builder
+	fired bool
+}
+
+func (w *signalAtFirstWrite) Write(p []byte) (int, error) {
+	if !w.fired {
+		w.fired = true
+		if death := onSignalDeath; death != nil {
+			death()
+		}
+	}
+	return w.Builder.Write(p)
+}
+
+// TestCreateFailedBeginPrintsItsFailureOnce: the form prints a failed begin only once the stretch
+// is over, so a signal that comes as it prints finds no cleanup set and prints nothing more: one
+// line, whether the begin left nothing or left the empty secret it could not delete.
+func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		refuse map[string]codes.Code
+		want   string
+	}{
+		{"its empty secret deleted", nil, "so it is deleted again and nothing stays"},
+		{"its empty secret kept", map[string]codes.Code{"DeleteSecret": codes.PermissionDenied}, newTestID + " stays in the store"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			fake.answerAfter, fake.refuseMethods = map[string]codes.Code{"CreateSecret": codes.Unavailable}, row.refuse
+			startFakeSecretManager(t, fake)
+			useGCPIdentity(t, "authorized_user", "ada@example.com")
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			refuseValueReads(t)
+			stderr := &signalAtFirstWrite{}
+			code := cmdSecret([]string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, io.Discard, stderr)
+			if out := stderr.String(); code != 1 || strings.Count(out, "agent-secrets secret create: ") != 1 || !strings.Contains(out, row.want) {
+				t.Fatalf("exit %d, stderr %q; want 1 and the failure, naming %q, printed once", code, out, row.want)
+			}
+		})
+	}
+}
+
+// TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack: a DeleteSecret answered with a
+// failure that is no refusal the store gives before it acts - Unavailable here - may have deleted
+// the empty secret, so the create reads it back rather than say it stays: none found is the delete
+// done, said as such, with the broker asked to reread the name and the value's own refusal's exit
+// code kept; the secret still found stays, said with the command that clears it; a read back that
+// fails says the store may still hold it, with the commands that tell and clear it, and never that
+// it stays.
+func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) {
+	for _, row := range []struct {
+		name          string
+		refuse, after map[string]codes.Code
+		readBackFails bool
+		code, held    int
+		facts, not    []string
+		rereads       []string
+	}{
+		{"the delete done, its answer lost", nil, map[string]codes.Code{"DeleteSecret": codes.Unavailable}, false, exitUsageError, 0,
+			[]string{"the value is read from standard input, which was empty", "the empty secret " + newTestID + " is deleted, so nothing stays in the store"},
+			[]string{"an empty secret named", "may still hold"}, []string{"NEW_TEST"}},
+		{"the delete not done, its answer lost", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, false, 1, 1,
+			[]string{"Unavailable", "leaves open whether it deleted " + newTestID, "reading it back still finds it", "`" + clearEmptySecret + "`"}, nil, nil},
+		{"the delete's answer lost and its read back failing", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, true, 1, 1,
+			[]string{"Unavailable", "leaves open whether it deleted " + newTestID, "may still hold it", "`agent-secrets secret show NEW_TEST`", "`" + clearEmptySecret + "`"},
+			[]string{"stays in the store"}, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			fake.refuseMethods, fake.answerAfter = maps.Clone(row.refuse), row.after
+			if fake.refuseMethods == nil {
+				fake.refuseMethods = map[string]codes.Code{}
+			}
+			if row.readBackFails {
+				// Every GetSecret after the delete is refused, as a store that fails the read back.
+				fake.beforeCall = func(method string) {
+					if method == "DeleteSecret" {
+						fake.mu.Lock()
+						fake.refuseMethods["GetSecret"] = codes.Unavailable
+						fake.mu.Unlock()
+					}
+				}
+			}
+			startFakeSecretManager(t, fake)
+			useGCPIdentity(t, "authorized_user", "ada@example.com")
+			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			useStdin(t, "")
+
+			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
+			if code != row.code {
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
+			}
+			for _, fact := range row.facts {
+				if !strings.Contains(stderr, fact) {
+					t.Fatalf("stderr %q; want it to say %q", stderr, fact)
+				}
+			}
+			for _, not := range row.not {
+				if strings.Contains(stderr, not) {
+					t.Fatalf("stderr %q; want no %q", stderr, not)
+				}
+			}
+			calls := fake.called()
+			if deleted := slices.Index(calls, "DeleteSecret"); deleted < 0 || !slices.Contains(calls[deleted:], "GetSecret") {
+				t.Fatalf("Secret Manager calls %v; want the secret read back after the delete", calls)
+			}
+			if held := fake.written(); held != row.held {
+				t.Fatalf("the store holds %d secrets, want %d", held, row.held)
+			}
+			if rereads, _ := broker.recorded(); !slices.Equal(rereads, row.rereads) {
+				t.Fatalf("rereads %v, want %v", rereads, row.rereads)
+			}
+		})
 	}
 }

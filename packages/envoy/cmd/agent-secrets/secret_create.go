@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -209,12 +210,16 @@ const (
 )
 
 // pendingCreate owns a create from before its first store call until its value is stored or its
-// discard has run. mu is held across begin, store and discard, so a signal waits for the call in
-// flight before cleaning up. The backend settles a failed begin itself; discard runs only after
-// begin succeeds. A second signal waits for none of it (endingAtOnce).
+// discard has run (runCreate holds that order). mu is held across begin, store and discard, so a
+// signal waits for the call in flight before cleaning up. The backend settles a failed begin
+// itself; discard runs only after begin succeeds. A second signal waits for none of it
+// (endingAtOnce). Whatever the stretch ends in is reported once: by the form, which reports only
+// once the stretch is over (runCreate), or by a signal's cleanup (interrupted), after which the
+// stretch never ends, since the form ends by the signal.
 type pendingCreate struct {
 	s              *secretSession
 	form, name     string
+	owner, tier    string // the owner and tier tags the created line names
 	stdout, stderr io.Writer
 	created        newSecret
 
@@ -222,7 +227,54 @@ type pendingCreate struct {
 	begun     bool
 	stored    bool
 	discarded bool
-	left      error // what discard left to report, nil for nothing
+	// failure is what the form reports should it end now: begin's failure, the store's, or, once
+	// the discard has run, that failure beside what the discard left (abandonLocked); nil for none.
+	failure error
+}
+
+// runCreate is p's stretch, in its order: the watch on the signals, begin, the read of the value
+// (readValue, handed the deadline its read ends at: valueReadWindow after the store is asked to
+// make the secret, where begin makes one that waits for its value, and the zero time, no bound,
+// where it makes nothing), store, and abandon after any failure. It ends the stretch before it
+// reports anything, the failure, or the value stored and the broker's reread, so a signal that
+// comes as it reports finds no cleanup to run, and one that came before keeps the stretch from
+// ending: interrupted reports instead. It answers the form's exit code, and is a function rather
+// than a method of pendingCreate because broker-refgen reads every exit code this package returns,
+// and it follows a plain call, never a method's.
+func runCreate(p *pendingCreate, readValue func(deadline time.Time) (string, error)) int {
+	end := p.watch()
+	defer end()
+	// The broker holds a secret waiting for its value for valueReadWindow from its making, so the
+	// window counts from before the store is asked to make it: the create gives up, and discards
+	// it, no later than the broker stops waiting.
+	asked := time.Now()
+	if err := p.begin(); err != nil {
+		end()
+		return secretFailIn(p.stderr, p.form, p.s, err)
+	}
+	var deadline time.Time
+	if p.created.madeBeforeValue() {
+		deadline = asked.Add(valueReadWindow)
+	}
+	value, err := readValue(deadline)
+	if err == nil {
+		err = p.store(value)
+	}
+	if err != nil {
+		err = p.abandon(err)
+	}
+	end()
+	if err != nil {
+		return secretFailIn(p.stderr, p.form, p.s, err)
+	}
+	p.sayStored()
+	noteEdgeSpaces(p.stderr, p.form, p.name, value)
+	return rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
+}
+
+// sayStored prints the line that says the create stored the secret with its value.
+func (p *pendingCreate) sayStored() {
+	fmt.Fprintf(p.stdout, "created %s in %s (owner=%s, tier=%s)\n", p.name, p.s.storeName(), p.owner, p.tier)
 }
 
 // watch makes p what a signal ends the form on, onSignalDeath and onSecondSignal, and starts
@@ -238,10 +290,9 @@ func (p *pendingCreate) watch() (end func()) {
 	})
 }
 
-// begin makes any value-free store call while signal cleanup waits for its answer. Its failure is
-// the form's to print; p.left keeps it as well only where something stays (a kept outcome), so a
-// signal that comes before the form prints it says what stays, and a failure that left nothing
-// (madeNothing, deletedEmpty) is printed once, by the form alone.
+// begin makes any value-free store call while signal cleanup waits for its answer. Its failure,
+// which says what its own recovery left, is what the form reports (p.failure), by run or by a
+// signal's cleanup, once.
 func (p *pendingCreate) begin() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -251,16 +302,15 @@ func (p *pendingCreate) begin() error {
 	p.begun = true
 	outcome, err := p.created.begin(p.s.ctx)
 	if err != nil {
-		p.discarded = true
-		if outcome != madeNothing && outcome != deletedEmpty {
-			p.left = err
-		}
+		p.discarded, p.failure = true, err
 		p.rereadOutcome(outcome)
 	}
 	return err
 }
 
-// store writes value as the secret's first value.
+// store writes value as the secret's first value. Its failure, which says what the store may hold
+// (AWS: whether it may have made the secret), is what the form reports (p.failure) until the
+// discard has run.
 func (p *pendingCreate) store(value string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -268,37 +318,77 @@ func (p *pendingCreate) store(value string) error {
 		return fmt.Errorf("the secret %s was discarded before its value was stored", p.name)
 	}
 	err := p.created.store(p.s.ctx, value)
-	p.stored = err == nil
+	p.stored, p.failure = err == nil, err
 	return err
 }
 
 // abandon discards what create made after err, the failure that stopped the value being stored,
-// and answers the error the form reports: err itself when nothing stays, so a usage error still
-// exits 2 having written nothing, and otherwise err beside what stays, which exits 1, the store
-// holding a secret it did not hold before.
+// and answers the error the form reports (abandonLocked).
 func (p *pendingCreate) abandon(err error) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if left := p.discardLocked(); left != nil {
-		return fmt.Errorf("%v; %v", p.s.refusedAs(err), p.s.refusedAs(left))
-	}
-	return err
+	return p.abandonLocked(err)
 }
 
-// interrupted is onSignalDeath while p is pending: unless the value is stored, it discards what
-// create made, saying on stderr what stays, if anything; the signal then decides the exit status.
+// abandonLocked runs the discard once, under mu, after err, the failure that stopped the value
+// being stored (nil where a signal ended the read), and answers, and keeps in p.failure, the error
+// the form reports: err itself where the store held nothing to discard, so a usage error still
+// exits 2 having written nothing; err beside the line that the empty secret the create made is
+// deleted and nothing stays, its exit code kept; and otherwise err beside what stays, which exits
+// 1, the store holding a secret it did not hold before. After deleting the empty secret it asks the
+// broker to reread the name, so a refusal or a wait for a value the broker logged for the secret
+// meanwhile ends at once; the create has failed already, so that reread's own failure changes
+// nothing it reports. A secret that may hold the value is reread with its answer printed, which
+// says whether the broker serves it.
+func (p *pendingCreate) abandonLocked(err error) error {
+	if p.discarded {
+		if p.failure != nil {
+			return p.failure
+		}
+		return err
+	}
+	p.discarded = true
+	outcome, left := p.created.discard(p.s.ctx)
+	p.rereadOutcome(outcome)
+	switch {
+	case left != nil && err != nil:
+		p.failure = fmt.Errorf("%v; %v", p.s.refusedAs(err), p.s.refusedAs(left))
+	case left != nil:
+		p.failure = left
+	case outcome == deletedEmpty && err != nil:
+		stated := fmt.Errorf("%v; %s", p.s.refusedAs(err), p.created.unsettled())
+		if errors.As(err, new(usageErr)) {
+			stated = usageErr{stated}
+		}
+		p.failure = stated
+	case outcome == deletedEmpty:
+		p.failure = errors.New(p.created.unsettled())
+	default:
+		p.failure = err
+	}
+	return p.failure
+}
+
+// interrupted is onSignalDeath while p is pending: the cleanup of a signal that ends the form, run
+// once the call in flight has answered, which reports what the stretch ended in, since the form,
+// ending by the signal, never will. A value stored is said stored, as the form says it, and the
+// broker asked to reread the name; otherwise it discards what create made, unless that has run,
+// and reports the failure beside what the discard left (abandonLocked). The signal then decides
+// the exit status.
 func (p *pendingCreate) interrupted() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.begun {
+	switch {
+	case !p.begun:
 		p.discarded = true
 		return
-	}
-	if p.stored {
+	case p.stored:
+		p.sayStored()
+		reread(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
 		return
 	}
-	if left := p.discardLocked(); left != nil {
-		secretFailIn(p.stderr, p.form, p.s, left)
+	if failure := p.abandonLocked(p.failure); failure != nil {
+		secretFailIn(p.stderr, p.form, p.s, failure)
 	}
 }
 
@@ -308,23 +398,6 @@ func (p *pendingCreate) interrupted() {
 // that very call.
 func (p *pendingCreate) endingAtOnce(sig os.Signal) {
 	fmt.Fprintf(p.stderr, "agent-secrets %s: a second signal (%s) ends the create before the first one's cleanup is done: %s\n", p.form, signalNoun(sig), p.created.unsettled())
-}
-
-// discardLocked runs the discard once, under mu, and answers what it left to report, nil when
-// nothing stays. After deleting the empty secret it asks the broker to reread the name, so a
-// refusal or a wait for a value the broker logged for the secret meanwhile ends at once; the
-// create has failed already, so that reread's own failure changes nothing it reports. A secret
-// that may hold the value is reread with its answer printed, which says whether the broker
-// serves it.
-func (p *pendingCreate) discardLocked() error {
-	if p.discarded {
-		return p.left
-	}
-	p.discarded = true
-	outcome, err := p.created.discard(p.s.ctx)
-	p.rereadOutcome(outcome)
-	p.left = err
-	return p.left
 }
 
 // rereadOutcome updates the broker after either recovery from begin or the later discard.

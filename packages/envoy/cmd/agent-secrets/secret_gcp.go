@@ -793,13 +793,42 @@ func (n *gcpNewSecret) discardRead(ctx context.Context, secret *secretmanagerpb.
 			why, n.name, n.agentSecrets("secret", "show", n.display), n.clearCommand())
 	}
 	if err := n.b.deleteOutright(ctx, n.name, secret.GetEtag()); err != nil {
-		if status.Code(err) == codes.FailedPrecondition || status.Code(err) == codes.Aborted {
+		switch {
+		case status.Code(err) == codes.FailedPrecondition || status.Code(err) == codes.Aborted:
 			return keptOthers, fmt.Errorf("%s%s changed before cleanup could delete it, so it is left as it is: `%s` shows it. Deleting it failed: %w", why, n.name, n.agentSecrets("secret", "show", n.display), err)
+		case gcpDefiniteRefusal(err):
+			return keptEmpty, fmt.Errorf("%san empty secret named %s stays in the store: clear it with %s. Deleting it failed: %w", why, n.name, n.clearCommand(), err)
 		}
-		return keptEmpty, fmt.Errorf("%san empty secret named %s stays in the store: clear it with %s. Deleting it failed: %w", why, n.name, n.clearCommand(), err)
+		return n.settleLostDelete(ctx, why, err)
 	}
 	n.deleted.Store(true)
 	return deletedEmpty, nil
+}
+
+// settleLostDelete answers what a DeleteSecret whose answer, deleteErr, leaves open whether the
+// store acted (no gcpDefiniteRefusal: a lost answer, a deadline, an outage) left, by reading the
+// secret back under storeCallDeadline: none found is the delete done; this create's secret still
+// there stays, though a delete the store has not finished may yet land; another writer's is left
+// as it is; and a read that fails leaves it unknown, so the store may still hold it. It says the
+// secret stays only where the store showed it.
+func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteErr error) (discardOutcome, error) {
+	lost := why + "the store's answer to the delete leaves open whether it deleted " + n.name
+	getCtx, cancel := withStoreDeadline(ctx)
+	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
+	cancel()
+	switch {
+	case status.Code(err) == codes.NotFound:
+		n.deleted.Store(true)
+		return deletedEmpty, nil
+	case err != nil:
+		return keptUnknown, fmt.Errorf("%s, and reading it back failed, so the store may still hold it: `%s` says whether it is there, `versions: none` being this create's empty secret, which %s clears. Deleting it failed: %w; reading it back failed: %v",
+			lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr, err)
+	case secret.GetLabels()[createLabel] != n.token:
+		return keptOthers, fmt.Errorf("%s, and reading it back finds a secret this create did not make (its %s label is not this create's), so it is left as it is: `%s` shows it. Deleting it failed: %w",
+			lost, createLabel, n.agentSecrets("secret", "show", n.display), deleteErr)
+	}
+	return keptEmpty, fmt.Errorf("%s, and reading it back still finds it, so this create's empty secret stays in the store unless a delete the store has not finished lands: `%s` says whether it is there, and %s clears it. Deleting it failed: %w",
+		lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr)
 }
 
 // unsettled says what the store may hold should the form end now: nothing once the empty secret

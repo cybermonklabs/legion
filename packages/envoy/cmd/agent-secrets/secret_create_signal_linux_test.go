@@ -9,7 +9,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -27,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestCreateSignalHelper is the process the tests below signal. It creates on GCP's fake Secret
@@ -35,7 +35,10 @@ import (
 // storing the value, or "lost" (Unavailable) once it has stored it. AGENT_SECRETS_CREATE_HOLD,
 // <method>:<duration>, holds each call of that method that long before the store answers it, so a
 // signal can arrive while it is in flight; <method>:signal holds it until this process has received
-// a signal, so the signal arrives while it is in flight whatever the load. AGENT_SECRETS_CREATE_DEADLINE
+// a signal, so the signal arrives while it is in flight whatever the load; <method>:self-<SIGNAL>
+// (self-INT, self-HUP) sends this process that signal as the call begins and holds the call until
+// the signal is received and from then on, never answering it, so the call ends only at its own
+// deadline, which the signal is sure to come before. AGENT_SECRETS_CREATE_DEADLINE
 // is the deadline on each store call (storeCallDeadline). It prints READING at its first read of
 // the value, CALL <method> at each store call (on AWS, CreateSecret alone), CREATED once a held GCP
 // CreateSecret has made the secret, SIGNALLED <signal> each time it receives a signal it does not
@@ -53,8 +56,23 @@ func TestCreateSignalHelper(t *testing.T) {
 	}
 	signalled := acknowledgeSignals()
 	held, holdFor, _ := strings.Cut(os.Getenv("AGENT_SECRETS_CREATE_HOLD"), ":")
-	hold := func() { <-signalled }
-	if holdFor != "signal" {
+	var hold func()
+	switch name, self := strings.CutPrefix(holdFor, "self-"); {
+	case holdFor == "signal":
+		hold = func() { <-signalled }
+	case self:
+		sig := unix.SignalNum("SIG" + name)
+		if sig == 0 {
+			t.Fatalf("AGENT_SECRETS_CREATE_HOLD names no signal %q", name)
+		}
+		hold = func() {
+			if err := unix.Kill(os.Getpid(), sig); err != nil {
+				t.Error(err)
+			}
+			<-signalled
+			select {}
+		}
+	default:
 		d, err := time.ParseDuration(holdFor)
 		if held != "" && err != nil {
 			t.Fatal(err)
@@ -168,7 +186,7 @@ type createProcess struct {
 	t     *testing.T
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
-	out   *lockedBuffer
+	out   *syncWriter
 }
 
 // startCreate starts cmd, a command that runs TestCreateSignalHelper, with env added to its
@@ -180,7 +198,7 @@ func startCreate(t *testing.T, cmd *exec.Cmd, env ...string) *createProcess {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &createProcess{t: t, cmd: cmd, stdin: stdin, out: &lockedBuffer{}}
+	p := &createProcess{t: t, cmd: cmd, stdin: stdin, out: &syncWriter{}}
 	cmd.Stdout, cmd.Stderr = p.out, p.out
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -197,13 +215,12 @@ func helperCommand() *exec.Cmd {
 	return exec.Command(os.Args[0], "-test.run=^TestCreateSignalHelper$")
 }
 
-// waitFor returns once the process has printed want, failing the test after ten seconds.
+// waitFor returns once the process has printed want, failing the test once the wait the test
+// binary's own deadline leaves has passed (testwait).
 func (p *createProcess) waitFor(want string) {
 	p.t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(p.out.String(), want); time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			p.t.Fatalf("the create never printed %q: %q", want, p.out.String())
-		}
+	if !testwait.Holds(testwait.Bounded(p.t, time.Minute, time.Second), testwait.Poll, func() bool { return strings.Contains(p.out.String(), want) }) {
+		p.t.Fatalf("the create never printed %q: %q", want, p.out.String())
 	}
 }
 
@@ -216,10 +233,10 @@ func (p *createProcess) signal(sig syscall.Signal) {
 }
 
 // endedBy waits for the process and fails the test unless sig ended it, the create never having
-// returned.
+// returned, within the wait the test binary's own deadline leaves (testwait).
 func (p *createProcess) endedBy(sig syscall.Signal) string {
 	p.t.Helper()
-	return p.endedByWithin(sig, 30*time.Second)
+	return p.endedByWithin(sig, testwait.Bounded(p.t, time.Minute, time.Second))
 }
 
 // endedByWithin is endedBy, failing the test, and killing the process, unless it ended within limit.
@@ -309,7 +326,9 @@ func TestCreateSignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
 // one refused as unavailable is listed, found empty, and kept, the create saying a late add may
 // still land; one the store carried out and whose answer was lost is listed, found holding a
 // version, and kept, the create saying the value may have been stored; both reread the name. One
-// the store answered as done needs nothing. The process then ends by that signal.
+// the store answered as done has stored the value: the create says so, on the line a create that
+// ends as it should prints, and asks the broker to reread the name. The process then ends by that
+// signal.
 func TestCreateSignalWhileTheAddIsInFlightWaitsForItsAnswer(t *testing.T) {
 	for _, row := range []struct {
 		name, add string
@@ -322,7 +341,7 @@ func TestCreateSignalWhileTheAddIsInFlightWaitsForItsAnswer(t *testing.T) {
 		{"the add carried out and its answer lost", "lost", syscall.SIGTERM,
 			[]string{"CALL ListSecretVersions", "may have been stored", "REREAD NEW_TEST"}, []string{"CALL DeleteSecret"}},
 		{"the add answered as done", "", syscall.SIGINT,
-			nil, []string{"CALL ListSecretVersions", "CALL DeleteSecret"}},
+			[]string{"created NEW_TEST in GCP Secret Manager project", "REREAD NEW_TEST"}, []string{"CALL ListSecretVersions", "CALL DeleteSecret"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:signal", "AGENT_SECRETS_CREATE_ADD="+row.add)
@@ -346,22 +365,61 @@ func TestCreateSignalWhileTheAddIsInFlightWaitsForItsAnswer(t *testing.T) {
 	}
 }
 
-// TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline: a signal that comes
-// while the store holds the add of the value without answering waits for that add no longer than
-// the deadline on each store call (storeCallDeadline, here five seconds, the window in which the
-// test sends its signal): the add then ends as one that ran out of time, which may have stored the
-// value or may still, so the create lists the secret's versions, finds none, keeps the secret,
-// says a late add may still land, asks the broker to reread the name, and ends by the signal, all
-// long before the store would answer.
-func TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline(t *testing.T) {
-	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:1h", "AGENT_SECRETS_CREATE_DEADLINE=5s")
+// TestCreateSignalDuringAnAWSCreateThatSucceedsSaysItWasStored: on AWS, a signal that arrives while
+// the one CreateSecret is in flight waits for its answer; one the store answers as done has made
+// the secret with its value, so the create says it was stored, on the line a create that ends as
+// it should prints, asks the broker to reread the name, and only then ends by the signal.
+func TestCreateSignalDuringAnAWSCreateThatSucceedsSaysItWasStored(t *testing.T) {
+	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:signal")
 	p.waitFor("READING")
 	_, _ = io.WriteString(p.stdin, "shh")
 	_ = p.stdin.Close()
-	p.waitFor("CALL AddSecretVersion")
-	p.signal(syscall.SIGINT)
+	p.waitFor("CALL CreateSecret")
+	p.signal(syscall.SIGTERM)
+	out := p.endedBy(syscall.SIGTERM)
+	if n := strings.Count(out, "created NEW_TEST in AWS Secrets Manager account"); n != 1 || !strings.Contains(out, "REREAD NEW_TEST") {
+		t.Fatalf("output %q says %d times that NEW_TEST was created; want once, and the name reread", out, n)
+	}
+}
+
+// TestCreateFirstSignalDuringAnAWSCreateSaysWhatTheStoreMayHold: a first signal that arrives while
+// AWS's one CreateSecret is in flight waits for it; a CreateSecret that then runs out of its
+// deadline may have made the secret with its value, and the signal's cleanup says so, once, naming
+// the command that tells which, before the process ends by the signal. The helper sends itself the
+// signal as the call begins (self-HUP), so the signal comes inside the deadline however loaded the
+// machine.
+func TestCreateFirstSignalDuringAnAWSCreateSaysWhatTheStoreMayHold(t *testing.T) {
+	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_STORE=aws", "AGENT_SECRETS_CREATE_HOLD=CreateSecret:self-HUP", "AGENT_SECRETS_CREATE_DEADLINE=5s")
+	p.waitFor("READING")
+	_, _ = io.WriteString(p.stdin, "shh")
+	_ = p.stdin.Close()
+	p.waitFor("SIGNALLED hang-up")
+	out := p.endedBy(syscall.SIGHUP)
+	for _, want := range []string{"did not answer within 5s", "`agent-secrets secret show NEW_TEST`"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q; want %q", out, want)
+		}
+	}
+	if n := strings.Count(out, "the store may hold NEW_TEST"); n != 1 {
+		t.Fatalf("output %q says %d times what the store may hold; want once", out, n)
+	}
+}
+
+// TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline: a signal that comes
+// while the store holds the add of the value without answering waits for that add no longer than
+// the deadline on each store call (storeCallDeadline, here five seconds): the add then ends as one
+// that ran out of time, which may have stored the value or may still, so the create lists the
+// secret's versions, finds none, keeps the secret, says a late add may still land, asks the broker
+// to reread the name, and ends by the signal, though the store never answers the add. The helper
+// sends itself the signal as the add begins (self-INT), so the signal comes inside the deadline
+// however loaded the machine.
+func TestCreateSignalWaitsOnAnAddTheStoreNeverAnswersNoLongerThanItsDeadline(t *testing.T) {
+	p := startCreate(t, helperCommand(), "AGENT_SECRETS_CREATE_HOLD=AddSecretVersion:self-INT", "AGENT_SECRETS_CREATE_DEADLINE=5s")
+	p.waitFor("READING")
+	_, _ = io.WriteString(p.stdin, "shh")
+	_ = p.stdin.Close()
 	p.waitFor("SIGNALLED interrupt")
-	out := p.endedByWithin(syscall.SIGINT, 20*time.Second)
+	out := p.endedBy(syscall.SIGINT)
 	for _, want := range []string{"CALL ListSecretVersions", "a late add may still land", "REREAD NEW_TEST"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q; want %q", out, want)
@@ -436,31 +494,20 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 func TestCreateSignalInheritedIgnoredStaysIgnored(t *testing.T) {
 	p := startCreate(t, exec.Command("bash", "-c", `trap '' HUP INT; exec "$0" -test.run='^TestCreateSignalHelper$'`, os.Args[0]))
 	p.waitFor("READING")
+	// The create's watch on the signals is in place by the read: a signal it watched would have a
+	// handler of its own and be ignored no longer.
+	pid := p.cmd.Process.Pid
+	for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGINT} {
+		if !ignores(t, pid, sig) || catches(t, pid, sig) {
+			t.Fatalf("while the create reads, %s is ignored %t and caught %t; want it ignored, as inherited, and not caught", unix.SignalName(sig), ignores(t, pid, sig), catches(t, pid, sig))
+		}
+	}
 	p.signal(syscall.SIGHUP)
 	p.signal(syscall.SIGINT)
-	time.Sleep(300 * time.Millisecond) // time for a signal the create wrongly watched to end it
 	_, _ = io.WriteString(p.stdin, "piped-value")
 	_ = p.stdin.Close()
 	err := p.cmd.Wait()
 	if out := p.out.String(); err != nil || !strings.Contains(out, "RETURNED 0") || !strings.Contains(out, "created NEW_TEST") || strings.Contains(out, "CALL DeleteSecret") {
 		t.Fatalf("the create ended %v, output %q; want the value stored and nothing deleted", err, out)
 	}
-}
-
-// lockedBuffer is a buffer the process writing it and the test reading it share.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }

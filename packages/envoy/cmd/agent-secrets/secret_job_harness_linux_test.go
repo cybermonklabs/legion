@@ -394,12 +394,25 @@ func processState(t *testing.T, pid int) string {
 // catches reports whether process pid has a handler of its own installed for sig.
 func catches(t *testing.T, pid int, sig syscall.Signal) bool {
 	t.Helper()
+	return signalMaskHas(t, pid, "SigCgt", sig)
+}
+
+// ignores reports whether process pid ignores sig (SIG_IGN).
+func ignores(t *testing.T, pid int, sig syscall.Signal) bool {
+	t.Helper()
+	return signalMaskHas(t, pid, "SigIgn", sig)
+}
+
+// signalMaskHas reports whether the signal mask field (SigCgt, SigIgn) of /proc/<pid>/status holds
+// sig.
+func signalMaskHas(t *testing.T, pid int, field string, sig syscall.Signal) bool {
+	t.Helper()
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(string(status), "\n") {
-		if mask, ok := strings.CutPrefix(line, "SigCgt:"); ok {
+		if mask, ok := strings.CutPrefix(line, field+":"); ok {
 			bits, err := strconv.ParseUint(strings.TrimSpace(mask), 16, 64)
 			if err != nil {
 				t.Fatal(err)
@@ -407,6 +420,6 @@ func catches(t *testing.T, pid int, sig syscall.Signal) bool {
 			return bits&(1<<(uint(sig)-1)) != 0
 		}
 	}
-	t.Fatalf("no SigCgt line in /proc/%d/status", pid)
+	t.Fatalf("no %s line in /proc/%d/status", field, pid)
 	return false
 }

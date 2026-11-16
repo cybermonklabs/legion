@@ -270,6 +270,34 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 	}
 }
 
+// TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold: a signal whose cleanup runs once an
+// AWS CreateSecret has failed, before the form has abandoned the create, reports that failure, so
+// what the store may hold is said though the form, ending by the signal, never prints it: once,
+// naming the command that tells which. The cleanup is run here as the signal would run it, right
+// after the store's answer.
+func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
+	local := secrets.NewLocal()
+	startSecretBroker(t, servedBy(local))
+	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
+	s, err := openSession(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var stderr strings.Builder
+	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.prepareCreate("new-test", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent})}
+	if err := p.begin(); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.store("shh"); err == nil {
+		t.Fatal("store = nil; want the create's failure")
+	}
+	p.interrupted()
+	if out := stderr.String(); strings.Count(out, "the store may hold NEW_TEST") != 1 || !strings.Contains(out, "`agent-secrets secret show NEW_TEST`") || strings.Contains(out, "shh") {
+		t.Fatalf("the signal's cleanup printed %q; want what the store may hold, once, naming `agent-secrets secret show NEW_TEST`, and never the value", out)
+	}
+}
+
 // TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid: the command a create prints for telling
 // whether a failed CreateSecret made the secret carries the --profile the create ran under, so it
 // reads the store as the identity that wrote to it.
@@ -284,34 +312,22 @@ func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 	}
 }
 
-// slowStdin answers its value only after delay, then ends, as a pipe whose writer is slow.
-type slowStdin struct {
-	delay time.Duration
-	value *strings.Reader
-	once  sync.Once
-}
-
-func (s *slowStdin) Read(p []byte) (int, error) {
-	s.once.Do(func() { time.Sleep(s.delay) })
-	return s.value.Read(p)
-}
-
 // TestAWSSecretCreateValueReadHasNoWindow: on AWS the create makes nothing before it has the value,
 // so no secret waits in the store and the broker holds nothing pending: its read of the value has
-// no window, and a value that comes after the window a GCP create's read ends at is still stored.
+// no window. With GCP's window shortened to a nanosecond, which is over before any value is read -
+// a create given that deadline refuses the value, whenever it comes - a value piped in at once is
+// still stored on AWS.
 func TestAWSSecretCreateValueReadHasNoWindow(t *testing.T) {
 	restore := valueReadWindow
-	valueReadWindow = 300 * time.Millisecond
+	valueReadWindow = time.Nanosecond
 	t.Cleanup(func() { valueReadWindow = restore })
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-	restoreStdin := secretStdin
-	secretStdin = &slowStdin{delay: time.Second, value: strings.NewReader("shh")}
-	t.Cleanup(func() { secretStdin = restoreStdin })
+	useStdin(t, "shh")
 
 	if _, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent"); code != 0 {
-		t.Fatalf("exit %d, stderr %q; want 0: a value piped in after GCP's window is still read on AWS", code, stderr)
+		t.Fatalf("exit %d, stderr %q; want 0: the value is read with no window on AWS", code, stderr)
 	}
 	if v := valueOf(t, local, "NEW_TEST"); v != "shh" {
 		t.Fatalf("NEW_TEST = %q, want the value piped in", v)
