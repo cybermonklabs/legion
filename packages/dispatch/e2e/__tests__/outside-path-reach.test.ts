@@ -1160,7 +1160,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           [written("closed 127.0.0.1 1 # closed port\rhub 127.0.0.1 4222\r"), "line 1 of"],
           [
             written("closed 127.0.0.1 1 # closed port\rhub 127.0.0.1 4222\r"),
-            "holds a carriage return inside it: write one target per line, with LF or CRLF line endings",
+            "holds a control character or a line break other than LF inside it: write one target per line, with LF or CRLF line endings",
           ],
           // An IPv6 address holding an IPv4 one names another host than the IPv4 address does
           // (::127.0.0.1 is not loopback), or none on a v6-only stack (::ffff:127.0.0.1).
@@ -1189,6 +1189,184 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A byte that `read` does not split on, written after an inline comment, puts the next target
+  // in the comment: here that target is a listening hub, so the run would pass without it.
+  const separators: [string, string][] = [
+    ["SOH", "\x01"],
+    ["BS", "\x08"],
+    ["VT", "\x0b"],
+    ["FF", "\x0c"],
+    ["CR alone", "\r"],
+    ["ESC", "\x1b"],
+    ["US", "\x1f"],
+    ["DEL", "\x7f"],
+    ["NEL", "\u0085"],
+    ["LS", "\u2028"],
+    ["PS", "\u2029"],
+  ];
+  const locales = ["C", "C.UTF-8"];
+
+  row(withoutTools)(
+    "refuses a line holding a control character or a Unicode line break, which would hide the target after it",
+    async () => {
+      const origin = fakeDispatch();
+      const holding = holdingTarget();
+      try {
+        const closed = await closedPort();
+        const runs = await Promise.all(
+          separators.flatMap(([name, separator]) =>
+            locales.map(async (locale) => {
+              const where = written(
+                `closed 127.0.0.1 ${closed} # closed port${separator}hub 127.0.0.1 ${holding.port}\n`
+              );
+              const run = await drive({
+                OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+                OUTSIDE_PATH_TARGETS: where,
+                LC_ALL: locale,
+              });
+              return { name, locale, where, said: verdict(run), code: run.code };
+            })
+          )
+        );
+        for (const { name, locale, where, said, code } of runs) {
+          expect({ name, locale, said, code }).toEqual({
+            name,
+            locale,
+            said: `UNKNOWN: line 1 of ${where} holds a control character or a line break other than LF inside it: write one target per line, with LF or CRLF line endings`,
+            code: 2,
+          });
+        }
+        expect(origin.seen).toEqual([]);
+      } finally {
+        origin.stop(true);
+        holding.stop(true);
+      }
+    }
+  );
+
+  row(withoutTools)(
+    "takes CRLF line endings, tabs between fields and non-ASCII comments, and reads every target",
+    async () => {
+      const origin = fakeDispatch();
+      const holding = holdingTarget();
+      try {
+        const closed = await closedPort();
+        // Å is C3 85 in UTF-8: a byte-wise search for NEL's last byte would refuse this comment.
+        const where = written(
+          `closed 127.0.0.1 ${closed} # Zürich, Åre, 東京\r\n` +
+            `hub\t127.0.0.1\t${holding.port}\t# ø\r\n`
+        );
+        const runs = await Promise.all(
+          locales.map(async (locale) => ({
+            locale,
+            run: await drive({
+              OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+              OUTSIDE_PATH_TARGETS: where,
+              LC_ALL: locale,
+            }),
+          }))
+        );
+        for (const { locale, run } of runs) {
+          expect({
+            locale,
+            closed: run.stdout.includes(`target closed 127.0.0.1:${closed} unreachable; `),
+            hub: run.stdout.includes(`target hub 127.0.0.1:${holding.port} REACHED; `),
+            said: verdict(run),
+            code: run.code,
+          }).toEqual({ locale, closed: true, hub: true, said: "FAIL: reached hub", code: 1 });
+        }
+      } finally {
+        origin.stop(true);
+        holding.stop(true);
+      }
+    }
+  );
+
+  // Each spelling of an IPv4-mapped address, and two with a dotted IPv4 part. A v6-only device
+  // (OpenBSD, or Linux with bindv6only=1) connects to none of them, so the hub each names, which
+  // listens on 127.0.0.1, would read unreachable there and the run would pass.
+  const mapped = [
+    "::ffff:127.0.0.1",
+    "::127.0.0.1",
+    "::ffff:7f00:1",
+    "::FFFF:7f00:1",
+    "0:0:0:0:0:ffff:7f00:1",
+    "0:0::ffff:7f00:1",
+    "::0:ffff:7f00:1",
+    "0::ffff:7f00:1",
+    "0000:0000:0000:0000:0000:ffff:7f00:0001",
+  ];
+  /** A PATH whose curl, as on a v6-only stack, connects to no IPv6 address. */
+  const v6Only = () =>
+    pathWithCurl(`case "$*" in *'telnet://['*) printf '0.000010 0.000000'; exit 7 ;; esac`);
+
+  row(withoutTools)(
+    "refuses every spelling of an IPv4-mapped address, which a v6-only device would read unreachable",
+    async () => {
+      const origin = fakeDispatch();
+      const holding = holdingTarget();
+      try {
+        const path = v6Only();
+        const runs = await Promise.all(
+          mapped.map(async (host) => ({
+            host,
+            run: await drive(
+              {
+                OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+                OUTSIDE_PATH_TARGETS: await list(`hub ${host} ${holding.port}`),
+              },
+              { path }
+            ),
+          }))
+        );
+        for (const { host, run } of runs) {
+          expect({ host, said: verdict(run), code: run.code }).toEqual({
+            host,
+            said: `UNKNOWN: target hub: ${host} is an IPv6 form of an IPv4 address; write the IPv4 address itself`,
+            code: 2,
+          });
+        }
+        expect(origin.seen).toEqual([]);
+      } finally {
+        origin.stop(true);
+        holding.stop(true);
+      }
+    }
+  );
+
+  row(withoutTools)(
+    "takes an IPv6 address that is not IPv4-mapped, ffff in a later group and ::7f00:1 included",
+    async () => {
+      const origin = fakeDispatch();
+      try {
+        const taken = [
+          "::1",
+          "0:0:0:0:0:0:0:1",
+          "fd00::1",
+          "fd7a:115c:a1e0::a136:6940",
+          "2001:db8::ffff:1",
+          "::7f00:1",
+        ];
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: await list(...taken.map((host, at) => `v6-${at} ${host} 4222`)),
+          },
+          { path: v6Only() }
+        );
+        expect(
+          taken.map((host, at) =>
+            lineFor(run, `v6-${at}`).startsWith(`target v6-${at} [${host}]:4222 unreachable; `)
+          )
+        ).toEqual(taken.map(() => true));
+        expect(verdict(run)).toStartWith("PASS");
+        expect(run.code).toBe(0);
+      } finally {
+        origin.stop(true);
+      }
+    }
+  );
+
   row(withoutTools)(
     "refuses an origin that is not an https origin alone, unless it is the local harness's with the flag set",
     async () => {
@@ -1204,6 +1382,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["https://dispatch-outside.0x1", "1"],
         ["https://[::ffff:127.0.0.1]", "1"],
         ["https://[::127.0.0.1]:8443", "1"],
+        ["https://[0:0::ffff:7f00:1]", "1"],
+        ["https://[0000:0000:0000:0000:0000:ffff:7f00:0001]:8443", "1"],
         ["ftp://dispatch-outside.example", "1"],
       ] as const) {
         const run = await drive({

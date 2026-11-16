@@ -22,8 +22,12 @@
 #                         listeners, the secrets broker, the other Dispatch origin). `#` starts a
 #                         comment. `host` is a name or a literal address: an IPv4 address written
 #                         as four numbers of 0 to 255 with no leading zero, or an IPv6 address that
-#                         holds no IPv4 one (write ::ffff:10.0.0.1 as 10.0.0.1); never a `svc:`
-#                         selector, which resolves nowhere. Lines end in LF or CRLF. The list must
+#                         holds no dotted IPv4 part and is not IPv4-mapped however written (its
+#                         text must not start with ffff: once its leading zeros and colons are
+#                         dropped, as ::ffff:a00:1 and 0:0::ffff:a00:1 do: write 10.0.0.1); never
+#                         a `svc:` selector, which resolves nowhere. Lines end in LF or CRLF; a line
+#                         holding any other control character than tab, or a Unicode line break
+#                         (NEL, LS, PS), is refused, since `read` splits only on LF. The list must
 #                         hold each of our services' addresses on the path as lines of their own,
 #                         not names alone: a name line proves only where that name resolves on this
 #                         device, and a name that resolves elsewhere there, or nowhere, says nothing
@@ -114,13 +118,19 @@ host_ok() {
   is_ipv4 "$1"
 }
 
-# v4_in_v6 HOST: HOST is an IPv6 address that holds an IPv4 one, dotted (::127.0.0.1,
-# ::ffff:127.0.0.1) or mapped in hex (::ffff:7f00:1). Each names another host than its IPv4
-# address does: ::127.0.0.1 is not loopback, and a v6-only stack reaches no mapped address.
+# v4_in_v6 HOST: HOST is an IPv6 address that holds a dotted IPv4 part (::127.0.0.1,
+# ::ffff:127.0.0.1), or whose text starts with ffff: once its leading zeros and colons are dropped:
+# the IPv4-mapped form in any spelling (::ffff:7f00:1, 0:0::ffff:7f00:1, 0000:…:ffff:7f00:0001).
+# Each names another host than its IPv4 address does: ::127.0.0.1 is not loopback, and a v6-only
+# stack (OpenBSD, or Linux with bindv6only=1) reaches no mapped address, so the target would read
+# unreachable while its IPv4 address answers.
 v4_in_v6() {
-  case $1 in
-    *:*.* | ::[fF][fF][fF][fF]:* | 0:0:0:0:0:[fF][fF][fF][fF]:*) return 0 ;;
-  esac
+  local rest=$1
+  case $rest in *:*.*) return 0 ;; esac
+  while :; do
+    case $rest in [0:]*) rest=${rest#?} ;; *) break ;; esac
+  done
+  case $rest in [fF][fF][fF][fF]:*) return 0 ;; esac
   return 1
 }
 
@@ -338,6 +348,11 @@ esac
 # is the origin itself, the positive control.
 targets=$OUTSIDE_PATH_TARGETS
 bom=$'\xef\xbb\xbf'
+# The bytes `read` does not split on that would still end a line for a reader: every control
+# character but tab (and LF, which `read` splits on), each named rather than given as a range, since
+# bash 3.2 in a UTF-8 locale orders a bracket range by collation; and the Unicode line breaks.
+control=$'[\001\002\003\004\005\006\007\010\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037\177]'
+nel=$'\xc2\x85' line_sep=$'\xe2\x80\xa8' para_sep=$'\xe2\x80\xa9'
 # `read -d ''` stops at a NUL byte and succeeds only when it found one. bash 3.2 cuts a line at a
 # NUL and bash 5 drops it, so either would probe another line than the one written.
 if IFS= read -r -d '' _ <"$targets" 2>/dev/null; then
@@ -362,12 +377,14 @@ while [ -n "$rest" ]; do
   number=$((number + 1))
   row=${line#L}
   [ "$number" -gt 1 ] || row=${row#"$bom"}
-  # The trailing CR of a CRLF line goes first. A CR left inside the row means the file's lines end
-  # in CR alone, which `read` takes as one line, so an inline comment would cut away every later
-  # target: such a file is refused before any comment is cut.
+  # The trailing CR of a CRLF line goes first. Any control character left in the row, or a Unicode
+  # line break, means the file holds a line break `read` does not split on, which puts the next
+  # target on this row, where an inline comment would cut it away: such a file is refused before
+  # any comment is cut.
   row=${row%$'\r'}
-  case $row in *$'\r'*)
-    unknown "line $number of $targets holds a carriage return inside it: write one target per line, with LF or CRLF line endings"
+  # shellcheck disable=SC2254 # $control is a bracket expression on purpose, so it stays unquoted
+  case $row in *$control* | *"$nel"* | *"$line_sep"* | *"$para_sep"*)
+    unknown "line $number of $targets holds a control character or a line break other than LF inside it: write one target per line, with LF or CRLF line endings"
     ;;
   esac
   row=${row%%#*}

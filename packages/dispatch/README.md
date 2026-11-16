@@ -633,14 +633,17 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
 - `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
   listeners, the secrets broker, the other Dispatch origin), ending in LF or CRLF. `#` starts a
   comment. `host` is a name or a literal address; an IPv4 address must be four numbers of 0 to
-  255 with no leading zero (curl reads `172.020.000.021` in octal, another host), an IPv6 address
-  must hold no IPv4 one (`::ffff:10.0.0.1` is refused: write `10.0.0.1`), and a `svc:` selector,
-  which resolves nowhere, is refused. **The list must hold each of our services' addresses on the
-  path as lines of their own, not names alone**: a name line proves only where that name resolves
-  on the person's device, so a name that resolves elsewhere there says nothing of the address
-  behind it. A list of names alone prints a warning. A list holding a NUL byte, or a line holding
-  a carriage return inside it (a file whose lines end in CR alone), is refused, since bash would
-  read another line than the one written.
+  255 with no leading zero (curl reads `172.020.000.021` in octal, another host); an IPv6 address
+  must hold no dotted IPv4 part and must not be IPv4-mapped however it is written: its text must
+  not start with `ffff:` once its leading zeros and colons are dropped, as `::ffff:a00:1` and
+  `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no mapped address; and a
+  `svc:` selector, which resolves nowhere, is refused. **The list must hold each of our services'
+  addresses on the path as lines of their own, not names alone**: a name line proves only where
+  that name resolves on the person's device, so a name that resolves elsewhere there says nothing
+  of the address behind it. A list of names alone prints a warning. A list holding a NUL byte is
+  refused, and so is a line holding any control character other than tab, or a Unicode line break
+  (NEL, LS, PS): `read` splits only on LF, so the target after such a break would land in the
+  line's comment and be lost.
 
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
