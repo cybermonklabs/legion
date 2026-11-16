@@ -38,17 +38,18 @@ const (
 	// recorded; write_suggestions rows that cannot be written in a second are only logged, and a
 	// related_checks row is retried once (relatedRecordRetryTimeout).
 	relatedRecordTimeout = time.Second
-	// relatedRecordRetryTimeout bounds the one retry of a related_checks row the first attempt
-	// could not write in relatedRecordTimeout. The insert locks every table its foreign keys name
-	// (asks, artifacts, issues), so a migration's ACCESS EXCLUSIVE lock on one of them holds it
-	// up - just when the check, held up by the same lock, ran out of time and is the one the
+	// relatedRecordRetryTimeout bounds the one retry of a record the first attempt could not
+	// write in its second (retryRecord): a related_checks row, or a near_copy_checks row written
+	// after its create's commit. Each insert locks every table its foreign keys name (asks,
+	// artifacts, issues; projects), so a migration's ACCESS EXCLUSIVE lock on one of them holds
+	// it up - just when the check, held up by the same lock, ran out of time and is the one the
 	// records exist to count. Thirty seconds is well past the five a migration waits for a lock
 	// (pgmigrate.LockTimeout), and the retry runs in the background, so no write waits on it.
 	relatedRecordRetryTimeout = 30 * time.Second
-	// relatedRecordRetryLimit is the most related_checks retries that run at once. Each holds, or
-	// waits for, a connection of the shared pool for up to relatedRecordRetryTimeout, and a lock
-	// that holds up the first attempts holds up every check's: without a bound, those retries
-	// alone could take every connection the requests need.
+	// relatedRecordRetryLimit is the most record retries that run at once, of both kinds. Each
+	// holds, or waits for, a connection of the shared pool for up to relatedRecordRetryTimeout,
+	// and a lock that holds up the first attempts holds up every check's: without a bound, those
+	// retries alone could take every connection the requests need.
 	relatedRecordRetryLimit = 4
 	// suggestionRelatedCount is "the three items most like what was just filed" (LEGION-550's spec).
 	suggestionRelatedCount = 3
@@ -1031,15 +1032,9 @@ const relatedCheckInsert = `
 // write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
 // so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
 //
-// related_checks rows the first attempt could not write for a reason a retry can cure
-// (relatedRecordRetryable) are tried once more in the background, on the server's lifetime
-// bounded by relatedRecordRetryTimeout, and waitBackground waits them out. At most
-// relatedRecordRetryLimit retries run at once, each holding or waiting on a connection of the
-// shared pool; past them the rows are dropped and logged, so a lock that holds up every check's
-// records cannot take the pool from the requests. Each row's id is chosen here and the insert does
-// nothing where it exists, since the first attempt's statement may still land after its context
-// gave up on it: pgx cancels a statement whose context ends only by a cancel request it sends
-// afterwards, and a lock released before that request arrives lets the statement run.
+// related_checks rows the first attempt could not write are tried once more in the background
+// (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
+// the first attempt's statement may still land after its context gave up on it.
 func (s *server) recordRelatedChecks(ctx context.Context, rows ...relatedCheckRecord) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relatedRecordTimeout)
 	defer cancel()
@@ -1070,22 +1065,40 @@ func (s *server) recordRelatedChecks(ctx context.Context, rows ...relatedCheckRe
 	if err == nil {
 		return
 	}
+	s.retryRecord(err, func(ctx context.Context) error { return s.insertRelatedChecks(ctx, inserts) },
+		"dispatch: related-item check not recorded", "rows", len(inserts))
+}
+
+// retryRecord tries a record's write once more in the background, when its first attempt failed
+// with err for a reason a retry can cure (relatedRecordRetryable): a related_checks row
+// (recordRelatedChecks) or a near_copy_checks row written after its create's commit
+// (recordNearCopyCheck). The retry runs on the server's lifetime bounded by
+// relatedRecordRetryTimeout, and waitBackground waits it out. At most relatedRecordRetryLimit
+// retries of either record run at once, each holding or waiting on a connection of the shared
+// pool; past them the record is dropped and logged under message with attrs, as it is when err is
+// one a retry cannot cure or the retry fails too, so a lock that holds up every record cannot take
+// the pool from the requests.
+//
+// write must be one that can run twice: pgx cancels a statement whose context ends only by a
+// cancel request it sends afterwards, and a lock released before that request arrives lets the
+// first attempt's statement land after all.
+func (s *server) retryRecord(err error, write func(context.Context) error, message string, attrs ...any) {
+	logged := func(err error) []any { return append(slices.Clip(attrs), "error", err) }
 	if !relatedRecordRetryable(err) {
-		slog.Warn("dispatch: related-item check not recorded", "rows", len(inserts), "error", err)
+		slog.Warn(message, logged(err)...)
 		return
 	}
 	if s.relatedRecordRetrying.Add(1) > relatedRecordRetryLimit {
 		s.relatedRecordRetrying.Add(-1)
-		slog.Warn("dispatch: related-item check not recorded: too many records are already being retried",
-			"rows", len(inserts), "error", err)
+		slog.Warn(message+": too many records are already being retried", logged(err)...)
 		return
 	}
 	s.detached.goDetached(func() {
 		defer s.relatedRecordRetrying.Add(-1)
 		ctx, cancel := context.WithTimeout(s.lifetime, relatedRecordRetryTimeout)
 		defer cancel()
-		if err := s.insertRelatedChecks(ctx, inserts); err != nil {
-			slog.Warn("dispatch: related-item check not recorded", "rows", len(inserts), "error", err)
+		if err := write(ctx); err != nil {
+			slog.Warn(message, logged(err)...)
 		}
 	})
 }

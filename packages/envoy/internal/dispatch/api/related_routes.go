@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -276,24 +275,12 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 		}
 		report.SourceKind = &kind
 	}
-	for _, bound := range []struct {
-		name   string
-		target **time.Time
-	}{{"from", &report.From}, {"to", &report.To}} {
-		if strings.TrimSpace(query.Get(bound.name)) == "" {
-			continue
-		}
-		parsed, err := parseOptionalRFC3339(query, bound.name, time.Time{})
-		if err != nil {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
-			return
-		}
-		*bound.target = &parsed
-	}
-	if report.From != nil && report.To != nil && !report.From.Before(*report.To) {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "from must be before to")
+	from, to, err := parseOptionalWindow(query)
+	if err != nil {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
+	report.From, report.To = from, to
 
 	keyword, total := &report.KeywordMS, &report.TotalMS
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksReportQuery,
