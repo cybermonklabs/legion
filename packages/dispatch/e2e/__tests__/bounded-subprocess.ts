@@ -513,21 +513,25 @@ const passwordKey = secretKeys
  *  text or after a character no key holds, which is anything but a letter, a digit, `_` or `%`:
  *  after whitespace, `?` or `&` where libpq or a shell reads it, after `=` or a quote where a
  *  variable, a flag or JSON holds the connection string, and after `-`, as in `--password=x`. A
- *  key also stands right after a short option, `-` and one letter at the start of a word, where
- *  a word starts the text or follows whitespace, a quote or a backslash: psql reads
- *  `-d<conninfo>`, so `-dpassword=x` and `-dsslpassword=x host=h` hide, and `-ePGPASSWORD=x`
- *  hides alike. Whitespace may stand on either side of a secret key's `=`, as libpq reads
- *  `password = sekrit`, and it is kept as written. The value starts after that whitespace and
- *  runs to the next whitespace, `&`, quote or backslash, or, where it opens with `'`, as libpq
- *  and a shell quote a value holding a space, to the `'` that closes it. An empty value, as in
- *  `password=`, `password=&dbname=d`, `password=''` or `PGPASSWORD=`, holds no password and is
- *  left as it is. No other key is hidden, as a key is read whole and `_` is a character a key
- *  holds: `dbname=mine`, `passwords=x`, `mypassword=x`, `sslpasswords=x`, `mysslpassword=x`,
- *  `my_oauth_client_secret=x`, `scram_client_keys=x`, `-dbname=x`, `-dmydb` and `-dpasswords=x`
- *  stay, but in `password= dbname=mine` libpq reads `dbname=mine` as the password, and it is
- *  hidden. */
+ *  key also stands right after short options, `-` and one or more option letters, as psql groups
+ *  them (`-XAtqwd<conninfo>`), at the start of a word, where a word starts the text or follows
+ *  whitespace, a quote or a backslash. A digit counts as an option letter, since psql groups its
+ *  `-1` the same way (`-1Xd<conninfo>`). psql reads `-d<conninfo>`, so `-dpassword=x`,
+ *  `-Xdpassword=x`, `-1dpassword=x` and `-dsslpassword=x host=h` hide, and `-ePGPASSWORD=x` and
+ *  `-XdPGPASSWORD=x` hide alike. After `-`, any run of letters reads as options, so a longer key
+ *  that ends in a secret key is hidden too, as `-dmypassword=x` is, while `mypassword=x`, with no
+ *  `-` before it, stays as written. Whitespace may stand on either side of a secret key's `=`, as
+ *  libpq reads `password = sekrit`, and it is kept as written. The value starts after that
+ *  whitespace and runs to the next whitespace, `&`, quote or backslash, or, where it opens with
+ *  `'`, as libpq and a shell quote a value holding a space, to the `'` that closes it. An empty
+ *  value, as in `password=`, `password=&dbname=d`, `password=''` or `PGPASSWORD=`, holds no
+ *  password and is left as it is. No other key is hidden, as a key is read whole and `_` is a
+ *  character a key holds: `dbname=mine`, `passwords=x`, `mypassword=x`, `sslpasswords=x`,
+ *  `mysslpassword=x`, `my_oauth_client_secret=x`, `scram_client_keys=x`, `-dbname=x`,
+ *  `-Xdbname=x`, `-dmydb` and `-dpasswords=x` stay, but in `password= dbname=mine` libpq reads
+ *  `dbname=mine` as the password, and it is hidden. */
 const passwordParameter = new RegExp(
-  String.raw`(?:(?<![\w%])|(?<=(?:^|[\s"'\\])-[a-z]))` +
+  String.raw`(?:(?<![\w%])|(?<=(?:^|[\s"'\\])-[a-z0-9]+))` +
     String.raw`(pgpassword=|(?:${passwordKey})\s*=\s*)` +
     String.raw`(?:'(?:[^'\\]|\\[\s\S])+'?|[^\s&"'\\]+)`,
   "gi"

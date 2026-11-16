@@ -287,12 +287,29 @@ test("a child's name hides each password libpq reads and keeps the rest", () => 
       "-dsslpassword=*** host=127.0.0.1",
     ],
     "a PGPASSWORD assignment glued to a short option": ["-ePGPASSWORD=sekrit", "-ePGPASSWORD=***"],
+    "the keyword form after two grouped short options": ["-Xdpassword=sekrit", "-Xdpassword=***"],
+    "the keyword form after the short options psql groups": [
+      "-XAtqwdpassword=sekrit",
+      "-XAtqwdpassword=***",
+    ],
+    "a PGPASSWORD assignment after grouped short options": [
+      "-XdPGPASSWORD=sekrit",
+      "-XdPGPASSWORD=***",
+    ],
+    // psql's `-1` is an option too, and groups with `-d` as a letter does.
+    "the keyword form after psql's -1 grouped with -d": ["-1dpassword=sekrit", "-1dpassword=***"],
+    // Over-masked on purpose: after `-`, any run of letters reads as options, so a longer key that
+    // ends in a secret key is hidden too.
+    "a longer key that ends in a secret key, after a short option": [
+      "-dmypassword=x",
+      "-dmypassword=***",
+    ],
     // A key after `-` stands after a character no key holds, so a long option hides as the
     // keyword form does.
     "the keyword form as a long option": ["--password=sekrit", "--password=***"],
     "short options that hold no secret key": [
-      "-dbname=x -dmydb -dpasswords=x",
-      "-dbname=x -dmydb -dpasswords=x",
+      "-dbname=x -dmydb -dpasswords=x -Xdbname=x",
+      "-dbname=x -dmydb -dpasswords=x -Xdbname=x",
     ],
   };
   expect(
