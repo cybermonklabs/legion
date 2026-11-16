@@ -7,12 +7,15 @@ body: |-
   controller's. Each other session stops: an idle one at once, and one in a turn when that turn
   ends. Its conversation is kept, and its pod is kept from the idle release, the unowned-pod
   release and an update round until a session of it runs again. Every task, notice, start and wake
-  that arrives meanwhile waits in the outbox, and the resume lets each held launch out through the
-  wake pacing, once for each session. The pause holds across a restart. `legion state` and the
-  state route show the pause and the last pause, and the daemon logs each pause, stop, resume and
-  released row. A daemon under `runtime: tmux`, with `idle_minutes: 0` or with
-  `worker_wakes_per_minute: 0` refuses a pause with `PAUSE_UNAVAILABLE`, and
-  `legion start --check-config` prints `pause unavailable: <setting>`. While paused, the operations
-  that would start a turn of another session answer `PROJECT_PAUSED`. The daemon API contract is
-  153. Before a rollback to an earlier release, resume the project and run the three statements of
-  the migration `20261115194357_project_pause.up.sql` (docs/kubernetes.md, "Pausing a project").
+  that arrives meanwhile waits: in the outbox, or with its claim for a task that a claim already
+  holds. The resume lets each held launch out through the wake pacing, once for each session. The
+  pause holds across a restart. `legion state` and the state route show the pause and the last
+  pause, and the daemon logs each pause, stop, resume and released row. A daemon under
+  `runtime: tmux`, with `idle_minutes: 0` or with `worker_wakes_per_minute: 0` refuses a pause with
+  `PAUSE_UNAVAILABLE`, and `legion start --check-config` prints `pause unavailable: <setting>`.
+  While paused, the operations that would start a turn of another session answer `PROJECT_PAUSED`.
+  The daemon API contract is 153. Before a rollback to an earlier release, do three things in this
+  order (docs/kubernetes.md, "Rolling back the project pause"). Resume the project. Resume one role
+  of each pod that a pause still holds, because an earlier release reads no hold and deletes a held
+  pod in which no role is live, with its unpushed work. Then, with the daemon stopped, run the
+  three statements of the migration `20261115194357_project_pause.up.sql`.

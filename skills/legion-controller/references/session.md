@@ -64,7 +64,7 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   and Envoy keeps the message itself for at most one hour.
 - `read_state` with no field prints one line on the pause. While the project is paused it is
   `paused: pause <id> since <time> by <who>: <reason>; waits on <n> roles — <ISSUE> <role>, …;
-  holds <n> rows`: the roles are those whose turn the pause still waits on, and the rows are the
+  holds <n> rows`: the roles are those whose stop the pause still waits on, and the rows are the
   tasks, notices and starts it holds. Once a pause has ended it is `last pause: pause <id> since
   <time> by <who>: <reason>; ended <time> by <who>`. `<who>` is `the controller (session <id>)` or
   `the operator`. No filter of `read_state` returns more of the pause than that line.

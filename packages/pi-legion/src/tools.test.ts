@@ -105,8 +105,6 @@ function recordingDaemon(options: {
     "compact",
     "handoffComplete",
     "releaseRecords",
-    "projectPause",
-    "projectResume",
   ];
   const daemon = {
     grant: async (input: object) => {
@@ -220,7 +218,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
-  "that stands or the last one ended, admission, each " +
+  "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
@@ -1739,6 +1737,19 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
   });
 }
 
+/** The lines of `read_state`'s summary, read as the controller reads them from `daemon`. */
+async function summaryLinesOf(daemon: () => LegionDaemonClient): Promise<string[]> {
+  const result = await controllerTool(daemon, []).execute(
+    "",
+    { op: "read_state" },
+    undefined,
+    undefined,
+    context("ses_controller")
+  );
+  const [block] = result.content;
+  return (block !== undefined && block.type === "text" ? block.text : "").split("\n");
+}
+
 test("the controller reads the state without a grant and sets an issue's status with its own", async () => {
   const state = legionState({
     admission: { cap: 2, free: 0, active: ["LEGION-208"], waiting: [], blocked: [] },
@@ -2059,21 +2070,10 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 // runs after a pause, naming that pause and when and by whom it was ended; and neither before
 // the project's first pause. The two states are the daemon's goldens, read through the client.
 test("read_state's summary prints the pause's line while the project is paused and the last pause's line while it runs", async () => {
-  const summaryOf = async (daemon: () => LegionDaemonClient): Promise<string[]> => {
-    const result = await controllerTool(daemon, []).execute(
-      "",
-      { op: "read_state" },
-      undefined,
-      undefined,
-      context("ses_controller")
-    );
-    const [block] = result.content;
-    return (block !== undefined && block.type === "text" ? block.text : "").split("\n");
-  };
   const pauseLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("paused: ") || line.startsWith("last pause: "));
 
-  const paused = await summaryOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  const paused = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
   const pausedLine =
     "paused: pause 7 since 2026-09-22T09:09:00Z by the controller (session ses_controller): " +
     "the model provider is refusing every turn; waits on 1 role — LEGION-208 implementer; " +
@@ -2086,7 +2086,7 @@ test("read_state's summary prints the pause's line while the project is paused a
   expect(paused[2]).toBe(pausedLine);
   expect(paused[3]).toStartWith("admission cap ");
 
-  const running = await summaryOf(
+  const running = await summaryLinesOf(
     goldenDaemon({ "/legion/v1/state": "state-last-pause.json" }).daemon
   );
   expect(pauseLines(running)).toEqual([
@@ -2095,7 +2095,8 @@ test("read_state's summary prints the pause's line while the project is paused a
       "ended 2026-11-15T09:41:30Z by the controller (session ses_controller)",
   ]);
 
-  expect(pauseLines(await summaryOf(recordingDaemon({ state: legionState() }).daemon))).toEqual([]);
+  const unpaused = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
+  expect(pauseLines(unpaused)).toEqual([]);
 
   // A pause every role has stopped for, with nothing held yet, and one that waits on two roles
   // and holds one row.
@@ -2106,7 +2107,7 @@ test("read_state's summary prints the pause's line while the project is paused a
     reason: "a provider outage",
   };
   const settled = legionState({ paused: { ...pause, waitsOn: [], held: [] } });
-  expect(pauseLines(await summaryOf(recordingDaemon({ state: settled }).daemon))).toEqual([
+  expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: settled }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
       "waits on no role; holds no row",
   ]);
@@ -2130,10 +2131,84 @@ test("read_state's summary prints the pause's line while the project is paused a
       held: [{ id: 41, kind: "notice", issue: "INFRA-100", waitedSeconds: 30 }],
     },
   });
-  expect(pauseLines(await summaryOf(recordingDaemon({ state: waiting }).daemon))).toEqual([
+  expect(pauseLines(await summaryLinesOf(recordingDaemon({ state: waiting }).daemon))).toEqual([
     "paused: pause 9 since 2026-11-16T08:00:00Z by the operator: a provider outage; " +
       "waits on 2 roles — INFRA-100 architect, INFRA-101 tester; holds 1 row",
   ]);
+});
+
+// What the controller reads of the wake pacing in `read_state` with no field: one line after the
+// admission lines, with how many wakes the pacing holds until their turn and when the earliest
+// of them is due. The controller's skill has it read that line before it publishes to more than
+// one role topic (`skills/legion-controller/SKILL.md`, "Trees waiting on a root claim") and
+// after a resume (`references/wakes.md`, `project-resumed`), so a summary without it leaves both
+// steps with nothing to read.
+test("read_state's summary counts the wakes the pacing holds and says when the earliest is due", async () => {
+  const wakesLines = (lines: readonly string[]) =>
+    lines.filter((line) => line.startsWith("wakes waiting"));
+
+  // A state without the key says nothing of what waits, so the summary has no such line: the
+  // daemon leaves the key off the state it serves a caller it reads as below the contract that
+  // added the key (`LegionStateResponse`).
+  const unsaid = await summaryLinesOf(recordingDaemon({ state: legionState() }).daemon);
+  expect(wakesLines(unsaid)).toEqual([]);
+
+  // Outside a wave the list is empty, and the line says so and names no moment.
+  const none = legionState({ wakesWaiting: [] });
+  expect(wakesLines(await summaryLinesOf(recordingDaemon({ state: none }).daemon))).toEqual([
+    "wakes waiting 0",
+  ]);
+
+  // The daemon lists the wakes in claim order, so the earliest is not the first. It is the
+  // earliest as a time: read as text, the half second after it would sort before it.
+  const wave = legionState({
+    admission: {
+      cap: 8,
+      free: 0,
+      active: ["INFRA-100", "INFRA-101"],
+      waiting: ["INFRA-102"],
+      blocked: [{ issue: "INFRA-102", blockedBy: ["INFRA-103"] }],
+    },
+    capabilities: [{ name: "subagents", status: "present", detail: "6 agents discovered" }],
+    wakesWaiting: [
+      {
+        claim: "legion-infra-infra-100-architect",
+        issue: "INFRA-100",
+        role: "architect",
+        kind: "catch-up",
+        dueAt: "2026-11-16T08:00:23Z",
+      },
+      {
+        claim: "legion-infra-infra-100-implementer",
+        issue: "INFRA-100",
+        role: "implementer",
+        kind: "launch",
+        dueAt: "2026-11-16T08:00:08.5Z",
+      },
+      {
+        claim: "legion-infra-infra-101-tester",
+        issue: "INFRA-101",
+        role: "tester",
+        kind: "plugin-refresh",
+        dueAt: "2026-11-16T08:00:08Z",
+      },
+    ],
+  });
+  const waiting = await summaryLinesOf(recordingDaemon({ state: wave }).daemon);
+  const waitingLine = "wakes waiting 3 next 2026-11-16T08:00:08Z";
+  expect(wakesLines(waiting)).toEqual([waitingLine]);
+  // The legend says what the line is, and the line stands between the last admission line and
+  // the first capability.
+  expect(waiting[0]).toContain(
+    "wakes waiting <count> [next <earliest due time>], the wakes the daemon's pacing holds until their turn, 0 outside a wave; "
+  );
+  const at = waiting.indexOf(waitingLine);
+  expect(waiting[at - 1]).toBe("blocked INFRA-102 on INFRA-103");
+  expect(waiting[at + 1]).toBe("capability subagents present");
+
+  // The daemon's own golden, read through the client: three wakes, the first of them the earliest.
+  const golden = await summaryLinesOf(goldenDaemon({ "/legion/v1/state": "state.json" }).daemon);
+  expect(wakesLines(golden)).toEqual(["wakes waiting 3 next 2026-09-22T09:17:56Z"]);
 });
 
 test("read_state's filters answer full records, and name what they cannot select", async () => {

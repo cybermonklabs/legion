@@ -108,14 +108,23 @@ type PauseActor = NonNullable<LegionState["lastPause"]>["by"];
 const pauseActorWords = (by: PauseActor): string =>
   by.kind === "controller" ? `the controller (session ${by.session})` : "the operator";
 
+/** A pause as the summary's line names it: its id, since when, who paused and why (`pauseWords`
+ * in `packages/daemon/cmd/legion/project.go`). */
+const pauseWords = (
+  pause: Pick<NonNullable<LegionState["lastPause"]>, "id" | "since" | "by" | "reason">
+): string =>
+  `pause ${pause.id} since ${pause.since} by ${pauseActorWords(pause.by)}: ${pause.reason}`;
+
 /**
  * The summary's line on the project's pause, in the words `legion state` prints for an operator
  * (`pausedSummary` and `lastPauseSummary` in `packages/daemon/cmd/legion/project.go`), so the
- * controller and an operator read one wording. While the project is paused: the pause, since
- * when, by whom and why, the roles whose stop it still waits on, each by issue and role, and how
- * many rows it holds, which `legion state` leaves to its JSON. While the project runs after a
- * pause has ended: that pause, then when and by whom it was ended. The state carries one of the
- * two at most, and neither before the project's first pause, when the summary has no such line.
+ * controller and an operator read the same words. The times are not the same text: `legion
+ * state` prints each at whole seconds, and this line prints the daemon's own string. While the
+ * project is paused: the pause, since when, by whom and why, the roles whose stop it still waits
+ * on, each by issue and role, and how many rows it holds, which `legion state` leaves to its
+ * JSON. While the project runs after a pause has ended: that pause, then when and by whom it was
+ * ended. The state carries one of the two at most, and neither before the project's first pause,
+ * when the summary has no such line.
  */
 function pauseSummary(state: LegionState): string | undefined {
   const { paused, lastPause } = state;
@@ -127,19 +136,40 @@ function pauseSummary(state: LegionState): string | undefined {
         : `${roles.length} ${roles.length === 1 ? "role" : "roles"} — ${roles.join(", ")}`;
     const rows = paused.held.length;
     const holds = rows === 0 ? "no row" : `${rows} ${rows === 1 ? "row" : "rows"}`;
-    return (
-      `paused: pause ${paused.id} since ${paused.since} by ${pauseActorWords(paused.by)}: ` +
-      `${paused.reason}; waits on ${waitsOn}; holds ${holds}`
-    );
+    return `paused: ${pauseWords(paused)}; waits on ${waitsOn}; holds ${holds}`;
   }
   if (lastPause !== undefined) {
     return (
-      `last pause: pause ${lastPause.id} since ${lastPause.since} by ` +
-      `${pauseActorWords(lastPause.by)}: ${lastPause.reason}; ` +
+      `last pause: ${pauseWords(lastPause)}; ` +
       `ended ${lastPause.endedAt} by ${pauseActorWords(lastPause.endedBy)}`
     );
   }
   return undefined;
+}
+
+/**
+ * The summary's line on the wakes the daemon's pacing holds until their turn
+ * (`wakesWaiting`): how many, and after `next` the earliest moment any of them is due, which is
+ * when the pacing lets the next one out. The state lists them in claim order, so the earliest is
+ * searched for; it is compared as a time and printed as the daemon wrote it. `wakes waiting 0` is
+ * a state outside every wave. A state that carries no such key has no such line, because it says
+ * nothing of what waits, where a 0 would say that nothing does: the daemon leaves the key off the
+ * state it serves a caller it reads as below the contract that added the key (`api.stateFor`,
+ * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are).
+ */
+function wakesWaitingSummary(state: LegionState): string | undefined {
+  const wakes = state.wakesWaiting;
+  if (wakes === undefined) return undefined;
+  let next: string | undefined;
+  let nextAt = Number.POSITIVE_INFINITY;
+  for (const wake of wakes) {
+    const dueAt = Date.parse(wake.dueAt);
+    if (dueAt < nextAt) {
+      nextAt = dueAt;
+      next = wake.dueAt;
+    }
+  }
+  return `wakes waiting ${wakes.length}${next === undefined ? "" : ` next ${next}`}`;
 }
 
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
@@ -147,7 +177,8 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/blocked; " +
+  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
@@ -156,8 +187,9 @@ const SUMMARY_LEGEND =
 
 /**
  * The whole state as the controller reads it between its filtered reads: the project, its pause
- * or its last pause, the admission lists, each capability's status, one line per recorded issue,
- * and under each issue Legion still runs its slot, its hold, its gate and its claims.
+ * or its last pause, the admission lists, the wakes the pacing holds, each capability's status,
+ * one line per recorded issue, and under each issue Legion still runs its slot, its hold, its
+ * gate and its claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -181,6 +213,8 @@ function stateSummary(state: LegionState): string {
   for (const blocked of admission.blocked) {
     lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy.join(" ")}`);
   }
+  const wakesWaiting = wakesWaitingSummary(state);
+  if (wakesWaiting !== undefined) lines.push(wakesWaiting);
   for (const capability of state.capabilities) {
     // A row that is not `present` is one someone acts on, so it keeps the fact its check found
     // and the legion.yaml line that would record a decision; no filter answers for capabilities.
@@ -340,8 +374,7 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
  * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state`, `set_status`, the two claim recoveries and the project's
- * `pause` and `resume` belong to the controller. */
+ * first (`handoffReport`); the operations of `OPERATIONS.controller` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -417,7 +450,7 @@ export function createLegionTool(deps: {
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
-        "that stands or the last one ended, admission, each " +
+        "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
         "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +

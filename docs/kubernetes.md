@@ -5326,7 +5326,7 @@ Four gates hold the project's work:
 **What still runs.**
 The pause never stops the controller, and it holds none of the controller's tasks, notices or ticks: the controller is the session that resumes the project and answers people meanwhile.
 Under `controller: operator` the daemon holds no controller claim, so nothing of this changes there.
-Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), a write to Dispatch (a status, a message, a comment), and each row of another project on the same database.
+Every outbox row outside the list above runs as before: a stop (a `supervise` row of any other op, `issue_suspend`, `issue_release`), a write to Dispatch (a status, a message, the published gate steps), every other row the list does not name, and each row of another project on the same database.
 The workflow still records what happens.
 A handoff, a review, a CI result or a merge moves its issue's phase as it does while the project runs, and the start that the move writes waits with the other held rows.
 `legion claims suspend`, `legion claims stop`, `legion status` and the controller's `set_status` still work, because none of them starts a turn.
@@ -5420,6 +5420,7 @@ Each held row runs, and the first row to run for a role launches it with a token
 The role's other held rows find it launching or live and are delivered to it.
 So a resume launches each session that the pause held something for once, and never all of them at once.
 `wakesWaiting` on `GET /legion/v1/state` lists the launches that still wait in the pacing.
+`legion state` prints them as its `wakes waiting:` line, and the summary of the controller's `read_state` counts them in its `wakes waiting <n>` line, with the moment the next one is due.
 Every other session that the pause stopped stays stopped until its next wake, which launches it in its own pod.
 The admission pass promotes issues again, and each launch that it causes takes the same pacing.
 
@@ -5428,13 +5429,16 @@ A woken role's stuck clock (`pod_resumes.clock_at`) starts when the pacing lets 
 The stuck warning and the stranded-claim report read that clock, and both pass over a project that is paused.
 A wake that a pause held is marked with its pause (`pod_resumes.pause_id`).
 `read_release_records` counts such a wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
+A held wake names no release.
+Where its issue's pod was released before the wake, that report still ends the release at the wake, as any other wake of the pod would, in its pod-hours and in its share of releases woken within ten minutes.
 
 **What the state and the log show.**
 While the project is paused, `GET /legion/v1/state` carries `paused`: the pause's `id`, `since`, `by` and `reason`, then `waitsOn`, each claim whose stop the pause still waits on, and `held`, each row that the pause holds, with its kind, its issue, its claim where the row names one, and the seconds it has waited.
 While the project runs after a pause has ended, the state carries `lastPause` instead, the last pause with its `endedAt` and `endedBy`.
 `legion state` prints one line for each: `paused: pause <id> since <time> by <who>: <reason>; waits on <n> roles — <ISSUE> <role>, …`, which ends `waits on no role` where the pause waits on none, and `last pause: pause <id> since <time> by <who>: <reason>; ended <time> by <who>`.
 `<who>` is `the controller (session <id>)` or `the operator`.
-The summary of the controller's `read_state` prints the same line, and adds how many rows the pause holds.
+The summary of the controller's `read_state` prints each line in the same words, and adds how many rows the pause holds.
+Its times are the daemon's own strings, where `legion state` prints each time at whole seconds.
 A caller from a pod whose plugin speaks a contract below the one that added the two keys is served the state with neither (`withoutPause`, `internal/api/server.go`).
 
 The daemon logs four messages, each with the claim it is about where it has one:
@@ -5459,19 +5463,15 @@ The daemon logs four messages, each with the claim it is about where it has one:
   There are three: `runtime: tmux`, `runtime.kubernetes.idle_release.idle_minutes: 0` and `worker_wakes_per_minute: 0`.
   The pause stops and wakes roles as the idle release does, and the resume lets the held work out through the wake pacing, so a daemon without either cannot hold a pause.
   `legion start --check-config` prints `pause unavailable: <setting>` for such a file, and still exits 0.
-  A daemon that runs no workflow, because its `legion.yaml` names no `dispatch_url`, answers the same code with no setting.
-  A resume is never refused for the configuration.
+  A daemon that runs no workflow, because its `legion.yaml` names no `dispatch_url`, answers both a pause and a resume with the same code and no setting (`refuseWithoutPause`, `internal/api/pause.go`).
+  On every other daemon, a resume is never refused for the configuration.
 
 - While the project is paused, an operation that would start a turn of a role other than the controller answers 409 `PROJECT_PAUSED`, with the pause that stands, and changes nothing.
   These are the controller's `compact` and `fresh_session`, and the operator's `legion claims resume`, `retry`, `compact`, `spawn` and `deliver`.
 
 `legion project release` (dispatch://INFRA-3583) is not in this release.
-That command reads a pod's unpushed work through a running role, and it deletes a pod in which no role runs without reading it, so it would delete each held pod unread.
-The two commands are designed to refuse each other.
-A project release answers `PROJECT_PAUSED` while the project is paused, and while a pause's hold stands on any pod, and it names the held pods (`store.Store.OpenPausePodHolds` reads them).
-A pause answers `PROJECT_RELEASING` while a project release runs.
-Whichever of the two changes merges second writes both refusals, and this release has neither, since it has no project release.
-An operator who must release a held pod then ends its hold first, by resuming one role of the pod (`legion claims resume --claim <token>`), which works once the project runs.
+It is designed to refuse while the project is paused, and while a pause's hold stands on any pod.
+An operator who must release a held pod ends its hold first, by resuming one role of the pod (`legion claims resume --claim <token>`), which works once the project runs.
 
 **A rolling restart.**
 The daemon reads the open pause at boot, before it restores any claim, and again at every outbox sweep, which runs every 30 seconds.

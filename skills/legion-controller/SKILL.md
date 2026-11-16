@@ -100,7 +100,7 @@ when the holder lets go. `dispatch read` each root in `admission.trees` whose `p
 `admitted`. When `Claimed by:` is `nobody` or ends `· not running`, `envoy_publish` `<KEY>: the
 claim is free; claim it again.` to `notifications.role.<issues.<KEY>.architect.locator.claim>`.
 
-Before you publish to more than one role topic, read whether a wave of wakes is already running, in the state `read_state` returns: `wakesWaiting`, every wake the daemon's pacing holds until its turn, which is empty at every moment outside a wave; `daemon.startedAt`, since a restart minutes old is a wave; and each claim's `updateRound`, which an open pod-update round sets. While any of the three says a wave is running, publish nothing and say so in your summary, because your wake would land on the same minute as the daemon's own.
+Before you publish to more than one role topic, read whether a wave of wakes is already running, in what `read_state` returns: the `wakes waiting <n>` line of its summary, which counts every wake the daemon's pacing holds until its turn and reads `wakes waiting 0` at every moment outside a wave; `daemon.startedAt`, since a restart minutes old is a wave; and each claim's `updateRound`, which an open pod-update round sets. While any of the three says a wave is running, publish nothing and say so in your summary, because your wake would land on the same minute as the daemon's own.
 
 ## Issues handed to Legion
 

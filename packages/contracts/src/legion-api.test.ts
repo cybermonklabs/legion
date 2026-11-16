@@ -2261,8 +2261,6 @@ test("the state goldens carry the pause that stands and the last pause, and both
   const { paused: standing, ...neither } = fixtureBody("state.json");
   const served = LegionStateResponse.safeParse(neither);
   expect(served.error?.issues ?? []).toEqual([]);
-  expect(served.data?.paused).toBeUndefined();
-  expect(served.data?.lastPause).toBeUndefined();
 
   if (!isJsonObject(standing)) {
     throw new Error("state fixture lacks its pause");

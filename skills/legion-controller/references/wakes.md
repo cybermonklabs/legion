@@ -108,7 +108,7 @@ is `{kind: "operator"}`, `pause.at` is when, and `pause.reason` is the reason th
 The daemon sends one such notice for each pause a person makes. Your own `pause` sends you none,
 because you already know of it.
 
-Read `read_state`. Its `paused:` line gives the same pause, the roles whose turn the pause still
+Read `read_state`. Its `paused:` line gives the same pause, the roles whose stop the pause still
 waits on, and how many rows it holds (`skill://legion-controller/references/session.md`). While
 that line stands, the daemon admits no issue, and it starts no session and gives none a task,
 except you. That is the pause at work, and no stall to act on: restart nothing and re-admit
@@ -127,10 +127,11 @@ notice carries no reason. The daemon sends one such notice for each resume a per
 your own `resume` sends you none.
 
 Read `read_state`. It has no `paused:` line now, its `last pause:` line gives that pause with who
-ended it and when, and `wakesWaiting` lists the launches that the daemon's wake pacing still
-holds. Each session the pause held work for starts once, at that pacing, and every other session
-the pause stopped stays stopped until its next wake. Start none of them yourself. The resume's
-launches are a wave, so while `wakesWaiting` lists any, publish to role topics only as
+ended it and when, and its `wakes waiting <n>` line counts the launches that the daemon's wake
+pacing still holds, with the moment the next one is due after `next`. Each session the pause held
+work for starts once, at that pacing, and every other session the pause stopped stays stopped
+until its next wake. Start none of them yourself. The resume's launches are a wave, so until that
+line reads `wakes waiting 0`, publish to role topics only as
 [Trees waiting on a root claim](skill://legion-controller/SKILL.md#trees-waiting-on-a-root-claim)
 allows.
 
@@ -438,8 +439,9 @@ the process has not started, either its write was refused and the daemon retries
 interval, or the daemon's own shutdown cut the launch short and the daemon's next start takes it up;
 and where every try at that
 launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
-second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
-is what says whether that launch is still waiting its turn.
+second notice follows it: where it names a parked launch, the `wakes waiting <n>` line of
+`read_state`'s summary counts the launches still waiting their turn, that one among them until it
+runs.
 
 The notice says what became of the stalled process itself, for every end: that the daemon made no
 stop of it and the claim records it still, which is the parked end; that it was stopped; or that
