@@ -1972,7 +1972,7 @@ A `design_changes` row that this release queued waits in the outbox under the ea
 The earlier release decodes each outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`), and it does not know two members that this release adds to a payload.
 It refuses on every attempt a `supervise` row that carries `news`, which is a news-only start.
 Such a start waits while its claim works a turn, and a merger's start waits while its design gate is closed.
-It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued.
+It also refuses on every attempt a `design_gates_publish` row that carries `holds`, which is every such row this release queued with at least one entry (an emptied set carries none).
 Its `RoleRuns` decodes each queued supervise row of the role and generation it reads, so each admission pass that reads that role's run fails too.
 Its `pending_task_deliveries` upsert names only its own columns, and its `on conflict ... do update` leaves `design_news`, `carried_news` and `news_only` as this release wrote them.
 So a delivery that it writes over keeps the news of the task it replaced and the copy of that news a prompt carried (`carried_news`), and after a roll forward this release would raise that copy in `design_news_told` at that delivery's confirmation.
@@ -2002,6 +2002,20 @@ The fourth statement takes the news, and the copy of it a prompt carried, off ea
 The task's text still holds that news, and the confirmation of a delivery that carries no copy raises nothing, so this release tells that news again after the roll forward.
 A confirmed delivery's copy goes too, so the raise its confirmation made stands, as it does under the earlier release, which gives nothing back.
 The earlier release writes neither column, so after the fourth statement no row holds a copy for a roll forward to raise.
+
+**Two costs of a rollback that no statement undoes.**
+The earlier release reads only the steps the deployment gates: its `TreeGate.Open` reads the rows of `RequiredSteps` alone, and it ignores a row of a step it does not gate.
+So a tree that this release holds on a registered `criteria` row, whose new Verification version waits for a person's approval, opens on `spec` alone after the rollback: its merger starts, and its children are released.
+These trees are the ones this read names, run before the rollback:
+
+```sql
+select issue from design_gates where step = 'criteria' and approved_version is distinct from latest_version;
+```
+
+Roll back while it names a tree only when that tree may merge on its approved spec alone, or park that tree's root first.
+This release also deletes the `design_news_told` rows of an issue when it clears the issue's generation, and the earlier release does not know that table.
+So an issue that re-enters the workflow during the rollback keeps its old generation's rows, and after the roll forward `BaselineTold` leaves an existing row as it is.
+The new generation's holders are then owed news of versions their work never stood on, and each gets one news task for them, which it reads against its work.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `outbox` and `pending_task_deliveries` are one table each for all of them, so the statements act on the rows of every project.
