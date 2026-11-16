@@ -187,7 +187,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(rig.URL).String()+"\n" || stderr != "" {
 		t.Fatalf("grant revoke: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
-	if _, err := newClient(rig.URL).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, nil); err == nil {
+	if _, err := newClient(rig.URL).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, nil, releaseCall{}); err == nil {
 		t.Fatal("the box read the revoked grant's values")
 	}
 	if stdout, _, _ := grant("list"); strings.Contains(stdout, grantID) {

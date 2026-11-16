@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // mintAgainBefore is how close to its expiry a minted value may come before the proxy reads the
@@ -243,9 +244,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The three names the decision compares are ASCII lower-cased, as the entry's hosts
 		// are: host names are case-insensitive and the model compares them exactly, so a
 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
-		// is ASCII-only for the reason airlock.ASCIILower gives.
-		SNI:        airlock.ASCIILower(sniOf(r)),
-		HostHeader: airlock.ASCIILower(hostHeaderOf(r.Host)),
+		// is fold.ASCII, ASCII-only for the reason the airlock package gives.
+		SNI:        fold.ASCII(sniOf(r)),
+		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
 		Method:     r.Method,
 		Path:       r.URL.Path,
 		Headers:    headersOf(r.Header),

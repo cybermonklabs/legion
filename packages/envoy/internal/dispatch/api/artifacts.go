@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 const (
@@ -658,9 +659,11 @@ func (s *server) storeArtifact(
 	var diff *string
 	if !created && kind == "doc" {
 		// This route writes its version itself rather than through the document service, so its
-		// open approval request follows that version just as every other version write does.
+		// open approval request follows that version just as every other version write does. An
+		// upload is no settlement's version, so the request moves to its agent whatever text it
+		// stores (docs.MoveApprovalAsk).
 		movedEvents, err = docs.MoveApprovalAsk(
-			r.Context(), tx, s.deps.Events, artifact.ID, version, actor, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -1695,11 +1698,11 @@ func documentsNearest(reference string, documents []model.Artifact) []model.Arti
 // letters are folded because Go and JavaScript lowercase other letters differently, and
 // envoy-client's documentCloseness must rank alike.
 func documentCloseness(reference, slug, name string) (int, bool) {
-	wanted := []rune(asciiLower(reference))
+	wanted := []rune(fold.ASCII(reference))
 	limit := max(2, len(wanted)/3)
 	distance := -1
 	for _, candidate := range []string{slug, name} {
-		label := []rune(asciiLower(candidate))
+		label := []rune(fold.ASCII(candidate))
 		edits := boundedEditDistance(wanted, label, limit)
 		if (len(wanted) >= 4 && strings.Contains(string(label), string(wanted))) ||
 			(len(label) >= 4 && strings.Contains(string(wanted), string(label))) {
@@ -1715,16 +1718,6 @@ func documentCloseness(reference, slug, name string) (int, bool) {
 		return limit + 1, false
 	}
 	return distance, true
-}
-
-// asciiLower lowercases the ASCII letters of text and leaves every other character as it is.
-func asciiLower(text string) string {
-	return strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, text)
 }
 
 // boundedEditDistance is the Levenshtein distance between a and b in characters, or limit+1 once

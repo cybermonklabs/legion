@@ -66,14 +66,20 @@ func newConfirmedRecord(t *testing.T) *dedupe.Cache {
 // The delivery configuration a route runs a kept-lane drain on: a config over d's stores with
 // the dedupe cache and the attempt cache the drain judges a forward against (beforeForward),
 // startRoleForward(client) as the forward, a logger, a delivered counter, the drain's
-// kept-expired counter and the guards two drains of one role take (roleKeepGuards). POST
-// /v1/roles/set hands a claim's handover this config (runKeptRoleDrain), so a test that claims
-// a role through that route needs it.
+// kept-expired, dead-letter and undecodable counters, the dead letter's publish as main.go sets
+// it (client.PublishStoredAs), the guards two drains of one role take (roleKeepGuards) and the
+// listener's clock, time.Now as main.go sets it. POST /v1/roles/set hands this config to the
+// handovers it starts (runKeptRoleDrain) - a granted claim's, and one for each role of a claimant
+// it read not live before its refresh - and so does POST /v1/interests/subscribe for a
+// registration that makes its session live again while its row or the role claim copy names a
+// role for it, so a test that claims a role through the one route, or registers a role lane or a
+// session that holds a claim through the other, needs it.
 //
-// The route needs nothing of the live window here: it reads that window from d's own session
-// registry when it weighs a standing claim's renewal (roleSetHandler, through
-// session.SessionRegistry.Windows), so a test's route and its registry are held to one window
-// with nothing to keep in step by hand.
+// Neither route needs anything of the live window here: each reads that window from d's own
+// session registry, the claim route when it weighs a standing claim's renewal (roleSetHandler,
+// through session.SessionRegistry.Windows) and the registration route when it reads whether the
+// session was live (listenerDeps.registerPass), so a test's routes and its registry are held to
+// one window with nothing to keep in step by hand.
 func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 	t.Helper()
 	cache := dedupe.New(10 * time.Minute)
@@ -87,16 +93,20 @@ func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 		}
 	})
 	d.delivery = &listenerDeliveryHandlerConfig{
-		client:            d.client,
-		forwardRole:       startRoleForward(d.client),
-		registry:          d.registry,
-		sessions:          d.sessions,
-		dedupeCache:       cache,
-		attemptCache:      attempts,
-		logger:            logging.NewWithWriter("test", logs),
-		messagesDelivered: metrics.New().NewCounter("test_messages_delivered", "test"),
-		roleKeptExpired:   metrics.New().NewCounter("test_role_kept_expired", "test"),
-		roleKeepDrains:    newRoleKeepGuards(),
+		client:              d.client,
+		forwardRole:         startRoleForward(d.client),
+		registry:            d.registry,
+		sessions:            d.sessions,
+		dedupeCache:         cache,
+		attemptCache:        attempts,
+		logger:              logging.NewWithWriter("test", logs),
+		messagesDelivered:   metrics.New().NewCounter("test_messages_delivered", "test"),
+		roleKeptExpired:     metrics.New().NewCounter("test_role_kept_expired", "test"),
+		roleDeadLetters:     metrics.New().NewCounter("test_role_dead_letters", "test"),
+		roleKeptUndecodable: metrics.New().NewCounter("test_role_kept_undecodable", "test"),
+		publishDeadLetter:   d.client.PublishStoredAs,
+		roleKeepDrains:      newRoleKeepGuards(),
+		now:                 time.Now,
 	}
 	return d
 }

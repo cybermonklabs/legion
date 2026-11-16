@@ -16,10 +16,10 @@ It then tells that process's role why, in a message on the role's topic. The com
 turn goes on. A command that fills the memory faster than the guard can stop it still takes the pod
 past its limit, and that ends every role's turn, not only yours.
 
-In the pod you compile and test the packages your change touches, build the program a check of
-your issue drives (`go build ./cmd/legion`), vet the module you changed (`go vet -tags e2e ./...`,
-which compiles and runs no test), and, in a package whose tests need Postgres, run only the tests
-your change touches by name (`go test -run`). To run Go's race detector, prefix the command with
+In the pod you compile the packages your change touches, run by name the tests you added or
+changed (`go test -run '<TestName>' ./internal/<package>/`, or `bun test` with their files), build
+the program a check of your issue drives (`go build ./cmd/legion`), and vet the module you changed
+(`go vet -tags e2e ./...`, which compiles and runs no test). To run Go's race detector, prefix the command with
 `CGO_ENABLED=1`: `CGO_ENABLED=1 go test -race -count=1 -run '<TestName>' ./internal/<package>/`.
 The worker image sets `CGO_ENABLED=0` and carries gcc (both in
 `packages/daemon/docker/worker.Dockerfile`), and Go refuses `-race` without cgo.
@@ -143,8 +143,8 @@ carries the pod's own PostgreSQL server (the section above).
   `psql`, `flock`, `openssl` and `python3` on `PATH`, and without `docker` too unless a
   `DATABASE_URL` is given. The image carries `go`, `flock`, `openssl` and `python3`, a
   `DATABASE_URL` stands in for `docker`,
-  and `psql` was the one a role had no way to supply — so a role whose change owes that suite can
-  run it.
+  and `psql` was the one a role had no way to supply — so a role can run the local stack as a
+  running build, and the specs of that suite its change touches, by file.
 - `redis-cli` — no repository of the project speaks Redis today; it is carried anyway, at about a
   megabyte, because a second image roll costs more than a megabyte.
 - `sqlite3` — a repository's own SQLite fixture or database has no other way to open from a shell,

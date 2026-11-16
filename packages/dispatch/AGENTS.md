@@ -2033,8 +2033,9 @@ reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
-The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
-tests and build, beside the proof editor's, and runs no browser row.
+The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's typecheck, unit tests
+and build, beside the proof editor's typecheck and unit tests, and runs no browser row and no
+lint: Biome checks the whole tree once, in the `lint` job.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 
@@ -2691,7 +2692,12 @@ alone, and CI's `dispatch-two-builds` job runs `cross-build.multiprocess` twice,
 then the first-rollout release's, the newest release before the one that registers its schema
 numbers (`e2e/cross-build.multiprocess.e2e.ts`: each direction's page against the other build's
 server, writable or read-only as the live registry's numbers admit it, and, with both processes on
-this tree, a document holding newer content).
+this tree, a document holding newer content). The second run also sets
+`DISPATCH_E2E_FIRST_ROLLOUT_COMMIT` to the job's `FIRST_ROLLOUT_COMMIT`, which holds that run to
+the first-rollout build's commit and to a registry that reads version 0 while B is live: each
+direction fails when B's `COMMIT` is another commit or the live registry's lowest schema version
+is not 0 (`e2e/first-rollout.ts`, `firstRolloutRefusal`), and a run that sets the variable
+without `DISPATCH_E2E_BINARY_B` fails before any row starts.
 Two-process mode starts its own servers, so the Playwright config refuses it with
 `PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
 

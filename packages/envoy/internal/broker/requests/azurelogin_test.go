@@ -125,8 +125,7 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
-	entry := &airlock.SecretRule{Name: "AZURE_LOGIN", Hosts: []string{"login.example.com"}, Kind: airlock.KindAzure}
-	split, err := airlockSplitOf(entry, policy.KindAzureLogin, minted.Value)
+	split, err := airlockSplitOf(airlock.KindAzure, policy.KindAzureLogin, minted.Value)
 	if err != nil {
 		t.Fatalf("airlockSplitOf: %v", err)
 	}
@@ -150,15 +149,15 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 	}
 
 	for _, other := range []struct {
-		name  string
-		entry *airlock.SecretRule
-		kind  string
-		value string
+		name      string
+		entryKind string
+		kind      string
+		value     string
 	}{
-		{"a stored value", &airlock.SecretRule{Name: "OTHER"}, "", "a-stored-value"},
-		{"a stored AWS key pair", &airlock.SecretRule{Name: "OTHER", Kind: airlock.KindAWS}, "", `{"access_key_id":"AKIAEXAMPLE","secret_access_key":"not-a-secret"}`},
+		{"a stored value", "", "", "a-stored-value"},
+		{"a stored AWS key pair", airlock.KindAWS, "", `{"access_key_id":"AKIAEXAMPLE","secret_access_key":"not-a-secret"}`},
 	} {
-		split, err := airlockSplitOf(other.entry, other.kind, other.value)
+		split, err := airlockSplitOf(other.entryKind, other.kind, other.value)
 		if err != nil || split.azure != (AzureApplication{}) {
 			t.Errorf("%s split as %+v, %v; want no application or tenant", other.name, split.azure, err)
 		}
@@ -170,7 +169,6 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 // string is a shape refusal, released neither to the session nor to the proxy. The refusal
 // names the field and carries nothing the document holds.
 func TestAnAzureLoginThatNamesNoApplicationOrTenantIsReleasedNowhere(t *testing.T) {
-	entry := &airlock.SecretRule{Name: "AZURE_LOGIN", Hosts: []string{"login.example.com"}, Kind: airlock.KindAzure}
 	for _, row := range []struct{ name, value, field string }{
 		{"no tenant_id", `{"client_id":"the-application","federated_token":"the-federated-token"}`, "tenant_id"},
 		{"an empty tenant_id", `{"tenant_id":"","client_id":"the-application","federated_token":"the-federated-token"}`, "tenant_id"},
@@ -180,7 +178,7 @@ func TestAnAzureLoginThatNamesNoApplicationOrTenantIsReleasedNowhere(t *testing.
 		{"a client_id that is no string", `{"tenant_id":"the-tenant","client_id":["the-application"],"federated_token":"the-federated-token"}`, "client_id"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			_, err := airlockSplitOf(entry, policy.KindAzureLogin, row.value)
+			_, err := airlockSplitOf(airlock.KindAzure, policy.KindAzureLogin, row.value)
 			if !errors.Is(err, ErrAirlockValueShape) {
 				t.Fatalf("airlockSplitOf = %v; want ErrAirlockValueShape", err)
 			}

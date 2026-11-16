@@ -159,6 +159,10 @@ jobs:
       # `image` output, or from the caller's `image` input when this job skipped. $GITHUB_ENV
       # gives the steps after this one the same `${IMAGE}` they always read.
       - name: Derive the image repository
+        # The id is BUILD_PLUMBING_STEPS's key in
+        # .github/scripts/check-image-trigger-paths.sh, which pins this step as the image
+        # build's own plumbing.
+        id: image
         run: |
           # Assigned first, never `echo "IMAGE=$(…)"`: a command substitution inside echo's
           # arguments cannot fail the step, since echo exits 0 whatever the substitution did, so

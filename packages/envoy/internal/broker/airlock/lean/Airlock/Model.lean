@@ -68,7 +68,8 @@ inductive Decision where
 
 /-! ## String helpers (on `List Char`, so they are total and plain to reason about) -/
 
-/-- ASCII-only lower-casing (`Char.toLower` touches only `A`–`Z`). -/
+/-- ASCII-only lower-casing (`Char.toLower` touches only `A`–`Z`). Its Go function is
+`fold.ASCII` (`packages/envoy/internal/fold`), which `airlock.go` and the proxy port share. -/
 def lowerAscii (s : String) : String := s.map Char.toLower
 
 /-- `pat` occurs in `s` as a contiguous run. -/
