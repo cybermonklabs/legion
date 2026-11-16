@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `dispatch_request_approval` spec tells the writer of a document under The Spec to run
+  `dispatch spec-form` and to have a fresh reviewer read the document with
+  skill://spec-statement-review before the approval request.
+custom:
+    Issue: pr4210
