@@ -71,6 +71,12 @@ func (r DomainRule) DomainHint() bool {
 	return true
 }
 
+// OffersAccountChooser is false: a refusal under the domain alone keeps its plain link to
+// /auth/start.
+func (r DomainRule) OffersAccountChooser() bool {
+	return false
+}
+
 // CanRefresh is true only while stored, the account the address's row recorded, is set: a row
 // that records none (a sign-in under a group, from before the column, or any other way) has
 // nothing to check a refresh against, so the caller ends without asking Google.

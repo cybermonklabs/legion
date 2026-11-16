@@ -60,6 +60,21 @@ func TestOutsideSignInRuleAsksGoogleForNoDomainHint(t *testing.T) {
 	}
 }
 
+// Only the outside rule's refusal page offers Google's account chooser: a browser holding the one
+// Google session just refused would otherwise be sent straight back with it. A refusal under the
+// domain's people alone, or under a Cognito group, keeps its plain link.
+func TestOutsideSignInRuleAloneOffersGooglesAccountChooser(t *testing.T) {
+	for rule, want := range map[SignInRule]bool{
+		outsideRule(&stubLister{}): true,
+		workspace:                  false,
+		GroupRule{Group: "people"}: false,
+	} {
+		if got := rule.OffersAccountChooser(); got != want {
+			t.Errorf("%T.OffersAccountChooser() = %t, want %t", rule, got, want)
+		}
+	}
+}
+
 // Each rule tells a reason only for a restricted member whose sign-in no longer stands, and only
 // for what it no longer admits: the outside rule once no list names them, the domain rule always,
 // since it admits nobody from outside, and a group never. A full member, a restricted member signed

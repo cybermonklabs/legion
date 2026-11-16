@@ -66,6 +66,11 @@ type SignInRule interface {
 	// as hd (oidc.CodeFlow.AuthURL), which narrows Google's account chooser to the domain and
 	// decides nothing: Person reads the token's own claims.
 	DomainHint() bool
+	// OffersAccountChooser says whether the page refusing a sign-in under this rule links to
+	// /auth/start?prompt=select_account, which asks Google for its account chooser, so a browser
+	// holding one Google session can pick another account rather than be sent straight back with
+	// the one just refused.
+	OffersAccountChooser() bool
 	// CanRefresh says whether stored, the subject a membership's row records
 	// (auth.PersonMembership.Subject, empty when it records none), lets this rule confirm it
 	// without asking the issuer first.

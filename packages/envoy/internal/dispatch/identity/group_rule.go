@@ -55,6 +55,11 @@ func (r GroupRule) DomainHint() bool {
 	return false
 }
 
+// OffersAccountChooser is false: a refusal under a group keeps its plain link to /auth/start.
+func (r GroupRule) OffersAccountChooser() bool {
+	return false
+}
+
 // CanRefresh is always true: a group's row always has something to refresh.
 func (r GroupRule) CanRefresh(stored string) bool {
 	return true

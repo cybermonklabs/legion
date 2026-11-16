@@ -28,9 +28,9 @@ func (f ListerFunc) Listed(ctx context.Context, email string) (bool, error) {
 
 // OutsideRule signs in Domain's people as DomainRule does, and also a verified Google account
 // outside the domain while some project names its email directly (People), as a restricted member.
-// It is the DomainRule it embeds but for Person, BootLog, DomainHint, End and SignedOutReason: the
-// sign-in records the Google account's subject, and the hourly confirmation runs Person again, so
-// an account no list names any more is signed out there, and told so.
+// It is the DomainRule it embeds but for Person, BootLog, DomainHint, OffersAccountChooser, End and
+// SignedOutReason: the sign-in records the Google account's subject, and the hourly confirmation
+// runs Person again, so an account no list names any more is signed out there, and told so.
 type OutsideRule struct {
 	DomainRule
 	People Lister
@@ -86,6 +86,13 @@ func (r OutsideRule) BootLog(issuer, clientID string) {
 // domain would hide it.
 func (r OutsideRule) DomainHint() bool {
 	return false
+}
+
+// OffersAccountChooser is true: the account a refusal names is most often one outside the domain
+// that no list names, and a browser holding that one Google session would otherwise be sent
+// straight back with it.
+func (r OutsideRule) OffersAccountChooser() bool {
+	return true
 }
 
 // End is DomainRule.End, logged in words that fit both kinds of person this rule signs in: one
