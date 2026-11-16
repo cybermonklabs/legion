@@ -89,21 +89,29 @@ plugin, reads. A change to any of these surfaces bumps the field and the
 daemon's `DaemonAPIVersion` (`internal/api/version.go`, whose doc comment is the contract's
 history) in the same commit: `packages/contracts/fixtures/daemon-api/version.json`, written by the
 daemon's golden test, is what `src/daemon-api-version.test.ts` pins the field to, so neither
-side bumps alone, and the number is re-read against `main` at every rebase. Contract 12 renamed the
+side bumps alone; the number is in every file the root `AGENTS.md` names, and it is re-read
+against `main` at every rebase. Contract 12 renamed the
 field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-daemon client
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 141's experiment assignments
+number is the one `DaemonAPIVersion` declares, last bumped by contract 144's memory guard
+(dispatch://INFRA-3557: the daemon's answer to an issue pod launcher's hello, `launcher_hello_ack`,
+carries the guard's settings in `memoryGuard`, and the launcher reports each process its guard
+ended in a new `launcher_memory_kill` frame, which names the process by its executable and no
+argument; a launcher that reads an acknowledgement with no settings runs no guard, and no shape the
+plugin parses moves), after contract 141's experiment assignments
 (dispatch://INFRA-2566: each issue of `GET /legion/v1/state` carries `assignments`, one
 `{experiment, variant, mode, drawnAt}` per experiment answer that applies to it, absent from an
 issue no experiment holds an answer for; the reader this plugin parses the state through takes
 the key as optional, because a caller from a pod whose claims record a contract under 141 is
 served every issue without it (`api.stateFor`, `withoutAssignments`)), after contract 137's session
-service account (INFRA-3621: a pod's `legion launcher` may be told
-`--session-impersonate-service-account <email>`, which the daemon renders only where
-`runtime.kubernetes.session_database.impersonate_service_account` is set, and no shape the plugin
-parses moves), after contract 133's merge
+proxy account (dispatch://INFRA-3621: a pod's `legion launcher` may be told
+`--session-impersonate-service-account <email>`, which the daemon renders only when
+`runtime.kubernetes.session_database.impersonate_service_account` is set; a launcher built before
+137 exits 2 on the unknown flag, so the image probe refuses such an image at boot; no shape the
+plugin parses moves, so a caller from a pod below 137 is served the state as before), after
+contract 133's merge
 wait (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on
 GitHub's answer about merging the pull request's head carries `mergeWait`, the head the round
 waits on, the merge state the record holds for that head, when that state was last read, when

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CaseRow, countsOf } from "../build-corpus";
@@ -8,12 +8,15 @@ import type { DispatchEvent } from "../dispatch-read";
 import { FreshError, type FreshReport, refuseReportsOutside } from "../fresh-agent";
 import { PoolError, type RunOutcomes, refuseRunsOutside } from "../pool-runs";
 import {
+  DigestError,
   noteIssueCreated,
   pickedKey,
   RESERVE_CUT,
   RESERVE_VARIABLE,
+  type Registration,
   readReferenceOf,
   reserveOf,
+  runDigestOf,
 } from "../reserve";
 
 /**
@@ -183,18 +186,158 @@ async function corpusOnDisk(rows: readonly CaseRow[]): Promise<string> {
   return directory;
 }
 
-/** `readCorpus` with what it printed to stderr. */
-async function read(directory: string): Promise<{ corpus: Corpus; printed: string }> {
+/** A repository root holding a bundle of two files, beside the registration and a test. */
+async function bundleRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "bundle-"));
+  made.push(root);
+  await mkdir(join(root, "scripts/approval-eval/__tests__"), { recursive: true });
+  await mkdir(join(root, "skills/approval-review/references"), { recursive: true });
+  await writeFile(join(root, "scripts/approval-eval/run-round.ts"), "the arms\n", "utf8");
+  await writeFile(join(root, "scripts/approval-eval/claim.ts"), "no read\n", "utf8");
+  await writeFile(join(root, "scripts/approval-eval/__tests__/a.test.ts"), "a test\n", "utf8");
+  await writeFile(join(root, "skills/approval-review/references/rule.md"), "a rule\n", "utf8");
+  return root;
+}
+
+/** `readCorpus` under a registration and a bundle root, with what it printed to stderr. */
+async function read(
+  directory: string,
+  registration: Registration = { reads: [], ended: null },
+  root?: string
+): Promise<{ corpus: Corpus; printed: string }> {
   const lines: string[] = [];
   const error = spyOn(console, "error").mockImplementation((line?: unknown) => {
     lines.push(String(line));
   });
   try {
-    return { corpus: await readCorpus(directory), printed: lines.join("\n") };
+    const corpus = await readCorpus(directory, { registration, root });
+    return { corpus, printed: lines.join("\n") };
   } finally {
     error.mockRestore();
   }
 }
+
+describe("runDigestOf", () => {
+  const command = ["/usr/local/bin/bun", "/repository/scripts/approval-eval/run-round.ts"];
+  const env = { ANTHROPIC_BASE_URL: "http://gateway:4000", ANTHROPIC_API_KEY: "key-one" };
+
+  test("is the same for the same run, and moves with a file of the bundle or the command", async () => {
+    const root = await bundleRoot();
+    const first = await runDigestOf({ argv: command, env }, root);
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(await runDigestOf({ argv: command, env }, root)).toBe(first);
+    const draw = ["/usr/local/bin/bun", "/repository/scripts/approval-eval/draw.ts"];
+    expect(await runDigestOf({ argv: draw, env }, root)).not.toBe(first);
+    await writeFile(join(root, "skills/approval-review/references/rule.md"), "a rule.\n", "utf8");
+    const skillMoved = await runDigestOf({ argv: command, env }, root);
+    expect(skillMoved).not.toBe(first);
+    await writeFile(join(root, "scripts/approval-eval/run-round.ts"), "other arms\n", "utf8");
+    expect(await runDigestOf({ argv: command, env }, root)).not.toBe(skillMoved);
+  });
+
+  test("leaves out the registration and the tests, so registering a run keeps its digest", async () => {
+    const root = await bundleRoot();
+    const before = await runDigestOf({ argv: command, env }, root);
+    await writeFile(join(root, "scripts/approval-eval/claim.ts"), "one read\n", "utf8");
+    await writeFile(join(root, "scripts/approval-eval/__tests__/a.test.ts"), "changed\n", "utf8");
+    expect(await runDigestOf({ argv: command, env }, root)).toBe(before);
+  });
+
+  test("refuses a link in the bundle, since a change behind it would not move the digest", async () => {
+    const root = await bundleRoot();
+    await symlink(
+      join(root, "skills/approval-review/references/rule.md"),
+      join(root, "scripts/approval-eval/linked.md")
+    );
+    await expect(runDigestOf({ argv: command, env }, root)).rejects.toThrow(DigestError);
+  });
+
+  test("takes a file option by its bytes and a directory option as a path", async () => {
+    const root = await bundleRoot();
+    const one = await mkdtemp(join(tmpdir(), "arms-"));
+    const two = await mkdtemp(join(tmpdir(), "arms-"));
+    made.push(one, two);
+    const arms = join(one, "arms.json");
+    await writeFile(arms, "[1]\n", "utf8");
+    const run = (...args: string[]) => runDigestOf({ argv: [...command, ...args], env }, root);
+    const pinned = await run("--arms", arms, "--corpus", one, "--out", "/nowhere/a");
+    expect(await run(`--arms=${arms}`, "--corpus", two, "--out", "/nowhere/b")).toBe(pinned);
+    await writeFile(arms, "[2]\n", "utf8");
+    expect(await run("--arms", arms, "--corpus", one, "--out", "/nowhere/a")).not.toBe(pinned);
+  });
+
+  test("reads a file option at its trimmed path, as the commands do", async () => {
+    const root = await bundleRoot();
+    const directory = await mkdtemp(join(tmpdir(), "distillation-"));
+    made.push(directory);
+    const file = join(directory, "distillation.md");
+    await writeFile(file, "first\n", "utf8");
+    const run = () => runDigestOf({ argv: [...command, "--distillation", `${file} `], env }, root);
+    const before = await run();
+    await writeFile(file, "second\n", "utf8");
+    expect(await run()).not.toBe(before);
+  });
+
+  test("takes the argument after a file option as its value, as parseArgs does", async () => {
+    const root = await bundleRoot();
+    const run = (...args: string[]) => runDigestOf({ argv: [...command, ...args], env }, root);
+    expect(await run("--arms", "-")).toBe(await run("--arms=-"));
+  });
+
+  test("refuses a file option that names something other than a regular file", async () => {
+    const root = await bundleRoot();
+    const directory = await mkdtemp(join(tmpdir(), "arms-"));
+    made.push(directory);
+    await expect(
+      runDigestOf({ argv: [...command, "--arms", directory], env }, root)
+    ).rejects.toThrow(DigestError);
+  });
+
+  test("takes any other value as written, whatever the disk holds under that name", async () => {
+    const root = await bundleRoot();
+    const run = (arm: string) => runDigestOf({ argv: [...command, "--only", arm], env }, root);
+    expect(await run(join(root, "scripts/approval-eval"))).not.toBe(
+      await run(join(root, "skills/approval-review"))
+    );
+  });
+
+  test("reads an option as a file only in a command where it names one", async () => {
+    const root = await bundleRoot();
+    const directory = await mkdtemp(join(tmpdir(), "cases-"));
+    made.push(directory);
+    const of = (name: string) => [
+      `/repository/scripts/approval-eval/${name}`,
+      "--cases",
+      directory,
+    ];
+    const fresh = ["/usr/local/bin/bun", ...of("fresh-agent.ts")];
+    expect(await runDigestOf({ argv: fresh, env }, root)).toMatch(/^[0-9a-f]{64}$/);
+    const analyze = ["/usr/local/bin/bun", ...of("analyze.ts")];
+    await expect(runDigestOf({ argv: analyze, env }, root)).rejects.toThrow(DigestError);
+  });
+
+  test("refuses an agent PATH does not find, since the runtime could find another", async () => {
+    const root = await bundleRoot();
+    const argv = ["/usr/local/bin/bun", "/repository/scripts/approval-eval/fresh-agent.ts"];
+    const unfound = { ...env, PATH: "" };
+    await expect(
+      runDigestOf({ argv: [...argv, "--omp", "printf"], env: unfound }, root)
+    ).rejects.toThrow(DigestError);
+  });
+
+  test("moves with the servers a run reads and the lines a command adds, not with a key", async () => {
+    const root = await bundleRoot();
+    const first = await runDigestOf({ argv: command, env }, root);
+    const otherKey = { ...env, ANTHROPIC_API_KEY: "key-two" };
+    expect(await runDigestOf({ argv: command, env: otherKey }, root)).toBe(first);
+    const otherServer = { ...env, ANTHROPIC_BASE_URL: "http://elsewhere:4000" };
+    expect(await runDigestOf({ argv: command, env: otherServer }, root)).not.toBe(first);
+    const otherDispatch = { ...env, DISPATCH_URL: "http://dispatch:8766" };
+    expect(await runDigestOf({ argv: command, env: otherDispatch }, root)).not.toBe(first);
+    const agent = async () => ["agent models 1234"];
+    expect(await runDigestOf({ argv: command, env, inputs: agent }, root)).not.toBe(first);
+  });
+});
 
 describe("readCorpus and the reserve", () => {
   const after = "2026-11-15T01:00:00Z";
@@ -204,6 +347,7 @@ describe("readCorpus and the reserve", () => {
     kind: "question",
   };
   const open = caseRow("open", NOT_PICKED, after, "2026-11-14T09:00:00Z");
+  const claim = "dispatch://INFRA-2897/comment/claim-run";
 
   test("holds every case of a reserved issue out of the rows and the ids, and says so", async () => {
     delete process.env[RESERVE_VARIABLE];
@@ -216,16 +360,53 @@ describe("readCorpus and the reserve", () => {
     expect(printed).toContain("held out 2 cases on 1 issue");
   });
 
-  test("reads them under a named reference, and records the reference", async () => {
-    process.env[RESERVE_VARIABLE] = "read:dispatch://INFRA-2897/comment/claim-run";
-    const { corpus } = await read(await corpusOnDisk([reserved, open]));
+  test("reads them under a reference registered for this run, and records it", async () => {
+    process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    const root = await bundleRoot();
+    const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
+    const registration = { reads: [{ reference: claim, run }], ended: null };
+    const directory = await corpusOnDisk([reserved, open]);
+    const { corpus, printed } = await read(directory, registration, root);
     expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved", "open"]);
-    expect(corpus.reserve.readUnder).toBe("dispatch://INFRA-2897/comment/claim-run");
+    expect(corpus.reserve.readUnder).toBe(claim);
+    expect(printed).toContain(`under ${claim}`);
+  });
+
+  test("refuses a reference no read registers, and names this run's digest", async () => {
+    process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    const root = await bundleRoot();
+    const run = await runDigestOf({ argv: process.argv, env: process.env }, root);
+    const refused = readCorpus(await corpusOnDisk([reserved, open]), {
+      registration: { reads: [], ended: null },
+      root,
+    });
+    await expect(refused).rejects.toThrow(CorpusError);
+    await expect(refused).rejects.toThrow(`registers no read under ${claim}`);
+    await expect(refused).rejects.toThrow(run);
+  });
+
+  test("refuses a registered reference for a run with another digest", async () => {
+    process.env[RESERVE_VARIABLE] = `read:${claim}`;
+    const root = await bundleRoot();
+    const other: Registration = { reads: [{ reference: claim, run: "0".repeat(64) }], ended: null };
+    await expect(
+      readCorpus(await corpusOnDisk([reserved, open]), { registration: other, root })
+    ).rejects.toThrow(/for other runs/);
   });
 
   test("refuses a value of the variable that names no reference", async () => {
     process.env[RESERVE_VARIABLE] = "read";
     await expect(readCorpus(await corpusOnDisk([open]))).rejects.toThrow(CorpusError);
+  });
+
+  test("holds nothing once the reserve ended, an older build included", async () => {
+    delete process.env[RESERVE_VARIABLE];
+    const oldBuild = caseRow("old-build", PICKED, after, undefined);
+    const ended: Registration = { reads: [], ended: "dispatch://INFRA-2897/comment/claim-result" };
+    const { corpus, printed } = await read(await corpusOnDisk([reserved, oldBuild, open]), ended);
+    expect(corpus.rows.map((row) => row.caseId)).toEqual(["reserved", "old-build", "open"]);
+    expect(corpus.reserve).toEqual({ cases: 0, issues: 0, readUnder: null });
+    expect(printed).toBe("");
   });
 
   test("refuses a corpus built before creation times that holds a case the rule could hold", async () => {

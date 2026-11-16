@@ -604,6 +604,7 @@ jobs:
               - 'packages/daemon/internal/launcher/*'
               - 'packages/daemon/internal/leakguard/*'
               - 'packages/daemon/internal/lookpath/*'
+              - 'packages/daemon/internal/memoryguard/*'
               - 'packages/daemon/internal/modeltoken/*'
               - 'packages/daemon/internal/natsauth/*'
               - 'packages/daemon/internal/notify/*'
@@ -770,11 +771,13 @@ jobs:
             # (internal/api/state_golden_test.go:27, internal/intake/intake_test.go:698), the two
             # Oh My Pi plugins internal/daemon/promptreferences_omp_test.go:132 packs, whose prepack
             # bundles contracts and envoy-client, stages skills/ and writes their notices, the
-            # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
+            # GitHub App helper internal/api/real_github_test.go:88 sources, the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
             # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322,
-            # internal/runtime/sandbox/reclaim_doc_test.go:144). The root manifest, lockfile and
-            # patches the packs resolve through are bun_install's.
+            # internal/runtime/sandbox/reclaim_doc_test.go:144), and the three pages
+            # internal/prompts/prompts_test.go:785 holds to the production check's rule beside the
+            # composed prompts (AGENTS.md, scripts/e2e/README.md and the concepts page). The root
+            # manifest, lockfile and patches the packs resolve through are bun_install's.
             daemon_go_tests: &daemon_go_tests
               - *go_workspace
               - 'packages/daemon/**'
@@ -795,6 +798,9 @@ jobs:
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
               - 'docs/kubernetes.md'
+              - 'AGENTS.md'
+              - 'scripts/e2e/README.md'
+              - 'docs/site/src/content/docs/legion/concepts.md'
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:
@@ -2316,7 +2322,7 @@ jobs:
       # change has already merged. The condition tests `github.event_name` and no output of the
       # `changes` job, which rules 2 and 3 of .github/scripts/check-ci-filters.sh require of a
       # step in this job.
-      - name: Check a change that touches the daemon API contract declares a number above the base's
+      - name: "Check the daemon API contract: the files that hold its number agree, and a change to it declares a number above the base's"
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -5629,23 +5635,27 @@ jobs:
           job-status: ${{ job.status }}
 
   # The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
-  # an envoy-dispatch of the previous build and one of this tree against one Postgres and one NATS,
+  # an envoy-dispatch of an earlier build and one of this tree against one Postgres and one NATS,
   # which is what a rolling release runs, and drives each build's CLI, stored documents, document
   # socket and bus traffic against the other (cmd/dispatch/README.md, "Two builds at once"). They
   # build only under the `twobuild` tag and are a job of their own for the reason
   # dispatch-multiprocess is: a row waits out durable hand-overs and settings polls, tens of seconds
-  # each, and the previous build is built here first. The previous build is the newest
+  # each, and the earlier builds are built here first. Most rows run the previous build, the newest
   # legion-envoy-v* release in the history of origin/main; build-dispatch-build.sh resolves it,
   # which needs the whole history and the tags (fetch-depth 0), and builds it from `git archive`.
-  # The build is cached by the commit and the script that built it, so a pull request builds each
+  # The first-rollout row runs the first-rollout build instead, the newest release before the first
+  # that registers its schema numbers: the job pins it by its commit (FIRST_ROLLOUT_COMMIT), the
+  # resolve step fails when its tag, legion-envoy-v30.20.2, names another commit, and the job builds
+  # it the same way.
+  # Each build is cached by its commit and the script that built it, so a pull request builds each
   # release once; its src/ is left out of the cache, since the test reads only the parts the script
   # copies out of it. Each row's NATS runs in its own test process (internal/testnats), so the job
   # needs no container runtime of its own. Then the browser half
-  # (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts): the browser suite's two-process mode
-  # with Dispatch B run from the previous build's envoy-dispatch and web dist, and each direction's
-  # page served by one build against the other build's server. Playwright installs as it does for
-  # dispatch-browser-multiprocess, and the rows get a database of their own, since they truncate
-  # it.
+  # (packages/dispatch/e2e/cross-build.multiprocess.e2e.ts), which runs twice: the browser suite's
+  # two-process mode with Dispatch B run from the previous build's envoy-dispatch and web dist, then
+  # from the first-rollout build's, and each direction's page served by one build against the other
+  # build's server. Playwright installs as it does for dispatch-browser-multiprocess, and the rows
+  # get a database of their own, since they truncate it.
   dispatch-two-builds:
     needs: changes
     if: needs.changes.outputs.dispatch_two_builds == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -5667,6 +5677,11 @@ jobs:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The browser half's own database, which its rows truncate.
       DATABASE_URL: postgres://postgres:ci@localhost:5432/dispatch_cross_build?sslmode=disable
+      # The first-rollout build's commit, the release tagged legion-envoy-v30.20.2. That tag is
+      # lightweight and no ruleset protects it, so it can move: the commit is the pin.
+      # firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same
+      # commit.
+      FIRST_ROLLOUT_COMMIT: edb69e0d7588ec037847182e74a04a343a0664c9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -5701,25 +5716,28 @@ jobs:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
       # The first-rollout build: the newest release before the first that registers its schema
-      # numbers (firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go, which
-      # names the same tag). The transition row that drives the fleet's first rollout runs it as its
-      # earlier build, since every previous release from legion-envoy-v30.21.0 on registers its
-      # numbers. The release is pinned, so its cache entry is written once and restored after that.
+      # numbers (FIRST_ROLLOUT_COMMIT above, and firstRolloutRelease in
+      # packages/envoy/cmd/dispatch/twobuild_harness_test.go, which holds the same commit). The
+      # transition row that drives the fleet's first rollout runs it as its earlier build, since
+      # every previous release from legion-envoy-v30.21.0 on registers its numbers. This step fails
+      # when the release's tag names another commit than the pin. The release is pinned, so its
+      # cache entry is written once and restored after that.
       - name: Resolve the first-rollout build's commit
-        id: first-rollout
         run: |
-          commit=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
+          if [[ "$resolved" != "$FIRST_ROLLOUT_COMMIT" ]]; then
+            echo "::error::The tag legion-envoy-v30.20.2 names commit $resolved. FIRST_ROLLOUT_COMMIT pins the first-rollout build to commit $FIRST_ROLLOUT_COMMIT, and firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same commit. Move the tag back to $FIRST_ROLLOUT_COMMIT, or change the pin in both places."
+            exit 1
+          fi
       - name: Cache the first-rollout build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ runner.temp }}/dispatch-first-rollout
             !${{ runner.temp }}/dispatch-first-rollout/src
-          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ steps.first-rollout.outputs.commit }}
+          key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
       - name: Build the first-rollout build
         env:
-          FIRST_ROLLOUT_COMMIT: ${{ steps.first-rollout.outputs.commit }}
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       - name: Size the service for this lane's Dispatch processes
@@ -5763,10 +5781,14 @@ jobs:
             bun run e2e:multiprocess -- cross-build.multiprocess
         working-directory: packages/dispatch
       # The same rows with B the first-rollout build, a release before the fleet columns, which
-      # registers no schema numbers: a page of either build is read-only on A's server while it is
-      # live, which the previous release, registering its numbers, no longer shows. The spec reads
-      # which of the two B is from the live registry (pageWritable). The database is made again,
-      # so this run starts from what the step above started from.
+      # registers no schema numbers: B's page is read-only on A's server while B is live, which the
+      # previous release, registering its numbers, no longer shows, and A's page is held to B's own
+      # exact version rule on B's server, which admits it writable while the two builds' schema
+      # versions are equal. The step tells the spec this is the first-rollout run with
+      # DISPATCH_E2E_FIRST_ROLLOUT_COMMIT: the spec fails unless B is that commit and the registry
+      # reads version 0 while B is live, and pageWritable then reads each direction's rule from the
+      # registry. The database is made again, so this run starts from what the step above started
+      # from.
       - name: Browser-test each build's page against the first-rollout build's server
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
@@ -5776,6 +5798,7 @@ jobs:
             -c 'create database dispatch_cross_build'
           DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
+            DISPATCH_E2E_FIRST_ROLLOUT_COMMIT="$FIRST_ROLLOUT_COMMIT" \
             bun run e2e:multiprocess -- cross-build.multiprocess
         working-directory: packages/dispatch
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
