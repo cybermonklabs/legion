@@ -346,8 +346,8 @@ What each part is for:
   optional `slack_channels` lists Slack channel ids (`C…` or `G…`) whose
   mentions of the Legion Slack app reach the project's controller, which answers in the thread. It
   needs `controller: daemon` and `runtime.kubernetes.agent_secrets`, and the loader refuses it
-  otherwise: the controller replies with the Slack bot token the secrets broker grants only to the
-  Legion daemon service's own pods
+  otherwise: the controller replies with the Slack bot token, which the secrets broker grants it
+  only once the daemon enrolls it with the broker
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the

@@ -1960,6 +1960,9 @@ package api
 // (#3730). It keeps 153 at the forward merge that brings main in at 5f658978b127, where main still
 // declares 144: the reading of every open head at 2026-11-16T07:41Z found 145 (#3659), 146
 // (#3711), 147 (#4017), 148 (#3519), 149 (#2731), 150 (#4049 and #4065), 151 (#4106) and 152
+// (#3730), and none declares 153. It keeps 153 at the forward merge that brings main in at
+// fffa9dc0c1c6, where main still declares 144: the reading at 2026-11-16T09:19Z found 145 (#3659
+// and #4175), 146 (#3711), 147 (#4017), 148 (#3519), 150 (#4049 and #4065), 151 (#4106) and 152
 // (#3730), and none declares 153. Read the base's own number and every open pull request again at
 // every forward merge rather than from this line.)
 const DaemonAPIVersion = 153

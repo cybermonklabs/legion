@@ -1,0 +1,31 @@
+# A copy of the two path lists in the reclaim paragraph of docs/kubernetes.md — the paragraph
+# that runs from "The remedy for a volume near full is manual" to "As for the rest:" — each list
+# in the guide's own order, the paths alone and none of the prose that argues for them.
+#
+# The guide still answers for the runtime, in two halves. This package's reclaim_doc_test.go
+# holds every directory the renderer puts on the issue's volume to these two lists;
+# packages/daemon/internal/textcheck's TestTheReclaimExtractIsTheGuidesReclaimParagraph holds
+# these two lists to the guide's own, and checks there what only the lists can say: that no
+# delete-list path swallows a path the same paragraph exempts. Splitting it that way is what lets
+# an edit to the guide alone start the text-check run rather than every Go lane: the product test
+# no longer reads the guide at all.
+#
+# So this file is changed only when that paragraph's lists change, in the same commit as the
+# guide. A path added here and not there, or there and not here, fails the text-check half; a
+# rendered directory neither list accounts for fails the product half.
+#
+# A line that is blank or opens with # is a comment; a line ending in a colon opens one of the
+# two lists; every other line is one path on the list last opened. A per-role or per-issue
+# directory is written with the placeholder the guide writes it with.
+
+delete:
+/legion/scratch/cache
+/legion/scratch/tmp
+/legion/scratch/bun/install/cache
+/legion/go
+/legion/uv/cache
+
+exempt:
+/legion/scratch/state/<role>
+/legion/scratch/data
+/legion/uv/python/<issue>
