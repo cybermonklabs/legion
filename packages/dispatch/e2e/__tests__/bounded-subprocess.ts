@@ -334,8 +334,10 @@ const maxReads = 100;
  *  process alone (`stopTree`). No verdict rests on it: the reads end at the first one that finds
  *  nothing new and lists no such process, and `maxReads` bounds them. The wait hands the
  *  processor to the exec the kill waits on, which a loaded machine would otherwise share with
- *  this loop, and spreads the reads over half a second at least, so an exec that a loaded machine
- *  holds up still ends inside them. */
+ *  this loop. Measured in a gVisor pod of 3 CPUs under nine busy loops, on 2026-11-16, a kill
+ *  that waits so missed nothing in 500 runs of the row of `bounded-subprocess.test.ts` whose
+ *  child leaves a `setsid sleep` behind, nor in 2 000 runs of the same child in one loop, where
+ *  a kill that read the table once missed 2 and 5 (`stopTree`). */
 const execPause = 5;
 
 /** One bounded child being waited for, the token its environment carries, and when it started:
@@ -367,9 +369,10 @@ interface Running {
  *  that stopped at its first read missed that sleep in 2 of 500 runs of its row and in 5 of
  *  2 000 runs of the same child in one loop, and at each of those 5 the sleep's process read
  *  empty, in state `R`, at that read; the row failed the same way in CI, in job 133098513525. A
- *  read made for unknown processes alone waits `execPause` first. An unknown process that
- *  started before the child cannot carry its token, and one this kill signalled is exiting, not
- *  exec'ing, so neither keeps the reads going.
+ *  read made for unknown processes alone waits `execPause` first, and 500 and 2 000 such runs
+ *  with those reads missed nothing (`execPause`). An unknown process that started before the
+ *  child cannot carry its token, and one this kill signalled is exiting, not exec'ing, so
+ *  neither keeps the reads going.
  *
  *  Nothing is stopped with SIGSTOP first. A child shares this process's group, and where that
  *  group is orphaned - no member's parent stands in another group of the same session, as under
@@ -380,10 +383,12 @@ interface Running {
  *
  *  What it does NOT reach: a process that both left the tree, by its parent ending, and carries
  *  no token, because it cleared or replaced its environment (`env -i`) or runs as another user
- *  whose environment this process cannot read; a process outside this pid namespace, such as a
- *  container a daemon started on a child's request; and, where `/proc` is missing, anything a
- *  child left once that child has exited, and anything forked during the kill, since `ps` gives
- *  no environment to match and the table is read once there, by one `ps` that runs with no bound
+ *  whose environment this process cannot read; a process that left the tree and is still in the
+ *  middle of its exec when the `maxReads` reads end, since its token cannot be read until the
+ *  exec has loaded its program; a process outside this pid namespace, such as a container a
+ *  daemon started on a child's request; and, where `/proc` is missing, anything a child left
+ *  once that child has exited, and anything forked during the kill, since `ps` gives no
+ *  environment to match and the table is read once there, by one `ps` that runs with no bound
  *  (`processTable`).
  *
  *  The child's own pid is signalled only through `child.kill`, and only while the runtime has
