@@ -1,7 +1,7 @@
 -- 20261115200014_owner_lock_legacy_gate.up.sql
--- INFRA-636: an earlier build's boot is seen before it writes anything an owner lock guards, and a
--- transaction of this build that read the fleet as having no earlier build in it has ended before
--- an earlier build is seen.
+-- INFRA-636: an earlier build's boot is seen at its first step that can be seen, its dashboard
+-- publish or else its registration, and a transaction of this build that read the fleet as having no
+-- earlier build in it has ended before an earlier build is seen.
 --
 -- 20261115100924 registers each server process's owner lock protocol: a build at 1 serialises an
 -- owner's writers on the owner's advisory lock and takes the owner's row only in its write phase
@@ -16,10 +16,13 @@
 --     and writes the owner's row only in its write phase, so an earlier build that arrives between
 --     that read and that write writes the owner under it unseen.
 --
--- Every earlier build publishes its dashboard (dashboard_builds, migration 0136) before its first
--- owner write and exits when the publish fails, and registers in server_processes before it
--- serves; both are an `insert ... on conflict ... do update`, which fires BEFORE INSERT whether or
--- not the row exists, and so is every return of a lapsed registration (its heartbeat's admit). So:
+-- An earlier build that serves a dashboard, as the image always does, publishes it (dashboard_builds,
+-- migration 0136) before its first owner write and exits when the publish fails. One that serves
+-- none (its web dist holds no index.html, dashboard.ErrNoBuild) publishes nothing, and its boot's
+-- repairs and background passes write before its registration, the first step of it that can be
+-- seen. Every earlier build registers in server_processes before it serves. Both are an
+-- `insert ... on conflict ... do update`, which fires BEFORE INSERT whether or not the row exists,
+-- and so is every return of a lapsed registration (its heartbeat's admit). So:
 --
 --   - dashboard_builds.owner_lock_protocol, a constant default of 0 that rewrites no row: this
 --     build's publish names 1 (dashboard.Publish), an earlier build's names nothing and reads 0.

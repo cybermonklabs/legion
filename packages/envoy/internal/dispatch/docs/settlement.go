@@ -61,12 +61,12 @@ type settlement struct {
 		markdown         string
 		docUpdateVersion int64
 	}
-	// issueClosed is the document's issue row as this settlement's transaction locked it
-	// (lockArtifactOwner): true for a closed issue, false for an open one and for a document of
-	// no issue, so its zero value is open. A closed issue's document settles as an open one's
-	// does, and every rule of the settlement that differs on a closed issue goes by this row,
-	// never by the room's record of the issue (roomState.closed): a close this process has not
-	// heard of yet leaves that record open.
+	// issueClosed is the document's issue row as this settlement's transaction read it under the
+	// issue's owner lock (lockArtifactOwner): true for a closed issue, false for an open one and
+	// for a document of no issue, so its zero value is open. A closed issue's document settles as
+	// an open one's does, and every rule of the settlement that differs on a closed issue goes by
+	// this row, never by the room's record of the issue (roomState.closed): a close this process
+	// has not heard of yet leaves that record open.
 	issueClosed bool
 	// first is the settlement's read of the room before its repairs, read at an exact commit
 	// position; read is that read's tree, and markdown, offsets and renderErr are what it renders

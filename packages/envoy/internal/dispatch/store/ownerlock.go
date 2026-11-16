@@ -58,8 +58,10 @@ const OwnerLockProtocol = 1
 //
 // OwnerLockLegacyWindow is processes.PruneAge, so a row of an earlier build counts until it is
 // deregistered or pruned. A process of an earlier build silent past it - frozen, or cut from the
-// database - has its row pruned and is not in the fleet again until its next heartbeat's admit,
-// whose insert is an arrival. That is the registry's own model: every other decision over the
+// database - has its row pruned and is not in the fleet again until a heartbeat's admit of it,
+// whose insert is an arrival, commits. Each such admit waits for the gate at most 2 seconds, its
+// heartbeat's own bound, so a write of this build that holds the gate longer defers it, and that
+// process serves writes in its row-first order meanwhile. That is the registry's own model: every other decision over the
 // fleet (the signing keys, the embedder, the schema admission) counts a process silent past
 // processes.LiveWindow as gone.
 //
@@ -373,8 +375,8 @@ func noteOwnerLockMode(legacy bool) {
 // While no earlier build is in the fleet, the statement tries the owner lock gate shared before
 // the lock (OwnerLockGateNamespace) and holds it to the transaction's end, so an earlier build that
 // arrives meanwhile - its dashboard publish, or its registration for up to 5 seconds - waits for
-// this transaction to end before it writes anything, and every owner lock after that arrival reads
-// it in the fleet. A try that fails, while an arrival holds the gate or waits for it, takes the
+// this transaction to end before that arrival commits, and every owner lock after it reads the
+// earlier build in the fleet. A try that fails, while an arrival holds the gate or waits for it, takes the
 // owner's row as beside an earlier build, so no owner lock waits on an arrival.
 //
 // The lock and the read it guards must be separate statements. Under READ COMMITTED a statement's
