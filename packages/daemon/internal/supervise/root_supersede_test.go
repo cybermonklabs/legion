@@ -156,10 +156,11 @@ func TestARootArchitectsTaskAPromptOfWhichAwaitsItsResultIsNotSuperseded(t *test
 
 // The rule is a tree's root architect's, and only for a request that carries an entry it raised:
 // in every other case an unconfirmed pending task refuses a newer one, as it did before. A phase
-// worker's claim holding a task of the run before is refused (the daemon's
-// TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask pins the same refusal through the
-// outbox), and so is a root architect's request of no entry, which hands the architect no newer
-// entry's work. In each the older task is the one the agent is sent once it comes up.
+// worker's claim holding a task of the run before is refused, which this test is the one to pin:
+// the daemon's TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask starts with no entry, so it
+// never reaches the role test. So is a root architect's request of no entry, which hands the
+// architect no newer entry's work. In each the older task is the one the agent is sent once it
+// comes up.
 func TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne(t *testing.T) {
 	for _, held := range holdings {
 		for _, c := range []struct {

@@ -361,9 +361,12 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 // entry 1. The re-admission's promotion gives its architect the earlier generation's shape —
 // register the spec again, decompose nothing anew — and not the fresh tree's, which says nothing
 // in the tree runs and asks for every child of a decomposition: the same promotion starts again
-// the child that stood mid-phase (startMidPhaseMembers), so both of those would be false. What
-// tells it is the served entry (workflow.ArchitectStartTask's fourth rule): the claim served no
-// run, and the root's run never stood in a phase of its own.
+// the child that stood mid-phase (startMidPhaseMembers), so both of those would be false. Two
+// facts tell it, each enough for workflow.ArchitectStartTask's fourth rule: the served entry, since
+// the claim served no run and the root's run never stood in a phase of its own, and the child the
+// promotion starts again (ArchitectStart.MembersRun). So this test passes with either of the two
+// taken away, and TestTheArchitectTaskShapeRule and
+// TestTheArchitectTaskReadsTheRunItsArchitectServedAndNotItsLaunches pin the served entry alone.
 func TestTheArchitectUpgradeReadmissionOfATreeWhoseArchitectServedNoRunIsAnEarlierGenerations(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)

@@ -371,9 +371,11 @@ func pendingID(p *Delivery) string {
 // its task.
 //
 // A request a pending task refuses sends that task first (sendPending), so a task held back
-// because its root had no architect to hear it never wedges the claim: the start of the root's
-// next run, retrying on its backoff, is what releases it, and the refusal that start is answered
-// with is over once the architect's turn on the held task has ended and the delivery retired.
+// because its root had no architect to hear it never wedges the claim. A start of the root's next
+// run that carries a newer entry's task supersedes the held task (supersedes), which is retired
+// unsent; a start of no entry, or a resend of the held task's own entry, is refused, retries on its
+// backoff and sends the held task first, and that refusal is over once the architect's turn on the
+// held task has ended and the delivery retired.
 //
 // A pending delivery whose task the worker has already taken refuses nothing: the turn took it
 // (confirm writes ConfirmedAt), so there is no task left to give and the delivery is only the
@@ -417,10 +419,12 @@ func pendingID(p *Delivery) string {
 // no architect to hear it would otherwise go at the very start whose own task supersedes it.
 //
 // That rule is the root architect's alone. A phase worker that holds a task of another run is
-// still refused and its start retried, which the daemon's
-// TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask pins (its case "another run"): which of
-// a phase worker's two tasks goes first is that worker's model of its phase entries, and
-// dispatch://INFRA-2614 changes the architect's rule, not that model.
+// still refused and its start retried, which supervise's
+// TestAnUnconfirmedTaskTheRuleDoesNotReachStillRefusesANewerOne pins for a phase worker's claim;
+// the daemon's TestARetryOfAClaimThatKeptOtherWorkStillDeliversItsTask (its case "another run")
+// starts with no entry, so supersedes answers false before it reads the role and that test pins
+// nothing of the scope. Which of a phase worker's two tasks goes first is that worker's model of
+// its phase entries, and dispatch://INFRA-2614 changes the architect's rule, not that model.
 //
 // What the older task named of a person's decisions is not lost with it: its retirement releases
 // them (the claim store's releaseKeptDecisions), so they are the tree's again, and the catch-up of
