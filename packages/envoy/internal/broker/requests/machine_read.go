@@ -38,12 +38,15 @@ const MintFailedMessage = "broker: mint failed"
 // an owner whose value it reads wrongly can retag that secret shape=document.
 const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line ending was removed"
 
-// NarrowingRefusedMessage is logged, at WARN, each time a release's narrowing of its GitHub App
-// tokens is refused for what it names: an account a github-app secret of the grant does not list
-// (403 NARROWING_OWNER_NOT_LISTED, before any minter runs), or GitHub's 422 to the narrowed token
-// (422 NARROWING_REFUSED). It is followed by grant=, enrollment=, name=<the secret's name> and
-// error=, which never holds a value or a token. A refused authorization the caller fixes, not a
-// mint failure the operator acts on.
+// NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
+// refused for what it names, which happens in two places. A release's refusal is one: an account
+// a github-app secret of the grant does not list (403 NARROWING_OWNER_NOT_LISTED, before any
+// minter runs), or GitHub's 422 to the narrowed token (422 NARROWING_REFUSED); that case carries
+// grant=, enrollment=, name=<the secret's name> and error=. Create's check of a request's
+// narrowing is the other (narrowing_check.go): every refusal it makes before anybody is asked to
+// approve the request, which carries enrollment=, name= and error= and no grant= key at all,
+// since no grant exists and the refusal is why none will. Neither case holds a value or a token
+// in any key. A refused authorization the caller fixes, not a mint failure the operator acts on.
 const NarrowingRefusedMessage = "broker: narrowing refused"
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,
@@ -56,13 +59,14 @@ type Release struct {
 }
 
 // grantRelease is a live grant as checkRelease found it: the enrollment that holds it, the
-// request it came of, when it expires, the names it was granted, and the policy snapshot its
-// re-checks were made against, which the reads that follow mint from.
+// request it came of and the reason that request gave, when it expires, the names it was
+// granted, and the policy snapshot its re-checks were made against, which the reads that follow
+// mint from.
 type grantRelease struct {
-	enrollmentID, requestID string
-	expires                 *time.Time
-	granted                 []requestedSecret
-	set                     *policy.Set
+	enrollmentID, requestID, reason string
+	expires                         *time.Time
+	granted                         []requestedSecret
+	set                             *policy.Set
 }
 
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
@@ -84,16 +88,16 @@ type grantRelease struct {
 // that grant's placeholders, which AirlockConnection checked, and the session it belongs to is
 // what the row answers rather than what the caller claims.
 func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (grantRelease, error) {
-	var enrollmentID, requestID, policyVersion, decidedBy string
+	var enrollmentID, requestID, reason, policyVersion, decidedBy string
 	var expires *time.Time
 	var lifetime *int
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id, g.expires_at, g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
-		g.request_id, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host
+		g.request_id, r.reason, r.rules_version, coalesce(r.decided_by, ''), r.lifetime_seconds, e.kind, e.operator, e.subject, c.service, c.host
 		from grants g join enrollments e on e.id=g.enrollment_id join requests r on r.id=g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id where g.id=$1`, grantID).
-		Scan(&enrollmentID, &expires, &live, &requestID, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host)
+		Scan(&enrollmentID, &expires, &live, &requestID, &reason, &policyVersion, &decidedBy, &lifetime, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Service, &enr.Host)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return grantRelease{}, ErrGrantNotLive
 	}
@@ -161,7 +165,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 			}
 		}
 	}
-	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, expires: expires, granted: granted, set: set}, nil
+	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
 }
 
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
@@ -184,7 +188,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 // altogether — a CLI from before the airlock finds it missing and runs nothing, rather than
 // running the command with a placeholder it does not understand — and what the session needs to
 // reach it is Release.Airlock.
-func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing) (Release, error) {
+//
+// call is what the session says of this release: the command it starts and the reason its own
+// call gave. The release records both, with the reason of the grant's request, in its grant.used
+// row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
+// nothing about the release.
+func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
 	checked, err := m.checkRelease(ctx, grantID, enrollmentID)
 	if err != nil {
 		return Release{}, err
@@ -218,11 +227,14 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 			return Release{}, err
 		}
 	}
-	detail := auditDetail{"names": releasedNames(read)}
-	if narrowing != nil {
-		detail["github_app"] = auditDetail{"owner": narrowing.Owner, "repositories": narrowing.Repositories, "read_only": narrowing.ReadOnly}
+	// A release with no command, every release from a client from before the field among them,
+	// collects and parses nothing for a redaction it would not make.
+	command := []string{}
+	if len(call.Command) > 0 {
+		command = loggedCommand(call.Command, handedOut(read, release.Airlock))
 	}
-	if err := m.auditGrantUsed(ctx, grantID, checked, detail); err != nil {
+	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
+	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
 		return Release{}, err
 	}
 	return release, nil
@@ -249,9 +261,16 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 // narrowingRefusal is why narrowing cannot reach granted, with the name it refuses for, in the
 // order the three are reported: the grant holds no github-app secret
 // (ErrNarrowingNotApplicable), a github-app secret of it does not list the narrowing's owner in
-// its github-owners tag in set, the snapshot the release mints from (ErrNarrowingOwnerNotListed),
-// or the airlock holds back a granted name (ErrNarrowingBehindAirlock, naming the first such
-// name). GitHubApp.Mint refuses that owner too, as a second barrier.
+// its github-owners tag in set, the snapshot the names are judged against
+// (ErrNarrowingOwnerNotListed), or the airlock holds back one of those names
+// (ErrNarrowingBehindAirlock, naming the first such name). GitHubApp.Mint refuses that owner
+// too, as a second barrier.
+//
+// Both places a narrowing is judged make these three refusals through this one function, so
+// neither can answer one of them differently: the release of a grant (Values, where set is the
+// snapshot the release mints from and granted its granted names) and Create's check before
+// anybody is asked (checkNarrowing, where set is the snapshot the request is evaluated against
+// and granted the names it asks for).
 //
 // The airlock's refusal is there because the broker would answer that it applied the narrowing
 // while the proxy went on swapping in the value it holds for that grant, which is minted
@@ -421,11 +440,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, secrets.MintRequest{
-		Name: g.name, Kind: kind, HumanTier: served.Tier == policy.TierHuman, Value: shapedValue(value, served.Shape, g.name),
-		GitHubOwners: served.GitHubOwnerLogins(), GoogleScopes: served.ScopeURLs(),
-		GitHubNarrowing: narrowing,
-	})
+	token, err := mint(ctx, mintRequest(g.name, kind, served, shapedValue(value, served.Shape, g.name), narrowing))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
@@ -439,6 +454,25 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	return token, nil
+}
+
+// mintRequest is the input one granted name's release gives its minter: the name, the kind tag
+// its minters count their attempts under, the stored value as the shape rule spends it, the
+// tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
+// against, and the narrowing the caller asked for, nil where it asked for none. Create's check
+// builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
+// worth of the check: it asks GitHub about the same secret, with the same owners and the same
+// narrowing, as the release it stands for.
+func mintRequest(name, kind string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
+	return secrets.MintRequest{
+		Name:            name,
+		Kind:            kind,
+		HumanTier:       served.Tier == policy.TierHuman,
+		Value:           value,
+		GitHubOwners:    served.GitHubOwnerLogins(),
+		GoogleScopes:    served.ScopeURLs(),
+		GitHubNarrowing: narrowing,
+	}
 }
 
 // shapedValue answers the value release spends for a stored value it has just read, under that

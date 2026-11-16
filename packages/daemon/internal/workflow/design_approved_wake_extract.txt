@@ -1,0 +1,13 @@
+# A copy of DesignApprovedWake (awaiting_reconcile.go), the phrase a resume task carries when the
+# root's design gate is open at the resume, committed beside this package so that the text check
+# holding the architect's instructions to that phrase imports no product package.
+#
+# The check is in two halves. internal/workflow's TestTheDesignApprovedWakeExtractIsTheConstant
+# holds this copy equal to the constant, and internal/textcheck's
+# TestTheArchitectsInstructionsTakeTheResumeAsTheDesignApprovedWake holds the skill files and the
+# root architect's prompt to this copy. Importing internal/workflow there put the daemon's whole
+# closure, the store's migrations included, into the text-check job's filter.
+#
+# The format: these `#` lines, one blank line, then the phrase on one line.
+
+this resume is your design-approved wake

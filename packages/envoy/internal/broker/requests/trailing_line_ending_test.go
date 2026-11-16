@@ -30,11 +30,11 @@ func valueDigest(value string) string {
 func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, secret secrets.LocalSecret, name string) string {
 	t.Helper()
 	retag(t, m, secret)
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "")
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = state %q, grant %v, %v; want an automatic grant", name, request.State, request.GrantID, err)
 	}
-	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values(%s): %v", name, err)
 	}

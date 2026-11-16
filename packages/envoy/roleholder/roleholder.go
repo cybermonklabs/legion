@@ -18,7 +18,8 @@ package roleholder
 const Unclaimed = "unclaimed"
 
 // HolderLapsed is the refusal of a publish to a role whose claim names a session that is no longer
-// live.
+// live, when the listener kept nothing for it: the publish sent keep: false, or the keep failed.
+// The listener's 202 that keeps such a publish names the same word as its kept_reason.
 const HolderLapsed = "holder_lapsed"
 
 // IsNoHolderReason reports whether reason is one the listener gives when it refuses a role publish

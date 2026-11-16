@@ -1,0 +1,90 @@
+name: CI job private-names-port
+
+# The steps of ci.yaml's `private-names-port` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# What runs here is one harness, .github/scripts/check-private-names-port.test.sh: the port of
+# this repository's four private-name rules, proved by comparison rather than by assertion. Every
+# case runs through .github/scripts/check-private-names.sh, the frozen shell script, and through
+# packages/daemon/internal/leakguard's rule file as the `legion` binary of this head runs it, and
+# the two are held to one verdict and one class.
+#
+# It is a job because of what that comparison costs the filters: the harness builds ./cmd/legion
+# out of packages/daemon (:70), so the filter that selects it has to name the whole closure of
+# that build - `go list -deps ./cmd/legion`, the ci.yaml anchor legion_command. While the step
+# was the test job's, that closure sat on the `test` filter, and a change to any package of the
+# daemon or to the envoy packages it imports ran thirty-odd shell harnesses, the Claude Code
+# plugin build and the Bun suites of scripts/ beside this one, none of which could see it
+# (dispatch://INFRA-1413). A gate on the step inside that job could not cure it: the gate's own
+# filter would be that closure a second time, and the changes job's filters string has no room
+# for one (rule 18 of .github/scripts/check-ci-filters.sh).
+#
+# Everything the harness needs, and nothing else:
+#   * the checkout, which is the whole of its corpus: the harness, the frozen script it compares
+#     against, and the daemon sources the build reads, the rule file leakguard embeds among them;
+#   * setup-go on packages/daemon/go.mod, the module the build runs in. The harness refuses
+#     without a `go` on PATH (:66) and fails the run when the binary does not build (:70-73).
+# No Bun, no Oh My Pi, no uv, no tmux, no database and no container image: the harness starts a
+# `go build` and the binary it built, and makes every fixture with git, which the runner image
+# carries. It restores no Actions cache either, as the test job that carried this step restored
+# none: of ci.yaml's six Go cache families the go-daemon entry is filled with what compiling
+# packages/daemon's test binaries leaves (.github/workflows/ci-caches.yaml), which is not this
+# build, and a restore of it would download a gigabyte to save part of one command's compile.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  private-names-port:
+    runs-on: ubuntu-24.04
+    # The harness takes 71 s on a machine whose Go build cache is warm, the build of ./cmd/legion
+    # included (measured here, dispatch://INFRA-1413). This job restores no cache, so every run
+    # compiles that command's 1,217 packages from nothing; 20 minutes is many times the cold
+    # build and the 148 cases after it, and still fails a hung case well inside the hour.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Go the build runs under, from the module it builds in. No cache: the header says why,
+      # and setup-go caches nothing in any job of ci.yaml.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      - name: Test the private-name rules' port against the frozen script
+        run: .github/scripts/check-private-names-port.test.sh
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: private-names-port
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
