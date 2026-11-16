@@ -2696,7 +2696,13 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // and the registration deadline's retirement end a process and send no stop. A death whose
 // relaunch the wake pacing parked keeps the dead process's locator until the wake's turn
 // (parkWake), so a suspension that arrives meanwhile stops that process again and sends a second
-// stop, which finds no registration and is harmless.
+// stop. The first runs on a goroutine nothing in the decision waits for (Deps.SessionGone), so it
+// may still be in flight or may have failed, and the second can find the dead process's
+// registration still there. What makes the second harmless is the delete's two conditions, the
+// client instance id and the moment (notify.DeleteConditions), not that it finds nothing: it
+// deletes only a registration written before its own moment under the instance id the listener
+// answered, and no relaunch has registered by then, since the relaunch was still parked when the
+// suspension came. A relaunch that registers later writes after that moment, and is kept.
 //
 // The daemon dates the stop when it is told, and the listener keeps a registration written after
 // that moment. Told after the process has ended, the stop comes after the process's last

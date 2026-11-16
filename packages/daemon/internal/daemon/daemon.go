@@ -1297,9 +1297,9 @@ type supervision struct {
 	wg        sync.WaitGroup
 	stopOnce  sync.Once
 	// sessionStops counts the clean stops of session registrations in flight (cleanSessionStop),
-	// which no decision waits for and the halt does not end; stop waits for them once the
-	// decisions that sent them have returned.
-	sessionStops *sync.WaitGroup
+	// which no decision waits for and the halt does not end; stop waits for the ones sent before
+	// its final wait began, once the decisions that sent them have returned.
+	sessionStops *sessionStopsInFlight
 }
 
 // promptAgents is the sorted names of every task agent the role prompts dispatch
@@ -1442,8 +1442,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		return nil, fmt.Errorf("build the %s runtime: %w", cfg.Runtime.Name, err)
 	}
 	// The clean stops of session registrations the machines send run past their decisions and are
-	// counted here, so the daemon's stop waits for each to end (cleanSessionStop, supervision.stop).
-	var sessionStops sync.WaitGroup
+	// counted here, so the daemon's stop waits for each sent before its final wait began
+	// (cleanSessionStop, supervision.stop).
+	var sessionStops sessionStopsInFlight
 	sup.deps = supervise.Deps{
 		Runtime: rt,
 		Conns:   listener,
@@ -1525,8 +1526,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // The machine calls it inside its own decision, under its lock, so the read and the delete run on
 // a goroutine of their own, on a context of their own that only cleanSessionStopBudget ends (send):
 // not the decision's, which the machine's caller can end the moment the decision returns, and not
-// supervision's, which the halt cancels. inFlight counts each stop from the call until it ends,
-// and the daemon's stop waits for them once the decisions have returned (supervision.stop).
+// supervision's, which the halt cancels. inFlight counts each stop sent before the daemon's stop
+// began its final wait, from the call until it ends, and that wait is for those
+// (supervision.stop); one sent after it began runs uncounted (sessionStopsInFlight).
 // goneAt, the moment the stop belongs to, is read here, inside the decision, where no lock is
 // waited on: for a death before any relaunch (Machine.died calls sessionGone first), and for a
 // suspension once the runtime's stop has returned, which both runtimes do only when the process
@@ -1553,24 +1555,88 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // A listener that refuses the delete, keeps the registration, or cannot be reached costs the
 // session nothing beyond the wait it already had: the registration lapses on its own at the
 // gone horizon. With no listener configured nothing is told.
-func cleanSessionStop(inFlight *sync.WaitGroup, envoyURL, token string, log *slog.Logger) func(string) {
+func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, log *slog.Logger) func(string) {
 	if envoyURL == "" {
 		return nil
 	}
 	stop := sessionStop{sessions: notify.New(envoyURL, token), log: log}
 	return func(session string) {
 		goneAt := time.Now()
-		inFlight.Add(1)
+		counted := inFlight.start()
 		go func() {
-			defer inFlight.Done()
+			if counted {
+				defer inFlight.end()
+			}
 			stop.send(session, goneAt)
 		}()
 	}
 }
 
-// sessionStop is one role's clean stop in flight: the listener client it goes to, the log that
-// says what became of it, and the budget its read and delete share, which zero leaves at
-// cleanSessionStopBudget; only a test sets another.
+// sessionStopsInFlight counts the clean stops of session registrations in flight
+// (cleanSessionStop), which no decision waits for and the halt does not end, so the daemon's stop
+// can wait for them (supervision.stop). It counts a stop only until that final wait has begun. A
+// decision can still send one after that: a timer the halt did not disarm fires its decision on
+// a goroutine of its own, straight into the machine rather than through the supervisor the halt
+// closed (Machine.arm), and a death that decision judges sends a stop (Machine.died). Such a stop
+// runs uncounted, on its own budget, and nothing waits for it. A sync.WaitGroup has no such
+// cut-off: an Add that starts its count from zero while its Wait runs races that Wait, which the
+// race detector reports, and an Add in the instant a Done brings the count to zero under a
+// blocked Wait panics.
+//
+// A stop sent between the halt and the final wait is counted and waited for, on its own budget
+// too, so one sent late can outlive the stop's budget; supervision.stop says what run does then.
+// The zero value counts nothing and has no wait begun.
+type sessionStopsInFlight struct {
+	mu    sync.Mutex
+	count int
+	// waiting is whether the final wait has begun, and drained, made when it begins, is closed
+	// once it has and no counted stop is left.
+	waiting bool
+	drained chan struct{}
+}
+
+// start counts one stop, unless the final wait has begun, and reports whether it counted it. A
+// stop it counted calls end when it ends.
+func (s *sessionStopsInFlight) start() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.waiting {
+		return false
+	}
+	s.count++
+	return true
+}
+
+// end is the end of a stop start counted.
+func (s *sessionStopsInFlight) end() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.count--
+	if s.waiting && s.count == 0 {
+		close(s.drained)
+	}
+}
+
+// wait begins the final wait, after which start counts no stop, and blocks until every stop
+// start counted has ended.
+func (s *sessionStopsInFlight) wait() {
+	s.mu.Lock()
+	if !s.waiting {
+		s.waiting = true
+		s.drained = make(chan struct{})
+		if s.count == 0 {
+			close(s.drained)
+		}
+	}
+	drained := s.drained
+	s.mu.Unlock()
+	<-drained
+}
+
+// sessionStop is what every clean stop this daemon sends shares, not one role's stop: one value
+// serves them all (cleanSessionStop), each stop its own call of send. It holds the listener
+// client each stop goes to, the log that says what became of each, and the budget each stop's
+// read and delete share, which zero leaves at cleanSessionStopBudget; only a test sets another.
 type sessionStop struct {
 	sessions *notify.HTTPPublisher
 	log      *slog.Logger
@@ -1602,12 +1668,13 @@ type sessionStop struct {
 // process's own last heartbeat without asking the listener anything.
 //
 // Nothing but its budget ends it: not the decision that sent it, and not the daemon's stop, which
-// waits for it (supervision.stop). The halt ends the machines' context, but a decision can return
-// just before the halt with its stop still in flight — an idle release the workflow's outbox
-// decided on serve's context, not the machines', or an operator's suspension a route decided —
-// and a released claim is the one a message's wake acts on. Cut short there, its stop would leave
-// the registration standing, and a message to the role would be stored for a session that reads
-// nothing, with no wake raised, until the registration lapses at the gone horizon.
+// waits for it unless it was sent after that wait began (supervision.stop). The halt ends the
+// machines' context, but a decision can return just before the halt with its stop still in
+// flight — an idle release the workflow's outbox decided on serve's context, not the machines',
+// or an operator's suspension a route decided — and a released claim is the one a message's wake
+// acts on. Cut short there, its stop would leave the registration standing, and a message to the
+// role would be stored for a session that reads nothing, with no wake raised, until the
+// registration lapses at the gone horizon.
 func (s sessionStop) send(session string, goneAt time.Time) {
 	budget := s.budget
 	if budget == 0 {
@@ -2271,6 +2338,14 @@ func drainOf(budget time.Duration) time.Duration {
 // half the stop's budget, so a stop in flight when the halt came ends inside the stop's budget
 // even where the listener never answers. The panes and pods keep running; the next boot
 // re-adopts them. The wait is unbounded here; run stops waiting for it at the stop's budget.
+//
+// A stop sent after the halt, while this waits for the decisions and sends above, is waited for
+// too, and it runs on its own budget as every stop does, so one sent late can still be in flight
+// when the stop's budget runs out. run then stops waiting at that budget and logs `legion daemon
+// stopped waiting for its work`, whose `deciding` names no claim when that stop is all that is
+// left. A stop sent once this final wait has begun is not waited for at all: a timer's decision
+// the halt did not end can still send one (sessionStopsInFlight), and it runs on its own budget
+// with nothing waiting for it.
 func (s *supervision) stop() {
 	s.stopOnce.Do(func() {
 		s.halt(nil)
@@ -2278,7 +2353,7 @@ func (s *supervision) stop() {
 		s.supervisor.stop()
 		s.supervisor.wait()
 		s.wg.Wait()
-		s.sessionStops.Wait()
+		s.sessionStops.wait()
 	})
 }
 

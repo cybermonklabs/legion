@@ -11,11 +11,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // storedRegistration is what the fake listener's registry holds for the session under test: the
@@ -179,8 +179,8 @@ func TestCleanSessionStopDeletesARegistrationWrittenBeforeTheProbesMoment(t *tes
 		settled: make(chan struct{}),
 	}
 	server := listener.server(t)
-	var inFlight sync.WaitGroup
-	defer inFlight.Wait()
+	var inFlight sessionStopsInFlight
+	defer inFlight.wait()
 	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
 
 	stop("ses_dead")
@@ -438,7 +438,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 		settled:  make(chan struct{}),
 	}
 	server := listener.server(t)
-	var inFlight sync.WaitGroup
+	var inFlight sessionStopsInFlight
 	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
 
 	returned := make(chan struct{})
@@ -458,7 +458,7 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 		t.Fatal("the clean stop never reached the listener")
 	}
 	close(listener.heldRead)
-	inFlight.Wait()
+	inFlight.wait()
 	select {
 	case <-listener.settled:
 	default:
@@ -469,7 +469,117 @@ func TestCleanSessionStopRunsOffTheMachinesDecision(t *testing.T) {
 // With no listener configured there is nothing to tell, and the machines are given no SessionGone
 // at all.
 func TestNoCleanSessionStopWithoutAListener(t *testing.T) {
-	if stop := cleanSessionStop(&sync.WaitGroup{}, "", "", quietLogger()); stop != nil {
+	if stop := cleanSessionStop(&sessionStopsInFlight{}, "", "", quietLogger()); stop != nil {
 		t.Fatal("a daemon with no Envoy listener was given a clean stop to call")
 	}
+}
+
+// A stop sent once the daemon's stop has begun its final wait is left out of that wait, not out
+// of the work: it still reads the registration and deletes it, on its own budget. Dropped
+// instead, it would leave the ended process's registration standing until the gone horizon, and
+// a message to a released role would be stored for a session nothing reads, with no wake.
+func TestCleanSessionStopSentAfterTheFinalWaitBeganStillDeletesTheRegistration(t *testing.T) {
+	listener := &listenerRecorder{
+		held:     storedRegistration{clientInstanceID: "inst_dead", lastSeen: time.Now().Add(-time.Second)},
+		heldRead: make(chan struct{}),
+		arrived:  make(chan struct{}),
+		settled:  make(chan struct{}),
+	}
+	server := listener.server(t)
+	var inFlight sessionStopsInFlight
+	stop := cleanSessionStop(&inFlight, server.URL, "envoy-token", quietLogger())
+	// Nothing is counted yet, so the wait returns at once, and from here it has begun.
+	inFlight.wait()
+
+	stop("ses_dead")
+	select {
+	case <-listener.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clean stop sent after the final wait began never reached the listener")
+	}
+	close(listener.heldRead)
+	select {
+	case <-listener.settled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clean stop sent after the final wait began sent no delete")
+	}
+	if !listener.entryRemoved {
+		t.Fatalf("the listener kept the registration asked for with %q, want the ended process's registration deleted",
+			listener.delete.query)
+	}
+}
+
+// The daemon's stop waits, last, for the clean stops its decisions sent (supervision.stop): each
+// stop counted before that wait began holds it until the stop ends.
+func TestSessionStopsInFlightWaitsForEveryStopStartedBeforeTheFinalWait(t *testing.T) {
+	var stops sessionStopsInFlight
+	if !stops.start() || !stops.start() {
+		t.Fatal("a stop started before the final wait was not counted")
+	}
+	returned := make(chan struct{})
+	go func() {
+		stops.wait()
+		close(returned)
+	}()
+	awaitFinalWaitBegun(t, &stops)
+
+	stops.end()
+	select {
+	case <-returned:
+		t.Fatal("the final wait returned with a stop it counted still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+	stops.end()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the final wait did not return once every stop it counted had ended")
+	}
+}
+
+// A decision can still send a stop once the daemon's stop has begun its final wait: a timer the
+// halt did not disarm fires its decision straight into the machine, and a death that decision
+// judges sends one (sessionStopsInFlight). That stop is not counted, so the wait ends when the
+// stops it did count end. It can start in the very instant the last of those ends, which on a
+// sync.WaitGroup is an Add that panics under the blocked Wait, so each round starts the late
+// stop and ends the counted one on two goroutines at once: under -race, the detector checks both
+// against the wait's own reads of the count.
+func TestSessionStopsInFlightDoesNotWaitForAStopStartedAfterTheFinalWaitBegan(t *testing.T) {
+	for round := range 50 {
+		var stops sessionStopsInFlight
+		if !stops.start() {
+			t.Fatal("a stop started before the final wait was not counted")
+		}
+		returned := make(chan struct{})
+		go func() {
+			stops.wait()
+			close(returned)
+		}()
+		awaitFinalWaitBegun(t, &stops)
+
+		counted := make(chan bool, 1)
+		go func() { counted <- stops.start() }()
+		go stops.end()
+		if <-counted {
+			t.Fatalf("round %d: a stop started once the final wait had begun was counted, so the wait would wait for it", round)
+		}
+		select {
+		case <-returned:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: the final wait did not return once the stop it counted ended: it waited for the stop started after it began", round)
+		}
+	}
+}
+
+// awaitFinalWaitBegun waits until stops' final wait has begun, which is the moment start stops
+// counting: each stop the poll counts before then it ends again at once.
+func awaitFinalWaitBegun(t *testing.T, stops *sessionStopsInFlight) {
+	t.Helper()
+	testwait.Eventually(t, "the final wait to begin", func() bool {
+		if stops.start() {
+			stops.end()
+			return false
+		}
+		return true
+	})
 }
