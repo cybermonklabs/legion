@@ -10,22 +10,16 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// The rules of R50, by the ids of the refusal. term-line is the rule of a line under a heading
-// Terms that is no term line, which the extractor reads as a text of Kind line, terms-heading
-// the rule of a heading that reads as Terms in another form, a text of Kind heading, and term-name
-// the rule of a name of a term that holds a character other than the letters a to z, the digits,
-// a space and a hyphen.
+// The rules of R50, by the ids of the refusal, beside term-line (rules.go), the rule of a line
+// under a heading Terms that is no term line: terms-heading is the rule of a heading that reads as
+// Terms in another form, a text of Kind heading, and term-name the rule of a name of a term that
+// holds a character other than the letters a to z, the digits, a space and a hyphen.
 const (
 	ruleDefinitionSentences  Rule = "definition-sentences"
 	ruleTermSecondDefinition Rule = "term-second-definition"
-	ruleTermLine             Rule = "term-line"
 	ruleTermsHeading         Rule = "terms-heading"
 	ruleTermName             Rule = "term-name"
 )
-
-// termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
-// of a term line.
-const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>"`
 
 // termsHeadingDetail is the detail of a heading that reads as Terms in another form: it shows the
 // one form of the heading Terms.

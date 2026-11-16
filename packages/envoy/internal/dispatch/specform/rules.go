@@ -3,7 +3,6 @@ package specform
 import (
 	"fmt"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -23,6 +22,15 @@ const (
 	rulePerson        Rule = "person"
 )
 
+// ruleTermLine is the rule of a line under a heading Terms that is no term line, which the
+// extractor reads as a text of Kind line. A definition in another form than the term line would
+// otherwise pass the rules of R49 unread.
+const ruleTermLine Rule = "term-line"
+
+// termLineDetail is the detail of a line under Terms that is no term line: it shows the one form
+// of a term line.
+const termLineDetail = `it is no term line, and a term line has the form "- **<term>**: <definition>"`
+
 // maxWords is R49's bound on a sentence, which is also ste-lint's.
 const maxWords = 25
 
@@ -40,12 +48,22 @@ var steRules = map[string]string{
 var (
 	// bareKey is an issue key standing as a word: the server's own reference grammar finds
 	// only dispatch:// and http(s):// references, so this one is this package's.
-	bareKey     = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
-	recordID    = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	incident    = regexp.MustCompile(`(?i:\bincident\s+(?:#?\d+|[a-z][a-z0-9]*-\d+|\d{4}-\d{2}-\d{2}))|\bINC-\d+\b`)
-	pullRequest = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:number\s+)?#?\d+)|\b[\w.-]+/[\w.-]+#\d+|github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d+`)
+	bareKey  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
+	recordID = regexp.MustCompile(`(?i)\b(?:message:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	// incident and pullRequest name a record only by a form that only a name has: "#" and digits,
+	// the word "number" and digits, an incident's key or date, and a pull request's
+	// <owner>/<repo>#<digits> or address. A bare number after the words is a count, such as
+	// "each pull request 10 minutes after", and names nothing.
+	incident    = regexp.MustCompile(`(?i:\bincident\s+(?:#\d+|number\s+#?\d+|\d{4}-\d{2}-\d{2}|[a-z][a-z0-9]*-\d+))|\bINC-\d+\b`)
+	pullRequest = regexp.MustCompile(`(?i:\b(?:pr|pull request)\s+(?:#\d+|number\s+#?\d+))|\b[\w.-]+/[\w.-]+#\d+|github\.com/[\w.-]+/[\w.-]+/pull/\d+|#\d+`)
 	email       = regexp.MustCompile(`[\w.+-]+@[\w-]+\.[\w.-]*[\w-]`)
 	handle      = regexp.MustCompile(`(?:^|[^\w@])(@[A-Za-z][\w-]*)`)
+)
+
+// incidentForms and pullRequestForms say, in a finding, which forms the two rules read as a name.
+const (
+	incidentForms    = "Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date"
+	pullRequestForms = "Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address"
 )
 
 // broken is one rule a text breaks, and the detail of the break.
@@ -82,10 +100,14 @@ func breaks(c Context, people map[string]bool, text Text) []broken {
 	return unique
 }
 
-// formBreaks is the sentence count of a statement, each sentence over maxWords, and each hard
-// finding of ste-lint, all as ste-lint reads the line.
+// formBreaks is each word that holds a stop with no space after it (stopsWithNoSpace), the
+// sentence count of a statement and each sentence over maxWords, as sentencesOf reads the line,
+// and each hard finding of ste-lint.
 func formBreaks(kind Kind, line string) []broken {
 	var found []broken
+	for _, word := range stopsWithNoSpace(line) {
+		found = append(found, broken{ruleStopNoSpace, stopNoSpaceDetail(word)})
+	}
 	sentences := sentencesOf(line)
 	if kind == KindStatement && (len(sentences) < 1 || len(sentences) > 2) {
 		found = append(found, broken{ruleSentences, fmt.Sprintf("it has %d sentences, and a statement has one or two", len(sentences))})
@@ -102,20 +124,6 @@ func formBreaks(kind Kind, line string) []broken {
 		}
 	}
 	return found
-}
-
-// sentencesOf is each sentence of line, as its words, that a rule of the form counts: each piece
-// that ste-lint's splitter cuts (ste.Sentences, the one place that says where a sentence ends)
-// and that holds a word with a letter. A piece with no such word, such as "42", "...", "—" or
-// "12:30.", is no sentence, so a text of such pieces alone has no sentence.
-func sentencesOf(line string) [][]string {
-	var sentences [][]string
-	for _, sentence := range ste.Sentences(line) {
-		if slices.ContainsFunc(sentence, hasLetter) {
-			sentences = append(sentences, sentence)
-		}
-	}
-	return sentences
 }
 
 // hasLetter reports whether word holds a letter of any script.
@@ -167,10 +175,10 @@ func referenceBreaks(c Context, people map[string]bool, line string) []broken {
 		found = append(found, link.broken)
 	}
 	for _, match := range incident.FindAllString(line, -1) {
-		found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q", match)})
+		found = append(found, broken{ruleIncident, fmt.Sprintf("it names an incident: %q. %s", match, incidentForms)})
 	}
 	for _, match := range pullRequest.FindAllString(line, -1) {
-		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q", match)})
+		found = append(found, broken{rulePullRequest, fmt.Sprintf("it names a pull request: %q. %s", match, pullRequestForms)})
 	}
 	for _, name := range personNames(people, line, inReference) {
 		found = append(found, broken{rulePerson, fmt.Sprintf("it names a person: %q", name)})

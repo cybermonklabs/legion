@@ -1,4 +1,9 @@
-import type { ApprovalRequestResponse, Artifact, SpecFormRead } from "@legion/contracts";
+import type {
+  ApprovalRequestResponse,
+  Artifact,
+  SpecFormFinding,
+  SpecFormRead,
+} from "@legion/contracts";
 import type { DispatchClient } from "../dispatch-http";
 import {
   type CommandContext,
@@ -66,6 +71,17 @@ function scopeLine(form: SpecFormRead): string {
 }
 
 /**
+ * How many texts hold one of `findings`, which the read route answers whole. The findings of one
+ * text name its node, its kind, its place and its excerpt, as in the head of the server's refusal
+ * (`textsOf` in packages/envoy/internal/dispatch/specform/message.go).
+ */
+function textsBreaking(findings: readonly SpecFormFinding[]): number {
+  return new Set(
+    findings.map(({ excerpt, kind, node, where }) => JSON.stringify([where, kind, node, excerpt]))
+  ).size;
+}
+
+/**
  * The form of one document as Dispatch read it. A document an approval request is judged on
  * (`in_scope`) gets the line that says Dispatch refuses its approval and each finding, or the
  * line of what Dispatch read. One out of scope first says why Dispatch refuses nothing for it,
@@ -81,7 +97,8 @@ function documentLines(form: SpecFormRead): string[] {
       : [scopeLine(form), "The findings below are for you to read.", ...listed];
   }
   if (findings.length === 0) return [read];
-  const breaks = form.findings_total === 1 ? "1 text breaks" : `${form.findings_total} texts break`;
+  const texts = textsBreaking(findings);
+  const breaks = texts === 1 ? "1 text breaks" : `${texts} texts break`;
   return [
     `Dispatch refuses an approval request of ${form.name} version ${form.version}, because ${breaks} the form of The Spec.`,
     ...listed,

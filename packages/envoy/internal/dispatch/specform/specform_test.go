@@ -3,6 +3,7 @@ package specform
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -53,9 +54,9 @@ func TestCheckRefusesEachFormFault(t *testing.T) {
 		{planted(), statement("Dispatch keeps each answer, as dispatch://ACME-12 asks."),
 			"dispatch-link", `it links to a record of Dispatch: "dispatch://ACME-12"`},
 		{planted(), statement("Envoy restarts its listener after incident INC-2041."),
-			"incident", `it names an incident: "incident INC-2041"`},
+			"incident", `it names an incident: "incident INC-2041". Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date`},
 		{planted(), statement("Envoy stores each message, as pull request #4031 makes it do."),
-			"pull-request", `it names a pull request: "pull request #4031"`},
+			"pull-request", `it names a pull request: "pull request #4031". Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address`},
 		{planted("ada.lovelace@example.com"), claim,
 			"person", `it names a person: "Ada Lovelace"`},
 	} {
@@ -112,6 +113,48 @@ func TestCheckLetsTheWordIncidentStand(t *testing.T) {
 	}
 }
 
+// pullRequestNamed and incidentNamed are the details of the two rules for the text they matched.
+func pullRequestNamed(match string) string {
+	return fmt.Sprintf("it names a pull request: %q. Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address", match)
+}
+
+func incidentNamed(match string) string {
+	return fmt.Sprintf("it names an incident: %q. Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date", match)
+}
+
+// TestACountAfterPullRequestOrIncidentNamesNoRecord holds the two rules to the forms that only a
+// name has. A bare number after the words is a count, such as "10 minutes", and names nothing.
+// The rows that name a record are the control: each form of a name keeps its finding.
+func TestACountAfterPullRequestOrIncidentNamesNoRecord(t *testing.T) {
+	for _, body := range []string{
+		"Legion merges each pull request 10 minutes after its checks pass.",
+		"Legion lands each pull request 2 minutes after its last check passes.",
+		"Legion opens each PR 3 times at most.",
+		"Dispatch closes each incident 24 hours after its last event.",
+		"Dispatch keeps each incident 30 days after it closes.",
+		"Legion merges each change, as pull request 4179 shows.",
+	} {
+		if _, got := checkStatement(body); len(got) != 0 {
+			t.Errorf("Check(%q) = %#v, want none: the number is a count", body, got)
+		}
+	}
+	for _, test := range []struct{ body, rule, detail string }{
+		{"Legion reads each thread, as PR #3920 requires.", "pull-request", pullRequestNamed("PR #3920")},
+		{"Legion reads each thread, as pull request number 12 requires.", "pull-request", pullRequestNamed("pull request number 12")},
+		{"Legion reads each thread, as acme/widgets#12 requires.", "pull-request", pullRequestNamed("acme/widgets#12")},
+		{"Legion reads each thread, as https://github.com/acme/widgets/pull/12 requires.", "pull-request", pullRequestNamed("github.com/acme/widgets/pull/12")},
+		{"Legion reads each thread, as #12 requires.", "pull-request", pullRequestNamed("#12")},
+		{"Envoy starts again within 10 seconds, as incident number 4471 showed.", "incident", incidentNamed("incident number 4471")},
+		{"Envoy starts again within 10 seconds, as incident SEV-12 showed.", "incident", incidentNamed("incident SEV-12")},
+		{"Envoy starts again within 10 seconds, as incident 2026-11-01 showed.", "incident", incidentNamed("incident 2026-11-01")},
+	} {
+		text, got := checkStatement(test.body)
+		if want := []Finding{finding(text, Rule(test.rule), test.detail)}; !sameFindings(got, want) {
+			t.Errorf("Check(%q) = %#v, want %#v", test.body, got, want)
+		}
+	}
+}
+
 // TestANamePieceThatIsASystemNounIsNoPerson holds the person rule off a name of the system, from
 // the context or from a name text of the input. With neither, the same text names a person,
 // which shows the rule can fire.
@@ -141,7 +184,7 @@ func TestFailingExampleAndNameTakeOnlyReferenceRules(t *testing.T) {
 		t.Errorf("a failing example of 40 words with a semicolon: Check = %#v, want none", got)
 	}
 	name := Text{Node: "queue", Kind: KindName, Body: "PR #12 queue", Where: where}
-	if got, want := Check(planted(), Input{Texts: []Text{name}}), []Finding{finding(name, "pull-request", `it names a pull request: "PR #12"`)}; !sameFindings(got, want) {
+	if got, want := Check(planted(), Input{Texts: []Text{name}}), []Finding{finding(name, "pull-request", pullRequestNamed("PR #12"))}; !sameFindings(got, want) {
 		t.Errorf("the name %q: Check = %#v, want %#v", name.Body, got, want)
 	}
 }
@@ -300,5 +343,60 @@ func TestMessageIsTheRefusalOfThePlan(t *testing.T) {
 		"Fix each text, then request approval again."
 	if got := Message(ActRequest, findings, 2, more); got != want {
 		t.Fatalf("Message =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestTheRefusalHeadCountsTheTextsThatBreak holds the first line of each refusal to the count of
+// the texts that hold a finding: one statement with several faults is one text, with one line for
+// each fault. Control: a second text with its own faults makes the head say 2.
+func TestTheRefusalHeadCountsTheTextsThatBreak(t *testing.T) {
+	text := statement("Dispatch spins up a seamless lease; it starts. It ends.")
+	findings := Check(planted(), Input{Texts: []Text{text}})
+	if len(findings) < 3 {
+		t.Fatalf("setup: Check = %#v, want at least three findings of the one text", findings)
+	}
+	other := Text{Node: "second", Kind: KindStatement, Body: "Legion spins up each lease; it waits.", Where: where}
+	both := append(slices.Clone(findings), Check(planted(), Input{Texts: []Text{other}})...)
+	for _, test := range []struct {
+		name, text, head string
+		lines            int
+	}{
+		{"request", Message(ActRequest, findings, len(findings), more), "Dispatch refused this approval request, because 1 text breaks the form of The Spec.", len(findings)},
+		{"approval", Message(ActApproval, findings, len(findings), more), "Dispatch refused this approval, because 1 text breaks the form of The Spec.", len(findings)},
+		{"changes reason", ChangesReason(findings, len(findings), more), "Dispatch refused my approval, because 1 text breaks the form of The Spec.", len(findings)},
+		{"restore", Message(ActRestore, findings, len(findings), more), "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.", len(findings)},
+		{"two texts", Message(ActRequest, both, len(both), more), "Dispatch refused this approval request, because 2 texts break the form of The Spec.", len(both)},
+	} {
+		lines := strings.Split(test.text, "\n")
+		if lines[0] != test.head || len(lines) != test.lines+2 {
+			t.Errorf("%s: head %q and %d lines, want %q and %d finding lines between the head and the next step:\n%s",
+				test.name, lines[0], len(lines), test.head, test.lines, test.text)
+		}
+	}
+}
+
+// TestADefinitionLineInAnotherFormIsNotPassedInSilence holds Check to each line under Terms: a
+// line in another form than "- **<term>**: <definition>" gets a finding that names it, so a
+// definition that breaks the form cannot pass because its line has another form. Control: the
+// same definition in the term line's form gets findings of its own rules.
+func TestADefinitionLineInAnotherFormIsNotPassedInSilence(t *testing.T) {
+	control, err := ExtractDocument("terms.md", 1, "# Terms\n\n- **beacon**: A seamless signal that each session spins up; it repeats. It stops. It starts.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := Check(planted(), Input{Texts: control.Texts, Proposed: control.Terms}); len(got) == 0 {
+		t.Fatalf("control: the same definition in the form of a term line gives no finding")
+	}
+	extracted, err := ExtractDocument("terms.md", 1, "# Terms\n\n- **lease**: The time for which a session holds an issue.\n"+
+		"- **beacon** — A seamless signal that each session spins up; it repeats. It stops. It starts.\n"+
+		"- **drift:** The slow change of the clock of one machine; it is robust.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+	for _, name := range []string{"beacon", "drift"} {
+		if !slices.ContainsFunc(got, func(finding Finding) bool { return strings.Contains(finding.Node, name) }) {
+			t.Errorf("%s: no finding names its line, and the extractor read terms %#v: a definition that breaks the form passes in silence", name, extracted.Terms)
+		}
 	}
 }

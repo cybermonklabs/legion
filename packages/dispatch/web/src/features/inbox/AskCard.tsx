@@ -10,13 +10,7 @@ import {
   useState,
 } from "react";
 
-import {
-  type ArtifactOwner,
-  api,
-  type DeclineAskInput,
-  isSpecFormRefusal,
-  type WriteBounds,
-} from "../../api/client";
+import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import { usersQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
@@ -42,6 +36,7 @@ import {
   borderDefault,
   card,
   cardHoverBorder,
+  growingField,
   inlineWarningText,
   inputClasses,
   linkHoverText,
@@ -56,6 +51,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { focusIsFreeFor } from "../doc/form-refusals";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -362,6 +358,7 @@ export function AskCard({
     completed,
     displayedAsk,
     edits,
+    formRefusal,
     isApproval,
     isSubmitting,
     mutation,
@@ -380,6 +377,7 @@ export function AskCard({
     submitHint,
     toggleOther,
     submitGuard,
+    takeFormRefusalFocus,
     threadQuery,
     trimmedAnswer,
     unsentAnswer,
@@ -406,9 +404,9 @@ export function AskCard({
   }
   // A refusal of the form fills the reason of Request changes with what Dispatch wrote for the
   // author (`useAskAnswerForm`); a compact card shows that reason too rather than folding the
-  // text the next press sends behind its disclosure. The same pattern as the change above.
-  const formRefusal = isSpecFormRefusal(mutation.error) ? mutation.error : null;
-  const [shownFormRefusal, setShownFormRefusal] = useState(formRefusal);
+  // text the next press sends behind its disclosure. The same pattern as the change above, from
+  // no refusal, so a card drawn again with a kept refusal opens it too.
+  const [shownFormRefusal, setShownFormRefusal] = useState<typeof formRefusal>(null);
   if (formRefusal !== shownFormRefusal) {
     setShownFormRefusal(formRefusal);
     if (formRefusal !== null && variant === "compact") setOwnWordsOpen(true);
@@ -439,14 +437,18 @@ export function AskCard({
   });
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
-  // Picking Request changes moves the person straight to the field the server insists
-  // on. Keyed on the field actually being mounted, not just on the option: the compact variant
-  // unmounts the field when its disclosure closes, and reopening it must refocus.
+  // Picking Request changes moves the person straight to the field the server insists on. Keyed
+  // on the field actually being mounted, not just on the option: the compact variant mounts the
+  // field when its disclosure opens (reopening it is the disclosure's own move, below). Only the
+  // person's own pick moves the focus, so the intent is recorded as the option is picked: a
+  // refusal of the form also picks Request changes, in each card of the ask, and leaves the focus
+  // where the person pressed (`takeFormRefusalFocus`, below).
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
+  const focusReasonOnShow = useRef(false);
   useEffect(() => {
-    if (reasonFieldShown) {
-      answerFieldRef.current?.focus();
-    }
+    if (!reasonFieldShown) return;
+    if (focusReasonOnShow.current) answerFieldRef.current?.focus();
+    focusReasonOnShow.current = false;
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
   // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
@@ -481,20 +483,28 @@ export function AskCard({
   // A refusal of the form is an answer the reader acts on in this card, so the control they
   // pressed gets the focus back once it is enabled again. A compact card draws its actions anew
   // as it opens the reason, so a control no longer in the page stands for the same kind of
-  // control in the form: Answer, or the answer field. An answer that lands leaves the focus where
-  // the hand-off put it, as every answered card does.
+  // control in the form: Answer, or the answer field. A card drawn again after the press - the
+  // host took the card that wrote out of the page - holds no pressed control, and takes the focus
+  // the press owes onto Answer, the press the refusal's last line names, unless the reader has
+  // put the focus elsewhere. Another card of the same ask on the page shows the refusal and takes
+  // no focus. An answer that lands leaves the focus where the hand-off put it, as every answered
+  // card does.
   useEffect(() => {
     if (mutation.isPending) return;
     const pressed = handedOffFrom.current;
     handedOffFrom.current = null;
-    if (formRefusal === null || pressed === null) return;
-    const control = pressed.isConnected
-      ? pressed
-      : formRef.current?.querySelector<HTMLElement>(
-          pressed.matches('[type="submit"]') ? '[type="submit"]' : "[data-ask-answer]"
-        );
+    if (formRefusal === null || !takeFormRefusalFocus(formRef.current)) return;
+    if (pressed === null && !focusIsFreeFor(formRef.current)) return;
+    const control =
+      pressed?.isConnected === true
+        ? pressed
+        : formRef.current?.querySelector<HTMLElement>(
+            pressed === null || pressed.matches('[type="submit"]')
+              ? '[type="submit"]'
+              : "[data-ask-answer]"
+          );
     if (control?.matches(":disabled") === false) control.focus();
-  }, [formRef, formRefusal, mutation.isPending]);
+  }, [formRef, formRefusal, mutation.isPending, takeFormRefusalFocus]);
   const submitHintId = `${answerFieldId}-hint`;
   const agentText = useAgentText();
   // The asker as its button's tooltip: a block ask the server indexed with no pending author
@@ -606,8 +616,11 @@ export function AskCard({
         >
           {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
         </span>
+        {/* It grows with its text up to half the window (`growingField`). So a reason that
+            Dispatch wrote after a form refusal shows whole, and Answer stays on the screen.
+            `min-h-16!` keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
         <textarea
-          className={`block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
+          className={`block min-h-16! w-full rounded-lg px-3 py-2 font-normal outline-none ${growingField} ${inputClasses(true)}`}
           data-ask-answer=""
           disabled={isSubmitting}
           id={answerFieldId}
@@ -920,6 +933,7 @@ export function AskCard({
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
+                  focusReasonOnShow.current = requiresReason(option.label);
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");

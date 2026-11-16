@@ -333,6 +333,85 @@ test("Request changes after a form refusal opens with Dispatch's reason and no a
   }
 });
 
+// The refusal belongs to the approval, not to the header that shows it: a host that draws the
+// header again shows it again, with the focus on Approve and the reason in Request changes. The
+// control: a header drawn for a later version of the document shows no refusal, because the
+// findings are of the version that Dispatch read.
+test("a form refusal of Approve survives a redraw of the header, for the version it judged", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    specFormRefusal()
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const header = (drawing: number, latest: number) => (
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: latest, state: "awaiting" })}
+        key={drawing}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  const view = render(header(1, 12));
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await screen.findByRole("alert");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toHaveFocus());
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    view.rerender(header(2, 12));
+    expect((await screen.findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    expect((within(dialog).getByLabelText("Reason") as HTMLTextAreaElement).value).toBe(
+      specFormRefusalBody.changes_reason
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    view.rerender(header(3, 13));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// A press whose header the host draws again before Dispatch answers: the header drawn again takes
+// the focus the press owes, on Approve, the press of the refusal.
+test("a header drawn again while its Approve is out takes the focus when Dispatch refuses it", async () => {
+  const user = userEvent.setup();
+  const refused = Promise.withResolvers<ArtifactReview>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockReturnValue(refused.promise);
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const header = (drawing: number) => (
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 12, state: "awaiting" })}
+        key={drawing}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  const view = render(header(1));
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    view.rerender(header(2));
+    expect(document.activeElement).toBe(document.body);
+    refused.reject(specFormRefusal());
+    expect((await screen.findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve" })).toHaveFocus());
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
 // The control: after a form refusal the dialog still says so when its own request for changes is
 // refused. It sends a reason of its own, so it passes with the reason field empty or filled. A
 // 403, since a 5xx is tried again under its key and never reaches the dialog.

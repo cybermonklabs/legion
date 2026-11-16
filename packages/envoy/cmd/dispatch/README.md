@@ -4675,8 +4675,28 @@ With no request open, these are the documents that the request names.
 With a request open, they are the documents that the open request names.
 These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
 A hard finding of ASD-STE100 also breaks it.
-A sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
+
+- How the rules count sentences: a sentence holds a word with a letter, so a statement or a definition such as `42`, `...` or `12:30.` has no sentence.
+  A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
+  So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
+  A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
+  An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word, and none of its stops ends a sentence, also the last one before a space.
+  Nothing in code font ends a sentence.
+  A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
+  Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+  A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+  An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
+  A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
+  So write the steps with words.
+  The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
+
 A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
+
+- How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
+  `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
+  A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+  The finding of each rule lists the forms that it reads.
+
 A definition of a term has one sentence, and a term has one definition.
 A term line is `- **<term>**: <definition>` under a heading `Terms`, at any level.
 Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
@@ -4722,6 +4742,7 @@ So its move and an approval at one time can join the list in either order.
 
 A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
 `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
+The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
 A person's approval of a covered document gets the same refusal through three routes.
 These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
 That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
@@ -4730,6 +4751,9 @@ When the document that a request names is covered, the answer carries `spec_form
 `texts` counts each kind of text that Dispatch read in the documents it judged.
 `terms` counts the terms of the root's list.
 A reopen and the repair pass leave a withdrawn request that breaks the form resolved, with the findings as its reason (`PATCH /api/v1/issues/{key}`, above).
+A carry of an approval to a new version passes the same gate.
+So Dispatch carries no approval to a version whose text breaks the form, and the person's own Approve then gets the refusal.
+An approval given outside a root was never judged, and it stays when its issue moves under the root.
 `GET /api/v1/artifacts/{id}/spec-form` shows the findings and the list of terms with no side effect.
 
 ## Dispatch topics

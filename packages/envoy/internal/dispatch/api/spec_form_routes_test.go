@@ -186,11 +186,11 @@ var formFaults = []formFault{
 	{name: "an incident", node: "restart-listener", kind: specform.KindStatement,
 		clean:  "Envoy restarts its listener when the listener stops.",
 		broken: "Envoy restarts its listener after incident INC-2041.",
-		rule:   "incident", detail: `it names an incident: "incident INC-2041"`},
+		rule:   "incident", detail: `it names an incident: "incident INC-2041". Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date`},
 	{name: "a pull request", node: "store-message", kind: specform.KindStatement,
 		clean:  "Envoy stores each message.",
 		broken: "Envoy stores each message, as pull request #4031 makes it do.",
-		rule:   "pull-request", detail: `it names a pull request: "pull request #4031"`},
+		rule:   "pull-request", detail: `it names a pull request: "pull request #4031". Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address`},
 	{name: "a person in a claim", node: "approve-change", kind: specform.KindClaim,
 		clean:  "Each change waits for its approval before it lands.",
 		broken: "Ada Lovelace approves each change before it lands.",
@@ -227,7 +227,8 @@ func (f formFault) finding(issue formIssue, version int) specFormFinding {
 }
 
 // requireFormRefusal fails t unless response is the 409 SPEC_FORM refusal of act, naming exactly
-// want, each by its node and rule, in that order.
+// want, each by its node and rule, in that order. Its head counts the texts that want names, and
+// findings_total counts want.
 func requireFormRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, act specform.Act, lines []string, want ...specFormFinding) specFormError {
 	t.Helper()
 	if response.Code != http.StatusConflict {
@@ -237,9 +238,13 @@ func requireFormRefusal(t *testing.T, what string, response *httptest.ResponseRe
 	if body.Code != "SPEC_FORM" || body.FindingsTotal != len(want) || !reflect.DeepEqual(body.Findings, want) {
 		t.Fatalf("%s: refusal = code %q, total %d, findings %#v; want SPEC_FORM, %d, %#v", what, body.Code, body.FindingsTotal, body.Findings, len(want), want)
 	}
+	texts := map[string]bool{}
+	for _, finding := range want {
+		texts[fmt.Sprintf("%s version %d: %s %s", finding.Document, finding.Version, finding.Kind, finding.Node)] = true
+	}
 	count := "1 text breaks"
-	if len(want) != 1 {
-		count = fmt.Sprintf("%d texts break", len(want))
+	if len(texts) != 1 {
+		count = fmt.Sprintf("%d texts break", len(texts))
 	}
 	listed := strings.Join(lines, "\n")
 	switch act {
@@ -860,6 +865,41 @@ func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 		lines[20] != "- statement s20 in spec.md version 1: it has 3 sentences, and a statement has one or two." ||
 		lines[21] != "And 3 more: dispatch spec-form --issue "+issue.Key+" --artifact spec.md lists them all." {
 		t.Fatalf("refusal = total %d, %d findings, error\n%s", body.FindingsTotal, len(body.Findings), body.Error)
+	}
+}
+
+// The head of a refusal counts the texts that break the form, and findings_total counts the
+// findings: a statement with three faults is one text with a line for each fault, in the refusal of
+// the agent's request, in the refusal of the person's approval and in the reason that Request
+// changes sends.
+func TestTheRefusalHeadCountsTheTextsAndTheTotalCountsTheFindings(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const body = "Dispatch spins up a seamless lease; it starts. It ends."
+	issue := createFormIssue(t, tree.handler, tree.root, "One statement with three faults", "# Spec\n\n:::requirement{#lease}\n"+body+"\n:::\n")
+	var want []specFormFinding
+	var lines []string
+	for _, fault := range []struct{ rule, detail string }{
+		{"ste100-phrasal-verb", `ASD-STE100 does not permit the phrasal verb: "spins up"`},
+		{"ste100-marketing-adjective", `ASD-STE100 does not permit the marketing adjective: "seamless"`},
+		{"ste100-semicolon", `ASD-STE100 does not permit a semicolon: ";"`},
+	} {
+		want = append(want, specFormFinding{
+			Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: 1,
+			Finding: specform.Finding{
+				Node: "lease", Kind: specform.KindStatement, Where: "spec.md version 1",
+				Rule: specform.Rule(fault.rule), Detail: fault.detail, Excerpt: body,
+			},
+		})
+		lines = append(lines, "- statement lease in spec.md version 1: "+fault.detail+".")
+	}
+	request := requireFormRefusal(t, "request", requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil),
+		specform.ActRequest, lines, want...)
+	approval := requireFormRefusal(t, "approval", reviewFormDocument(t, tree.handler, issue.PrimaryArtifactID, "approved", ""),
+		specform.ActApproval, lines, want...)
+	for what, text := range map[string]string{"request": request.Error, "approval": approval.Error, "changes_reason": approval.ChangesReason} {
+		if !strings.Contains(strings.Split(text, "\n")[0], "because 1 text breaks the form of The Spec.") {
+			t.Errorf("%s: head %q, want 1 text for the 3 findings", what, strings.Split(text, "\n")[0])
+		}
 	}
 }
 

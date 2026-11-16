@@ -316,7 +316,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if heartbeat == 0 {
 		heartbeat = defaultStreamHeartbeat
 	}
-	return Deps{
+	deps := Deps{
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
@@ -347,7 +347,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
-	}, nil
+	}
+	// Each carry of an approval that the document service writes asks the form gate first.
+	deps.Docs.SetFormGate((&server{deps: deps}).carryBreaksForm)
+	return deps, nil
 }
 
 // ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...).

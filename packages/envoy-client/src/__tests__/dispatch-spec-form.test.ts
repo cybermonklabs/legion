@@ -417,6 +417,23 @@ describe("dispatch spec-form", () => {
     ]);
   });
 
+  test("a statement with two faults is one text that breaks the form, with a line for each fault", async () => {
+    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 1 }, [
+      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
+      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", LONG_SENTENCE),
+    ]);
+
+    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+
+    expect(code).toBe(0);
+    expect(stdout.split("\n")).toEqual([
+      "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
+      `- statement ship-at-head: ${THREE_SENTENCES}.`,
+      `- statement ship-at-head: ${LONG_SENTENCE}.`,
+      "",
+    ]);
+  });
+
   test.each([
     [
       "no_root",

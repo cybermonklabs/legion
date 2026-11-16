@@ -370,19 +370,17 @@ func eachSegment(lines []string, visit func(line int, from segment, text string)
 	}
 }
 
-// Sentences is each sentence, as its words, that ste-lint's long-sentence rule counts in text:
-// outside code fences, a table's cells one by one, with inline code removed, split at a run of
-// whitespace after ".", "!" or "?". A piece with no word is no sentence.
-func Sentences(text string) [][]string {
-	var sentences [][]string
+// Words is each piece of text that ste-lint lints, as its words: outside code fences, a table's
+// cells one by one, with inline code removed, split at Python's white space. A piece with no word
+// is left out. Where a sentence ends is the caller's to decide.
+func Words(text string) [][]string {
+	var pieces [][]string
 	eachSegment(splitLines(text), func(_ int, _ segment, line string) {
-		for _, piece := range sentencePieces(line) {
-			if words := fields(piece); len(words) > 0 {
-				sentences = append(sentences, words)
-			}
+		if words := fields(line); len(words) > 0 {
+			pieces = append(pieces, words)
 		}
 	})
-	return sentences
+	return pieces
 }
 
 // located is a finding with the line and column that ste-lint orders findings by.

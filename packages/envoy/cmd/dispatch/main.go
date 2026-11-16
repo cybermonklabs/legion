@@ -444,6 +444,14 @@ func main() {
 		Identity:  requestIdentity,
 		ServerURL: serverURL,
 	})
+	// The restoration below schedules settlements, whose version writes carry approvals, before
+	// the API is built: the form gate is set first, so no carry passes it (api.FormGate).
+	formGate, err := api.FormGate(boot.SpecRoots, serverURL)
+	if err != nil {
+		slog.Error("dispatch: read the roots of The Spec", "error", err)
+		os.Exit(1)
+	}
+	documentService.SetFormGate(formGate)
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
