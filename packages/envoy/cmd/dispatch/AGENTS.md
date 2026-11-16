@@ -432,11 +432,14 @@ write identity errors with `identity.WriteError`.
   from the current signing key), so any process completes a sign-in another
   started, and no process holds pending state. Those boot checks, the
   code flow and the request identity main builds live in
-  `cmd/dispatch/signin.go`, and `identity.SignInRule` — an interface with two
-  implementations, `identity.GroupRule` and `identity.DomainRule`, which
-  `signInRule` chooses between once from boot's settings — carries the choice
-  to the router and `identity.Membership`; each implementation's `Person`
-  method reads only its own issuer's claims. Under a group it names the
+  `cmd/dispatch/signin.go`, and `identity.SignInRule` — an interface with three
+  implementations, `identity.GroupRule`, `identity.DomainRule` and
+  `identity.OutsideRule` (a `DomainRule` that also admits, as a restricted
+  member, a verified account outside the domain that a project names directly,
+  under `DISPATCH_SIGNIN_OUTSIDE=1`), which `signInRule` chooses between once
+  from boot's settings — carries the choice to the router and
+  `identity.Membership`; each implementation's `Person` method reads only its
+  own issuer's claims. Under a group it names the
   person by the email in the pool username (`<provider>_<email>`, the
   provider one the ID token's `identities` names), never by the `email`
   claim, which a person can write, and admits only a member of
@@ -446,7 +449,7 @@ write identity errors with `identity.WriteError`.
   `prompt=consent` and `hd`, and reads `email`, `email_verified` and `hd`
   from the verified ID token itself (`readWorkspaceClaims`; `Verify`, shared
   with pods' tokens and the listener, reads none of them); `DomainRule`'s
-  `Person` admits the lowercased `email` of a token whose
+  `Person` admits the `email`, its ASCII letters lowered, of a token whose
   `hd` is the domain and whose email is verified, and refuses anyone else with
   a reason on the 403 page (`ErrNotInDomain`, `ErrEmailNotVerified`,
   `ErrNoEmail`). The callback records the person in `people` with the issuer's
