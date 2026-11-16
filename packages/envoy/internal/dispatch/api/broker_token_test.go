@@ -9,6 +9,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ func liveNamedToken(jkt string) brokertoken.Introspection {
 		Session:      brokerTestSession,
 		Person:       brokerTestPerson,
 		ProjectScope: brokertoken.ProjectScopeNamed,
-		Project:      brokerTestProject,
+		Projects:     []string{brokerTestProject},
 		Scope:        "dispatch.write",
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		ClientID:     brokertoken.ExchangeClientID,
@@ -254,7 +255,7 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-session-token"
 	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Project = brokertoken.ProjectScopePerson, ""
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(token, answer)
 
 	response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
@@ -345,6 +346,98 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	}
 	if actor.Origin == nil || actor.Origin.Cwd != "/workspace" || actor.Origin.Host != "example-host-one" || actor.Origin.Pane != "%7" {
 		t.Fatalf("the write's origin = %+v, want the body's cwd, host and pane kept", actor.Origin)
+	}
+}
+
+// TestANamedBrokerTokenNamingTwoProjectsWritesNothing: no exchange mints a named token naming two
+// projects, and Dispatch writes its project limit only for one; such an answer is refused before
+// any write rather than read as a caller no project limits.
+func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token-naming-two-projects"
+	answer := liveNamedToken(caller.jkt)
+	answer.Projects = []string{brokerTestProject, "OTHER"}
+	rig.broker.Says(token, answer)
+	seedProject(t, rig, "OTHER", "Other")
+	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written under a named token naming two projects", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, written); written.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
+		t.Fatalf("a write under a named token naming two projects: status=%d body=%s, want 401 BROKER_TOKEN_NOT_A_SESSION", written.Code, written.Body.String())
+	}
+}
+
+// TestAnOlderBrokersNamedAnswerWritesNothing: while an older broker replica answers introspection
+// for a named token this release stored (a rolling update, a canary, a rollback), it reads the
+// token's one project from the older `project` claim the exchange also writes, and answers
+// `"project":"<key>"` with no `projects`. Dispatch refuses that answer before any write, rather
+// than reading a named token naming no project, which it would hold to no project at all. This is
+// the reader's half and passes whatever the exchange stores; the writer's half, that the exchange
+// stores that claim at all, is TestANamedTokenStoresItsProjectUnderTheOlderClaimToo
+// (internal/broker/oauth).
+func TestAnOlderBrokersNamedAnswerWritesNothing(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token-an-older-replica-answers-for"
+	rig.broker.SaysRaw(token, fmt.Sprintf(`{"active":true,"session":%q,"person":%q,"project_scope":"named","project":%q,"exp":%d,"client_id":%q,"jkt":%q}`,
+		brokerTestSession, brokerTestPerson, brokerTestProject, time.Now().Add(time.Hour).Unix(), brokertoken.ExchangeClientID, caller.jkt))
+	seedProject(t, rig, "OTHER", "Other")
+	written := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written under an older replica's answer", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, written); written.Code != http.StatusUnauthorized || refusal.Code != "BROKER_TOKEN_NOT_A_SESSION" {
+		t.Fatalf("a write under an older replica's named answer: status=%d body=%s, want 401 BROKER_TOKEN_NOT_A_SESSION", written.Code, written.Body.String())
+	}
+}
+
+// TestANamedBrokerTokenLimitsWritesToItsProject: a token an operator's entry mapped to one
+// project writes that project and no other, as it always has.
+func TestANamedBrokerTokenLimitsWritesToItsProject(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-named-token"
+	rig.broker.Says(token, liveNamedToken(caller.jkt))
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	own := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": brokerTestProject, "title": "Written into its own project", "spec": "# Spec",
+	}))
+	if own.Code != http.StatusCreated {
+		t.Fatalf("a named token's write into its own project: status=%d body=%s", own.Code, own.Body.String())
+	}
+	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written into another project", "spec": "# Spec",
+	}))
+	if refusal := decodeBody[refusalAnswer](t, other); other.Code != http.StatusForbidden || refusal.Code != codeProjectScope {
+		t.Fatalf("a named token's write into another project: status=%d body=%s, want 403 %s", other.Code, other.Body.String(), codeProjectScope)
+	}
+}
+
+// TestAPersonTokenWithProjectsLimitsNoWriteYet: a token acting as its person carries the list its
+// trade asked for, and that list names no project the token writes as its own: whoami names
+// none, and the token writes another project its person may write, exactly as a token naming no
+// project does. What later reads the list is Dispatch's own project access rule.
+func TestAPersonTokenWithProjectsLimitsNoWriteYet(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	const token = "a-person-token-naming-a-project"
+	answer := liveNamedToken(caller.jkt)
+	answer.ProjectScope, answer.Projects = brokertoken.ProjectScopePerson, []string{brokerTestProject}
+	rig.broker.Says(token, answer)
+	seedProject(t, rig, brokerTestProject, "Broker")
+	seedProject(t, rig, "OTHER", "Other")
+
+	who := decodeBody[whoamiAnswer](t, rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)))
+	if who.Project != nil {
+		t.Fatalf("whoami project = %q, want null: a person token's list names no project it writes as its own", *who.Project)
+	}
+	other := rig.serve(caller.presenting(t, http.MethodPost, "/api/v1/issues", token, map[string]any{
+		"project": "OTHER", "title": "Written into a project the list does not name", "spec": "# Spec",
+	}))
+	if other.Code != http.StatusCreated {
+		t.Fatalf("a person token's write into a project its list does not name: status=%d body=%s, want it written as before", other.Code, other.Body.String())
 	}
 }
 

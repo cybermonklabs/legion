@@ -804,6 +804,20 @@ func newStartingGate(name string, logger *logging.Logger) *startingGate {
 
 func (g *startingGate) open(mux *http.ServeMux) { g.mux.Store(mux) }
 
+// route names the /v1 route r reaches, envoy_listener_requests_total's path label: once the gate
+// is open, the pattern of the route that serves it ((*http.ServeMux).Handler, which routes as
+// ServeHTTP does and changes nothing on r), and before then, or for a path no route matches, the
+// pattern that routed it to the gate (/v1 or /v1/). It is always a pattern and never the path, so
+// a session id, or any other text a caller writes into a path, never becomes a series of its own.
+func (g *startingGate) route(r *http.Request) string {
+	if mux := g.mux.Load(); mux != nil {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			return pattern
+		}
+	}
+	return r.Pattern
+}
+
 func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := g.mux.Load()
 	if mux == nil {
@@ -979,11 +993,28 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	oidcAccounts, err := resolveListenerOIDCAccounts(os.Getenv, oidcIssuer)
+	if err != nil {
+		log.Fatal(err)
+	}
+	googleAudience, googleAccounts, err := resolveListenerGoogleConfig(os.Getenv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	apiVerifier, err := oidc.Discover(context.Background(), oidcIssuer, oidcAudience, oidc.DiscoveryTimeout)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// The broker-token settings are read here, beside the other two credentials, so a
+	// A Google identity token's issuer is Google itself, so only its audience is a setting.
+	var googleCallers *googleIdentities
+	if googleAudience != "" {
+		googleVerifier, err := oidc.Discover(context.Background(), oidc.GoogleIssuer, googleAudience, oidc.DiscoveryTimeout)
+		if err != nil {
+			log.Fatal(err)
+		}
+		googleCallers = &googleIdentities{audience: googleAudience, verifier: googleVerifier, accounts: googleAccounts}
+	}
+	// The broker-token settings are read here, beside the bearers' own, so a
 	// half-configured one refuses the start before anything is bound. Its verifier is built
 	// later, once JetStream is open: the spent-proof bucket it records a proof in lives there
 	// (brokerTokens.open).
@@ -992,11 +1023,20 @@ func main() {
 		log.Fatal(err)
 	}
 	brokerTokenAuth := newBrokerTokens(brokerConfig)
-	if err := validateListenerAPIAuth(cfg, apiToken, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED"), apiVerifier); err != nil {
+	apiAuthConfig := listenerAPIAuth{
+		token:        apiToken,
+		verifier:     apiVerifier,
+		accounts:     oidcAccounts,
+		google:       googleCallers,
+		brokers:      brokerTokenAuth,
+		allowedHosts: cfg.AllowedHosts,
+		logger:       logger,
+	}
+	if err := validateListenerAPIAuth(cfg, apiAuthConfig, os.Getenv("ENVOY_API_ALLOW_UNAUTHENTICATED")); err != nil {
 		log.Fatal(err)
 	}
-	logger.Info("listener API auth: " + describeListenerAPIAuth(apiToken, oidcIssuer, brokerTokenAuth))
-	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiToken, apiVerifier, cfg.AllowedHosts))
+	logger.Info("listener API auth: " + describeListenerAPIAuth(apiAuthConfig, oidcIssuer))
+	logger.Info("listener API hosts: " + describeListenerAPIHosts(apiAuthConfig))
 
 	// Load webhook config (fast — env var reads only).
 	webhookCfg, err := webhook.LoadWebhookConfig()
@@ -1046,7 +1086,11 @@ func main() {
 	sessionStoredAfterLastSeen := met.NewCounter("envoy_session_messages_stored_after_last_seen_total", "Messages the stream held for a reaped session, stored after its last registration; not a count of unread messages, since the listener keeps no read receipt")
 	sendsToUnresponsive := met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
-	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role messages a claim's drain dropped unforwarded, the stream having held them longer than the keep window")
+	// The kept role lanes' outcomes, none labelled by role: a deployment sees unboundedly many
+	// role tokens, and each would be a series of its own for the process's life.
+	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role copies a walk dropped at the end of their hour, whether or not a session held the role, by who kept them (kept_by: listener or dispatch_outbox) and whether the hour had ended more than an hour before the drop with no walk's claim on the copy (stale)")
+	roleDeadLetters := met.NewCounter("envoy_role_dead_letters_total", "Dead letters sent to the sender session of a kept role copy a walk dropped, by result: stored, or refused for good and not sent again")
+	roleKeptUndecodable := met.NewCounter("envoy_role_kept_undecodable_total", "Kept role copies a walk ended because no read can decode them")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
 	// The CI summary loop runs only beside the GitHub webhook route (Phase 6b2), so only a listener
 	// that mounts it carries the gauge the loop sets.
@@ -1086,7 +1130,9 @@ func main() {
 		mux.Handle(hook.path, webhookGate)
 	}
 	// Serve /v1/* on the listener port for local plugin registration.
-	v1Handler := apiAuth(apiToken, apiVerifier, brokerTokenAuth, cfg.AllowedHosts, logger, v1Gate)
+	apiAuthConfig.requests = newListenerRequests(met)
+	apiAuthConfig.route = v1Gate.route
+	v1Handler := apiAuth(apiAuthConfig, v1Gate)
 	mux.Handle("/v1", v1Handler)
 	mux.Handle("/v1/", v1Handler)
 
@@ -1398,6 +1444,12 @@ func main() {
 		messagesNAKed:     messagesNAKed,
 		deliveryDuration:  deliveryDuration,
 		roleKeptExpired:   roleKeptExpired,
+		// The walk's other two outcomes beside the drop, and the one publish a walk makes that
+		// is not a forward: a dropped copy's dead letter, stored on its sender's agent subject
+		// under the message id every listener gives it (endKeptCopyWithDeadLetter).
+		roleDeadLetters:     roleDeadLetters,
+		roleKeptUndecodable: roleKeptUndecodable,
+		publishDeadLetter:   client.PublishStoredAs,
 
 		fanoutUnresponsiveSkips: fanoutUnresponsiveSkips,
 
@@ -1409,11 +1461,16 @@ func main() {
 		// (unplaceableDeferrals, unplaceable_delivery.go).
 		deferredUnplaceable: newUnplaceableDeferrals(),
 		// One guard per role for the life of the process, held for a whole handover of that
-		// role's kept lane, so the handovers a claim, a keep and the sweep start never walk the
-		// lane together, and the sweep can tell a lane this listener is draining already
-		// (roleKeepGuards, role_keep.go). Every handler and route built from this one value
-		// shares it, as they share the deferral set above.
+		// role's kept lane, so the handovers the claim route, a keep, a registration that makes a
+		// holder live again and the sweep start never walk the lane together, and the sweep can
+		// tell a lane this listener is draining already (roleKeepGuards, role_keep.go). Every
+		// handler and route built from this one value shares it, as they share the deferral set
+		// above.
 		roleKeepDrains: newRoleKeepGuards(),
+		// The listener's one clock for a kept copy's hour: the keep's answer, and the
+		// handovers the claim route, the keep, the registration and the sweep start
+		// (role_keep.go).
+		now: time.Now,
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
 	// role message's holder and hands the forward over, and the forwards to one holder are
@@ -1610,14 +1667,19 @@ func main() {
 		}),
 	}
 
-	// Phase 6b0: Hand over the kept role lanes nothing is draining. A handover of a role's kept
-	// lane runs in a goroutine of the process that started it, and only a claim or a keep starts
-	// one, so a listener restarted or replaced mid-handover leaves the copies behind its cursor
-	// for a claim that seldom comes inside roleKeepWindow: a live holder claims no second time.
-	// This is the backstop over them, on the reapers' cadence and under their context, with a
-	// pass as the listener starts. It costs one stream read a pass while no role has a kept lane
-	// (startKeptRoleSweep, role_keep_sweep.go).
-	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, 5*time.Minute))
+	// Phase 6b0: Walk every kept role lane on the stream. A handover of a role's kept lane runs in a
+	// goroutine of the process that started it, and only a claim the claim route grants, that
+	// route's refresh of a claimant that was not live, a keep or a registration that makes a holder
+	// live again starts one, so a listener restarted or replaced mid-handover leaves the copies
+	// behind its cursor for one of those, which seldom comes inside roleKeepWindow: a live holder
+	// claims no second time and its heartbeats start none. A role nobody holds is handed nothing
+	// at all, and its copies must still end at the end of their hour, each with a dead letter to
+	// its sender, while the copies still young wake the role again. This is the backstop over
+	// them, on the reapers' cadence and under their context, with a pass as the listener starts.
+	// It costs one stream read a pass while no role has a kept lane (startKeptRoleSweep,
+	// role_keep_sweep.go), and its cadence is the interval the repeated wake report is named by
+	// (roleWakeInterval).
+	kvLoopsDone = append(kvLoopsDone, startKeptRoleSweep(kvLoopsCtx, deliveryConfig, roleWakeInterval))
 
 	// Phase 6b0a: Free the slot every session consumer whose session ended without deregistering
 	// holds. The deregistration route deletes the consumer of a registration it removed, and a

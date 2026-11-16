@@ -22,7 +22,7 @@ const tailnetLocalAddrPort = "127.0.0.1:41234"
 // and children.
 type NatsContainers struct {
 	NatsImage        string
-	Launch           []core.Field // NatsLaunch's fields
+	Launch           Launch // NatsLaunch's
 	TailscaleImage   string
 	TailnetHostname  string
 	TailnetTags      []string
@@ -41,14 +41,14 @@ func NatsContainerDefinitions(c NatsContainers) string {
 		{Key: "image", Value: c.NatsImage},
 		{Key: "essential", Value: true},
 	}
-	nats = append(nats, c.Launch...)
+	nats = append(nats, c.Launch.fields...)
 	nats = append(nats,
 		core.Field{Key: "portMappings", Value: []core.Object{
 			portMapping(NatsClientPort), portMapping(natsClusterPort), portMapping(natsMonitorPort),
 		}},
 		core.Field{Key: "mountPoints", Value: []core.Object{mountPoint("nats-data", "/data")}},
 		core.Field{Key: "healthCheck", Value: healthCheck(
-			fmt.Sprintf("wget -qO- http://localhost:%d/healthz || exit 1", natsMonitorPort), 30)},
+			fmt.Sprintf("wget -qO- http://%s:%d/healthz || exit 1", c.Launch.monitorHost(), natsMonitorPort), 30)},
 		core.Field{Key: "logConfiguration", Value: logConfiguration(c.LogGroup, c.Region, "nats")},
 	)
 
@@ -86,20 +86,44 @@ func NatsContainerDefinitions(c NatsContainers) string {
 	return core.PyJSON([]core.Object{nats, sidecar}, core.PyJSONOptions{EnsureASCII: true})
 }
 
-// NatsLaunch returns the NATS container's launch fields. Without authorization the image's own
-// entrypoint runs nats-server with serverArgs. With it, the task has no file of its own to mount,
-// so `/bin/sh -c` runs core's StartScript, which `envoy-infra render nats-start-script` prints;
-// its refusals, each a core.InputError naming its input, pass through as they are.
-func NatsLaunch(authorization *core.Authorization, header, serverArgs []string, configPath string) ([]core.Field, error) {
+// Launch is how the NATS container starts: its launch fields, and the host its health check reads
+// monitoring on, which the start script decides.
+type Launch struct {
+	fields []core.Field
+	// monitorOnLoopback is set where the start script binds monitoring to core.PrivateMonitorHost.
+	monitorOnLoopback bool
+}
+
+// monitorHost is the host the container's health check reads /healthz on: localhost, as before
+// private projects, or core.PrivateMonitorHost where the start script binds monitoring there. On
+// the hub's image (nats:2.15.1-alpine) busybox wget takes ::1 for localhost whenever the
+// container's loopback has IPv6, the Linux and Docker default, and nothing listens on [::1] then,
+// so the check names the address the server binds (core/nats_monitor_healthcheck_live_test.go).
+func (l Launch) monitorHost() string {
+	if l.monitorOnLoopback {
+		return core.PrivateMonitorHost
+	}
+	return "localhost"
+}
+
+// NatsLaunch returns the NATS container's launch. Without authorization the image's own entrypoint
+// runs nats-server with serverArgs. With it, the task has no file of its own to mount, so
+// `/bin/sh -c` runs core's StartScript, which `envoy-infra render nats-start-script` prints, and
+// which binds monitoring to core.PrivateMonitorHost beside privateProjects; its refusals, each a
+// core.InputError naming its input, pass through as they are.
+func NatsLaunch(authorization *core.Authorization, header, serverArgs []string, configPath string) (Launch, error) {
 	if authorization == nil {
-		return []core.Field{{Key: "command", Value: append([]string{"nats-server"}, serverArgs...)}}, nil
+		return Launch{fields: []core.Field{{Key: "command", Value: append([]string{"nats-server"}, serverArgs...)}}}, nil
 	}
 	script, err := authorization.StartScript(header, serverArgs, configPath)
 	if err != nil {
-		return nil, err
+		return Launch{}, err
 	}
-	return []core.Field{
-		{Key: "entryPoint", Value: []string{"/bin/sh", "-c"}},
-		{Key: "command", Value: []string{script}},
+	return Launch{
+		fields: []core.Field{
+			{Key: "entryPoint", Value: []string{"/bin/sh", "-c"}},
+			{Key: "command", Value: []string{script}},
+		},
+		monitorOnLoopback: authorization.PrivateProjects,
 	}, nil
 }
