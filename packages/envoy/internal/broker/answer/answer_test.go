@@ -285,8 +285,8 @@ func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
 }
 
 // An answer whose caller had gone (NoteCallerEnded) is counted cancelled, under the code its
-// status gives, and writes no line: a 503 is not counted failed, nor a refusal refused, since the
-// broker failed at nothing and nobody reads the answer.
+// status gives, and writes no line: a 503 is not counted failed, nor a refusal refused, since
+// nobody reads the answer.
 func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
 	for _, row := range []struct {
 		name, body, code, otherwise string

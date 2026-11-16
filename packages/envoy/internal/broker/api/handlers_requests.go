@@ -404,15 +404,14 @@ const requestWaitStep = 500 * time.Millisecond
 // within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
 // absent or empty one answers at once, as before the parameter.
 //
-// A store that fails is 503 DATABASE_UNAVAILABLE, which agent-secrets reads as a failed read and
-// waits through (retryable), where a 500 would end its wait with nothing run while the request
-// stays pending. A request that ended while the read was held is 503 REQUEST_ENDED and logs
-// nothing, as the reread's does: anyone can end a request. Where its caller ended it, by closing
-// the connection (a Ctrl-C, a tool's timeout that killed the command, a front door that cut the
-// call), nobody reads that answer and the broker failed at nothing, so it is counted cancelled
-// rather than failed (answer.Recorder.NoteCallerEnded). On the API port a request's context is
-// cancelled by its caller's connection alone; the request deadline ends it otherwise, which a
-// held read never reaches (TestTheWaitLimitEndsInsideTheRequestDeadline, cmd/broker).
+// A store that fails is 503 DATABASE_UNAVAILABLE, logged at ERROR and counted failed, which
+// agent-secrets reads as a failed read and waits through (retryable), where a 500 would end its
+// wait with nothing run while the request stays pending. A read whose caller went away before the
+// broker owed its answer, inside its wait and the step after it, is 503 REQUEST_ENDED, logs
+// nothing, as the reread's does, and is counted cancelled (answer.Recorder.NoteCallerEnded). A
+// read that ended past that time is a store failure like any other: the pool sets no statement
+// timeout, so a store that stalls holds the read until its caller gives up, and that stall is
+// logged and counted failed, as it is when it holds the proof check.
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
@@ -423,6 +422,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	if !ok {
 		return
 	}
+	start := time.Now()
 	req, err := s.readHeld(ctx, id, enrollmentID, wait)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -431,10 +431,8 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
 		return
-	case err != nil && ctx.Err() != nil:
-		if errors.Is(ctx.Err(), context.Canceled) {
-			answer.FromContext(ctx).NoteCallerEnded()
-		}
+	case err != nil && errors.Is(ctx.Err(), context.Canceled) && time.Since(start) < wait+requestWaitStep:
+		answer.FromContext(ctx).NoteCallerEnded()
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
 		return
 	case err != nil:

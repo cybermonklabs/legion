@@ -9,6 +9,7 @@ package api_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,51 +220,112 @@ func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {
 	}
 }
 
-// TestReadRequestWaitEndedByItsCallerIsNoFailure: a held read whose caller goes away a second in
-// (a Ctrl-C, a tool's timeout that killed the command, a front door that cut the call) is counted
-// outcome="cancelled" and writes no line, since the broker failed at nothing and nobody reads the
-// answer. It is counted neither as the failed 503 a store fault is nor with the ERROR line one
-// writes.
-func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	ts := newTestServer(t)
-	enrollmentID, key, asked := ts.pendingRequest(t)
-	const (
-		cancelled = `outcome="cancelled",code="HTTP_503",caller_class="session"`
-		failed    = `outcome="failed",code="HTTP_503",caller_class="session"`
-	)
-
-	path := "/v1/requests/" + asked.RequestID
+// readCut sends the session's GET path?query and closes the connection after cut, as a caller that
+// gives up does (a Ctrl-C, a tool's timeout that killed the command, a front door that cut the
+// call), failing t when the broker answered first. The proof signs the path alone.
+func (ts *testServer) readCut(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, path, query string, cut time.Duration) {
+	t.Helper()
 	p, err := proof.Sign(key, enrollmentID, http.MethodGet, ts.URL+path, time.Now())
 	if err != nil {
 		t.Fatalf("proof.Sign: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cut)
 	defer cancel()
-	read, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+path+"?wait=10", nil)
+	read, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+path+"?"+query, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	read.Header.Set("Proof", p)
 	if resp, err := http.DefaultClient.Do(read); err == nil {
 		resp.Body.Close()
-		t.Fatalf("GET /v1/requests/{id}?wait=10 answered %d before its caller went away, want the read held", resp.StatusCode)
+		t.Fatalf("GET %s?%s answered %d before its caller went away at %s, want the read still running", path, query, resp.StatusCode, cut)
 	}
-	// The handler ends once the closed connection cancels its request, and its answer is counted
-	// when it returns, after the caller has already stopped waiting for it.
-	for wait := time.Now().Add(5 * time.Second); ts.answersCounted(t, cancelled) == 0 && time.Now().Before(wait); {
+}
+
+// countedSoon is ts's broker_answers_total sample naming labels once it is above 0, or 0 after 5
+// seconds: an answer whose caller has gone is counted when its handler returns, after the caller
+// stopped waiting for it.
+func (ts *testServer) countedSoon(t *testing.T, labels string) int {
+	t.Helper()
+	for wait := time.Now().Add(5 * time.Second); ts.answersCounted(t, labels) == 0 && time.Now().Before(wait); {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if n := ts.answersCounted(t, cancelled); n != 1 {
-		t.Fatalf("broker_answers_total{%s} = %d, want 1: the read its caller ended", cancelled, n)
+	return ts.answersCounted(t, labels)
+}
+
+// The two series of a held read's 503: its caller's own end, and a failure.
+const (
+	heldReadCancelled = `outcome="cancelled",code="HTTP_503",caller_class="session"`
+	heldReadFailed    = `outcome="failed",code="HTTP_503",caller_class="session"`
+)
+
+// TestReadRequestWaitEndedByItsCallerIsNoFailure: a held read whose caller goes away a second into
+// its ten-second wait, before the broker owed its answer, is counted outcome="cancelled" and writes
+// no line. It is counted neither as the failed 503 a store fault is nor with the ERROR line one
+// writes.
+func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServer(t)
+	enrollmentID, key, asked := ts.pendingRequest(t)
+
+	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=10", time.Second)
+	if n := ts.countedSoon(t, heldReadCancelled); n != 1 {
+		t.Fatalf("broker_answers_total{%s} = %d, want 1: the read its caller ended", heldReadCancelled, n)
 	}
-	if n := ts.answersCounted(t, failed); n != 0 {
-		t.Errorf("broker_answers_total{%s} = %d, want 0: a caller that went away is no failure", failed, n)
+	if n := ts.answersCounted(t, heldReadFailed); n != 0 {
+		t.Errorf("broker_answers_total{%s} = %d, want 0: a caller that went away is no failure", heldReadFailed, n)
 	}
 	for _, r := range capture.Records() {
 		if strings.Contains(r.Message, "read request") {
 			t.Errorf("the read its caller ended logged %q at %s, want no line", r.Message, r.Level)
 		}
+	}
+}
+
+// TestReadRequestWaitStalledPastItsWaitIsAFailure: a held read whose store stalls, a lock on the
+// requests table taken after its first step, until its caller gives up at 3 s, past the 1 s it
+// asked for and the step after it, is a store failure: counted outcome="failed" with a `broker:
+// read request failed` line at ERROR, as the same stall in the proof check is. The pool sets no
+// statement or acquire timeout, so such a read ends only when its caller does, and counting it
+// cancelled would hide the stall.
+func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	ts := newTestServer(t)
+	enrollmentID, key, asked := ts.pendingRequest(t)
+	ctx := context.Background()
+
+	locked := make(chan error, 1)
+	release := make(chan struct{})
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		tx, err := ts.Store.Pool.Begin(ctx)
+		if err == nil {
+			defer func() { _ = tx.Rollback(ctx) }()
+			_, err = tx.Exec(ctx, `lock table requests in access exclusive mode`)
+		}
+		locked <- err
+		<-release
+	}()
+	ts.readCut(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=1", 3*time.Second)
+	if err := <-locked; err != nil {
+		close(release)
+		t.Fatalf("lock the requests table: %v", err)
+	}
+	failed := ts.countedSoon(t, heldReadFailed)
+	close(release)
+	if failed != 1 {
+		t.Fatalf("broker_answers_total{%s} = %d, want 1: a store that stalled past the read's wait failed", heldReadFailed, failed)
+	}
+	if n := ts.answersCounted(t, heldReadCancelled); n != 0 {
+		t.Errorf("broker_answers_total{%s} = %d, want 0: the broker owed its answer when the caller gave up", heldReadCancelled, n)
+	}
+	logged := false
+	for _, r := range capture.Records() {
+		logged = logged || (r.Level == slog.LevelError && r.Message == "broker: read request failed")
+	}
+	if !logged {
+		t.Errorf("no `broker: read request failed` line at ERROR for the stalled read; want one, as the proof check's stall writes")
 	}
 }

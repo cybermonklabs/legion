@@ -417,14 +417,15 @@ func (rec *Recorder) NoteCode(code string) {
 	rec.mu.Unlock()
 }
 
-// NoteCallerEnded notes that the caller ended the request while the handler waited on its
-// behalf: it closed the connection, by a Ctrl-C, a timeout of its own or a front door that cut
-// the call, so nobody reads the answer. The answer is counted outcome="cancelled", under the code
-// its status gives, and writes no line, whatever its status: the broker failed at nothing, and a
-// caller can end any request. A handler notes it only where its request's context ended by
-// cancellation, which on the API port is the caller's connection closing alone (cmd/broker gives
-// the server no base context to cancel, and net/http clears the read deadline before the handler
-// runs).
+// NoteCallerEnded notes that the caller ended the request before the handler owed its answer,
+// while the handler waited on its behalf: it closed the connection, by a Ctrl-C, a timeout of its
+// own or a front door that cut the call, so nobody reads the answer. The answer is counted
+// outcome="cancelled", under the code its status gives, and writes no line, whatever its status.
+// A handler notes it only where its request's context ended by cancellation, which on the API
+// port is the caller's connection closing alone (cmd/broker gives the server no base context to
+// cancel, and net/http clears the read deadline before the handler runs), and only before the
+// time it promised its answer: a caller that gives up after it, a store that stalled say, is a
+// failure the handler logs and counts as one.
 func (rec *Recorder) NoteCallerEnded() {
 	if rec == nil {
 		return
@@ -553,7 +554,7 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 		answerCode = refusalCode(rec.status, fields, noted)
 	}
 	if ended {
-		answers.Inc(outcome(outcomeCancelled), code(countedCode(rec.status, answerCode)), callerClass(class))
+		answers.Inc(outcome(outcomeCancelled), code(answerCode), callerClass(class))
 	} else {
 		if Refused(rec.status, answerCode) {
 			line := RefusalLine{ID: rec.id, Status: rec.status, Code: answerCode, Method: r.Method, Route: r.Pattern,
@@ -579,23 +580,16 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 }
 
 // Count counts one answer the broker wrote on answers (nil counts nothing): an answer of status
-// naming answerCode, for a caller of class, under the code countedCode gives. Its outcome is read
-// from the two (outcomeOf). It is the one rule of broker_answers_total's labels but one:
-// Middleware counts by it each answer a handler of the API port writes, but an answer whose caller
-// had gone (NoteCallerEnded), which it counts cancelled, and the airlock's proxy port each answer
+// naming answerCode, which is HTTP_<status> when it names none codePattern accepts, for a caller
+// of class. Its outcome is read from the two (outcomeOf). It is the one rule of
+// broker_answers_total's labels: Middleware counts by it each answer a handler of the API port
+// writes but one whose caller had gone (NoteCallerEnded), and the airlock's proxy port each answer
 // it writes itself. An answer net/http writes before any handler runs is counted by neither.
 func Count(answers *metrics.Counter, status int, answerCode, class string) {
-	answerCode = countedCode(status, answerCode)
-	answers.Inc(outcome(outcomeOf(status, answerCode)), code(answerCode), callerClass(class))
-}
-
-// countedCode is the code label of an answer of status naming answerCode: answerCode, or
-// HTTP_<status> when it names none codePattern accepts.
-func countedCode(status int, answerCode string) string {
 	if !codePattern.MatchString(answerCode) {
-		return httpCode(status)
+		answerCode = httpCode(status)
 	}
-	return answerCode
+	answers.Inc(outcome(outcomeOf(status, answerCode)), code(answerCode), callerClass(class))
 }
 
 // CountCarried counts one answer the broker carried rather than wrote: a call the airlock's

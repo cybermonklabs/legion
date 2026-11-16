@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
@@ -194,12 +194,14 @@ func TestExecLearnsOfAGrantAfterAFullHold(t *testing.T) {
 }
 
 // TestTheWaitLimitEndsInsideTheClientsCallTimeout: a held read of the longest wait the broker
-// takes ends before this client's whole-call timeout cuts it (leasetime.RenewClientTimeout). A
-// timeout that fell to the limit or under it would cut every undecided held read, which the exec
-// form reads as a failed read and answers with its backoff, so R1's second would become up to ten.
+// takes ends before the whole-call timeout of the client every call goes out on (newClient's
+// http.Client) cuts it. A timeout that fell to the limit or under it would cut every undecided
+// held read, which the exec form reads as a failed read and answers with its backoff, so R1's
+// second would become up to ten.
 func TestTheWaitLimitEndsInsideTheClientsCallTimeout(t *testing.T) {
-	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; limit >= leasetime.RenewClientTimeout {
-		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under leasetime.RenewClientTimeout (%s)", limit, leasetime.RenewClientTimeout)
+	timeout := newClient(brokeraddr.New("http://broker.invalid")).http.Timeout
+	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; timeout <= limit {
+		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under the client's whole-call timeout (%s)", limit, timeout)
 	}
 }
 

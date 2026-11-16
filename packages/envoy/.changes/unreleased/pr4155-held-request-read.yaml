@@ -8,9 +8,10 @@ body: |-
   whichever broker process decided it. Any other wait is refused `400 REQUEST_WAIT_INPUT`; an
   absent one answers at once, as before. A read of a request that moved to another session while
   it was held is `403 NOT_YOURS`, and a store that fails is `503 DATABASE_UNAVAILABLE` (it was
-  `500 INTERNAL`), which `agent-secrets` waits through. A held read whose caller went away (a
-  Ctrl-C, a tool's timeout, a front door that cut the call) answers `503 REQUEST_ENDED`, logs
-  nothing, and is counted in `broker_answers_total` under a new outcome, `cancelled`, not
-  `failed`. The exec form asks each read to hold for what is left of `--wait`, at most 20 s;
-  against a broker from before this change, which answers every read at once, it sleeps its old
-  backoff between reads. `agent-secrets status` sends no wait.
+  `500 INTERNAL`), logged and counted failed, which `agent-secrets` waits through. A held read
+  whose caller went away before the broker owed its answer (a Ctrl-C, a tool's timeout, a front
+  door that cut the call) answers `503 REQUEST_ENDED`, logs nothing, and is counted in
+  `broker_answers_total` under a new outcome, `cancelled`; one the database stalled until its
+  caller gave up is still a logged failure. The exec form asks each read to hold for what is left
+  of `--wait`, at most 20 s; against a broker from before this change, which answers every read
+  at once, it sleeps its old backoff between reads. `agent-secrets status` sends no wait.
