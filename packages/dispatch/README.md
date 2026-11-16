@@ -632,18 +632,22 @@ bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash`
 - `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets;
 - `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
   listeners, the secrets broker, the other Dispatch origin), ending in LF or CRLF. `#` starts a
-  comment. `host` is a name or a literal address; an IPv4 address must be four numbers of 0 to
-  255 with no leading zero (curl reads `172.020.000.021` in octal, another host); an IPv6 address
+  comment, and comments are ASCII like the rest of the list. `host` is a name or a literal
+  address; an IPv4 address must be four numbers of 0 to 255 with no leading zero (curl reads
+  `172.020.000.021` in octal, another host); an IPv6 address
   must hold no dotted IPv4 part and must not be IPv4-mapped however it is written: its text must
   not start with `ffff:` once its leading zeros and colons are dropped, as `::ffff:a00:1` and
   `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no mapped address; and a
   `svc:` selector, which resolves nowhere, is refused. **The list must hold each of our services'
   addresses on the path as lines of their own, not names alone**: a name line proves only where
   that name resolves on the person's device, so a name that resolves elsewhere there says nothing
-  of the address behind it. A list of names alone prints a warning. A list holding a NUL byte is
-  refused, and so is a line holding any control character other than tab, or a Unicode line break
-  (NEL, LS, PS): `read` splits only on LF, so the target after such a break would land in the
-  line's comment and be lost.
+  of the address behind it. A list of names alone prints a warning. **The list is ASCII**: every
+  byte must be printable ASCII, a tab or LF, but a CR that comes directly before an LF and a UTF-8
+  byte-order mark at offset 0, which the script drops before anything parses the list. Any other
+  byte, a NUL, a control character or any byte above 0x7E (so any non-ASCII text, in a comment
+  too), refuses the run, naming the byte and its offset counted from 0: `read` splits only on LF,
+  and a reader that split on that byte would put the next target in the line's comment, where it
+  would be lost.
 
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
@@ -684,9 +688,14 @@ of them separated by `;` are judged as one target's rounds in order; that mode e
 `PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
 of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
 sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
-`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach.test.ts` drives it against real
-listeners; each row carries its own timeout. The row that runs it under zsh skips where zsh is
-missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach` drives it against real
+listeners, from three files: `outside-path-reach-input.test.ts` for what it decides before any
+probe (the inputs it refuses, the origin's two answers and its classifier),
+`outside-path-reach.test.ts` for the runs that probe, and `outside-path-reach-blackhole.test.ts`
+for the two runs that need a network dropping TEST-NET-1, which skip with the reason printed
+where the network refuses that address at once. Each row carries its own timeout. The row of
+`outside-path-reach-input.test.ts` that runs the script under zsh skips where zsh is missing, so a
+local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
 ## Acceptance run against the deployed image
 

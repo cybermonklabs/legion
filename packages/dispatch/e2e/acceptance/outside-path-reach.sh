@@ -25,9 +25,12 @@
 #                         holds no dotted IPv4 part and is not IPv4-mapped however written (its
 #                         text must not start with ffff: once its leading zeros and colons are
 #                         dropped, as ::ffff:a00:1 and 0:0::ffff:a00:1 do: write 10.0.0.1); never
-#                         a `svc:` selector, which resolves nowhere. Lines end in LF or CRLF; a line
-#                         holding any other control character than tab, or a Unicode line break
-#                         (NEL, LS, PS), is refused, since `read` splits only on LF. The list must
+#                         a `svc:` selector, which resolves nowhere. The list is ASCII, comments
+#                         included: every byte must be printable ASCII, a tab or LF, but a CR that
+#                         comes directly before an LF (CRLF line endings) and a UTF-8 byte-order
+#                         mark at offset 0, which are dropped before anything parses the list. Any
+#                         other byte refuses the run, naming the byte and its offset, since `read`
+#                         splits only on LF and a reader may split on that byte. The list must
 #                         hold each of our services' addresses on the path as lines of their own,
 #                         not names alone: a name line proves only where that name resolves on this
 #                         device, and a name that resolves elsewhere there, or nowhere, says nothing
@@ -72,6 +75,8 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exit 2
 fi
 set -u
+# Every pattern below matches bytes, whatever locale the device runs in.
+LC_ALL=C
 
 # rounds: how many rounds of probes each host gets, started 6 s apart (see the header).
 rounds=5
@@ -339,48 +344,72 @@ esac
 # The target list, read whole before anything goes on the network: a file it cannot read whole is
 # a refusal, never a target left out. A read error ends a `read` loop exactly as the end of the
 # file does, and `$(<file)` and curl's file:// both pass one over in silence; only `read` says so,
-# on stderr. So each line comes back marked `L` and bash's own words come back unmarked, and any
-# unmarked line refuses the run. A UTF-8 byte-order mark before the first line is dropped. Row 0
-# is the origin itself, the positive control.
+# on stderr. So each line that ended in an LF comes back marked `L`, a last line with no LF after it
+# `E`, and bash's own words come back unmarked, and any unmarked line refuses the run. Row 0 is the
+# origin itself, the positive control.
 targets=$OUTSIDE_PATH_TARGETS
 bom=$'\xef\xbb\xbf'
-# The bytes `read` does not split on that would still end a line for a reader: every control
-# character but tab (and LF, which `read` splits on), each named rather than given as a range, so
-# the match does not hang on how a locale orders a range; and the Unicode line breaks.
-breaks=$'[\001\002\003\004\005\006\007\010\013\014\015\016\017\020\021\022\023\024\025\026\027\030\031\032\033\034\035\036\037\177]'
-nel=$'\xc2\x85' line_sep=$'\xe2\x80\xa8' para_sep=$'\xe2\x80\xa9'
-# `read -d ''` stops at a NUL byte and succeeds only when it found one. bash 3.2 cuts a line at a
-# NUL and bash 5 drops it, so either would probe another line than the one written.
-if IFS= read -r -d '' _ <"$targets" 2>/dev/null; then
-  unknown "OUTSIDE_PATH_TARGETS names $targets, which holds a NUL byte, so it is not a text file to read"
+# outside: one byte that is not printable ASCII or a tab. LF never reaches a row, since `read`
+# splits on it; NUL never reaches one either, since bash cannot hold it in a string.
+outside=$'[!\t -~]'
+
+# byte_hex BYTE: sets `hex` to the two hexadecimal digits of BYTE, one byte other than NUL.
+byte_hex() {
+  local n=1 each
+  while [ "$n" -le 255 ]; do
+    printf -v hex '%02X' "$n"
+    printf -v each '%b' "\\x$hex"
+    [ "$each" != "$1" ] || return 0
+    n=$((n + 1))
+  done
+}
+
+# refuse_byte LINE OFFSET HEX: the verdict for the byte 0xHEX at OFFSET of the list, counted from
+# 0, on its line LINE.
+refuse_byte() {
+  unknown "line $1 of $targets holds byte 0x$3 at offset $2, which is not printable ASCII, a tab or LF: write the list in ASCII, one target per line, with LF or CRLF line endings"
+}
+
+# `read -d ''` stops at a NUL byte and succeeds only when it found one, holding what came before.
+if IFS= read -r -d '' before <"$targets" 2>/dev/null; then
+  lfs=${before//[!$newline]/}
+  refuse_byte $((${#lfs} + 1)) "${#before}" 00
 fi
 row=''
-rest=$({ while IFS= read -r row || [ -n "$row" ]; do
+rest=$({ while IFS= read -r row; do
   printf 'L%s\n' "$row"
-  row=''
-done <"$targets"; } 2>&1) || rest="$rest${newline}could not open it"
+done <"$targets" && { [ -z "$row" ] || printf 'E%s\n' "$row"; }; } 2>&1) ||
+  rest="$rest${newline}could not open it"
 hosts[0]=$origin_host
 ports[0]=$origin_port
 count=0
 addresses=0
 number=0
+offset=0
 while [ -n "$rest" ]; do
   pop
   case $line in
-    L*) ;;
+    L* | E*) ;;
     *) unknown "OUTSIDE_PATH_TARGETS names $targets, which this device could not read whole: $line" ;;
   esac
   number=$((number + 1))
-  row=${line#L}
-  [ "$number" -gt 1 ] || row=${row#"$bom"}
-  # The trailing CR of a CRLF line goes first. Any control character left in the row, or a Unicode
-  # line break, means the file holds a line break `read` does not split on, which puts the next
-  # target on this row, where an inline comment would cut it away: such a file is refused before
-  # any comment is cut.
-  row=${row%$'\r'}
-  # shellcheck disable=SC2254 # $breaks is a bracket expression on purpose, so it stays unquoted
-  case $row in *$breaks* | *"$nel"* | *"$line_sep"* | *"$para_sep"*)
-    unknown "line $number of $targets holds a control character or a line break other than LF inside it: write one target per line, with LF or CRLF line endings"
+  row=${line#?}
+  start=$offset
+  offset=$((offset + ${#row} + 1))
+  # The byte-order mark is dropped at offset 0 alone, and a CR only where an LF follows it at once;
+  # any byte left outside printable ASCII and tab refuses the list before any comment is cut.
+  if [ "$start" -eq 0 ]; then
+    stripped=${row#"$bom"}
+    start=$((${#row} - ${#stripped}))
+    row=$stripped
+  fi
+  case $line in L*) row=${row%$'\r'} ;; esac
+  # shellcheck disable=SC2254 # $outside is a bracket expression on purpose, so it stays unquoted
+  case $row in *$outside*)
+    # shellcheck disable=SC2295 # the same bracket expression, as a pattern on purpose
+    prefix=${row%%$outside*}
+    byte_hex "${row:${#prefix}:1}"
+    refuse_byte "$number" $((start + ${#prefix})) "$hex"
     ;;
   esac
   row=${row%%#*}
