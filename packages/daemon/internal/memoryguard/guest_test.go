@@ -121,12 +121,20 @@ type guestProcess struct {
 	score int
 }
 
+// addGuest adds each process with its oom_score_adj, its oom_score and a status as every process
+// in /proc has one: SIGTERM pending for its thread group and SIGKILL in no pending mask, so only the
+// status a test writes with showKill or reaped shows the kernel's kill.
 func (p *fakePod) addGuest(gps ...guestProcess) {
 	p.t.Helper()
 	for _, gp := range gps {
 		p.add(gp.fakeProcess)
 		p.setOOMScore(gp.pid, gp.score)
 		p.setScore(gp.pid, gp.adj)
+		if gp.threads == 0 {
+			p.writeWhole(filepath.Join(p.proc, strconv.Itoa(gp.pid), "status"), fmt.Sprintf(
+				"Name:\t%s\nState:\tS (sleeping)\nTgid:\t%d\nPid:\t%d\nThreads:\t1\nSigQ:\t1/63451\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000004000\nSigBlk:\t0000000000000100\n",
+				gp.name, gp.pid, gp.pid))
+		}
 	}
 }
 
@@ -546,6 +554,32 @@ func TestGuestWritesOneUnnamedLineWithTheRisesMemoryWhenNoProcessShowsTheKill(t 
 	}
 	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
 		t.Fatalf("the watch wrote %q and reported %+v, want neither", ended, kills)
+	}
+}
+
+// A command that runs on through a rise, its status with SIGTERM pending and SIGKILL in no pending
+// mask, is no kill, though it is the only process of a role the watch knows and the largest: the
+// watch names it for no kill, tells no role, and the kill has its unnamed line once the wait ends.
+func TestGuestNamesNoRunningProcessWithoutTheKillThoughItIsTheOnlyCandidate(t *testing.T) {
+	const load = 826
+	pod := newFakePod(t)
+	pod.setSelfScore(0)
+	pod.addGuest(command(load, 8260, "python3", 1400, 1500*mib))
+	classes := map[int]Class{load: {Role: "tester"}}
+	cgroup := newFakeCgroup(t, cgroupV2)
+	cgroup.setUsage(3900 * mib)
+	cgroup.setStat(fakeStat{anon: 3500 * mib, file: 400 * mib, inactiveFile: 120 * mib, shmem: 32 * mib})
+	h := newGuestHarness(t, pod.proc, cgroup.dir, classes).run()
+
+	cgroup.setKills(1)
+	h.tick()
+	h.tickAfter(guestKillWait)
+	h.tick()
+	if ended, kills := h.log.with("ended "), h.reported(); len(ended) != 0 || len(kills) != 0 {
+		t.Fatalf("the watch wrote %q and reported %+v, want neither for a command that runs on; the log:\n%s", ended, kills, h.logged())
+	}
+	if got, want := h.lines("killed unnamed"), unnamedLine(1, 1, 3500*mib, 3900*mib, 32*mib); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the unnamed lines are %q, want %q alone; the log:\n%s", got, want, h.logged())
 	}
 }
 
