@@ -199,10 +199,10 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 
 // Each outside input the component cannot serve is refused by its own name before anything
 // registers: outside sign-in with no browser sign-in to extend, either input in a sandbox, and a
-// second origin that is no https origin, whose host has a label no public certificate authority
-// issues for, or that is the front door's own. An nkey seed in outsideOrigin is refused with every
-// other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput), and clusterOnly refuses both
-// as it refuses every input that configures Dispatch
+// second origin that is no https origin, whose host has a label of the reserved form
+// weborigin.ReservedLabel refuses, or that is the front door's own. An nkey seed in outsideOrigin
+// is refused with every other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput), and
+// clusterOnly refuses both as it refuses every input that configures Dispatch
 // (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 	// The web-origin refusals are weborigin.Parse's, prefixed with the input's name; that

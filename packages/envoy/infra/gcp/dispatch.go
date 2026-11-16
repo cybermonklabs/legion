@@ -1040,7 +1040,7 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 // refuseDispatchOutsideOrigin judges outsideOrigin where the tailnet group is set, the one place
 // it may be set, and returns it with a trailing slash trimmed, as Dispatch trims one: "" when it
 // is unset. It must be a web origin as weborigin.Parse holds one to (written as a browser writes
-// it, with a host a public certificate authority can certify), whose refusals it prefixes with
+// it, with host labels weborigin.ReservedLabel takes), whose refusals it prefixes with
 // the input's name; the component adds only that the origin is https, as the front door's is, and
 // that its host is not the front door's, whose origin Dispatch already is.
 func refuseDispatchOutsideOrigin(args *DispatchArgs) (string, error) {
