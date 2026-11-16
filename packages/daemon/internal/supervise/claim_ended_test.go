@@ -1,7 +1,12 @@
 package supervise
 
 import (
+	"context"
+	"slices"
+	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -175,4 +180,160 @@ func TestARepairedEndTellsTheWorkflowOnce(t *testing.T) {
 			}
 		})
 	}
+}
+
+// refusingStates is the store behind a database trigger that refuses outright every claim write
+// that sets one of the states it names, as the acceptance rig's trigger refused an end's write.
+// The server judged the statement (SQLSTATE P0001), so the machine owes no repair for it
+// (writeOwed), and the row stays behind memory until a later claim write lands. Every claim write
+// passes it: PutClaim, the admission's AdmitClaim, PutClaimAndDelivery and RetireDelivery.
+type refusingStates struct {
+	*memStore
+	mu     sync.Mutex
+	states []ClaimState
+}
+
+// refuse names the states the trigger refuses from now on; naming none lifts it.
+func (s *refusingStates) refuse(states ...ClaimState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.states = states
+}
+
+func (s *refusingStates) refusal(c Claim) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !slices.Contains(s.states, c.State) {
+		return nil
+	}
+	return &pgconn.PgError{Code: "P0001", Message: "the trigger refuses a claim write that sets " + string(c.State), Severity: "ERROR"}
+}
+
+func (s *refusingStates) PutClaim(ctx context.Context, c Claim) error {
+	if err := s.refusal(c); err != nil {
+		return err
+	}
+	return s.memStore.PutClaim(ctx, c)
+}
+
+func (s *refusingStates) AdmitClaim(ctx context.Context, c Claim) (Claim, error) {
+	if err := s.refusal(c); err != nil {
+		return Claim{}, err
+	}
+	return s.memStore.AdmitClaim(ctx, c)
+}
+
+func (s *refusingStates) PutClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
+	if err := s.refusal(c); err != nil {
+		return err
+	}
+	return s.memStore.PutClaimAndDelivery(ctx, c, d)
+}
+
+func (s *refusingStates) RetireDelivery(ctx context.Context, c Claim, deliveryID string) error {
+	if err := s.refusal(c); err != nil {
+		return err
+	}
+	return s.memStore.RetireDelivery(ctx, c, deliveryID)
+}
+
+// behindTrigger puts the trigger in front of the harness's store before the machine is built
+// (endedHarness's before), and hands the test the trigger.
+func behindTrigger(trigger **refusingStates) func(*harness) {
+	return func(h *harness) {
+		*trigger = &refusingStates{memStore: h.store}
+		h.deps.Store = *trigger
+	}
+}
+
+// The three claim writes TestAnEndOfAClaimTellsTheWorkflow does not reach tell the daemon too,
+// each where it is the first claim write to land since the row's holder changed: a retirement
+// that writes the retired claim with the delete of its round's unanswered ask (retirePending), a
+// resume's admission over an end whose own write the server refused (revive), and the note a
+// provider error's turn writes beside its task over a registration whose writes the server
+// refused (providerErrorClears). Each is told once, with the store already holding the state the
+// tell names, because the publication reads the live set from the store.
+func TestEveryClaimWriteThatLandsTellsTheWorkflow(t *testing.T) {
+	// toldOnce fails unless the daemon was told once since was, of the claim in state want, with
+	// the store already at want.
+	toldOnce := func(t *testing.T, told *[]Claim, stored *[]ClaimState, was int, want ClaimState) {
+		t.Helper()
+		if len(*told) != was+1 {
+			t.Fatalf("the write told the daemon %d times, want once: %+v", len(*told)-was, (*told)[was:])
+		}
+		if c, at := (*told)[was], (*stored)[was]; c.Token != testToken || c.State != want || at != want {
+			t.Fatalf("told of %s in state %s with the store at %s, want %s %s with the store at %s",
+				c.Token, c.State, at, testToken, want, want)
+		}
+	}
+
+	t.Run("a retirement that drops its round's unanswered ask", func(t *testing.T) {
+		h, told, stored := endedHarness(t, func(h *harness) { h.deps.PluginContract = PodUpdateContract })
+		h.reach(StateIdle)
+		h.openUpdate(testRound, testReasons)
+		// The restart that restores an older daemon's ask builds the machine again from the row,
+		// which holds the idle claim and its session.
+		ask := h.unsentAsk(testRound)
+		was := len(*told)
+
+		_ = h.handle(RequestStop{Claim: h.token})
+		h.wantState(StateRetired)
+		if row := h.store.load(h.token); row.State != StateRetired || row.Pending != nil {
+			t.Fatalf("control: the stop left the row %s holding %+v, want it retired with the ask %s deleted", row.State, row.Pending, ask.ID)
+		}
+		toldOnce(t, told, stored, was, StateRetired)
+	})
+
+	t.Run("a resume's admission over a suspension the server refused", func(t *testing.T) {
+		var trigger *refusingStates
+		h, told, stored := endedHarness(t, behindTrigger(&trigger))
+		h.reach(StateIdle)
+		was := len(*told)
+		trigger.refuse(StateSuspended)
+		_ = h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+		h.wantState(StateSuspended)
+		if row := h.store.load(h.token).State; row != StateIdle || len(*told) != was {
+			t.Fatalf("control: the refused suspension left the row %s and told %d times, want idle and none", row, len(*told)-was)
+		}
+
+		// The launch's own write is refused too, so the admission is the one write of the resume
+		// that lands.
+		trigger.refuse(StateLaunching)
+		_ = h.handle(RequestResume{Claim: h.token})
+		if row := h.store.load(h.token).State; row != StateSuspended {
+			t.Fatalf("control: the resume left the row %s, want the suspended claim its admission wrote", row)
+		}
+		toldOnce(t, told, stored, was, StateSuspended)
+	})
+
+	t.Run("a provider error's note over a registration the server refused", func(t *testing.T) {
+		var trigger *refusingStates
+		h, told, stored := endedHarness(t, behindTrigger(&trigger))
+		h.reach(StateShimConnected)
+		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+		was := len(*told)
+		// Every write of the registered agent's states is refused, from its registration to its
+		// turn's end, so the row still names no holder when the turn's prompt answers.
+		trigger.refuse(StateRegistered, StateReady, StateWorking, StateIdle)
+		_ = h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session,
+			SessionFile: sessionFile, CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+		_ = h.handle(RequestReady{Claim: h.token, Generation: h.generation(), Session: session})
+		_ = h.handle(StreamTurnStart{Claim: h.token})
+		_ = h.handleQuiet(StreamTurnEnd{Claim: h.token})
+		h.wantState(StateIdle)
+		if row := h.store.load(h.token).State; row != StateShimConnected || len(*told) != was {
+			t.Fatalf("control: the refused writes left the row %s and told %d times, want it shim-connected and none", row, len(*told)-was)
+		}
+
+		trigger.refuse()
+		delivery := h.pending().ID
+		if err := h.handle(StreamPromptResult{Claim: h.token, DeliveryID: delivery, AgentInvoked: true,
+			Error: "overloaded_error", HTTPStatus: 529}); err != nil {
+			t.Fatalf("the provider error's result: %v", err)
+		}
+		if row := h.store.load(h.token); row.State != StateIdle || row.Pending == nil || row.Pending.ProviderErrorRetries != 1 {
+			t.Fatalf("control: the result left the row %s holding %+v, want idle with the task counted one send", row.State, row.Pending)
+		}
+		toldOnce(t, told, stored, was, StateIdle)
+	})
 }
