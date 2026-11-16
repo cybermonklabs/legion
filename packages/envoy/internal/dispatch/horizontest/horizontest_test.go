@@ -82,9 +82,14 @@ func stallWarningHeadNoPendingFor() string {
 // stallWarningHeadOf writes the head with the pending_for field already rendered: either
 // " pending_for=<value>" or nothing at all.
 func stallWarningHeadOf(pendingFor string) string {
-	return `time=2026-11-10T02:14:05.113Z level=WARN msg="` + events.StallWarning + `"` + pendingFor +
+	return `time=` + stallWarningAt.Format(time.RFC3339Nano) + ` level=WARN msg="` + events.StallWarning + `"` + pendingFor +
 		` observed_id=2 safe_horizon=0 observer_xid=4021`
 }
+
+// stallWarningAt is when the fixture warnings were logged. Their holder's transaction began
+// 2 OwnHoldBound before (stallWarningHolderOf), so a fixture's pending_for is what the own-hold rule
+// reads unless a row dates its holder otherwise (stallWarningLineHeldFor).
+var stallWarningAt = time.Date(2026, 11, 10, 2, 14, 5, 113_000_000, time.UTC)
 
 // stallWarningLine is a whole stall-warning line naming database as the holder's and pendingFor as
 // how long the oldest pending observation has waited, as warnStall's default arm logs one for a
@@ -108,8 +113,19 @@ func stallWarningHolder(application, database string) string {
 // the application_name beside it, so a row that needs a query of a shape no query Dispatch sends
 // has - one carrying a backquote - writes it here.
 func stallWarningHolderOf(application, database, query string) string {
-	return ` holder=backend pid=1188 xact_start=2026-11-10T02:13:59.998Z state=active` +
+	return stallWarningHolderSince(application, database, query, stallWarningAt.Add(-2*OwnHoldBound))
+}
+
+// stallWarningHolderSince writes those fields for a holder whose transaction began at since.
+func stallWarningHolderSince(application, database, query string, since time.Time) string {
+	return ` holder=backend pid=1188 xact_start=` + since.Format(time.RFC3339Nano) + ` state=active` +
 		` application_name=` + application + ` database=` + database + ` query=` + query
+}
+
+// stallWarningLineHeldFor is stallWarningLine for a holder whose own transaction had stood held
+// when the warning named it, whatever pendingFor says of the oldest pending observation.
+func stallWarningLineHeldFor(database string, pendingFor, held time.Duration) string {
+	return stallWarningHead(pendingFor) + stallWarningHolderSince("psql", database, `"begin; select 1"`, stallWarningAt.Add(-held))
 }
 
 // stallWarningRecord is a stall warning as a horizon in the test's own process logs it, holder
@@ -121,10 +137,16 @@ func stallWarningRecord(attrs ...any) slog.Record {
 }
 
 // heldRecord is stallWarningRecord with the fields warnStall's default arm logs for a holder in
-// database, pendingFor being the oldest pending observation's age.
+// database, pendingFor being the oldest pending observation's age and the holder's transaction
+// having begun 2 OwnHoldBound before the record.
 func heldRecord(pendingFor time.Duration, database string) slog.Record {
+	return heldRecordFor(pendingFor, 2*OwnHoldBound, database)
+}
+
+// heldRecordFor is heldRecord for a holder whose own transaction had stood held when it was named.
+func heldRecordFor(pendingFor, held time.Duration, database string) slog.Record {
 	return stallWarningRecord("pending_for", pendingFor, "observed_id", int64(2), "safe_horizon", int64(0),
-		"holder", "backend", "pid", int32(86), "xact_start", time.Now(), "state", "active",
+		"holder", "backend", "pid", int32(86), "xact_start", time.Now().Add(-held), "state", "active",
 		"application_name", "psql", "database", database, "query", "select 1")
 }
 
@@ -188,6 +210,31 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 			"a warning naming the test's own database whose pending_for has passed the own-hold bound fails whatever the elapsed time, so a hold holding up its live readers is never waited out (dispatch://INFRA-636)",
 			state{elapsed: 3 * time.Millisecond, warnings: 1, last: FromLine(stallWarningLine(ownDatabase, 2*OwnHoldBound))},
 			ownHold,
+		},
+		{
+			"a warning naming the test's own database for a transaction that began a moment ago is no own hold, though pending_for is past the bound: a foreign holder released since carried the oldest observation's age there (the transaction named holds for its own age)",
+			state{elapsed: 4 * Base, sinceNewWarning: Extension / 2, warnings: 5, last: FromLine(stallWarningLineHeldFor(ownDatabase, 2*OwnHoldBound, 100*time.Millisecond))},
+			waitOn,
+		},
+		{
+			"the same race on a record of the test's own process is no own hold either",
+			state{elapsed: 4 * Base, sinceNewWarning: Extension / 2, warnings: 5, last: FromRecord(heldRecordFor(2*OwnHoldBound, 100*time.Millisecond, ownDatabase))},
+			waitOn,
+		},
+		{
+			"a transaction of the test's own database that has itself stood the bound is an own hold, whatever came before it",
+			state{elapsed: 4 * Base, sinceNewWarning: Extension / 2, warnings: 5, last: FromLine(stallWarningLineHeldFor(ownDatabase, 2*OwnHoldBound, OwnHoldBound))},
+			ownHold,
+		},
+		{
+			"so is one on a record of the test's own process",
+			state{elapsed: 4 * Base, sinceNewWarning: Extension / 2, warnings: 5, last: FromRecord(heldRecordFor(2*OwnHoldBound, OwnHoldBound+time.Second, ownDatabase))},
+			ownHold,
+		},
+		{
+			"a warning naming the test's own database that dates no holder (xact_start) holds for zero and extends the wait",
+			state{elapsed: 4 * Base, sinceNewWarning: Extension / 2, warnings: 5, last: FromLine(stallWarningHead(2*OwnHoldBound) + ` holder=backend pid=1188 state=active application_name=psql database=` + ownDatabase)},
+			waitOn,
 		},
 		{
 			"a warning naming the test's own database whose pending_for is under the own-hold bound extends the wait like any other stall, so a client's second-and-a-half transaction in that database fails nothing",

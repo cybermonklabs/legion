@@ -195,11 +195,7 @@ func recordRelayDials(relay *eventStreamRelay, deps Deps) *listenerDials {
 // other state is the listener's own.
 func relayBackends(t *testing.T, database *store.Store, dials *listenerDials) []int32 {
 	t.Helper()
-	var dialed []int32
-	for _, conn := range dials.dialed() {
-		dialed = append(dialed, int32(conn.PgConn().PID()))
-	}
-	rows, err := database.Pool.Query(context.Background(), `select pid from pg_stat_activity where pid = any($1) order by pid`, dialed)
+	rows, err := database.Pool.Query(context.Background(), `select pid from pg_stat_activity where pid = any($1) order by pid`, dials.pids())
 	if err != nil {
 		t.Fatalf("read the backends of the relay's listener connections: %v", err)
 	}

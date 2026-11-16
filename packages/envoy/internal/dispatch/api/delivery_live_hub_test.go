@@ -1006,10 +1006,7 @@ func terminateListener(t *testing.T, database *store.Store, dials *listenerDials
 			t.Fatalf("the listener kept connecting for %s after it was made blind", 5*time.Second)
 		}
 		conns, settled := dials.settled()
-		pids := make([]int32, 0, len(conns))
-		for _, conn := range conns {
-			pids = append(pids, int32(conn.PgConn().PID()))
-		}
+		pids := pidsOf(conns)
 		var ended []int32
 		if err := database.Pool.QueryRow(context.Background(), `
 			with listener as materialized (
@@ -1700,9 +1697,8 @@ func (l *listenerDials) wrap(dial func(context.Context) (*pgx.Conn, error)) func
 
 // dialed is every connection dialed so far.
 func (l *listenerDials) dialed() []*pgx.Conn {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.conns)
+	conns, _ := l.settled()
+	return conns
 }
 
 // settled is every connection dialed so far, and whether no dial is under way, so none can add
@@ -1713,6 +1709,19 @@ func (l *listenerDials) settled() ([]*pgx.Conn, bool) {
 	return slices.Clone(l.conns), l.inFlight == 0
 }
 
+// pids is the backend pid of every connection dialed so far (pidsOf).
+func (l *listenerDials) pids() []int32 { return pidsOf(l.dialed()) }
+
+// pidsOf is the backend pid of each of conns: fixed once a dial returns, where a connection's other
+// state is its listener's own, so it can be read while that listener runs.
+func pidsOf(conns []*pgx.Conn) []int32 {
+	pids := make([]int32, 0, len(conns))
+	for _, conn := range conns {
+		pids = append(pids, int32(conn.PgConn().PID()))
+	}
+	return pids
+}
+
 // waitListening waits for one of the connections dials recorded to hold a LISTEN: its backend's last
 // statement was the listener's LISTEN (pglisten.Listener). The idle ping a listener sends after
 // pglisten.DefaultListenIdle does not count, since a connection that never listened sends it too; a
@@ -1720,10 +1729,7 @@ func (l *listenerDials) settled() ([]*pgx.Conn, bool) {
 func waitListening(t *testing.T, database *store.Store, what string, dials *listenerDials) {
 	t.Helper()
 	testwait.Eventually(t, what, func() bool {
-		var pids []int32
-		for _, conn := range dials.dialed() {
-			pids = append(pids, int32(conn.PgConn().PID()))
-		}
+		pids := dials.pids()
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
 			`select count(*) from pg_stat_activity where pid = any($1) and query like 'listen %'`, pids,
@@ -1768,10 +1774,10 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	// The hub and its relay read through a pool of their own, so its acquires are theirs alone.
 	deps.Store = storetest.SecondProcess(t, database)
-	var hubDials, relayDials listenerDials
+	var hubDials listenerDials
 	rig := hubOn(t, handler, database, deps, newNoonHubClock(), func(hub *deliveryHub) { hub.dial = hubDials.wrap(hub.dial) })
 	// The relay starts nothing before the hub's first Subscribe.
-	rig.relay.dial = relayDials.wrap(deps.Store.Pool.Listener)
+	relayDials := recordRelayDials(rig.relay, deps)
 	allDials := func() []*pgx.Conn { return slices.Concat(hubDials.dialed(), relayDials.dialed()) }
 	seedHubSettings(t, database)
 	key := createHubIssue(t, handler, map[string]any{"title": "Ship widgets"})
@@ -1807,7 +1813,7 @@ func TestAHubWithNoViewReadsNothingAndHoldsNoListener(t *testing.T) {
 	pollBehindHorizon(t, database, "the relay's generation, started for the hub's feed", func() bool {
 		return relaySubscribers(rig.relay) > 0
 	})
-	waitListening(t, database, "the relay's listener holding a LISTEN", &relayDials)
+	waitListening(t, database, "the relay's listener holding a LISTEN", relayDials)
 	rig.hub.Close(first)
 	// The hub's goroutines first: seedEvents, one of them, is what subscribes to the relay, so once
 	// they have returned nothing starts a relay generation while the relay's are waited for.

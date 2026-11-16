@@ -433,7 +433,7 @@ func awaitHorizonRead[T any](t *testing.T, database *store.Store, what string, r
 	t.Helper()
 	warnings, stop := horizontest.Listen(t)
 	defer stop()
-	watch := horizontest.NewWatch(t, warnings, database.Pool.Config().ConnConfig.Database)
+	watch := horizontest.NewWatch(t, warnings, database.Pool.Config().ConnConfig.Database, database.Pool)
 	for {
 		started := time.Now()
 		answer := read()
