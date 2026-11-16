@@ -4,6 +4,7 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,69 @@ func TestATokenWhoseIssuerCannotBeReadIsUnavailableNotRefused(t *testing.T) {
 			status, body := route.send()
 			if refusal := decode[wireError](t, body); status != http.StatusServiceUnavailable || refusal.Code != "ISSUER_UNAVAILABLE" {
 				t.Fatalf("%s while the key set answers 500 = %d %s, want 503 ISSUER_UNAVAILABLE: the token was never judged", route.name, status, body)
+			}
+		})
+	}
+}
+
+// A token its own claims refuse is refused while its issuer's key set cannot be read, exactly as
+// it is while the set reads: the verifier decides the token's issuer, audience and expiry before
+// the key-set error (oidc's classify), so an outage turns no refusal into a 503 a caller would
+// retry for the whole outage. A Google identity token is no token of the cluster's issuer at all,
+// and is judged by Google's verifier whatever the cluster's key set answers. The sound token first
+// is what shows the cluster's set is down for every row: it is answered the outage.
+func TestATokenItsClaimsRefuseIsRefusedWhileItsIssuerCannotBeRead(t *testing.T) {
+	g := newGoogleCallerServer(t)
+	// The cluster's set is read before the outage, so the registrar's token below verifies from
+	// the set held, and each token signed by the key published after it sends the verifier to
+	// read the set again.
+	if status, body := g.introspect(t, g.uiToken); status != http.StatusOK {
+		t.Fatalf("introspection as the dispatch caller before the outage = %d %s, want 200", status, body)
+	}
+	registrar := g.accountToken(t, daemonAccount, "", time.Hour)
+	rotated := g.podIssuer.PublishKey(t, "rotated-key")
+	mint := func(account, audience string, issued, expires time.Time, podUID string) string {
+		t.Helper()
+		claims := g.podIssuer.Claims(account, audience)
+		claims["iat"], claims["nbf"], claims["exp"] = issued.Unix(), issued.Unix(), expires.Unix()
+		if podUID != "" {
+			claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
+		}
+		return g.podIssuer.Mint(t, rotated, claims)
+	}
+	now := time.Now()
+	g.podIssuer.FailKeys(http.StatusInternalServerError)
+
+	status, body := g.introspect(t, mint(dispatchAccount, podAudience, now.Add(-5*time.Second), now.Add(time.Hour), ""))
+	if refusal := decode[wireError](t, body); status != http.StatusServiceUnavailable || refusal.Code != "ISSUER_UNAVAILABLE" {
+		t.Fatalf("a sound token while the key set answers 500 = %d %s, want 503 ISSUER_UNAVAILABLE: without the outage the rows below prove nothing", status, body)
+	}
+	for _, row := range []struct {
+		name   string
+		send   func() (int, []byte)
+		status int
+		code   string
+	}{
+		{"an expired account token at accountAuth", func() (int, []byte) {
+			return g.introspect(t, mint(dispatchAccount, podAudience, now.Add(-2*time.Hour), now.Add(-time.Minute), ""))
+		}, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED"},
+		{"an account token for another audience at accountAuth", func() (int, []byte) {
+			return g.introspect(t, mint(dispatchAccount, "https://another.example/audience", now.Add(-5*time.Second), now.Add(time.Hour), ""))
+		}, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID"},
+		{"an expired pod token a registrar sends, POST /v1/oauth/exchange/pod-sessions", func() (int, []byte) {
+			return g.registerPodSession(t, registrar, mint(brokertest.ExchangeAccount, podAudience, now.Add(-2*time.Hour), now.Add(-time.Minute), "pod-uid-outage"), "outage-session")
+		}, http.StatusUnauthorized, "POD_TOKEN_EXPIRED"},
+		{"a listed Google caller's token at accountAuth", func() (int, []byte) {
+			return g.introspect(t, g.live(t, listenerGoogleAccount))
+		}, http.StatusOK, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			status, body := row.send()
+			if status != row.status || (row.code != "" && decode[wireError](t, body).Code != row.code) {
+				t.Fatalf("%s while the cluster's key set answers 500 = %d %s, want %d %s: its own claims decide it, not the outage", row.name, status, body, row.status, row.code)
+			}
+			if row.code == "" && !strings.Contains(string(body), `"active":false`) {
+				t.Fatalf("%s = %s, want the introspection's answer", row.name, body)
 			}
 		})
 	}

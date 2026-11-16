@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,5 +110,51 @@ func TestAKeySetOutageAtTheExchangeIsTradedAgain(t *testing.T) {
 	}
 	if refusals < 1 {
 		t.Errorf("the client traded %d times and none was answered the outage: this test proves nothing about trading past one", trades)
+	}
+}
+
+// A subject token its own claims refuse is refused 400 invalid_request while its issuer's key set
+// cannot be read, naming the claim, as it is refused while the set reads: its issuer, audience and
+// expiry are decided before the outage, as the verifier's classify decides them
+// (internal/oidc/verifier.go), so brokerclient stops on a trade no read of the set could land,
+// rather than trading it again until the outage ends. The sound token first is what shows the set
+// is down for every row: it is answered the outage.
+func TestAnExchangeRefusesATokenItsClaimsRefuseDuringAKeySetOutage(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	f.cluster.FailKeys(http.StatusInternalServerError)
+
+	sound := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+	if status, body := f.exchange(t, sound, key); status != http.StatusServiceUnavailable || body["error"] != "temporarily_unavailable" {
+		t.Fatalf("a sound token while the key set answers 500 = %d %v, want 503 temporarily_unavailable: without the outage the rows below prove nothing", status, body)
+	}
+	for _, row := range []struct {
+		name   string
+		change func(map[string]any)
+		// names is what the refusal's description must carry: the claim it refused.
+		names string
+	}{
+		{"an expired token", func(claims map[string]any) {
+			now := time.Now()
+			claims["iat"], claims["exp"] = now.Add(-2*time.Hour).Unix(), now.Add(-time.Minute).Unix()
+		}, "expired"},
+		{"a token for another audience", func(claims map[string]any) {
+			claims["aud"] = []string{"https://another.example/audience"}
+		}, podAudience},
+		{"a token from another issuer", func(claims map[string]any) {
+			claims["iss"] = "https://another-issuer.example"
+		}, f.cluster.URL()},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			form := exchangeForm(f.podToken(t, "pod-uid-1", row.change), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
+			status, body := f.exchange(t, form, key)
+			if status != http.StatusBadRequest || body["error"] != "invalid_request" {
+				t.Fatalf("%s while the key set answers 500 = %d %v, want 400 invalid_request: its own claims refuse it, and a 5xx sends brokerclient to trade it again for the whole outage", row.name, status, body)
+			}
+			if hint, _ := body["error_description"].(string); !strings.Contains(hint, row.names) {
+				t.Errorf("the refusal reads %q, which does not name %q, the claim that refused it", hint, row.names)
+			}
+		})
 	}
 }

@@ -108,7 +108,8 @@ const (
 // KeySource answers the public key a token's header names, which is what the library's
 // jwt.Keyfunc has to return: *oidc.Keys is one, reading the issuer's published set. An error that
 // wraps oidc.ErrKeySet is an issuer whose set could not be read, which the exchange answers 503
-// temporarily_unavailable (keySetUnavailable) rather than as a token it refused.
+// temporarily_unavailable (keySetUnavailable) rather than as a token it refused, unless the
+// token's own claims refuse it (claimsRefusal).
 type KeySource interface {
 	// Key is the public key a token naming kid and signed with alg is checked against.
 	Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error)
@@ -312,7 +313,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// pod is the pod binding the decision requires.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: kubernetesTolerance,
-				ValidateFunc:               keyFunc(c.Kubernetes.Keys),
+				ValidateFunc:               keyFunc(c.Kubernetes),
 			},
 		}
 	}
@@ -325,7 +326,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// token needs and a leaked one cannot be replayed.
 				ValidateJTI:                true,
 				JWTLifetimeToleranceWindow: githubTolerance,
-				ValidateFunc:               keyFunc(c.GitHub.Keys),
+				ValidateFunc:               keyFunc(c.GitHub),
 			},
 		}
 	}
@@ -341,7 +342,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// copied it is the DPoP key the minted token is bound to.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: googleTolerance,
-				ValidateFunc:               keyFunc(c.Google.Keys),
+				ValidateFunc:               keyFunc(c.Google),
 			},
 		}
 	}
@@ -353,6 +354,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 		// subject with no actor is refused by the decision, and the machine type is an actor
 		// type the exchange client may present and no subject type at all.
 		for _, name := range []string{oauthwire.SubjectTokenTypePerson, oauthwire.ActorTokenTypeMachine} {
+			issuer, _ := c.issuerOf(name)
 			types[name] = &rfc8693.JWTType{
 				Name:   name,
 				Issuer: c.Google.Issuer,
@@ -364,7 +366,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 					// being spendable is the box key the sign-in is recorded against.
 					ValidateJTI:                false,
 					JWTLifetimeToleranceWindow: googleTolerance,
-					ValidateFunc:               keyFunc(c.Google.Keys),
+					ValidateFunc:               keyFunc(issuer),
 				},
 			}
 		}
@@ -390,23 +392,59 @@ func (c ExchangeConfig) issuerOf(subjectTokenType string) (IssuerConfig, bool) {
 	return IssuerConfig{}, false
 }
 
-// keyFunc is a JWT subject token type's ValidateFunc: the library hands it the parsed but
-// unverified token and checks the signature with whatever key it returns.
+// keyFunc is a JWT token type's ValidateFunc, for tokens of issuer: the library hands it the
+// parsed but unverified token and checks the signature with whatever key it returns.
 //
 // The algorithm comes from a header nobody has verified, and the library's parse allows every
 // algorithm including 'none', so the header is refused before any key is returned: an issuer
 // publishes public keys, so a token signed with a shared secret or not signed at all is not one
 // of its tokens whatever key id it names.
 //
+// A key set that cannot be read reaches no verdict on the signature, but the token's own claims
+// may still refuse it, and the library checks them only after this returns. So where the key
+// source answers oidc.ErrKeySet, the unverified claims are held to issuer first (claimsRefusal),
+// as the verifier's classify decides a token's claims before its key-set error
+// (internal/oidc/verifier.go): a token that no read of the set could make acceptable is refused,
+// and only one its claims accept is answered as the outage.
+//
 // The read runs on its own context rather than the request's, because the library's signature
 // gives it none; the key source bounds its own fetch, and a set already cached costs no read.
-func keyFunc(keys KeySource) jwt.Keyfunc {
+func keyFunc(issuer IssuerConfig) jwt.Keyfunc {
 	return func(token *jwt.Token) (any, error) {
 		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
 			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
 		}
-		return keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+		key, err := issuer.Keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+		if errors.Is(err, oidc.ErrKeySet) {
+			if refused := claimsRefusal(issuer, token.Claims.ToMapClaims()); refused != nil {
+				return nil, refused
+			}
+		}
+		return key, err
 	}
+}
+
+// claimRefusal is a token its own claims refuse, decided while its issuer's key set could not be
+// read (keyFunc). Its text says which claim refused it and repeats nothing of the token.
+type claimRefusal struct{ reason string }
+
+func (r *claimRefusal) Error() string { return r.reason }
+
+// claimsRefusal holds a token's unverified claims to the issuer its type is configured with: the
+// issuer it must name, the audience it must carry (the check decide makes of a verified token,
+// audience) and an expiry that has not passed. It answers nil for claims that accept the token,
+// which leaves only its signature undecided.
+func claimsRefusal(issuer IssuerConfig, claims map[string]any) *claimRefusal {
+	expiry, hasExpiry := expiryOf(claims)
+	switch iss, _ := claims["iss"].(string); {
+	case iss != issuer.Issuer:
+		return &claimRefusal{fmt.Sprintf("the token was not issued by %s, the issuer this token type is accepted from", issuer.Issuer)}
+	case !hasAudience(claims["aud"], issuer.Audience):
+		return &claimRefusal{fmt.Sprintf("the token was not minted for %s, which is the audience this broker accepts from %s", issuer.Audience, issuer.Issuer)}
+	case hasExpiry && expiry.Before(time.Now()):
+		return &claimRefusal{fmt.Sprintf("the token expired at %s", expiry.UTC().Format(time.RFC3339))}
+	}
+	return nil
 }
 
 // keySetUnavailable reports whether err, the library's refusal of an exchange request, is a subject
@@ -419,6 +457,18 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 func keySetUnavailable(err error) bool {
 	var invalid *jwt.ValidationError
 	return errors.As(err, &invalid) && errors.Is(invalid.Inner, oidc.ErrKeySet)
+}
+
+// refusedClaim is keyFunc's claimRefusal inside err, the library's refusal of an exchange request,
+// read from the jwt.ValidationError's Inner as keySetUnavailable reads the outage; nil for any
+// other refusal.
+func refusedClaim(err error) *claimRefusal {
+	var invalid *jwt.ValidationError
+	var refused *claimRefusal
+	if errors.As(err, &invalid) && errors.As(invalid.Inner, &refused) {
+		return refused
+	}
+	return nil
 }
 
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
@@ -460,7 +510,12 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, oauthstore.NewExchangeSession())
 	noteClient(ctx, request)
-	if keySetUnavailable(err) {
+	switch refused := refusedClaim(err); {
+	case refused != nil:
+		// A token whose issuer's key set is down, refused on its own claims: the 400
+		// invalid_request it gets once the set reads, naming the claim, since no read changes it.
+		err = oauth2.ErrInvalidRequest.WithHintf("The presented token was refused: %s.", refused).WithWrap(err).WithDebugError(err)
+	case keySetUnavailable(err):
 		err = oauth2.ErrTemporarilyUnavailable.WithHint("The issuer of the presented token cannot be reached, so the token could not be checked; try again shortly.").WithWrap(err).WithDebugError(err)
 	}
 	if err != nil {
