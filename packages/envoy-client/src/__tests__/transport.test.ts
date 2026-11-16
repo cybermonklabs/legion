@@ -951,9 +951,10 @@ describe("EnvoyClient", () => {
 
     // A listener that names no state lists only sessions it holds a registration for, so every
     // row of its answer is live; reading the absence as anything else buries working sessions.
+    // A row without roles or capabilities reads as holding none, so the lists are always there.
     expect(sessions).toEqual([
-      { ...unversioned, state: "live" },
-      { ...versioned, state: "live" },
+      { ...unversioned, state: "live", roles: [], capabilities: [] },
+      { ...versioned, state: "live", roles: [], capabilities: [] },
     ]);
     expect(recorded.requests[0]?.url).toBe("http://listener/v1/sessions");
   });
@@ -981,9 +982,9 @@ describe("EnvoyClient", () => {
     // Every row carries the state the listener put the session in, and one that names none
     // reads as live, so the delivery each row reports is read beside its state.
     expect(sessions).toEqual([
-      { ...relayed, state: "live" },
-      { ...core, state: "live" },
-      { ...unreported, state: "live" },
+      { ...relayed, state: "live", roles: [], capabilities: [] },
+      { ...core, state: "live", roles: [], capabilities: [] },
+      { ...unreported, state: "live", roles: [], capabilities: [] },
     ]);
     expect(sessions.map((session) => session.delivery)).toEqual(["consumer", "", undefined]);
   });
@@ -1030,8 +1031,14 @@ describe("EnvoyClient", () => {
 
     // A row carrying a place still parses, which is what keeps an older reader working against a
     // listener that answers one.
-    expect(sessions[0]).toEqual({ ...row, state: "live" });
-    expect(sessions[1]).toEqual({ ...row, session_id: "ses_newer", state: "live" });
+    expect(sessions[0]).toEqual({ ...row, state: "live", roles: [], capabilities: [] });
+    expect(sessions[1]).toEqual({
+      ...row,
+      session_id: "ses_newer",
+      state: "live",
+      roles: [],
+      capabilities: [],
+    });
   });
 
   test("reads a listener's null topics as an empty list and keeps the row's other values", async () => {
@@ -1040,9 +1047,11 @@ describe("EnvoyClient", () => {
 
     const sessions = await client.listSessions();
 
+    // updated_at is absent: the schema does not read it, so zod drops it.
     expect(sessions).toEqual([
       {
         session_id: "ses_infra742_no_interests",
+        state: "live",
         machine_id: "envoy-fixture",
         host: "envoy-fixture",
         dir: "/work/infra-742-fixture",
@@ -1053,6 +1062,7 @@ describe("EnvoyClient", () => {
         capabilities: [],
         self_subscribed: true,
         last_seen: 0,
+        delivery: "consumer",
       },
     ]);
   });
@@ -1090,8 +1100,8 @@ describe("EnvoyClient", () => {
     const sessions = await client.listSessions();
 
     expect(sessions).toEqual([
-      { ...base, roles: [], capabilities: [] },
-      { ...base, session_id: "ses_absent", roles: [], capabilities: [] },
+      { ...base, state: "live", roles: [], capabilities: [] },
+      { ...base, session_id: "ses_absent", state: "live", roles: [], capabilities: [] },
     ]);
   });
 
@@ -1113,7 +1123,10 @@ describe("EnvoyClient", () => {
     ]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
 
-    await expect(client.listSessions()).rejects.toThrow();
+    // The row is otherwise valid, so the one issue is the element's type.
+    await expect(client.listSessions()).rejects.toMatchObject({
+      issues: [{ code: "invalid_type", path: [0, "topics", 0] }],
+    });
   });
 
   test("keeps an unresponsive row's state and its last registration, and asks for it by name", async () => {
