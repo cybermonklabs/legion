@@ -8,6 +8,7 @@ import type { Subprocess } from "bun";
 import {
   bounds,
   type Listed,
+  listedOf,
   masked,
   maxReads,
   named,
@@ -410,8 +411,121 @@ test("a kill never signals this process, even where its table reads it as one of
   expect(scriptedKill([[init, self]])).toEqual(["read"]);
 });
 
-// Last of the scripted rows: were the walk to take the loop again, this row would never end, and
-// no row clock stops a synchronous loop, so the rows above report first.
+/** The pid, parent and start time of the process the rows of `listedOf` below read. */
+const readProcess = { pid: 4_242, ppid: 4_200, start: 9_183_936 };
+
+/** The flags, field 9 of `/proc/<pid>/stat`, of an ordinary process: `PF_RANDOMIZE` and
+ *  `PF_SUPERPRIV`, and not `PF_KTHREAD`, 0x00200000, so only that bit tells a kernel thread. */
+const ordinaryFlags = 0x00400100;
+
+/** The text Linux gives for the `/proc/<pid>/stat` of `readProcess`, named `name`, in `state`,
+ *  with `flags`: its pid, its name in parentheses, and fields 3 to 52 of proc(5), each 0 but the
+ *  state, the parent, the flags and the start time. So a field read one place off reads 0, or
+ *  the state, and not what `readProcess` holds. */
+function statText({ flags = ordinaryFlags, name = "sleep", state = "R" } = {}): string {
+  const fields: Record<number, string> = {
+    1: String(readProcess.pid),
+    2: `(${name})`,
+    3: state,
+    4: String(readProcess.ppid),
+    9: String(flags),
+    22: String(readProcess.start),
+  };
+  return `${Array.from({ length: 52 }, (_, index) => fields[index + 1] ?? "0").join(" ")}\n`;
+}
+
+/** The text of a `/proc/<pid>/environ` holding `variables`, each one ended by a NUL. */
+function environText(...variables: string[]): string {
+  return variables.map((variable) => `${variable}\0`).join("");
+}
+
+test("the table lists a process whose environment reads empty, in state R and no kernel thread, as unknown", () => {
+  // As a process in the middle of its exec reads, or one that is exiting, or one `env -i` started.
+  expect(listedOf(readProcess.pid, statText(), "")).toEqual({
+    ...readProcess,
+    tokens: [],
+    unknown: true,
+  });
+});
+
+test("the table lists a zombie whose environment reads empty as not unknown", () => {
+  expect(listedOf(readProcess.pid, statText({ state: "Z" }), "")).toEqual({
+    ...readProcess,
+    tokens: [],
+    unknown: false,
+  });
+});
+
+test("the table lists a kernel thread, told by its flags, whose environment reads empty as not unknown", () => {
+  // A kworker's flags, `PF_KTHREAD` among them, in a state other than `Z`, so the flag alone
+  // tells it.
+  const kworker = statText({ flags: 0x04208060, name: "kworker/0:1", state: "I" });
+  expect(listedOf(readProcess.pid, kworker, "")).toEqual({
+    ...readProcess,
+    tokens: [],
+    unknown: false,
+  });
+});
+
+test("the table lists the tokens of a process's environment, split on spaces", () => {
+  const carrying = (tokens: string) =>
+    environText("HOME=/root", `DISPATCH_E2E_BOUNDED_TOKENS=${tokens}`, "PATH=/usr/bin");
+  expect(listedOf(readProcess.pid, statText(), carrying("outer"))).toEqual({
+    ...readProcess,
+    tokens: ["outer"],
+    unknown: false,
+  });
+  // A child started inside another bounded child carries the outer token, then its own.
+  expect(listedOf(readProcess.pid, statText(), carrying("outer inner"))).toEqual({
+    ...readProcess,
+    tokens: ["outer", "inner"],
+    unknown: false,
+  });
+});
+
+test("the table lists no token for an environment whose variables only hold the tokens' name", () => {
+  // One variable's value holds the tokens' variable and its `=`, and another's name starts with
+  // that variable's: neither is the entry for it.
+  const environ = environText(
+    "HOME=/root",
+    "NOTE=DISPATCH_E2E_BOUNDED_TOKENS=outer",
+    "DISPATCH_E2E_BOUNDED_TOKENS_SAVED=inner"
+  );
+  expect(listedOf(readProcess.pid, statText(), environ)).toEqual({
+    ...readProcess,
+    tokens: [],
+    unknown: false,
+  });
+});
+
+test("the table lists a process whose environment could not be read with no token, and not as unknown", () => {
+  // Another user's, or that of a process that ended after its stat was read. It is in state R
+  // and no kernel thread, so the failed read alone decides.
+  expect(listedOf(readProcess.pid, statText(), undefined)).toEqual({
+    ...readProcess,
+    tokens: [],
+    unknown: false,
+  });
+});
+
+test("the table lists no process whose stat could not be read", () => {
+  expect(listedOf(readProcess.pid, undefined, undefined)).toBeUndefined();
+});
+
+test("the table lists the parent and start of a process whose command name holds spaces and `)`", () => {
+  // A command name is the program's file name, or one the process set, and may read as fields:
+  // read from its first `)`, this one would list a zombie whose parent is pid 1.
+  expect(listedOf(readProcess.pid, statText({ name: "x) Z 1 (y" }), "")).toEqual({
+    ...readProcess,
+    tokens: [],
+    unknown: true,
+  });
+});
+
+// Last of the scripted rows. Were the walk's cycle guard, the `found.has` of `treeOf`, to
+// regress, the walk would take this loop for ever and the row would hang: no row clock stops a
+// synchronous loop, so only the job's limit would end it. It stands last so that every scripted
+// row above reports first.
 test("a kill's walk by parent pid ends where its table lists two processes as each other's parent", () => {
   // `processTable` reads one process at a time, so where a pid is reused between two of its
   // reads, a table can list a process as the parent of its own parent.

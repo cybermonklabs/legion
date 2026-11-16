@@ -9,6 +9,11 @@
  * That line, and the failure of a child its bound stopped, go to the run's stderr, which CI keeps
  * in a public log, so both name the child as `named` writes it.
  *
+ * When a child ends, or its bound passes, `stopTree` kills every process the child started, and
+ * a kill whose token match is inverted takes every other process of the pod, so a plant in
+ * `treeOf`, `stopTree` or the table it reads (`processTable`, `listedOf`, `statFields`) runs
+ * against the scripted rows of `bounded-subprocess.test.ts` alone, through a `-t` filter.
+ *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
  * would kill a process its row is still using: the probe the seven driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
@@ -232,8 +237,7 @@ export interface Listed {
    *  lists it. */
   readonly start: number;
   /** Whether its environment read empty although it is neither a zombie nor a kernel thread, so
-   *  the read could not tell whether it carries a token (`processTable`). Never where `ps` lists
-   *  it. */
+   *  the read could not tell whether it carries a token (`listedOf`). Never where `ps` lists it. */
   readonly unknown: boolean;
 }
 
@@ -241,25 +245,34 @@ export interface Listed {
  *  `PF_KTHREAD` of the kernel's `include/linux/sched.h`. */
 const kernelThread = 0x00200000;
 
-/** The fields of `/proc/<pid>/stat` from the third on, the state first, or undefined where the
- *  process is gone. They are split after the `)` that ends the command name, since that name may
+/** The fields of `stat`, the text of a `/proc/<pid>/stat`, from the third on, the state first.
+ *  They are split after the last `)`, the one that ends the command name, since that name may
  *  hold spaces and parentheses of its own, so field N of proc(5) is at index N - 3. */
-function statFields(pid: number | string): string[] | undefined {
+function statFields(stat: string): string[] {
+  return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+}
+
+/** The text of `/proc/<pid>/<file>`, or undefined where it cannot be read: where the process is
+ *  gone (ENOENT), and, for its `environ`, where it is another user's (EACCES). */
+function procText(pid: number | string, file: "environ" | "stat"): string | undefined {
   try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    return readFileSync(`/proc/${pid}/${file}`, "utf8");
   } catch {
     return undefined;
   }
 }
 
-/** Every process the machine lists, or undefined where neither `/proc` nor `ps` answers.
+/** What the table lists of the process `pid`, from `stat` and `environ`, the texts of its
+ *  `/proc/<pid>/stat` and `/proc/<pid>/environ`, each undefined where its read failed; or
+ *  undefined where `stat` is, since the process is gone. `processTable` reads the two files and
+ *  hands them here. Exported for the rows of `bounded-subprocess.test.ts` that hand it built
+ *  texts, and hold each condition of it with no process and no clock.
  *
- *  Under `/proc`, the state, the parent, the flags and the start time are fields 3, 4, 9 and 22
- *  of `/proc/<pid>/stat` (`statFields`). The tokens come from `/proc/<pid>/environ`, which is the
- *  environment the process was started with: the one its last exec wrote. A process of another
- *  user has an environ this process cannot read, and it carries no token here. A process that
- *  ends between the directory read and the read of its own files is left out, since it is gone.
+ *  The state, the parent, the flags and the start time are fields 3, 4, 9 and 22 of the stat
+ *  (`statFields`). The tokens come from the environ's `tokensVariable` entry, split on spaces.
+ *  The environ is the environment the process was started with: the one its last exec wrote. An
+ *  environ that could not be read, as another user's cannot, or as a process's that ended after
+ *  its stat was read, carries no token and is not `unknown`.
  *
  *  An environ that reads empty says nothing of the tokens, and it reads empty in five cases. A
  *  process in the middle of an exec: Linux gives it the new program's memory first (`exec_mmap`)
@@ -270,7 +283,30 @@ function statFields(pid: number | string): string[] | undefined {
  *  process whose environ reads empty is `unknown` unless its state is `Z` or its flags carry
  *  `kernelThread`, and `stopTree` reads again while an unknown process may be one it has to
  *  kill. A kernel thread is told by its flag, not by a parent pid of 2: in a pid namespace, as in
- *  a container, no kernel thread is listed and pid 2 is an ordinary process.
+ *  a container, no kernel thread is listed and pid 2 is an ordinary process. */
+export function listedOf(
+  pid: number,
+  stat: string | undefined,
+  environ: string | undefined
+): Listed | undefined {
+  if (stat === undefined) return undefined;
+  const fields = statFields(stat);
+  const prefix = `${tokensVariable}=`;
+  const line = environ?.split("\0").find((variable) => variable.startsWith(prefix));
+  return {
+    pid,
+    ppid: Number(fields[1]),
+    start: Number(fields[19]),
+    tokens: line === undefined ? [] : line.slice(prefix.length).split(" "),
+    unknown: environ === "" && fields[0] !== "Z" && (Number(fields[6]) & kernelThread) === 0,
+  };
+}
+
+/** Every process the machine lists, or undefined where neither `/proc` nor `ps` answers.
+ *
+ *  Under `/proc`, each process is what `listedOf` makes of its `/proc/<pid>/stat` and its
+ *  `/proc/<pid>/environ`, read in that order. A process whose stat cannot be read ended between
+ *  the directory read and that read, and is left out; its environ is not read.
  *
  *  Without `/proc`, one `ps` lists them, run by `Bun.spawnSync` with no bound: a `ps` that never
  *  ends is never stopped, and the kill that read it waits with it. That is a stated edge, not a
@@ -278,23 +314,12 @@ function statFields(pid: number | string): string[] | undefined {
 function processTable(): Listed[] | undefined {
   if (procfs) {
     const table: Listed[] = [];
-    const prefix = `${tokensVariable}=`;
     for (const entry of readdirSync("/proc")) {
       if (!/^\d+$/.test(entry)) continue;
-      const fields = statFields(entry);
-      if (fields === undefined) continue;
-      let tokens: string[] = [];
-      let unknown = false;
-      try {
-        const environ = readFileSync(`/proc/${entry}/environ`, "utf8");
-        unknown = environ === "" && fields[0] !== "Z" && (Number(fields[6]) & kernelThread) === 0;
-        const line = environ.split("\0").find((variable) => variable.startsWith(prefix));
-        if (line !== undefined) tokens = line.slice(prefix.length).split(" ");
-      } catch {
-        // EACCES: another user's process. ENOENT: it ended after its stat was read.
-      }
-      const pid = Number(entry);
-      table.push({ pid, ppid: Number(fields[1]), start: Number(fields[19]), tokens, unknown });
+      const stat = procText(entry, "stat");
+      const environ = stat === undefined ? undefined : procText(entry, "environ");
+      const listed = listedOf(Number(entry), stat, environ);
+      if (listed !== undefined) table.push(listed);
     }
     return table;
   }
@@ -389,7 +414,7 @@ interface Collaborators {
  *  exited. Each read of the table is followed by SIGKILL to every process it found. The table is
  *  read again, up to `maxReads` times, until a read finds nothing it has not killed already and
  *  lists no `unknown` process that started at or after the child and that this kill has not
- *  signalled (`processTable`). A process forked between one read and the kill of its parent is
+ *  signalled (`listedOf`). A process forked between one read and the kill of its parent is
  *  re-parented when that parent dies, and the next read finds it by the token it inherited.
  *
  *  An unknown process is read again because it may be one of the child's in the middle of an
@@ -816,7 +841,8 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
   });
   // Read now, while the child is listed: `stopTree` waits only on unknown processes that started
   // at or after it. A child the runtime reaped already reads as gone, and gets 0.
-  const start = procfs ? Number(statFields(child.pid)?.[19] ?? 0) : 0;
+  const stat = procfs ? procText(child.pid, "stat") : undefined;
+  const start = stat === undefined ? 0 : Number(statFields(stat)[19] ?? 0);
   const run: Running = { child, start, token };
   running.add(run);
   const stdoutReader = child.stdout.getReader();
