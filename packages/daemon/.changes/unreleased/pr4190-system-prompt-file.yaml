@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    A role's system prompt reaches its agent as a file, not as one argument, so a prompt longer than
+    the 131072 bytes Linux allows one argument launches under both runtimes. The daemon composes the
+    prompt and passes its path: `--append-system-prompt <path>` to Oh My Pi and
+    `--append-system-prompt-file <path>` to Claude Code. A pod's launcher writes the file into the
+    generation's directory of the role's own private volume; a tmux launch writes
+    `<state_dir>/secrets/<claim>-system-prompt.md`. The new per-role key `model_context_bytes`
+    bounds a role's prompt in bytes: a larger prompt, or one whose start frame a pod's launcher
+    cannot read in one frame, is refused before anything starts, and the claim fails at once with
+    cause `launch_refused`, charged no launch failure, its `lastStartFailure` and `failure.detail`
+    naming the role, the prompt's size and the bound.
+time: 2026-11-16T10:00:00Z
+custom:
+    Issue: pr4190
