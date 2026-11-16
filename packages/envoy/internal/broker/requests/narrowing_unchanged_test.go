@@ -85,7 +85,7 @@ func TestNarrowingOnARequestChangesNothingElse(t *testing.T) {
 		{"the narrowed request's grant", narrowedGrant, "APP_KEY"},
 		{"the grant of the request with no narrowing", plainGrant, "OTHER_APP_KEY"},
 	} {
-		got, err := f.Values(t.Context(), release.grantID, f.enrollmentID, nil)
+		got, err := f.Values(t.Context(), release.grantID, f.enrollmentID, nil, nil)
 		if err != nil {
 			t.Fatalf("the release of %s = %v", release.name, err)
 		}

@@ -573,9 +573,9 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	for _, released := range read {
 		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Kind: released.kind}
 	}
-	// The same grant.used row a session's own release writes, marked as the proxy's: the values
-	// did leave the broker, and an operator reading the trail must see that they did.
-	if err := m.auditGrantUsed(ctx, grantID, checked, auditDetail{"names": releasedNames(read), "airlock": true}); err != nil {
+	// The same grant.used row and line a session's own release writes, marked as the proxy's: the
+	// values did leave the broker, and an operator reading the trail must see that they did.
+	if err := m.auditGrantUsed(ctx, grantID, checked, grantUse{names: releasedNames(read), airlock: true}); err != nil {
 		return nil, "", err
 	}
 	return values, checked.set.Version, nil

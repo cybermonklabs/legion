@@ -946,7 +946,9 @@ approved record behind it releases nothing.
 Beside the records, the broker keeps an append-only `audit` table with one row per event:
 `enrollment.created`, `enrollment.revoked`, `enrollment.expired`, `request.created`,
 `request.granted`, `request.denied`, `request.cancelled`, `request.expired`, `grant.used` (each time
-a session reads a grant, naming the secrets released), `grant.revoked` (naming, under `withheld`,
+a session or the airlock's proxy reads a grant, naming the secrets released and the reason the
+grant's request gave, and, for a session's read, the command it said the release starts, with each
+value the release handed out replaced by `[redacted]`), `grant.revoked` (naming, under `withheld`,
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
 a grant already revoked, naming under `withheld` the secrets it withheld from the session),

@@ -211,6 +211,12 @@ type grantValuesBody struct {
 	// proxy spends that grant's values and mints them owner-wide. It
 	// narrows this release alone: the grant's next release without it is owner-wide.
 	GitHubApp *githubNarrowing `json:"github_app"`
+	// Optional: the command this release starts, as its argument vector. The broker logs it with
+	// the grant's reason, at most 32 arguments of at most 256 bytes each, and every value the
+	// release hands out replaced by `[redacted]`. It decides nothing about the release. A broker
+	// from before this field refuses a body that holds it, as INVALID_NARROWING naming the
+	// unknown field, and releases nothing.
+	Command []string `json:"command"`
 }
 
 // githubNarrowing is one release's narrowing of its GitHub App tokens: as the request names it,
@@ -483,7 +489,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if narrowing != nil {
 		applied = &githubNarrowing{Owner: narrowing.Owner, Repositories: narrowing.Repositories, ReadOnly: narrowing.ReadOnly}
 	}
-	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing)
+	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, narrowing, body.Command)
 	switch {
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
