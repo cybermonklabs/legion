@@ -34,8 +34,8 @@ type keptHandover struct {
 
 // keptLaneUnderClaim is one listener's kept lane under test: the harness's stores, a delivery
 // config whose role forwards the test stands in for, and the /v1/roles/set route over them. A
-// drain is started the way production starts one - by a claim through that route, by a keep
-// (keepForNextHolder) or by the sweep (sweepKeptRoleLanes) - rather than by calling the drain
+// drain is started in one of the ways production starts one - by a claim through that route, by a
+// keep (keepForNextHolder) or by the sweep (sweepKeptRoleLanes) - rather than by calling the drain
 // itself, since what these tests are about is what happens after one walk of the lane ends.
 type keptLaneUnderClaim struct {
 	harness listenerDeliveryHarness
@@ -174,9 +174,11 @@ func (l *keptLaneUnderClaim) keys() []string {
 // A role's kept lane is handed over whole, from the one claim that started it. One walk of the
 // lane forwards at most roleKeepDrainMax copies, and nothing starts another drain while the
 // holder stays live: a keep happens only while a role has no live holder, a live holder claims no
-// second time, and a heartbeat of a holder that was live already starts no handover
-// (subscribeHandler). A lane of more copies than one walk forwards therefore used to strand
-// every copy past the twentieth until it aged out unread, with every sender answered 202 kept.
+// second time, and a heartbeat of a holder that was live already starts no handover, since only
+// the registration that makes a holder live again (subscribeHandler) and the claim route's
+// refresh of a claimant that was not live (roleSetHandler) start one. A lane of more copies than
+// one walk forwards therefore used to strand every copy past the twentieth until it aged out
+// unread, with every sender answered 202 kept.
 func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -202,9 +204,10 @@ func TestOneClaimHandsOverAKeptLaneLongerThanOneWalkOfIt(t *testing.T) {
 }
 
 // A copy whose forward failed is left on the lane for the role's next drain, and while the role's
-// holder stays live nothing starts one: no claim follows a holder that already holds the role, and
-// no keep follows a role that has one. The handover walks the lane again itself, after a back-off,
-// so the copy reaches the holder its sender was told it was kept for.
+// holder stays live nothing but the sweep starts one: no claim follows a holder that already holds
+// the role, no keep follows a role that has one, and a heartbeat of a holder that was live already
+// starts none (subscribeHandler). The handover walks the lane again itself, after a back-off, so
+// the copy reaches the holder its sender was told it was kept for.
 func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -474,10 +477,12 @@ func sweptRoleWakes(t *testing.T, client *bus.Client, role string) []contracts.E
 // goroutine of the process that started it, so a listener restarted or replaced mid-handover ends
 // it with copies behind its cursor, and nothing starts another: a keep happens only while a role
 // has no live holder, a live holder claims no second time, and a heartbeat of a holder that was
-// live already starts no handover (subscribeHandler). One pass of the sweep hands such a lane to
-// the role's live holder with no claim and no keep behind it. The same pass walks a lane whose
-// role no session claims: its copy, inside its hour, reaches nobody, and it wakes its role again
-// (raiseKeptRoleWake), where the claimed lane, whose holder is live, wakes nothing.
+// live already starts no handover, since only the registration that makes a holder live again
+// (subscribeHandler) and the claim route's refresh of a claimant that was not live
+// (roleSetHandler) start one. One pass of the sweep hands such a lane to the role's live holder
+// with no claim and no keep behind it. The same pass walks a lane whose role no session claims:
+// its copy, inside its hour, reaches nobody, and it wakes its role again (raiseKeptRoleWake),
+// where the claimed lane, whose holder is live, wakes nothing.
 func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -571,12 +576,12 @@ func countSessionBucketReads(t *testing.T, sessions *session.SessionRegistry) *a
 	return gets
 }
 
-// A handover of a role whose kept lane holds nothing resolves no holder at all. Every claim of a
-// role starts one and most roles have nothing kept for them, so a pass that resolved the holder
-// before it read the lane spent a claim read and a session read on every such claim - and made
-// them from a goroutine the claim's own answer had already outlived, which is how a claim's
-// handover came to read the session registry under a test that was replacing it. The pass opens
-// with the lane instead, and ends there when the lane holds nothing.
+// A handover of a role whose kept lane holds nothing resolves no holder at all. Every claim the
+// claim route grants starts one and most roles have nothing kept for them, so a pass that resolved
+// the holder before it read the lane spent a claim read and a session read on every such claim -
+// and made them from a goroutine the claim's own answer had already outlived, which is how a
+// claim's handover came to read the session registry under a test that was replacing it. The pass
+// opens with the lane instead, and ends there when the lane holds nothing.
 func TestAHandoverOfAnEmptyKeptLaneResolvesNoHolder(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (

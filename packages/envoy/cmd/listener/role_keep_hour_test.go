@@ -1269,11 +1269,14 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 
 // TestADeadLetterClaimIsTakenOverForTheReasonItWasMade holds the rule a walk that takes over a
 // dead letter's claim sends that dead letter again by (keptCopyClaimOf, judgeKeptRoleCopy): the
-// claim names the reason the walk that made it ended the copy for (bus.KeptRoleCursor.DeadLetter),
-// and the walk taking it over sends the dead letter again for that reason and no other, whatever
-// the copy's age on its own clock. Rows (h), (n) and (s) above take claims over that the walks of
-// their listeners wrote; this one judges claims at ages those rows' clocks do not reach, an
-// expiry claim on a copy that names a delivery mode among them.
+// claim names the reason the walk that made it ended the copy for, and for an expired copy whether
+// its forward may have reached the holder (bus.KeptRoleCursor.DeadLetter), and the walk taking it
+// over sends the dead letter again for that reason, with that qualifier, and for no other, whatever
+// the copy's age on its own clock. Rows (h), (n), (s) and (t) above take claims over that the
+// walks of their listeners wrote; this one judges claims at ages those rows' clocks do not reach,
+// an expiry claim on a copy that names a delivery mode among them, and reads the claim each drop
+// is written under (keptRoleDrop.claimReason) back as that drop, so a claim taken over again and
+// again is judged as the first takeover judged it.
 func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 	stored := bus.StoredMessage{Sequence: 7, Time: time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)}
 	data, err := json.Marshal(contracts.Envelope{EventID: "evt_claimed", SourceSession: "ses_claim_sender", Payload: `{"delivery":{"mode":"steer"}}`})
@@ -1283,6 +1286,7 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 	stored.Data = data
 	mode := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: string(deadLetterDeliveryMode)}
 	expiry := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: string(deadLetterExpired)}
+	unconfirmed := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: expiredUnconfirmedClaim}
 	for _, tc := range []struct {
 		name   string
 		cursor bus.KeptRoleCursor
@@ -1292,6 +1296,7 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 		{"a forward's claim", bus.KeptRoleCursor{Kept: 6, Claiming: 7}, keptCopyForwardClaimed},
 		{"a dead letter's claim for the copy's delivery mode", mode, keptCopyModeClaimed},
 		{"a dead letter's claim for the copy's hour", expiry, keptCopyExpiryClaimed},
+		{"a dead letter's claim for the hour of a copy whose forward was claimed", unconfirmed, keptCopyUnconfirmedExpiryClaimed},
 	} {
 		if got := keptCopyClaimOf(tc.cursor, stored.Sequence); got != tc.want {
 			t.Fatalf("%s: the claim is %d, want %d", tc.name, got, tc.want)
@@ -1309,10 +1314,46 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 		t.Fatalf("a mode claim taken over after the hour is judged %+v, want the steer delivery mode's dead letter and no expired report", verdict)
 	}
 	// An expiry claim taken over by a walk whose clock reads the copy inside its hour is the
-	// expired drop it was, reported as one, though the copy names a delivery mode.
+	// expired drop it was, reported as one, though the copy names a delivery mode, and it says
+	// nothing of a forward.
 	if verdict := judged(expiry, 59*time.Minute); verdict.step != keptCopyDeadLetter || verdict.drop.reason != deadLetterExpired ||
-		verdict.report == nil {
-		t.Fatalf("an expiry claim taken over by a clock inside the hour is judged %+v, want the expired dead letter with its report", verdict)
+		verdict.drop.forwarded || verdict.report == nil {
+		t.Fatalf("an expiry claim taken over by a clock inside the hour is judged %+v, want the expired dead letter with its report and no forward", verdict)
+	}
+
+	// The claim a walk writes for each drop is read back as that drop, by every walk that takes
+	// it over after it: the expiry of a copy whose forward was claimed stays a drop that may have
+	// reached the holder however many times its dead letter's publish fails, which row (t) holds
+	// on a stream.
+	for _, tc := range []struct {
+		name      string
+		cursor    bus.KeptRoleCursor
+		at        time.Duration
+		reason    deadLetterReason
+		forwarded bool
+		// claim is the dead_letter value the claim of that drop carries.
+		claim string
+	}{
+		{"a forward's claim taken over after the hour", bus.KeptRoleCursor{Kept: 6, Claiming: 7}, time.Hour + time.Minute, deadLetterExpired, true, "expired_unconfirmed"},
+		{"a copy no walk claimed, read after the hour", bus.KeptRoleCursor{Kept: 6}, time.Hour + time.Minute, deadLetterExpired, false, "expired"},
+		{"a mode claim taken over after the hour", mode, 3 * time.Hour, deadLetterDeliveryMode, false, "delivery_mode"},
+	} {
+		first := judged(tc.cursor, tc.at)
+		if first.step != keptCopyDeadLetter || first.drop.reason != tc.reason || first.drop.forwarded != tc.forwarded {
+			t.Fatalf("%s: judged %+v, want the %s dead letter with forwarded %t", tc.name, first, tc.reason, tc.forwarded)
+		}
+		claimed := bus.KeptRoleCursor{Kept: 6, Claiming: 7, DeadLetter: first.drop.claimReason()}
+		if claimed.DeadLetter != tc.claim {
+			t.Fatalf("%s: the dead letter's claim names %q, want %q", tc.name, claimed.DeadLetter, tc.claim)
+		}
+		for _, at := range []time.Duration{59 * time.Minute, 3 * time.Hour} {
+			again := judged(claimed, at)
+			if again.step != keptCopyDeadLetter || again.drop.reason != tc.reason || again.drop.forwarded != tc.forwarded ||
+				again.drop.claimReason() != tc.claim {
+				t.Fatalf("%s: its claim taken over by a clock %s after the keep is judged %+v, want the %s dead letter with forwarded %t under the claim %q",
+					tc.name, at, again, tc.reason, tc.forwarded, tc.claim)
+			}
+		}
 	}
 }
 

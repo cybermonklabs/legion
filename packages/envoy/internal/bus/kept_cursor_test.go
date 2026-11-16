@@ -15,8 +15,10 @@ import (
 // package's, not either caller's. A tag that drifted would decode as zero, which reads as a lane
 // drained to its start and leads every handover astray, so the encoding is pinned here: what a
 // walk writes decodes back to itself, and a body written exactly as a walk writes it decodes to
-// the numbers in it. A forward's claim and a cursor with nothing claimed carry no dead_letter key
-// at all, and a body with no dead_letter key decodes with no reason.
+// the numbers in it. A dead letter's claim carries each of the three reasons a walk writes, the
+// expiry of a copy whose forward may have reached the holder among them; a forward's claim and a
+// cursor with nothing claimed carry no dead_letter key at all, and a body with no dead_letter key
+// decodes with no reason.
 func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 	for _, tc := range []struct {
 		written bus.KeptRoleCursor
@@ -25,6 +27,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12}, `{"kept":11,"claiming":12}`},
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "expired"}, `{"kept":11,"claiming":12,"dead_letter":"expired"}`},
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "delivery_mode"}, `{"kept":11,"claiming":12,"dead_letter":"delivery_mode"}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "expired_unconfirmed"}, `{"kept":11,"claiming":12,"dead_letter":"expired_unconfirmed"}`},
 	} {
 		body, err := json.Marshal(tc.written)
 		if err != nil {

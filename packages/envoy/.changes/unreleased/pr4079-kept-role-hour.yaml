@@ -14,9 +14,10 @@ body: |-
   session (`envoy_role_dead_letters_total`). A copy that no walk had claimed, and whose hour ended
   more than an hour before the walk that drops it, is dropped as stale with no dead letter, and a
   copy Dispatch's outbox kept gets none. A copy that the live holder does not take for its delivery
-  mode is dropped inside its hour, with a dead letter that names the holder and the mode. The sweep
-  now walks every kept lane, at most 16 at a time, and raises the role's wake report again in each
+  mode is dropped inside its hour, and the sender it is owed to gets a dead letter that names the
+  mode the holder does not take, or says that the mode could not be read. The sweep now walks
+  every kept lane, at most 16 at a time, and raises the role's wake report again in each
   five-minute interval while a copy the listener kept has at least 20 minutes of its hour left and
   no live session holds the role. `envoy_role_kept_undecodable_total` counts copies no read can
-  decode. The lane cursor gains `dead_letter`, which an earlier listener and Dispatch's outbox
-  ignore.
+  decode. The lane cursor gains `dead_letter`, the reason a walk claimed a copy for its dead
+  letter, which an earlier listener and Dispatch's outbox ignore.

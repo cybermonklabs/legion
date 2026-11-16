@@ -126,9 +126,9 @@ type listenerDeliveryHandlerConfig struct {
 	roleKeepDrains *roleKeepGuards
 	// now is the listener's clock, which a kept copy's age and the end of its hour are measured
 	// by, against the time the stream stored the copy: the keep's answer (storeKeptRoleCopy), the
-	// handovers the claim, the keep and a registration that makes a holder live again start
-	// (runKeptRoleDrain) and the sweep's (sweepKeptRoleLanes), and the sweep's repeated wake
-	// report, which it dates and names the interval of (raiseKeptRoleWake). It is required:
+	// handovers the claim route, the keep and a registration that makes a holder live again
+	// start (runKeptRoleDrain) and the sweep's (sweepKeptRoleLanes), and the sweep's repeated
+	// wake report, which it dates and names the interval of (raiseKeptRoleWake). It is required:
 	// main.go sets it to time.Now, and so does every test that builds a config, while a test that
 	// must cross a copy's hour moves this clock rather than waiting the hour out, since the store
 	// time is the stream's own and no caller chooses it.
@@ -510,8 +510,9 @@ func (c roleLaneClaims) RoleClaim(ctx context.Context, role string) (store.RoleC
 // the copy where that holder is live, and the kept-role sweep hands every lane over again each
 // pass (sweepKeptRoleLanes). A handover that finds no live holder, the holder lapsed among the
 // cases, forwards nothing (handOverKeptRole), so the copy then waits on the lane, with no delivery
-// exception published for it, until a handover - a claim's, a keep's, the sweep's, or that of the
-// registration that makes a holder live again (subscribeHandler) - finds a live holder: the holder
+// exception published for it, until a handover - a claim's, a keep's, the sweep's, that of the
+// registration that makes a holder live again (subscribeHandler), or that of the claim route's
+// refresh of a claimant that was not live (roleSetHandler) - finds a live holder: the holder
 // answering again, or a successor that claimed the role. The walk that handover makes forwards
 // the copy while it is inside its hour (roleKeepWindow); once it is older, the first walk that
 // reads it drops it with a WARN, with a holder or without one, and sends its sender a dead letter

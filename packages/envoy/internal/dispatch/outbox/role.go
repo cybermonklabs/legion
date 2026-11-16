@@ -880,8 +880,9 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // keep, so the event is published and nothing retries the handover, and it is not counted among
 // the destinations a publish did not reach (countPublishFailure), which are the ones the outbox
 // then sends again. What it costs is this issue's order at that holder: the copy reaches it only
-// at the role's next claim, keep or the listener's sweep, up to its interval later, behind every
-// event the holder takes meanwhile.
+// at the listener's next handover of the lane - the role's next claim, a keep, the registration
+// that makes the holder live again or the claim route's refresh that does, or the sweep, up to
+// its interval later - behind every event the holder takes meanwhile.
 //
 // The forward carries the time of the keep itself (contracts.Envelope.KeptAt), as the drain's
 // forward of a copy carries the stream's store time of it, so a holder can judge the message's
