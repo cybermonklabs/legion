@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -170,6 +171,9 @@ type Recorder struct {
 	// correlation is the caller's X-Correlation-Id, clipped (CorrelationID); empty when it sent
 	// none.
 	correlation string
+	// arrived is when Middleware first saw the request, before the mux routed it or any route
+	// authenticated its caller (Arrived).
+	arrived time.Time
 
 	// mu guards the notes: a handler may note from a goroutine of its own while the answer is
 	// being written.
@@ -196,7 +200,7 @@ type Recorder struct {
 // that hands the mux a request of its own (r.WithContext) leaves every line's route empty.
 func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), class: CallerPublic}
+		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: time.Now(), class: CallerPublic}
 		// The request the mux is handed, whose Pattern names the route once next has returned.
 		r = r.WithContext(context.WithValue(r.Context(), recorderKey{}, rec))
 		completed := false
@@ -246,6 +250,16 @@ func (rec *Recorder) ID() string {
 		return ""
 	}
 	return rec.id
+}
+
+// Arrived is when the request reached the broker's code, before its route authenticated its
+// caller: the moment a handler that promises an answer by a time counts that time from. It is the
+// zero time on a nil Recorder.
+func (rec *Recorder) Arrived() time.Time {
+	if rec == nil {
+		return time.Time{}
+	}
+	return rec.arrived
 }
 
 // NoteCaller names who the broker established sent the request: class, one of the Caller

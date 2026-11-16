@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -313,6 +314,25 @@ func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
 				t.Errorf("counted %s under %s, want 0", got, row.otherwise)
 			}
 		})
+	}
+}
+
+// Arrived is when Middleware first saw the request, before the handler ran, and the zero time on
+// a request no Recorder records.
+func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
+	var arrived, handled time.Time
+	before := time.Now()
+	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		arrived, handled = answer.FromContext(req.Context()).Arrived(), time.Now()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	r.serve(httptest.NewRequest(http.MethodGet, "/", nil))
+	if arrived.Before(before) || handled.Sub(arrived) < 50*time.Millisecond {
+		t.Errorf("Arrived() = %s, want at or after %s and at least 50 ms before the handler read it at %s", arrived, before, handled)
+	}
+	if got := answer.FromContext(context.Background()).Arrived(); !got.IsZero() {
+		t.Errorf("Arrived() on no Recorder = %s, want the zero time", got)
 	}
 }
 

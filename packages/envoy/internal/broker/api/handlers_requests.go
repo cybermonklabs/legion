@@ -399,19 +399,22 @@ const requestWaitStep = 500 * time.Millisecond
 // readRequest answers one of the calling session's requests. With ?wait=N, N a whole number of
 // seconds from 1 to record.MaxRequestWaitSeconds, it holds the read while the request is pending
 // (readHeld) and answers the first state that is not pending, or pending once N seconds have
-// passed. The state it reads is the database's, so a decision made on either broker process — the
-// approval page's, the model judge's, the sweeper's expiry, the session's own cancel — is seen
-// within one step of its commit. Any other wait is refused REQUEST_WAIT_INPUT before any read; an
-// absent or empty one answers at once, as before the parameter.
+// passed since the request reached the broker (answer.Recorder.Arrived), so a slow proof check
+// shortens the hold rather than lengthening it. The state it reads is the database's, so a decision
+// made on either broker process — the approval page's, the model judge's, the sweeper's expiry,
+// the session's own cancel — is seen within one step of its commit. Any other wait is refused
+// REQUEST_WAIT_INPUT before any read; an absent or empty one answers at once, as before the
+// parameter.
 //
 // A store that fails is 503 DATABASE_UNAVAILABLE, logged at ERROR and counted failed, which
 // agent-secrets reads as a failed read and waits through (retryable), where a 500 would end its
-// wait with nothing run while the request stays pending. A read whose caller went away before the
-// broker owed its answer, inside its wait and the step after it, is 503 REQUEST_ENDED, logs
-// nothing, as the reread's does, and is counted cancelled (answer.Recorder.NoteCallerEnded). A
-// read that ended past that time is a store failure like any other: the pool sets no statement
-// timeout, so a store that stalls holds the read until its caller gives up, and that stall is
-// logged and counted failed, as it is when it holds the proof check.
+// wait with nothing run while the request stays pending. A held read whose caller went away before
+// the broker owed its answer, within one step (half a second) after its wait, is 503 REQUEST_ENDED,
+// logs nothing, as the reread's does, and is counted cancelled (answer.Recorder.NoteCallerEnded).
+// Any other read that ends early is a store failure: a read with no wait owes its answer at once,
+// and the pool sets no statement timeout, so a store that stalls holds a read until its caller
+// gives up or the request deadline ends it. That stall is logged and counted failed, as it is when
+// it holds the proof check.
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
@@ -422,8 +425,15 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	if !ok {
 		return
 	}
-	start := time.Now()
-	req, err := s.readHeld(ctx, id, enrollmentID, wait)
+	recorder := answer.FromContext(ctx)
+	arrived := recorder.Arrived()
+	if arrived.IsZero() {
+		// A request served outside answer.Middleware, which cmd/broker wraps every request in,
+		// counts its wait from here.
+		arrived = time.Now()
+	}
+	deadline := arrived.Add(wait)
+	req, err := s.readHeld(ctx, id, enrollmentID, deadline)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such request")
@@ -431,8 +441,8 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
 		return
-	case err != nil && errors.Is(ctx.Err(), context.Canceled) && time.Since(start) < wait+requestWaitStep:
-		answer.FromContext(ctx).NoteCallerEnded()
+	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && time.Now().Before(deadline.Add(requestWaitStep)):
+		recorder.NoteCallerEnded()
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
 		return
 	case err != nil:
@@ -465,13 +475,13 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 
 // readHeld reads request id for enrollmentID. It reads the request's owner and state
 // (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when the owner is another
-// enrollment; while the state is pending and wait has time left, it reads them again every
-// requestWaitStep; then it reads the whole request (Machine.Get) once. A wait of 0 is the one
-// read. The owner is checked at every step, so a request that moves to another enrollment while
-// the read is held (adopt moves a predecessor's requests to its successor) is refused at the next
-// step, as a new read of it is. Any other error is the store's, or ctx's when ctx ended first.
-func (s *server) readHeld(ctx context.Context, id, enrollmentID string, wait time.Duration) (requests.Request, error) {
-	deadline := time.Now().Add(wait)
+// enrollment; while the state is pending and deadline has not passed, it reads them again every
+// requestWaitStep; then it reads the whole request (Machine.Get) once. A deadline already passed
+// is the one read. The owner is checked at every step, so a request that moves to another
+// enrollment while the read is held (adopt moves a predecessor's requests to its successor) is
+// refused at the next step, as a new read of it is. Any other error is the store's, or ctx's when
+// ctx ended first.
+func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
 	for {
 		owner, state, err := s.deps.Machine.OwnerAndState(ctx, id)
 		if err != nil {
