@@ -227,6 +227,12 @@ scratch build; natsd is still built from the checkout. A path that is not an exe
 refused with exit 2, and so is `--listener-bin` beside `--base-rev`, since each chooses the
 listener.
 
+The listener is given `PORT=0` and binds a port the kernel chooses. One built from this checkout
+names that port in its `envoy-listener listening` line. One built before `a5f0cf479b`, which either
+flag can run, names port 0 there, the port it was given, and the smoke reads its port from the
+listener's own process instead: the one loopback socket it holds that listens, from its
+descriptors and the kernel's socket tables (`listening_port`), with no probe of the port.
+
 `SMOKE_DROP_ROLE_FROM_COPY=1` turns the INFRA-2747 row into its own control
 (c-live-restart of dispatch://INFRA-2747). Once the restarted process's claim is granted, the row
 asks the listener to take the role out of its copy of the role claims
