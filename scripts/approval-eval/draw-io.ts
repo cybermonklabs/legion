@@ -98,6 +98,24 @@ export interface DrawExcluded {
 }
 
 /**
+ * Where a draw's report slice, the final test, came from: the reserve of INFRA-2897's next final
+ * test, read under a registration of `claim.ts` (`reserve.ts`, item 4 of the rule).
+ */
+export interface FinalTestDraw {
+  /** The reference of the registered read the corpus was read under. */
+  reference: string;
+  /** The groups whose every case after the cut the reserve holds: the only ones report takes. */
+  groups: number;
+  /**
+   * The cases the reserve holds that went to another slice than report: their group holds a case
+   * the reserve does not hold, which a scorer may have read, or report had no room for the group.
+   * A group goes into one slice whole, so such a case is development data from this draw on. A
+   * reserved case the draw left out of every slice is under `excluded`, as every such case is.
+   */
+  heldOutsideReport: { total: number; cases: string[] };
+}
+
+/**
  * What a reader of a draw is handed: the facts `readDraw` read out of the bytes and checked,
  * and nothing it did not check.
  *
@@ -144,6 +162,12 @@ export interface DrawRecord {
   backlogLegionRoots: BacklogRoots;
   rule: DrawRule;
   excluded: DrawExcluded;
+  /**
+   * The final test's source, for a draw made under a registered read of the reserve. Null for a
+   * draw that read no reserve, whose report slice holds cases a live scorer may have read and so
+   * is no final test. A draw made before this was recorded carries none.
+   */
+  finalTest?: FinalTestDraw | null;
 }
 
 /**

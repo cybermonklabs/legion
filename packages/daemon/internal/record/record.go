@@ -67,6 +67,10 @@ type ClassifiedPush struct {
 	Sender string `json:"sender,omitempty"`
 }
 
+// NoCommit is the commit GitHub names for a ref that does not exist: a push webhook's `after`
+// when the push deleted the branch, and its `before` when the push created it.
+const NoCommit = "0000000000000000000000000000000000000000"
+
 // Issue is one durable workflow record. Status is the issue's lifecycle status as the daemon holds
 // it: set when the daemon queues a status write, and set again from each Dispatch event or boot
 // listing that changes the status Dispatch shows, the daemon's own echoes included, except a

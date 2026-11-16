@@ -758,11 +758,13 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) isFact() {}
 
-// PullRequestMerged records GitHub's terminal merged observation.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
+// the head the pull request merged at, "" when the observation names none.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
+	HeadSHA  string
 }
 
 func (PullRequestMerged) isFact() {}
@@ -825,7 +827,8 @@ func (PullRequestMissing) isFact() {}
 type Push struct {
 	Repo   string
 	Branch string
-	// Before is the head the push replaced, After the head it left.
+	// Before is the head the push replaced, After the head it left. A push that deleted the branch
+	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
 	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).
