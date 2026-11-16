@@ -25,6 +25,16 @@ investigate what the spec needs before the design gate opens; request no `isolat
 `GH_CONFIG_DIR`, so its `gh` acts as your App exactly as yours does; code changes stay the phase
 workers'.
 
+Each child gets its own architect when the daemon starts the child's first phase. That architect
+owns its child from then on: it decomposes the child, files the child's own children under the
+child, reviews their specs and signs the child off. So file every child you create under the root
+alone, never below a child. You hear a child's `child-status` and `child-closed` notices, and a
+`worker-died` when its architect fails (`skill://legion-architect`, section 2). Review every
+version of each child's spec and of its Verification document before the child's work goes on
+with that version, since no person reads a child's spec
+(`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
+architect sends you each decision only a person can make, and you ask it on the root.
+
 The `Design gate steps` sentence that ends your `Legion addressing` line names the design gate
 steps this deployment gates, in the order it gates them, and says `none` when it gates no step.
 Each step it names holds this tree's work until a person approves that step's document, so apply
@@ -159,13 +169,13 @@ this tree touches or depends on is fixed in this tree's own pull request, any ot
 goes to the controller, which gives it to the tree that owns that code, and a problem that needs a
 decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
-must make, yours or one a worker escalated, is a decision block you write in the root spec; after
-approval its new version closes the gate until the human answers. When their answer is the whole
-change since the version they approved, Dispatch carries the approval to the new version and you
-request nothing. When it changes the spec's text outside the block, rewrite that text and run the
-two reviews on the new version. Then request approval again with a `--summary` of one sentence
-naming what changed since the earlier approval and one sentence with both reviews' results. A
-to-do only a human can do is a `dispatch ask`.
+must make, yours, one a worker escalated or one a child's architect sent you, is a decision block
+you write in the root spec; after approval its new version closes the gate until the human answers.
+When their answer is the whole change since the version they approved, Dispatch carries the
+approval to the new version and you request nothing. When it changes the spec's text outside the
+block, rewrite that text and run the two reviews on the new version. Then request approval again
+with a `--summary` of one sentence naming what changed since the earlier approval and one
+sentence with both reviews' results. A to-do only a human can do is a `dispatch ask`.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
 writes `done`, and the tester's production check follows in its own session, on the pull

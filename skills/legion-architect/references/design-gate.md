@@ -361,8 +361,8 @@ Summary, the requirements, the checks, the scope and every settled decision unch
 is the record and the tree carries on; otherwise change the root spec and request approval again.
 
 Later children and re-scoping open children toward the same requirements need no spec edit and no
-new approval. A child issue's spec is never gated, and its architect writes the child's own
-Verification document.
+new approval. A child issue's spec is never gated, and its parent's review stands in its place
+(`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec").
 
 ## A decision block for a read no pod can make
 

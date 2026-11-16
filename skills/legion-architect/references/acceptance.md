@@ -1,7 +1,8 @@
 # Acceptance, retro, the merge and the close
 
 Part of `skill://legion-architect`, sections 3, 5, 6 and 7. Read the section for the step you are
-at.
+at. Where it tells you to ask a person, a child's own architect sends the question to the
+architect above it instead (`skill://legion-architect`, "Every turn").
 
 ## Retro's result
 
@@ -215,11 +216,14 @@ a `pending`, the retry of a look nobody reported, or the check's own bound where
 When a person closes a root and it stays `done` through its linger, each child still in the
 workflow is handed to Legion as a root of its own: `todo` with the `legion` label, its phase, gate,
 phase records and pull request carried into a new generation, and that phase's role started. A
-child that never started is handed over too, carrying no run, whatever held it at `admitted`: it
-waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
-root and registers its own spec. Only a child that finished, was parked or was never released
-stays. The child stays its own tree; reopening the old root does not take it back. The hand-over
-runs by itself and needs no action from you.
+child that had its own architect keeps that architect's session: the root's architect start
+resumes the same claim, and its next launch gives it the root architect's prompt. A child that ran
+without one gets a new architect session. A child that never started is handed over too,
+carrying no run, whatever held it at `admitted`: it waits in the line for a slot and for any
+unfinished blocker, and its architect starts as a fresh root and registers its own spec. Only a
+child that finished, was parked or was never released stays. The child stays its own tree;
+reopening the old root does not take it back. The hand-over runs by itself and needs no action
+from you.
 Park a child with `park_child` before then only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the child.
 Ask the person whether a child's work must end with the root. A root that is parked
 rather than closed hands over only a child in `merging` whose pull request is still open,
@@ -228,6 +232,9 @@ its own tree, merges that head. Ask the person whether that child's merge must w
 
 If you are that child's architect:
 
+- You may be the child's own architect from before the hand-over. Your session is the same, and
+  your role prompt is now the root architect's. Follow that prompt from your next `catch-up`,
+  which says `handed_over`.
 - Your catch-up says `handed_over` and `carried`: resume from the phase, and never register a spec
   or ask for approval again.
 - It says `handed_over` alone (no gate to carry): your workers already run their phases, so
