@@ -599,9 +599,11 @@ func idleRigKeptWakesAndReaches(t *testing.T, rig *idleWakeRig, issue idleRigIss
 // (the Legion daemon's notices, notify.Publish). Nothing is kept for the role, so the attempt a
 // live holder took is the only way this message can reach the session and the count below reads
 // that attempt and nothing else. Every other role publish of the rig lets the listener keep the
-// message, as the daemon's own kept publishes do, and each kept copy is counted where it is
-// handed over (idleRigDeliveredOnce), by the function that counts it: idleRigKeptWakesAndReaches
-// counts one copy for each of rows (a) and (b) of check k3; idleRigWakeJustReleased counts the
+// message, as the daemon's own kept publishes do. One kept copy is counted by no function: the
+// five-wake pass's role message (idleRigWakeAll's `role-wake-1`), whose pass reads the wake it
+// raises and not the copy's hand-over. Every other is counted where it is handed over
+// (idleRigDeliveredOnce), by the function that counts it: idleRigKeptWakesAndReaches counts one
+// copy for each of rows (a) and (b) of check k3; idleRigWakeJustReleased counts the
 // just-released role's message; idleRigOutboxWakesJustReleased counts the daemon's phase-ended
 // message and hook prompt; and the restart subtest
 // (AMessageSentDuringTheReleaseReachesTheWokenSessionOnceAcrossARestart) counts the role message

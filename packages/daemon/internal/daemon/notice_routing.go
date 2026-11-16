@@ -32,7 +32,8 @@ const noticeSummarySeparator = " on "
 
 // errNoticeWaits is a notice held for its architect: the architect holds no role while its claim
 // can hold it again, or an earlier notice held for the same architect has not gone yet, and a later
-// one must not overtake it. The row is tried again on the outbox's backoff, logged once.
+// one must not overtake it. The row is tried again on the outbox's backoff, logged once, or once
+// at the turn of a launch the wake pacing holds for its architect (wakeForDelivery's turn).
 var errNoticeWaits = wait.New("the notice waits for its architect")
 
 // errNoticeUnroutable is a notice whose architect cannot be resolved from the record: its issue is

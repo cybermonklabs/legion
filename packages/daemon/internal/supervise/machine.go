@@ -615,7 +615,7 @@ type ClaimView struct {
 	// Machine.WaitingWake, which copies no claim (the daemon's supervision,
 	// api.State.WakesWaiting); the operator API's recoveries read it to refuse a claim whose
 	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
-	// while a launch waits over no process (internal/daemon's wakeForDelivery).
+	// until the turn of a launch that waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
 }
 

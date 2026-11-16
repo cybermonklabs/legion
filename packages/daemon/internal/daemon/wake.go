@@ -203,18 +203,28 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // for (deliverResuming); these four publish to a live session instead, so the row's own retry is
 // what waits for the pod, and this is what makes the pod come back for it to find.
 //
-// It answers whether the row must wait for a launch of the claim: a released claim, which it
-// resumes here, and a claim whose launch the wake pacing has parked over no process, which is
-// what that resume leaves while it waits for its turn. The pacing does not exempt the resume
-// (supervise's exemptWake lets only an operator's requests through), so over a wave it can wait
-// more than an hour, the machine holding the claim launching with no process and its view naming
-// the waiting wake (supervise's parkWake, ClaimView.WakeWaiting). The row waits through that park
-// because a phase-ended message or a hook prompt published then would be kept for the listener's
-// one hour from that publish, which can end before the pod starts. So a waiting wake that starts
-// a process (supervise.StartsProcess) over a claim that records no process holds the row until
-// its turn runs the launch, whichever launch it is. A relaunch parked over a process the claim
-// still records holds nothing: the machine keeps that claim's state, and its live session can
-// take the publish now.
+// It answers whether the row must wait for a launch of the claim, and when that launch runs where
+// the wake pacing holds it. The row waits for a released claim, which it resumes here, and for a
+// claim whose launch the wake pacing has parked over no process, which is what that resume leaves
+// while it waits for its turn. The pacing does not exempt the resume (supervise's exemptWake lets
+// only an operator's requests through), so over a wave it can wait more than an hour, the machine
+// holding the claim launching with no process and its view naming the waiting wake (supervise's
+// parkWake, ClaimView.WakeWaiting). The row waits through that park because a phase-ended message
+// or a hook prompt published then would be kept for the listener's one hour from that publish,
+// which can end before the pod starts. So a waiting wake that starts a process
+// (supervise.StartsProcess) over a claim that records no process holds the row until its turn runs
+// the launch, whichever launch it is. A relaunch parked over a process the claim still records
+// holds nothing: the machine keeps that claim's state, and its live session can take the publish
+// now.
+//
+// For such a park it answers the wake's turn as well (supervise.WakeWaiting.At), and each caller
+// returns a wait that names it (wait.Until), so the row runs once, at the turn, as a notice held
+// behind a paced notice does (deliverNotice). A row that climbed its backoff instead would try
+// again every 64 s and log a Warn at every attempt from the seventh (settle), about once a minute
+// for as long as the turn is away. A turn already past when the row settles — the row ran a moment
+// before the machine's own timer — is the backoff's (retry). A released claim this call resumes
+// answers no turn, even where the resume parks: the row waits on its backoff, and its next attempt
+// reads the park.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
@@ -226,34 +236,36 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // machine holds its lock through the runtime call its decision makes, so a read that waited
 // would hold the notice and the phase-ended message behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
-func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) (bool, error) {
+func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string) (waits bool, turn time.Time, err error) {
 	if r.supervisor == nil {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	machine, found := r.supervisor.Machine(token)
 	if !found {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	held := machine.View()
 	if !held.Released() {
-		parked := held.State == supervise.StateLaunching && held.Locator == nil &&
-			held.WakeWaiting != nil && supervise.StartsProcess(held.WakeWaiting.Kind)
-		return parked, nil
+		if held.State == supervise.StateLaunching && held.Locator == nil &&
+			held.WakeWaiting != nil && supervise.StartsProcess(held.WakeWaiting.Kind) {
+			return true, held.WakeWaiting.At, nil
+		}
+		return false, time.Time{}, nil
 	}
 	issue, err := r.issue(ctx, held.Issue)
 	if err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	root, err := r.root(ctx, issue)
 	if err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	if root == nil || !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, held.Role, pods.WakeDelivery, r.now().UTC())
 	if err != nil {
-		return false, err
+		return false, time.Time{}, err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
 	// of that claim ever ran. This take commits before the resume it leads to, and that resume is
@@ -269,7 +281,7 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	reason := "a wake for " + detail
 	if !taken {
 		if !machine.View().Released() {
-			return true, nil
+			return true, time.Time{}, nil
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.log.Warn("wake: a released pod's resume stands open with no process behind it; this wake resumes it",
@@ -279,9 +291,9 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 			"issue", issue.Key, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
-		return false, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
+		return false, time.Time{}, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
 	}
-	return true, nil
+	return true, time.Time{}, nil
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the

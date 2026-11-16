@@ -105,7 +105,7 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 				t.Fatalf("the message was published with keep: false, want keep: the listener is its keeper for a role no live session holds")
 			}
 			if _, ok := record.ParseOutboxKey(told[0].key); !ok {
-				t.Fatalf("the message went under key %q, want its row's own (legion-outbox:<id>): a retried row is one delivery", told[0].key)
+				t.Fatalf("the message went under key %q, want its row's own (legion-outbox:<id>): a retry under it while the copy is kept stores nothing new (notify.HTTPPublisher.PublishKept)", told[0].key)
 			}
 			// The architect's own notice is a row of its own, to its own topic, as before.
 			architect := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleArchitect))
@@ -131,9 +131,9 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 // A role topic with no live holder is the ordinary state before a session claims it, and the role's
 // next task from the daemon names its phase anyway: the row ends with one log line rather than
 // waiting as an architect's notice waits, and the implementer's start goes on all the same. The
-// listener here is a listener before #4079 meeting a claim whose holder is gone (holderPublisher
-// without keeps), which refuses the kept publish with its 404, so nothing keeps the message, and
-// the row ends even so.
+// listener here has no kept lane (holderPublisher without keeps), as a listener before
+// sjawhar/legion#2588 has none: it refuses the kept publish to a role nobody claims with its 404,
+// so nothing keeps the message, and the row ends even so.
 func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	ctx := context.Background()
 	publisher := &holderPublisher{}
@@ -177,12 +177,96 @@ func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T)
 }
 
 // A phase-ended message to a released role waits out the resume the wake pacing parks, as a hook
-// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): no attempt publishes while
-// the wake waits for its turn, and the attempt after the turn has launched the resume publishes
-// the message with keep, once, and ends the row.
+// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): the row is due at the
+// wake's turn and publishes nothing before it, and the attempt after the turn has launched the
+// resume publishes the message with keep, once, and ends the row.
 func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
 	keptAfterTheParkedWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+}
+
+// A relaunch the wake pacing parks over a process the claim still records holds no row: the
+// machine leaves that claim as it stands, idle on its process (supervise's parkWake), and its
+// live session can take a publish now, so the row's first attempt publishes. The claim is one of
+// the wave TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt reads, a process on an
+// earlier plugin contract whose stale-plugin relaunch waits its turn (parkedOverItsProcess). A row
+// held there would hold every notice, phase-ended message, hook prompt and merge-queue removal to
+// a live session behind that session's paced refresh. The negative control is wakeForDelivery's
+// park check without its first half, the claim launching with no process: each row then waits for
+// the relaunch's turn and publishes nothing.
+func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
+	t.Run("a phase-ended message", func(t *testing.T) {
+		ctx := context.Background()
+		publisher := &holderPublisher{}
+		runner, sup, pool := hookRunner(t, publisher)
+		parkedOverItsProcess(t, sup, "LEGION-208", claim.RoleTester)
+		ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", ended, time.Now().Add(-time.Minute)))
+
+		if err := runner.RunOnce(ctx); err != nil {
+			t.Fatalf("the row's first attempt: %v", err)
+		}
+		topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleTester))
+		attempts, delivered := publisher.snapshot()
+		if attempts != 1 || len(delivered) != 1 || delivered[0].topic != topic || delivered[0].message != ended.Message("LEGION-208") {
+			t.Fatalf("the first attempt made %d publishes and delivered %+v, want the message delivered to %s: the relaunch waits over a live session",
+				attempts, delivered, topic)
+		}
+		if left := outboxRows(t, pool); left != 0 {
+			t.Fatalf("outbox rows left = %d, want the row finished by its first attempt", left)
+		}
+	})
+	t.Run("an architect's notice", func(t *testing.T) {
+		ctx := context.Background()
+		pool := isolatedOutboxPool(t)
+		records := record.NewStore()
+		noticeTree(t, pool, records, false)
+		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+		parkedOverItsProcess(t, sup, "LEGION-1", claim.RoleArchitect)
+		publisher := &holderPublisher{}
+		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}
+
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("the notice's first attempt = %v, want it published: the relaunch waits over a live session", err)
+		}
+		want := architectTopic(t, "LEGION-1")
+		if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != want || delivered[0].key != record.OutboxKey(row.ID) {
+			t.Fatalf("notice publishes = %+v, want one to %s under the row's key", delivered, want)
+		}
+	})
+}
+
+// parkedOverItsProcess creates role's claim on issue, the root of its own tree, as the stale-plugin
+// wave of TestARelaunchKeepsTheRunningProcessUntilItsTurnAndNoSweepReapsIt leaves one: idle on
+// the process it records, which speaks the contract before the daemon's (liveClaim), under the
+// relaunch that lane raises for it, parked in the wake pacing over that process. The pacing gives
+// the relaunch a turn an hour ahead and the machines' clock fires no timer the test does not fire
+// (heldClock), so the relaunch waits through the whole test. It is posted as the daemon's pass
+// posts an idle claim's, holding a credit of the refresh gate (StalePlugin.Admitted).
+func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role claim.Role) *supervise.Machine {
+	t.Helper()
+	ctx := context.Background()
+	// A machine takes its deps where it is built, so the clock and the pacing go in before the
+	// claim is created.
+	sup.deps.Clock = &heldClock{}
+	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
+	token := mustClaimToken(t, issue, role)
+	live := liveClaim(1, token, sup.deps.PluginContract-1)
+	live.Token, live.Project, live.Tree, live.Issue, live.Role, live.State = token, "legion", issue, issue, role, supervise.StateIdle
+	machine, _, err := sup.Create(ctx, live, "")
+	if err != nil {
+		t.Fatalf("create the live %s's claim: %v", role, err)
+	}
+	if err := machine.Handle(ctx, supervise.StalePlugin{Claim: token, Trigger: "sweep", Admitted: true}); err != nil {
+		t.Fatalf("raise the stale-plugin relaunch of the %s: %v", role, err)
+	}
+	if held := machine.View(); held.State != supervise.StateIdle || held.Locator == nil ||
+		held.WakeWaiting == nil || held.WakeWaiting.Kind != supervise.WakePluginRefresh {
+		t.Fatalf("the %s is %s recording %+v with wake %+v, want it idle on its process under the stale-plugin relaunch the pacing parked",
+			role, held.State, held.Locator, held.WakeWaiting)
+	}
+	return machine
 }
 
 // The three answers of the confirmed publish route are other failures, and keep the ordinary retry:
