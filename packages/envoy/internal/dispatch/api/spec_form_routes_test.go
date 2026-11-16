@@ -1629,7 +1629,8 @@ const driftDefinition = "The slow change of the clock of one machine."
 var termsLineFault = formFault{
 	name: "a line under Terms that is no term line", node: `"- **drift:** ` + driftDefinition + `"`, kind: specform.KindLine,
 	clean: termLine("drift", driftDefinition), broken: "**drift:** " + driftDefinition, excerpt: "- **drift:** " + driftDefinition,
-	rule: "term-line", detail: `it is no term line, and a term line has the form "- **<term>**: <definition>"`,
+	rule: "term-line", detail: `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`,
 }
 
 // A line under Terms that is no term line breaks the form: in a spec, on each of the six paths to
