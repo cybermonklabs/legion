@@ -76,7 +76,7 @@ function render(routes: Route[]): string {
   // an issues route, and /api/v1 itself is the index (""). A route of the table outside /api/v1
   // belongs to its own first segment: GET /metrics is a metrics route.
   const groups = Map.groupBy(routes, (route) =>
-    underAPI(route.path) ? (route.path.split("/")[3] ?? "") : (route.path.split("/")[1] ?? ""),
+    underAPI(route.path) ? (route.path.split("/")[3] ?? "") : (route.path.split("/")[1] ?? "")
   );
   const api = routes.filter((route) => underAPI(route.path));
   const beside = routes
