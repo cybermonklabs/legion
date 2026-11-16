@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CaseRow } from "./build-corpus";
 import { artifactsOf } from "./corpus-io";
-import { askClaude, type ClaudeAsk, type ModelAnswer } from "./models";
+import { askClaude, type ClaudeAsk, type ModelAnswer, servedModelFault } from "./models";
 
 /**
  * What the agent never decides, whatever its confidence.
@@ -150,6 +150,12 @@ export interface NeverDecideAnswer {
   source: NeverDecideSource;
   /** Why the answer could not be read, and null where it was read. A fault is never a decide. */
   fault: string | null;
+  /**
+   * The model the call's answer says served it, or the cached answer's, and null for the kind
+   * the issue's facts settle, which takes no call. A served model other than the asked one is
+   * the `model` fault (`askClaude`), never a decide.
+   */
+  servedModel: string | null;
   /** What this call read and wrote, and null where no call was paid for. */
   inputTokens: number | null;
   outputTokens: number | null;
@@ -265,9 +271,15 @@ interface CacheEntry {
   reason: string;
   /** The model's answer as it came back, so a disagreement is read rather than asked again. */
   answer: string;
+  /** The model the answer says served it, which `readCache` holds to `model`. */
+  servedModel: string;
 }
 
-/** The answer kept under `key`, and null where none is kept or what is kept cannot be read. */
+/**
+ * The answer kept under `key`, and null where none is kept, what is kept cannot be read, or it
+ * does not say that its own model served it: an entry written before entries recorded their
+ * served model is asked again, so no kept answer reads as a model nothing shows gave it.
+ */
 async function readCache(directory: string, key: string): Promise<CacheEntry | null> {
   let text: string;
   try {
@@ -287,8 +299,11 @@ async function readCache(directory: string, key: string): Promise<CacheEntry | n
   if (typeof entry.held !== "boolean") return null;
   const kind = entry.kind ?? null;
   if (kind !== null && !NEVER_DECIDE_KINDS.includes(kind)) return null;
+  const model = entry.model ?? "";
+  const servedModel = entry.servedModel ?? "";
+  if (servedModelFault(model, servedModel, true) !== null) return null;
   return {
-    model: entry.model ?? "",
+    model,
     documentId: entry.documentId ?? null,
     documentVersion: entry.documentVersion ?? null,
     answeredAt: entry.answeredAt ?? "",
@@ -296,6 +311,7 @@ async function readCache(directory: string, key: string): Promise<CacheEntry | n
     kind,
     reason: entry.reason,
     answer: entry.answer,
+    servedModel,
   };
 }
 
@@ -372,6 +388,7 @@ export async function neverDecide(
       answer: null,
       source: "issue-facts",
       fault: null,
+      servedModel: null,
       inputTokens: null,
       outputTokens: null,
     };
@@ -391,6 +408,7 @@ export async function neverDecide(
         answer: kept.answer,
         source: "cache",
         fault: null,
+        servedModel: kept.servedModel,
         // Nothing was read or written for this one: the call it came from was paid for before.
         inputTokens: null,
         outputTokens: null,
@@ -403,7 +421,14 @@ export async function neverDecide(
     prompt: { system: `${definition}\n\n${ANSWER_SHAPE}\n`, user: userOf(input), labels: LABELS },
     bounds: BOUNDS,
   });
-  const read = readNeverDecideAnswer(answer);
+  // An answer another model gave, or one naming none, is a fault and never a decide, so it is
+  // neither returned as the rule's answer nor kept, whatever asking function gave it.
+  const wrongModel =
+    answer.fault === null ? servedModelFault(model, answer.servedModel ?? null, true) : null;
+  const read =
+    wrongModel === null
+      ? readNeverDecideAnswer(answer)
+      : faulted(`model: ${wrongModel}`, answer.text ?? "");
   if (read.fault === null && directory !== null) {
     await writeCache(directory, key, {
       model,
@@ -414,6 +439,7 @@ export async function neverDecide(
       kind: read.kind,
       reason: read.reason,
       answer: read.answer,
+      servedModel: answer.servedModel ?? "",
     });
   }
   return {
@@ -423,6 +449,7 @@ export async function neverDecide(
     answer: read.answer,
     source: "model",
     fault: read.fault,
+    servedModel: answer.servedModel ?? null,
     inputTokens: answer.inputTokens,
     outputTokens: answer.outputTokens,
   };

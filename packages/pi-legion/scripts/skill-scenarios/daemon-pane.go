@@ -26,10 +26,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -105,15 +105,16 @@ type paneRequest struct {
 	// Path, refused when that is a script.
 	GHPath string `json:"ghPath"`
 	// SystemPrompt asks for the pane's system prompt, composed from the role prompts the daemon
-	// module embeds.
+	// module embeds and written to the claim's prompt file under StateDir, as a pane's launch
+	// writes it (runtime.WriteSystemPrompt).
 	SystemPrompt bool `json:"systemPrompt"`
 }
 
 type paneResponse struct {
 	// Env is every variable the daemon tells the pane, PATH included.
 	Env map[string]string `json:"env"`
-	// SystemPromptArgument is the pane's one --append-system-prompt argument, as shell text; ""
-	// without SystemPrompt.
+	// SystemPromptArgument is the pane's one --append-system-prompt argument, as shell text: the
+	// flag and the path of the file the prompt was written to; "" without SystemPrompt.
 	SystemPromptArgument string `json:"systemPromptArgument,omitempty"`
 }
 
@@ -222,7 +223,11 @@ func firstBytes(path string, n int) ([]byte, error) {
 }
 
 // systemPromptArgument composes the pane's role prompt as the daemon does (specs.SpawnSpec): the
-// role prompts snapshotted under the state directory, the role's parts, then its addressing.
+// role prompts snapshotted under the state directory, the role's parts, then its addressing; it
+// writes the text to the claim's prompt file, as a pane's launch does, and answers the argument
+// that names that file. The join and the write are this program's own copies of the daemon's
+// (runtime.ComposePrompt, runtime.WriteSystemPrompt), since the rig runs it against each label's
+// checkout of the daemon module, an older one among them, which has neither.
 func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	role := claim.Role(req.Role)
 	if claim.IsTreeArchitect(role, req.Issue, req.Issue) {
@@ -246,5 +251,21 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return omplaunch.SystemPromptArgument(runtime.PromptParts{RolePromptPaths: parts.RolePromptPaths, Addressing: addressing}), nil
+	var body strings.Builder
+	for _, path := range parts.RolePromptPaths {
+		text, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("prompt file: %w", err)
+		}
+		body.Write(text)
+	}
+	prompt := strings.TrimRight(body.String(), "\n") + "\n\n" + addressing
+	promptFile := filepath.Join(req.StateDir, "secrets", string(token)+"-system-prompt.md")
+	if err := os.MkdirAll(filepath.Dir(promptFile), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(promptFile, []byte(prompt), 0o600); err != nil {
+		return "", err
+	}
+	return "--append-system-prompt " + shellprefix.Word(promptFile), nil
 }

@@ -353,7 +353,9 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	// pi-envoy publishing the interface `envoy-interface` holds (1 when absent; `none` for no
 	// pi-envoy) from the file `envoy-loaded-from` names; and the pre-split package loaded from the
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
-	// environment, and working directory, and exits with the code the test asked for.
+	// a copy of the file its --append-system-prompt names and that file's mode (the command removes
+	// the file once Oh My Pi exits), environment, and working directory, and exits with the code
+	// the test asked for.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
@@ -376,6 +378,14 @@ if [ "$1" = models ]; then
 fi
 [ -f "$GH_CONFIG_DIR/hosts.yml" ] && cp "$GH_CONFIG_DIR/hosts.yml" %[1]s/hosts-at-start
 %[3]s
+if [ -n "$LEGION_TEST_HOLD" ]; then
+  : >%[1]s/held
+  i=0
+  while [ "$i" -lt 1200 ] && [ ! -e "$LEGION_TEST_HOLD" ]; do i=$((i + 1)); sleep 0.1; done
+  [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
+  exit 0
+fi
+if [ "$1" = --append-system-prompt ]; then cp "$2" %[1]s/system-prompt; stat -c %%a "$2" >%[1]s/system-prompt-mode; fi
 for a in "$@"; do printf '%%s\0' "$a"; done >%[1]s/argv
 readlink /proc/self/fd/0 >%[1]s/stdin
 env -0 >%[1]s/env
@@ -542,6 +552,22 @@ func (c *operatorMachine) argv() []string {
 	return strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
 }
 
+// systemPrompt is the prompt Oh My Pi was started with: the contents of the file its one
+// --append-system-prompt value names, as Oh My Pi reads a value with no newline, copied by the
+// recording Oh My Pi while it ran.
+func (c *operatorMachine) systemPrompt() string {
+	c.t.Helper()
+	argv := c.argv()
+	if len(argv) != 3 || argv[0] != "--append-system-prompt" {
+		c.t.Fatalf("Oh My Pi's argv = %q, want --append-system-prompt <file> and the start word", argv)
+	}
+	prompt, err := os.ReadFile(filepath.Join(c.record, "system-prompt"))
+	if err != nil {
+		c.t.Fatalf("read the prompt file Oh My Pi was started with: %v", err)
+	}
+	return string(prompt)
+}
+
 func (c *operatorMachine) env() map[string]string {
 	c.t.Helper()
 	return readEnv(c.t, filepath.Join(c.record, "env"))
@@ -664,13 +690,13 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 }
 
 // Oh My Pi runs through the launch prefix, interactive (no --mode rpc, no --resume), with one
-// --append-system-prompt holding the controller prompt, the daemon's design gate steps, the reach
-// of the controller's gh, and the deployment instructions, then the one word
-// daemon.ControllerStartCommand; under the operator's own
-// environment plus exactly the shared controller environment — the secrets as file pointers, never
-// values — including LEGION_CONTROLLER_START_MESSAGE, which that pi-legion command sends as the
-// session's first turn. This default daemon has no GitHub App, so the controller's gh acts as
-// nobody and its prompt says its App is installed on no owner, whatever the mapping names.
+// --append-system-prompt naming the file that holds the controller prompt, the daemon's design
+// gate steps, the reach of the controller's gh, and the deployment instructions, then the one
+// word daemon.ControllerStartCommand; under the operator's own environment plus exactly the
+// shared controller environment — the secrets as file pointers, never values — including
+// LEGION_CONTROLLER_START_MESSAGE, which that pi-legion command sends as the session's first
+// turn. This default daemon has no GitHub App, so the controller's gh acts as nobody and its
+// prompt says its App is installed on no owner, whatever the mapping names.
 func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *testing.T) {
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
@@ -697,14 +723,29 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	if err != nil {
 		t.Fatalf("read the deployment instructions: %v", err)
 	}
-	// `$(cat …)` drops each file's trailing newlines, as a shell does. The start message travels
-	// as LEGION_CONTROLLER_START_MESSAGE; argv ends with the command that sends it.
-	wantArgv := []string{"--append-system-prompt",
-		strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n" +
-			strings.TrimRight(string(instructions), "\n"),
-		"/legion-controller-start"}
-	if got := c.argv(); !slices.Equal(got, wantArgv) {
-		t.Fatalf("Oh My Pi's argv = %q\nwant %q", got, wantArgv)
+	// The one value of --append-system-prompt is this run's own prompt file under the secrets
+	// directory, never the text. The start message travels as LEGION_CONTROLLER_START_MESSAGE;
+	// argv ends with the command that sends it.
+	argv := c.argv()
+	if len(argv) != 3 || argv[0] != "--append-system-prompt" || argv[2] != "/legion-controller-start" {
+		t.Fatalf("Oh My Pi's argv = %q, want --append-system-prompt <file> /legion-controller-start", argv)
+	}
+	promptFile := argv[1]
+	if dir, name := filepath.Split(promptFile); dir != filepath.Join(c.defaultDir, "secrets")+"/" ||
+		!strings.HasPrefix(name, "legion-demo-controller-") || !strings.HasSuffix(name, "-system-prompt.md") {
+		t.Fatalf("the prompt file is %s, want legion-demo-controller-<run>-system-prompt.md under %s", promptFile, filepath.Join(c.defaultDir, "secrets"))
+	}
+	// Each file's trailing newlines are dropped where the parts join.
+	wantPrompt := strings.TrimRight(string(controllerPrompt), "\n") + "\n\nDesign gate steps: `spec`. Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n" +
+		strings.TrimRight(string(instructions), "\n")
+	if got := c.systemPrompt(); got != wantPrompt {
+		t.Fatalf("the controller's prompt file held %q\nwant %q", got, wantPrompt)
+	}
+	if mode, err := os.ReadFile(filepath.Join(c.record, "system-prompt-mode")); err != nil || strings.TrimSpace(string(mode)) != "600" {
+		t.Errorf("the controller's prompt file had mode %q (%v) while Oh My Pi ran, want 600", mode, err)
+	}
+	if _, err := os.Stat(promptFile); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the controller's prompt file is still there once the command ended: %v", err)
 	}
 
 	env := c.env()
@@ -784,6 +825,50 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	}
 }
 
+// Two runs of the command overlap, as they do when the operator starts it again while an earlier
+// controller still runs (the new capability revokes the old), and each run's Oh My Pi reads the
+// prompt file it was handed: one run's exit removes its own file and no other run's. The held run's
+// Oh My Pi waits (LEGION_TEST_HOLD) until a second run has written its prompt, launched and
+// exited, and only then reads its own file.
+func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	release := filepath.Join(t.TempDir(), "release")
+	t.Setenv("LEGION_TEST_HOLD", release)
+	held := make(chan int, 1)
+	go func() {
+		code, _, _ := c.run()
+		held <- code
+	}()
+	testwait.Eventually(t, "the held run's Oh My Pi to start and wait", func() bool {
+		_, err := os.Stat(filepath.Join(c.record, "held"))
+		return err == nil
+	})
+	t.Setenv("LEGION_TEST_HOLD", "")
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("the second run of legion controller start = %d, stderr %q", code, errb)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-held:
+		if code != 0 {
+			t.Fatalf("the held run of legion controller start = %d", code)
+		}
+	case <-time.After(2 * time.Minute):
+		t.Fatal("the held run of legion controller start never ended")
+	}
+	got, err := os.ReadFile(filepath.Join(c.record, "held-prompt"))
+	if err != nil || !strings.Contains(string(got), "Design gate steps: `spec`.") {
+		t.Fatalf("the held run's Oh My Pi read %q (%v) from the prompt file it was handed, want the controller prompt: the other run's exit removed it", got, err)
+	}
+	left, err := filepath.Glob(filepath.Join(c.defaultDir, "secrets", "*-system-prompt.md"))
+	if err != nil || len(left) != 0 {
+		t.Errorf("prompt files left once both runs ended: %q (%v), want none", left, err)
+	}
+}
+
 // The controller is told the design-gate steps the daemon really gates, so under a deployment
 // that gates none its take comment promises no design approval that cannot happen, and under
 // one that gates several it names each (skill://legion-controller). `legion controller start`
@@ -805,10 +890,9 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 			if code, _, errb := c.run(); code != 0 {
 				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 			}
-			argv := c.argv()
 			want := "\n\n" + tc.line + " Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
-			if len(argv) != 3 || !strings.Contains(argv[1], want) {
-				t.Fatalf("Oh My Pi's argv = %q; want the system prompt to carry %q", argv, want)
+			if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+				t.Fatalf("Oh My Pi's system prompt = %q; want it to carry %q", prompt, want)
 			}
 		})
 	}
@@ -838,10 +922,9 @@ func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 			t.Fatalf("the controller's gh holds no token for %s (%v), so this case proves nothing", owner, err)
 		}
 	}
-	argv := c.argv()
 	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owners acme, theorem-labs, and its token reaches every repository of those owners.\n\n"
-	if len(argv) != 3 || !strings.Contains(argv[1], want) {
-		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 
@@ -978,10 +1061,9 @@ func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(c.defaultDir, "gh", "theorem-labs", ghconfig.HostsFile)); err != nil {
 		t.Fatalf("the controller's gh holds no token for theorem-labs (%v), so this case proves nothing", err)
 	}
-	argv := c.argv()
 	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner theorem-labs, and its token reaches every repository of that owner.\n\n"
-	if len(argv) != 3 || !strings.Contains(argv[1], want) {
-		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 
@@ -994,10 +1076,9 @@ func TestControllerStartLaunchesWithNoRepositoryMappedOrRefused(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	argv := c.argv()
 	want := "Your role's GitHub App is installed on no owner, so its token reaches no repository.\n\n"
-	if len(argv) != 3 || !strings.Contains(argv[1], want) {
-		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 

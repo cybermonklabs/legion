@@ -36,10 +36,10 @@ import (
 // session's extra claims, which is where this provider's opaque tokens carry them. The code's side
 // is collected by calling decide for each kind of subject token — a pod's, whose entry gives the
 // named project scope, a machine access token's, whose scope is the person's, and a machine's
-// Google identity token, whose entry names a service — and taking the union, since `project` is
-// written under one scope and deleted under the other. So a claim a new scope or a new decision
-// adds is a claim this fails until the list names it. The one claim no decision writes, the
-// launcher credential a machine's exchange mints (machineCredential, which runs after decide
+// Google identity token, whose entry names a service — and taking the union, since `machine` is
+// written for one kind of trade and deleted for the others. So a claim a new scope or a new
+// decision adds is a claim this fails until the list names it. The one claim no decision writes,
+// the launcher credential a machine's exchange mints (machineCredential, which runs after decide
 // because the credential does not exist until the request's key is bound), is added to that union
 // by name; what proves it is written is the live exchange in cmd/broker.
 //
