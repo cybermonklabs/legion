@@ -6,7 +6,7 @@ import { usesFakeEmbedder } from "./harness-embedder";
 import type { HarnessListenerKey } from "./harness-ports";
 import { binaryB, harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
-import { googleSignIn, harnessSignIn, oidcSignIn } from "./harness-signin";
+import { googleSignIn, harnessSignIn, oidcSignIn, signInClientId } from "./harness-signin";
 
 /** One process the harness starts and how it reports its port. */
 export interface HarnessListener {
@@ -168,8 +168,7 @@ function dispatchListeners(): HarnessListener[] {
 function signInIssuerListeners(): HarnessListener[] {
   if (harnessSignIn === "dev") return [];
   const client = {
-    DISPATCH_E2E_SIGNIN_CLIENT_ID:
-      harnessSignIn === "oidc" ? oidcSignIn.clientId : googleSignIn.clientId,
+    DISPATCH_E2E_SIGNIN_CLIENT_ID: signInClientId,
     DISPATCH_E2E_SIGNIN_CLIENT_SECRET: clientSecret,
   };
   return [
