@@ -351,6 +351,11 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	// The handler is counted before the upgrade hands its connection over, while the server still
+	// tracks the request as its own: a page that reads the upgrade's answer and closes at once can
+	// end the test that opened it, whose cleanup waits for every handler (liveSocketSet.wait), and
+	// a count taken after the upgrade could come after that wait began.
+	defer s.liveSockets.serve()()
 	upgrader := gws.Upgrader{EnableCompression: true, ReadBufferSize: liveSocketReadBuffer}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -503,6 +508,12 @@ type liveSocketSet struct {
 	serving sync.WaitGroup
 }
 
+// serve counts one socket handler until the func it answers runs (wait).
+func (set *liveSocketSet) serve() (done func()) {
+	set.serving.Add(1)
+	return set.serving.Done
+}
+
 func (set *liveSocketSet) add(socket *liveSocket) {
 	set.mu.Lock()
 	defer set.mu.Unlock()
@@ -510,14 +521,12 @@ func (set *liveSocketSet) add(socket *liveSocket) {
 		set.open = map[*liveSocket]struct{}{}
 	}
 	set.open[socket] = struct{}{}
-	set.serving.Add(1)
 }
 
 func (set *liveSocketSet) remove(socket *liveSocket) {
 	set.mu.Lock()
+	defer set.mu.Unlock()
 	delete(set.open, socket)
-	set.mu.Unlock()
-	set.serving.Done()
 }
 
 // all is every socket open now.
