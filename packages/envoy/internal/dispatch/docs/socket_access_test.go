@@ -1,8 +1,11 @@
 package docs
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -48,11 +51,31 @@ func writeAccess(t *testing.T, service *Service, write func(ctx context.Context,
 // its status and its body.
 func documentSocketRefusal(t *testing.T, serverURL, room, login string) string {
 	t.Helper()
+	outcome, upgraded := documentSocketOutcome(t, serverURL, room, login)
+	if upgraded {
+		t.Fatalf("%s opened the document socket of %s (%s); want it refused", login, room, outcome)
+	}
+	return outcome
+}
+
+// documentSocketOutcome is what login's upgrade to room at serverURL ends in: the refusal's status
+// and body, or, for a socket the upgrade opened, the close code the socket ended with.
+func documentSocketOutcome(t *testing.T, serverURL, room, login string) (outcome string, upgraded bool) {
+	t.Helper()
 	url := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/doc/" + room + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	connection, response, err := gws.DefaultDialer.Dial(url, http.Header{"X-Dispatch-User": []string{login}})
 	if err == nil {
-		_ = connection.Close()
-		t.Fatalf("%s opened the document socket of %s; want it refused", login, room)
+		defer connection.Close()
+		_ = connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+		for {
+			if _, _, err := connection.ReadMessage(); err != nil {
+				var closed *gws.CloseError
+				if errors.As(err, &closed) {
+					return "upgraded, then closed " + strconv.Itoa(closed.Code), true
+				}
+				return "upgraded, then " + err.Error(), true
+			}
+		}
 	}
 	if response == nil {
 		t.Fatalf("%s's upgrade to %s: %v, with no answer", login, room, err)
@@ -62,7 +85,7 @@ func documentSocketRefusal(t *testing.T, serverURL, room, login string) string {
 	if err != nil {
 		t.Fatalf("read the refusal of %s's upgrade to %s: %v", login, room, err)
 	}
-	return response.Status + " " + string(body)
+	return response.Status + " " + string(body), false
 }
 
 // TestTheDocumentSocketClosesWhenItsPersonLosesTheProject: a document of a private project is a
@@ -124,13 +147,126 @@ func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 	}
 }
 
+// TestAPersonWhoLosesTheRoomDuringTheirOwnAdmissionIsRefusedAsAReaderWhoCannotReadIt: bob, on DOC's
+// list, opens a socket to DOC's document, and alice takes him off the list while that socket is
+// being admitted. He gets what carol, whom no list names, gets for the same room - the refusal of a
+// room no document holds - and is never upgraded onto it: not ygo's 500 "room unavailable", which a
+// cold room's load answers once the socket's context is ended, and not an upgrade the re-check
+// closes afterwards, which a warm room's join would let send him the document. Each way an access
+// re-check reaches his socket is taken: one that begins after his read of the room and before his
+// socket is recorded, so his admission reads him again (recheckAdmission), and one that begins once
+// his socket is recorded and walks it (recheckAccess), each on a cold room and on a warm one, which
+// alice holds open.
+func TestAPersonWhoLosesTheRoomDuringTheirOwnAdmissionIsRefusedAsAReaderWhoCannotReadIt(t *testing.T) {
+	const bob, carol = "bob@outside.example", "carol@example.com"
+	owner := model.Actor{Kind: "user", ID: "alice"}
+	for _, recheck := range []struct {
+		name string
+		// hook is the service's hook the re-check runs in.
+		hook func(service *Service, run func(room string))
+	}{
+		{"a re-check that misses his socket", func(service *Service, run func(string)) { service.afterSocketAdmitted = run }},
+		{"a re-check that walks his socket", func(service *Service, run func(string)) { service.afterSocketRecorded = run }},
+	} {
+		for _, warm := range []bool{false, true} {
+			name := recheck.name + ", on a cold room"
+			if warm {
+				name = recheck.name + ", on a warm room"
+			}
+			t.Run(name, func(t *testing.T) {
+				service, artifactID := newTestService(t)
+				seedServiceText(t, service, artifactID, "before")
+				writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+					if _, _, err := access.SetVisibility(ctx, tx, service.events, "DOC", model.ProjectPrivate, owner); err != nil {
+						return err
+					}
+					_, _, err := access.AddPrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, bob, owner)
+					return err
+				})
+				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+				t.Cleanup(httpServer.Close)
+				if warm {
+					keeper := connectPeer(t, httpServer.URL, artifactID, "alice")
+					if err := keeper.WaitForText(peerMarkdown, "before\n", roomWait(t)); err != nil {
+						t.Fatalf("alice opens the room: %v", err)
+					}
+				}
+				var armed atomic.Bool
+				recheck.hook(service, func(room string) {
+					if room != artifactID || !armed.CompareAndSwap(true, false) {
+						return
+					}
+					writeAccess(t, service, func(ctx context.Context, tx pgx.Tx) error {
+						_, _, err := access.RemovePrincipal(ctx, tx, service.events, "DOC", access.PrincipalPerson, bob, owner)
+						return err
+					})
+					service.recheckAccess(context.Background())
+				})
+				refused := documentSocketRefusal(t, httpServer.URL, artifactID, carol)
+				armed.Store(true)
+				got, _ := documentSocketOutcome(t, httpServer.URL, artifactID, bob)
+				if armed.Load() {
+					t.Fatal("bob's admission never reached the hook the re-check runs in")
+				}
+				if got != refused {
+					t.Errorf("bob, taken off DOC's list during his own admission, got %q; carol, whom no list names, gets %q", got, refused)
+				}
+			})
+		}
+	}
+}
+
+// recordingHijacker is a response writer that records what is written to it and whether its
+// connection was taken, for an upgrade that takes it.
+type recordingHijacker struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+}
+
+func (w *recordingHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.hijacked = true
+	server, client := net.Pipe()
+	_ = client.Close()
+	return server, bufio.NewReadWriter(bufio.NewReader(server), bufio.NewWriter(server)), nil
+}
+
+// TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded: a socket whose person lost the room after ygo
+// joined it to the room, and before the upgrade took its connection, is not upgraded - an upgrade
+// would send the person the room's document - and is answered as a hidden room is. A socket whose
+// admission stands is upgraded, with nothing written in its place.
+func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
+	hidden := httptest.NewRecorder()
+	refuseHiddenRoom(hidden)
+	for _, revoked := range []bool{false, true} {
+		ctx, cancel := context.WithCancelCause(context.Background())
+		t.Cleanup(func() { cancel(nil) })
+		if revoked {
+			cancel(errAccessRevoked)
+		}
+		under := &recordingHijacker{ResponseRecorder: httptest.NewRecorder()}
+		conn, _, err := (&revocableSocketWriter{ResponseWriter: under, ctx: ctx}).Hijack()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		switch {
+		case revoked && (err == nil || under.hijacked):
+			t.Errorf("the upgrade of a revoked socket took its connection (err %v)", err)
+		case revoked && (under.Code != hidden.Code || under.Body.String() != hidden.Body.String()):
+			t.Errorf("a revoked socket's upgrade was answered %d %q, want a hidden room's %d %q", under.Code, under.Body.String(), hidden.Code, hidden.Body.String())
+		case !revoked && (err != nil || !under.hijacked || under.Body.Len() != 0):
+			t.Errorf("the upgrade of a socket whose admission stands: err %v, connection taken %t, written %q", err, under.hijacked, under.Body.String())
+		}
+	}
+}
+
 // TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson: an access re-check walks the
 // sockets recorded when it begins, so a socket whose admission read its room before a re-check
 // began, and that is recorded only after it, is one that re-check never walked. Its admission reads
 // again whether its person may read the room, which it does after the access change that re-check
 // is for has committed: bob, still on DOC's list, keeps his socket, as a socket admitted across a
 // re-check of somebody else's access must, and bob, taken off the list between his read of the room
-// and his socket's record, has it closed with the cause on which the provider reconnects.
+// and his socket's record, has it revoked with the cause on which the provider reconnects, and
+// refused before ygo joins him to the room (revocableSocketWriter answers it as a hidden room).
 func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T) {
 	const bob = "bob@outside.example"
 	owner := model.Actor{Kind: "user", ID: "alice"}
@@ -169,8 +305,9 @@ func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T)
 			if held := service.schemaAdmissions.beginAccessCheck(); len(held) != 0 {
 				t.Fatalf("the re-check walks %v before bob's socket is recorded", held)
 			}
-			if _, ok := service.authorize(request); !ok {
-				t.Fatal("bob's socket was refused before its admission was recorded")
+			_, ok := service.authorize(request)
+			if ok != (row.want == nil) {
+				t.Fatalf("bob's socket, admitted across a re-check, authorized %t; want %t", ok, row.want == nil)
 			}
 			if cause := context.Cause(request.Context()); cause != row.want {
 				t.Errorf("bob's socket, admitted across a re-check, ends with %v, want %v", cause, row.want)

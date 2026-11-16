@@ -356,6 +356,11 @@ type Service struct {
 	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
 	// count of switches covers (schemaSwitches).
 	afterSocketAdmitted func(room string)
+	// afterSocketRecorded runs in ygo's authorization of a document socket (authorize) once the
+	// socket's admission is recorded where an access re-check walks it (schemaAdmissions.admit) and
+	// authorize has admitted it, and before ygo joins the room and upgrades the socket. Nil outside
+	// tests; tests take the socket's person off the room's list and run a re-check there.
+	afterSocketRecorded func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have

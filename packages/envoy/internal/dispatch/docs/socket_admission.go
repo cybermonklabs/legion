@@ -287,7 +287,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reader.Viewer = &viewer
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room, reader)
 	if err != nil {
-		http.Error(w, "document not found", http.StatusNotFound)
+		refuseHiddenRoom(w)
 		return
 	}
 	if err := s.awaitRoomRecovery(r.Context(), room); err != nil {
@@ -357,9 +357,67 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames (awareness_limit.go), and a socket whose person loses the room before ygo has upgraded
+	// it is refused as a hidden room is (revocableSocketWriter).
+	s.srv.ServeHTTP(&revocableSocketWriter{ResponseWriter: &awarenessLimitWriter{ResponseWriter: w, room: room}, ctx: ctx}, r.WithContext(ctx))
 }
+
+// refuseHiddenRoom answers a document socket whose person may not read its room - a document of a
+// project they do not see, or of a conversation they are no party to - exactly as a room no
+// document holds is answered, so the answer tells them nothing of the room (readIssue).
+func refuseHiddenRoom(w http.ResponseWriter) {
+	http.Error(w, "document not found", http.StatusNotFound)
+}
+
+// revocableSocketWriter is the response writer ygo serves a document socket on, up to its upgrade.
+// Once an access re-check has ended the socket's request context with errAccessRevoked - its person
+// lost the room while the socket was being admitted - whatever ygo would answer is replaced with a
+// hidden room's refusal (refuseHiddenRoom), which is what a person who cannot read the room gets at
+// admission, and ygo's upgrade is refused. ygo's own answer would be its 401, from an authorization
+// that refused the socket (authorize), or its 500 "room unavailable", from a join whose context had
+// ended; an upgrade would join the person to a room they no longer read, and send them its
+// document. A socket revoked after its upgrade is closed with the revocation's close code, as every
+// open socket is (revokeUnless). ygo writes through it from the socket's own request alone, and
+// never once it has hijacked the connection, so it takes no lock.
+type revocableSocketWriter struct {
+	http.ResponseWriter
+	ctx     context.Context
+	refused bool
+}
+
+// hidden reports whether the socket's admission was revoked for access, and the first time it
+// does, answers the request as a hidden room is answered.
+func (w *revocableSocketWriter) hidden() bool {
+	if !w.refused && errors.Is(context.Cause(w.ctx), errAccessRevoked) {
+		w.refused = true
+		refuseHiddenRoom(w.ResponseWriter)
+	}
+	return w.refused
+}
+
+func (w *revocableSocketWriter) WriteHeader(code int) {
+	if !w.hidden() {
+		w.ResponseWriter.WriteHeader(code)
+	}
+}
+
+func (w *revocableSocketWriter) Write(body []byte) (int, error) {
+	if w.hidden() {
+		return len(body), nil
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+// Hijack takes the connection for ygo's upgrade, unless the socket's person has lost the room.
+func (w *revocableSocketWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if w.hidden() {
+		return nil, nil, errAccessRevoked
+	}
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+// Unwrap gives http.ResponseController the writer underneath.
+func (w *revocableSocketWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
 // all, the host name of the process serving it - the pod's name in production - so a check that
@@ -554,12 +612,21 @@ func (s *Service) authorize(r *http.Request) (websocket.ConnectionConfig, bool) 
 	if s.schemaAdmissions.admit(admission) {
 		s.recheckAdmission(r.Context(), admission)
 	}
+	// A socket a re-check has revoked by now - its person lost the room while it was admitted - is
+	// refused before ygo joins or loads the room for it, and answered as a hidden room is
+	// (revocableSocketWriter).
+	if errors.Is(context.Cause(r.Context()), errAccessRevoked) {
+		return websocket.ConnectionConfig{}, false
+	}
 	// A reader joining a room already resident here asks the other processes for their readers'
 	// awareness, so their cursors reach it at once; a room this join has yet to load asks once its
 	// load finishes (awarenessRelay.RoomActivated), and the connection registered above is what
 	// lets the answers in (holdsRoomForReaders).
 	if s.srv.GetDoc(room) != nil {
 		s.awarenessRelay.query(room)
+	}
+	if s.afterSocketRecorded != nil {
+		s.afterSocketRecorded(room)
 	}
 	return websocket.ConnectionConfig{ReadOnly: !admission.writable}, true
 }
