@@ -8,8 +8,52 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// TestAServerWithNoDatabaseReadsAsTheClosedViewer: a server built with no database has nothing to
+// resolve a viewer from, and its read check fails closed. A row that needs the viewer runs its
+// handler with the closed viewer, which is not open and sees no project; a read of the whole
+// deployment is refused 403 DEPLOYMENT_READ_REFUSED; and a caller who names nobody is still 401.
+func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
+	mux := http.NewServeMux()
+	served := register(mux, t.Context(), Deps{
+		Store:    &store.Store{},
+		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
+	})
+
+	route := apiRoute{routeRow: routeRow{Method: http.MethodGet, Pattern: "/api/v1/widgets"}, Reads: []readclass.Class{readclass.Project}}
+	ran := false
+	handler := served.withinReadScope(route, func(w http.ResponseWriter, r *http.Request) {
+		reader, ok := readerFromContext(r.Context())
+		if !ok || reader.Viewer == nil {
+			t.Fatalf("a project row of a server with no database ran its handler with no viewer: %+v, %t", reader, ok)
+		}
+		if reader.Viewer.Open || reader.Viewer.All || len(reader.Viewer.Sees) != 0 || reader.ID != "alice" {
+			t.Fatalf("a project row of a server with no database read as %+v with the viewer %+v, want alice and the closed viewer", reader, *reader.Viewer)
+		}
+		ran = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/widgets", nil)
+	request.Header.Set("X-Dispatch-User", "alice")
+	handler(httptest.NewRecorder(), request)
+	if !ran {
+		t.Fatal("a project row of a server with no database did not run its handler")
+	}
+
+	refused := dispatchRequest(t, mux, http.MethodGet, "/api/v1/priorities", nil, "alice")
+	if refused.Code != http.StatusForbidden || !strings.Contains(refused.Body.String(), `"code":"DEPLOYMENT_READ_REFUSED"`) {
+		t.Fatalf("GET /api/v1/priorities on a server with no database = %d %s, want 403 DEPLOYMENT_READ_REFUSED", refused.Code, refused.Body.String())
+	}
+	anonymous := httptest.NewRecorder()
+	mux.ServeHTTP(anonymous, httptest.NewRequest(http.MethodGet, "/api/v1/priorities", nil))
+	if anonymous.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/v1/priorities naming nobody on a server with no database = %d %s, want 401", anonymous.Code, anonymous.Body.String())
+	}
+}
 
 // TestADeploymentReadIsRefusedToAViewerThatIsNotOpen walks every GET row the table classes as a
 // read of the deployment. bob, a restricted member, is refused each one 403 DEPLOYMENT_READ_REFUSED
