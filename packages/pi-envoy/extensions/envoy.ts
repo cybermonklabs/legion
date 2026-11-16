@@ -1073,10 +1073,15 @@ export default function envoyExtension(pi: PiApi): void {
   // record. Oh My Pi refreshes the shell's environment after `session_start`, `session_switch`
   // and `session_branch`; any other caller refreshes it itself. A caller after `session_start`
   // passes `ui`, so a record it cannot write is a notice at once: the start notices are shown once.
+  // A session with no id yet names none, as "" rather than a delete: a delete reaches
+  // `process.env` alone, and the C environment the process started with keeps a value it
+  // inherited (an omp started from another session's shell), which a child Oh My Pi starts in a
+  // PTY begins from with the variables built from `Bun.env` laid over it. "" lies over that value,
+  // and every reader takes "" as unset (the `dispatch` CLI, `legion git`, this file, AskGate).
   const bindDispatchSession = (id: string, ui?: SessionContext["ui"]): void => {
     process.env.DISPATCH_STATE_DIR ||= sessionStateRoot(process.env);
     if (id === "") {
-      delete process.env.DISPATCH_SESSION_ID;
+      process.env.DISPATCH_SESSION_ID = "";
       dispatchLedger = undefined;
       return;
     }

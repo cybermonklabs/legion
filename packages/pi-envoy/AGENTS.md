@@ -955,12 +955,15 @@ layouts) first on `PATH` only when no `PATH` entry already resolves to it (an ol
 ("Configuration"); Oh My Pi snapshots `process.env` for its shell when it first runs one, after
 every extension has loaded, so all three reach every shell command. `bindDispatchSession` sets
 `DISPATCH_SESSION_ID` to the session's id at `session_start`, `session_switch`, `session_branch`
-and the heartbeat's drift heal (and deletes it while the session has no id), and the command acts
-as that session; the session's title reaches it through the `title` file in the session's state
-directory (the `dispatch` CLI row under "Where to look"). The command resolves Dispatch's URL and
-bearer token on every call, and so do the extension's own Dispatch calls (the open-asks read, a
-delivery's reply) over the same file, so a Dispatch that moved (a new `dispatch.serverUrl` in
-envoy.json, or a changed `DISPATCH_URL`) takes effect in live sessions without `/reload-plugins`,
+and the heartbeat's drift heal, and the command acts as that session. While the session has no
+id it sets the variable to the empty string, which every reader takes as unset, rather than
+deleting it: a delete reaches `process.env` alone, and a value the process inherited stays in the
+C environment a child Oh My Pi starts in a PTY begins from. The session's title reaches the
+command through the `title` file in the session's state directory (the `dispatch` CLI row under
+"Where to look"). The command resolves Dispatch's URL and bearer token on every call, and so do
+the extension's own Dispatch calls (the open-asks read, a delivery's reply) over the same file, so
+a Dispatch that moved (a new `dispatch.serverUrl` in envoy.json, or a changed `DISPATCH_URL`)
+takes effect in live sessions without `/reload-plugins`,
 and a file that has since broken fails the call with its own error rather than using the stale
 endpoint. A human mints a personal token in Dispatch Settings → Agent
 tokens, then supplies it through `dispatch.token` or `DISPATCH_TOKEN`; the server

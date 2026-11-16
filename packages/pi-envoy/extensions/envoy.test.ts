@@ -2718,7 +2718,8 @@ describe("envoy OMP extension", () => {
       lazySessionID: true,
       selfCheck: async () => ({ replyText: "PROCEEDING" }),
     });
-    expect(process.env.DISPATCH_SESSION_ID).toBeUndefined();
+    // A session with no id names none: the variable is "", which every reader takes as unset.
+    expect(process.env.DISPATCH_SESSION_ID).toBe("");
     procmgr.refreshShellConfigCache();
 
     await session.userTurn();
@@ -4602,6 +4603,70 @@ describe("envoy OMP extension", () => {
       sessionContext("ses_dispatch_env_new")
     );
     expect(process.env.DISPATCH_SESSION_ID).toBe("ses_dispatch_env_new");
+  });
+
+  // A session with no id yet (a fresh TUI's) names no session for the `dispatch` command, even in
+  // a process started from another session's shell, which inherits that session's id. A delete
+  // would reach `process.env` alone: the C environment the process started with keeps the value,
+  // and a child Oh My Pi starts in a PTY begins from it with the variables built from `Bun.env`
+  // laid over it, so the child would act as the other session. "" lies over the value there, and
+  // every reader takes "" as unset. The process here starts with the variable, loads the entry
+  // (with the host package stood in by the role takeover smoke's preload), runs its session_start
+  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`.
+  test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", () => {
+    const marker = "dispatch-session-report ";
+    const script = `
+      const { createStandInHost } = await import(${JSON.stringify(join(import.meta.dir, "..", "test", "stand-in-host.ts"))});
+      const { default: envoyExtension } = await import(${JSON.stringify(join(import.meta.dir, "envoy.ts"))});
+      const { handlers, pi } = createStandInHost();
+      envoyExtension(pi);
+      await handlers.get("session_start")?.({}, {
+        cwd: process.cwd(),
+        hasUI: true,
+        sessionManager: {
+          getSessionId: () => "",
+          getSessionName: () => undefined,
+          getBranch: () => [],
+          getEntries: () => [],
+          getSessionFile: () => undefined,
+          ensureOnDisk: async () => undefined,
+        },
+        setInterval: () => undefined,
+        setTimeout: () => undefined,
+        ui: { notify: () => undefined, onTerminalInput: () => () => undefined, getEditorText: () => "" },
+      });
+      const overrides = Object.entries(process.env)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => name + "=" + value);
+      const line = Bun.spawnSync(["env", ...overrides, "env"])
+        .stdout.toString()
+        .split("\\n")
+        .find((entry) => entry.startsWith("DISPATCH_SESSION_ID="));
+      console.log(${JSON.stringify(marker)} + JSON.stringify({
+        processEnv: process.env.DISPATCH_SESSION_ID ?? null,
+        pty: line === undefined ? null : line.slice("DISPATCH_SESSION_ID=".length),
+      }));
+      process.exit(0);
+    `;
+    const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
+    const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
+    const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
+      cwd: import.meta.dir,
+      env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 30_000,
+    });
+    const report = run.stdout
+      .toString()
+      .split("\n")
+      .find((line) => line.startsWith(marker));
+    if (run.exitCode !== 0 || report === undefined) {
+      throw new Error(
+        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+      );
+    }
+    expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
   });
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
