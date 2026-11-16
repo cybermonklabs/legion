@@ -230,7 +230,7 @@ func TestContractARegistrationIsAuthenticatedByTheDaemonsOwnToken(t *testing.T) 
 		{"an unlisted account's token", "system:serviceaccount:legion-system:someone-else", http.StatusForbidden, "ACCOUNT_NOT_LISTED"},
 	} {
 		client := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, c.account, time.Hour)}
-		_, err := client.RegisterPodSession(ctx, podToken, "ses_contract")
+		_, err := client.RegisterPodSession(ctx, "pod-uid-registered", podToken, "ses_contract")
 		var api *APIError
 		if !errors.As(err, &api) || api.Status != c.status || api.Code != c.code {
 			t.Fatalf("%s: RegisterPodSession = %v, want %d %s", c.name, err, c.status, c.code)

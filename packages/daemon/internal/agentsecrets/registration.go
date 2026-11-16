@@ -48,7 +48,8 @@ type PodSessionRenewal struct {
 // broker refused for a reason a retry can change (IsPermanent false: a 5xx, a 429, an expired pod
 // token, POD_REGISTRAR_NOT_LISTED, a broker out of reach, a token the pod did not hand over) on a
 // backoff from registrationRetryInitial doubling to registrationRetryMax. A permanent refusal ends
-// it: no later write of the same registration could be taken. Each write's outcome is logged,
+// it, and so does an answer the broker made for another pod than r.PodUID (PodMismatchError): no
+// later write of the same registration could be taken for that pod. Each write's outcome is logged,
 // naming the pod and the session and never a token. It returns once the first write is made, with
 // that write's error, having scheduled the next; the caller ends the renewal by ending ctx, which
 // stops the write scheduled next.
@@ -94,7 +95,7 @@ func (k *podSessionKeeper) write() error {
 		log.Info("agent-secrets: registered the pod to trade under its session",
 			"expires_at", expires.UTC().Format(time.RFC3339), "next_write_in", wait.String())
 	case IsPermanent(err):
-		log.Error("agent-secrets: the broker refused the pod's session registration; not writing it again for this pod", "error", err)
+		log.Error("agent-secrets: the pod's session registration cannot be written for this pod; not writing it again", "error", err)
 		return err
 	default:
 		k.failed++
@@ -111,7 +112,7 @@ func (k *podSessionKeeper) attempt(ctx context.Context) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("read the pod's token: %w", err)
 	}
-	return k.client.RegisterPodSession(ctx, token, k.r.Session)
+	return k.client.RegisterPodSession(ctx, k.r.PodUID, token, k.r.Session)
 }
 
 // schedule arms the next write after wait, unless ctx has ended.

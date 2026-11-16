@@ -191,11 +191,13 @@ func (e *APIError) RegistrarNotListed() bool {
 	return e.Status == http.StatusForbidden && e.Code == "POD_REGISTRAR_NOT_LISTED"
 }
 
-// IsPermanent reports whether err is a permanent broker refusal. A transport failure, a 5xx, a
-// 429, an expired pod token and a daemon with no credential yet are all transient.
+// IsPermanent reports whether err is a refusal a retry cannot change: a permanent broker refusal
+// (*APIError), or a registration the broker answered for another pod (*PodMismatchError). A
+// transport failure, a 5xx, a 429, an expired pod token and a daemon with no credential yet are
+// all transient.
 func IsPermanent(err error) bool {
-	var api *APIError
-	return errors.As(err, &api) && api.Permanent()
+	var permanent interface{ Permanent() bool }
+	return errors.As(err, &permanent) && permanent.Permanent()
 }
 
 // Start logs the daemon in with its token now and keeps it logged in until ctx ends
@@ -491,15 +493,18 @@ type podSessionBody struct {
 }
 
 // RegisterPodSession is POST /v1/oauth/exchange/pod-sessions: it records at the broker that the pod
-// podToken names may trade under session, and answers when the broker stops honouring that
-// registration unless it is written again (expires_at). The route's class is the broker's
-// serviceAuth, which verifies the Authorization bearer with the token login's own check
-// (serviceCaller, MachineLogin.VerifyServiceToken), so the call carries the daemon's own projected
-// ServiceAccount token as that bearer, read from TokenFile at each call as a login reads it, and
-// no launcher proof; it needs no won launcher credential. A token file it cannot read sends
-// nothing. Any other answer than 200 is an *APIError carrying the broker's code (Permanent says
-// which a retry can change), and a transport failure is a plain error; neither repeats a token.
-func (c *Client) RegisterPodSession(ctx context.Context, podToken, session string) (time.Time, error) {
+// podToken names — podUID, by the daemon's own record of the process — may trade under session,
+// and answers when the broker stops honouring that registration unless it is written again
+// (expires_at). The route's class is the broker's serviceAuth, which verifies the Authorization
+// bearer with the token login's own check (serviceCaller, MachineLogin.VerifyServiceToken), so
+// the call carries the daemon's own projected ServiceAccount token as that bearer, read from
+// TokenFile at each call as a login reads it, and no launcher proof; it needs no won launcher
+// credential. A token file it cannot read sends nothing. The broker answers the pod uid it read
+// from the token (pod_uid); an answer naming another pod than podUID is a *PodMismatchError,
+// permanent, since the token presented was not that pod's. Any other answer than 200 is an
+// *APIError carrying the broker's code (Permanent says which a retry can change), and a transport
+// failure is a plain error; none repeats a token.
+func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, session string) (time.Time, error) {
 	token, err := c.serviceToken()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("agent-secrets registration: %w", err)
@@ -514,16 +519,34 @@ func (c *Client) RegisterPodSession(ctx context.Context, podToken, session strin
 		return time.Time{}, refusal(status, raw)
 	}
 	var answer struct {
+		PodUID    string    `json:"pod_uid"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	if err := json.Unmarshal(raw, &answer); err != nil {
 		return time.Time{}, fmt.Errorf("broker answered %d with a body that is not the contract's shape: %w", status, err)
+	}
+	if answer.PodUID != podUID {
+		return time.Time{}, &PodMismatchError{Session: session, Registered: podUID, Answered: answer.PodUID}
 	}
 	if answer.ExpiresAt.IsZero() {
 		return time.Time{}, fmt.Errorf("broker answered %d with no expires_at", status)
 	}
 	return answer.ExpiresAt, nil
 }
+
+// PodMismatchError is a registration the broker answered for another pod (Answered, the uid it
+// read from the token presented) than the one the daemon registered (Registered) under Session.
+// Its message names the session and both uids, never a token.
+type PodMismatchError struct {
+	Session, Registered, Answered string
+}
+
+func (e *PodMismatchError) Error() string {
+	return fmt.Sprintf("the broker registered pod %q for session %s, where the daemon registered pod %q", e.Answered, e.Session, e.Registered)
+}
+
+// Permanent is true: no later write presenting the same pod's token can be taken for that pod.
+func (*PodMismatchError) Permanent() bool { return true }
 
 // doProof signs a launcher proof over this call with the held credential's key and sends it as
 // the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes

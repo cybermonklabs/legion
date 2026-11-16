@@ -18,10 +18,12 @@ import (
 )
 
 // registrationBroker is POST /v1/oauth/exchange/pod-sessions as the broker serves it: it records
-// each write's credential headers and body, and answers the next of answers, or a registration
-// that lasts a day once they run out.
+// each write's credential headers and body, and answers the next of answers, or once they run out
+// a registration of pod (the pod uid the broker reads from the token every write presents) that
+// lasts a day.
 type registrationBroker struct {
-	t *testing.T
+	t   *testing.T
+	pod string
 
 	mu      sync.Mutex
 	answers []enrollAnswer
@@ -35,8 +37,8 @@ type registrationWrite struct {
 	status                            int
 }
 
-func newRegistrationBroker(t *testing.T) (*registrationBroker, *httptest.Server) {
-	b := &registrationBroker{t: t}
+func newRegistrationBroker(t *testing.T, pod string) (*registrationBroker, *httptest.Server) {
+	b := &registrationBroker{t: t, pod: pod}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/exchange/pod-sessions", b.handle)
 	server := httptest.NewServer(mux)
@@ -54,7 +56,7 @@ func (b *registrationBroker) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	b.mu.Lock()
 	answer := enrollAnswer{status: http.StatusOK, body: mustJSON(b.t, map[string]any{
-		"pod_uid": "pod-from-the-token", "session": write.body["session"], "expires_at": registrationExpiry,
+		"pod_uid": b.pod, "session": write.body["session"], "expires_at": registrationExpiry,
 	})}
 	if len(b.answers) > 0 {
 		answer, b.answers = b.answers[0], b.answers[1:]
@@ -154,14 +156,15 @@ func (m *manualTimers) scheduled() []time.Duration {
 // only credential is the daemon's own ServiceAccount token as a bearer — the credential the
 // route's class reads (the broker's serviceAuth: serviceCaller verifies bearer(r) with
 // MachineLogin.VerifyServiceToken), read from the token file at each call so the kubelet's
-// rotation is picked up, and never a launcher proof. It answers the registration's expiry; a
-// refusal is an *APIError with the broker's code, and neither token is ever in an error.
+// rotation is picked up, and never a launcher proof. It answers the registration's expiry once the
+// broker's answer names the pod the daemon registered; a refusal is an *APIError with the
+// broker's code, and neither token is ever in an error.
 func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
-	broker, server := newRegistrationBroker(t)
+	broker, server := newRegistrationBroker(t, "pod-uid-1")
 	path := tokenFile(t, "the-daemon's-token")
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: path}
 
-	expires, err := c.RegisterPodSession(context.Background(), testPodToken, "ses_implementer")
+	expires, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer")
 	if err != nil {
 		t.Fatalf("RegisterPodSession: %v", err)
 	}
@@ -186,7 +189,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	if err := os.WriteFile(path, []byte("the-rotated-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.RegisterPodSession(context.Background(), testPodToken, "ses_implementer"); err != nil {
+	if _, err := c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer"); err != nil {
 		t.Fatalf("RegisterPodSession after the rotation: %v", err)
 	}
 	if got := broker.received()[1].authorization; got != "Bearer the-rotated-token" {
@@ -196,7 +199,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	broker.mu.Lock()
 	broker.answers = []enrollAnswer{{status: http.StatusForbidden, body: `{"code":"POD_ACCOUNT_NOT_LISTED","error":"system:serviceaccount:legion:worker is not in BROKER_EXCHANGE_ACCOUNTS"}`}}
 	broker.mu.Unlock()
-	_, err = c.RegisterPodSession(context.Background(), testPodToken, "ses_implementer")
+	_, err = c.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer")
 	var api *APIError
 	if !errors.As(err, &api) || api.Status != http.StatusForbidden || api.Code != "POD_ACCOUNT_NOT_LISTED" || !IsPermanent(err) {
 		t.Fatalf("a refused registration = %v, want a permanent *APIError 403 POD_ACCOUNT_NOT_LISTED", err)
@@ -208,7 +211,7 @@ func TestRegisterPodSessionPostsThePodToken(t *testing.T) {
 	}
 
 	missing := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: filepath.Join(t.TempDir(), "absent")}
-	if _, err := missing.RegisterPodSession(context.Background(), testPodToken, "ses_implementer"); err == nil || !strings.Contains(err.Error(), "read the ServiceAccount token") {
+	if _, err := missing.RegisterPodSession(context.Background(), "pod-uid-1", testPodToken, "ses_implementer"); err == nil || !strings.Contains(err.Error(), "read the ServiceAccount token") {
 		t.Errorf("a registration with no token file = %v, want a failure naming the token file", err)
 	}
 	if n := len(broker.received()); n != 3 {
@@ -241,7 +244,7 @@ func TestARegistrarNotListedRefusalIsRetried(t *testing.T) {
 
 	const session = "ses_reviewer"
 	notListed := enrollAnswer{status: http.StatusForbidden, body: `{"code":"POD_REGISTRAR_NOT_LISTED","error":"system:serviceaccount:legion:legion-daemon is not listed to register pods of system:serviceaccount:legion:worker"}`}
-	broker, server := newRegistrationBroker(t)
+	broker, server := newRegistrationBroker(t, "pod-uid-1")
 	broker.answers = []enrollAnswer{notListed, notListed}
 	var logged lockedLog
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
@@ -281,7 +284,7 @@ func TestARegistrarNotListedRefusalIsRetried(t *testing.T) {
 // exchange entry — is logged once, naming the pod and the session, and nothing more is written or
 // scheduled for that registration.
 func TestAPermanentRefusalEndsTheRenewal(t *testing.T) {
-	broker, server := newRegistrationBroker(t)
+	broker, server := newRegistrationBroker(t, "pod-uid-2")
 	broker.answers = []enrollAnswer{{status: http.StatusForbidden, body: `{"code":"POD_ACCOUNT_NOT_LISTED","error":"not listed"}`}}
 	var logged lockedLog
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
@@ -304,7 +307,7 @@ func TestAPermanentRefusalEndsTheRenewal(t *testing.T) {
 // TestTheRenewalEndsWithItsContext: a renewal is the claim's process's, and its context ends with
 // it: the write scheduled next is stopped, and a timer that fires anyway writes nothing.
 func TestTheRenewalEndsWithItsContext(t *testing.T) {
-	broker, server := newRegistrationBroker(t)
+	broker, server := newRegistrationBroker(t, "pod-uid-3")
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
 	timers := &manualTimers{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -328,7 +331,7 @@ func TestTheRenewalEndsWithItsContext(t *testing.T) {
 // write six hours after the hello presents the token the pod holds then, and a token that cannot
 // be read is a failed write, retried on the backoff like any other.
 func TestARenewalReadsAFreshTokenForEachWrite(t *testing.T) {
-	broker, server := newRegistrationBroker(t)
+	broker, server := newRegistrationBroker(t, "pod-uid-4")
 	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token")}
 	timers := &manualTimers{}
 	tokens := []string{"token-at-the-hello", "", "token-six-hours-on"}
@@ -358,5 +361,49 @@ func TestARenewalReadsAFreshTokenForEachWrite(t *testing.T) {
 	}
 	if got, want := timers.scheduled(), []time.Duration{RegistrationRenewal, 15 * time.Second, RegistrationRenewal}; !slices.Equal(got, want) {
 		t.Errorf("the renewal waited %v, want %v", got, want)
+	}
+}
+
+// TestARegistrationAnsweredForAnotherPodIsNotRenewed: the broker answers the registration as it now
+// stands, the pod uid it read from the token included (handlers_pod_sessions.go,
+// podSessionResponse). An answer that names another pod than the one the daemon registered
+// means the token the daemon presented was not that pod's, so the write is a permanent failure:
+// nothing is written again or scheduled. The one log line names the session and both uids, and
+// no token.
+func TestARegistrationAnsweredForAnotherPodIsNotRenewed(t *testing.T) {
+	const (
+		session = "ses_planner"
+		mine    = "pod-uid-mine"
+		other   = "pod-uid-other"
+	)
+	broker, server := newRegistrationBroker(t, other)
+	var logged lockedLog
+	c := &Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile(t, "the-daemon's-token"), Log: slog.New(slog.NewTextHandler(&logged, nil))}
+
+	_, err := c.RegisterPodSession(context.Background(), mine, testPodToken, session)
+	var mismatch *PodMismatchError
+	if !errors.As(err, &mismatch) || mismatch.Session != session || mismatch.Registered != mine || mismatch.Answered != other || !IsPermanent(err) {
+		t.Fatalf("a registration the broker answered for pod %s, where the daemon registered %s for %s = %v, want a permanent *PodMismatchError naming both", other, mine, session, err)
+	}
+
+	timers := &manualTimers{}
+	err = c.KeepPodSession(context.Background(), PodSessionRenewal{
+		PodUID: mine, Session: session, Bound: time.Second, After: timers.after,
+		Token: func(context.Context) (string, error) { return testPodToken, nil },
+	})
+	if !errors.As(err, &mismatch) || !IsPermanent(err) {
+		t.Fatalf("the renewal of %s for pod %s, answered for pod %s = %v, want the permanent mismatch", session, mine, other, err)
+	}
+	if timers.armed() != 0 || len(broker.received()) != 2 {
+		t.Fatalf("after the mismatch %d writes were made and %d are scheduled, want 2 and none", len(broker.received()), timers.armed())
+	}
+	text := logged.String()
+	for _, want := range []string{"session=" + session, mine, other} {
+		if !strings.Contains(text, want) {
+			t.Errorf("logged %q, want it to name %s", text, want)
+		}
+	}
+	if strings.Contains(text, testPodToken) || strings.Contains(text, "the-daemon's-token") {
+		t.Errorf("logged %q, which repeats a token", text)
 	}
 }

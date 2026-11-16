@@ -5,4 +5,6 @@ body: |-
   daemon's own ServiceAccount token): an Oh My Pi role's when its agent registers, a Claude Code
   role's at its shim's hello, and a relaunched role's for the session it resumes. It writes each
   live registration again every 6 hours and retries a failed write at 15 seconds doubling to 5
-  minutes, `403 POD_REGISTRAR_NOT_LISTED` included. Unset, no registration is made.
+  minutes, `403 POD_REGISTRAR_NOT_LISTED` included. An answer that names another pod than the one
+  the daemon registered ends that registration's writes, logged with the session and both pod
+  uids. Unset, no registration is made.
