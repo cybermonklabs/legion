@@ -152,7 +152,7 @@ func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, e
 		if lister == nil {
 			return nil, errors.New("DISPATCH_SIGNIN_OUTSIDE=1 reads the projects' access lists, and this server has no database to read them from")
 		}
-		return identity.OutsideRule{Domain: identity.DomainRule{Domain: boot.SignInDomain}, People: lister}, nil
+		return identity.OutsideRule{DomainRule: identity.DomainRule{Domain: boot.SignInDomain}, People: lister}, nil
 	case boot.SignInDomain != "":
 		return identity.DomainRule{Domain: boot.SignInDomain}, nil
 	case boot.SignInGroup != "":

@@ -432,7 +432,7 @@ func newOutsideMembershipRig(t *testing.T, lister *stubLister) *membershipRig {
 	t.Helper()
 	claims := googleMemberClaims()
 	delete(claims, "hd")
-	rig := newMembershipRigFor(t, OutsideRule{Domain: DomainRule{Domain: outsideDomain}, People: lister}, outsideDomain, claims, "google-subject")
+	rig := newMembershipRigFor(t, OutsideRule{DomainRule: DomainRule{Domain: outsideDomain}, People: lister}, outsideDomain, claims, "google-subject")
 	if person, _ := rig.people.get(memberEmail); person.Kind != model.MemberRestricted {
 		t.Fatalf("the outside sign-in recorded member kind %q, want restricted", person.Kind)
 	}

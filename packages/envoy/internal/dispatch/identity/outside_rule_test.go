@@ -36,7 +36,7 @@ func (l *stubLister) calls() []string {
 
 // outsideRule is the outside rule over workspace's domain, example.com, reading lister.
 func outsideRule(lister Lister) OutsideRule {
-	return OutsideRule{Domain: workspace, People: lister}
+	return OutsideRule{DomainRule: workspace, People: lister}
 }
 
 // outsideAccount is a verified Google ID token's claims for an account of no Workspace, whose

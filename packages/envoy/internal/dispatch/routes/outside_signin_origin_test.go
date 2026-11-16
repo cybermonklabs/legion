@@ -24,8 +24,8 @@ const (
 // tests are about which origin answers, not about who is listed.
 func outsideRuleListingEveryone() identity.OutsideRule {
 	return identity.OutsideRule{
-		Domain: identity.DomainRule{Domain: rigDomain},
-		People: identity.ListerFunc(func(context.Context, string) (bool, error) { return true, nil }),
+		DomainRule: identity.DomainRule{Domain: rigDomain},
+		People:     identity.ListerFunc(func(context.Context, string) (bool, error) { return true, nil }),
 	}
 }
 
@@ -152,8 +152,8 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 // rule alone keeps today's plain link.
 func TestOutsideSignInRefusalOffersGooglesAccountChooser(t *testing.T) {
 	unlisted := identity.OutsideRule{
-		Domain: identity.DomainRule{Domain: rigDomain},
-		People: identity.ListerFunc(func(context.Context, string) (bool, error) { return false, nil }),
+		DomainRule: identity.DomainRule{Domain: rigDomain},
+		People:     identity.ListerFunc(func(context.Context, string) (bool, error) { return false, nil }),
 	}
 	outsider := map[string]any{"sub": "outside-subject", "email": "stranger@other.example", "email_verified": true}
 	refusalLink := func(rig *signInRig) string {
