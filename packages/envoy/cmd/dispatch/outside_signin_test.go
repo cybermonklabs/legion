@@ -514,7 +514,7 @@ var googleHostRows = []string{
 	"dispatch-outside.example.com",
 	"outside.np",
 	"outside.xn--p1ai",
-	"dispatch.tail12345.ts.net",
+	"outside.github.io",
 	"10.0.0.1",
 	"single",
 	"outside.corp",
