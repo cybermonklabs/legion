@@ -1183,6 +1183,35 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 	})
 }
 
+// TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure: a live token whose stored row
+// holds a public_key_jwk that is not base64 is a row the broker cannot decode, so Introspect
+// returns the decode error, for the route to log beside its 503, and never answers the token not
+// live. The row fails with the same base64 decode error a malformed token does
+// (TestIntrospectingALiveTokenWithACharacterAddedIsNotLive): told apart by that error alone, a
+// row the broker cannot read would be answered as a token nobody issued, denying a sound token
+// and hiding the fault.
+func TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	ctx := context.Background()
+	f.registers(t, account, "pod-uid-1", "implementer-g1")
+	token := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
+	// The control: the token's row as it was written is live, so the failure below is the
+	// rewrite's.
+	if live := f.introspected(t, token); !live.Active {
+		t.Fatalf("Introspect of the token as minted = %+v, want it live", live)
+	}
+	if _, err := f.pool.Exec(ctx, `update oauth_access_tokens set request = jsonb_set(request, '{session,public_key_jwk}', '"!"')`); err != nil {
+		t.Fatalf("rewrite the token's row: %v", err)
+	}
+	answer, err := f.provider.Introspect(ctx, token)
+	if err == nil {
+		t.Fatalf("Introspect of a row whose public_key_jwk is not base64 = %+v and no error, want the broker's failure", answer)
+	}
+	if !strings.Contains(err.Error(), "public_key_jwk") {
+		t.Fatalf("Introspect's error reads %q: it must name the row's public_key_jwk, which is what failed to decode", err.Error())
+	}
+}
+
 // TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere: the broker answers the exchange
 // client as authenticated when it presents nothing at the token-exchange grant, because the
 // subject token is the credential and shipping a secret to every pod is what this removes. Every

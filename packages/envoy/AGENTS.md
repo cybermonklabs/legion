@@ -6842,9 +6842,10 @@ The form's `token` parameter names the token (missing, `400 TOKEN_REQUIRED`), an
 — which is what makes a stolen token useless, since whoever reads this answer checks the caller's proof against it.
 A machine login's own token carries neither project field, no exchange having decided for it, and names no `session`, `person` or `service` either, which is why a resource server that acts as the session its caller proved refuses it rather than admitting it with none (`brokertoken.ErrNotASession`, Dispatch's `401 BROKER_TOKEN_NOT_A_SESSION`).
 A token the broker does not know, one it revoked and one that has expired are all `active` false and nothing else (Section 2.2), so an answer discloses nothing to a caller holding a string at random.
+So is a string that is not a token's shape, a live token with a character added in front among them, whose half that is not base64url the library's check refuses with a decode error and no sentinel (`notLive`, `oauth/introspect.go`).
 So is any token that is not an access token, a machine login's refresh token among them:
 the answer names no token type, and a refresh token, which outlives the access token issued beside it, answered live would pass for a credential no request can present, so `Introspect` checks the kind the library reports finding rather than trusting the `access_token` hint it passes.
-Only the broker's own failure to read its storage is a refusal (503), since answering that as "not live" would deny a sound token and hide the outage.
+Only the broker's own failure to read its storage is a refusal (503), since answering that as "not live" would deny a sound token and hide the outage: a stored row that does not decode is one, though its decode error can be the same base64 one, and the library's wrapping of a failed row read is what tells the two apart.
 It spends its source address's own bucket (`DefaultIntrospectLimit`) before the provider reads anything, `429 RATE_LIMITED` with `Retry-After`, and logs no caller:
 reading a token back acts on nobody's behalf.
 
