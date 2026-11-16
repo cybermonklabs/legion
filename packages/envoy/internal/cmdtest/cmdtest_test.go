@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -67,9 +70,14 @@ func heldPortChild() int {
 
 // A held port stays bound from HoldPort until the process it was passed to serves on it, with only
 // that process holding it once Start returns: another program's bind in the meantime is refused,
-// the process serves on the socket, and the port is free again once it exits.
+// the process serves on the socket, and the socket is gone once it exits.
 func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	held := HoldPort(t)
+	// The socket itself, by its inode, which the checks below read rather than its port: once the
+	// socket is gone, any other process on the machine may bind the port.
+	inode := socketInode(t, held.file)
+	self := os.Getpid()
+	checkSocket(t, "after HoldPort", inode, map[int]int{self: 1}, 1)
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), heldPortChildEnv+"=1")
 	held.Pass(cmd, heldPortFD)
@@ -78,6 +86,7 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 		t.Fatal(err)
 	}
 	child := Start(t, "the held-port child", cmd)
+	checkSocket(t, "after Start, before the child served", inode, map[int]int{self: 0, cmd.Process.Pid: 1}, 1)
 
 	// The child is waiting for its line and has not served, so only its inherited copy can hold the
 	// port.
@@ -116,13 +125,99 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 		t.Fatalf("the child exited %d:\n%s", code, child.Output.String())
 	}
 
-	// The test's cleanup has not run yet, so a bind that succeeds now shows Start closed the test's
-	// copy, and the child released its own on exit.
-	rebound, err := net.Listen("tcp", held.Addr)
+	// The test's cleanup has not run yet, so a socket gone now shows Start closed the test's copy
+	// and the child released its own on exit, and that nothing else they started holds one.
+	checkSocket(t, "after the child exited", inode, map[int]int{self: 0, cmd.Process.Pid: 0}, 0)
+}
+
+// socketInode is the inode of the socket file holds: /proc/<pid>/fd names the socket
+// socket:[<inode>] in every process holding it, and its rows in /proc/net/tcp carry it.
+func socketInode(t *testing.T, file *os.File) uint64 {
+	t.Helper()
+	info, err := file.Stat()
 	if err != nil {
-		t.Fatalf("bind %s after the child exited: %v; want it free", held.Addr, err)
+		t.Fatalf("stat the held socket: %v", err)
 	}
-	_ = rebound.Close()
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("stat the held socket: %T is no syscall.Stat_t", info.Sys())
+	}
+	return stat.Ino
+}
+
+// checkSocket fails the test, naming when, unless each pid in copies holds the socket of inode on
+// that many descriptors, read from /proc/<pid>/fd, and /proc/net/tcp and /proc/net/tcp6 list it in
+// rows rows: one while any process holds it listening, none once every holder has closed it. A
+// process that has exited and been reaped has no /proc/<pid>/fd, and so holds none. It reads
+// /proc, so off Linux it checks nothing and says so.
+func checkSocket(t *testing.T, when string, inode uint64, copies map[int]int, rows int) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Logf("%s: the held socket's holders are read from /proc, which %s has not; not checked", when, runtime.GOOS)
+		return
+	}
+	link := fmt.Sprintf("socket:[%d]", inode)
+	for pid, want := range copies {
+		if got := descriptorsLinking(t, pid, link); len(got) != want {
+			t.Errorf("%s: process %d holds the held socket on descriptors %v, want %d of them", when, pid, got, want)
+		}
+	}
+	if got := socketRows(t, inode); len(got) != rows {
+		t.Errorf("%s: /proc/net/tcp lists the held socket in %d rows %q, want %d", when, len(got), got, rows)
+	}
+}
+
+// descriptorsLinking names each descriptor of pid whose /proc/<pid>/fd link is link. A pid with no
+// such directory holds none.
+func descriptorsLinking(t *testing.T, pid int, link string) []string {
+	t.Helper()
+	dir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	var linking []string
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join(dir, entry.Name()))
+		// The listing's own descriptor, and any other closed since the listing was read.
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read %s/%s: %v", dir, entry.Name(), err)
+		}
+		if target == link {
+			linking = append(linking, entry.Name())
+		}
+	}
+	return linking
+}
+
+// socketRows returns the local address and state of each row of /proc/net/tcp and /proc/net/tcp6
+// whose inode, its tenth field, is inode. A machine with IPv6 off has no /proc/net/tcp6.
+func socketRows(t *testing.T, inode uint64) []string {
+	t.Helper()
+	want := strconv.FormatUint(inode, 10)
+	var rows []string
+	for _, table := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(table)
+		if table == "/proc/net/tcp6" && errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("read %s: %v", table, err)
+		}
+		for _, line := range strings.Split(string(data), "\n")[1:] {
+			fields := strings.Fields(line)
+			if len(fields) > 9 && fields[9] == want {
+				rows = append(rows, fields[1]+" "+fields[3])
+			}
+		}
+	}
+	return rows
 }
 
 // StartThen runs afterExit once the process has exited and before it closes Exited, so a test
