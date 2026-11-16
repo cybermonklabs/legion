@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/legionagents"
 )
 
@@ -21,16 +22,26 @@ import (
 // in the write transaction of a result (heldRole), so that the stored role of a result is the role
 // that its session holds.
 //
-// Only the daemon of the issue's project writes the set, as session legion-daemon:<project>
-// (legionDaemonSessionOf). That check rests on the actor that the body names, as every write with
-// a bearer that proves no session does before the airlock: a caller that holds the deployment's
-// bearer can name that session too. The airlock owns that case.
+// A write must name the actor session legion-daemon:<project> (legionDaemonSessionOf), the session
+// the daemon of the issue's project writes as. Before the airlock, Dispatch takes the session that
+// a bearer caller names as the caller names it, so any caller whose Dispatch credential proves no
+// session of its own can name that session: the deployment's shared token, and a person's own
+// agent token whatever its scopes. The airlock closes that case, and this route does not.
 //
 // A claim ends when the daemon retires it, fails it or suspends it. The session of an ended claim
 // leaves the set only when the daemon's next publication lands, and until then its row stays. The
 // process of a failed or a suspended claim can still run during that window: the daemon lets go of
 // a process whose stop the runtime refused. Such a process keeps the pane's bearer, and its session
-// keeps its role, until the publication lands.
+// keeps its role, until the publication lands. An end whose queue failed in the daemon is published
+// at the daemon's next boot only when that boot comes within seven days of the end, and otherwise
+// at the next ready or end of a claim on the same issue.
+//
+// Each write replaces the issue's whole set under a lock of the issue row that a second write of
+// the same issue waits for, so the stored set is always one whole set, and each write answers the
+// set that it stored. Two writes of one issue at once store the set of the one that finishes
+// last. The daemon sends one write of an issue at a time: its outbox holds one role_holders_publish
+// row per issue, and a lane runs its issue's rows one at a time (packages/daemon's
+// internal/daemon/outbox_lanes.go, the lanes' comment).
 //
 // The write appends no issue event and publishes nothing, whether the set changed or not, for the
 // reasons a design-gate publication gives (issue_design_gates.go): the record is the daemon's own
@@ -138,10 +149,20 @@ func writeRoleHoldersIssueNotFound(w http.ResponseWriter, key string) {
 	writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
 }
 
+// maxRoleHolderSessionBytes is the longest session the route stores. A Legion session id is far
+// shorter: the Legion agent registry holds one to 128 bytes (legionagents.ValidateSessionID). The
+// bound keeps every row inside the unique index on (issue_key, session), whose B-tree entry holds
+// at most 2704 bytes, so no body reaches the index with a session it cannot hold.
+const maxRoleHolderSessionBytes = 256
+
 // putIssueRoleHolders publishes the session of each Legion role of an issue. The daemon sends the
 // issue's whole set, so the transaction deletes each stored pair that the body does not name, then
 // inserts the pairs that are not stored yet. A pair that changed is deleted before the insert, so
 // the insert meets neither key of the table, and a pair that did not change keeps its recorded_at.
+// The body is checked whole before the transaction opens: each role is one of the six, once, and
+// each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
+// body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
+// check or an index of the table. Six distinct roles bound the set at six holders.
 func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	var input issueRoleHoldersInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -184,6 +205,12 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 				"the session of %s is empty.", holder.Role))
 			return
 		}
+		if !text.IsSessionID(holder.Session) || len(holder.Session) > maxRoleHolderSessionBytes {
+			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+				"the session of %s is not a session id. A session id is at most %d bytes, and it holds no whitespace, no control character and none of / ? # < > \" ' ` [ ] |.",
+				holder.Role, maxRoleHolderSessionBytes))
+			return
+		}
 		if slices.Contains(sessions[:index], holder.Session) {
 			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
 				"session %s is named for two roles. A session holds one role of an issue.", holder.Session))
@@ -199,11 +226,13 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read in the write's own transaction, under the key-share lock that the rows'
-	// foreign key takes anyway, so the refusal and the write decide on the same row.
+	// The issue row is read in the write's own transaction, under a lock that a second write of the
+	// same issue waits for (`for no key update`), so the two replaces run one after the other: the
+	// second reads the rows that the first committed, and each answers the set that it stored. The
+	// lock is the one an issue's own writes take (ownerRowLock), and it does not stop a reader.
 	var issue string
 	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for key share
+		select key from issues where key = $1 for no key update
 	`, key).Scan(&issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeRoleHoldersIssueNotFound(w, key)

@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,6 +247,118 @@ func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
 	unknown := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/ACME-999/role-holders", nil, "alice")
 	if code, _ := refusalOf(t, unknown); unknown.Code != http.StatusNotFound || code != "ISSUE_NOT_FOUND" {
 		t.Fatalf("the read of an unknown issue: status=%d body=%s, want 404 ISSUE_NOT_FOUND", unknown.Code, unknown.Body.String())
+	}
+}
+
+// sortedPairs is the set an answer names, as role and session pairs in role order.
+func sortedPairs(holders []issueRoleHolderRecord) []issueRoleHolder {
+	pairs := []issueRoleHolder{}
+	for _, holder := range holders {
+		pairs = append(pairs, issueRoleHolder{Role: holder.Role, Session: holder.Session})
+	}
+	slices.SortFunc(pairs, func(a, b issueRoleHolder) int { return strings.Compare(a.Role, b.Role) })
+	return pairs
+}
+
+// Two publications of one issue that run at the same time leave one of the two sets, whole, and
+// never a mix of both: the route replaces the issue's whole set. Each publication that answers 200
+// answers the set that it stored, so the one that finished first answers its own set, and the one
+// that finished last leaves its set stored. Twenty rounds of each shape, because one round can pass
+// by the order the two happen to run in.
+func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	for _, shape := range []struct {
+		name string
+		a, b []issueRoleHolder
+	}{
+		{"disjoint roles", []issueRoleHolder{{Role: "tester", Session: "a1"}}, []issueRoleHolder{{Role: "implementer", Session: "b1"}}},
+		{"the same roles, other sessions",
+			[]issueRoleHolder{{Role: "implementer", Session: "a2"}, {Role: "tester", Session: "a1"}},
+			[]issueRoleHolder{{Role: "implementer", Session: "b2"}, {Role: "tester", Session: "b1"}}},
+		{"two sessions that swap roles",
+			[]issueRoleHolder{{Role: "implementer", Session: "s1"}, {Role: "tester", Session: "s2"}},
+			[]issueRoleHolder{{Role: "implementer", Session: "s2"}, {Role: "tester", Session: "s1"}}},
+	} {
+		for round := range 20 {
+			publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "architect", Session: "z0"}})
+			sets := [][]issueRoleHolder{shape.a, shape.b}
+			codes := make([]int, 2)
+			answers := make([][]issueRoleHolder, 2)
+			var start, done sync.WaitGroup
+			start.Add(1)
+			for index, set := range sets {
+				done.Add(1)
+				go func() {
+					defer done.Done()
+					start.Wait()
+					response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": set, "actor": daemonSessionOf("ACME")})
+					codes[index] = response.Code
+					if response.Code == http.StatusOK {
+						answers[index] = sortedPairs(decodeBody[issueRoleHolders](t, response).Holders)
+					}
+				}()
+			}
+			start.Done()
+			done.Wait()
+			stored := sortedPairs(readRoleHolders(t, handler, issue).Holders)
+			if !slices.Equal(stored, shape.a) && !slices.Equal(stored, shape.b) {
+				t.Errorf("%s, round %d: the issue stores %v, want exactly %v or %v", shape.name, round+1, stored, shape.a, shape.b)
+			}
+			for index, set := range sets {
+				if codes[index] != http.StatusOK {
+					t.Errorf("%s, round %d: publication %d answered %d, want 200", shape.name, round+1, index, codes[index])
+				} else if !slices.Equal(answers[index], set) {
+					t.Errorf("%s, round %d: publication %d of %v answered %v, want the set it stored", shape.name, round+1, index, set, answers[index])
+				}
+			}
+		}
+	}
+}
+
+// A session that Dispatch's own rule does not take as a session id (text.IsSessionID) is refused
+// with 400, and so is one so long that the table's unique index could not hold it: no body gives a
+// 500, which the daemon would retry with no end. The stored set stays as it was.
+func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{})
+	issue := roleHolderIssue(t, handler)
+	before := []issueRoleHolder{{Role: "tester", Session: "ses-t"}}
+	// Characters that do not compress, so Postgres stores the session as long as it is.
+	random := rand.New(rand.NewPCG(7, 7))
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	long := make([]byte, 3000)
+	for index := range long {
+		long[index] = letters[random.IntN(len(letters))]
+	}
+	for _, session := range []string{"ses\nx", " ses-t", "ses t", "ses\tx", "ses/x", "ses#x", string(long)} {
+		publishRoleHolders(t, handler, issue, before)
+		response := putRoleHoldersAs(t, handler, issue, map[string]any{
+			"holders": []issueRoleHolder{{Role: "reviewer", Session: session}}, "actor": daemonSessionOf("ACME"),
+		})
+		label := session
+		if len(label) > 20 {
+			label = label[:20] + "…"
+		}
+		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" {
+			t.Errorf("session %q: status=%d body=%.300s, want 400 INVALID_ROLE_HOLDER", label, response.Code, response.Body.String())
+		}
+		if stored := sortedPairs(readRoleHolders(t, handler, issue).Holders); !slices.Equal(stored, before) {
+			t.Errorf("session %q: the issue stores %v after the refusal, want %v", label, stored, before)
+		}
+	}
+
+	// The bound itself: a session of exactly maxRoleHolderSessionBytes is stored, and one byte more
+	// is refused. Both are well inside what the unique index holds.
+	atBound := string(long[:maxRoleHolderSessionBytes])
+	publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "reviewer", Session: atBound}})
+	if stored := sortedPairs(readRoleHolders(t, handler, issue).Holders); len(stored) != 1 || stored[0].Session != atBound {
+		t.Fatalf("a session of %d bytes: the issue stores %v, want it stored", len(atBound), stored)
+	}
+	over := putRoleHoldersAs(t, handler, issue, map[string]any{
+		"holders": []issueRoleHolder{{Role: "reviewer", Session: atBound + "x"}}, "actor": daemonSessionOf("ACME"),
+	})
+	if code, _ := refusalOf(t, over); over.Code != http.StatusBadRequest || code != "INVALID_ROLE_HOLDER" {
+		t.Fatalf("a session of %d bytes: status=%d body=%.300s, want 400 INVALID_ROLE_HOLDER", len(atBound)+1, over.Code, over.Body.String())
 	}
 }
 
