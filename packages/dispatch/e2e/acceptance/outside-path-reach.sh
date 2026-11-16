@@ -16,30 +16,44 @@
 #                         IPv4 address or a bracketed IPv6 address.
 #   OUTSIDE_PATH_TARGETS  a file of `name host port` lines, one per internal target (the hub, the
 #                         listeners, the secrets broker, the other Dispatch origin). `#` starts a
-#                         comment, so the address a name stands for goes beside it. `host` is a
-#                         name that resolves on this network or a literal address, never a `svc:`
-#                         selector, which resolves nowhere.
+#                         comment. `host` is a name or a literal address: an IPv4 address written
+#                         as four numbers of 0 to 255 with no leading zero, or an IPv6 address;
+#                         never a `svc:` selector, which resolves nowhere. The list must hold each
+#                         of our services' addresses on the path as lines of their own, not names
+#                         alone: a name line proves only where that name resolves on this device,
+#                         and a name that resolves elsewhere there, or nowhere, says nothing of the
+#                         address behind it. A list of names alone draws a warning.
 # OUTSIDE_PATH_ALLOW_HTTP=1 lets an http origin through, and only http://127.0.0.1, for this
 # script's own tests. OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>" runs the classifier
 # alone on one recorded probe, prints its class and exits 0.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
-#   PASS     exit 0: Dispatch answered at the origin, the probe connected to the origin, and every
-#            target was unreachable.
+#   PASS     exit 0: Dispatch answered at the origin (/healthz 200, and /api/v1/projects with no
+#            credential 401 with Dispatch's own NO_IDENTITY refusal), the probe connected to the
+#            origin, and every target was unreachable.
 #   FAIL     exit 1: a target was reached, or the origin served a read with no credential.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, curl
 #            missing or too old, the origin not answering as Dispatch, the probe unable to connect
 #            to the origin itself, a target that did not resolve or that no rule classifies, or an
 #            empty target list.
 #
-# Every host and port is probed by one command and judged by whether TCP connected, not by curl's
-# exit code alone: every target this check exists for (NATS, an HTTP listener, a TLS port) accepts
-# and then holds the connection waiting for the client, so a reached target ends at --max-time
-# with exit 28, the same exit a blackholed address gives. See `classify`.
+# Every host and port is probed three times at once by one command and judged by whether TCP
+# connected, not by curl's exit code alone: every target this check exists for (NATS, an HTTP
+# listener, a TLS port) accepts and then holds the connection waiting for the client, so a reached
+# target ends at --max-time with exit 28, the same exit a blackholed address gives. A target is
+# REACHED when any of its three probes connected, unreachable only when all three were, and
+# otherwise takes the class of its first probe that was neither; three probes, not one, so a
+# network that loses packets does not hide a target. See `classify` for the classes.
 #
 # Usage: OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
 #          bash outside-path-reach.sh
+
+# A shell other than bash stops here, before it reads a line it would take another way.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo 'UNKNOWN: run this with bash: bash outside-path-reach.sh'
+  exit 2
+fi
 set -u
 
 # unknown MESSAGE: the verdict for anything that proved nothing.
@@ -54,6 +68,32 @@ is_seconds() { case $1 in '' | *[!0-9.]* | .* | *. | *.*.*) return 1 ;; esac; }
 is_port() {
   case $1 in '' | *[!0-9]* | 0*) return 1 ;; esac
   [ "${#1}" -le 5 ] && [ "$1" -le 65535 ]
+}
+
+# is_ipv4 HOST: HOST is an IPv4 address in its one canonical form, four numbers of 0 to 255 with
+# no leading zero, which is how curl reads it too (curl reads 010 as octal 8).
+is_ipv4() {
+  local rest=$1. part count=0
+  while [ -n "$rest" ]; do
+    part=${rest%%.*}
+    rest=${rest#*.}
+    case $part in '' | *[!0-9]* | 0?*) return 1 ;; esac
+    [ "${#part}" -le 3 ] && [ "$part" -le 255 ] || return 1
+    count=$((count + 1))
+  done
+  [ "$count" -eq 4 ]
+}
+
+# host_ok HOST: HOST is a name, an IPv6 address, or an IPv4 address in its canonical form. As
+# Dispatch's own origin rule has it, a host whose last label is a number or a 0x hex number is an
+# address, so it must be a canonical one: 127.1, 0x7f000001 and 172.020.000.021 each name another
+# host than they seem to.
+host_ok() {
+  case $1 in *:*) return 0 ;; esac
+  case ${1##*.} in
+    *[!0-9]*) case ${1##*.} in 0[xX]*) ;; *) return 0 ;; esac ;;
+  esac
+  is_ipv4 "$1"
 }
 
 # pop: moves the first line of `rest` into `line`, splitting a text already in memory with no
@@ -76,14 +116,19 @@ address() {
 }
 
 # classify EXIT NAMELOOKUP CONNECT: prints the class of one probe, from curl's exit code and its
-# time_namelookup and time_connect, each 0.000000 when that step never completed. Bash has no
-# floating point, so a time is non-zero when it holds a digit 1 to 9; LC_ALL=C on the probe keeps
-# the decimal point a point. In this order:
+# time_namelookup and time_connect, each 0.000000 when that step never completed. The connect
+# timeout, 3 s, covers the lookup and the connect together. Bash has no floating point, so a time
+# is non-zero when it holds a digit 1 to 9, and a second or more when its whole part does; LC_ALL=C
+# on the probe keeps the decimal point a point. In this order:
 #   REACHED                        time_connect non-zero, whatever the exit code;
+#   unreachable                    exit 7 (refused);
 #   unresolved (lookup timed out)  exit 28 with both times zero: the name lookup never answered;
-#   unreachable                    exit 7 (refused), or exit 28 with the lookup non-zero;
+#   unreachable                    exit 28 with a lookup of under a second, leaving the connect two
+#                                  seconds or more to time out in;
+#   UNKNOWN (the lookup took ...)  exit 28 with a lookup of a second or more: the connect had too
+#                                  little time to show the target does not answer;
 #   unresolved                     exit 6: the name does not resolve on this network;
-#   UNKNOWN (...)                  anything else, an empty or malformed value included.
+#   UNKNOWN (curl exit ...)        anything else, an empty or malformed value included.
 classify() {
   local code=${1-} lookup=${2-} connect=${3-}
   if is_count "$code" && is_seconds "$lookup" && is_seconds "$connect"; then
@@ -92,16 +137,28 @@ classify() {
       return
       ;;
     esac
-    case $code:$lookup in
-      28:*[1-9]* | 7:*)
+    case $code in
+      7)
         echo unreachable
         return
         ;;
-      28:*)
-        echo 'unresolved (lookup timed out)'
+      28)
+        case $lookup in
+          *[1-9]*) ;;
+          *)
+            echo 'unresolved (lookup timed out)'
+            return
+            ;;
+        esac
+        case ${lookup%%.*} in
+          *[1-9]*)
+            printf 'UNKNOWN (the lookup took %s s of the 3 s to connect, too long to read a timed-out connect as unreachable; curl exit 28, time_connect %s)\n' "$lookup" "$connect"
+            ;;
+          *) echo unreachable ;;
+        esac
         return
         ;;
-      6:*)
+      6)
         echo unresolved
         return
         ;;
@@ -163,6 +220,8 @@ esac
 if [ -z "$origin_host" ] || ! is_port "$origin_port"; then
   unknown "OUTSIDE_ORIGIN must be an origin alone, https://<host>[:<port>] with a port of 1 to 65535 and no user, path, query or fragment, not $origin"
 fi
+host_ok "$origin_host" ||
+  unknown "OUTSIDE_ORIGIN host $origin_host is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
 case $origin in http://*)
   [ "$origin_host" = 127.0.0.1 ] ||
     unknown "OUTSIDE_ORIGIN may be http only at 127.0.0.1, for this script's own tests, not $origin"
@@ -173,8 +232,10 @@ esac
 # a refusal, never a target left out. A read error ends a `read` loop exactly as the end of the
 # file does, and `$(<file)` and curl's file:// both pass one over in silence; only `read` says so,
 # on stderr. So each line comes back marked `L` and bash's own words come back unmarked, and any
-# unmarked line refuses the run. Row 0 is the origin itself, the positive control.
+# unmarked line refuses the run. A UTF-8 byte-order mark before the first line is dropped. Row 0
+# is the origin itself, the positive control.
 targets=$OUTSIDE_PATH_TARGETS
+bom=$'\xef\xbb\xbf'
 row=''
 rest=$({ while IFS= read -r row || [ -n "$row" ]; do
   printf 'L%s\n' "$row"
@@ -183,6 +244,7 @@ done <"$targets"; } 2>&1) || rest="$rest${newline}could not open it"
 hosts[0]=$origin_host
 ports[0]=$origin_port
 count=0
+addresses=0
 number=0
 while [ -n "$rest" ]; do
   pop
@@ -192,6 +254,7 @@ while [ -n "$rest" ]; do
   esac
   number=$((number + 1))
   row=${line#L}
+  [ "$number" -gt 1 ] || row=${row#"$bom"}
   row=${row%%#*}
   row=${row%$'\r'}
   set -f
@@ -208,11 +271,14 @@ while [ -n "$rest" ]; do
     unknown "target $1: $2 is neither a host name nor an address"
     ;;
   esac
+  host_ok "$2" ||
+    unknown "target $1: $2 is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
   is_port "$3" || unknown "target $1: $3 is not a TCP port of 1 to 65535"
   count=$((count + 1))
   names[count]=$1
   hosts[count]=$2
   ports[count]=$3
+  { case $2 in *:*) ;; *) is_ipv4 "$2" ;; esac; } && addresses=$((addresses + 1))
 done
 [ "$count" -gt 0 ] || unknown "$targets lists no target: nothing was tried, so nothing is proved"
 
@@ -239,44 +305,56 @@ printf 'outside-path-reach: device %s\n' "${HOSTNAME:-unknown}"
 printf 'outside-path-reach: time %s\n' "${now:-unknown (no date command answered)}"
 printf 'outside-path-reach: curl %s\n' "$version"
 printf 'outside-path-reach: targets %s (%s)\n' "$targets" "$count"
+[ "$addresses" -gt 0 ] ||
+  echo "outside-path-reach: warning: every target is a name, and a name proves only where it resolves on this device; list each of our services' addresses on the path as lines of their own"
 
-# status PATH: the HTTP status the origin answers PATH with, no credential sent; 000 when none.
-status() {
+# fetch PATH: what the origin answers PATH with, no credential sent: its body, then its three-digit
+# status, 000 when none came.
+fetch() {
   local answer
-  answer=$(curl -q --noproxy '*' -sS -o /dev/null --connect-timeout 3 --max-time 10 \
+  answer=$(curl -q --noproxy '*' -sS -o - --connect-timeout 3 --max-time 10 \
     -w '%{http_code}' "$origin$1" </dev/null 2>/dev/null)
-  printf '%s' "${answer:-000}"
+  [ "${#answer}" -ge 3 ] || answer=000
+  printf '%s' "$answer"
 }
 
-# Dispatch answers: its health route with 200, and a read with no credential with 401, which shows
-# the path ends at Dispatch and Dispatch is the boundary.
-health=$(status /healthz)
-projects=$(status /api/v1/projects)
-printf 'dispatch: GET /healthz %s, GET /api/v1/projects with no credential %s\n' "$health" "$projects"
+# Dispatch answers: its health route with 200, and a read with no credential with 401 and its own
+# NO_IDENTITY refusal, which shows the path ends at Dispatch and Dispatch is the boundary.
+health=$(fetch /healthz)
+health=${health#"${health%???}"}
+projects=$(fetch /api/v1/projects)
+refusal=none
+case ${projects%???} in *'"code":"NO_IDENTITY"'* | *'"code": "NO_IDENTITY"'*) refusal=NO_IDENTITY ;; esac
+projects=${projects#"${projects%???}"}
+printf 'dispatch: GET /healthz %s, GET /api/v1/projects with no credential %s, code %s\n' \
+  "$health" "$projects" "$refusal"
 [ "$projects" != 200 ] || {
   printf 'FAIL: %s served a read with no credential\n' "$origin"
   exit 1
 }
-[ "$health" = 200 ] && [ "$projects" = 401 ] ||
+[ "$health" = 200 ] && [ "$projects" = 401 ] && [ "$refusal" = NO_IDENTITY ] ||
   unknown "$origin did not answer as Dispatch; reached nothing, so proved nothing"
 
-# probe INDEX: one probe of row INDEX, printed as `INDEX EXIT NAMELOOKUP CONNECT` on one line.
+# probe INDEX ATTEMPT: one probe of row INDEX, printed as `INDEX ATTEMPT EXIT NAMELOOKUP CONNECT`
+# on one line.
 probe() {
   local times code
   times=$(LC_ALL=C curl -q --noproxy '*' -sS -o /dev/null --connect-timeout 3 --max-time 5 \
     -w '%{time_namelookup} %{time_connect}' "telnet://$(address "${hosts[$1]}" "${ports[$1]}")" \
     </dev/null 2>/dev/null)
   code=$?
-  printf '%s %s %s\n' "$1" "$code" "$times"
+  printf '%s %s %s %s\n' "$1" "$2" "$code" "$times"
 }
 
-# Every row probed at once: a probe that reaches a holding listener takes its whole --max-time,
-# and one after another would take that per target. Each job prints its one short line in one
-# write, so the lines do not mix, and a row whose line never came reads UNKNOWN.
+# Every row probed three times, all at once: a probe that reaches a holding listener takes its
+# whole --max-time, and one after another would take that per probe. Each job prints its one short
+# line in one write, so the lines do not mix, and a probe whose line never came reads UNKNOWN.
 results=$(
   index=0
   while [ "$index" -le "$count" ]; do
-    probe "$index" &
+    probe "$index" 0 &
+    probe "$index" 1 &
+    probe "$index" 2 &
     index=$((index + 1))
   done
   wait
@@ -285,24 +363,50 @@ rest=$results
 while [ -n "$rest" ]; do
   pop
   set -f
-  # shellcheck disable=SC2086 # split on purpose: `INDEX EXIT NAMELOOKUP CONNECT`
+  # shellcheck disable=SC2086 # split on purpose: `INDEX ATTEMPT EXIT NAMELOOKUP CONNECT`
   set -- $line
   set +f
-  is_count "${1-}" || continue
-  codes[$1]=${2-}
-  lookups[$1]=${3-}
-  connects[$1]=${4-}
+  is_count "${1-}" && is_count "${2-}" && [ "$2" -lt 3 ] || continue
+  key=$(($1 * 3 + $2))
+  codes[key]=${3-}
+  lookups[key]=${4-}
+  connects[key]=${5-}
 done
 
-# report LABEL INDEX: prints the probe's line and sets `class`.
+# report LABEL INDEX: judges row INDEX from its three probes, prints its line and sets `class`.
 report() {
-  class=$(classify "${codes[$2]-}" "${lookups[$2]-}" "${connects[$2]-}")
+  local attempt=0 key each decisive=0 probes=''
+  class=''
+  while [ "$attempt" -lt 3 ]; do
+    key=$(($2 * 3 + attempt))
+    each=$(classify "${codes[key]-}" "${lookups[key]-}" "${connects[key]-}")
+    probes="$probes, ${each%% *}"
+    if [ "$each" = REACHED ]; then
+      [ "$class" = REACHED ] || {
+        class=REACHED
+        decisive=$key
+      }
+    elif [ "$each" != unreachable ]; then
+      case $class in '' | unreachable)
+        class=$each
+        decisive=$key
+        ;;
+      esac
+    elif [ -z "$class" ]; then
+      class=$each
+      decisive=$key
+    fi
+    attempt=$((attempt + 1))
+  done
   case $class in
-    UNKNOWN*) printf '%s %s %s\n' "$1" "$(address "${hosts[$2]}" "${ports[$2]}")" "$class" ;;
+    UNKNOWN*)
+      printf '%s %s %s; probes: %s\n' "$1" "$(address "${hosts[$2]}" "${ports[$2]}")" "$class" \
+        "${probes#, }"
+      ;;
     *)
-      printf '%s %s %s; curl exit %s, time_namelookup %s, time_connect %s\n' "$1" \
-        "$(address "${hosts[$2]}" "${ports[$2]}")" "$class" "${codes[$2]}" "${lookups[$2]}" \
-        "${connects[$2]}"
+      printf '%s %s %s; curl exit %s, time_namelookup %s, time_connect %s; probes: %s\n' "$1" \
+        "$(address "${hosts[$2]}" "${ports[$2]}")" "$class" "${codes[decisive]}" \
+        "${lookups[decisive]}" "${connects[decisive]}" "${probes#, }"
       ;;
   esac
 }

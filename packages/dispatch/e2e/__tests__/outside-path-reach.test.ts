@@ -91,10 +91,10 @@ interface Run {
 }
 
 /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
- *  given, and PATH the host's unless given. */
+ *  given, PATH the host's unless given, and run by bash unless `shell` names another program. */
 async function drive(
   env: Record<string, string>,
-  options: { path?: string; curlrc?: string } = {}
+  options: { path?: string; curlrc?: string; shell?: string } = {}
 ): Promise<Run> {
   const home = join(scratch, `home-${randomUUID()}`);
   if (options.curlrc !== undefined) {
@@ -102,7 +102,7 @@ async function drive(
     writeFileSync(join(home, ".curlrc"), options.curlrc);
   }
   const started = performance.now();
-  const child = Bun.spawn([bash, script], {
+  const child = Bun.spawn([options.shell ?? bash, script], {
     env: {
       HOME: home,
       PATH: options.path ?? process.env.PATH ?? "",
@@ -146,8 +146,9 @@ interface Seen {
 
 /** A fake Dispatch: `/healthz` answers `health`, and `/api/v1/projects` answers 200 to a request
  *  carrying a credential (an `Authorization` or a `Cookie`), as Dispatch would, and `projects` to
- *  one carrying none. `seen` lists every request it answered. */
-function fakeDispatch(health = 200, projects = 401) {
+ *  one carrying none, with Dispatch's own refusal body unless `refusal` names another. `seen` lists
+ *  every request it answered. */
+function fakeDispatch(health = 200, projects = 401, refusal: object = { code: "NO_IDENTITY" }) {
   const seen: Seen[] = [];
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -160,7 +161,7 @@ function fakeDispatch(health = 200, projects = 401) {
       if (pathname === "/api/v1/projects") {
         const status = credential === null ? projects : 200;
         if (status === 302) return Response.redirect("https://accounts.example/signin", 302);
-        return Response.json(status === 200 ? [] : { code: "NO_IDENTITY" }, { status });
+        return Response.json(status === 200 ? [] : refusal, { status });
       }
       return Response.json({ code: "NOT_FOUND" }, { status: 404 });
     },
@@ -433,20 +434,23 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   test.skipIf(withoutTools)(
-    "is unknown when the origin's answers are not Dispatch's, a health route that fails or a read that is not refused",
+    "is unknown when the origin's answers are not Dispatch's: a health route that fails, a read that is not refused, or a refusal that is not Dispatch's own",
     async () => {
-      for (const [health, projects] of [
-        [503, 401],
-        [200, 403],
-        [200, 302],
+      for (const [health, projects, refusal] of [
+        [503, 401, { code: "NO_IDENTITY" }],
+        [200, 403, { code: "NO_IDENTITY" }],
+        [200, 302, { code: "NO_IDENTITY" }],
+        // A proxy of its own that refuses every path but a health route it answers itself.
+        [200, 401, { error: "unauthorized" }],
       ] as const) {
-        const origin = fakeDispatch(health, projects);
+        const origin = fakeDispatch(health, projects, refusal);
         try {
           const where = `http://127.0.0.1:${origin.port}`;
           const run = await drive({ OUTSIDE_ORIGIN: where, OUTSIDE_PATH_TARGETS: await list() });
-          expect({ health, projects, verdict: verdict(run), code: run.code }).toEqual({
+          expect({ health, projects, refusal, verdict: verdict(run), code: run.code }).toEqual({
             health,
             projects,
+            refusal,
             verdict: `UNKNOWN: ${where} did not answer as Dispatch; reached nothing, so proved nothing`,
             code: 2,
           });
@@ -514,16 +518,18 @@ describe.concurrent("outside-path-reach.sh", () => {
   );
 
   // Answers only a broken network gives, from a curl that names them: an exit no rule classifies,
-  // a probe that printed no times, and a name lookup that timed out.
+  // a probe that printed no times, a name lookup that timed out, and one that took so long the
+  // connect had too little of its three seconds left to say anything.
   const odd =
     'case "$*" in\n' +
     "  *telnet://exit35.invalid:*) printf '0.000010 0.000000'; exit 35 ;;\n" +
     "  *telnet://blank.invalid:*) exit 28 ;;\n" +
     "  *telnet://slowdns.invalid:*) printf '0.000000 0.000000'; exit 28 ;;\n" +
+    "  *telnet://slow.invalid:*) printf '2.966833 0.000000'; exit 28 ;;\n" +
     "esac";
 
   test.skipIf(withoutTools)(
-    "is unknown, never a pass, when a probe's answer fits no rule or its lookup timed out",
+    "is unknown, never a pass, when a probe's answer fits no rule or its lookup timed out or ran long",
     async () => {
       const origin = fakeDispatch();
       try {
@@ -533,27 +539,178 @@ describe.concurrent("outside-path-reach.sh", () => {
             OUTSIDE_PATH_TARGETS: await list(
               "odd exit35.invalid 4222",
               "blank blank.invalid 4222",
-              "slowdns slowdns.invalid 4222"
+              "slowdns slowdns.invalid 4222",
+              "slow slow.invalid 4222"
             ),
           },
           { path: pathWithCurl(odd) }
         );
         expect(lineFor(run, "odd")).toBe(
-          "target odd exit35.invalid:4222 UNKNOWN (curl exit 35, time_namelookup 0.000010, time_connect 0.000000)"
+          "target odd exit35.invalid:4222 UNKNOWN (curl exit 35, time_namelookup 0.000010, time_connect 0.000000); probes: UNKNOWN, UNKNOWN, UNKNOWN"
         );
         expect(lineFor(run, "blank")).toBe(
-          "target blank blank.invalid:4222 UNKNOWN (curl exit 28, time_namelookup , time_connect )"
+          "target blank blank.invalid:4222 UNKNOWN (curl exit 28, time_namelookup , time_connect ); probes: UNKNOWN, UNKNOWN, UNKNOWN"
         );
         expect(lineFor(run, "slowdns")).toBe(
-          "target slowdns slowdns.invalid:4222 unresolved (lookup timed out); curl exit 28, time_namelookup 0.000000, time_connect 0.000000"
+          "target slowdns slowdns.invalid:4222 unresolved (lookup timed out); curl exit 28, time_namelookup 0.000000, time_connect 0.000000; probes: unresolved, unresolved, unresolved"
         );
-        expect(verdict(run)).toBe("UNKNOWN: odd blank slowdns unresolved or unknown");
+        expect(lineFor(run, "slow")).toBe(
+          "target slow slow.invalid:4222 UNKNOWN (the lookup took 2.966833 s of the 3 s to connect, too long to read a timed-out connect as unreachable; curl exit 28, time_connect 0.000000); probes: UNKNOWN, UNKNOWN, UNKNOWN"
+        );
+        expect(verdict(run)).toBe("UNKNOWN: odd blank slowdns slow unresolved or unknown");
         expect(run.code).toBe(2);
       } finally {
         origin.stop(true);
       }
     }
   );
+
+  /** A PATH whose curl answers the first `drops` probes of 127.0.0.1:`port` with `answer` and hands
+   *  every later one, and every other call, to the host's curl. The probes of one target run at
+   *  once, so each drop is claimed by a `mkdir` that one caller alone wins. */
+  function pathDropping(port: number, drops: number, answer: string): string {
+    const counter = join(scratch, `drops-${randomUUID()}`);
+    mkdirSync(counter);
+    const mkdir = hostTool("mkdir") ?? "mkdir";
+    const claims = Array.from(
+      { length: drops },
+      (_, drop) => `${mkdir} ${counter}/${drop} 2>/dev/null`
+    );
+    return pathWithCurl(
+      `case "$*" in *telnet://127.0.0.1:${port}\\ *|*telnet://127.0.0.1:${port}) ` +
+        `if ${claims.join(" || ")}; then ${answer}; fi ;; esac`
+    );
+  }
+
+  /** The classes a target's line lists after `probes:`, sorted. */
+  function probesOf(line: string): string[] {
+    return (line.split("; probes: ")[1] ?? "").split(", ").sort();
+  }
+
+  test.skipIf(withoutTools)(
+    "probes each target three times at once and reads it reached when one probe of the three connects",
+    async () => {
+      const origin = fakeDispatch();
+      const holding = holdingTarget();
+      try {
+        // Two of the three probes are lost on the way, as on a network dropping packets.
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: await list(`lossy 127.0.0.1 ${holding.port}`),
+          },
+          { path: pathDropping(holding.port, 2, "printf '0.000020 0.000000'; exit 28") }
+        );
+        expect(lineFor(run, "lossy")).toContain(" REACHED; curl exit 28, ");
+        expect(probesOf(lineFor(run, "lossy"))).toEqual(["REACHED", "unreachable", "unreachable"]);
+        expect(verdict(run)).toBe("FAIL: reached lossy");
+        expect(run.code).toBe(1);
+      } finally {
+        origin.stop(true);
+        holding.stop(true);
+      }
+    }
+  );
+
+  test.skipIf(withoutTools)(
+    "reads a target unreachable only when all three probes are, and unknown when one of them is",
+    async () => {
+      const origin = fakeDispatch();
+      const port = await closedPort();
+      try {
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+            OUTSIDE_PATH_TARGETS: await list(`flaky 127.0.0.1 ${port}`),
+          },
+          { path: pathDropping(port, 1, "printf '0.000010 0.000000'; exit 35") }
+        );
+        expect(lineFor(run, "flaky")).toStartWith(
+          `target flaky 127.0.0.1:${port} UNKNOWN (curl exit 35, `
+        );
+        expect(probesOf(lineFor(run, "flaky"))).toEqual(["UNKNOWN", "unreachable", "unreachable"]);
+        expect(probesOf(lineFor(run, "closed-a"))).toEqual([
+          "unreachable",
+          "unreachable",
+          "unreachable",
+        ]);
+        expect(verdict(run)).toBe("UNKNOWN: flaky unresolved or unknown");
+        expect(run.code).toBe(2);
+      } finally {
+        origin.stop(true);
+      }
+    }
+  );
+
+  const namesOnly =
+    "outside-path-reach: warning: every target is a name, and a name proves only where it " +
+    "resolves on this device; list each of our services' addresses on the path as lines of their own";
+
+  test.skipIf(withoutTools)(
+    "warns when the list holds only names, since a name proves only where it resolves here",
+    async () => {
+      const origin = fakeDispatch();
+      try {
+        const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
+        const [names, addresses] = await Promise.all([
+          drive({
+            ...env,
+            OUTSIDE_PATH_TARGETS: targets(
+              `closed-a localhost ${await closedPort()}`,
+              `closed-b localhost ${await closedPort()}`
+            ),
+          }),
+          drive({
+            ...env,
+            OUTSIDE_PATH_TARGETS: await list(`closed-c localhost ${await closedPort()}`),
+          }),
+        ]);
+        expect(names.stdout.split("\n")).toContain(namesOnly);
+        expect(verdict(names)).toStartWith("PASS");
+        expect(addresses.stdout).not.toContain("warning");
+        expect(verdict(addresses)).toStartWith("PASS");
+      } finally {
+        origin.stop(true);
+      }
+    }
+  );
+
+  test.skipIf(withoutTools)(
+    "reads a list written with a UTF-8 byte-order mark as it reads one without",
+    async () => {
+      const origin = fakeDispatch();
+      const listening = closingTarget();
+      try {
+        const run = await drive({
+          OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+          OUTSIDE_PATH_TARGETS: targets(`\ufeffhub 127.0.0.1 ${listening.port}`),
+        });
+        expect(lineFor(run, "hub")).toContain(" REACHED; ");
+        expect(verdict(run)).toBe("FAIL: reached hub");
+        expect(run.code).toBe(1);
+      } finally {
+        origin.stop(true);
+        listening.stop(true);
+      }
+    }
+  );
+
+  for (const shell of ["dash", "zsh"]) {
+    test.skipIf(withoutTools || hostTool(shell) === null)(
+      `refuses to run under ${shell}, naming bash`,
+      async () => {
+        const run = await drive(
+          {
+            OUTSIDE_ORIGIN: "https://dispatch-outside.example",
+            OUTSIDE_PATH_TARGETS: await list(),
+          },
+          { shell: hostTool(shell) ?? shell }
+        );
+        expect(run.stdout).toBe("UNKNOWN: run this with bash: bash outside-path-reach.sh\n");
+        expect(run.code).toBe(2);
+      }
+    );
+  }
 
   test.skipIf(withoutTools)(
     "fails naming every reached target, whatever else the run could not see",
@@ -680,7 +837,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       const path = pathWithCurl(
         'case "$*" in\n' +
           "  */healthz*) printf 200; exit 0 ;;\n" +
-          "  */api/v1/projects*) printf 401; exit 0 ;;\n" +
+          `  */api/v1/projects*) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
           "  *'telnet://dispatch-outside.example:443'* | *'telnet://[fd00::1]:443'* | *'telnet://[fd00::1]:8443'*)\n" +
           "    printf '0.000010 0.000100'; exit 28 ;;\n" +
           "  *'telnet://[::1]:4222'*) printf '0.000010 0.000000'; exit 7 ;;\n" +
@@ -776,6 +933,16 @@ describe.concurrent("outside-path-reach.sh", () => {
           [await list("hub 127.0.0.1 0443"), "target hub: 0443 is not a TCP port"],
           [await list("hub 127.0.0.1 65536"), "target hub: 65536 is not a TCP port"],
           [await list("hub 127.0.0.1 nats"), "target hub: nats is not a TCP port"],
+          // An address written any way but the canonical dotted quad names another host than it
+          // seems to: curl reads 172.020.000.021 in octal, as 172.16.0.17.
+          [
+            await list("hub 172.020.000.021 4222"),
+            "target hub: 172.020.000.021 is not an IPv4 address written as four numbers",
+          ],
+          [await list("hub 127.1 4222"), "target hub: 127.1 is not an IPv4 address written"],
+          [await list("hub 10.0.0.256 4222"), "target hub: 10.0.0.256 is not an IPv4 address"],
+          [await list("hub 0x7f000001 4222"), "target hub: 0x7f000001 is not an IPv4 address"],
+          [await list("hub 127.0.0.0x1 4222"), "target hub: 127.0.0.0x1 is not an IPv4 address"],
           [scratch, "which this device could not read whole"],
           [join(scratch, "no-such-list.txt"), "which this device could not read whole"],
         ] as const) {
@@ -806,6 +973,8 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["https://user@dispatch-outside.example", "1"],
         ["https://dispatch-outside.example:0443", "1"],
         ["https://::1", "1"],
+        ["https://010.0.0.1", "1"],
+        ["https://dispatch-outside.0x1", "1"],
         ["ftp://dispatch-outside.example", "1"],
       ] as const) {
         const run = await drive({
@@ -831,6 +1000,16 @@ describe.concurrent("outside-path-reach.sh", () => {
         ["28 0.000000 0.000000", "unresolved (lookup timed out)"],
         // A blackholed address: the lookup completed and the connect timed out.
         ["28 0.000027 0.000000", "unreachable"],
+        ["28 0.999999 0.000000", "unreachable"],
+        // A lookup that took a second or more left the connect too little of its three seconds.
+        [
+          "28 1.000000 0.000000",
+          "UNKNOWN (the lookup took 1.000000 s of the 3 s to connect, too long to read a timed-out connect as unreachable; curl exit 28, time_connect 0.000000)",
+        ],
+        [
+          "28 2.966833 0.000000",
+          "UNKNOWN (the lookup took 2.966833 s of the 3 s to connect, too long to read a timed-out connect as unreachable; curl exit 28, time_connect 0.000000)",
+        ],
         ["28 0.000027 0.000113", "REACHED"],
         ["7 0.000010 0.000000", "unreachable"],
         // A completed connect is REACHED whatever the exit.

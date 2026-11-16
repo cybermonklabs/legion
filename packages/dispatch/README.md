@@ -621,29 +621,48 @@ without printing it, unsetting both so no process the script starts inherits it.
 were given to Dispatch, to prove that path reaches Dispatch and nothing else of ours. It is handed
 to that person as the one file with its target list, so it sources nothing and needs only bash
 (3.2, as macOS ships it, or later) and curl 7.40 or later; curl's own `--connect-timeout` and
-`--max-time` bound every probe, so it needs no GNU `timeout`. Its inputs:
+`--max-time` bound every probe, so it needs no GNU `timeout`. Started by `sh` or zsh it prints
+`UNKNOWN: run this with bash` and stops. Its inputs:
 
 - `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets;
 - `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
-  listeners, the secrets broker, the other Dispatch origin). `#` starts a comment, so the address a
-  name stands for is written beside it; `host` is a name that resolves on that person's network or
-  a literal address, and a `svc:` selector, which resolves nowhere, is refused.
+  listeners, the secrets broker, the other Dispatch origin). `#` starts a comment. `host` is a name
+  or a literal address; an IPv4 address must be four numbers of 0 to 255 with no leading zero
+  (curl reads `172.020.000.021` in octal, another host), and a `svc:` selector, which resolves
+  nowhere, is refused. **The list must hold each of our services' addresses on the path as lines
+  of their own, not names alone**: a name line proves only where that name resolves on the
+  person's device, so a name that resolves elsewhere there says nothing of the address behind
+  it. A list of names alone prints a warning.
 
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
   bash outside-path-reach.sh
 ```
 
-It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401), then
-probes the origin's own host and port and every target at once, and judges each probe by whether
-TCP connected, not by curl's exit code alone. Its curls ignore the device's `~/.curlrc` and any
-proxy, so the run measures what that device itself reaches. `PASS` (exit 0) needs Dispatch's two
+It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
+Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
+three times, all at once. Its curls ignore the device's `~/.curlrc` and any proxy, so the run
+measures what that device itself reaches. Each probe is judged by whether TCP connected, not by
+curl's exit code alone, since our services accept a connection and then wait for the client:
+
+| curl's answer | Class |
+|---|---|
+| a completed connect (`time_connect` above zero), whatever the exit | `REACHED` |
+| exit 7, refused | `unreachable` |
+| exit 28, timed out, with no lookup completed | `unresolved (lookup timed out)` |
+| exit 28 after a lookup of under a second | `unreachable` |
+| exit 28 after a lookup of a second or more, too little of the 3 s left to connect | `UNKNOWN`, naming the lookup time |
+| exit 6, the name does not resolve | `unresolved` |
+| anything else | `UNKNOWN` |
+
+A target is `REACHED` when any of its three probes connected and `unreachable` only when all three
+were, so a network that loses packets does not hide one. `PASS` (exit 0) needs Dispatch's
 answers, a connect to the origin itself and every target unreachable; `FAIL` (exit 1) names each
 target reached, or an origin that served a read with no credential; every run that proved
 nothing is `UNKNOWN` (exit 2), never a pass. The script's own header has every rule. A path that
 puts a sign-in of its own in front of Dispatch, such as an identity-aware proxy, answers a request
-with no credential with that sign-in, not Dispatch's 200 and 401, so the run reads `UNKNOWN`
-there. `cd packages/dispatch && bun test --timeout 60000 e2e/__tests__/outside-path-reach.test.ts`
+with no credential with that sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
+`cd packages/dispatch && bun test --timeout 60000 e2e/__tests__/outside-path-reach.test.ts`
 drives it against real listeners.
 
 ## Acceptance run against the deployed image
