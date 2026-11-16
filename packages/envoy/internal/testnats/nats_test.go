@@ -532,6 +532,43 @@ func TestAReloadUnderJetStreamRequestsAnswersEveryOne(t *testing.T) {
 	t.Logf("%d requests answered across %d reloads", answered.Load(), reloadCount)
 }
 
+// nats-server takes in a message whose Nats-Trace-Only header asks for a trace alone and whose
+// Nats-Trace-Dest is not a subject, and drops it without processing or counting it (msgtrace.go
+// 470-475 and parser.go 512-538 in 2.15.1: no in_msgs for it in /connz). A Reload after one still
+// reloads: the hold waits for the server's answer to the relay's PING, which the server sends once
+// it has read everything before it, and not for a count of messages the server never reaches.
+func TestAReloadAfterATraceOnlyMessageTheServerDropsStillReloads(t *testing.T) {
+	seed, public := User(t)
+	grant := func(subjects ...string) string { return publishGrantConfig(public, subjects) }
+	server, uri := StartConfig(t, grant("traced.>"), []string{"-js"}, false)
+	conn, err := ConnectSeed(t, uri, seed)
+	if err != nil {
+		t.Fatalf("connect as the user: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	message := natsgo.NewMsg("traced.one")
+	message.Header.Set("Nats-Trace-Dest", "not..a.subject")
+	message.Header.Set("Nats-Trace-Only", "true")
+	if err := conn.PublishMsg(message); err != nil {
+		t.Fatalf("publish the trace-only message: %v", err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the trace-only message: %v", err)
+	}
+	if !strings.Contains(server.Log(), `Destination "not..a.subject" is not valid`) {
+		t.Fatalf("the server did not drop the trace-only message, so this test says nothing about one:\n%s", server.Log())
+	}
+	if err := server.Reload(t, grant("traced.>", "more.>")); err != nil {
+		t.Fatalf("reload after the trace-only message: %v", err)
+	}
+	if reloads := strings.Count(server.Log(), "Reloaded: authorization nkey users"); reloads != 1 {
+		t.Fatalf("the server reloaded its nkey users %d times, want 1", reloads)
+	}
+	if _, err := conn.Request("more.echo", nil, 5*time.Second); !errors.Is(err, natsgo.ErrNoResponders) {
+		t.Fatalf("a request on the subject the reload granted: %v, want %v from the server that took the grant", err, natsgo.ErrNoResponders)
+	}
+}
+
 // A Restart serves its new configuration under the same URL: the user the first configuration lets
 // subscribe to a subject is refused it once the server restarts on one that does not, and has it
 // again once the server restarts on the first.
