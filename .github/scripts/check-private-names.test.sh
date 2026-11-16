@@ -2,7 +2,10 @@
 # Tests for `check-private-names.sh` and `check-pr-text.sh`: every spelling the guard refuses, the
 # identifiers and the English word it must pass, what it skips, its two modes (the repository, and
 # named paths such as the built site), file names, and a pull request's title, body, branch name,
-# commits (message, author and committer), issue comments, reviews and review comments.
+# commits (message, author and committer), issue comments, reviews and review comments; and the
+# deployment's own term list, PRIVATE_NAME_TERMS: a planted term refused in a line and in a path,
+# its absence passing, and an unset list warning on a pull request's events and failing on the
+# merge queue's, a push's and a dispatched run's.
 #
 # Each case builds a miniature git repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs: it resolves its root from its own
@@ -10,6 +13,8 @@
 # below, so this file holds none of them and the check scans it like any other. Every case names
 # itself by an index or a neutral label, never the assembled form, since `check`'s PASS/FAIL line
 # is this script's own stdout — the CI log; the last case runs the guard over that captured log.
+# The terms the list cases plant are placeholders this file sets, never a real term, and no case's
+# output names one either.
 #
 # Run from anywhere: .github/scripts/check-private-names.test.sh
 # CI runs it in ci.yaml's test job.
@@ -60,6 +65,33 @@ tailnet_suffix="ts.net"
 tailnet_label="realtailnet"
 tailnet_example="example-tailnet"
 
+# The term list every case below runs the guard under, unless a case sets its own: placeholder
+# terms standing in for the deployment's own list (PRIVATE_NAME_TERMS, an Actions secret), on a
+# pull request's event. One holds regex characters, to show a term is a fixed string, and one a
+# "/", standing in for an owner/repository form. The job's own two values are kept for the last
+# case, which scans this suite's log with them: in CI, that is the deployment's real list.
+planted="zephyr-orchard"
+planted_dotted="copper.kettle"
+planted_owner="lanternfish/harbor-map"
+planted_terms=$(printf '%s\n' "$planted" "$planted_dotted" "$planted_owner")
+job_event=${GITHUB_EVENT_NAME-}
+job_terms=${PRIVATE_NAME_TERMS-}
+export GITHUB_EVENT_NAME=pull_request
+export PRIVATE_NAME_TERMS=$planted_terms
+
+# names_planted <text>: true/false for check; whether text holds a planted term, or either half of
+# the owner/repository one, in any case.
+names_planted() {
+  local term
+  for term in "$planted" "$planted_dotted" "$planted_owner" "${planted_owner%%/*}" "${planted_owner#*/}"; do
+    if grep -q -i -F -- "$term" <<< "$1"; then
+      echo true
+      return
+    fi
+  done
+  echo false
+}
+
 # assert_each_refused <fixture-prefix> <label> <array-name> [line]: writes each line of the named
 # array into its own fixture, on the given line (1 by default; 2 is preceded by a filler line), and
 # checks the guard refuses it with that label there. Each case is named by its index, never the
@@ -103,6 +135,22 @@ run_check() {
   shift
   set +e
   out=$(cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+# run_check_as <event> <terms> <root> [path...]: run_check under that GITHUB_EVENT_NAME and
+# PRIVATE_NAME_TERMS, where `-` leaves the variable unset (a run outside Actions, a job that maps
+# no secret).
+run_check_as() {
+  local event=$1 list=$2 root=$3
+  shift 3
+  set +e
+  out=$(
+    if [ "$event" = - ]; then unset GITHUB_EVENT_NAME; else export GITHUB_EVENT_NAME=$event; fi
+    if [ "$list" = - ]; then unset PRIVATE_NAME_TERMS; else export PRIVATE_NAME_TERMS=$list; fi
+    cd "$root" && .github/scripts/check-private-names.sh "$@" 2>&1
+  )
   status=$?
   set -e
 }
@@ -454,6 +502,103 @@ root=${root%$'\n'x}
 run_check "$root" docs/notes.md
 check "exits 0" "$(is "$status" 0)"
 check "scans the file" "$(contains "$out" '(1 files under docs/notes\.md)')"
+
+echo "case: a term of the deployment's own list is refused, in any case, and the log names only its place"
+root=$(fixture term)
+printf 'line one\nSee the %s runbook.\n' "${planted^^}" > "$root/docs/notes.md"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "annotates the file and line" \
+  "$(contains "$out" "^::error file=docs/notes.md,line=2::docs/notes.md:2: names a term of the deployment's own list (PRIVATE_NAME_TERMS)\$")"
+check "counts the finding" "$(contains "$out" '^check-private-names: 1 finding(s)')"
+check "does not print the term" "$(is "$(names_planted "$out")" false)"
+
+echo "case: with no term in the tree, the list passes and says it ran"
+root=$(fixture term-absent)
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "names the list and its size" "$(contains "$out" 'or a term of PRIVATE_NAME_TERMS (3 terms)')"
+check "warns of nothing" "$(is "$(contains "$out" '::warning::')" false)"
+
+echo "case: a term is a fixed string, whose regex characters match only themselves"
+root=$(fixture term-fixed)
+printf '%s\n' "${planted_dotted/./X}" > "$root/docs/notes.md"
+run_check "$root"
+check "a line the term read as a regex would match passes" "$(is "$status" 0)"
+printf '%s\n' "${planted_dotted^}" > "$root/docs/notes.md"
+run_check "$root"
+check "the term itself, in another case, fails" "$(is "$status" 1)"
+check "names its line" "$(contains "$out" "docs/notes.md:1: names a term of the deployment's own list")"
+
+echo "case: blank lines, a carriage return and the blanks around a term are dropped"
+root=$(fixture term-blanks)
+padded=$(printf '\n  %s  \r\n\n\t\n' "$planted")
+run_check_as pull_request "$padded" "$root"
+check "a clean tree passes, so no empty pattern matched every line" "$(is "$status" 0)"
+check "counts the one term" "$(contains "$out" '(1 terms)')"
+printf 'the %s notes\n' "$planted" > "$root/docs/notes.md"
+run_check_as pull_request "$padded" "$root"
+check "the trimmed term still fails" "$(is "$status" 1)"
+
+echo "case: a path holding a term is refused, and the log masks it"
+root=$(fixture term-path)
+mkdir -p "$root/docs/runbooks"
+printf 'clean text\n' > "$root/docs/runbooks/$planted-steps.md"
+git -C "$root" add docs/runbooks
+run_check "$root"
+check "a file name holding a term fails" "$(is "$status" 1)"
+check "names the directory it is in" \
+  "$(contains "$out" "^::error::docs/runbooks/<name>: names a term of the deployment's own list (PRIVATE_NAME_TERMS) in its path\$")"
+check "does not print the term" "$(is "$(names_planted "$out")" false)"
+
+root=$(fixture term-owner-path)
+mkdir -p "$root/docs/${planted_owner^^}"
+printf 'see %s\n' "$planted_owner" > "$root/docs/${planted_owner^^}/notes.md"
+git -C "$root" add docs
+run_check "$root"
+check "a term that spans two directories fails" "$(is "$status" 1)"
+check "masks it where it stands in a line's annotation" \
+  "$(contains "$out" "^::error file=docs/<name>/notes.md,line=1::docs/<name>/notes.md:1: names a term")"
+check "and in the path's own report" "$(contains "$out" "^::error::docs/<name>/notes.md: names a term")"
+check "prints neither half of it" "$(is "$(names_planted "$out")" false)"
+
+echo "case: an unset or empty list on a pull request's events warns, and keeps the other rules' exit"
+root=$(fixture terms-unset-pr)
+unset_warning='^::warning::check-private-names: PRIVATE_NAME_TERMS is unset or empty, so only the'
+for event in pull_request pull_request_review; do
+  run_check_as "$event" - "$root"
+  check "$event, unset: exits 0" "$(is "$status" 0)"
+  check "$event, unset: warns that only the rules the script spells ran" "$(contains "$out" "$unset_warning")"
+done
+run_check_as pull_request "" "$root"
+check "an empty list exits 0 and warns the same way" \
+  "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+run_check_as pull_request "$(printf '\n \n\t')" "$root"
+check "a list of blank lines is an empty one" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+run_check_as - - "$root"
+check "outside Actions, an unset list warns too" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+printf '%s\n' "$key-7" > "$root/docs/notes.md"
+run_check_as pull_request - "$root"
+check "a hit of the rules the script spells still fails" "$(is "$status" 1)"
+check "and still warns" "$(contains "$out" "$unset_warning")"
+check "names the hit" "$(contains "$out" 'docs/notes.md:1: names the private deployment repository')"
+
+echo "case: an unset list on the merge queue, a push or a dispatched run fails before it scans"
+root=$(fixture terms-unset-queue)
+for event in merge_group push workflow_dispatch; do
+  run_check_as "$event" - "$root"
+  check "$event, unset: exits 2" "$(is "$status" 2)"
+  check "$event, unset: says the list is missing" \
+    "$(contains "$out" "^::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a $event run")"
+done
+run_check_as merge_group "" "$root"
+check "merge_group, empty: exits 2" "$(is "$status" 2)"
+run_check_as merge_group "$planted_terms" "$root"
+check "merge_group with the list exits 0, so the failure above is the missing list" "$(is "$status" 0)"
+printf '%s\n' "$key-7" > "$root/docs/notes.md"
+run_check_as merge_group - "$root"
+check "merge_group, unset, over a tree with a hit: still exits 2" "$(is "$status" 2)"
+check "and reports no finding, having scanned nothing" "$(is "$(contains "$out" 'finding(s)')" false)"
 
 # write_pr_text <title> <body> <commit message> [branch] [author email] [committer email]: writes
 # the fixture check-pr-text.sh reads as CI runs it. A pull_request event payload carries the head
@@ -830,11 +975,46 @@ check "a stranger's clean comment after an App's red one still fails, so it clea
 check "names the App's comment" "$(contains "$out" 'comment:405:1: names the company')"
 check "skips the stranger's" "$(contains "$out" '^skipped comment:406: author drive-by (NONE) is not trusted$')"
 
+echo "case: a pull request's text naming a term of the deployment's own list"
+run_pr_text "fix(dispatch): keep the inbox order" "$(printf 'Line one.\nThe %s runbook says so.\n' "$planted")" \
+  "fix: keep the order"
+check "a body naming a term fails" "$(is "$status" 1)"
+check "names the body's line" "$(contains "$out" "body:2: names a term of the deployment's own list (PRIVATE_NAME_TERMS)")"
+check "does not print the term" "$(is "$(names_planted "$out")" false)"
+
+run_pr_text "fix(dispatch): keep the inbox order" "Refs LEGION-7" "fix: keep the order" "fix/$planted-steps"
+check "a branch naming a term fails" "$(is "$status" 1)"
+check "names the branch" "$(contains "$out" 'branch:1: names a term')"
+check "does not print the term" "$(is "$(names_planted "$out")" false)"
+
+clean_pr
+items 101 "Looks good." 102 "Owned by ${planted_owner^^}." > "$work/comments.1"
+run_pr_text
+check "an issue comment naming a term fails" "$(is "$status" 1)"
+check "names the comment by its id and line" "$(contains "$out" 'comment:102:1: names a term')"
+check "prints neither half of the term" "$(is "$(names_planted "$out")" false)"
+
+echo "case: a pull request's text with the list unset, on a pull request and on the merge queue"
+clean_pr
+GITHUB_EVENT_NAME=pull_request PRIVATE_NAME_TERMS='' run_pr_text
+check "a pull request's run passes clean text" "$(is "$status" 0)"
+check "and warns that the list did not run" "$(contains "$out" "$unset_warning")"
+clean_pr
+GITHUB_EVENT_NAME=merge_group PRIVATE_NAME_TERMS='' run_pr_text
+check "a merge group's run fails with exit 2, the pr-title job's failure" "$(is "$status" 2)"
+check "says the list is missing" \
+  "$(contains "$out" '::error::check-private-names: PRIVATE_NAME_TERMS is unset or empty on a merge_group run')"
+
 echo "case: the suite's own output never names a private thing"
 exec 1>&3 2>&4
 wait "$tee_pid" 2> /dev/null || true
 suite_status=0
 "$check_script" "$self_log" > /dev/null 2>&1 || suite_status=$?
-check "the suite's own PASS/FAIL log passes the guard" "$(is "$suite_status" 0)"
+check "the suite's own PASS/FAIL log names no term a case planted" "$(is "$suite_status" 0)"
+job_status=0
+GITHUB_EVENT_NAME=$job_event PRIVATE_NAME_TERMS=$job_terms "$check_script" "$self_log" > /dev/null 2>&1 ||
+  job_status=$?
+check "the suite's own PASS/FAIL log passes the guard under the job's own event and term list" \
+  "$(is "$job_status" 0)"
 
 summary "check-private-names.sh"

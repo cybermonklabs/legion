@@ -20,7 +20,12 @@
 #    every job, so the key there is never allowed.
 # 2. A build job — one that runs dependency code — holds none of those four write scopes and no
 #    `secrets` reference but `secrets.GITHUB_TOKEN`, in its own text or the workflow's `env:` (so
-#    no deploy key, by dot or by index, no other secret and no `toJSON(secrets)`), declares
+#    no deploy key, by dot or by index, no other secret and no `toJSON(secrets)`), with one
+#    exception: `PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}` (that form, exactly) in the
+#    step-level `env:` of a step whose `run:` runs the private-name check (PRIVATE_NAME_CHECKS:
+#    check-private-names.sh, or verify-build, which runs it). That secret is the deployment's own
+#    list of names the check refuses, which grants no access, and the check fails a push's run
+#    without it (its header). It also declares
 #    `permissions` of its own when the workflow declares none (a job with neither runs under
 #    whatever the repository grants, which this check cannot read), carries no
 #    `continue-on-error:` (GitHub reports such a job as a success to the jobs that need it, failed
@@ -181,6 +186,12 @@ OTHER_SECRET = re.compile(
     r"|\$\{\{(?:(?!\}\}).)*?(?<![\w./-])secrets\b(?!\s*[.\[])(?:(?!\}\}).)*\}\}",
     re.IGNORECASE,
 )
+
+# Rule 2's one exception: the deployment's own term list, in the env of a step whose run names one
+# of PRIVATE_NAME_CHECKS, as exactly this value. The secret name stays exact, a stricter form than
+# GitHub's case-insensitive one, so the exception reads as one string wherever it is grepped.
+TERMS_VALUE = re.compile(r"\$\{\{ secrets\.PRIVATE_NAME_TERMS \}\}")
+PRIVATE_NAME_CHECKS = ("check-private-names.sh", "verify-build")
 
 # What makes a step run dependency code. changie is a third-party binary, which `release-push.sh
 # fold-notes` runs in each release's build job to render that release's changelog entries.
@@ -516,6 +527,17 @@ def texts_of(node, path=(), line=0) -> list[tuple[tuple, int, str]]:
     return texts
 
 
+def terms_allowed(steps: list, path: tuple, text: str) -> bool:
+    """`PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}` in the env of a step that runs the
+    private-name check, and nothing else: rule 2's one exception, exactly that form."""
+    if len(path) != 4 or path[0] != "steps" or path[2:] != ("env", "PRIVATE_NAME_TERMS"):
+        return False
+    if not TERMS_VALUE.fullmatch(text.strip()):
+        return False
+    run = steps[path[1]].get("run")
+    return isinstance(run, str) and any(check in run for check in PRIVATE_NAME_CHECKS)
+
+
 def deploy_key_allowed(steps: list, path: tuple, text: str) -> bool:
     """`DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}` in the env of a step that runs PUSH_COMMAND, and
     nothing else: the dot form, exactly, as the one value of that key."""
@@ -687,7 +709,9 @@ def check_job(
             if "permissions" not in job:
                 held += " through the workflow's permissions, having none of its own"
             problem(path, line, f"job '{name}' runs dependency code ({what}), but {held}")
-        for _, line, text in texts:
+        for site, line, text in texts:
+            if terms_allowed(steps, site, text):
+                continue
             if secret := OTHER_SECRET.search(text):
                 problem(
                     path, line,

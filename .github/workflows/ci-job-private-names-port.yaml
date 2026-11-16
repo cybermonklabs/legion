@@ -47,6 +47,12 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: >-
+          The deployment's own private names, one a line. The harness runs every case with no
+          list, since the port carries none, and its last case alone scans its log with them.
+        required: false
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -79,6 +85,8 @@ jobs:
           cache: false
 
       - name: Test the private-name rules' port against the frozen script
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: .github/scripts/check-private-names-port.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run

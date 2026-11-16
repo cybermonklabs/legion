@@ -22,10 +22,10 @@
 # The corpus is .github/scripts/check-private-names.test.sh's, case for case: its 16 rule cases
 # are ported here with the mapping table below, and its 13 argument-handling cases are run too,
 # each one recording what the engine does instead of the frozen script's own path handling, which
-# the engine replaces rather than inherits. Its 10 pull-request-text cases belong to
-# check-pr-text.sh and stay there. Beyond the corpus the five rules are driven over a file's
-# content and over a file's path, the conditional allow-list is driven with each half holding
-# alone, and the frozen script's own selection rules are driven one by one.
+# the engine replaces rather than inherits. Its pull-request-text cases belong to check-pr-text.sh,
+# and its term-list cases to a rule with no port (below). Beyond the corpus the five rules are
+# driven over a file's content and over a file's path, the conditional allow-list with each half
+# holding alone, and the frozen script's own selection rules one by one.
 #
 # A class the mapping table does not hold fails its case rather than passing it silently: a port
 # that grew a sixth class, or renamed one, is a port nobody has compared.
@@ -80,6 +80,16 @@ chmod +x "$PUBLIC_LEAK_CHECK"
 # A local path as the push's URL names no GitHub repository, so the guard reads the destination as
 # public (its fail-closed answer) and scans, without a gh call.
 remote_url="$work/remote.git"
+
+# The frozen script's fifth rule, the deployment's own term list (PRIVATE_NAME_TERMS, an Actions
+# secret), has no port: no rule file of a public repository can spell those terms. So every case
+# runs the frozen script with no list on a pull request's event, where it runs the four rules it
+# spells and warns that it did (a line read_frozen does not read), and the last case alone runs
+# it under the job's own event and list, which are kept here.
+job_event=${GITHUB_EVENT_NAME-}
+job_terms=${PRIVATE_NAME_TERMS-}
+export GITHUB_EVENT_NAME=pull_request
+unset PRIVATE_NAME_TERMS
 
 # The names the rules hunt are assembled from the pieces below, so this file holds none of them
 # whole and the guard scans it like any other file. The two that are this repository's own are
@@ -826,7 +836,8 @@ echo "rule case 16: the suite's own output never names a private thing"
 exec 1>&3 2>&4
 wait "$tee_pid" 2> /dev/null || true
 frozen_self=0
-"$frozen_script" "$self_log" > /dev/null 2>&1 || frozen_self=$?
+GITHUB_EVENT_NAME=$job_event PRIVATE_NAME_TERMS=$job_terms "$frozen_script" "$self_log" > /dev/null 2>&1 ||
+  frozen_self=$?
 engine_self=0
 "$engine" leak-check text "this suite's own log" < "$self_log" > /dev/null 2>&1 || engine_self=$?
 check "the frozen script clears this suite's own log" "$(is "$frozen_self" 0)"
