@@ -22,10 +22,18 @@ const (
 // and Read's for a source the store no longer holds or that has no current value.
 var ErrNotFound = errors.New("secret not found in the store")
 
+// ErrValueNotText is what Read's error wraps for a current value that is not text the broker can
+// hand a command - an empty value, a Secrets Manager SecretBinary with no SecretString, a Secret
+// Manager payload that is not UTF-8 - so no release and no mint could use it. It is the value's
+// fault and not the read's, so the policy refuses such a kind secret as it refuses one its
+// decoder refuses (policy.ReasonValueMalformed), rather than reading it again at every load.
+var ErrValueNotText = errors.New("value is not a non-empty UTF-8 string")
+
 // Reader answers a granted secret's value: what releasing a grant needs, and nothing more.
 type Reader interface {
 	// Read answers the current value of the secret source names (Listing.Source): ErrNotFound
-	// for one the store no longer holds, one scheduled for deletion or one with no current value.
+	// for one the store no longer holds, one scheduled for deletion or one with no current value,
+	// and an error wrapping ErrValueNotText for a current value that is not text.
 	Read(ctx context.Context, source string) (string, error)
 }
 
@@ -68,4 +76,12 @@ type Listing struct {
 	// HasCurrentValue is whether a read would answer a value: a version labelled AWSCURRENT, or a
 	// Secret Manager versions/latest that is ENABLED.
 	HasCurrentValue bool
+	// Version is the id of the version a Read answers now: the Secrets Manager version labelled
+	// AWSCURRENT, or the Secret Manager version versions/latest resolves to; "" when
+	// HasCurrentValue is false. It comes from the call that answers HasCurrentValue, so it costs
+	// no call of its own, and it is the store's own id, never a digest of the value. The policy
+	// decodes a kind secret's value once for each version, kind and shape it lists
+	// (policy.Current), so a write of a new value is decoded at the next load and an unchanged one
+	// is read at no load.
+	Version string
 }

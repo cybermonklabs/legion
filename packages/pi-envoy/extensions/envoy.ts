@@ -205,7 +205,11 @@ import {
   taskWasAbandoned,
 } from "../src/registration-state";
 import { ServerClock } from "../src/server-clock";
-import { type CarriedAnswers, withSessionAnswers } from "../src/session-answers-context";
+import {
+  type CarriedAnswers,
+  carriedAnswers,
+  withSessionAnswers,
+} from "../src/session-answers-context";
 import { sideTurn } from "../src/side-turn";
 import { TypedPictures } from "../src/typed-pictures";
 import {
@@ -4145,14 +4149,15 @@ export default function envoyExtension(pi: PiApi): void {
         env: process.env,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
-      // The failure line shows nothing a person wrote.
-      return read.text === undefined ? undefined : { text: read.text, words: read.words ?? [] };
+      return carriedAnswers(read);
     } catch (error) {
       // Oh My Pi drops all a `context` handler returns when it throws, the dispatch-first skill
       // with it, so a read that throws instead of answering with its failure line still costs
-      // only the list: the request says the list could not be read, and why.
+      // only the list: the request says the list could not be read, after its last message where
+      // a list sat (`withSessionAnswers`), and the log says why. A failure line already placed
+      // keeps its own reason.
       logger.warn(`envoy: people's answers could not be read: ${messageFor(error)}`);
-      return { text: sessionAnswersFailureLine(messageFor(error)), words: [] };
+      return { text: sessionAnswersFailureLine(messageFor(error)) };
     }
   };
 
@@ -4197,6 +4202,17 @@ export default function envoyExtension(pi: PiApi): void {
           );
         },
         read: () => sessionAnswersText(context),
+        // A failed read that gave the cached list, or a list an older copy of this extension
+        // rendered from its cache, where the placed bytes stay: the model is not told of that
+        // failure (the kept bytes may name an earlier one), unless the kept bytes are that read's
+        // own text, which say it. So the log says it, on the first such request and not again
+        // until a read has answered, so a lasting failure logs once. The reason is this copy's
+        // read's own, as its failure line would carry it, or the sentence an older copy's read
+        // line names, as that copy's renderer wrote it, ending with a full stop, `?` or `!`.
+        unshownFailure: (reason) =>
+          logger.warn(
+            `envoy: people's answers could not be read (${reason}); the request keeps the list placed before, which does not name this read's failure`
+          ),
       });
       const result = messages ?? withSkill ?? aged;
       return result === undefined ? undefined : { messages: result };
@@ -4794,6 +4810,8 @@ export default function envoyExtension(pi: PiApi): void {
             recipient: result.recipient,
             recipient_state: result.recipientState,
             confirmed: result.confirmed,
+            state: result.state,
+            ...(result.lastSeen === undefined ? {} : { last_seen: result.lastSeen }),
           });
         }
         case EnvoyToolOperation.publish: {
@@ -4813,8 +4831,8 @@ export default function envoyExtension(pi: PiApi): void {
           // role lane, which its holder does not follow, actually goes undelivered: a
           // subagent's source is its parent, so a publish to a role that parent holds is
           // accepted, answers with that holder, and reaches nobody. Only the role case is
-          // visible here: a plain topic's subscribers are not in the answer at all, since the
-          // stream stores one copy each session's own consumer delivers. AGENTS.md and the
+          // visible here: a plain topic's answer counts its subscribers and names none, since
+          // the stream stores one copy each session's own consumer delivers. AGENTS.md and the
           // envoy skill carry the general rule. A direct envoy_send is unaffected: the
           // agent-subject lane has no such skip.
           // A kept answer reached no session at all, so the echo rule cannot apply to it: the
@@ -4831,6 +4849,10 @@ export default function envoyExtension(pi: PiApi): void {
               topic,
               ...(result.holder === undefined ? {} : { holder: result.holder }),
               ...(result.holderState === undefined ? {} : { holder_state: result.holderState }),
+              ...(result.recipients === undefined ? {} : { recipients: result.recipients }),
+              ...(result.recipientsConnected === undefined
+                ? {}
+                : { recipients_connected: result.recipientsConnected }),
               ...(result.kept === undefined ? {} : { kept: result.kept }),
               ...(result.keptReason === undefined ? {} : { kept_reason: result.keptReason }),
               ...(undelivered ? { undelivered_echo: true } : {}),

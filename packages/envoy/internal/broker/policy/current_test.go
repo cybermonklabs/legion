@@ -3,6 +3,8 @@ package policy_test
 import (
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // awsListLag is the AWS store's ListLag, which every Local-backed Current here runs on.
@@ -299,7 +302,7 @@ func TestARereadThatConfirmsTheLiveAnswerCostsNoReload(t *testing.T) {
 // tag: a Secret compares equal to itself by value, so a reread that finds it unchanged anchors
 // nothing and the next reload describes nothing.
 func TestARereadThatConfirmsAMaxGrantSecretCostsNoReload(t *testing.T) {
-	limited := policytest.KindSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "v1")
+	limited := policytest.KindSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	store := secrets.NewLocal(limited)
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
@@ -397,6 +400,209 @@ func TestARereadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 	}
 }
 
+// abandonedRead is a secrets.Local whose GetSecretValue, once hold arms it, answers the reads hold
+// lets pass as Local does, and from then on waits for each caller's context to end and answers
+// that context's error, as the SDK does: a value read its caller's deadline cuts short.
+type abandonedRead struct {
+	*secrets.Local
+	mu      sync.Mutex
+	holding bool
+	pass    int
+}
+
+// hold arms it: the next pass reads answer, and each read after them waits for its context.
+func (s *abandonedRead) hold(pass int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holding, s.pass = true, pass
+}
+
+// release disarms it: every read answers again.
+func (s *abandonedRead) release() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holding = false
+}
+
+func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	s.mu.Lock()
+	held := s.holding && s.pass == 0
+	if s.holding && s.pass > 0 {
+		s.pass--
+	}
+	s.mu.Unlock()
+	if held {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.Local.GetSecretValue(ctx, in, opts...)
+}
+
+// TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished: a reload whose context
+// ends while it reads values - the background reload's interval passing, or the broker shutting
+// down - records the reads it finished before then, waiting for the writer lock however that
+// context ends, since no caller waits on a reload: here a value the decoder refuses, with its one
+// RefusedMessage line. The read the context cut short records nothing, and the next load reads
+// that version alone again, since the version the reload finished reading is decoded.
+//
+// The named revert: record nothing once the reload's context has ended (answer at the first read
+// ctx cut short, or wait for the writer lock on ctx); FIRST_KEY is then still served after the
+// reload and this test fails.
+func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
+	local := secrets.NewLocal(
+		kindSecret("FIRST_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
+		kindSecret("SECOND_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
+	)
+	store := &abandonedRead{Local: local}
+	cur, registry, logged := bootThrough(t, local, store)
+	gained := logChecker(logged)
+	if got := gained(); got != "" {
+		t.Fatalf("the first load logged:\n%s", got)
+	}
+
+	// A new version of each that no decoder reads. The reload reads them in name order: FIRST_KEY's
+	// answers, and its context ends during SECOND_KEY's.
+	local.Put(kindSecret("FIRST_KEY", policy.KindGitHubApp, undecodable))
+	local.Put(kindSecret("SECOND_KEY", policy.KindGitHubApp, undecodable))
+	store.hold(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := cur.Refresh(ctx)
+	store.release()
+	if err != nil {
+		t.Fatalf("a reload whose context ended during its value reads = %v, want nil: a value read fails no reload", err)
+	}
+	if n := valueReads(t, registry); n != 4 {
+		t.Fatalf("the policy has read %d values; want 4, the boot's two and the reload's two", n)
+	}
+	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
+	if _, served := cur.Get().Secrets["SECOND_KEY"]; !served {
+		t.Fatal("the reload refused SECOND_KEY, whose value read its context cut short")
+	}
+	if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+		t.Fatalf("the reload whose context ended during its second value read logged:\n%s\nwant:\n%s", got, want)
+	}
+
+	refresh(t, cur)
+	if n := valueReads(t, registry); n != 5 {
+		t.Fatalf("the policy has read %d values; want 5, the next load reading SECOND_KEY's version alone again", n)
+	}
+	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
+	refusedAs(t, cur.Get(), "SECOND_KEY", policy.ReasonValueMalformed)
+	if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+		t.Fatalf("the next load logged:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError: a reread that lists a
+// version of a kind secret this pod has not decoded, and whose context ends before it records that
+// version's value read - while the read is out, or while it waits for the writer lock a reload
+// stuck on its listing holds - has merged what it read and has not finished. It answers
+// ErrValueUnchecked wrapping its context's error, not the Lookup of a reread that did, so the
+// reread route answers 503 REQUEST_ENDED rather than a 200 for a value nobody checked, and can
+// tell it from a reread that merged nothing. It records nothing: it writes no line, the secret is
+// still served, and the next load reads that version again and refuses it.
+//
+// The named revert: RefreshOne drops readValues' answer (c.readValues(ctx, ctx, reads, false),
+// then return lk, nil); each reread then answers a nil error and this test fails.
+func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *testing.T) {
+	const deadline = 300 * time.Millisecond
+	// endedUnrecorded checks what a reread of APP_KEY whose deadline passed left: its error is
+	// ErrValueUnchecked and that deadline's, nothing was written and APP_KEY is still served; and,
+	// once load has run, the version was read again - the boot's read, the reread's and the
+	// load's - and refused.
+	endedUnrecorded := func(t *testing.T, cur *policy.Current, registry *metrics.Registry, gained func() string, err error, load func()) {
+		t.Helper()
+		if !errors.Is(err, policy.ErrValueUnchecked) || !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RefreshOne(APP_KEY) whose deadline passed before it recorded its value read = %v, want ErrValueUnchecked and context.DeadlineExceeded", err)
+		}
+		if got := gained(); got != "" {
+			t.Fatalf("a reread whose deadline passed before it recorded its value read logged:\n%s", got)
+		}
+		if _, served := cur.Get().Secrets["APP_KEY"]; !served {
+			t.Fatal("a reread that recorded nothing refused APP_KEY")
+		}
+		load()
+		if n := valueReads(t, registry); n != 3 {
+			t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the next load's read of the same version again", n)
+		}
+		refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
+		if got, want := gained(), refusedLine(policytest.ID("APP_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+			t.Fatalf("the load that read the version again logged:\n%s\nwant:\n%s", got, want)
+		}
+	}
+
+	t.Run("while its value read is out", func(t *testing.T) {
+		local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+		store := &abandonedRead{Local: local}
+		cur, registry, logged := bootThrough(t, local, store)
+		gained := logChecker(logged)
+		if got := gained(); got != "" {
+			t.Fatalf("the first load logged:\n%s", got)
+		}
+		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+		store.hold(0)
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		_, err := cur.RefreshOne(ctx, "APP_KEY")
+		store.release()
+		endedUnrecorded(t, cur, registry, gained, err, func() { refresh(t, cur) })
+	})
+
+	t.Run("while it waits for the writer lock", func(t *testing.T) {
+		local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+		store := &lockedOutRead{Local: local}
+		cur, registry, logged := bootThrough(t, local, store)
+		gained := logChecker(logged)
+		if got := gained(); got != "" {
+			t.Fatalf("the first load logged:\n%s", got)
+		}
+		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+		readEntered, readRelease := store.armRead()
+		ctx, cancel := context.WithTimeout(context.Background(), deadline)
+		defer cancel()
+		rereadDone := make(chan struct{})
+		var rereadErr error
+		go func() {
+			defer close(rereadDone)
+			_, rereadErr = cur.RefreshOne(ctx, "APP_KEY")
+		}()
+		<-readEntered
+
+		// A reload whose listing hangs takes the writer lock while the reread's value read is out.
+		listEntered, listRelease := store.holdList()
+		reloadDone := make(chan struct{})
+		var reloadErr error
+		go func() {
+			defer close(reloadDone)
+			reloadErr = cur.Refresh(context.Background())
+		}()
+		<-listEntered
+		released := false
+		letGo := func() {
+			if !released {
+				released = true
+				close(listRelease)
+			}
+		}
+		t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+
+		close(readRelease)
+		select {
+		case <-rereadDone:
+		case <-time.After(deadline + 1500*time.Millisecond):
+			t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits on the writer lock a reload holds", deadline)
+		}
+		endedUnrecorded(t, cur, registry, gained, rereadErr, func() {
+			letGo()
+			<-reloadDone
+			if reloadErr != nil {
+				t.Fatalf("Refresh: %v", reloadErr)
+			}
+		})
+	})
+}
+
 // hangingLister answers page until hang; from then on it holds each call until unhang releases
 // every held call with page, or until the call's context ends and it answers that context's error,
 // as the SDK does: a Secrets Manager that stops answering, then answers again. heldCalls counts the
@@ -480,8 +686,8 @@ func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
 }
 
 // TestAReloadItsShutdownEndsLogsNothing pins that a reload cut short because NewCurrent's context
-// ended, the broker shutting down, is no failed load: the deployment's alarm counts
-// LoadFailedMessage, so a reload in flight when that context ends logs nothing.
+// ended, the broker shutting down, is no failed load: LoadFailedMessage says a reload failed while
+// the broker was serving, so a reload in flight when that context ends logs nothing.
 func TestAReloadItsShutdownEndsLogsNothing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		lister, loader := hangingLoader(t)
@@ -500,6 +706,256 @@ func TestAReloadItsShutdownEndsLogsNothing(t *testing.T) {
 		synctest.Wait() // the reload has returned, and its goroutine with it
 		if logged.String() != "" {
 			t.Fatalf("a reload the shutdown ended logged:\n%s", logged)
+		}
+	})
+}
+
+// refusedLine is the exact RefusedMessage line Current writes, as CaptureLog reads it, for the
+// secret whose whole name in the store is id: refused for reason, its owner tag owner, first_load
+// on the pod's first load, and was the reason before on a change of reason ("" for none).
+func refusedLine(id, reason, owner string, firstLoad bool, was string) string {
+	line := "ERROR " + policy.RefusedMessage + " name=" + id + " reason=" + reason + " owner=" + textValue(owner) + " first_load=" + strconv.FormatBool(firstLoad)
+	if was != "" {
+		line += " was=" + was
+	}
+	return line + "\n"
+}
+
+// servableLine is the exact ServableMessage line Current writes, as CaptureLog reads it, for the
+// secret whose whole name in the store is id, which was refused for reason with owner: now is
+// servable or absent.
+func servableLine(id, reason, owner, now string) string {
+	return "INFO " + policy.ServableMessage + " name=" + id + " reason=" + reason + " owner=" + textValue(owner) + " now=" + now + "\n"
+}
+
+// textValue is a fixture's value as slog's text output writes it: as it is, and quoted when it is
+// empty. No fixture value holds a space, a quote or an equals sign, which it would quote too.
+func textValue(value string) string {
+	if value == "" {
+		return `""`
+	}
+	return value
+}
+
+// unservable is the broker_unservable_secrets sample of the secret whose whole name in the store
+// is id, refused for reason with owner, as the scrape writes it.
+func unservable(id, reason, owner string) string {
+	return `broker_unservable_secrets{secret="` + id + `",reason="` + reason + `",owner="` + owner + `"} 1` + "\n"
+}
+
+// TestThePolicyWritesAChangeOfASecretsStateNotEachLoad pins the rule the policy's lines follow: a
+// line marks a change of a secret's state, never a load. The pod's first load writes one
+// RefusedMessage line for each secret it refuses, marked first_load, the owner empty for the two
+// reasons that are the owner tag's own; a load, a boot's catch-up load or a reread that finds what
+// the live policy holds writes nothing; a failed load keeps the live set and writes nothing; a
+// change of reason writes one line naming the reason before; a secret that gains a value, and one
+// that leaves the store, writes one ServableMessage line, now=servable and now=absent; and a
+// reread keeps the same set under the same rule. broker_unservable_secrets holds one series for
+// each refused secret after every step, its owner the one the store holds now, and a reread of a
+// name the store does not hold adds none. A refusal moves no Version. The steps call Refresh and
+// RefreshOne themselves, in a synctest bubble whose clock moves only when they wait, so the
+// hour's reload NewCurrent starts never runs between them and its goroutine is gone when the
+// bubble ends.
+//
+// The named revert: write a line for every refused secret at every publish, not only for one
+// whose state changed; the catch-up load's step then fails.
+func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		noOwner := policytest.Secret("NO_OWNER_KEY", owner, policy.TierAgent, "v")
+		delete(noOwner.Tags, policy.TagOwner)
+		store := &failingSecrets{Local: secrets.NewLocal(
+			policytest.Secret("SERVED_KEY", owner, policy.TierAgent, "v"),
+			policytest.Secret("NO_VALUE_KEY", owner, policy.TierAgent, ""),
+			policytest.Secret("BAD_OWNER_KEY", "sjawhar", policy.TierAgent, "v"),
+			policytest.Secret("GOING_KEY", owner, "admin", "v"),
+			noOwner,
+		)}
+		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix}
+		logged := policytest.CaptureLog(t)
+		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+		if err != nil {
+			t.Fatalf("NewCurrent: %v", err)
+		}
+		registry := metrics.New()
+		policy.NewUnservableSecrets(registry, cur)
+		ctx := context.Background()
+		refresh := func() error { return cur.Refresh(ctx) }
+		reread := func(name string) func() error {
+			return func() error { _, err := cur.RefreshOne(ctx, name); return err }
+		}
+		badOwner, going, noOwnerID, noValue, newKey := policytest.ID("BAD_OWNER_KEY"), policytest.ID("GOING_KEY"), policytest.ID("NO_OWNER_KEY"), policytest.ID("NO_VALUE_KEY"), policytest.ID("NEW_KEY")
+
+		gained, version := logChecker(logged), cur.Get().Version
+		for _, step := range []struct {
+			name string
+			// act is the step; nil for the first load, which NewCurrent took above.
+			act func() error
+			// lines is every line the step writes, in order.
+			lines string
+			// series is every sample of broker_unservable_secrets after it, in any order.
+			series []string
+			// moves is whether the step moves the policy's Version.
+			moves bool
+		}{
+			{name: "the pod's first load", lines: refusedLine(badOwner, policy.ReasonOwnerTagMalformed, "", true, "") +
+				refusedLine(going, policy.ReasonTierTagMalformed, owner, true, "") +
+				refusedLine(noOwnerID, policy.ReasonOwnerTagMissing, "", true, "") +
+				refusedLine(noValue, policy.ReasonNoCurrentValue, owner, true, ""),
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+					unservable(noOwnerID, policy.ReasonOwnerTagMissing, ""), unservable(noValue, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "the boot's catch-up load over the same store", act: refresh,
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+					unservable(noOwnerID, policy.ReasonOwnerTagMissing, ""), unservable(noValue, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "a reread of a refused secret that has not changed", act: reread("NO_VALUE_KEY"),
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+					unservable(noOwnerID, policy.ReasonOwnerTagMissing, ""), unservable(noValue, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "a reread of a name the store does not hold", act: reread("NO_SUCH_KEY"),
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+					unservable(noOwnerID, policy.ReasonOwnerTagMissing, ""), unservable(noValue, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "a load the store fails", act: func() error {
+				live := cur.Get()
+				store.mu.Lock()
+				store.failing = true
+				store.mu.Unlock()
+				defer func() {
+					store.mu.Lock()
+					store.failing = false
+					store.mu.Unlock()
+				}()
+				if err := cur.Refresh(ctx); err == nil {
+					return errors.New("Refresh with the listing failing = nil error, want its failure")
+				}
+				if cur.Get() != live {
+					return errors.New("a failed load replaced the live set")
+				}
+				return nil
+			}, series: []string{
+				unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+				unservable(noOwnerID, policy.ReasonOwnerTagMissing, ""), unservable(noValue, policy.ReasonNoCurrentValue, owner),
+			}},
+			{name: "a refusal whose reason changes", act: func() error {
+				store.Put(policytest.Secret("NO_OWNER_KEY", owner, "admin", "v"))
+				return refresh()
+			}, lines: refusedLine(noOwnerID, policy.ReasonTierTagMalformed, owner, false, policy.ReasonOwnerTagMissing),
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+					unservable(noOwnerID, policy.ReasonTierTagMalformed, owner), unservable(noValue, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "a secret that gains a value", act: func() error {
+				store.Put(policytest.Secret("NO_VALUE_KEY", owner, policy.TierAgent, "v1"))
+				return refresh()
+			}, lines: servableLine(noValue, policy.ReasonNoCurrentValue, owner, "servable"), moves: true,
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
+					unservable(noOwnerID, policy.ReasonTierTagMalformed, owner),
+				}},
+			{name: "a refused secret that leaves the store", act: func() error {
+				store.Delete(going)
+				return refresh()
+			}, lines: servableLine(going, policy.ReasonTierTagMalformed, owner, "absent"),
+				series: []string{unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(noOwnerID, policy.ReasonTierTagMalformed, owner)}},
+			{name: "a reread that finds a new secret refused", act: func() error {
+				store.Put(policytest.Secret("NEW_KEY", owner, policy.TierAgent, ""))
+				return reread("NEW_KEY")()
+			}, lines: refusedLine(newKey, policy.ReasonNoCurrentValue, owner, false, ""),
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(noOwnerID, policy.ReasonTierTagMalformed, owner),
+					unservable(newKey, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "the load after that reread", act: refresh,
+				series: []string{
+					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(noOwnerID, policy.ReasonTierTagMalformed, owner),
+					unservable(newKey, policy.ReasonNoCurrentValue, owner),
+				}},
+			{name: "an owner tag that changes under the same reason", act: func() error {
+				store.Put(policytest.Secret("NEW_KEY", other, policy.TierAgent, ""))
+				return refresh()
+			}, series: []string{
+				unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(noOwnerID, policy.ReasonTierTagMalformed, owner),
+				unservable(newKey, policy.ReasonNoCurrentValue, other),
+			}},
+			{name: "a reread that finds a refused secret servable", act: func() error {
+				store.Put(policytest.Secret("BAD_OWNER_KEY", owner, policy.TierAgent, "v"))
+				return reread("BAD_OWNER_KEY")()
+			}, lines: servableLine(badOwner, policy.ReasonOwnerTagMalformed, "", "servable"), moves: true,
+				series: []string{unservable(noOwnerID, policy.ReasonTierTagMalformed, owner), unservable(newKey, policy.ReasonNoCurrentValue, other)}},
+		} {
+			if step.act != nil {
+				if err := step.act(); err != nil {
+					t.Fatalf("%s: %v", step.name, err)
+				}
+			}
+			if got := gained(); got != step.lines {
+				t.Fatalf("%s logged:\n%s\nwant:\n%s", step.name, got, step.lines)
+			}
+			slices.Sort(step.series)
+			if got, want := samplesOf(t, registry, "broker_unservable_secrets"), strings.Join(step.series, ""); got != want {
+				t.Fatalf("after %s broker_unservable_secrets reads\n%s\nwant one series for each refused secret\n%s", step.name, got, want)
+			}
+			if moved := cur.Get().Version != version; moved != step.moves {
+				t.Fatalf("%s moved the policy version: %t, want %t", step.name, moved, step.moves)
+			}
+			version = cur.Get().Version
+		}
+	})
+}
+
+// TestAFailingReloadLogsOnceUntilItLoadsAgain pins the reload NewCurrent runs to the same rule: a
+// run of reloads that fail writes LoadFailedMessage once, at its first failure, and the reload that
+// loads again writes LoadRecoveredMessage once, after which a reload of a store that answers writes
+// nothing. The store-read counter shows each reload was made. It runs on the synctest reload
+// shape of TestAReloadItsShutdownEndsLogsNothing, whose bubble moves the clock reload by reload.
+//
+// The named revert: drop the failing flag from the reload loop, logging every failed reload; the
+// second failure's line then fails this test.
+func TestAFailingReloadLogsOnceUntilItLoadsAgain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
+		registry := metrics.New()
+		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
+		logged := policytest.CaptureLog(t)
+		if _, err := policy.NewCurrent(t.Context(), loader, time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		setFailing := func(failing bool) {
+			store.mu.Lock()
+			store.failing = failing
+			store.mu.Unlock()
+		}
+		const (
+			failed    = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": ThrottlingException: Rate exceeded\"\n"
+			recovered = "INFO " + policy.LoadRecoveredMessage + "\n"
+		)
+		for _, step := range []struct {
+			name    string
+			failing bool
+			// wait is how long the step lets the clock run: the reloads at one minute and at two
+			// for the first, the next one for each after it.
+			wait   time.Duration
+			lists  int
+			logged string
+		}{
+			{"two reloads that fail", true, 2*time.Minute + time.Second, 3, failed},
+			{"the reload that loads again", false, time.Minute, 4, failed + recovered},
+			{"a reload after it", false, time.Minute, 5, failed + recovered},
+		} {
+			setFailing(step.failing)
+			time.Sleep(step.wait)
+			synctest.Wait()
+			if got, want := samplesOf(t, registry, "broker_policy_store_reads_total"), `broker_policy_store_reads_total{read="list"} `+strconv.Itoa(step.lists)+"\n"; got != want {
+				t.Fatalf("after %s the store reads are\n%s\nwant\n%s", step.name, got, want)
+			}
+			if logged.String() != step.logged {
+				t.Fatalf("after %s the reload logged:\n%s\nwant:\n%s", step.name, logged, step.logged)
+			}
 		}
 	})
 }

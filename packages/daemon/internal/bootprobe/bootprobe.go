@@ -302,10 +302,13 @@ func NATSUser(output string) string {
 }
 
 // RoleConfigFilesFlag is the `legion probe-image` flag the daemon's probe Sandbox passes once per
-// role `role_config_files` names, its value RoleConfigFilesValue: the probe reads that role's
-// PI_CONFIG_FILES as the role's Oh My Pi will start with it, the probe pod's own overlays then the
-// role's, and refuses with a RoleOverlaysRefusedLine when one is missing or Oh My Pi refuses them.
-// Passed only for a role that names overlays, so a deployment that names none probes with the
+// role per whole PI_CONFIG_FILES tail that role starts on — its own `role_config_files`, and
+// those files with the overlays of one arm of one declared experiment after them — its value
+// RoleConfigFilesValue: the probe reads each value as that role's Oh My Pi will start with it,
+// the probe pod's own overlays then the value's, and refuses with a RoleOverlaysRefusedLine when
+// one is missing or Oh My Pi refuses them. A role may be named by more than one occurrence, and
+// each is read on its own, since the union of two arms is a configuration no launch produces.
+// Passed only for a value that names a file, so a deployment that names none probes with the
 // command it always had.
 const RoleConfigFilesFlag = "--role-config-files"
 

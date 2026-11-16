@@ -196,13 +196,14 @@ func (s *stubSignIns) Current(context.Context) (*brokerclient.Authority, error) 
 	return s.authority, s.err
 }
 
-func (s *stubSignIns) Refused(credentialID string) {
+func (s *stubSignIns) Refused(_ context.Context, credentialID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refused = append(s.refused, credentialID)
 	if s.onRefused != nil {
 		s.onRefused()
 	}
+	return nil
 }
 
 // signedIn is the authority of a person signed in on this box: a box key of their own and the

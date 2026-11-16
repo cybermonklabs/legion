@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1077,14 +1078,28 @@ func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 // listener's cache does not hold it (session.SessionRegistry.Refresh), which is how a test
 // counts those reads, fails one, or stalls them all. The field the handle hangs off is the
 // registry's own, so one helper holds the reflection that reaches it and a rename of it breaks
-// here alone.
+// here alone. The field is written under the registry's own mutex, which sessionCache.Apply holds
+// while it reads the field (SessionRegistry.following): stopping the watcher first does not wait
+// for an apply already past its generation check, and that apply still reads the field after
+// the swap (review 5911599468 of cybermonklabs/legion#4087 made that interleaving with a delay).
 func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
 	t.Helper()
-	field := reflect.ValueOf(sessions).Elem().FieldByName("watcher")
+	registry := reflect.ValueOf(sessions).Elem()
+	field := registry.FieldByName("watcher")
 	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	old := watcher.Interface().(*kvwatch.Watcher).KV()
 	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
-	watcher.Set(reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{})))
+	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
+	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
+	// would compile, and RWMutex.Lock would write past it into the next field.
+	muField := registry.FieldByName("mu")
+	if muField.Type() != reflect.TypeOf(sync.RWMutex{}) {
+		t.Fatalf("session.SessionRegistry.mu is %s, want sync.RWMutex: swapSessionBucket locks it as one", muField.Type())
+	}
+	mu := (*sync.RWMutex)(unsafe.Pointer(muField.UnsafeAddr()))
+	mu.Lock()
+	watcher.Set(replacement)
+	mu.Unlock()
 }
 
 // stallSessionReads makes every bucket read of sessions stall until the test ends, keeping its
@@ -1856,7 +1871,7 @@ func TestSubscribeHandlerWarnsWhenGitHubRepositoryIsUnwired(t *testing.T) {
 		client:     client,
 		registry:   registry,
 		sessions:   sessions,
-		consumers:  setupSessionConsumers(t),
+		consumers:  setupSessionConsumers(t, client),
 		streamName: "notifications",
 		streamInfo: inspector,
 	}
@@ -1900,7 +1915,7 @@ func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
 		client:     client,
 		registry:   registry,
 		sessions:   sessions,
-		consumers:  setupSessionConsumers(t),
+		consumers:  setupSessionConsumers(t, client),
 		streamName: "notifications",
 		streamInfo: inspector,
 	}
@@ -1932,7 +1947,7 @@ func TestSubscribeHandlerWarnsWhenGitHubWiringLookupFails(t *testing.T) {
 func TestSubscribeHandlerWritesAnUnchangedInterestOnce(t *testing.T) {
 	const calls = 5
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}
+	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
 	conn := testnats.Connect(t, testnats.URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -2016,7 +2031,7 @@ func TestSubscribeHandlerWarnsWhenAGitHubTopicSpellsARepositoryWithADot(t *testi
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	inspector := &fakeStreamInfo{info: &nats.StreamInfo{State: nats.StreamState{Subjects: map[string]uint64{"notifications.github.example-org.example-repo.pr.1": 1}}}}
-	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t), streamName: "notifications", streamInfo: inspector}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client), streamName: "notifications", streamInfo: inspector}
 	warnings := func(t *testing.T, topic string) []string {
 		t.Helper()
 		body := consumerRegistration("ses_subscriber", "e", topic)
@@ -2075,7 +2090,7 @@ func TestSubscribeHandlerDoesNotBlockOnUnwiredRepositoryCheck(t *testing.T) {
 		client:     client,
 		registry:   registry,
 		sessions:   sessions,
-		consumers:  setupSessionConsumers(t),
+		consumers:  setupSessionConsumers(t, client),
 		streamName: "notifications",
 		streamInfo: lookup,
 	}
@@ -2140,7 +2155,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	}
 	routeClient.Close()
 
-	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}
+	state := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(`{
@@ -3333,7 +3348,7 @@ func TestMessageHandlersUseFirstNonEmptyLine(t *testing.T) {
 }
 func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.New("test"))
+	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 
 	for _, body := range []string{
 		`{"session_id":"ses_capable","topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"},"capabilities":["aside","btw"]}`,
@@ -3376,7 +3391,7 @@ func TestSubscribeHandlerStoresAndListsCapabilities(t *testing.T) {
 // per-session route, trimmed. A registration from a plugin predating the fields lists neither key.
 func TestSubscribeHandlerStoresAndListsThePluginAndItsVersion(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}
+	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}
 	handler := subscribeHandler(state, "test-machine", logging.New("test"))
 	for _, body := range []string{
 		`{"session_id":"ses_versioned","topics":[],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"},"plugin":" @sjawhar/pi-envoy ","plugin_version":" 11.0.0 "}`,
@@ -3493,7 +3508,7 @@ func TestSessionRoutesReportEachSessionsDeliveryMode(t *testing.T) {
 // A team topic and a topic outside notifications. are stored as they always were.
 func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.New("test"))
+	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 	subscribe := func(t *testing.T, sessionID string, topics ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		encoded, err := json.Marshal(map[string]any{"session_id": sessionID, "topics": topics, "self_subscribed": true, "delivery": map[string]any{"consumer": true, "epoch": "e"}})
@@ -3558,7 +3573,7 @@ func TestSubscribeHandlerDropsAnUncapturedNotificationTopicByName(t *testing.T) 
 // wherever it is told.
 func TestSubscribeHandlerNamesThePrivateRuleBeforeTheUncapturedOne(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.New("test"))
+	handler := subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.New("test"))
 	private := func(topic, sessionID string) string {
 		return fmt.Sprintf("%s was not registered: it reaches a private stream subject (another session's inbox, a failed-delivery lane, or a Legion controller notice lane), and of those a session registers only its own agent subject, %s, and the notice lane of a project whose controller role it holds",
 			topic, contracts.AgentSubject(sessionID))
@@ -3617,7 +3632,7 @@ func newInterestRig(t *testing.T, topics ...string) *interestRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, map[string][]string{interestSession: topics}, nil)
-	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}
+	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}
 	mux := http.NewServeMux()
 	registerV1Routes(mux, deps, "test-machine", logging.New("test"))
 	return &interestRig{deps: deps, mux: mux}

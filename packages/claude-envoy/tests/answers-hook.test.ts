@@ -840,7 +840,8 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // The refresher is shared by every hook of the session, whatever Dispatch each resolves. A
   // refresher started while envoy.json named `before` that finishes after a later hook, started
   // after envoy.json moved to `now`, began must not give that hook `before`'s list, the
-  // invariant the review asked for ("no list from another Dispatch URL").
+  // invariant the review asked for ("no list from another Dispatch URL"). `before` is named with
+  // a user and a password, which the request carries and the hook's reason leaves out.
   const before = standinDispatch()
   before.route = { kind: "list", items: [answer("ask-x", "Read from the Dispatch before.", 1)] }
   const now = standinDispatch()
@@ -849,13 +850,16 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
   const envoyJson = join(config, "envoy.json")
   const gate = join(home, "gate")
+  const user = "user-7f2a"
+  const secret = "pw-4c7e19"
+  const beforeUrl = before.base.replace("://", `://${user}:${secret}@`)
 
   // The first hook's refresher runs the command, which waits until the gate opens.
   await writeFile(
     envoyJson,
     JSON.stringify({
       dispatch: {
-        serverUrl: before.base,
+        serverUrl: beforeUrl,
         token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf before-token`,
       },
     }),
@@ -894,6 +898,8 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
       `the refresher read ${before.base}, not the Dispatch envoy.json names now`,
     ),
   )
+  expect(context).not.toContain(user)
+  expect(context).not.toContain(secret)
   // The refresher this hook started reads the Dispatch named now.
   await eventually(() => noRefresher(home, state), "the next refresher's end")
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])

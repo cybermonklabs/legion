@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `POST /api/v1/artifacts/{id}/versions/{number}/reviews` records a person's review of a document,
+  as `POST /api/v1/artifacts/{id}/reviews` does, with `{number}` the version the caller read. When
+  the review would record another version of the document (the version an open approval request
+  names for it, else its latest settled version), Dispatch refuses it with
+  `409 REVIEW_VERSION_MOVED`, which names the version to read, and writes nothing. A `{number}`
+  that is not an integer from 1 is `400 INVALID_REVIEW`. The existing review route is unchanged.
+custom:
+    Issue: pr4029

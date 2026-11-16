@@ -78,19 +78,35 @@ func newClient(baseURL string) *client {
 	return &client{baseURL: baseURL, http: &http.Client{Timeout: leasetime.RenewClientTimeout}}
 }
 
-// apiError is the broker's {"code":...,"error":...} error envelope, plus the HTTP status it came
-// with.
+// apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
+// status it came with. AnswerID is the id the broker's own record of the answer names: the body's
+// answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes carries, so
+// a refusal whose body is not the envelope (the broker's 404 for a path it does not serve) still
+// names it. A broker from before the id sends neither, and neither does an answer net/http writes
+// before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
 type apiError struct {
-	Status  int
-	Code    string
-	Message string
+	Status   int
+	Code     string
+	Message  string
+	AnswerID string
 }
 
+// Error is the broker's message and code, and the answer id to quote when it named one. A body
+// that was not the envelope is the message as it came, a line ending and all (the mux's
+// "404 page not found\n"), so the message is cut at its trailing line endings before the id goes
+// after it on the same line.
 func (e *apiError) Error() string {
+	message := strings.TrimRight(e.Message, "\r\n")
+	var text string
 	if e.Code == "" {
-		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, message)
+	} else {
+		text = fmt.Sprintf("%s (%s)", message, e.Code)
 	}
-	return fmt.Sprintf("%s (%s)", e.Message, e.Code)
+	if e.AnswerID != "" {
+		text += " (answer " + e.AnswerID + ")"
+	}
+	return text
 }
 
 // enrollmentEnded reports whether this refusal is the broker's answer to a proof naming an
@@ -227,17 +243,26 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			AnswerID string `json:"answer_id"`
 		}
 		_ = json.Unmarshal(data, &envelope)
 		if envelope.Error == "" {
 			envelope.Error = string(data)
 		}
-		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error}
+		if envelope.AnswerID == "" {
+			envelope.AnswerID = resp.Header.Get(answerIDHeader)
+		}
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error, AnswerID: envelope.AnswerID}
 	}
 	return resp.StatusCode, data, nil
 }
+
+// answerIDHeader is the header every answer the broker itself writes names its answer id in
+// (answer.Header in internal/broker/answer, which this client does not link); net/http's own
+// 400, 431 and 417, written before any of the broker's code runs, carry none.
+const answerIDHeader = "X-Broker-Answer-Id"
 
 // errNothingSent is the cause of a call this client could not even build a request for.
 var errNothingSent = errors.New("nothing was sent")
@@ -327,11 +352,28 @@ type RequestResult struct {
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
-// request object plus an optional, unsigned session_id (wake-only). The v8 top-level
+// request object plus two optional, unsigned fields, session_id (wake-only) and github_app, the
+// narrowing this request's grant will be released with. The v8 top-level
 // "secrets"/"reason"/"issue" fields are gone — they live inside the signed request object instead.
+// github_app is left out when the run asks for no narrowing, so such a run sends the body it
+// always sent; it narrows nothing by itself, the release being what applies a narrowing, and the
+// broker checks it before it asks a person to approve the request.
 type createRequestBody struct {
-	Request   string  `json:"request"`
-	SessionID *string `json:"session_id"`
+	Request   string           `json:"request"`
+	SessionID *string          `json:"session_id"`
+	GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
+}
+
+// brokerTookNoNarrowing reports whether err is a broker from before POST /v1/requests took a
+// github_app field: its readJSON refuses an unknown field with 400 INVALID_REQUEST, and refuses
+// it before the request machine runs, so nothing was written and the signed request object's jti
+// is unspent. Every refusal of the narrowing itself has a code of its own (INVALID_NARROWING,
+// NARROWING_NOT_APPLICABLE, NARROWING_OWNER_NOT_LISTED, NARROWING_BEHIND_AIRLOCK,
+// NARROWING_REFUSED), and a request object the broker would not take is REQUEST_INVALID, so none
+// of them reads as an older broker and none is sent again.
+func brokerTookNoNarrowing(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_REQUEST"
 }
 
 // CreateRequest builds and signs a credential-request object carrying one
@@ -340,7 +382,14 @@ type createRequestBody struct {
 // URL), then calls POST /v1/requests with that object nested in the body and the outer call still
 // authenticated with a session Proof header. It returns both the decoded result and the exact raw
 // response bytes, for --json's "print the response body verbatim" requirement.
-func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string) (RequestResult, []byte, error) {
+//
+// narrowing is the narrowing the release will ask for, sent as github_app so the broker refuses a
+// narrowing it cannot serve before anybody is asked to approve the request; nil sends no such
+// field. A broker from before that field refuses the whole body (brokerTookNoNarrowing) without
+// reading the request object, so the same signed object is sent once more without the field and
+// that second call's own result and raw bytes are what this answers. Once only: a second refusal
+// is about something else, which sending it again cannot mend.
+func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, []byte, error) {
 	requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
 	if err != nil {
 		return RequestResult{}, nil, fmt.Errorf("sign request object: %w", err)
@@ -349,11 +398,21 @@ func (c *client) CreateRequest(ctx context.Context, signer Signer, names []strin
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
-	body, err := json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
+	result, raw, err := c.postRequest(ctx, signer, createRequestBody{Request: requestObject, SessionID: sessionIDPtr, GitHubApp: narrowing})
+	if narrowing == nil || !brokerTookNoNarrowing(err) {
+		return result, raw, err
+	}
+	return c.postRequest(ctx, signer, createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
+}
+
+// postRequest is one POST /v1/requests with body as it stands, answering the decoded result and
+// the exact bytes the broker sent.
+func (c *client) postRequest(ctx context.Context, signer Signer, body createRequestBody) (RequestResult, []byte, error) {
+	encoded, err := json.Marshal(body)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests", body)
+	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests", encoded)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
@@ -426,6 +485,8 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 
 // GitHubNarrowing is POST /v1/grants/{id}/values's github_app object: one release's narrowing of
 // its GitHub App tokens, as the request names it and as the answer names what the broker applied.
+// POST /v1/requests takes the same object, where it says which narrowing the release will ask
+// for, so the broker checks it before a person is asked to approve the request.
 type GitHubNarrowing struct {
 	Owner        string   `json:"owner"`
 	Repositories []string `json:"repositories,omitempty"`

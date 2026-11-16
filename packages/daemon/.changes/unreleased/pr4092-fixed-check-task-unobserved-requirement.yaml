@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A production check's task now covers a merge production carries whose requirement only the
+  deploy can show is still unobserved. Its `pending` named only a merge production did not carry
+  yet, and its `pass` asked only for the changed path driven, so a check whose merge was deployed
+  and whose requirement never showed had no verdict for it but a `pass` it was not. The task now
+  holds `pass` to each such requirement observed as it names it and, where production carries the
+  merge, makes one still unobserved a `pending` while a look follows and a `fail` on the last look;
+  the last look's `pending`, which closes the check as not run because production did not carry
+  the merge within the bound, is left to a merge production does not carry. The bound's look is
+  woken by `the bound: 14 days since the issue closed`, the check's own bound counted from the
+  close that opened it, rather than
+  `the bound: production did not carry the merge within 14 days`, which was false for every check
+  whose merge production carried.
+  The tester's and the implementer's prompts, the e2e README and the concepts page now say the
+  same: a requirement still unobserved at the last look is a `fail` only where production carries
+  the merge, and the check's task is handed, and its bound counted, at the issue's close rather
+  than at the merge, since an issue whose merge waits on the issues beneath it closes later.

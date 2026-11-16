@@ -3,19 +3,26 @@ package requests
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
+// requestKindSecret is a kind secret of the fixture's operator holding a value its kind's decoder
+// reads (policytest.KindValue), which the policy serves.
 func requestKindSecret(name, kind, tier, maxGrant string) secrets.LocalSecret {
-	secret := policytest.KindSecret(name, fixtureOperator, tier, kind, "stored-value")
+	secret := policytest.KindSecret(name, fixtureOperator, tier, kind, policytest.KindValue(kind))
 	if maxGrant != "" {
 		secret.Tags[policy.TagMaxGrant] = maxGrant
 	}
@@ -46,7 +53,7 @@ func TestAgentKindSecretIsGrantedAtOnceAndMintsForEachRelease(t *testing.T) {
 		},
 	}
 
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "GITHUB_APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "GITHUB_APP_KEY"), "", nil)
 	if err != nil || request.State != "granted" || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want automatic grant", request, err)
 	}
@@ -75,7 +82,7 @@ func TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow(t *testing.T) {
 			return secrets.Minted{Value: "minted"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "APP_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}
@@ -106,7 +113,7 @@ func TestHumanKindSecretWaitsForApprovalThenMints(t *testing.T) {
 		},
 	}
 
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "GOOGLE_LOGIN_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "GOOGLE_LOGIN_KEY"), "", nil)
 	if err != nil || request.State != "pending" || request.RecordID == nil {
 		t.Fatalf("Create = %+v, %v; want pending request", request, err)
 	}
@@ -128,7 +135,7 @@ func TestMaxGrantRequiresATTLNoLongerThanTheTag(t *testing.T) {
 		"no TTL":    signRequest(t, machine, key, "read limited login", "LIMITED_LOGIN"),
 		"two hours": signRequestFor(t, machine, key, 2*60*60, "LIMITED_LOGIN"),
 	} {
-		request, err := machine.Create(t.Context(), enrollmentID, compact, "")
+		request, err := machine.Create(t.Context(), enrollmentID, compact, "", nil)
 		if !errors.Is(err, ErrGrantRequiresLifetime) || !strings.Contains(err.Error(), "LIMITED_LOGIN") || !strings.Contains(err.Error(), "1h") {
 			t.Fatalf("Create(%s) = %+v, %v; want ErrGrantRequiresLifetime naming the secret and cap", name, request, err)
 		}
@@ -145,7 +152,7 @@ func TestMaxGrantRequiresATTLNoLongerThanTheTag(t *testing.T) {
 func TestMaxGrantAcceptsALifetimeAtTheTag(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestKindSecret("LIMITED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "1h"))
-	request, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "LIMITED_LOGIN"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "LIMITED_LOGIN"), "", nil)
 	if err != nil || request.State != "granted" || request.GrantID == nil {
 		t.Fatalf("Create(1h) = %+v, %v; want a grant", request, err)
 	}
@@ -153,7 +160,9 @@ func TestMaxGrantAcceptsALifetimeAtTheTag(t *testing.T) {
 
 func TestPlainToKindRetagEndsTheGrant(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	plain := policytest.Secret("PLAIN_TO_KIND", fixtureOperator, policy.TierAgent, "stored-value")
+	// A stored value the github-app decoder reads, so the retag below is served as that kind and
+	// moves the grant's source, rather than refused for its value (policy.ReasonValueMalformed).
+	plain := policytest.Secret("PLAIN_TO_KIND", fixtureOperator, policy.TierAgent, policytest.KindValue(policy.KindGitHubApp))
 	retag(t, machine, plain)
 	calls := 0
 	machine.Minters = map[string]Minter{
@@ -162,7 +171,7 @@ func TestPlainToKindRetagEndsTheGrant(t *testing.T) {
 			return secrets.Minted{Value: "minted"}, nil
 		},
 	}
-	first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "PLAIN_TO_KIND"), "")
+	first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "PLAIN_TO_KIND"), "", nil)
 	if err != nil || first.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", first, err)
 	}
@@ -174,7 +183,7 @@ func TestPlainToKindRetagEndsTheGrant(t *testing.T) {
 	if release, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil || calls != 0 {
 		t.Fatalf("Values after plain-to-kind retag = %v, %v after %d mints; want ErrGrantNotLive", release.Values, err, calls)
 	}
-	next, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "PLAIN_TO_KIND"), "")
+	next, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "PLAIN_TO_KIND"), "", nil)
 	if err != nil || next.ID == first.ID {
 		t.Fatalf("second Create = %+v, %v; want a new request", next, err)
 	}
@@ -190,7 +199,7 @@ func TestDeletedKindSecretStopsReleasing(t *testing.T) {
 			return secrets.Minted{Value: "access-token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "DELETE_KIND_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "DELETE_KIND_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}
@@ -210,6 +219,9 @@ func TestKindRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 		"changed": func(secret secrets.LocalSecret) secrets.LocalSecret {
 			secret.Tags = maps.Clone(secret.Tags)
 			secret.Tags[policy.TagKind] = policy.KindGoogleLogin
+			// The value the new kind's decoder reads, so the policy serves the secret as that
+			// kind rather than refusing it for its value (policy.ReasonValueMalformed).
+			secret.Value = policytest.KindValue(policy.KindGoogleLogin)
 			return secret
 		},
 	} {
@@ -228,7 +240,7 @@ func TestKindRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 					return secrets.Minted{Value: "access-token"}, nil
 				},
 			}
-			first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "RETAG_KIND_KEY"), "")
+			first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "RETAG_KIND_KEY"), "", nil)
 			if err != nil || first.GrantID == nil {
 				t.Fatalf("first Create = %+v, %v", first, err)
 			}
@@ -236,7 +248,7 @@ func TestKindRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 			if release, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil || calls != 0 {
 				t.Fatalf("old Values = %v, %v after %d minter calls; want ErrGrantNotLive and no stored value", release.Values, err, calls)
 			}
-			next, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RETAG_KIND_KEY"), "")
+			next, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RETAG_KIND_KEY"), "", nil)
 			if err != nil || next.ID == first.ID {
 				t.Fatalf("second Create = %+v, %v; want a new request", next, err)
 			}
@@ -247,7 +259,7 @@ func TestKindRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 func TestKindSecretWithoutAMinterDoesNotReleaseItsStoredValue(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestKindSecret("NO_MINTER_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "NO_MINTER_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "NO_MINTER_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}
@@ -271,11 +283,11 @@ func TestAMaxGrantAddedLaterBoundsLiveGrantsAndPendingApprovals(t *testing.T) {
 		requestKindSecret("AGENT_LOGIN", policy.KindGoogleLogin, policy.TierAgent, ""),
 		requestKindSecret("HUMAN_LOGIN", policy.KindGoogleLogin, policy.TierHuman, ""),
 	)
-	granted, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "AGENT_LOGIN"), "")
+	granted, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "AGENT_LOGIN"), "", nil)
 	if err != nil || granted.GrantID == nil {
 		t.Fatalf("Create(AGENT_LOGIN) = %+v, %v; want an automatic grant", granted, err)
 	}
-	pending, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 2*60*60, "HUMAN_LOGIN"), "")
+	pending, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 2*60*60, "HUMAN_LOGIN"), "", nil)
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(HUMAN_LOGIN, 2h) = %+v, %v; want pending", pending, err)
 	}
@@ -328,7 +340,7 @@ func TestAKindChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
 					return secrets.Minted{Value: "access-token"}, nil
 				},
 			}
-			first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "BACK_KIND_KEY"), "")
+			first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "BACK_KIND_KEY"), "", nil)
 			if err != nil || first.GrantID == nil {
 				t.Fatalf("Create = %+v, %v", first, err)
 			}
@@ -338,6 +350,7 @@ func TestAKindChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
 				delete(moved.Tags, policy.TagKind)
 			} else {
 				moved.Tags[policy.TagKind] = away
+				moved.Value = policytest.KindValue(away)
 			}
 			retag(t, machine, moved)
 			if _, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) {
@@ -350,7 +363,7 @@ func TestAKindChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
 			if by, audits := endedForGood(t, machine, *first.GrantID); by != GrantEndedActor || audits != 1 {
 				t.Fatalf("grant revoked_by = %q with %d grant.revoked rows by it; want %s and 1", by, audits, GrantEndedActor)
 			}
-			next, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "BACK_KIND_KEY"), "")
+			next, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "BACK_KIND_KEY"), "", nil)
 			if err != nil || next.ID == first.ID || next.GrantID == nil || *next.GrantID == *first.GrantID {
 				t.Fatalf("Create after the kind is back = %+v, %v; want a new request and grant", next, err)
 			}
@@ -372,11 +385,11 @@ func TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded(t *testing.T) {
 		},
 	}
 	retag(t, machine, requestKindSecret("BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "1h"))
-	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "BOUNDED_LOGIN"), "")
+	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "BOUNDED_LOGIN"), "", nil)
 	if err != nil || long.GrantID == nil {
 		t.Fatalf("Create(1h) = %+v, %v", long, err)
 	}
-	short, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 20*60, "BOUNDED_LOGIN"), "")
+	short, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 20*60, "BOUNDED_LOGIN"), "", nil)
 	if err != nil || short.GrantID == nil {
 		t.Fatalf("Create(20m) = %+v, %v", short, err)
 	}
@@ -401,16 +414,19 @@ func TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded(t *testing.T) {
 
 // TestAFailedMintIsNamedAndReleasesNothing: a minter's refusal, such as a Google login that needs
 // a new sign-in, reaches the session as ErrMintFailed with the minter's own words, never as the
-// stored value.
+// stored value: the refresh token it holds, a canary no quoting changes, is not in the error.
 func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("LAPSED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, ""))
+	const canary = "refresh-not-a-secret-canary-91b3"
+	lapsed := requestKindSecret("LAPSED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "")
+	lapsed.Value = `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
+	retag(t, machine, lapsed)
 	machine.Minters = map[string]Minter{
 		policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			return secrets.Minted{}, errors.New("Google login needs a new sign-in: invalid_grant (invalid_rapt)")
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "LAPSED_LOGIN"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "LAPSED_LOGIN"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", request, err)
 	}
@@ -418,7 +434,90 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 	if !errors.Is(err, ErrMintFailed) || !strings.Contains(err.Error(), "invalid_rapt") || release.Values != nil {
 		t.Fatalf("Values = %v, %v; want ErrMintFailed naming invalid_rapt", release.Values, err)
 	}
-	if strings.Contains(err.Error(), "stored-value") {
-		t.Fatalf("Values error leaked the stored value: %q", err)
+	if strings.Contains(err.Error(), canary) {
+		t.Fatal("Values error leaked the stored refresh token")
+	}
+}
+
+// TestAFailedMintsLineNamesItsAttempts: release hands the minter the secret's kind, which the
+// minter counts its attempts under, and the mint failure line names the attempts the failed call
+// made. A google-login release whose refresh Google answers 503 every time fails after the three
+// attempts the real minter's Retry makes, its line says attempts=3, and the counter holds the
+// third attempt under kind google-login.
+func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	retag(t, machine, requestKindSecret("FLAKY_LOGIN", policy.KindGoogleLogin, policy.TierAgent, ""))
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer google.Close()
+	registry := metrics.New()
+	retry := secrets.NewRetry(registry)
+	retry.Sleep = func(context.Context, time.Duration) error { return nil }
+	machine.Minters = map[string]Minter{
+		policy.KindGoogleLogin: secrets.GoogleLogin{TokenURL: google.URL, HTTP: google.Client(), Retry: retry}.Mint,
+	}
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read login", "FLAKY_LOGIN"), "", nil)
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
+	}
+	logged := policytest.CaptureLog(t)
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+	if !errors.Is(err, ErrMintFailed) || secrets.MintAttempts(err) != 3 || release.Values != nil {
+		t.Fatalf("Values = %v, %v (%d attempts); want ErrMintFailed after 3 attempts", release.Values, err, secrets.MintAttempts(err))
+	}
+	if want := MintFailedMessage + " name=FLAKY_LOGIN kind=google-login class=upstream attempts=3 error="; !strings.Contains(logged.String(), want) {
+		t.Fatalf("the log holds %q; want a line holding %q", logged, want)
+	}
+	recorder := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if want := `broker_mint_attempts_total{kind="google-login",outcome="upstream",attempt="3"} 1` + "\n"; !strings.Contains(recorder.Body.String(), want) {
+		t.Fatalf("the registry serves\n%s\nwant %s", recorder.Body.String(), want)
+	}
+}
+
+// TestAMintThatRefusesTheStoredValueRefusesTheSecret: a minter that refuses the stored value itself
+// (secrets.ErrMintStoredValue, which its decoder answers) fails that release as every mint failure
+// does, ErrMintFailed, and has the policy refuse the secret as value-malformed at the version it
+// lists, with one RefusedMessage line, so the grant's next release answers ErrGrantNotLive and runs
+// no minter, as every unservable secret's does. A new value stored and decoded serves it again,
+// and the same grant mints, since a value's version moves no policy Version.
+func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	secret := requestKindSecret("REFUSED_APP_KEY", policy.KindGitHubApp, policy.TierAgent, "")
+	retag(t, machine, secret)
+	calls, refuse := 0, true
+	machine.Minters = map[string]Minter{policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		calls++
+		if refuse {
+			return secrets.Minted{}, fmt.Errorf("%w: GitHub App secret needs an app_id and private_key", secrets.ErrMintStoredValue)
+		}
+		return secrets.Minted{Value: "minted"}, nil
+	}}
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "REFUSED_APP_KEY"), "", nil)
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
+	}
+	logged := policytest.CaptureLog(t)
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil); !errors.Is(err, ErrMintFailed) || !errors.Is(err, secrets.ErrMintStoredValue) || release.Values != nil {
+		t.Fatalf("Values = %v, %v; want ErrMintFailed for the stored value", release.Values, err)
+	}
+	id := policytest.ID("REFUSED_APP_KEY")
+	if refusal := machine.Policy.Get().Refused[id]; refusal.Reason != policy.ReasonValueMalformed || refusal.Owner != fixtureOperator {
+		t.Fatalf("after the mint's refusal the policy refuses %s as %+v; want %s", id, refusal, policy.ReasonValueMalformed)
+	}
+	if n := strings.Count(logged.String(), policy.RefusedMessage+" name="+id+" reason="+policy.ReasonValueMalformed); n != 1 {
+		t.Fatalf("the mint's refusal logged %d %q lines for %s; want 1:\n%s", n, policy.RefusedMessage, id, logged)
+	}
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil || calls != 1 {
+		t.Fatalf("the next Values = %v, %v after %d mints; want ErrGrantNotLive and no second mint", release.Values, err, calls)
+	}
+
+	refuse = false
+	stored := secret
+	stored.Value += "\n"
+	retag(t, machine, stored)
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil); err != nil || release.Values["REFUSED_APP_KEY"] != "minted" {
+		t.Fatalf("Values once a new value is stored = %v, %v; want the grant to mint again", release.Values, err)
 	}
 }
