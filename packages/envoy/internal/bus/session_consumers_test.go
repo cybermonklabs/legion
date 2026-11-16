@@ -431,7 +431,8 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 
 // A restart of a consumer with a message awaiting an ack still deletes and creates it at the floor:
 // the consumer is a new one, and it delivers the unacked message again, then the next, in stream
-// order.
+// order. The restart waits until the delivery is in the consumer's state file
+// (waitForStoredState), and until then the delete could race the server's own write of it.
 func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -454,6 +455,7 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 		t.Fatalf("the consumer has %d awaiting an ack, want the held message", before.NumAckPending)
 	}
 
+	waitForStoredState(t, consumers, session)
 	start, err := consumers.RestartAtFloor(ctx, session, []string{agent})
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
@@ -618,6 +620,44 @@ func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string
 			t.Fatalf("info: %v", err)
 		}
 		return info.AckFloor.Stream == floor, fmt.Sprintf("it stayed %d", info.AckFloor.Stream)
+	})
+}
+
+// waitForStoredState waits for the state file of sessionID's consumer to hold the position the
+// server reports for it (testnats.StoredConsumer). nats-server v2.15.1 writes that file from a
+// goroutine of the consumer's own a moment after a delivery or an ack, and its delete of the
+// consumer does not wait for a write under way: consumerFileStore.delete
+// (server/filestore.go:14590-14621) marks the store closed and removes its directory, while a write
+// that passed writeState's closed check before that (14156-14194) goes on to open, write and
+// rename o.dat.tmp. A create of the same name makes the directory again, and the late write can
+// rename the create's own o.dat.tmp from under it, which fails the create: "rename
+// .../obs/<name>/o.dat.tmp .../obs/<name>/o.dat: no such file or directory". Once the file holds
+// the position the server reports, the write that carried it has been renamed, and the consumer
+// writes the file again only when its state changes.
+func waitForStoredState(t *testing.T, consumers *SessionConsumers, sessionID string) {
+	t.Helper()
+	name, ok := SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%s names no session consumer", sessionID)
+	}
+	uri := testnats.URL(t)
+	waitUntil(t, fmt.Sprintf("the state file of %s to hold the position the server reports", name), func() (bool, string) {
+		info, err := consumers.Info(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		want := testnats.StoredConsumerState{
+			AckFloorConsumer:  info.AckFloor.Consumer,
+			AckFloorStream:    info.AckFloor.Stream,
+			DeliveredConsumer: info.Delivered.Consumer,
+			DeliveredStream:   info.Delivered.Stream,
+			Pending:           uint64(info.NumAckPending),
+		}
+		stored, err := testnats.StoredConsumer(t, uri, Stream, name)
+		if err != nil {
+			return false, fmt.Sprintf("the file did not read (%v); the server reports %+v", err, want)
+		}
+		return stored == want, fmt.Sprintf("the file held %+v, the server reports %+v", stored, want)
 	})
 }
 
