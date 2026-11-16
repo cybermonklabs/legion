@@ -3470,7 +3470,7 @@ The kernel adds SIGKILL to that mask in each thread of a process that any fatal 
 So while kills are pending, at each scan the watch makes a pass over the processes it holds, a process that has just become a zombie among them, which the scan itself leaves out, and reads the `status` of each one that has not shown SIGKILL pending yet.
 It then reads that process's start time again, so that a pid back with another start time, which is another process, is not taken for it.
 A process that shows SIGKILL pending is not read again, and each pass weighs it until one names it or sets it aside; after that it is never weighed for a later kill while the watch holds it, so a process the kernel stopped is named once.
-Every pass follows one rule: it names a process only on the sign that process shows, so a delay can leave a kill unnamed but never names a wrong process.
+Every pass follows one rule: it names a process only on the sign that process shows, so a delay can leave a kill unnamed, and outside the first item of "What the sign does not show" (below) it never names a wrong process.
 Of the processes that a pass weighs, it first sets aside those of a role whose session has ended (below).
 The pass counts the rest with each process that a scan first read with SIGKILL already pending during the same wait (`size`, below), which no pass names.
 Where they are no more than the kills left to name, each of the rest is named for one kill, with the role and the size that the last scan whose snapshot came before that pass read of it.
@@ -3478,7 +3478,8 @@ Where they are more, the watch reads the counter again.
 Where the counter rose, the kernel has stopped another process since the last read: the pass names none of the rest and sets none of them aside, and it leaves them, with what the watch read of them, to the next pass, which weighs them against the larger count.
 That is the one case where a pass leaves a process to the next, and it comes after the pass has set aside the processes of a role whose session ended, which the next pass would set aside too: a role's session that has ended stays ended for the rest of the wait.
 Where the counter did not rise, the sign does not say which one the kernel stopped, and the watch sets the rest all aside and names none of them.
-Those processes go on counting, as a process first read with SIGKILL pending during the wait does, for the rest of that wait, so a process that another sender SIGKILLs later in the wait meets the same count rather than a name.
+Those processes go on counting while they are in `/proc`, for the rest of that wait, as a process first read with SIGKILL pending during the wait does.
+So while they are there, a process that another sender SIGKILLs later in the wait meets the same count rather than a name.
 No later wait names or counts them, a zombie that stays in `/proc` among them.
 
 A role's session ends with a SIGKILL of its own `role-init`'s.
@@ -3491,14 +3492,16 @@ Such a SIGKILL that one of the pass's `status` reads saw came after the departur
 Each such SIGKILL reaches the processes of its own role alone, so the pass weighs every other role's processes as ever.
 A scan lets go of a session process that it no longer holds only once that process has left, and it keeps a zombie.
 A role whose session process left at most 3 s before the first rise of the wait, or at any time since, has no process named for the rest of the wait.
-Its processes that show SIGKILL pending are set aside, and the kills stay pending, to end on the `killed unnamed` line.
+Its processes that show SIGKILL pending are set aside, and no pass counts them against the kills left to name, so that one role's ended session never blocks another role's real victim.
+The kills stay pending, to end on the `killed unnamed` line.
+But where another role's held process shows another sender's SIGKILL in that wait, that process can be named in the victim's place (the first item of "What the sign does not show", below).
 The 3 s are `roleNamespaceDrain` and a second more, which the launcher passes the watch (`SessionDrain`): `role-init` sends its `kill(-1)` within one 10 ms poll of the drain's end, and the rest of the second covers a `role-init` that the memory pressure behind the rise runs late.
 A session process that shows the sign before it leaves, as an agent that the kernel stopped does while it is a zombie its shim has not reaped, is named as any process is.
-Where a session process of its role, that process itself among them, has left by the time the pass that would name it looks for those processes, it is set aside instead, and its kill ends on the `killed unnamed` line.
+Where a session process of its role, that process itself among them, has left by the time the pass that would name it looks for those processes, it is set aside instead, and its kill ends on the `killed unnamed` line, unless another role's process is named in its place, as above.
 
 The classifier cannot tell the agent from the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, so it counts them all as session processes.
 Where one of those ends by itself, the watch names no process of its role for the rest of that wait either.
-That costs only kills left unnamed, never a wrong name.
+That costs kills left unnamed, and a wrong name only where another role's process shows another sender's SIGKILL in that wait, as above.
 
 The kernel shows that sign only until the process's parent reaps it.
 For a 1.5 GiB process whose parent reaps it at once, the sign showed for 51 to 85 ms, and the 100 ms scan alone named such a process 3 times of 5.
@@ -3521,8 +3524,28 @@ When the wait ends, the kills that the watch named no process for have one `kill
 
 **What the sign does not show.**
 
-- A process that something other than the kernel, or than `role-init`'s drain, has sent SIGKILL is named in place of the kernel's victim, where it is still in `/proc` while kills are pending and the victim has already left.
-  In a microVM pod the memory guard is off, and these can send it:
+- A pass weighs against the kills left to name only the processes that it holds and that show SIGKILL pending: the ones it may name, and the ones it counts but never names.
+  Where the kernel's victim is not among them at a pass, a held process that something other than the kernel, or than `role-init`'s drain, has sent SIGKILL is named in the victim's place.
+  The victim is not among them at a pass in four cases:
+
+  - It has left `/proc`.
+    Its parent reaped it before a pass read its `status`.
+    Or the watch counted it, and it has left since: the watch counts a process only while it is in `/proc`.
+
+  - It started after the last scan, and no scan has read it yet.
+    A wake reads no new process, and a scan's pass runs before that scan's snapshot, so the passes of the wakes before that scan, and that scan's own pass, do not hold it.
+    Where kills are still pending at that scan, it counts from the next pass on.
+
+  - It is a process of a role whose session ended in the wait.
+    The pass sets that process aside and counts it against no kill, so that one role's ended session never blocks another role's real victim.
+
+  - It was first read with SIGKILL pending while no kill was pending.
+    It counts in no wait.
+    But the kernel can raise the counter just after a scan reads it, and the rise of its own kill is then read at the next read of the counter, at the wake or the next scan.
+
+  A process that the watch set aside in one wait, or first read with SIGKILL pending during it, counts in no later wait, a zombie whose parent has not reaped it among them.
+  So in a later wait it never takes the place of that wait's victim in the count.
+  In a microVM pod the memory guard is off, and these can send such a SIGKILL:
   a role's own `kill -9`;
   a timeout tool that sends SIGKILL;
   `procgroup`'s stop, which sends SIGKILL to a command's process group a second (`StopGrace`) after its SIGTERM (`Configure`, `packages/daemon/internal/procgroup/procgroup.go`);
@@ -3534,11 +3557,6 @@ When the wait ends, the kills that the watch named no process for have one `kill
   to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
   and to the launcher's test-database script at its bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
-
-- A process that the watch set aside in one wait, or first read with SIGKILL pending during it, counts in no later wait.
-  So in a later wait whose own victim has already left `/proc`, a held process that another sender SIGKILLs is named in the victim's place, as in the item above, though that older process may still show SIGKILL in `/proc`, a zombie whose parent has not reaped it.
-  A process first read with SIGKILL pending while no kill is pending counts in no wait, though the kernel can raise the counter just after a scan reads it, so the rise of that process's own kill can be read at the next scan.
-  Where that process was the kernel's victim, its wait has no process the watch can name for it, and a held process that another sender SIGKILLs in that wait is named in its place.
 
 - A victim whose parent reaps it before the watch reads its `status`, at the wake or at the next scan, shows no sign, and its kill has the `killed unnamed` line.
   On a real kernel (runc, Linux 6.12.110, with a test counter raised in place just before a real SIGKILL), the watch named a 1 GiB process that its parent reaps at once 10 times of 10, and a `sleep` reaped at once 3 times of 5, in each of two runs on 2026-11-16, at `874c5471` and at `c9392db1` (pull request #4106).
@@ -3561,8 +3579,9 @@ The guest watch fills it from what it read:
   A pass reads only the processes that the watch already holds, so a process that started after one scan and that the kernel stopped before the next is first read by that next scan, while its memory is freed.
   So the watch reads the `status` of each process that a scan reads for the first time, at every scan, whether or not kills are pending, and a process that already shows SIGKILL pending is never named, at that size or for any kill.
   That SIGKILL is the sign of a kill that the counter counted already, of one whose rise comes after that scan read the counter, since the kernel can raise the counter and send SIGKILL between the two reads, or of none, another sender's.
-  Where kills are pending at that scan, every pass of that wait counts it with the processes that it weighs against the kills left to name, while it is in `/proc`, and a zombie has not left.
+  Where kills are pending at that scan, each pass of that wait after that scan counts it with the processes that it weighs against the kills left to name, while it is in `/proc`, and a zombie has not left.
   So where one kill is left to name and another process shows SIGKILL pending beside it, the pass reads the counter again, and where the counter did not rise, it names neither, and the kill ends on the `killed unnamed` line.
+  The passes before that scan's snapshot, at the wakes and at that scan's own pass, do not hold it (the first item of "What the sign does not show", above).
   No later wait counts it.
   Where no kill is pending at that scan, it counts in no wait at all ("What the sign does not show", above).
 
