@@ -1163,7 +1163,7 @@ Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
 The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
-A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: `scripts/sessions-import-pods.sh` runs it in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
+A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 
 ### Starting fresh when a session is lost or wedged
 
@@ -1241,7 +1241,7 @@ Resuming a suspended claim starts a fresh session with its pending task.
 
 ### Copying file sessions before turning it on
 
-This runbook, and `scripts/sessions-import-pods.sh`, copy only from the release before issue pods, `legion-v10.0.0`, whose every role runs in a Sandbox of its own and keeps its session on its tree's volume; the script refuses any other release by name.
+This runbook copies only from the release before issue pods, `legion-v10.0.0`, whose every role runs in a Sandbox of its own and keeps its session on its tree's volume.
 A deployment on `legion-v10.1.0` to `legion-v10.2.x`, which runs one pod per issue, has no copy path: its switch to `postgres` is a drain at a pushed boundary, every tree closed, and the sessions on those volumes are lost.
 There is no way back either, and nothing to go back to: this release has no second store, and nothing copies a row out to a file.
 
@@ -1273,19 +1273,24 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    `legion claims list --json --operator-token-file <file> > claims.json` (the daemon of any release prints the list this command reads), then scale the daemon to 0 straight away, so nothing launches, resumes, or cleans up a tree from here on.
 
 3. **Copy every tree.**
-   Where a tree's volume is mounted and the session database is reachable, run, for each tree the list names:
+   Copy one tree at a time, in the pod of [A shell on an issue's disk](#a-shell-on-an-issues-disk) with that tree's claim: a pod of the worker image, under gVisor, with the tree's volume read-only at `/legion` and nothing else mounted.
+   The import reads two more files, and both come from your machine after the pod is `Ready`.
+   `claims.json` from step 2 goes to the import's standard input (`--claims -`).
+   `<url file>` is a file of mode 0600 on your machine that holds the session database's `postgres://` URL, one that a pod on the Legion pool can reach; under `postgres` it is the value of the providers Secret's `session_dsn_secret` key.
+   The URL goes into the pod on standard input, into a file of mode 0600 in a directory of mode 0700, so no command line holds it:
 
    ```sh
-   legion sessions import --dsn-file <url file> --claims claims.json --tree <ROOT ISSUE> --tree-volume /legion
+   kubectl -n legion apply -f legion-tree-shell.yaml    # its claimName is this tree's claim
+   kubectl -n legion wait --for=condition=Ready pod/legion-tree-shell --timeout=300s
+   kubectl -n legion exec -i legion-tree-shell -- sh -c 'umask 077 && mkdir /tmp/import && cat > /tmp/import/dsn' < <url file>
+   kubectl -n legion exec -i legion-tree-shell -- sh -c 'legion sessions import --dsn-file /tmp/import/dsn --claims - --tree <ROOT ISSUE> --tree-volume /legion; rc=$?; rm -rf /tmp/import; exit $rc' < claims.json
+   kubectl -n legion delete pod legion-tree-shell
    ```
 
-   `scripts/sessions-import-pods.sh <claims.json> <namespace> <worker image@sha256> <project> <url secret> <url key> [--context <context>]` runs it for every tree the list names: one pod of the worker image per tree, under gVisor, mounting the tree's volume read-only at `/legion` and the URL key, printing the import's lines, then deleted.
-   It finds each tree's volume and root Sandbox by `legion-v10.0.0`'s labels (`legion.dev/project`, `legion.dev/role=architect`, `legion.dev/tree` and `legion.dev/issue`), not by name, and schedules the pod as the root Sandbox's pods were: its pod template's node selector, tolerations and priority class.
-   The pod runs as the namespace's `default` ServiceAccount with no token (`automountServiceAccountToken: false`), never as the Sandbox's: it needs no identity, and a namespace admission policy may let only the agent-sandbox controller create pods as the worker ServiceAccount.
-   Before anything it refuses a project whose Sandboxes are issue pods (a later release), one with a Sandbox not `Suspended`, whose pod could still start, and one with a pod that has not ended (any phase but `Succeeded` or `Failed`): each would be a writer the copy misses.
-   It deletes a pod an interrupted run left before creating one, reports a pod that fails at once, exits 1 when any tree's import did, names a tree whose volume or root Sandbox is gone, and names every claim that records a session and belongs to no tree, the cleared controller's among them, which step 5 clears.
+   The second `exec` removes the URL's directory whatever the import's exit, and it exits with the import's own status.
+   The pod's own files go when the pod is deleted.
 
-   For each claim with a recorded session file it reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
+   For each claim with a recorded session file the import reads that file from the volume (its path below the agents' sessions directory, below `<tree-volume>/sessions`; without `--tree-volume` it reads the recorded path itself) and writes it as one row keyed by that recorded path: the whole file as `content`, `byte_len` its size, `mtime_ms` the file's, no title and no parts, which is how Oh My Pi reads a row an older release of it wrote.
    When `issue_close` already cleared a claim's resume path, the importer finds `*_<session>.jsonl` below the volume's sessions directory from the retained session id; exactly one match imports, none names the claim and session as missing, and several are refused by name.
    It creates the two tables with Oh My Pi's own statements when the database has none.
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
@@ -4051,9 +4056,7 @@ Nothing is saved first, because a shell on the old disk could carry nothing over
 **The one stopped disk still worth mounting: a tree volume of the release before issue pods.**
 That release's tree volume is its root Sandbox's, not a pod's, so it outlives every pod of the tree, and copying the sessions off it is the one procedure that still needs a stopped disk reachable:
 step 3 of [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on).
-`scripts/sessions-import-pods.sh` makes one such pod per tree itself;
-the pod below is that step run by hand for a single tree, with `legion sessions import --dsn-file <url file> --claims
-claims.json --tree <ROOT ISSUE> --tree-volume /legion` run inside it.
+The pod below is the one that step starts for each tree, and the step gives the commands that bring the database URL and the claims list into it and run the import there.
 The tree's claim is the one its labels name (`kubectl -n legion get pvc -l
 legion.dev/project=<project>,legion.dev/tree=<ROOT ISSUE>`).
 By that step of the runbook the tree's root Sandbox is `Suspended` with no pod of its own and the earlier release's daemon is stopped, so nothing launches a pod that would want the volume while yours holds it;
@@ -4090,9 +4093,10 @@ kubectl -n legion exec -it legion-tree-shell -- sh
 kubectl -n legion delete pod legion-tree-shell
 ```
 
-The pod carries no credential.
+The pod carries no credential of its own.
 An agent of that tree could plant git and jj configuration in a clone on the volume ([Trust model](#trust-model-the-provisioning-token)), which a `jj` run in this shell would obey, and the pod gives that configuration nothing to take.
-Run no command in it that holds a token.
+The session copy brings one credential in, the database URL, for the one command it runs there: `legion sessions import`, which reads the volume's session files as data, starts no `git`, `jj` or `omp`, and runs in the `exec` that removes the URL when it ends.
+Run no other command in the pod while the URL is in it, and no command that holds a token at any other time.
 
 ### Carrying unpushed work out of an issue's pod
 

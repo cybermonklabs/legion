@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  Dispatch records every answer its near-copy gate gives an issue create, in the new table
+  `near_copy_checks`, read through `GET /api/v1/near-copy-checks?project=` over a span of time.
+  A row names the project, the actor, the title, the spec's sha256, the parent, the outcome
+  (`refused`, `forced`, `nudged`, `passed` or `not_made`, with why for the last), whether the
+  create asked for `force`, each candidate the gate read with its score, the issue written, the
+  two bars and the build's commit; a refused create, which writes no issue, keeps its spec there,
+  which `GET /api/v1/near-copy-checks/{id}` reads (a page carries no spec).
+  Before it a refused create left no record anywhere and no create kept the scores the gate read,
+  so how often the live gate refuses a create that is no copy, or lets a copy in, could not be
+  counted on the creates it scored. A refusal is answered only once its row is known to be written:
+  otherwise it refuses nothing, and the create goes in unchecked (`not_made`, reason `unrecorded`)
+  and is told which issue the refusal would have named, so every 409 the gate gives has its row.
+  Such a create writes its row in its own transaction, under the id the refusal used, so the row
+  replaces a refused row whose insert landed unseen and commits with the create or not at all.
+  Every other create's row is written after the commit, bounded to one second, and tried once more
+  in the background for up to 30 seconds when a timeout or a lock stopped it; one that still cannot
+  be written never fails the create.
+time: 2026-11-15T18:31:00Z
+custom:
+    Issue: near-copy-check-records

@@ -417,6 +417,11 @@ type server struct {
 	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
 	// until the bound ends it, so the bound and nothing else decides that case.
 	beforeDuplicateRead func(ctx context.Context) error
+	// nearCopyRowID overrides how a near_copy_checks row gets its id; nil, which every server the
+	// deployment builds leaves it, means a random uuid. Only a test sets it, to put a refused row in
+	// place under the id a create will write, as a refusal whose insert landed but whose answer the
+	// server never read.
+	nearCopyRowID func() string
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the
@@ -517,9 +522,9 @@ type server struct {
 	// termStats is the per-project term-statistics refreshes a related-item check started
 	// (ensureSearchTermStats), keyed by project, so a project's many checks start one.
 	termStats singleflight.Group
-	// relatedRecordRetrying is how many related_checks records being retried in the background
-	// (recordRelatedChecks, run as detached work) hold or wait on a pool connection right now, at
-	// most relatedRecordRetryLimit.
+	// relatedRecordRetrying is how many records being retried in the background (retryRecord:
+	// related_checks and near_copy_checks rows, run as detached work) hold or wait on a pool
+	// connection right now, at most relatedRecordRetryLimit.
 	relatedRecordRetrying atomic.Int32
 	// branches is what the results reads last learned about each repository's default branch
 	// (delivery.Branches), held across requests so the Verification tab's refetch on every

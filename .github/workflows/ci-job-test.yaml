@@ -9,7 +9,7 @@ name: CI job test
 #
 # What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
 # changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
-# scripts/sessions-import-pods.sh), and the Bun suites of scripts/. The daemon's Go tests, which
+# scripts/priorities-seed-check.sh), and the Bun suites of scripts/. The daemon's Go tests, which
 # this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's; the session
 # message-wait suite, the one step here that needed a database, is
 # .github/workflows/ci-job-sessions-script.yaml's, and no step of this job needs one now; and
@@ -216,12 +216,6 @@ on:
         required: true
       disk_watch_test:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
-        type: string
-        required: true
-      sessions_import_pods_test:
-        description: >-
-          ci.yaml's needs.changes.outputs.sessions_import_pods_test:
-          scripts/sessions-import-pods.test.sh and what it tests.
         type: string
         required: true
       priorities_seed_check_test:
@@ -487,10 +481,6 @@ jobs:
       - name: Test the machine watch
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
-
-      - name: Test the session import pods script (a stand-in kubectl)
-        if: inputs.changes-result != 'success' || inputs.sessions_import_pods_test == 'true'
-        run: bash scripts/sessions-import-pods.test.sh
 
       - name: Test the priorities seed check (a stand-in Dispatch)
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
