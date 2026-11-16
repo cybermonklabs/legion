@@ -93,18 +93,10 @@ func (s *promptShell) send(text string) {
 	}
 }
 
+// wait waits until the terminal has shown want (waitFirst).
 func (s *promptShell) wait(want string) {
 	s.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	buf := make([]byte, 4096)
-	for !strings.Contains(s.out.String(), want) {
-		if time.Now().After(deadline) {
-			s.t.Fatalf("waiting for %q; terminal showed %q", want, s.out.String())
-		}
-		_ = s.controller.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
-		n, _ := s.controller.Read(buf)
-		s.out.Write(buf[:n])
-	}
+	s.waitFirst(want)
 }
 
 // waitFirst waits until the terminal has shown one of wants, and answers the one it showed first.
