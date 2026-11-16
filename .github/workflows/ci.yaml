@@ -4353,7 +4353,7 @@ jobs:
               - '.github/scripts/check-private-names-port.test.sh'
               # test-lib.sh, which the harness sources for check/is/summary (:63), and the
               # frozen script it runs every case through beside the binary, symlinked into each
-              # fixture (:203,411,457,546). That script is the subject of
+              # fixture (:213,421,467,556). That script is the subject of
               # check_private_names_test above, which gates another job's step: this job reads
               # it as the engine it compares against.
               - '.github/scripts/test-lib.sh'
@@ -4397,6 +4397,8 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
       go_notices: ${{ needs.changes.outputs.go_notices }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # Copies every row .github/ci-images.yaml names into ghcr.io/cybermonklabs/legion/ci, then reads the
   # package to check that it holds every row. The order is the point: the read fails a row the
@@ -4649,6 +4651,8 @@ jobs:
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
       go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
   # Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,
@@ -4703,6 +4707,8 @@ jobs:
     uses: ./.github/workflows/ci-job-private-names-port.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # Builds the documentation site (docs/site) on every pull request and merge group that could
   # change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes
@@ -4731,6 +4737,8 @@ jobs:
     uses: ./.github/workflows/docs-site.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   contracts:
     needs: changes
@@ -4920,6 +4928,8 @@ jobs:
     uses: ./.github/workflows/ci-job-claude-envoy.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+    secrets:
+      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
   # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
@@ -5486,9 +5496,12 @@ jobs:
           sparse-checkout: .github
           persist-credentials: false
 
+      # PRIVATE_NAME_TERMS is the deployment's own list, which check-private-names.sh's fifth rule
+      # reads and requires on a merge group (that script's header).
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
         env:
           GH_TOKEN: ${{ github.token }}
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: |
           payload=$(.github/scripts/find-pr-payload.sh)
           GITHUB_EVENT_PATH="$payload" .github/scripts/check-pr-text.sh

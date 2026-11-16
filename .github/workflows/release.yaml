@@ -54,9 +54,11 @@ on:
 #
 # Each package is built by a build job of its own and published by the one publish job. A build job
 # versions, installs, packs, builds and tests: it runs the dependencies' code and every third-party
-# module it links, so it holds no write scope and no secret, uploads what it made as an artifact,
-# and ends in a tripwire (`release-push.sh no-credential`) that fails when a credential is reachable
-# from it anyway. The publish job holds the credentials and runs no dependency code: only
+# module it links, so it holds no write scope and no secret (but PRIVATE_NAME_TERMS in the step of
+# claude_envoy_build that runs the private-name check, a list of names to refuse that grants no
+# access), uploads what it made as an artifact, and ends in a tripwire (`release-push.sh
+# no-credential`) that fails when a credential is reachable from it anyway. The publish job holds
+# the credentials and runs no dependency code: only
 # release-push.sh, git, gh, jq, sha256sum, npm (view, and publish of a handed tarball) and the
 # pinned actions below, with no cache restored (`cache-mode: none`) and the deploy key in the env
 # of the steps that push. release-push.sh handed checks what each build job handed over before
@@ -736,9 +738,14 @@ jobs:
       # What it builds and checks: packages/claude-envoy/scripts/verify-build.sh, which builds the
       # plugin twice into scratch directories outside the checkout, compares the two byte for
       # byte, runs the private-name check over the build and packs it into the tar
-      # `release-push.sh check-built` then checks member by member.
+      # `release-push.sh check-built` then checks member by member. The check fails a push's run
+      # without the deployment's own term list (.github/scripts/check-private-names.sh's header),
+      # so this step maps that secret, the one a build job may hold
+      # (.github/scripts/check-release-credentials.sh, rule 2).
       - name: Build, check and pack the plugin
         if: steps.version.outputs.skip != 'true'
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
         working-directory: packages/claude-envoy
 

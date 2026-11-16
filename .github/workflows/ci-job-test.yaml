@@ -238,6 +238,13 @@ on:
           go-test-step-expansion.test.sh and what it tests.
         type: string
         required: true
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: >-
+          The deployment's own private names, one a line, for the two steps below that run
+          .github/scripts/check-private-names.sh: the plugin build through verify-build.sh, and
+          the check's own harness, whose last case scans its log with them.
+        required: false
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -276,6 +283,8 @@ jobs:
       # and then failing every release. What it builds and checks:
       # packages/claude-envoy/scripts/verify-build.sh.
       - name: Build, check and pack the Claude Code plugin as the release does
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: bun run verify-build "$RUNNER_TEMP/claude-envoy-built.tar"
         working-directory: packages/claude-envoy
 
@@ -394,6 +403,8 @@ jobs:
 
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: .github/scripts/check-private-names.test.sh
 
       - name: Test the plugin-name check

@@ -1914,7 +1914,7 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names.test.sh:525 runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names.test.sh:670 runs it too: the pull request's text is the guard's other surface"),
     ]),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2170,7 +2170,7 @@ GATES = [
         (TEST_LIB, "check-private-names-port.test.sh:63 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh",
          "the frozen script every case of check-private-names-port.test.sh runs beside the "
-         "engine, symlinked into each fixture (:203,411,457,546)"),
+         "engine, symlinked into each fixture (:213,421,467,556)"),
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness

@@ -49,6 +49,12 @@ on:
           docs-pages.yaml, which reports nothing.
         type: string
         default: ""
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: >-
+          The deployment's own private names, one a line, which the built site's private-name
+          check reads (.github/scripts/check-private-names.sh's fifth rule). Both callers pass it.
+        required: false
 
 env:
   # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
@@ -180,6 +186,8 @@ jobs:
       # deployment repository, company, internal host, or Tailscale MagicDNS host. ci.yaml's lint
       # job checks the sources, on a pull request and on a merge group alike.
       - name: Check the built site has no private name, internal host, or tailnet host
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
         run: .github/scripts/check-private-names.sh docs/site/dist
       # The caller's deploy job publishes this artifact. Only docs-pages.yaml asks for it.
       - if: inputs.upload-pages-artifact

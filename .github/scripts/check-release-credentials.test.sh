@@ -865,6 +865,36 @@ check "names the whole secrets context" \
 check "the listener's docker job, whose login holds secrets.GITHUB_TOKEN, is not named" \
   "$(is "$(contains "$out" "job 'docker'")" false)"
 
+echo "case: the deployment's term list, in the env of a build job's step that runs the private-name check"
+terms_env=$'        env:\n          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}\n'
+verify_step=$'      - name: Build, check and pack the plugin\n'"$terms_env"$'        run: bun run verify-build "$RUNNER_TEMP/plugin.tar"\n'
+root=$(fixture build-terms-allowed)
+mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' $'        run: bun install --frozen-lockfile\n'"$verify_step" 1
+run_check "$root"
+check "is allowed: exits 0" "$(is "$status" 0)"
+
+root=$(fixture build-terms-other-step)
+mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' "$terms_env"$'        run: bun install --frozen-lockfile\n' 1
+run_check "$root"
+check "in a step that runs no private-name check: exits 1" "$(is "$status" 1)"
+check "names the secret at its line" \
+  "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" 'PRIVATE_NAME_TERMS:'): job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; a build job holds no secret but GITHUB_TOKEN")"
+
+root=$(fixture build-terms-other-form)
+odd_terms_env=$'        env:\n          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS || secrets.NPM_TOKEN }}\n'
+mutate "$root/$RELEASE" $'        run: bun install --frozen-lockfile\n' \
+  $'        run: bun install --frozen-lockfile\n      - name: Build, check and pack the plugin\n'"$odd_terms_env"$'        run: bun run verify-build "$RUNNER_TEMP/plugin.tar"\n' 1
+run_check "$root"
+check "in another form, which could carry another secret, in that same step: exits 1" "$(is "$status" 1)"
+check "names the secret" "$(contains "$out" "job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS; ")"
+
+root=$(fixture build-terms-job-env)
+mutate "$root/$RELEASE" $'    if: github.ref == \'refs/heads/main\'\n    steps:\n' \
+  $'    if: github.ref == \'refs/heads/main\'\n    env:\n      PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}\n    steps:\n' 1
+run_check "$root"
+check "in the job's env, which reaches every step: exits 1" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "job 'pi_envoy_build' runs dependency code (.*), but its text names secrets.PRIVATE_NAME_TERMS")"
+
 echo "case: docker run in a credentialed job (docker buildx imagetools, docker login and docker buildx version stay allowed)"
 root=$(fixture docker-run)
 add_publish_step "$root" $'      - name: Smoke the image\n        run: docker run alpine sh\n      - name: Inspect the image\n        run: docker buildx imagetools inspect x && docker login ghcr.io && docker buildx version\n'
@@ -1169,6 +1199,7 @@ root=$(fixture build-render-deploy-key)
 mutate "$root/$RELEASE" $'        run: .github/scripts/release-push.sh fold-notes ' $'        env:\n          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}\n        run: .github/scripts/release-push.sh fold-notes '
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
+# shellcheck disable=SC2016 # the `${{ … }}` is the workflow's own text, matched literally
 check "names the key in a job that runs dependency code, at its line" \
   "$(contains "$out" "^::error::$RELEASE:$(line_of "$root/$RELEASE" '^          DEPLOY_KEY: \${{ secrets.DEPLOY_KEY }}$'): job 'pi_envoy_build' runs dependency code (step './.github/actions/setup-bun' uses './.github/actions/setup-bun'), but its text names secrets.DEPLOY_KEY; a build job holds no secret but GITHUB_TOKEN$")"
 check "names the key outside a step that pushes" \
