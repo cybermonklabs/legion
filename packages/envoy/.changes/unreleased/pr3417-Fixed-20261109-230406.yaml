@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A session''s JetStream consumer is deleted when its session ends: at the session''s deregistration, and in a listener sweep of every session the session registry judges gone (ENVOY_SESSION_CONSUMER_SWEEP_INTERVAL, 5 minutes by default). The listener records the consumer''s resume floor on the stream before each delete, and a consumer created for a session that carries no resume point starts there, so a session that comes back loses nothing the stream still holds. The server-side inactive threshold is now one hour, the backstop for a consumer no listener deleted.'
+time: 2026-11-09T23:04:06.366665219Z
+custom:
+    Issue: pr3417

@@ -1,0 +1,8 @@
+kind: Fixed
+custom:
+  Issue: pr3716
+body: |-
+  The `legion` tool's `read_record` reads the caller's own issue when the call leaves `issue` out
+  or blank, and the tool's description now says so; `handoff_complete` takes an `issue` that names
+  the caller's own issue instead of refusing the field. A `handoff_complete` that names another
+  issue is refused before any daemon request, naming both issues.

@@ -47,18 +47,9 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "GRANT_ID\tSECRETS\tGRANTED\tAPPROVER\tSESSION\tOPERATOR\tEXPIRES")
+	fmt.Fprintln(tw, strings.Join(grantColumns, "\t"))
 	for _, g := range grants.Grants {
-		approver := "-"
-		if g.Approver != nil {
-			approver = *g.Approver
-		}
-		session := g.Enrollment.Kind + "/" + g.Enrollment.RuntimeID
-		if g.Enrollment.Slot != nil {
-			session += "/" + *g.Enrollment.Slot
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", g.GrantID, strings.Join(g.Names, ","), g.Granted, approver,
-			session, orDash(g.Enrollment.Operator), grantExpiry(g.ExpiresAt))
+		fmt.Fprintln(tw, strings.Join(grantRow(g), "\t"))
 	}
 	if err := tw.Flush(); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, err)
@@ -78,6 +69,37 @@ func grantExpiry(expires *time.Time) string {
 		return "session-end"
 	}
 	return expires.UTC().Format(time.RFC3339)
+}
+
+// grantColumns is the table's header: one name for each cell grantRow builds, in that order.
+var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}
+
+// grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
+// such value.
+//
+// APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
+// model judge approved, which records the record's own approver — the secret's owner, or anyone
+// for a shared secret — and the judge as its decider, "judge:<model id>". APPROVER alone read as
+// the owner's own approval of a request that owner never saw. An automatic grant nobody decided
+// prints "-" under both.
+func grantRow(g OperatorGrant) []string {
+	session := g.Enrollment.Kind + "/" + g.Enrollment.RuntimeID
+	if g.Enrollment.Slot != nil {
+		session += "/" + *g.Enrollment.Slot
+	}
+	return []string{
+		g.GrantID, strings.Join(g.Names, ","), g.Granted, orDashPtr(g.Approver), orDashPtr(g.DecidedBy),
+		session, orDash(g.Enrollment.Operator), grantExpiry(g.ExpiresAt),
+	}
+}
+
+// orDashPtr is what s points at, or "-" where it points at nothing: a cell the broker's answer
+// leaves null.
+func orDashPtr(s *string) string {
+	if s == nil {
+		return "-"
+	}
+	return orDash(*s)
 }
 
 // cmdGrantRevoke implements "grant revoke GRANT_ID": it ends a grant as the operator, as Dispatch's

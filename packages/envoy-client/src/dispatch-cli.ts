@@ -16,6 +16,7 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
+import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
@@ -53,7 +54,10 @@ export interface DispatchCliIo {
   readonly fetchImpl?: typeof fetch;
 }
 
-/** Exit codes: written or read, refused or failed, and a usage error. */
+/** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
+ *  REFUSED is a call Dispatch itself turned down (a near copy, an AskGate block, a server
+ *  refusal); an argument this CLI refuses before any request is USAGE, whether the argv named a
+ *  command or not. */
 const OK = 0;
 const REFUSED = 1;
 const USAGE = 2;
@@ -65,9 +69,9 @@ const HOSTS = ["omp", "claude"] as const satisfies readonly DispatchHost[];
  *  the CLI adds counted (`fitOutput`). */
 const CLAUDE_OUTPUT_MAX = 25_000;
 
-/** Why a file that changed after AskGate's review is refused or posts unreviewed. */
+/** Why a file that changed after AskGate read it is refused or posts unreviewed. */
 const SAME_MESSAGE =
-  "AskGate reviews the calls of a message before any of them runs, so it did not review that change.";
+  "AskGate reads the files of a message's calls before any of them runs, so it did not see that change.";
 
 /** What the CLI prints when the call reached Dispatch but its local record could not be written. */
 const STATE_WRITE_FAILED = "dispatch: Dispatch took the call, but this session's state";
@@ -81,9 +85,10 @@ const LITERAL_FORM =
   "AskGate reviews a Dispatch write, and lets it post, only when it is sent as one bash call of literal words: `dispatch <command> <words…>`. Each word is plain text, text in single quotes (also over more than one line), or text in double quotes with no `$`, backtick or `\\`. A `\\` at the end of a line continues the command. Before it, one `cd <path> &&` is permitted; after it, one `2>&1`, one here-document opened with a quoted delimiter (`<<'EOF'`) and one `| head -n N` or `| tail -n N`. For text with `$` or a backtick in it, use `--<field>-file - <<'EOF'`. A variable, `~`, a glob, an assignment, another redirect (`2>/dev/null`, `> file`), another pipe, another command (`;`, `&&`, `||`), a loop, xargs, `bash -c`, a script, an alias, or a process that a program or an eval cell starts carries no marker.";
 
 /** A line that refuses a call before it reaches Dispatch, each at the start of the line:
- *  `dispatch <command> was not called: …` (exit 1, `ToolInputError` and the refusals
- *  `executeDispatchTool` makes before a write), or a usage refusal (exit 2), which is `dispatch: `
- *  and its reason. The CLI's other `dispatch: ` lines refuse nothing: a result's warning
+ *  `dispatch <command> was not called: …` (an argument problem, exit 2, wherever it is found;
+ *  AskGate's block of a write wears the same line and exits 1), or a usage refusal
+ *  (exit 2), which is `dispatch: ` and its reason. The CLI's other `dispatch: ` lines refuse
+ *  nothing: a result's warning
  *  (`dispatch: warning: `), the note that the session's state was not written
  *  (STATE_WRITE_FAILED), and the notice of a file that is not read, printed beside a result. */
 const NOT_CALLED = /^dispatch ([a-z][a-z-]*) was not called: /;
@@ -177,11 +182,12 @@ export function fitOutput(
  * One `dispatch` command: parses `argv` into a Dispatch tool's arguments, runs that tool once as
  * the host session the environment names, and prints what the model reads. The host plugin sets
  * `DISPATCH_HOST`, `ENVOY_CONFIG_FILE` (the envoy.json it chose) and the session's id in the
- * agent's shell (`CLAUDE_CODE_SESSION_ID` under Claude Code, `DISPATCH_SESSION_ID` elsewhere); an
- * empty variable counts as unset. With `DISPATCH_HOST` unset, `CLAUDE_CODE_CHILD_SESSION=1`, which
- * Claude Code sets in every Bash and hook process it runs, is host `claude`: a Claude Code
- * subagent's Bash can lack what the bridge's `SessionStart` hook writes to `CLAUDE_ENV_FILE`
- * (anthropics/claude-code#46696).
+ * agent's shell (`CLAUDE_CODE_SESSION_ID` under Claude Code, where claude-envoy's QA override
+ * `ENVOY_SESSION_ID` wins over it as it does on the session's claim; `DISPATCH_SESSION_ID`
+ * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
+ * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
+ * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
+ * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696).
  *
  * The envoy.json it reads is the one its session's plugin chose: with `DISPATCH_HOST` set, the file
  * `ENVOY_CONFIG_FILE` names (each plugin sets the two together), else its host's own rule
@@ -206,6 +212,9 @@ export async function runDispatchCli(
   // The host need not be known for the session to be: a Python `subprocess.run(["dispatch", …])`
   // inherits the session id without `DISPATCH_HOST`. A ledger that cannot be written changes
   // nothing here: the refusal is already printed, and the caller is exiting.
+  // Under Claude Code the session is the one claude-envoy registers and claims under: its QA
+  // override ENVOY_SESSION_ID, else CLAUDE_CODE_SESSION_ID (`claudeSessionId` in claude-envoy).
+  const claudeSession = env.ENVOY_SESSION_ID ?? env.CLAUDE_CODE_SESSION_ID;
   const refuse = (
     text: string,
     code: number,
@@ -213,7 +222,7 @@ export async function runDispatchCli(
     askgate?: ResultInput["askgate"]
   ): number => {
     print(text);
-    const sessionId = env.CLAUDE_CODE_SESSION_ID ?? env.DISPATCH_SESSION_ID;
+    const sessionId = claudeSession ?? env.DISPATCH_SESSION_ID;
     if (sessionId !== undefined) {
       try {
         appendResult(sessionDirectory(env, sessionId), {
@@ -244,7 +253,12 @@ export async function runDispatchCli(
           [`dispatch: ${parsed.problems.join("\n")}`, "Run dispatch --help."].join("\n"),
           USAGE
         )
-      : refuse(new ToolInputError(parsed.tool, parsed.problems).message, REFUSED, parsed.tool);
+      : refuse(
+          new ToolInputError(parsed.tool, parsed.problems, defined("aboutAFlag", parsed.aboutAFlag))
+            .message,
+          USAGE,
+          parsed.tool
+        );
   }
 
   const hostName =
@@ -259,8 +273,10 @@ export async function runDispatchCli(
       parsed.tool
     );
   }
-  const sessionVariable = host === "claude" ? "CLAUDE_CODE_SESSION_ID" : "DISPATCH_SESSION_ID";
-  const sessionId = env[sessionVariable];
+  const [sessionId, sessionVariable] =
+    host === "claude"
+      ? [claudeSession, "ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID"]
+      : [env.DISPATCH_SESSION_ID, "DISPATCH_SESSION_ID"];
   if (sessionId === undefined) {
     return refuse(
       `dispatch: ${sessionVariable} is not set, so this call has no session to act as. The host plugin sets it in an agent's shell.`,
@@ -286,7 +302,9 @@ export async function runDispatchCli(
     // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
     // against a server it knows, and its standard output is the JSON alone.
     const settings =
-      file.path === null ? null : sessionDispatchSettings(file, env, { cwd: io.cwd }).dispatch;
+      file.path === null
+        ? null
+        : sessionDispatchSettings(file, env, { cwd: io.cwd, session: sessionId }).dispatch;
     const { problems } = await checkDispatchCall({
       tool: parsed.tool,
       args: parsed.args,
@@ -295,7 +313,7 @@ export async function runDispatchCli(
       serverUrls: settings?.enabled === true ? dispatchServerUrls(settings) : [],
     });
     if (problems.length > 0) {
-      return refuse(new ToolInputError(parsed.tool, problems).message, REFUSED, parsed.tool);
+      return refuse(new ToolInputError(parsed.tool, problems).message, USAGE, parsed.tool);
     }
     print(JSON.stringify(parsed.args, null, 2));
     return OK;
@@ -303,7 +321,12 @@ export async function runDispatchCli(
   if (file.path === null) {
     return refuse(`dispatch: ${file.error}`, USAGE, parsed.tool);
   }
-  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, { cwd: io.cwd });
+  // The session this call acts as is the session a broker trade writes under, so the token this
+  // call presents names it rather than naming none or another of this machine's.
+  const { dispatch: resolution, warnings } = sessionDispatchSettings(file, env, {
+    cwd: io.cwd,
+    session: sessionId,
+  });
   // A checkout's OpenCode-era file, which is not read, is said on every call while it is there.
   for (const warning of warnings) print(`dispatch: ${warning}`);
   if (!resolution.enabled) {
@@ -376,7 +399,7 @@ export async function runDispatchCli(
           return refuse(
             spent.changed === undefined
               ? `${notCalled} AskGate is on for this session, and ${spent.why}. ${LITERAL_FORM} Send the write again in that form, as a bash call of its own.`
-              : `${notCalled} AskGate is on for this session, and ${spent.why}. ${SAME_MESSAGE} Send the call again in a later message.`,
+              : `${notCalled} AskGate is on for this session, and ${spent.why}. ${SAME_MESSAGE} Send the call again in a later message than the one that changes the file.`,
             REFUSED,
             parsed.tool,
             { mode: "block", why: spent.why, asksCarried }
@@ -423,12 +446,16 @@ export async function runDispatchCli(
   let topics: Promise<readonly string[] | null> | undefined;
   const readTopics = async (): Promise<readonly string[] | null> => {
     try {
-      const envoy = sessionEnvoySettings(file, env, { cwd: io.cwd, nats: false });
+      const envoy = sessionEnvoySettings(file, env, {
+        cwd: io.cwd,
+        nats: false,
+        session: sessionId,
+      });
       if (!envoy.enabled) return null;
       const listener = createEnvoyClient({
         baseUrl: envoy.url,
         fetch: io.fetchImpl ?? fetch,
-        token: envoy.token,
+        credential: envoy.credential,
         timeoutMs: SUBSCRIPTIONS_TIMEOUT_MS,
         retry: false,
       });
@@ -488,7 +515,10 @@ export async function runDispatchCli(
       notes.push(followNoticeText(followed, await subscriptions()));
     }
     entry = { tool, details: result.details };
-    code = OK;
+    // A write Dispatch refused did nothing, and `skill://dispatch` promises exit 1 for a
+    // refusal: a create the near-copy gate stopped exits 1, so a caller that reads the status
+    // is never told an issue was filed. Its text is the same either way.
+    code = result.refused === true ? REFUSED : OK;
   } catch (error) {
     text = messageFor(error);
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
@@ -499,7 +529,14 @@ export async function runDispatchCli(
       code = OK;
     } else {
       entry = { tool, error: text };
-      code = REFUSED;
+      // An argument the executor refuses (a ref naming another owner, a picture that is not
+      // there, an id that matches no ask) is the same usage error as one the parse refuses, and
+      // exits 2 alike. `--dry-run` runs the call's own check (checkDispatchCall): the owner,
+      // schema, cross-field and picture checks. Those exit 2 from the dry run and from its call,
+      // so the two stay one answer. A refusal the executor makes during the call, such as an id
+      // of the wrong shape or an ask id prefix matching no ask, only the call reaches.
+      // Everything else here is Dispatch's own refusal or failure.
+      code = error instanceof ToolInputError ? USAGE : REFUSED;
     }
   }
   try {

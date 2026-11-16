@@ -156,12 +156,12 @@ func CheckTouchedTablesAreKnown(fsys fs.FS, dir string) error {
 }
 
 // CheckTouchedTablesAgainstLocks applies every migration of the set in fsys, in version order and
-// each in a transaction of its own as the runners do, on the database conn is connected to, and
-// reports an error unless what the census reads from each migration, pgmigrate.CensusTables read
-// just before the migration applies, is what it locks above ACCESS SHARE. What the migration locks
-// is read from pg_locks for its own backend before it commits, an index lock counted as its
-// table's. Only tables that existed before the migration count, since a table it creates holds no
-// row and nobody else's lock. Two ways to fail:
+// each in its declared execution mode, on conn's database. Transactional migrations are checked
+// against pg_locks before commit: the tables CensusTables reads must be what they lock above
+// ACCESS SHARE, with index locks counted as their table. A concurrent build releases those locks
+// before returning, so its actual index target is read from the catalog at ddl_command_end.
+// Only preexisting tables count: a newly created table holds no row or other session's lock.
+// Two ways to fail:
 //
 //   - a table the migration locks above ACCESS SHARE (every write and every DDL) that the reading
 //     misses: a statement form the census's patterns do not know, whose table the census would
@@ -215,19 +215,41 @@ func auditMigrationLocks(ctx context.Context, conn *pgx.Conn, migration pgmigrat
 			named[table.Name] = true
 		}
 	}
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("migration %s: begin: %w", migration.Name, err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, migration.SQL); err != nil {
-		return fmt.Errorf("migration %s: apply: %w", migration.Name, err)
-	}
-	rows, err := tx.Query(ctx, `
+	// A concurrent build releases its table locks before ddl_command_end. For that single
+	// statement, audit the index's actual catalog target instead of claiming to observe locks.
+	query := `
 		select coalesce(i.indrelid, l.relation), l.mode
 		from pg_locks l left join pg_index i on i.indexrelid = l.relation
 		where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.granted
-			and l.database = (select oid from pg_database where datname = current_database())`)
+			and l.database = (select oid from pg_database where datname = current_database())`
+	var tx pgx.Tx
+	if migration.NonTransactional {
+		if _, err := conn.Exec(ctx, `create temp table pgmigrate_audit_locks (relation oid, mode text);
+			create function pg_temp.pgmigrate_audit_locks() returns event_trigger language plpgsql as $body$
+			begin insert into pgmigrate_audit_locks
+				select i.indrelid, 'IndexTarget' from pg_event_trigger_ddl_commands() d
+				join pg_index i on i.indexrelid = d.objid where d.classid = 'pg_class'::regclass;
+			end $body$;
+			create event trigger pgmigrate_audit_locks on ddl_command_end when tag in ('CREATE INDEX')
+			execute function pg_temp.pgmigrate_audit_locks()`); err != nil {
+			return fmt.Errorf("migration %s: install concurrent lock audit: %w", migration.Name, err)
+		}
+		defer conn.Exec(ctx, "drop event trigger pgmigrate_audit_locks; drop function pg_temp.pgmigrate_audit_locks(); drop table pgmigrate_audit_locks")
+		if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+			return err
+		}
+		query = "select relation, mode from pgmigrate_audit_locks"
+	} else {
+		tx, err = conn.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("migration %s: begin: %w", migration.Name, err)
+		}
+		defer tx.Rollback(ctx)
+		if _, err := tx.Exec(ctx, migration.SQL); err != nil {
+			return fmt.Errorf("migration %s: apply: %w", migration.Name, err)
+		}
+	}
+	rows, err := conn.Query(ctx, query)
 	if err != nil {
 		return fmt.Errorf("migration %s: read its locks: %w", migration.Name, err)
 	}
@@ -262,7 +284,10 @@ func auditMigrationLocks(ctx context.Context, conn *pgx.Conn, migration pgmigrat
 			return fmt.Errorf("migration %s names %s, which pgmigrate.CensusTables reads from it, but takes no lock on it: the extractor misread a statement, and the census would refuse a deploy over a table the migration leaves alone; fix the patterns in touched.go", migration.Name, name)
 		}
 	}
-	return tx.Commit(ctx)
+	if tx != nil {
+		return tx.Commit(ctx)
+	}
+	return nil
 }
 
 // schemaTables maps each ordinary or partitioned table of the schema the connection creates
@@ -287,7 +312,7 @@ func schemaTables(ctx context.Context, conn *pgx.Conn) (map[uint32]string, error
 }
 
 // CheckCensusNamesTheMigrationsItReads applies every migration of the set in fsys, in version
-// order and each in a transaction of its own, on the empty database conn is connected to, recording
+// order and in their declared execution modes, on the empty database conn is connected to, recording
 // which migration created each table, column, function and type, and which last renamed one or
 // gave a column a new type, and reports an error unless every census names, in its text, each
 // migration numbered from `from` on that created or changed what it reads. What a census reads is
@@ -326,16 +351,22 @@ func CheckCensusNamesTheMigrationsItReads(ctx context.Context, conn *pgx.Conn, f
 					migration.CensusName, creator.name, creator.migration.Name, creator.verb(), creator.migration.Name, advice)
 			}
 		}
-		tx, err := conn.Begin(ctx)
-		if err != nil {
-			return fmt.Errorf("migration %s: begin: %w", migration.Name, err)
-		}
-		if _, err := tx.Exec(ctx, migration.SQL); err != nil {
-			tx.Rollback(ctx)
-			return fmt.Errorf("migration %s: apply: %w", migration.Name, err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("migration %s: commit: %w", migration.Name, err)
+		if migration.NonTransactional {
+			if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+				return err
+			}
+		} else {
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				return fmt.Errorf("migration %s: begin: %w", migration.Name, err)
+			}
+			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
+				tx.Rollback(ctx)
+				return fmt.Errorf("migration %s: apply: %w", migration.Name, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return fmt.Errorf("migration %s: commit: %w", migration.Name, err)
+			}
 		}
 		if err := recordChanges(ctx, conn, migration, created); err != nil {
 			return fmt.Errorf("migration %s: %w", migration.Name, err)

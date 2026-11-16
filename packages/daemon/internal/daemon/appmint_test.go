@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,12 +21,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // gitHubStandIn serves the GitHub App endpoints a boot's token mint calls, for the owner acme:
-// installation discovery answers through discover, the exchange and identity lookups succeed, and
-// each App's slug is legion-test-<its id>, so the two bot logins differ as two real Apps' do.
+// installation discovery answers through discover, the installation is granted every permission
+// a role's set names, the exchange and identity lookups succeed, and each App's slug is
+// legion-test-<its id>, so the two bot logins differ as two real Apps' do.
 // It counts each App's installation discoveries by the App id its JWT names.
 type gitHubStandIn struct {
 	mu          sync.Mutex
@@ -72,7 +74,7 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 	}
 	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	standIn := &gitHubStandIn{discoveries: map[string]int{}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
 			app := jwtIssuer(t, r)
@@ -84,17 +86,24 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 		case strings.HasSuffix(r.URL.Path, "/installation"):
 			fmt.Fprint(w, `{"id":77}`)
 		case strings.HasSuffix(r.URL.Path, "/access_tokens"):
-			fmt.Fprintf(w, `{"token":"installation-token","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+			// A mint names the permissions its token holds, and refuses an answer wider than it
+			// asked for (appauth), so the stand-in answers with them as the request named them,
+			// as GitHub does.
+			repositories, permissions := exchangeBody(t, r)
+			mintedToken(w, "installation-token", repositories, permissions)
+		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
+			// A mint reads what the installation is granted before it asks for a token and cuts
+			// its request down to it (appauth's exchangeGranted), so the stand-in's installation
+			// is granted every permission a role's set names.
+			fmt.Fprint(w, `{"id":77,"permissions":{"actions":"write","checks":"write","contents":"write","metadata":"read","pull_requests":"write","statuses":"write","workflows":"write"}}`)
 		case r.URL.Path == "/app":
 			fmt.Fprintf(w, `{"slug":"legion-test-%s"}`, jwtIssuer(t, r))
 		case strings.HasPrefix(r.URL.Path, "/users/"):
 			fmt.Fprint(w, `{"id":42}`)
 		default:
-			t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
-			http.NotFound(w, r)
+			githubtest.Unexpected(t, w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
+	}})
 	return appauth.New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "2", PrivateKey: privatePEM},
@@ -124,7 +133,7 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, cfg, Build{}, log, overrides{
+		done <- run(ctx, cfg, log, overrides{
 			listen:         heldListen,
 			runtime:        fakeRuntime(fake.NewRuntime(), &built{}).runtime,
 			clock:          stillClock{},
@@ -147,26 +156,32 @@ func bootsOrExitsLogging(t *testing.T, cfg config.Config, tokens appauth.Tokens,
 			t.Error("daemon did not stop")
 		}
 	})
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	var exited error
+	answered := testwait.Holds(within, 20*time.Millisecond, func() bool {
 		select {
 		case err := <-done:
 			stopped = true
 			if err == nil {
 				t.Fatal("run returned nil before the daemon answered /healthz")
 			}
-			return err
+			exited = err
+			return true
 		default:
 		}
 		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz"); err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
-				return nil
+				return true
 			}
 		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	})
+	if exited != nil {
+		return exited
 	}
-	t.Fatalf("the daemon neither answered /healthz nor exited within %s", within)
+	if !answered {
+		t.Fatalf("the daemon neither answered /healthz nor exited within %s", within)
+	}
 	return nil
 }
 
@@ -191,15 +206,16 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 	}
 }
 
-// A definitive answer (the App's key refused) is refused at once, naming it: no retry changes it.
+// A definitive answer (the App's key refused) is refused at once, naming it and the repository the
+// boot minted for (workflowConfig's mapping, acme/widgets): no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 	})
 	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot") || !strings.Contains(err.Error(), "(401)") {
-		t.Fatalf("boot = %v, want the refusal naming the implement mint and GitHub's 401", err)
+	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot for acme/widgets: ") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want the refusal naming the implement mint, the repository acme/widgets and GitHub's 401", err)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1}) {
 		t.Errorf("installation discoveries by App = %v, want the implement App's one: a 401 is not asked again", got)

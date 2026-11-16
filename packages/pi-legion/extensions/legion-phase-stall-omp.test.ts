@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
@@ -7,6 +7,7 @@ import {
   call,
   type LegionPane,
   type LegionPaneOptions,
+  ompNatsGuard,
   type Reply,
   type Request,
   runLegionPane,
@@ -16,15 +17,17 @@ import {
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
 // what the model is sent, and that the transcript keeps the state a resumed worker restores.
 // LEGION_TEST_OMP names the binary: the fork pin in the repository's .omp-pin, which
-// CI's pi-envoy job installs; on the devbox, `mise where <pin>`/bin/omp. A run without one skips,
-// except on GitHub Actions, where a skip would hide the only run of the check on the host that
-// ships it (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export CI=true).
+// CI's pi-envoy job installs; on the devbox, `mise where <pin>`/bin/omp. LEGION_TEST_NATS_URL
+// names the NATS server each pane runs against: a session's only inbound is the consumer the
+// listener builds for it, relayed on its own relay subject, so a pane with no NATS server
+// registers nothing and claims nothing (INFRA-771). A run without both skips, except on GitHub
+// Actions, where a skip would hide the only run of the check on the host that ships it
+// (`ompNatsGuard`).
 // It is also the only check that the run-end nudge's hidden self-check starts no run: the nudge
 // treats any `agent_start` after a settle as a newer run and withholds its steer, so a host that
 // counted the side turn as a run would silence the nudge with every unit test still green.
 // The WAITING self-check case below fails if that ever changes.
-const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
+const { skip, setup } = ompNatsGuard();
 
 /** The implementer pane the phase-stall cases run, with what its stand-in daemon recorded and
  * its transcript's phase-stall entries. */
@@ -36,9 +39,22 @@ interface StallPane extends LegionPane {
   readonly publishes: () => Record<string, unknown>[];
   /** The persisted transcript's phase-stall entries, in order. */
   readonly phaseEntries: () => Promise<unknown[]>;
-  /** The pushed commit carrying `.legion/STALL-2/implement.json` in the pane's workspace: what
-   * its `handoff_complete` finds and reports. */
-  readonly handoffCommit: string;
+  /** The commit `legion/STALL-2@origin` names in the pane's workspace: the pushed tip its
+   * `handoff_complete` reports beside the record. */
+  readonly pushedTip: string;
+}
+
+/** `POST /legion/v1/claims/activity`, the session's own report of what it is doing
+ * (packages/pi-shared/src/session-activity.ts): the plugin sends it after each turn and whenever
+ * the report's content changes, so how many a case sees is the host's timing and no case here is
+ * about it. What those reports hold is asserted in extensions/legion-session-activity-omp.test.ts. */
+const ACTIVITY_ROUTE = "/legion/v1/claims/activity";
+
+/** Every daemon route the pane called, in order, the activity heartbeat left out. */
+function daemonRoutes(pane: LegionPane): string[] {
+  return pane.requests
+    .map((request) => request.path)
+    .filter((requested) => requested.startsWith("/legion/") && requested !== ACTIVITY_ROUTE);
 }
 
 /**
@@ -75,8 +91,21 @@ function published(body: Record<string, unknown>): Response {
 }
 
 /** The identity the daemon puts on every pane (runtime.GitIdentity), which the pane's jj commits
- * as and `handoff_complete` holds the carrying commit's author to. */
+ * as. */
 const PANE_IDENTITY = { JJ_USER: "Legion Test", JJ_EMAIL: "legion-test@example.invalid" };
+
+/** The implement handoff the worker wrote to the stand-in Dispatch with `dispatch handoff-write`
+ * before completing: the newest record of STALL-2's implement phase, which its `handoff_complete`
+ * reads and names. Its body names the head the round pushed, which the workspace this file builds
+ * decides, so the body is written once that push has happened. */
+const STALL_RECORD = {
+  id: "0c9e7d2a-41b6-4f58-9a3e-6d1b2c8f5e70",
+  issue_key: "STALL-2",
+  phase: "implement",
+  version: 1,
+  author: { kind: "agent", session_id: "ses_stall" },
+  created_at: "2026-10-09T08:00:00Z",
+};
 
 /** Runs `jj` in `cwd` as the pane's identity, failing loudly on a non-zero exit, and answers its
  * stdout. */
@@ -97,7 +126,7 @@ async function runJj(jj: string, cwd: string, args: readonly string[]): Promise<
 }
 
 /** The daemon's state as the pane's `handoff_complete` reads it: STALL-2 at implementing, the
- * phase whose handoff is `.legion/STALL-2/implement.json`. */
+ * phase whose handoff is the `implement` record. */
 const STALL_STATE = {
   daemon: {
     project: "STALL",
@@ -106,7 +135,7 @@ const STALL_STATE = {
     firstBootAt: "2026-09-18T14:03:27Z",
     startedAt: "2026-09-22T09:15:02Z",
   },
-  admission: { cap: 1, active: ["STALL-1"], waiting: [], blocked: [] },
+  admission: { cap: 1, active: ["STALL-1"], waiting: [], trees: ["STALL-1"], blocked: [] },
   issues: {
     "STALL-2": {
       key: "STALL-2",
@@ -121,6 +150,7 @@ const STALL_STATE = {
   pendingStatusWrites: [],
   heldOutboxRows: [],
   strandedClaims: [],
+  wakesWaiting: [],
   capabilities: [],
   repositories: {
     owners: ["acme"],
@@ -129,7 +159,7 @@ const STALL_STATE = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
 };
 
@@ -178,7 +208,7 @@ function legionToolDescription(request: Request): string {
  * file's own routes, and the stand-in's open-ask snapshot. */
 interface PaneOptions
   extends Pick<LegionPaneOptions, "legion" | "quietMs" | "selfCheck" | "env" | "answer"> {
-  /** Configures Dispatch against the stand-in, whose open-ask snapshot answers with this count. */
+  /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
   readonly openAskQuestions?: readonly string[];
@@ -186,27 +216,31 @@ interface PaneOptions
 
 /**
  * Runs one implementer pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
- * daemon's state and completion routes and Dispatch's open-ask snapshot when a case configures
- * Dispatch, until its run settles. The pane's workspace is a jj repository with
- * `.legion/STALL-2/implement.json` committed and pushed to a bare origin's `legion/STALL-2`, as a
- * worker leaves it before completing, so the pane's `handoff_complete` finds the carrying commit.
+ * daemon's state and completion routes and, as Dispatch, the issue's handoff records and the
+ * open-ask snapshot, until its run settles. The pane's workspace is a jj repository whose change
+ * is committed and pushed to a bare origin's `legion/STALL-2`, and the stand-in Dispatch holds the
+ * implement record written to it, as a worker leaves both before completing, so the pane's
+ * `handoff_complete` finds the record and the pushed tip.
  */
 async function stallPane(
-  binary: string,
+  run: { readonly binary: string; readonly nats: string },
   replies: readonly Reply[],
   options: PaneOptions = {}
 ): Promise<StallPane> {
-  let handoffCommit = "";
+  let pushedTip = "";
+  /** The stand-in Dispatch's handoff records of STALL-2's implement phase, oldest first. */
+  const records: Array<typeof STALL_RECORD & { body: string }> = [];
   const pane = await runLegionPane(
-    binary,
+    run.binary,
     replies,
     {
       name: "stall",
+      nats: run.nats,
       role: "implementer",
       tree: "STALL-1",
       issue: "STALL-2",
       prompt: "Implement STALL-2.",
-      dispatch: options.openAsks !== undefined || options.openAskQuestions !== undefined,
+      dispatch: true,
       legion: options.legion,
       quietMs: options.quietMs,
       selfCheck: options.selfCheck,
@@ -234,21 +268,35 @@ async function stallPane(
         await writeFile(path.join(workspace, "main.py"), 'print("stall")\n');
         await jjIn("describe", "-m", "implement: the change");
         await jjIn("new");
-        await mkdir(path.join(workspace, ".legion", "STALL-2"), { recursive: true });
-        await writeFile(
-          path.join(workspace, ".legion", "STALL-2", "implement.json"),
-          '{"schemaVersion":1,"phase":"implement","issue":"STALL-2"}\n'
-        );
-        await jjIn("split", "-m", "implement: record handoff", ".legion/STALL-2/implement.json");
         await jjIn("bookmark", "set", "legion/STALL-2", "-r", "@-");
         await jjIn("git", "push", "--bookmark", "legion/STALL-2");
-        handoffCommit = await jjIn("log", "-r", "@-", "--no-graph", "-T", "commit_id");
+        pushedTip = await jjIn("log", "-r", "@-", "--no-graph", "-T", "commit_id");
+        // The worker's `dispatch handoff-write --issue STALL-2 --phase implement`, whose body
+        // names the tip it just pushed.
+        records.push({
+          ...STALL_RECORD,
+          body: JSON.stringify({
+            schemaVersion: 1,
+            phase: "implement",
+            issue: "STALL-2",
+            head: pushedTip,
+          }),
+        });
       },
       answer: (url, body) => {
         const own = options.answer?.(url, body);
         if (own !== undefined) return own;
         if (url.pathname === "/legion/v1/state") return Response.json(STALL_STATE);
         if (url.pathname === "/legion/v1/handoff/complete") return Response.json({});
+        if (url.pathname === "/api/v1/issues/STALL-2/handoffs/implement/latest") {
+          const newest = records.at(-1);
+          return newest === undefined
+            ? Response.json(
+                { error: "no implement handoff on STALL-2", code: "HANDOFF_NOT_FOUND" },
+                { status: 404 }
+              )
+            : Response.json(newest);
+        }
         // The Envoy listener takes the architect notice unless a case refuses it.
         if (url.pathname === "/v1/messages/publish") return published(body);
         if (url.pathname !== "/api/v1/asks/open") return undefined;
@@ -290,15 +338,14 @@ async function stallPane(
         .filter((request) => request.path === "/v1/messages/publish")
         .map((request) => request.body),
     phaseEntries: () => pane.transcriptEntries(PHASE_STALL_ENTRY),
-    handoffCommit,
+    pushedTip,
   };
 }
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a turn that ends on a legion tool call written as text is reminded that it did not run, and the next turn's real legion tool call posts the completion",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-    const pane = await stallPane(omp, [
+    const pane = await stallPane(setup(), [
       [
         {
           type: "text",
@@ -316,28 +363,37 @@ test.skipIf(omp === undefined && !onActions)(
     ]);
 
     // The worker registered through the daemon's routes; the reminder's record check read the
-    // issue's record before it was sent, and the handoff_complete read it again, found the pushed
-    // commit carrying .legion/STALL-2/implement.json in its workspace with the pane's jj, minted
-    // a grant in-process and posted the completion with both: no grant file, no `legion` command,
-    // and no handoff read by the daemon.
-    expect(
-      pane.requests.map((request) => request.path).filter((p) => p.startsWith("/legion/"))
-    ).toEqual([
+    // issue's record before it was sent, and the handoff_complete read it again, read the newest
+    // implement record from the pane's Dispatch, held the head that record names to the commit
+    // the pane's workspace stands on, pushed to legion/STALL-2@origin, with the pane's jj, minted
+    // a grant in-process and posted the completion at that head with the record: no grant file,
+    // no `legion` command, and no handoff file. Each of the two runs the host settled also
+    // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the
+    // tool call ends no run of its own, so it earns no report.
+    expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
       "/legion/v1/state",
+      "/legion/v1/claims/turn-outcome",
       "/legion/v1/state",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",
+      "/legion/v1/claims/turn-outcome",
     ]);
-    expect(pane.handoffCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(pane.pushedTip).toMatch(/^[0-9a-f]{40}$/);
+    expect(
+      pane.requests
+        .filter((request) => request.path.startsWith("/api/v1/issues/STALL-2/handoffs/"))
+        .map((request) => request.path)
+    ).toEqual(["/api/v1/issues/STALL-2/handoffs/implement/latest"]);
     expect(pane.completions()).toEqual([
       {
         grantId: "stall-grant-1",
         summary: "Stall proof done.",
         verdict: "",
-        ready: false,
-        commit: pane.handoffCommit,
+        commit: pane.pushedTip,
+        handoffId: STALL_RECORD.id,
+        handoffVersion: STALL_RECORD.version,
       },
     ]);
     const turns = pane.turns();
@@ -364,12 +420,11 @@ test.skipIf(omp === undefined && !onActions)(
   120_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a worker that keeps settling is reminded at the end of every turn, past the architect threshold, until its handoff_complete closes the phase",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
     const pane = await stallPane(
-      omp,
+      setup(),
       [
         [{ type: "text", text: "Pushed the change." }],
         [{ type: "text", text: "Still pushing." }],
@@ -412,15 +467,19 @@ test.skipIf(omp === undefined && !onActions)(
   120_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a WAITING reply buys its quiet wait, and the reminder comes again when the wait is over",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     // Every request the stand-in served, with the moment it was served: the proposition is that
     // nothing reached the session until the wait was over, and only elapsed time shows it.
     const seen: { readonly path: string; readonly at: number }[] = [];
+    // The quiet wait a WAITING line buys, and the bound every assertion below measures against.
+    // The bound allows the timer a little early, since a host timer may fire slightly short.
+    const waitMs = 1_500;
+    const waitedAtLeastMs = waitMs - 100;
     const pane = await stallPane(
-      omp,
+      run,
       [
         [{ type: "text", text: "Pushed the change.\nWAITING: CI on the pull request." }],
         [
@@ -433,7 +492,7 @@ test.skipIf(omp === undefined && !onActions)(
         [{ type: "text", text: "Reported." }],
       ],
       {
-        env: { LEGION_STALL_WAITING_MS: "1500" },
+        env: { LEGION_STALL_WAITING_MS: String(waitMs) },
         quietMs: 4_000,
         answer: (url) => {
           seen.push({ path: url.pathname, at: Date.now() });
@@ -449,14 +508,29 @@ test.skipIf(omp === undefined && !onActions)(
       .map((request) => request.at);
     // The WAITING line bought the wait: no turn started while it ran, and the reminder's did
     // only once it was over.
-    expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(1_400);
+    expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
     // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
-    // for the reminder's own record check, and to the listener for its session registration.
-    const between = seen
-      .filter((request) => request.at > waitingTurn && request.at < reminderTurn)
-      .map((request) => request.path);
+    // for the reminder's own record check, the outcome of the turn that bought the wait and the
+    // activity report its settle sends, and to the listener for its session registration. The
+    // stand-in also serves as Dispatch, which holds the handoff record, so the session reads its
+    // people's answers before every model request (pi-envoy's answers line), the reminder's
+    // included. That read belongs to the reminder's turn, so it comes only once the wait is over.
+    const between = seen.filter((request) => request.at > waitingTurn && request.at < reminderTurn);
+    const answersRead = /^\/api\/v1\/agents\/[^/]+\/answers$/;
+    for (const request of between.filter(({ path }) => answersRead.test(path))) {
+      expect(request.at - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
+    }
     expect(
-      between.filter((path) => path !== "/legion/v1/state" && path !== "/v1/interests/subscribe")
+      between
+        .map((request) => request.path)
+        .filter(
+          (path) =>
+            path !== "/legion/v1/state" &&
+            path !== "/legion/v1/claims/turn-outcome" &&
+            path !== ACTIVITY_ROUTE &&
+            path !== "/v1/interests/subscribe" &&
+            !answersRead.test(path)
+        )
     ).toEqual([]);
     // What the worker is told once its wait is over: the reminding repeats, rather than this
     // being the last it hears until something arrives.
@@ -474,13 +548,13 @@ test.skipIf(omp === undefined && !onActions)(
   120_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a run of unanswered reminders tells the issue's architect over Envoy, retried under its own key until the listener takes it, and never again",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     let publishes = 0;
     const pane = await stallPane(
-      omp,
+      run,
       [
         [{ type: "text", text: "Pushed the change." }],
         [{ type: "text", text: "Still pushing." }],
@@ -537,12 +611,12 @@ test.skipIf(omp === undefined && !onActions)(
   120_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a real tool call between reminders puts the count back to zero, so the architect of a working worker is not told",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     const pane = await stallPane(
-      omp,
+      run,
       [
         [{ type: "text", text: "Pushed." }],
         [{ type: "text", text: "Still pushing." }],
@@ -578,12 +652,12 @@ const MOVED_ON = {
   issues: { "STALL-2": { ...STALL_STATE.issues["STALL-2"], phase: "reviewing" } },
 };
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a worker whose record has already moved past its phase is reminded of nothing: its run settles where it is",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     const pane = await stallPane(
-      omp,
+      run,
       // A second reply is scripted so a turn that should not happen shows up as a turn rather
       // than as the gateway's "no reply scripted" refusal.
       [
@@ -608,13 +682,13 @@ test.skipIf(omp === undefined && !onActions)(
   120_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a record that moves on between reminders stops them: the reminder its timer carried is never sent",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     let reads = 0;
     const pane = await stallPane(
-      omp,
+      run,
       [
         [{ type: "text", text: "Pushed the change." }],
         [{ type: "text", text: "Still pushing." }],
@@ -653,12 +727,12 @@ test.skipIf(omp === undefined && !onActions)(
 // replies calls no tool, so it owes none: those two together are why the nudge cannot nudge
 // itself. If either changed, an ordinary session would nudge itself to the per-period cap after
 // every settle. This is what a pin bump is re-run against.
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a PROCEEDING self-check leaves an ask-free stop with no visible turn at all",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     const pane = await stallPane(
-      omp,
+      run,
       // A second reply is scripted so a turn that should not happen shows up as a turn rather
       // than as the gateway's "no reply scripted" refusal.
       [[{ type: "text", text: "Done." }], [{ type: "text", text: "Understood." }]],
@@ -684,13 +758,13 @@ test.skipIf(omp === undefined && !onActions)(
   180_000
 );
 
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a WAITING self-check with a held ask runs exactly one nudge and lists the ask",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     const heldQuestion = "Which deployment window should I use?";
     const pane = await stallPane(
-      omp,
+      run,
       [[{ type: "text", text: "Done." }], [{ type: "text", text: "Understood." }]],
       {
         legion: false,
@@ -726,12 +800,12 @@ test.skipIf(omp === undefined && !onActions)(
 // result wakes the session into the next turn. Nothing in the plugin decides this, which is
 // exactly why only the real binary can say it: a pin that stopped deferring would remind a
 // working worker that it has done nothing, with every unit test still green.
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(skip)(
   "a turn that ends while the session waits on its own background job gets no reminder, and the job's result wakes it",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    const run = setup();
     const pane = await stallPane(
-      omp,
+      run,
       [
         [call("bash", { command: "sleep 4; echo background-done", async: true })],
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],

@@ -7,8 +7,10 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
+  ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -20,21 +22,30 @@ import {
   IDEMPOTENCY_KEY_TTL_MS,
   IDEMPOTENCY_LEASE_MS,
   IDEMPOTENCY_REPLAYED_HEADER,
+  ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_TITLE_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
   MAX_BROADCAST_RECIPIENTS,
+  MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
+  SEARCH_OPERATOR_EXCLUDE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_PHRASE,
 } from "../src/dispatch-api";
 import {
-  ASK_QUESTION_MAX,
-  DISPATCH_BODY_MAX,
+  DISPATCH_BLOCK_UNITS,
+  DISPATCH_EVENT_BODY_MAX,
+  DISPATCH_HANDOFF_BODY_MAX,
+  DISPATCH_ITEM_BLOCKS,
+  HANDOFF_PHASE_PATTERN,
+  HANDOFF_PHASE_RULE_WORDS,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
@@ -42,17 +53,59 @@ import {
   SEARCH_QUERY_MAX,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
-import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
+import {
+  LISTENER_CALL_ATTEMPTS,
+  LISTENER_CALL_RETRY_DELAY_MS,
+  LISTENER_CALL_TIMEOUT_MS,
+  SESSION_CLAIM_STALE_MS,
+  SESSION_HEARTBEAT_MS,
+  SESSION_LIVE_WINDOW_MS,
+} from "../src/envoy-session";
+import {
+  GOING_ANSWER_WORD_MAX,
+  GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+  GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_NO_MODEL_CONFIGURED,
+  GOING_EVENT_CHANGED,
+  GOING_EVENT_CUT,
+  GOING_EVENT_END,
+  GOING_EVENT_ERROR,
+  GOING_EVENT_ITEM,
+  GOING_EVENT_NONE,
+  GOING_EVENT_TEXT,
+  GOING_HIT_RUNE_MAX,
+  GOING_MODEL_CALL_MAX,
+  GOING_REQUEST_RUNE_MAX,
+  GOING_REQUEST_TTL_MS,
+  GOING_RUN_MS,
+  GOING_SEARCH_MAX,
+  GOING_SEARCH_TOOL,
+  GOING_WORDS_MAX,
+} from "../src/going";
+import { controllerToken } from "../src/legion-roles";
+import {
+  legionControllerNoticeSubject,
+  SUBJECT_MAX_BYTES,
+  SUBJECT_SEGMENT_REPLACED,
+  uncapturedTopicRefusal,
+} from "../src/subject";
+import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
+// The slice of JSON Schema that schemas/envelope.schema.json uses. A property with no `type` is
+// one whose values are not of a single JSON type, such as a mixed literal set; it names the Go
+// type holding it through `x-go-type`, which is hand-written beside the generated file and
+// validates itself.
 type Prop = {
-  type: ScalarKind | "array" | "object";
-  enum?: string[];
+  type?: ScalarKind | "array" | "object";
+  enum?: (string | boolean)[];
   minLength?: number;
   properties?: Record<string, Prop>;
   required?: string[];
   items?: Prop;
+  additionalProperties?: Prop | false;
+  "x-go-type"?: string;
 };
 
 type Schema = {
@@ -63,12 +116,71 @@ type Schema = {
 };
 
 const envelopeFile = resolve(import.meta.dir, "../schemas/envelope.schema.json");
+const blockSchemaFile = resolve(import.meta.dir, "../schemas/block-schema.schema.json");
 
 const map = {
   string: "string",
   integer: "int64",
   boolean: "bool",
 } satisfies Record<ScalarKind, string>;
+
+// splitAtSentinels is the text a builder puts around the values it interpolates: what comes
+// before the first value, between each pair of them, and after the last, read by building it with
+// one sentinel per value. A builder that stopped interpolating one of them, interpolated one
+// twice, or interpolated them in another order throws here rather than generating Go that reads
+// nothing like it.
+function splitAtSentinels(built: string, ...sentinels: string[]): string[] {
+  const parts: string[] = [];
+  let rest = built;
+  for (const sentinel of sentinels) {
+    const at = rest.indexOf(sentinel);
+    if (built.split(sentinel).length !== 2 || at < 0) {
+      throw new Error(`cannot split ${JSON.stringify(built)} at the sentinel ${sentinel}`);
+    }
+    parts.push(rest.slice(0, at));
+    rest = rest.slice(at + sentinel.length);
+  }
+  parts.push(rest);
+  return parts;
+}
+
+// goConcat is the Go expression a builder's text becomes: its literal parts, read by
+// splitAtSentinels, with each Go value between them. A part the builder left empty is left out
+// rather than written as "".
+function goConcat(parts: string[], values: string[]): string {
+  const terms = parts.flatMap((part, index) => {
+    const value = values[index];
+    return [
+      ...(part === "" ? [] : [JSON.stringify(part)]),
+      ...(value === undefined ? [] : [value]),
+    ];
+  });
+  return terms.join(" + ");
+}
+
+// A Legion project token is lowercase alphanumeric (PROJECT_TOKEN in src/legion-roles.ts), which
+// this sentinel is, so both builders below accept it.
+const projectSentinel = "zzprojectzz";
+const [legionNoticeTopicPrefix, controllerNoticeSuffix] = splitAtSentinels(
+  legionControllerNoticeSubject(projectSentinel),
+  projectSentinel
+);
+const controllerRoleToken = goConcat(
+  splitAtSentinels(controllerToken(projectSentinel), projectSentinel),
+  ["project"]
+);
+// The refusal interpolates a topic and a session id, reading neither, so any text that appears
+// nowhere else in the sentence stands in for them.
+const topicSentinel = "zztopiczz";
+const sessionSentinel = "zzsessionzz";
+const uncapturedTopicRefusalText = goConcat(
+  splitAtSentinels(
+    uncapturedTopicRefusal(topicSentinel, sessionSentinel),
+    topicSentinel,
+    sessionSentinel
+  ),
+  ["topic", "sessionID"]
+);
 
 const keep = `func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
@@ -109,11 +221,48 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
 
+// GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
+const GithubTopicPrefix = "notifications.github."
+
+// LegionNoticeTopicPrefix opens every Legion daemon notice subject, ControllerNoticeSuffix ends
+// the one subject of that family naming a project's controller rather than an issue, so project
+// <p>'s notice lane is LegionNoticeTopicPrefix + <p> + ControllerNoticeSuffix, and
+// ControllerRoleToken is the Legion role token whose holder that lane is for. Generated from
+// legionControllerNoticeSubject and controllerToken in packages/contracts: a rename there that Go
+// did not follow would leave the listener refusing the holder's registration of its own lane
+// (bus.ReachesPrivateStreamSubject would read a role token no claim names) and the controller
+// would receive no notice, with nothing else failing.
+const LegionNoticeTopicPrefix = ${JSON.stringify(legionNoticeTopicPrefix)}
+const ControllerNoticeSuffix = ${JSON.stringify(controllerNoticeSuffix)}
+
+func ControllerRoleToken(project string) string {
+	return ${controllerRoleToken}
+}
+
+// UncapturedTopicRefusal is what a caller that named topic, a notification topic no stream
+// subject captures and no role lane (bus.ReachesNoSession), is told: nothing would ever be
+// delivered to sessionID on it. POST /v1/interests/subscribe leaves such a topic out of the
+// registration and names it in this warning (splitUncapturedTopics in cmd/listener), and either
+// plugin's explicit subscribe refuses such a topic in the same words. Generated from
+// uncapturedTopicRefusal in packages/contracts, which both plugins build their refusal from, so
+// the listener and the hosts cannot word it apart.
+func UncapturedTopicRefusal(topic, sessionID string) string {
+	return ${uncapturedTopicRefusalText}
+}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
-// notification stream and by every host that subscribes over core NATS. Generated from
+// notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
 // this window bounds, so the stream, the hosts and the dashboard read one number.
 const DeliveryDuplicateWindow = ${DELIVERY_DUPLICATE_WINDOW_MS} * time.Millisecond
+
+// IssueClaimUnresponsiveGrace is how long an issue claim is held for a holder the Envoy registry
+// calls unresponsive: a session that missed its heartbeats keeps the issue it is working until it
+// was last seen longer ago than this, and only then may another agent take or release the claim
+// without a person's force. Generated from ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS in
+// packages/contracts, whose doc comment states the rule, so the server's refusal and the wait a
+// client predicts are one number.
+const IssueClaimUnresponsiveGrace = ${ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS} * time.Millisecond
 
 // MintedDedupeKeyPattern is the shape of a dedupe key minted once for its message, by the listener
 // or by the shared transport's idempotency key, which DedupeKeyNamesTheUpstreamEvent counts as
@@ -162,9 +311,94 @@ const SearchKindDepth = ${SEARCH_KIND_DEPTH}
 // Dispatch writes and the string search-answer.ts compares against cannot drift apart.
 const SearchDegradedEmbedderUnavailable = ${JSON.stringify(SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE)}
 
+// SearchOperatorPhrase, SearchOperatorOr and SearchOperatorExclude are the operator forms
+// GET /api/v1/search reads in a person's words and names in its answer's query.operators: a
+// quoted phrase, the OR between two words, and a -word it leaves out. Generated from
+// SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_OR and SEARCH_OPERATOR_EXCLUDE in packages/contracts so
+// the strings Dispatch answers and the strings a client reads them by cannot drift apart.
+const (
+	SearchOperatorPhrase  = ${JSON.stringify(SEARCH_OPERATOR_PHRASE)}
+	SearchOperatorOr      = ${JSON.stringify(SEARCH_OPERATOR_OR)}
+	SearchOperatorExclude = ${JSON.stringify(SEARCH_OPERATOR_EXCLUDE)}
+)
+
+// The names of the frames one answer's stream carries: text as the answer arrives, item for each
+// thing the answer cites, cut when the answer reached its word cap, changed when the server did
+// not pass the answer on as the model wrote it, none when the model produced no answer text at
+// all, and end and error, the two that end a stream. A text frame carries plain text, every
+// ASCII punctuation byte of it backslash-escaped, which closes markdown's own constructs, so a
+// renderer makes no link, image, tag or code span of any of it; an escape closes none of GFM's
+// literal autolinks, so a word a renderer would link on its own is dropped from the answer
+// rather than sent; and an item frame is where the links of an answer live, each carrying a
+// cited item's own href.
+// Generated from GOING_EVENT_TEXT, GOING_EVENT_ITEM, GOING_EVENT_CUT,
+// GOING_EVENT_CHANGED, GOING_EVENT_NONE, GOING_EVENT_END and GOING_EVENT_ERROR in
+// packages/contracts so the frames the server writes and the frames the page reads cannot drift
+// apart.
+const GoingEventText = ${JSON.stringify(GOING_EVENT_TEXT)}
+const GoingEventItem = ${JSON.stringify(GOING_EVENT_ITEM)}
+const GoingEventCut = ${JSON.stringify(GOING_EVENT_CUT)}
+const GoingEventChanged = ${JSON.stringify(GOING_EVENT_CHANGED)}
+const GoingEventNone = ${JSON.stringify(GOING_EVENT_NONE)}
+const GoingEventEnd = ${JSON.stringify(GOING_EVENT_END)}
+const GoingEventError = ${JSON.stringify(GOING_EVENT_ERROR)}
+
+// The codes an error frame carries: the run reached its window without an answer, the deployment
+// has no text model configured, and the model service refused or failed. Generated from
+// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
+// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
+// the page keys on it cannot drift apart.
+const GoingErrorAnswerDidNotArrive = ${JSON.stringify(GOING_ERROR_ANSWER_DID_NOT_ARRIVE)}
+const GoingErrorNoModelConfigured = ${JSON.stringify(GOING_ERROR_NO_MODEL_CONFIGURED)}
+const GoingErrorAnswerFailed = ${JSON.stringify(GOING_ERROR_ANSWER_FAILED)}
+
+// GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
+// Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
+// name the page explains cannot drift apart.
+const GoingSearchTool = ${JSON.stringify(GOING_SEARCH_TOOL)}
+
+// GoingAnswerWordMax is the most words an answer carries, past which the stream cuts it and says
+// so. Generated from GOING_ANSWER_WORD_MAX in packages/contracts so the server's cut and the
+// page's account of it cannot drift apart.
+const GoingAnswerWordMax = ${GOING_ANSWER_WORD_MAX}
+
+// GoingHitRuneMax is the most of one hit's own text the model is shown, and GoingRequestRuneMax
+// the most hit text one run shows it in total; a hit past the total is still named to the model
+// with no body, and stays something the answer may cite.
+// Generated from GOING_HIT_RUNE_MAX and GOING_REQUEST_RUNE_MAX in packages/contracts so the
+// server's bounds and the page's account of them cannot drift apart.
+const GoingHitRuneMax = ${GOING_HIT_RUNE_MAX}
+const GoingRequestRuneMax = ${GOING_REQUEST_RUNE_MAX}
+
+// GoingSearchMax is the most searches one run makes, the server's own seeding search counting as
+// the first, and GoingModelCallMax the most calls it makes to the model, which bounds a model
+// that keeps searching instead of answering. Generated from GOING_SEARCH_MAX and
+// GOING_MODEL_CALL_MAX in packages/contracts so the server's bounds and the page's account of
+// them cannot drift apart.
+const GoingSearchMax = ${GOING_SEARCH_MAX}
+const GoingModelCallMax = ${GOING_MODEL_CALL_MAX}
+
+// GoingWordsMax is the longest question the route accepts, in UTF-16 units. Generated from
+// GOING_WORDS_MAX in packages/contracts so the server's refusal and the page's own cannot drift
+// apart.
+const GoingWordsMax = ${GOING_WORDS_MAX}
+
+// GoingRunWindow is how long one run may take, measured from the POST that started it, and
+// GoingRequestTTL how long a run's rows are kept, so a reader that reconnects still finds its
+// answer. Generated from GOING_RUN_MS and GOING_REQUEST_TTL_MS in packages/contracts so the
+// server's windows and the page's account of them cannot drift apart.
+const GoingRunWindow = ${GOING_RUN_MS} * time.Millisecond
+const GoingRequestTTL = ${GOING_REQUEST_TTL_MS} * time.Millisecond
+
 // MaxIssueBlockers bounds blocked_by input before deduplication. Generated from
 // MAX_ISSUE_BLOCKERS in packages/contracts so the server and tool schemas share the limit.
 const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
+
+// MaxIssueAdvances bounds the \`advances\` input of an issue write before deduplication: the most
+// priorities one issue states it advances, its own relations alone. Generated from
+// MAX_ISSUE_ADVANCES in packages/contracts so the server's refusal and every client's bound are
+// one number.
+const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
@@ -178,16 +412,38 @@ const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
 // server's refusal and the dashboard's title fields cannot drift apart.
 const IssueTitleMax = ${ISSUE_TITLE_MAX}
 
-// DispatchBodyMax is the longest comment, comment-edit, message and broadcast body the server
-// accepts, in UTF-16 units. Generated from DISPATCH_BODY_MAX in packages/contracts so the server's
-// refusal, the agent tools' pre-send refusal and the dashboard composer cannot drift apart.
-const DispatchBodyMax = ${DISPATCH_BODY_MAX}
+// DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
+// ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;
+// the server enforces it, names it in its refusal, and publishes it through GET /api/v1/limits.
+const DispatchBlockUnits = ${DISPATCH_BLOCK_UNITS}
 
-// AskQuestionMax is the longest ask question the server accepts, in UTF-16 units; an approval
-// request's summary gets what its question leaves of it. Generated from ASK_QUESTION_MAX in
-// packages/contracts so the server's refusal, the agent tools' pre-send refusal and the dashboard
-// ask composer cannot drift apart.
-const AskQuestionMax = ${ASK_QUESTION_MAX}
+// DispatchItemBlocks is the most blocks one body may hold. Generated from DISPATCH_ITEM_BLOCKS in
+// packages/contracts; the server enforces it, names it in its refusal, and publishes it through
+// GET /api/v1/limits.
+const DispatchItemBlocks = ${DISPATCH_ITEM_BLOCKS}
+
+// DispatchEventBodyMax is the longest body an event carries whole, in UTF-16 units, and the bound
+// on an ask's question and its options together. Generated from DISPATCH_EVENT_BODY_MAX in
+// packages/contracts; the server enforces it, names it in its refusal, and publishes it through
+// GET /api/v1/limits.
+const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
+
+// DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
+// POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
+// packages/contracts so the server's 413 and the \`dispatch handoff-write\` command's pre-send
+// refusal cannot drift apart.
+const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
+
+// HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
+// not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so
+// the server and the tool word it once.
+const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
+
+// HandoffPhasePattern is a handoff's phase, the {phase} segment of the handoff routes, which the
+// handoffs.phase check constraint holds too. Generated from HANDOFF_PHASE_PATTERN in
+// packages/contracts, which the dispatch command checks a phase against, so the two accept the
+// same phases.
+const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -245,12 +501,50 @@ const IdempotencyAnswerNotKept = ${JSON.stringify(IDEMPOTENCY_ANSWER_NOT_KEPT)}
 const IdempotencyKeyTTL = ${IDEMPOTENCY_KEY_TTL_MS} * time.Millisecond
 const IdempotencyLease = ${IDEMPOTENCY_LEASE_MS} * time.Millisecond
 
+// SessionHeartbeat is how often a pane's pi-envoy plugin refreshes its listener registration, and
+// SessionLiveWindow how long a session's last registration keeps it live to the listener. Three
+// heartbeats plus one whole listener call fit inside the live window, so two refreshes may fail
+// and the third still completes before the session stops reading live. Generated from
+// SESSION_HEARTBEAT_MS and SESSION_LIVE_WINDOW_MS in packages/contracts, whose doc comments state
+// that arrangement, so the pane's refresh and the listener's window cannot drift apart.
+const SessionHeartbeat = ${SESSION_HEARTBEAT_MS} * time.Millisecond
+const SessionLiveWindow = ${SESSION_LIVE_WINDOW_MS} * time.Millisecond
+
+// SessionClaimStale is how long a session's role claim may go unrefreshed before a reader treats
+// the process that wrote it as gone, which allows three missed heartbeats at SessionHeartbeat.
+// Generated from SESSION_CLAIM_STALE_MS in packages/contracts so session.ClaimStaleAfter and the
+// Legion daemon's copy of it, which times its last re-hold of a notice, are one number.
+const SessionClaimStale = ${SESSION_CLAIM_STALE_MS} * time.Millisecond
+
+// ListenerCallTimeout is how long one attempt of an envoy-client call waits for the listener,
+// ListenerCallRetryDelay the pause before the next attempt, and ListenerCallAttempts how many
+// attempts one call makes. Together they are a whole call's budget, which the heartbeat interval
+// is set to leave room for. Generated from LISTENER_CALL_TIMEOUT_MS, LISTENER_CALL_RETRY_DELAY_MS
+// and LISTENER_CALL_ATTEMPTS in packages/contracts so the client's cost and every check of that
+// budget are computed from one set of numbers.
+const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
+const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
+const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
 // packages/contracts so the server's check and the page's header cannot drift apart.
 const DispatchLoginHeader = ${JSON.stringify(DISPATCH_LOGIN_HEADER)}
 const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
+
+// IDAmbiguous is the code of the 409 an id written as a prefix two items or more carry is
+// refused with, on a page address, a dispatch:// reference and a dashboard address in text, and
+// on a route that takes an id in its path; the refusal's candidates list the items it names.
+// Generated from ID_AMBIGUOUS in packages/contracts so the server's refusal and the page that
+// lists its candidates cannot drift apart.
+const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
+
+// DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
+// names a session and a service but no person: the machine holding it has signed nobody in.
+// Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
+// every client's reading of it cannot drift apart.
+const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
@@ -260,15 +554,15 @@ func AgentSubject(session string) string {
 	return AgentTopicPrefix + session
 }
 
-// githubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
+// GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
 // segment: a name may hold a dot, which a NATS subject splits on. Mirrored on the TS side as
 // \`githubRepositoryPrefix\`.
-func githubRepositoryPrefix(owner, repo string) string {
-	return "notifications.github." + SanitizeSubjectSegment(owner) + "." + SanitizeSubjectSegment(repo)
+func GithubRepositoryPrefix(owner, repo string) string {
+	return GithubTopicPrefix + SanitizeSubjectSegment(owner) + "." + SanitizeSubjectSegment(repo)
 }
 
 func GithubSubject(owner string, repo string, kind string) string {
-	return githubRepositoryPrefix(owner, repo) + "." + kind
+	return GithubRepositoryPrefix(owner, repo) + "." + kind
 }
 
 func SlackSubject(team string, channel string, kind string) string {
@@ -304,7 +598,7 @@ const SubjectMaxBytes = ${SUBJECT_MAX_BYTES}
 // ref, so a cut segment is never another ref's whole one. A consumer that needs the exact ref reads
 // the payload's ref. Mirrored on the TS side as \`githubPushSubject\`.
 func GithubPushSubject(owner, repo, refType, refName string) string {
-	prefix := githubRepositoryPrefix(owner, repo) + ".push." + refType + "."
+	prefix := GithubRepositoryPrefix(owner, repo) + ".push." + refType + "."
 	segment := SanitizeSubjectSegment(refName)
 	if len(prefix)+len(segment) <= SubjectMaxBytes {
 		return prefix + segment
@@ -319,17 +613,17 @@ func GithubPushSubject(owner, repo, refType, refName string) string {
 }
 
 func GithubWorkflowSubject(owner, repo, workflowFilename, action string) string {
-	return githubRepositoryPrefix(owner, repo) + ".workflow." + SanitizeSubjectSegment(workflowFilename) + "." + action
+	return GithubRepositoryPrefix(owner, repo) + ".workflow." + SanitizeSubjectSegment(workflowFilename) + "." + action
 }
 
 // GithubJobSubject names a finished GitHub Actions job on the default branch, of a run with no pull
 // request, by its run. Mirrored on the TS side as \`githubJobSubject\`.
 func GithubJobSubject(owner, repo, runID, action string) string {
-	return githubRepositoryPrefix(owner, repo) + ".job." + SanitizeSubjectSegment(runID) + "." + action
+	return GithubRepositoryPrefix(owner, repo) + ".job." + SanitizeSubjectSegment(runID) + "." + action
 }
 
 func GithubResourceSubject(owner string, repo string, resourceType string, resourceNumber string) string {
-	return githubRepositoryPrefix(owner, repo) + "." + resourceType + "." + resourceNumber
+	return GithubRepositoryPrefix(owner, repo) + "." + resourceType + "." + resourceNumber
 }
 
 const GhostWisprTopicPrefix = "notifications.ghostwispr."
@@ -366,8 +660,26 @@ function name(key: string) {
   return key.split("_").map(title).join("");
 }
 
+// mapValues is the value shape of a map property - an object whose keys are the data, declared
+// with `additionalProperties` and no properties of its own - and undefined for every other
+// property, an object with named properties among them, which is rendered as a struct of its own
+// (renderEnvelopeObject).
+function mapValues(prop: Prop): Prop | undefined {
+  if (prop.type !== "object" || prop.properties) return undefined;
+  return prop.additionalProperties === false ? undefined : prop.additionalProperties;
+}
+
 function envelopeKind(prop: Prop, req: Set<string>, key: string) {
+  // A property whose Go type is hand-written beside the generated file holds it whole: the type
+  // decides what the field reads off the wire and writes back, and validates itself.
+  const goType = prop["x-go-type"];
+  if (goType) return goType;
   if (prop.type === "object") {
+    const values = mapValues(prop);
+    if (values) {
+      if (values.type !== "string") throw new Error(`unsupported map values for ${key}`);
+      return "map[string]string";
+    }
     if (!prop.properties) throw new Error(`missing object properties for ${key}`);
     return `*Envelope${name(key)}`;
   }
@@ -377,6 +689,7 @@ function envelopeKind(prop: Prop, req: Set<string>, key: string) {
     }
     return "[]string";
   }
+  if (!prop.type) throw new Error(`${key} has no type and no x-go-type`);
   const base = map[prop.type];
   if (req.has(key) || prop.type === "string") return base;
   return `*${base}`;
@@ -400,11 +713,26 @@ function check(access: string, path: string, prop: Prop, depth = 1) {
   throw new Error(`unsupported required envelope type for ${path}`);
 }
 
-function enums(key: string, prop: Prop, optional: boolean) {
+// What Validate() says about one property's value: the type's own Validate() when the property
+// names a hand-written Go type, else a switch over the words its enum holds.
+function valueChecks(key: string, prop: Prop, optional: boolean) {
+  if (prop["x-go-type"]) {
+    return `\tif err := e.${name(key)}.Validate(); err != nil {\n\t\treturn err\n\t}`;
+  }
   if (!prop.enum?.length) return "";
   const n = name(key);
   const indent = optional ? "\t\t" : "\t";
-  const list = prop.enum.map((item) => `"${item}"`).join(", ");
+  // The switch below reads a Go string, and the optional case leans on `""` being its zero
+  // value, so a set holding anything else needs a Go type of its own to read and validate it
+  // (`x-go-type`, answered above). Refuse such a set rather than emit Go that does not compile.
+  const list = prop.enum
+    .map((item) => {
+      if (typeof item !== "string") {
+        throw new Error(`${key}'s enum holds ${JSON.stringify(item)} and names no x-go-type`);
+      }
+      return `"${item}"`;
+    })
+    .join(", ");
   const body = [
     `${indent}switch e.${n} {`,
     `${indent}case ${list}:`,
@@ -477,20 +805,23 @@ function renderEnvelope(schema: Schema) {
       ];
     })
     .join("\n");
-  const enumChecks = keys
-    .map((key) => enums(key, schema.properties[key], !req.has(key)))
+  const propertyChecks = keys
+    .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
-  const nestedChecks = keys
-    .filter((key) => schema.properties[key].type === "object")
+  // A map property is the Go map envelopeKind names it, so it has neither a struct of its own nor
+  // required keys to check.
+  const objects = keys.filter(
+    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
+  );
+  const nestedChecks = objects
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
     .join("\n");
-  const validate = [checks, optionalStringChecks, enumChecks, nestedChecks, "\treturn nil"]
+  const validate = [checks, optionalStringChecks, propertyChecks, nestedChecks, "\treturn nil"]
     .filter(Boolean)
     .join("\n");
-  const nested = keys
-    .filter((key) => schema.properties[key].type === "object")
+  const nested = objects
     .map((key) => renderEnvelopeObject(key, schema.properties[key]))
     .join("\n\n");
   return `type Envelope struct {
@@ -523,58 +854,282 @@ ${keep}
 `;
 }
 
-function renderDaemonDispatch() {
-  return `package dispatch
+// The slice of JSON Schema that schemas/block-schema.schema.json uses, which the block schema
+// renderers below read. `x-ordered` marks an object whose keys carry their declaration order,
+// `x-go-type` names the Go type holding such an object, and `x-go-constants` names the Go
+// constant of each value of a string enum.
+type BlockProp = {
+  description?: string;
+  type?: "object" | "array" | "string" | "integer" | "boolean";
+  $ref?: string;
+  const?: string;
+  enum?: string[];
+  items?: BlockProp;
+  anyOf?: BlockProp[];
+  properties?: Record<string, BlockProp>;
+  required?: string[];
+  additionalProperties?: BlockProp;
+  "x-ordered"?: boolean;
+  "x-go-type"?: string;
+  "x-go-constants"?: Record<string, string>;
+};
 
-// MessageBodyLimit is the longest body Dispatch accepts on a message, in UTF-16 code units as
-// Dispatch counts them. Generated from DISPATCH_BODY_MAX in packages/contracts;
-// record.MessagePostLimit subtracts the outbox marker the runner appends from it.
-const MessageBodyLimit = ${DISPATCH_BODY_MAX}
+type BlockSchemaDocument = BlockProp & { title: string; $defs: Record<string, BlockProp> };
+
+function blockRefName(ref: string) {
+  const referenced = ref.split("/").pop();
+  if (!referenced) throw new Error(`unsupported block schema $ref ${ref}`);
+  return referenced;
+}
+
+function blockDescription(prop: BlockProp, what: string) {
+  if (!prop.description) throw new Error(`block schema ${what} has no description`);
+  return prop.description;
+}
+
+// A description as comment lines of at most 100 columns, each behind prefix.
+function blockComment(text: string, prefix: string) {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(/\s+/)) {
+    const candidate = line === "" ? word : `${line} ${word}`;
+    if (line !== "" && prefix.length + candidate.length > 100) {
+      lines.push(prefix + line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+  }
+  if (line !== "") lines.push(prefix + line);
+  return lines;
+}
+
+function blockDoc(text: string) {
+  return ["/**", ...blockComment(text, " * "), " */"];
+}
+
+function blockGoType(prop: BlockProp): string {
+  if (prop.$ref) return blockRefName(prop.$ref);
+  // A value of several scalar shapes (an attribute's default) is held as it comes off the wire.
+  if (prop.anyOf) return "any";
+  switch (prop.type) {
+    case "string":
+      return "string";
+    case "integer":
+      return "int";
+    case "boolean":
+      return "bool";
+    case "array":
+      if (!prop.items) throw new Error("a block schema array has no items");
+      return `[]${blockGoType(prop.items)}`;
+    case "object": {
+      const goType = prop["x-go-type"];
+      if (!prop["x-ordered"] || !goType) {
+        throw new Error("a block schema object property needs x-ordered and x-go-type");
+      }
+      return goType;
+    }
+    default:
+      throw new Error(`unsupported block schema type ${prop.type}`);
+  }
+}
+
+function blockTypeScriptType(prop: BlockProp): string {
+  if (prop.$ref) return blockRefName(prop.$ref);
+  if (prop.anyOf) return prop.anyOf.map(blockTypeScriptType).join(" | ");
+  switch (prop.type) {
+    case "string":
+      return prop.const === undefined ? "string" : JSON.stringify(prop.const);
+    case "integer":
+      return "number";
+    case "boolean":
+      return "boolean";
+    case "array":
+      if (!prop.items) throw new Error("a block schema array has no items");
+      return `readonly ${blockTypeScriptType(prop.items)}[]`;
+    case "object": {
+      const values = prop.additionalProperties;
+      if (!prop["x-ordered"] || !values) {
+        throw new Error("a block schema object property needs x-ordered and additionalProperties");
+      }
+      // A JavaScript object keeps the insertion order of its string keys, so the object the
+      // server sends carries the declaration order the Go decoder keeps.
+      return `Readonly<Record<string, ${blockTypeScriptType(values)}>>`;
+    }
+    default:
+      throw new Error(`unsupported block schema type ${prop.type}`);
+  }
+}
+
+function blockFields(typeName: string, prop: BlockProp) {
+  if (!prop.properties) throw new Error(`block schema object ${typeName} has no properties`);
+  const req = new Set(prop.required ?? []);
+  return Object.entries(prop.properties).map(([key, field]) => ({
+    key,
+    field,
+    required: req.has(key),
+  }));
+}
+
+function renderBlockGoStruct(typeName: string, prop: BlockProp) {
+  const fields = blockFields(typeName, prop).map(({ key, field, required }) => {
+    const tag = required ? key : `${key},omitempty`;
+    // A $ref carries its description on the definition it names, which is rendered there.
+    const doc = field.$ref
+      ? []
+      : blockComment(blockDescription(field, `${typeName}.${key}`), "\t// ");
+    return [...doc, `\t${name(key)} ${blockGoType(field)} \`json:"${tag}"\``].join("\n");
+  });
+  return [
+    ...blockComment(blockDescription(prop, typeName), "// "),
+    `type ${typeName} struct {`,
+    ...fields,
+    "}",
+  ].join("\n");
+}
+
+function renderBlockGoEnum(typeName: string, prop: BlockProp) {
+  const constants = prop["x-go-constants"];
+  if (!prop.enum?.length || !constants) {
+    throw new Error(`block schema enum ${typeName} needs enum values and x-go-constants`);
+  }
+  const values = prop.enum.map((value) => {
+    const constant = constants[value];
+    if (!constant) throw new Error(`block schema enum ${typeName} value ${value} has no constant`);
+    return `\t${constant} ${typeName} = ${JSON.stringify(value)}`;
+  });
+  return [
+    ...blockComment(blockDescription(prop, typeName), "// "),
+    `type ${typeName} string`,
+    "",
+    "const (",
+    ...values,
+    ")",
+  ].join("\n");
+}
+
+function renderBlockInterface(typeName: string, prop: BlockProp) {
+  const fields = blockFields(typeName, prop).map(({ key, field, required }) => {
+    const doc = field.$ref
+      ? []
+      : blockDoc(blockDescription(field, `${typeName}.${key}`)).map((line) => `  ${line}`);
+    const optional = required ? "" : "?";
+    return [...doc, `  readonly ${key}${optional}: ${blockTypeScriptType(field)};`].join("\n");
+  });
+  return [
+    ...blockDoc(blockDescription(prop, typeName)),
+    `export interface ${typeName} {`,
+    ...fields,
+    "}",
+  ].join("\n");
+}
+
+function renderBlockUnion(typeName: string, prop: BlockProp) {
+  if (!prop.enum?.length) throw new Error(`block schema enum ${typeName} has no values`);
+  const values = prop.enum.map((value) => JSON.stringify(value));
+  const line = `export type ${typeName} = ${values.join(" | ")};`;
+  const body =
+    line.length <= 100
+      ? line
+      : `export type ${typeName} =\n${values.map((value) => `  | ${value}`).join("\n")};`;
+  return [...blockDoc(blockDescription(prop, typeName)), body].join("\n");
+}
+
+// The Go the server reads its own block schema with: the types blocks.json is decoded into, and
+// the attribute order every renderer of a typed block follows. The BlockAttributes type that
+// `x-go-type` names is hand-written beside the generated file, in pmdoc/block_attributes.go: the
+// schema shapes the field, not the ordered decoding behind it.
+function renderBlockSchemaGo(document: BlockSchemaDocument) {
+  const definitions = Object.entries(document.$defs).map(([typeName, definition]) =>
+    definition.enum
+      ? renderBlockGoEnum(typeName, definition)
+      : renderBlockGoStruct(typeName, definition)
+  );
+  return `// Code generated by packages/contracts/scripts/gen-go.ts from
+// packages/contracts/schemas/block-schema.schema.json. DO NOT EDIT.
+
+package pmdoc
+
+${renderBlockGoStruct(document.title, document)}
+
+${definitions.join("\n\n")}
+`;
+}
+
+// The same shape for every TypeScript client: the browser editor, the SPA and the tools.
+function renderBlockSchemaTypes(document: BlockSchemaDocument) {
+  const definitions = Object.entries(document.$defs).map(([typeName, definition]) =>
+    definition.enum
+      ? renderBlockUnion(typeName, definition)
+      : renderBlockInterface(typeName, definition)
+  );
+  return `// Code generated by scripts/gen-go.ts from schemas/block-schema.schema.json. DO NOT EDIT.
+
+${renderBlockInterface(document.title, document)}
+
+${definitions.join("\n\n")}
 `;
 }
 
 const envelope = (await Bun.file(envelopeFile).json()) as Schema;
+const blockSchema = (await Bun.file(blockSchemaFile).json()) as BlockSchemaDocument;
 
-// Every generated Go file this script owns. The daemon carries its own copy of the body cap
-// rather than importing the envoy package: its production build imports nothing from
-// github.com/sjawhar/envoy.
+// Every generated file this script owns, each marked with the language it is written in: a Go
+// file is gofmt-formatted before it is written and before it is compared.
 const outputs = [
   {
     path: resolve(import.meta.dir, "../../envoy/internal/contracts/generated.go"),
     rendered: renderContracts(envelope),
+    language: "go",
   },
   {
-    path: resolve(import.meta.dir, "../../daemon/internal/dispatch/generated.go"),
-    rendered: renderDaemonDispatch(),
+    path: resolve(import.meta.dir, "../../envoy/internal/dispatch/pmdoc/schema_generated.go"),
+    rendered: renderBlockSchemaGo(blockSchema),
+    language: "go",
   },
-];
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_tools_generated.go"),
+    rendered: renderDispatchTools(),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../src/block-schema.generated.ts"),
+    rendered: renderBlockSchemaTypes(blockSchema),
+    language: "ts",
+  },
+] satisfies { path: string; rendered: string; language: "go" | "ts" }[];
 const fmt = Bun.which("gofmt");
 
-// `--check` pipes each render through gofmt and compares it with the committed file, writing
-// nothing, so CI fails on a generated.go that no longer matches the TypeScript it comes from.
+// `--check` pipes each Go render through gofmt and compares every render with the committed
+// file, writing nothing, so CI fails on a generated file that no longer matches the TypeScript or
+// the schema it comes from.
 if (process.argv.includes("--check")) {
   if (fmt === null) {
-    throw new Error("gen-go --check needs gofmt: the committed files are gofmt-formatted");
+    throw new Error("gen-go --check needs gofmt: the committed Go files are gofmt-formatted");
   }
   // GEN_GO_CHECK_ROOT points the comparison at copies of the outputs under another root, laid out
   // by their repository-relative paths, so a test can check a copy instead of a tracked file.
   // Unset, `--check` compares the committed files.
   const checkRoot = process.env.GEN_GO_CHECK_ROOT;
   const repoRoot = resolve(import.meta.dir, "../../..");
-  for (const { path: output, rendered } of outputs) {
+  for (const { path: output, rendered, language } of outputs) {
     const path = checkRoot ? resolve(checkRoot, relative(repoRoot, output)) : output;
-    const gofmt = Bun.spawnSync({
-      cmd: [fmt],
-      stdin: new TextEncoder().encode(rendered),
-      stderr: "inherit",
-    });
-    if (gofmt.exitCode !== 0) {
-      throw new Error("gofmt failed");
+    let expected = rendered;
+    if (language === "go") {
+      const gofmt = Bun.spawnSync({
+        cmd: [fmt],
+        stdin: new TextEncoder().encode(rendered),
+        stderr: "inherit",
+      });
+      if (gofmt.exitCode !== 0) {
+        throw new Error("gofmt failed");
+      }
+      expected = gofmt.stdout.toString();
     }
-    if (gofmt.stdout.toString() !== (await Bun.file(path).text())) {
+    if (expected !== (await Bun.file(path).text())) {
       Bun.spawnSync({
         cmd: ["diff", "-u", path, "-"],
-        stdin: gofmt.stdout,
+        stdin: new TextEncoder().encode(expected),
         stderr: "inherit",
         stdout: "inherit",
       });
@@ -592,10 +1147,14 @@ for (const { path, rendered } of outputs) {
   await Bun.write(path, rendered);
 }
 
-// One gofmt for every file written, rather than one spawn per output.
+// One gofmt for every Go file written, rather than one spawn per output.
 if (fmt) {
   const gofmt = Bun.spawnSync({
-    cmd: [fmt, "-w", ...outputs.map(({ path }) => path)],
+    cmd: [
+      fmt,
+      "-w",
+      ...outputs.filter(({ language }) => language === "go").map(({ path }) => path),
+    ],
     stderr: "inherit",
     stdout: "inherit",
   });

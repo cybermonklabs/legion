@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test"
 import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import {
   pruneStaleSessionHandoffs,
   pruneStaleSessionRoles,
+  readPersistedRole,
   readSessionHandoff,
   roleStateFile,
   SessionIdentity,
@@ -41,6 +42,38 @@ test("role state is keyed by session id, never by process", () => {
   // A session id that is nothing but dots stays inside `roles/`: encodeURIComponent leaves a dot
   // alone, and only the suffix keeps the name a path segment of its own.
   expect(roleStateFile("/data", "..")).toBe("/data/roles/...json")
+})
+
+// The file name carries the session id alone, so the writing process has to be in the record:
+// two `claude` processes share one state directory the moment a second resumes a live session's
+// id (dispatch://INFRA-783).
+test("a role record carries the process that wrote it, and one written before it still loads", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-role-record-"))
+  try {
+    const file = roleStateFile(stateDirectory, "ses_a")
+    await writePersistedRole(file, {
+      session_id: "ses_a",
+      role: "reviewer",
+      client_instance_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    })
+
+    expect(await readPersistedRole(file)).toEqual({
+      session_id: "ses_a",
+      role: "reviewer",
+      client_instance_id: "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    })
+
+    // What a build before the field wrote: it loads, and names no process.
+    const older = roleStateFile(stateDirectory, "ses_b")
+    await mkdir(dirname(older), { recursive: true })
+    await writeFile(older, `${JSON.stringify({ session_id: "ses_b", role: "tester" })}\n`)
+
+    const record = await readPersistedRole(older)
+    expect(record).toEqual({ session_id: "ses_b", role: "tester" })
+    expect(record?.client_instance_id).toBeUndefined()
+  } finally {
+    await rm(stateDirectory, { recursive: true, force: true })
+  }
 })
 
 test("title state is keyed by session id, and a dotted id names a file inside titles/", () => {
@@ -88,11 +121,12 @@ test("pruning drops title files older than the age, keeps fresh ones, and tolera
   }
 })
 
-// Only one path removes a role file by hand (a soft setRole that comes back unclaimed), and the
-// handoff prune cannot reach one: it walks `sessions/<pid>/` and asks about a pid, while a role
-// file is keyed by session id. The record of the session running the sweep is never dropped,
-// whatever its age: at startup, before any heartbeat has touched it, age alone would expire the
-// record of the very session that is running.
+// Only one path removes a role file by hand (a soft setRole another live session holds off,
+// never any answer of the publish route), and the handoff prune cannot reach one: it walks
+// `sessions/<pid>/` and asks about a pid, while a role file is keyed by session id. The record
+// of the session running the sweep is never dropped, whatever its age: at startup, before any
+// heartbeat has touched it, age alone would expire the record of the very session that is
+// running.
 test("pruning drops role files older than the age, keeps fresh ones and the sweeper's own, and tolerates no directory", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-roles-"))
   try {

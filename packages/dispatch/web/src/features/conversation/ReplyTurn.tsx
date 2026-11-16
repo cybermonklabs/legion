@@ -1,7 +1,7 @@
-import type { MessageDeliveryMode, ReplyBlock } from "@legion/contracts";
+import type { MessageDeliveryMode } from "@legion/contracts";
 import type { ReactNode } from "react";
 
-import type { Actor } from "../../api/types";
+import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { secondaryButtonBorder, textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, type AgentPart } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
@@ -27,8 +27,9 @@ export function TurnActions({ children }: { children: ReactNode }): ReactNode {
   );
 }
 
-/** The replies beneath a thread's root, oldest first, indented under a rule so the exchange
- *  reads as one thread. */
+/** The replies beneath a thread's root, in the reader's own thread order
+ *  (`features/threads/thread-layout.ts`), indented under a rule so the exchange reads as one
+ *  thread. */
 export function ThreadReplies({ children }: { children: ReactNode }): ReactNode {
   return (
     <ol
@@ -75,15 +76,17 @@ export function ReplyTurn({
   body: ReactNode;
   current?: boolean;
   delivery?: ReplyDelivery;
-  /** The Replies page's read mark, on the newest reply of a thread: the element it watches. */
+  /** The shared thread read mark (`useMarkThreadRead`), on the newest reply of a thread: the
+   *  element it watches. */
   markRef?: DwellRef;
   onReply?: () => void;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
    *  `reply_block`), and its turn's path. */
   quote?: {
     readonly author: Actor | undefined;
-    readonly block?: ReplyBlock | null;
+    readonly block?: ReplyBlockWithTrees | null;
     readonly excerpt: string;
+    readonly excerptTree?: DisplayTree;
     readonly to?: string;
   };
   /** Holds the Reply button while the composer it would address is busy with a send. */
@@ -117,6 +120,7 @@ export function ReplyTurn({
             block={quote.block}
             className="mb-1"
             excerpt={quote.excerpt}
+            excerptTree={quote.excerptTree}
             to={quote.to}
           />
         )}

@@ -1,6 +1,8 @@
+import type { BlockMark, DocumentJSON, EditorReferences } from "@legion/proof-editor";
 import { Awareness } from "y-protocols/awareness";
 import * as Y from "yjs";
 
+import { installTypedBlocks } from "../features/doc/ask-block";
 import type {
   ConnectDocument,
   ConnectionCallbacks,
@@ -18,16 +20,26 @@ import type { PendingState } from "../features/doc/pending-sync";
 import type { DocumentRuntimeValue } from "../features/doc/runtime";
 
 export interface FakeEditor {
+  /** What the editor lets the reader do (`access`), as created or as the host last set it. */
+  access: NonNullable<EditorOptions["access"]>;
+  /** Each set of block marks the host handed the editor (`setBlockMarks`), in order. */
+  blockMarks: BlockMark[][];
   /** How many times the host asked to comment on the selection. */
   commented: number;
   destroyed: boolean;
+  /** The document the host drew with `setDocumentJSON`: the tree its server read, which the
+   *  fake holds as it came rather than parsing anything. */
+  documentJSON: DocumentJSON | undefined;
   focused: string[];
   markdown: string | undefined;
   focusedBlocks: string[];
   options: EditorOptions;
-  readOnly: boolean;
   remoteMarks: Record<string, StoredMark>[];
   root: HTMLElement;
+  /** What the host last handed the editor to draw its references with (`setReferences`), or
+   *  undefined before it has handed it anything; the real plugin reads a block's text through
+   *  `scan` and reports what it found through `onKeys`, which a test does in its place. */
+  references: EditorReferences | null | undefined;
   /** Whether the fake view's selection is empty (a caret); a test sets it to select text. */
   selectionEmpty: boolean;
   /** The innermost block with an id that holds the selection, as `blockIdAtSelection` answers;
@@ -39,6 +51,8 @@ export interface FakeEditor {
 
 interface FakeConnection extends DocumentConnection {
   destroyed: boolean;
+  /** How many times the host asked the server to admit this connection again. */
+  readmitted: number;
 }
 
 export interface FakeDocumentRuntime {
@@ -70,6 +84,24 @@ const blockSchema = {
   version: 1,
 };
 
+/** The words of a document as JSON, its top-level blocks a line each: what the fake editor puts
+ *  into its root for a document the host drew, as `setMarkdown` puts the markdown it was
+ *  handed. */
+function textOf(tree: DocumentJSON): string {
+  if (tree.text !== undefined) return tree.text;
+  return (tree.content ?? []).map(textOf).join(tree.type === "doc" ? "\n" : "");
+}
+
+/** The text of every run of `tree` carrying a mark of `type`, in document order: what a mark a
+ *  host put into the document it drew reads over. */
+export function markedText(tree: DocumentJSON | undefined, type: string): string[] {
+  if (tree === undefined) return [];
+  if (tree.marks?.some((mark) => mark.type === type) === true && tree.text !== undefined) {
+    return [tree.text];
+  }
+  return (tree.content ?? []).flatMap((child) => markedText(child, type));
+}
+
 export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentRuntime {
   const callbacks: ConnectionCallbacks[] = [];
   const connections: FakeConnection[] = [];
@@ -88,6 +120,10 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         connection.destroyed = true;
       },
       doc,
+      readmit() {
+        connection.readmitted += 1;
+      },
+      readmitted: 0,
     };
     callbacks.push(nextCallbacks);
     connections.push(connection);
@@ -98,14 +134,17 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
       root.setAttribute(name, value);
     }
     const editor: FakeEditor = {
+      access: options.access ?? "edit",
+      blockMarks: [],
       commented: 0,
       destroyed: false,
+      documentJSON: undefined,
       focused: [],
       focusedBlocks: [],
       markdown: undefined,
       options,
-      readOnly: options.readOnly ?? false,
       remoteMarks: [],
+      references: undefined,
       root,
       selectionEmpty: true,
       selectedBlock: null,
@@ -144,19 +183,29 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         return { refused: "missing" as const };
       },
       setActiveBlocks() {},
+      setBlockMarks(marks: readonly BlockMark[]) {
+        editor.blockMarks.push([...marks]);
+      },
       setActiveMarks() {},
+      setDocumentJSON(tree: DocumentJSON) {
+        editor.documentJSON = tree;
+        root.textContent = textOf(tree);
+      },
       setMarkdown(markdown: string) {
         editor.markdown = markdown;
         root.textContent = markdown;
       },
-      setReadOnly(readOnly: boolean) {
-        editor.readOnly = readOnly;
+      setReferences(references: EditorReferences | null) {
+        editor.references = references;
+      },
+      setAccess(access: FakeEditor["access"]) {
+        editor.access = access;
       },
       view: {
         dispatch() {},
         dom: root,
         get editable() {
-          return !editor.readOnly;
+          return editor.access === "edit";
         },
         hasFocus: () => root.ownerDocument.activeElement === root,
         props: editor.viewProps,
@@ -173,6 +222,16 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
         },
       },
     } as unknown as EditorHandle;
+    // The real `createEditor` installs Dispatch's node views once the editor library has
+    // loaded (`features/doc/editor.ts`); the fake stands in for that call too, so a test reads
+    // the same `viewProps.nodeViews` the host would.
+    installTypedBlocks(
+      handle.view,
+      options.blockSchema,
+      options.onAskBlockHosts,
+      options.watchPicture,
+      options.anchoredBlock
+    );
     editors.push(editor);
     return handle;
   };

@@ -31,6 +31,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // testEnrollmentID is the enrollment id these tests' key dir fixture "issues" (writes into the
@@ -41,23 +43,17 @@ const testEnrollmentID = "enr-fake-1"
 // buildAgentSecrets compiles this package's binary into the test's temporary directory.
 func buildAgentSecrets(t *testing.T) string {
 	t.Helper()
-	binary := filepath.Join(t.TempDir(), "agent-secrets")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
-		t.Fatalf("build agent-secrets: %v\n%s", err, out)
-	}
-	return binary
+	return cmdtest.Build(t, "agent-secrets")
 }
 
-// shortTempDir is a temporary directory short enough to hold a unix socket: a socket path is
-// bounded at 108 bytes, and t.TempDir()'s path includes the test name, cut to 64 bytes.
+// shortTempDir is a directory of the test's own, removed when the test ends, with room under it
+// for the longest path these tests put there: the default helper socket a test's XDG_RUNTIME_DIR
+// holds, agent-secrets/helper.sock (hostmode_test.go). TMPDIR places it, and the helper falls
+// back to /tmp for that length alone, where t.TempDir()'s path carries the whole of the test's
+// name and passes the 107 bytes a unix socket path holds (docs/testing.md).
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "ast")
-	if err != nil {
-		t.Fatalf("make a temporary directory: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return testtmp.Dir(t, filepath.Join("agent-secrets", "helper.sock"))
 }
 
 // brokerCounters records how many times fakeBroker served each route, so a test can assert on
@@ -73,6 +69,26 @@ type brokerCounters struct {
 	pendingPoll   chan struct{}
 	noSettings    bool
 	settings      *Settings
+	released      *string
+}
+
+// releaseValue makes POST /v1/grants/grant-granted/values answer value for GRANT_ME in place of
+// the default, so a test can release a value of a shape of its own, such as one that ends in a
+// line ending.
+func (c *brokerCounters) releaseValue(value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.released = &value
+}
+
+// releasedValue is what that route answers with: what releaseValue chose, else the default.
+func (c *brokerCounters) releasedValue() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.released != nil {
+		return *c.released
+	}
+	return "topsecretvalue123"
 }
 
 func (c *brokerCounters) sessionID() string {
@@ -119,34 +135,26 @@ func (c *brokerCounters) servedSettings() *Settings {
 
 // fakePending are fakeBroker's never-resolving pending requests, keyed by the name that asks for
 // each: its request id, its record, the approver its answers carry, and whether they carry the
-// record's page on the broker as approve_url, <fake broker>/approve/<record>. The *_OLDER ones
-// answer as a broker from before that page, and the *_UNNAMED ones as brokers from before the
-// approver field, which name no approver. No real broker answers with the page and no approver,
-// since approve_url is the newer field, but the waiting line has a sentence for that pair and
-// PENDING_UNNAMED is what checks it. PENDING_NO_RECORD carries no record at all: record_id is
-// optional in the broker's own model, so an older broker may leave it out, and the one line that
-// would use it is the Dispatch page such a broker sends a person to.
+// record's page on the broker as approve_url, <fake broker>/approve/<record>. PENDING_ME_NO_PAGE
+// answers as a broker from before that page, which carries none, and PENDING_UNNAMED as one from
+// before the approver field, which names none. No real broker answers with the page and no
+// approver, since approve_url is the newer field, but the waiting line has a sentence for that
+// pair and PENDING_UNNAMED is what checks it.
 var fakePending = map[string]struct {
 	requestID, recordID, approver string
 	page                          bool
 }{
-	"PENDING_ME":            {"req-pending", "rec-pending-1", "ada@example.com", true},
-	"PENDING_ANYONE":        {"req-pending-anyone", "rec-pending-anyone", record.AnyoneApprover, true},
-	"PENDING_UNNAMED":       {"req-pending-unnamed", "rec-pending-unnamed", "", true},
-	"PENDING_ME_OLDER":      {"req-pending-older", "rec-pending-older", "ada@example.com", false},
-	"PENDING_ANYONE_OLDER":  {"req-pending-anyone-older", "rec-pending-anyone-older", record.AnyoneApprover, false},
-	"PENDING_UNNAMED_OLDER": {"req-pending-unnamed-older", "rec-pending-unnamed-older", "", false},
-	"PENDING_NO_RECORD":     {"req-pending-no-record", "", "ada@example.com", false},
+	"PENDING_ME":         {"req-pending", "rec-pending-1", "ada@example.com", true},
+	"PENDING_ANYONE":     {"req-pending-anyone", "rec-pending-anyone", record.AnyoneApprover, true},
+	"PENDING_UNNAMED":    {"req-pending-unnamed", "rec-pending-unnamed", "", true},
+	"PENDING_ME_NO_PAGE": {"req-pending-no-page", "rec-pending-no-page", "ada@example.com", false},
 }
 
 // pendingAnswer is fakeBroker's answer for a fakePending entry, request fields included or not;
 // base is the fake broker's own URL, which its approve_url names.
 func pendingAnswer(name, base string, request bool) map[string]any {
 	p := fakePending[name]
-	answer := map[string]any{"state": "pending", "grant_id": nil}
-	if p.recordID != "" {
-		answer["record_id"] = p.recordID
-	}
+	answer := map[string]any{"state": "pending", "grant_id": nil, "record_id": p.recordID}
 	if p.approver != "" {
 		answer["approver"] = p.approver
 	}
@@ -166,17 +174,33 @@ func pendingAnswer(name, base string, request bool) map[string]any {
 // person approved, which keeps the record and the approver it waited on, as the broker answers it.
 const approvedStatusJSON = `{"state":"granted","grant_id":"grant-approved","record_id":"rec-approved","approver":"ada@example.com","decided_at":"2026-10-09T12:00:00Z","decision":{"by":"ada@example.com","at":"2026-10-09T12:00:00Z"}}`
 
+// refusedDetail is the broker's own sentence about the refusal DETAIL_DENIED gets: the secret
+// whose requesters tag does not name this session, and the rule that refused it. DENY_ME keeps
+// its own canned answer, which carries no detail at all, so what a denial the broker explained
+// prints is told apart from what one it did not still prints.
+const refusedDetail = "GCLOUD_SAMI: requester-not-listed"
+
+// deniedDetailStatusJSON is fakeBroker's GET /v1/requests/req-denied-listed, byte for byte: the
+// request DETAIL_DENIED made, read back, carrying the same detail its creation answered.
+const deniedDetailStatusJSON = `{"state":"denied","grant_id":null,"record_id":null,"approver":null,"decided_at":"2026-10-09T12:00:00Z","decision":null,"detail":"` + refusedDetail + `"}`
+
+// cannedStatus is every decided request fakeBroker serves GET /v1/requests/{id} for, byte for
+// byte, because a test reads one back by id: the approved request and the refused one. Every
+// other request the fake decided at once is still a 404 there (see the route below).
+var cannedStatus = map[string]string{"req-approved": approvedStatusJSON, "req-denied-listed": deniedDetailStatusJSON}
+
 // fakeBroker serves just enough of the broker's HTTP API for the exec-form and --json
 // tests: POST /v1/requests decodes the signed request object CreateRequest posts (verifying it
 // with record.VerifyRequestObject against the fake's own URL as audience — a real, non-stubbed
 // check, since the wire shape under test IS that signed object) and routes on its first
-// authorization_detail's identifier to a canned granted/pending/approved/denied/unreleased/no-
-// trailing-newline response, GET /v1/requests/{id} answers each fakePending request's own id with
-// the same never-resolving pending state and req-approved with approvedStatusJSON (and 404s any
-// other id, since a granted-or-denied-immediately response must never be polled), POST
-// /v1/grants/{id}/values releases one canned value (or, for the unreleased case, none at all),
-// and GET /v1/enrollments/self echoes testEnrollmentID. It does not verify the outer Proof header
-// at all — proof.Verifier's own behavior is covered by internal/broker/proof and
+// authorization_detail's identifier to a canned granted/pending/approved/denied/denied-with-a-
+// detail/unreleased/no-trailing-newline response, GET /v1/requests/{id} answers each fakePending
+// request's own id with the same never-resolving pending state and each cannedStatus id with its
+// own bytes (and 404s any other id, since a granted-or-denied-immediately response a test does
+// not read back must never be polled), POST /v1/grants/{id}/values releases one canned value
+// (or, for the unreleased case, none at all, and for AIRLOCK_ME none and an airlock object
+// instead), and GET /v1/enrollments/self echoes testEnrollmentID. It does not verify the outer
+// Proof header at all — proof.Verifier's own behavior is covered by internal/broker/proof and
 // internal/broker/api's test suites, not this package's.
 func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	t.Helper()
@@ -210,8 +234,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
 				"grant_id": "grant-granted", "record_id": nil, "approver": nil,
 			})
-		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED",
-			"PENDING_ME_OLDER", "PENDING_ANYONE_OLDER", "PENDING_UNNAMED_OLDER", "PENDING_NO_RECORD":
+		case "PENDING_ME", "PENDING_ANYONE", "PENDING_UNNAMED", "PENDING_ME_NO_PAGE":
 			writeJSON(w, pendingAnswer(name, audience, true))
 		case "APPROVED_ME":
 			writeJSON(w, map[string]any{
@@ -225,11 +248,23 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
 				"grant_id": nil, "record_id": nil, "approver": nil,
 			})
+		case "DETAIL_DENIED":
+			writeJSON(w, map[string]any{
+				"request_id": "req-denied-listed", "state": "denied",
+				"secrets":  []map[string]string{{"name": name, "decision": "deny"}},
+				"grant_id": nil, "record_id": nil, "approver": nil, "detail": refusedDetail,
+			})
 		case "UNRELEASED_ME":
 			writeJSON(w, map[string]any{
 				"request_id": "req-unreleased", "state": "granted",
 				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
 				"grant_id": "grant-unreleased", "record_id": nil, "approver": nil,
+			})
+		case "AIRLOCK_ME":
+			writeJSON(w, map[string]any{
+				"request_id": "req-airlock", "state": "granted",
+				"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
+				"grant_id": "grant-airlock", "record_id": nil, "approver": nil,
 			})
 		case "NONEWLINE_ME":
 			// Written with http.ResponseWriter.Write directly, with NO trailing newline, unlike
@@ -243,9 +278,9 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	})
 	mux.HandleFunc("GET /v1/requests/{id}", func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&counters.getRequest, 1)
-		if r.PathValue("id") == "req-approved" {
+		if canned, ok := cannedStatus[r.PathValue("id")]; ok {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(approvedStatusJSON))
+			_, _ = w.Write([]byte(canned))
 			return
 		}
 		name := ""
@@ -275,7 +310,7 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 	})
 	mux.HandleFunc("POST /v1/grants/grant-granted/values", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
-			"values":     map[string]string{"GRANT_ME": "topsecretvalue123"},
+			"values":     map[string]string{"GRANT_ME": counters.releasedValue()},
 			"expires_at": time.Now().Add(time.Hour),
 		})
 	})
@@ -289,6 +324,27 @@ func fakeBroker(t *testing.T) (*httptest.Server, *brokerCounters) {
 		writeJSON(w, map[string]any{
 			"values":     map[string]string{"NONEWLINE_ME": "irrelevant"},
 			"expires_at": time.Now().Add(time.Hour),
+		})
+	})
+	mux.HandleFunc("POST /v1/grants/grant-airlock/values", func(w http.ResponseWriter, r *http.Request) {
+		// The airlock's release: nothing in "values" for the name at all, and the proxy, the
+		// certificate to trust it by and the name's placeholder in "airlock", exactly as the
+		// broker answers one (internal/broker/api's grantValuesResponse).
+		writeJSON(w, map[string]any{
+			"values":     map[string]string{},
+			"expires_at": time.Now().Add(time.Hour),
+			"airlock": map[string]any{
+				"proxy_url":      "http://airlock.broker.example:3128",
+				"ca_certificate": testAirlockCertificate,
+				"proxy_password": testAirlockPlaceholder,
+				"names": map[string]any{
+					"AIRLOCK_ME": map[string]any{
+						"value": testAirlockPlaceholder,
+						"slots": map[string]string{"value": testAirlockPlaceholder},
+						"hosts": []string{"api.example.com"},
+					},
+				},
+			},
 		})
 	})
 	mux.HandleFunc("GET /v1/enrollments/self", func(w http.ResponseWriter, r *http.Request) {
@@ -454,53 +510,100 @@ func TestExecFormGrantRunsChildWithValueInEnvironment(t *testing.T) {
 	}
 }
 
+// TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore: the real child of the real
+// binary gets the bytes the broker released, byte for byte — compared as a digest, so no value
+// is in this test's output — and standard error carries the one source line and then nothing of
+// this command's at all, not even where the released value ends in a line ending. Which bytes a
+// value has is the broker's decision now (policy.TrimForShape): a value that reaches the child
+// ending in a line feed ends that way because its owner's shape tag says it does, and the agent
+// running the command could not store it differently in any case.
+func TestTheExecFormGivesTheChildTheReleasedBytesAndSaysNothingMore(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	keyDir := newKeyDir(t)
+	broker, counters := fakeBroker(t)
+	defer broker.Close()
+	const released = "topsecretvalue123\n"
+	counters.releaseValue(released)
+
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil,
+		"GRANT_ME", "--", "sh", "-c", `printf %s "$GRANT_ME" | sha256sum; echo the-child-ran >&2`)
+	// Nothing below prints stdout or stderr: the released value is in neither unless the very
+	// regression this test exists to catch has happened, and redactSecrets hides only the
+	// default fixture. Each failure says what was wrong instead: an exit code, a digest, which
+	// assertion about the two streams failed.
+	digest := func(s string) string {
+		sum := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(sum[:])
+	}
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0", exit)
+	}
+	want, fields := digest(released), strings.Fields(stdout)
+	if len(fields) == 0 {
+		t.Fatalf("the child printed no digest at all")
+	}
+	if fields[0] != want {
+		// The token is not printed: a regression that puts the value where the digest belongs
+		// would print it. Its own digest tells two failures apart and discloses nothing.
+		t.Fatalf("what the child printed first is not the released value's digest %s; sha256 of what it did print: %s", want, digest(fields[0]))
+	}
+	source, rest, ended := strings.Cut(stderr, "\n")
+	if !ended || !strings.HasPrefix(source, "agent-secrets: GRANT_ME from ") {
+		t.Fatalf("the first of stderr's %d lines is not the source line", strings.Count(stderr, "\n"))
+	}
+	if rest != "the-child-ran\n" {
+		t.Fatalf("after the source line stderr holds %d bytes (sha256 %s), want the child's own line and nothing else", len(rest), digest(rest))
+	}
+	// The released value, whole and ending aside, in either stream is the leak.
+	for _, part := range []string{released, strings.TrimRight(released, "\r\n")} {
+		if strings.Contains(stdout+stderr, part) {
+			t.Fatalf("the released value reached this command's own output")
+		}
+	}
+}
+
 // pendingSentences is the sentence each fakePending request's wait names whom it waits on and
-// where they decide it with, keyed by the name that asks for it and then by
-// AGENT_SECRETS_APPROVE_URL: unset, or Dispatch's origin. <broker> stands for the fake broker's
-// URL. A request whose answer carries approve_url names that page on the broker, whatever
-// AGENT_SECRETS_APPROVE_URL says. One from an older broker, which carries none, names the
-// record's Dispatch page under that setting, and the Inbox's Credential requests section when it
-// is unset. The *_UNNAMED brokers name no approver, so their sentences say so.
-var pendingSentences = map[string]map[string]string{
-	"PENDING_ME": {
-		"":                          "waiting for ada@example.com to approve it on the secrets broker: <broker>/approve/rec-pending-1",
-		"https://dispatch.example/": "waiting for ada@example.com to approve it on the secrets broker: <broker>/approve/rec-pending-1",
-	},
-	"PENDING_ANYONE": {
-		"":                          "waiting for anyone signed in to the secrets broker to approve it: <broker>/approve/rec-pending-anyone",
-		"https://dispatch.example/": "waiting for anyone signed in to the secrets broker to approve it: <broker>/approve/rec-pending-anyone",
-	},
-	"PENDING_UNNAMED": {
-		"":                          "waiting for approval on the secrets broker: <broker>/approve/rec-pending-unnamed; the broker does not say whose",
-		"https://dispatch.example/": "waiting for approval on the secrets broker: <broker>/approve/rec-pending-unnamed; the broker does not say whose",
-	},
-	"PENDING_ME_OLDER": {
-		"":                          "waiting for ada@example.com to approve it under Credential requests in their Dispatch Inbox",
-		"https://dispatch.example/": "waiting for ada@example.com to approve it in Dispatch: https://dispatch.example/credentials/rec-pending-older",
-	},
-	"PENDING_ANYONE_OLDER": {
-		"":                          "waiting for anyone signed in to Dispatch to approve it under Credential requests in their Inbox",
-		"https://dispatch.example/": "waiting for anyone signed in to Dispatch to approve it: https://dispatch.example/credentials/rec-pending-anyone-older",
-	},
-	"PENDING_UNNAMED_OLDER": {
-		"":                          "waiting for approval under Credential requests in the Dispatch Inbox; the broker does not say whose",
-		"https://dispatch.example/": "waiting for approval in Dispatch: https://dispatch.example/credentials/rec-pending-unnamed-older; the broker does not say whose",
-	},
-	// No record, so no page can be built: the line names the Inbox whatever
-	// AGENT_SECRETS_APPROVE_URL says, and the command neither guesses a page nor dies on the
-	// missing field.
-	"PENDING_NO_RECORD": {
-		"":                          "waiting for ada@example.com to approve it under Credential requests in their Dispatch Inbox",
-		"https://dispatch.example/": "waiting for ada@example.com to approve it under Credential requests in their Dispatch Inbox",
-	},
+// where they decide it with, keyed by the name that asks for it. <broker> stands for the fake
+// broker's URL. A request whose answer carries approve_url names that page on the broker; one
+// whose answer carries none names its approver and no page at all. Neither sentence depends on
+// AGENT_SECRETS_APPROVE_URL, which the two tests below set to Dispatch's origin and to nothing
+// around every row. The *_UNNAMED broker names no approver, so its sentence says so.
+var pendingSentences = map[string]string{
+	"PENDING_ME":         "waiting for ada@example.com to approve it on the secrets broker: <broker>/approve/rec-pending-1",
+	"PENDING_ANYONE":     "waiting for anyone signed in to the secrets broker to approve it: <broker>/approve/rec-pending-anyone",
+	"PENDING_UNNAMED":    "waiting for approval on the secrets broker: <broker>/approve/rec-pending-unnamed; the broker does not say whose",
+	"PENDING_ME_NO_PAGE": "waiting for ada@example.com to approve it on the secrets broker",
+}
+
+// TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone pins all three sentences waitingOn
+// writes when the broker's answer carries no approve_url: each names the approver the broker
+// named, or says the broker named none, and names no page. PENDING_ME_NO_PAGE runs the third of
+// them through the real binary in the two tests below; the other two have no fixture of their
+// own, and this is what holds their wording.
+func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
+	person, anyone := "ada@example.com", record.AnyoneApprover
+	for _, row := range []struct {
+		name     string
+		approver *string
+		want     string
+	}{
+		{"no approver", nil, "waiting for approval on the secrets broker; the broker does not say whose"},
+		{"anyone signed in", &anyone, "waiting for anyone signed in to the secrets broker to approve it"},
+		{"a person", &person, "waiting for ada@example.com to approve it on the secrets broker"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := waitingOn(row.approver, ""); got != row.want {
+				t.Errorf("waitingOn = %q, want %q", got, row.want)
+			}
+		})
+	}
 }
 
 // TestExecFormPendingExitsSeventyFiveWithNoChild also pins what the wait says, and that it says it
 // before it waits: the request id and the bound, then whom it waits on and where they decide it —
 // the approver the broker names (a person, or anyone signed in), and the record's page on the
-// broker its answer names as approve_url. An older broker names none, and the line names the
-// record's Dispatch page under AGENT_SECRETS_APPROVE_URL, or the Inbox when that is unset. The
-// fake broker holds the first status poll until the test has read those two lines from the
+// broker its answer names as approve_url. A broker that names no page leaves the approver alone.
+// The fake broker holds the first status poll until the test has read those two lines from the
 // command's stderr, so lines printed only once the wait ends never arrive in time.
 func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 	binary := buildAgentSecrets(t)
@@ -508,9 +611,9 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 	defer broker.Close()
 	keyDir := newKeyDir(t)
 
-	for name, sentences := range pendingSentences {
-		for approveURL, sentence := range sentences {
-			sentence = strings.ReplaceAll(sentence, "<broker>", broker.URL)
+	for name, sentence := range pendingSentences {
+		sentence = strings.ReplaceAll(sentence, "<broker>", broker.URL)
+		for _, approveURL := range []string{"", "https://dispatch.example/"} {
 			t.Run(name+" "+approveURL, func(t *testing.T) {
 				requestID := fakePending[name].requestID
 				announced := make(chan struct{})
@@ -575,18 +678,17 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 
 // TestRequestAndStatusNameWhomAPendingRequestWaitsOn pins the text forms of request and status for
 // a pending request: after its id and state, the same sentence the exec form's wait prints, naming
-// the approver the broker names and where they decide it (the broker's approve_url, or the
-// record's Dispatch page or the Inbox for an older broker); request exits 75 and status 0, as
-// before.
+// the approver the broker names and the page on the broker where they decide it, which a broker
+// that names none leaves out; request exits 75 and status 0, as before.
 func TestRequestAndStatusNameWhomAPendingRequestWaitsOn(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
 	defer broker.Close()
 	keyDir := newKeyDir(t)
 
-	for name, sentences := range pendingSentences {
-		for approveURL, sentence := range sentences {
-			sentence = strings.ReplaceAll(sentence, "<broker>", broker.URL)
+	for name, sentence := range pendingSentences {
+		sentence = strings.ReplaceAll(sentence, "<broker>", broker.URL)
+		for _, approveURL := range []string{"", "https://dispatch.example/"} {
 			t.Run(name+" "+approveURL, func(t *testing.T) {
 				env := []string{"AGENT_SECRETS_APPROVE_URL=" + approveURL}
 				requestID := fakePending[name].requestID
@@ -815,12 +917,23 @@ func TestExecFormNestedCallKeepsTheSessionIdentity(t *testing.T) {
 	}
 }
 
+// testAirlockFiles are the two paths prepareAirlock would have written, as the tests that build
+// a child environment pass them: buildChildEnv names them and writes neither.
+var testAirlockFiles = airlockFiles{bundle: "/run/user/1000/agent-secrets/airlock/g1/ca-bundle.pem", wgetrc: "/run/user/1000/agent-secrets/airlock/g1/wgetrc"}
+
 // TestBuildChildEnvKeepsOnlyTheSessionIdentity pins which of this CLI's variables the exec'd
 // child inherits: exactly the three that say which session it is (the broker's URL, the helper
 // socket, the box's key dir), never any other AGENT_SECRETS_* setting, and never an inherited
 // copy of a released name beside the released value.
+//
+// The second row is the same grant with one name behind the airlock, and pins the whole of that
+// child's environment too: the name holds its placeholder, the proxy, its NO_PROXY and Node's
+// switch are set, every bundle variable and WGETRC name the files, and the three session
+// identity variables are kept exactly as in the first row. An inherited copy of anything this
+// CLI sets — the stale proxy, the inherited trust file — is gone, as an inherited copy of a
+// released name is.
 func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
-	environ := []string{
+	identity := []string{
 		"PATH=/usr/bin",
 		"AGENT_SECRETS_URL=https://broker.internal.example",
 		"AGENT_SECRETS_HELPER_SOCK=/run/user/1000/agent-secrets/helper.sock",
@@ -831,16 +944,93 @@ func TestBuildChildEnvKeepsOnlyTheSessionIdentity(t *testing.T) {
 		"GRANT_ME=inherited-stale-value",
 		"NOT_AN_ASSIGNMENT",
 	}
-	got := buildChildEnv(environ, map[string]string{"GRANT_ME": "released"})
-	want := []string{
+	kept := []string{
 		"PATH=/usr/bin",
 		"AGENT_SECRETS_URL=https://broker.internal.example",
 		"AGENT_SECRETS_HELPER_SOCK=/run/user/1000/agent-secrets/helper.sock",
 		"AGENT_SECRETS_KEY_DIR=/run/user/1000/agent-secrets",
-		"GRANT_ME=released",
 	}
-	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("child env:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	placeholder := "agent-secrets-placeholder-" + strings.Repeat("a", 32)
+	for _, row := range []struct {
+		name    string
+		environ []string
+		release *AirlockRelease
+		want    []string
+	}{
+		{
+			name:    "no airlock",
+			environ: identity,
+			want:    append(append([]string{}, kept...), "GRANT_ME=released"),
+		},
+		{
+			name: "one airlock name",
+			environ: append(append([]string{}, identity...),
+				"SSL_CERT_FILE=/inherited/roots.pem",
+				"HTTPS_PROXY=http://stale.example:3128",
+				"NO_PROXY=keep.example.com"),
+			release: &AirlockRelease{
+				ProxyURL:      "http://proxy.broker.example:3128",
+				CACertificate: "-----BEGIN CERTIFICATE-----\nproxy\n-----END CERTIFICATE-----\n",
+				ProxyPassword: placeholder,
+				Names:         map[string]AirlockName{"AIRLOCK_ME": {Value: placeholder, Slots: map[string]string{"value": placeholder}, Hosts: []string{"api.example.com"}}},
+			},
+			want: append(append([]string{}, kept...),
+				"AIRLOCK_ME="+placeholder,
+				"AWS_CA_BUNDLE="+testAirlockFiles.bundle,
+				"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE="+testAirlockFiles.bundle,
+				"CURL_CA_BUNDLE="+testAirlockFiles.bundle,
+				"GIT_SSL_CAINFO="+testAirlockFiles.bundle,
+				"GRANT_ME=released",
+				"HTTPS_PROXY=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
+				"NODE_EXTRA_CA_CERTS="+testAirlockFiles.bundle,
+				"NODE_USE_ENV_PROXY=1",
+				"NO_PROXY=keep.example.com,localhost,127.0.0.1,::1,.svc,.cluster.local,.internal,.ts.net,metadata.google.internal,169.254.169.254,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,broker.internal.example",
+				"REQUESTS_CA_BUNDLE="+testAirlockFiles.bundle,
+				"SSL_CERT_FILE="+testAirlockFiles.bundle,
+				"WGETRC="+testAirlockFiles.wgetrc,
+				"https_proxy=http://agent-secrets:"+placeholder+"@proxy.broker.example:3128",
+				"no_proxy=keep.example.com,localhost,127.0.0.1,::1,.svc,.cluster.local,.internal,.ts.net,metadata.google.internal,169.254.169.254,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,broker.internal.example",
+			),
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got, err := buildChildEnv(row.environ, map[string]string{"GRANT_ME": "released"}, row.release, testAirlockFiles)
+			if err != nil {
+				t.Fatalf("buildChildEnv: %v", err)
+			}
+			if strings.Join(got, "\n") != strings.Join(row.want, "\n") {
+				t.Fatalf("child env:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(row.want, "\n"))
+			}
+		})
+	}
+}
+
+// TestReleasedValuesReachTheChildAsTheBrokerSentThem: which bytes a released value has is the
+// broker's decision, taken from the secret's shape (policy.TrimForShape), so the exec form hands
+// the child what the broker sent, byte for byte, line endings and all.
+func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
+	for name, value := range map[string]string{
+		"one trailing newline":   "sk-live-abc\n",
+		"trailing CRLF":          "sk-live-abc\r\n",
+		"two trailing newlines":  "sk-live-abc\n\n",
+		"no trailing newline":    "sk-live-abc",
+		"a newline inside":       "first\nsecond",
+		"only a newline":         "\n",
+		"a lone carriage return": "sk-live-abc\r",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := buildChildEnv(nil, map[string]string{"GRANT_ME": value}, nil, airlockFiles{})
+			if err != nil {
+				t.Fatalf("buildChildEnv: %v", err)
+			}
+			// Compared as digests, and reported as digests: a failure here is a value that came
+			// out other than it went in, which is the one thing not to print.
+			want := []string{"GRANT_ME=" + value}
+			gotSum, wantSum := sha256.Sum256([]byte(strings.Join(got, "\n"))), sha256.Sum256([]byte(strings.Join(want, "\n")))
+			if gotSum != wantSum {
+				t.Fatalf("child env sha256 = %s, want %s: the value must reach the child as the broker sent it", hex.EncodeToString(gotSum[:]), hex.EncodeToString(wantSum[:]))
+			}
+		})
 	}
 }
 
@@ -885,8 +1075,8 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 	keyDir := t.TempDir()
 	marker := writePendingMarker(t, keyDir, 0)
 
-	// The launcher writes each file whole (enroll's writeFileAtomic), so a waiting call never reads
-	// one half-written; the fixture does the same.
+	// The launcher writes each file whole (writeFileAtomic), so a waiting call never
+	// reads one half-written; the fixture does the same.
 	setupDone := make(chan error, 1)
 	go func() {
 		time.Sleep(time.Second)

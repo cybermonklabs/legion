@@ -18,11 +18,14 @@ import {
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
+    advances: [],
+    advances_revision: 0,
     route: null,
     repo: null,
     resolved_repo: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     key: "CORE-1",
     title: "Core work",
     status: "todo",
@@ -36,6 +39,9 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     claim: null,
     components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     updated_at: "2026-09-12T00:00:00Z",
+    closed_at: overrides.status === "done" ? "2026-09-12T00:00:00Z" : null,
+    created_by: null,
+    created_at: "2026-09-12T00:00:00Z",
     last_seq: 1,
     open_asks: 0,
     progress: { tasks: null, children: null },

@@ -27,7 +27,7 @@
 // 200, not 403 ISSUE_OUTSIDE_TREE, as the route-visible proof that an issue is the architect's
 // tree's; what the daemon wrote to the Dispatch stand-in; and, for tree membership, which no route
 // shows, the daemon's own record of the issue in its PostgreSQL (record.Store), as
-// merged_root_waits_live_test.go reads and writes it. Step 4 reads the outbox table for the rows
+// the daemon's own tests read and write it. Step 4 reads the outbox table for the rows
 // the old linger queued, which no route shows either.
 //
 // What the proof stands in for lies outside the change. The broker is a native nats-server the
@@ -53,7 +53,6 @@ import (
 	"io"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -64,6 +63,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -106,6 +107,7 @@ type childAdoptionLive struct {
 // TestAQueuedRootUnderALiveTreeJoinsItLive drives the eleven steps of the proof against one booted
 // daemon.
 func TestAQueuedRootUnderALiveTreeJoinsItLive(t *testing.T) {
+	fixtureenv.Live(t)
 	r := newChildAdoptionLive(t)
 	r.step("queued-root-leaves-the-line", r.queuedRootLeavesTheLine)
 	r.step("release-adopts-from-todo", r.releaseAdoptsFromTodo)
@@ -148,7 +150,7 @@ func newChildAdoptionLive(t *testing.T) *childAdoptionLive {
 // github.com.
 func childAdoptionGitHub(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {
@@ -165,9 +167,7 @@ func childAdoptionGitHub(t *testing.T) string {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // seedTrees records the two trees admission's cap holds as the daemon would hold them mid-run: T

@@ -118,8 +118,8 @@ func TestTheBootListingAndTheTickReReadWriteTheClaim(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := mirror.Apply(context.Background(), tx, intake.ControllerTick{Observed: []intake.IssueStatus{
-			{Key: "LEGION-900", Status: "todo", Seq: 8, ClaimKnown: true},
-			{Key: "LEGION-901", Status: "todo", Seq: 7, ClaimKnown: true},
+			{Key: "LEGION-900", Project: testProject, Status: "todo", Seq: 8, ClaimKnown: true},
+			{Key: "LEGION-901", Project: testProject, Status: "todo", Seq: 7, ClaimKnown: true},
 		}}); err != nil {
 			t.Fatalf("apply the tick: %v", err)
 		}

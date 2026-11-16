@@ -1,14 +1,19 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 
+import { snippetSource } from "../../__tests__/display-trees";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
-import type { AskRead, IssueReferenceSummary } from "../../api/types";
+import type { AskRead, DisplayTree, IssueReferenceSummary } from "../../api/types";
+import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { useMarkdownHeadline } from "./markdown-engine";
+import { loadedEngine, useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
 import { Unfurl } from "./Unfurl";
 
 /** CORE-1's summary read, which a reference to it shows. */
@@ -20,14 +25,46 @@ const issue: IssueReferenceSummary = {
   title: "Design decision",
 };
 
+/** One reading of the display-tree fixture, by name: the trees these rows draw are Go's own,
+ *  from the file `pmdoc`'s `TestWebDisplayFixture` writes and CI checks. */
+function tree(name: string): DisplayTree {
+  const found = (fixtures as { name: string; latest: DisplayTree }[]).find(
+    (fixture) => fixture.name === name
+  );
+  if (found === undefined) {
+    throw new Error(`no stored text named ${name} in the display-tree fixture`);
+  }
+  return found.latest;
+}
+
+/** One marked snippet of the same fixture. */
+function stored(name: string): { markdown: string; snippet: DisplayTree } {
+  const found = (fixtures as { name: string; markdown: string; snippet?: DisplayTree }[]).find(
+    (fixture) => fixture.name === name
+  );
+  if (found?.snippet === undefined) {
+    throw new Error(`no marked snippet named ${name} in the display-tree fixture`);
+  }
+  return { markdown: found.markdown, snippet: found.snippet };
+}
+
+/** An ask read as the server answers one, the question carrying the reading Go made of it: the
+ *  card's title is the tree's plain words now, and the page's own engine reads a question into
+ *  the same document. `warmMarkdownRenderer` must have resolved before this is called. */
 function askRead(question: string): AskRead {
   return {
     ask: {
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      block_id: null,
       id: "ask-1",
       issue_key: "CORE-1",
       kind: "question",
       author: { id: "alice", kind: "user" },
       question,
+      question_tree: loadedEngine()?.parse(question)?.toJSON() as DisplayTree,
       options: [],
       multiple: false,
       urgency: "med",
@@ -45,6 +82,7 @@ function askRead(question: string): AskRead {
     route: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     replies: [],
   };
 }
@@ -106,9 +144,10 @@ test("right-to-left text keeps its characters in order, its marks on the words m
     );
     if (body === null) throw new Error("no MarkdownBody rendered");
     for (const element of [clamped, body]) {
-      await waitFor(() => expect(element.textContent).toContain("Design decision"));
+      await waitFor(() => expect(element).toHaveTextContent("Design decision"));
+      // An issue reference reads as its key then its title, as the issue list writes one.
       expect(element.textContent).toBe(
-        "שלום עולם, ראה kubectl get pods ו-Design decision. مرحبا بالعالم"
+        "שלום עולם, ראה kubectl get pods ו-CORE-1 Design decision. مرحبا بالعالم"
       );
       expect(element.querySelector("strong")?.textContent).toBe("עולם");
       expect(element.querySelector("em")?.textContent).toBe("بالعالم");
@@ -122,6 +161,7 @@ test("right-to-left text keeps its characters in order, its marks on the words m
 });
 
 test("a preview inside a link holds no link of its own, and a click on its reference follows the host", async () => {
+  const user = userEvent.setup();
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
   const view = render(
     <Providers>
@@ -144,7 +184,7 @@ test("a preview inside a link holds no link of its own, and a click on its refer
   );
   try {
     const element = preview(view.container);
-    await waitFor(() => expect(element.textContent).toContain("Design decision"));
+    await waitFor(() => expect(element).toHaveTextContent("Design decision"));
     // One link on the row: the host. A nested `<a>` is a second tab stop inside the host and
     // a second target for the same click.
     expect(element.querySelector("a")).toBeNull();
@@ -152,40 +192,44 @@ test("a preview inside a link holds no link of its own, and a click on its refer
     const reference = element.querySelector<HTMLElement>("[data-dispatch-ref]");
     expect(reference?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
     expect(reference?.hasAttribute("href")).toBe(false);
-    expect(reference?.textContent).toBe("Design decision");
+    expect(reference?.textContent).toBe("CORE-1 Design decision");
     const docs = Array.from(element.querySelectorAll("[data-markdown-link]")).find(
       (link) => link.textContent === "the docs"
     );
     expect(docs).toBeDefined();
     if (reference === null || reference === undefined) throw new Error("no reference rendered");
-    fireEvent.click(reference);
+    await user.click(reference);
     expect(await screen.findByText("Host page")).toBeDefined();
-    expect(screen.queryByText("Reference page")).toBeNull();
+    expect(screen.queryByText("Reference page")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getIssueSummary.mockRestore();
   }
 });
 
-test("search hits mark whole words in any case, and a reference the server matched is marked whole", async () => {
+test("search hits mark the runs the server matched, and a reference it matched is marked whole", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
-  // What the server's ts_headline marks for `port CORE-1` over this body: `port` as a word (not
-  // the `port` in `Report`, `support` or `export`), and the reference's two lexemes.
+  // What the server's ts_headline marked for `port CORE-1` over this body, read and marked by
+  // the server itself (`pmdoc.DisplaySnippetJSON`, the fixture `TestWebDisplayFixture` writes):
+  // `port` as a word - not the `port` in `Report`, `support` or `export` - and the reference.
+  // It used to be the browser that found those words in its own rendered text; that pass is
+  // gone, and this row draws the marks the tree carries instead. A deliberate change.
+  const hit = stored("a-marked-word-and-reference");
   const view = render(
     <Providers>
       <MarkdownPreview
-        highlight={["PORT", "CORE", "-1", "", "  "]}
         highlightClassName="hit"
         lines={2}
-        markdown="Report the port to support before we export dispatch://CORE-1"
+        markdown={snippetSource(hit.markdown)}
+        tree={hit.snippet}
       />
     </Providers>
   );
   try {
     const element = preview(view.container);
-    await waitFor(() => expect(element.textContent).toContain("Design decision"));
+    await waitFor(() => expect(element).toHaveTextContent("Design decision"));
     const marks = Array.from(element.querySelectorAll("mark"), (mark) => mark.textContent);
-    expect(marks).toEqual(["port", "Design decision"]);
+    expect(marks).toEqual(["port", "CORE-1 Design decision"]);
     const marked = element.querySelector("mark [data-dispatch-ref]");
     expect(marked?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
     expect(element.textContent).not.toContain("dispatch://");
@@ -195,23 +239,8 @@ test("search hits mark whole words in any case, and a reference the server match
   }
 });
 
-test("a hit after a character whose lower case is longer is marked on the right words", async () => {
-  // `İ` lower-cases to two code units, so an index found in the lower-cased text lands one
-  // character late in the source.
-  const view = render(<MarkdownPreview highlight={["port"]} lines={1} markdown="İstanbul port" />);
-  try {
-    const element = preview(view.container);
-    await waitFor(() => expect(element.textContent).toBe("İstanbul port"));
-    expect(Array.from(element.querySelectorAll("mark"), (mark) => mark.textContent)).toEqual([
-      "port",
-    ]);
-  } finally {
-    view.unmount();
-  }
-});
-
-function Headline({ markdown, max }: { markdown: string; max: number }): ReactNode {
-  const headline = useMarkdownHeadline(markdown, max);
+function Headline({ max, tree }: { max: number; tree: DisplayTree }): ReactNode {
+  const headline = useMarkdownHeadline(tree, max);
   return headline === undefined ? null : (
     <output data-cut={String(headline.cut)}>{headline.text}</output>
   );
@@ -220,12 +249,9 @@ function Headline({ markdown, max }: { markdown: string; max: number }): ReactNo
 test("a headline writes a reference as its short form, keeps one in code as written, and never cuts a character in half", async () => {
   const view = render(
     <>
-      <Headline
-        markdown="Blocked on **dispatch://CORE-2/ask/a1**, see `dispatch://CORE-3`"
-        max={60}
-      />
-      <Headline markdown={`a${"😀".repeat(60)}`} max={60} />
-      <Headline markdown="Use Array<string> here" max={60} />
+      <Headline max={60} tree={tree("a-headline-with-references")} />
+      <Headline max={60} tree={tree("a-headline-of-emoji")} />
+      <Headline max={60} tree={tree("a-tag-shaped-run")} />
     </>
   );
   try {
@@ -248,6 +274,7 @@ test("a headline writes a reference as its short form, keeps one in code as writ
 });
 
 test("an ask's unfurl card shows its question once, even when the question ends in an ellipsis", async () => {
+  await warmMarkdownRenderer();
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead("Should we wait for **CORE-2**…"));
   const view = render(
     <Providers>
@@ -267,6 +294,7 @@ test("an ask's unfurl card shows its question once, even when the question ends 
 });
 
 test("an ask's unfurl card never borrows its issue's status, and reads no issue, while the ask loads", async () => {
+  jest.useFakeTimers();
   const getAsk = spyOn(api, "getAsk").mockReturnValue(Promise.withResolvers<AskRead>().promise);
   const getIssue = spyOn(api, "getIssue");
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
@@ -278,13 +306,14 @@ test("an ask's unfurl card never borrows its issue's status, and reads no issue,
   try {
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
     // The ask has not answered: the card says what it is, not the issue's status.
-    await Bun.sleep(20);
+    await tick(20);
     const card = within(view.container).getByRole("link");
     expect(card.textContent).toBe("dispatch://CORE-1/ask/ask-1");
     expect(card.textContent).not.toContain("in_progress");
     expect(getIssue).not.toHaveBeenCalled();
     expect(getIssueSummary).not.toHaveBeenCalled();
   } finally {
+    realClock();
     view.unmount();
     getAsk.mockRestore();
     getIssue.mockRestore();
@@ -293,6 +322,7 @@ test("an ask's unfurl card never borrows its issue's status, and reads no issue,
 });
 
 test("a long ask's unfurl card shows the whole question under its cut title, formatted", async () => {
+  await warmMarkdownRenderer();
   const question = `**Which** of these ${"options ".repeat(10)}ships first?`;
   const getAsk = spyOn(api, "getAsk").mockResolvedValue(askRead(question));
   const view = render(

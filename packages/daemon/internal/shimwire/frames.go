@@ -11,12 +11,16 @@ package shimwire
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The frame type names, verbatim from the shipped protocol.
@@ -27,8 +31,11 @@ const (
 	TypePrompt                 = "prompt"
 	TypeResponse               = "response"
 	TypeGetState               = "get_state"
+	TypeCompact                = "compact"
 	TypeAgentStart             = "agent_start"
 	TypeAgentEnd               = "agent_end"
+	TypeToolExecutionStart     = "tool_execution_start"
+	TypeToolExecutionEnd       = "tool_execution_end"
 	TypePromptResult           = "prompt_result"
 	TypeShutdown               = "shutdown"
 	TypeAdoptWorkingCopy       = "adopt-working-copy"
@@ -50,6 +57,21 @@ const (
 	TypeLauncherStartResult          = "launcher_start_result"
 	TypeLauncherStop                 = "launcher_stop"
 	TypeLauncherStopResult           = "launcher_stop_result"
+	// The workspace bundle's two directions: the daemon asking one role's shim for the unpushed
+	// work of the workspace every role of its issue shares, and the daemon handing that bundle to
+	// the launcher of the pod that replaces the released one, in slices under the frame limit.
+	// The launcher reports what became of it once it has run the restore (launcher_restored),
+	// which is the confirmation the daemon drops its saved copy on.
+	TypeBundleWorkspace       = "bundle-workspace"
+	TypeBundleWorkspaceResult = "bundle-workspace-result"
+	TypeLauncherBundle        = "launcher_bundle"
+	TypeLauncherBundleResult  = "launcher_bundle_result"
+	TypeLauncherRestored      = "launcher_restored"
+	// The shared public leak check's two directions: the daemon pushing the check's packed
+	// directory, in slices under the frame limit, to a launcher whose hello named a tag, and the
+	// launcher answering each slice, the last with the outcome of its install.
+	TypeLauncherLeakCheck       = "launcher_leak_check"
+	TypeLauncherLeakCheckResult = "launcher_leak_check_result"
 )
 
 // The protocol's sizes, verified against the shipped files: the largest plain line including its
@@ -138,12 +160,23 @@ type AgentSecretsTokenResult struct {
 // LauncherHello authenticates a role launcher independently from its child shim. The daemon
 // minted Token belongs to exactly this pod UID, role and Secret epoch; LauncherID changes each
 // time Kubernetes restarts the launcher container.
+//
+// LeakCheckTag is the launcher's own pin of the shared public leak check (its environment's
+// LEGION_LEAK_CHECK_TAG), empty when its environment names none: a hello that names a tag is a
+// launcher that takes the check from the daemon (LauncherLeakCheck) rather than a role reading
+// GitHub for it. LeakCheckInstalled is this launcher process having already installed that tag,
+// so the daemon pushes it nothing, and a daemon that restarts makes a running pod read nothing
+// again; a launcher process that restarts says false and is pushed the check again. The hello
+// does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
+// daemon refuses that tag as the cause of the start it cannot serve the check for.
 type LauncherHello struct {
-	Token      string `json:"token"`
-	Sandbox    string `json:"sandbox"`
-	Role       string `json:"role"`
-	PodUID     string `json:"podUid"`
-	LauncherID string `json:"launcherId"`
+	Token              string `json:"token"`
+	Sandbox            string `json:"sandbox"`
+	Role               string `json:"role"`
+	PodUID             string `json:"podUid"`
+	LauncherID         string `json:"launcherId"`
+	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
+	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands.
@@ -200,12 +233,45 @@ type LauncherStart struct {
 // it writes them.
 func GenerationDir(generation uint64) string { return "g" + strconv.FormatUint(generation, 10) }
 
-// LauncherStartResult is the launcher's answer to LauncherStart.
+// SessionRefusal is why a launcher refused a start over the session it was asked to resume. It is
+// one kind with two values rather than a flag for each, because a start meets at most one of them:
+// SessionGone is the session table answering that it holds no such session, a session that is
+// gone, and SessionStoreUnreachable is that table being absent or the store not answering at all,
+// which says nothing about the session. The empty value is no session problem, which every start
+// that succeeded and every refusal over anything else carries. A value is also the error the
+// launcher wraps its own refusal in, so the sentence the daemon reads and the kind it acts on are
+// the same thing said once (internal/launcher's resumable).
+type SessionRefusal string
+
+const (
+	SessionGone             SessionRefusal = "gone"
+	SessionStoreUnreachable SessionRefusal = "store-unreachable"
+)
+
+// Error is the sentence a refusal of this kind reads as, so a launcher can wrap it into the error
+// it answers with. A kind this build does not know reads as its own value, which keeps a newer
+// launcher's answer legible rather than empty.
+func (r SessionRefusal) Error() string {
+	switch r {
+	case SessionGone:
+		return "the session table holds no such session"
+	case SessionStoreUnreachable:
+		return "the session store could not be asked"
+	}
+	return string(r)
+}
+
+// LauncherStartResult is the launcher's answer to LauncherStart. A start the launcher refused over
+// the session it was asked to resume names the refusal's kind, so the daemon never has to read an
+// error's prose to tell the two apart: the sandbox runtime maps the kind to the sentinel the
+// supervisor acts on (runtime.ErrSessionFileMissing, runtime.ErrSessionStore). Error carries the
+// sentence either way.
 type LauncherStartResult struct {
-	ID                string `json:"id"`
-	OK                bool   `json:"ok"`
-	RunningGeneration uint64 `json:"runningGeneration,omitempty"`
-	Error             string `json:"error,omitempty"`
+	ID                string         `json:"id"`
+	OK                bool           `json:"ok"`
+	RunningGeneration uint64         `json:"runningGeneration,omitempty"`
+	Error             string         `json:"error,omitempty"`
+	Session           SessionRefusal `json:"session,omitempty"`
 }
 
 // LauncherStop stops only the child of Generation. The launcher refuses an older generation
@@ -260,6 +326,22 @@ type StateData struct {
 // GetState asks the worker whether a turn is running.
 type GetState struct {
 	ID string `json:"id"`
+}
+
+// Compact asks Oh My Pi to compact the session's context: `{id?, type: "compact",
+// customInstructions?: string}` (omp://rpc.md, "Compaction"). The shim answers none of it — it
+// forwards it to Oh My Pi as it forwards a prompt — and Oh My Pi answers a `response` of the
+// same command, carrying its CompactionResult on success and `success: false` with the reason
+// when the compaction was refused or skipped.
+//
+// CustomInstructions is what the summary is written to, and the daemon always sends one: Oh My
+// Pi runs the image-based snapcompact method only for a compaction with no instructions and no
+// internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts at
+// the pinned tag), so instructions are what make the summary text the resumed session can read
+// back without a vision model. A frame with none is refused here rather than sent.
+type Compact struct {
+	ID                 string `json:"id"`
+	CustomInstructions string `json:"customInstructions"`
 }
 
 // AgentStart is OMP beginning a turn. DeliveryID is set only on the shim's own synthetic replay
@@ -317,6 +399,39 @@ func (f PromptResult) Reason() string {
 	return f.Error.Message
 }
 
+// ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that
+// same call finishing. They are the only frames that say an agent mid-turn is still moving: the
+// daemon stamps each on receipt and keeps the last of them on the claim, so a turn whose agent
+// has stopped stepping is found rather than read as hours of work (INFRA-1274).
+//
+// ToolCallID is what pairs an end with its start, and the only thing that does: two calls of one
+// tool in one assistant message come back with byte-identical ToolName and Args, and their ends
+// in either order. Args is the call's arguments as Oh My Pi wrote them, kept raw because their
+// shape belongs to the tool; nothing in the daemon keeps their text, which routinely holds a
+// credential (supervise's StepRecord). Intent is the agent's own words for the step.
+//
+// Neither frame carries a time, which is why the daemon stamps both on receipt. The end repeats
+// the tool and the call id and nothing else of the call — no Args, no Intent — so whatever is
+// recorded of the arguments beside an end is what the start left (supervise's openCall). Oh My
+// Pi's own end carries a `result` object too, which nothing in the daemon reads; the decode
+// drops it, as it drops the members of a prompt_result nothing reads. The Claude Code bridge
+// writes a start with no call id at all (internal/claudebridge), which is a step with no call to
+// name rather than a frame to refuse.
+type ToolExecutionStart struct {
+	ToolCallID string          `json:"toolCallId"`
+	ToolName   string          `json:"toolName"`
+	Args       json.RawMessage `json:"args"`
+	Intent     string          `json:"intent"`
+}
+
+// ToolExecutionEnd is the call ToolExecutionStart opened, finished. IsError is whether the tool
+// refused the call, which the daemon records nothing of: a call that ended is a step either way.
+type ToolExecutionEnd struct {
+	ToolCallID string `json:"toolCallId"`
+	ToolName   string `json:"toolName"`
+	IsError    bool   `json:"isError"`
+}
+
 // Shutdown asks the shim to end the wrapped process: SIGTERM, then SIGKILL if it is still running
 // when the shim's grace runs out. The shim acts on it and never forwards it.
 type Shutdown struct{}
@@ -337,6 +452,128 @@ type AdoptWorkingCopyResult struct {
 	Error string `json:"error,omitempty"`
 }
 
+// BundleWorkspace asks the shim to bundle the unpushed work of the workspace it runs in, so the
+// daemon can keep it while the released pod, its disk and that workspace go. The daemon names the
+// issue, the largest bundle it will take and the budget, never a command or a path: the shim
+// builds the bundle with the jj and git of the workspace it already works in.
+type BundleWorkspace struct {
+	ID        string `json:"id"`
+	Issue     string `json:"issue"`
+	MaxBytes  int    `json:"maxBytes"`
+	TimeoutMs int    `json:"timeoutMs"`
+}
+
+// BundleWorkspaceResult answers BundleWorkspace with the bundle and the three facts a restore
+// needs beside it: the commit the working copy sat on, the heads the bundle carries, and each
+// local bookmark that pointed into the saved set. A bundle larger than the request's MaxBytes is
+// refused rather than sent, with SizeBytes naming what it would have been, so the caller can stop
+// the release and record why. The result crosses the shim's lane as an rpc_chunk sequence when it
+// is larger than one line.
+type BundleWorkspaceResult struct {
+	ID        string            `json:"id"`
+	OK        bool              `json:"ok"`
+	Error     string            `json:"error,omitempty"`
+	SizeBytes int               `json:"sizeBytes"`
+	Bundle    []byte            `json:"bundle,omitempty"`
+	Head      string            `json:"head,omitempty"`
+	Tips      []string          `json:"tips,omitempty"`
+	Bookmarks map[string]string `json:"bookmarks,omitempty"`
+	At        time.Time         `json:"at"`
+}
+
+// LauncherBundle is one slice of a saved workspace bundle on its way to the launcher of the pod
+// that replaces a released one. The launcher has no rpc_chunk lane of its own, so the slicing is
+// the frame's: Payload is the Index-th LauncherBundlePayloadBytes of the whole body
+// (SplitWorkspaceBundle), Count how many slices there are, and SHA256 the digest of the body the
+// slices rebuild, which the launcher checks before it writes anything. ID names the sequence, so a
+// repeated slice is recognised as a repeated launcher_start id is.
+//
+// Release is the id of the release that saved the body, which the launcher echoes in its
+// launcher_restored: the daemon deletes the bundle that report names and no other, so a report
+// that reaches it after a later release has saved again deletes nothing (internal/runtime/sandbox's
+// restoreReported). It travels beside the body rather than in it so that a report still names its
+// release when the body could not be read.
+type LauncherBundle struct {
+	ID      string `json:"id"`
+	Index   int    `json:"index"`
+	Count   int    `json:"count"`
+	Release int64  `json:"release"`
+	Payload []byte `json:"payload"`
+	SHA256  string `json:"sha256"`
+}
+
+// LauncherBundleResult answers one LauncherBundle. Held is the launcher holding the whole,
+// digest-checked body, which it answers the last slice of the sequence with: the sequence is
+// over and the daemon sends no more of it. It is not the restore — that runs in the roles
+// container before the first role of the pod starts, and the launcher reports its outcome in a
+// launcher_restored of its own, which is what the daemon drops its saved copy on.
+type LauncherBundleResult struct {
+	ID    string `json:"id"`
+	Index int    `json:"index"`
+	OK    bool   `json:"ok"`
+	Held  bool   `json:"held,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// LauncherRestored is the launcher's own report of what became of the bundle it held: the
+// launcher sends it, unasked, as soon as the start that applied the bundle has run the restore,
+// and again on each later connection until one carries it: this report is the one thing the
+// daemon drops its own copy of the work on, so a restore it never hears of leaves in its
+// database work the pod's workspace already holds. ID is the slice sequence the bundle arrived
+// under and Release the release whose save that sequence carried. OK is the restore that put the
+// work back; a restore that failed carries the reason the launcher wrote the agent, and the
+// daemon keeps its copy, which it sends to no pod again (store.TakeWorkspaceBundleForRestore).
+type LauncherRestored struct {
+	ID      string `json:"id"`
+	Release int64  `json:"release,omitempty"`
+	OK      bool   `json:"ok"`
+	Error   string `json:"error,omitempty"`
+}
+
+// LauncherLeakCheck is one slice of the shared public leak check on its way to a pod's launcher:
+// the daemon reads the check's directory at the tag the launcher's hello named
+// (LauncherHello.LeakCheckTag), packs it, and pushes it before it starts a role of that launcher,
+// so no role of the pod reads GitHub for it. The launcher has no rpc_chunk lane of its own, so
+// the slicing is the frame's, as LauncherBundle's is: Payload is the Index-th
+// LauncherBundlePayloadBytes of the packed directory (SplitLeakCheck), Count how many slices there
+// are, and SHA256 the digest of the body the slices rebuild, which the launcher checks before it
+// installs anything. Tag is the tag the body was read at, which the launcher refuses unless it is
+// its own pin. ID names the sequence, `leak-check-<tag>-<first 12 hex of the digest>`, so a
+// repeated slice is recognised as a repeated launcher_bundle slice is.
+type LauncherLeakCheck struct {
+	ID      string `json:"id"`
+	Index   int    `json:"index"`
+	Count   int    `json:"count"`
+	Tag     string `json:"tag"`
+	SHA256  string `json:"sha256"`
+	Payload []byte `json:"payload"`
+}
+
+// LauncherLeakCheckResult answers one LauncherLeakCheck. OK is the slice taken. Installed is the
+// launcher having installed the whole, digest-checked check at its tag, which it answers the last
+// slice of the sequence with, or any slice of a sequence whose tag and digest it has already
+// installed: the sequence is over and the daemon sends no more of it. A refusal carries Error, the
+// pod's cause sentence for why the check could not be installed, which the daemon refuses the
+// role's start with.
+type LauncherLeakCheckResult struct {
+	ID        string `json:"id"`
+	Index     int    `json:"index"`
+	OK        bool   `json:"ok"`
+	Installed bool   `json:"installed,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
+// the commit the working copy sat on, the heads the bundle carries and each local bookmark that
+// pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
+type WorkspaceBundle struct {
+	Bundle    []byte            `json:"-"`
+	Head      string            `json:"head"`
+	Tips      []string          `json:"tips,omitempty"`
+	Bookmarks map[string]string `json:"bookmarks,omitempty"`
+	At        time.Time         `json:"at"`
+}
+
 // RPCChunk is one slice of a logical frame too large for a single line. Data is base64 of the
 // frame's Index-th ChunkPayloadBytes slice; ByteLength is the whole frame's size. See chunks.go.
 type RPCChunk struct {
@@ -347,9 +584,9 @@ type RPCChunk struct {
 	Data       string `json:"data"`
 }
 
-// Raw is a frame this package does not model: OMP's tool and error events, and whatever a later
-// OMP adds. It keeps the line verbatim and re-encodes to exactly those bytes, so a bridge that
-// decodes to inspect a frame can still pass it on unchanged.
+// Raw is a frame this package does not model: OMP's message updates and error events, and
+// whatever a later OMP adds. It keeps the line verbatim and re-encodes to exactly those bytes,
+// so a bridge that decodes to inspect a frame can still pass it on unchanged.
 type Raw struct {
 	Type string
 	JSON json.RawMessage
@@ -361,8 +598,11 @@ func (NegotiateProtocol) FrameType() string            { return TypeNegotiatePro
 func (Prompt) FrameType() string                       { return TypePrompt }
 func (Response) FrameType() string                     { return TypeResponse }
 func (GetState) FrameType() string                     { return TypeGetState }
+func (Compact) FrameType() string                      { return TypeCompact }
 func (AgentStart) FrameType() string                   { return TypeAgentStart }
 func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
+func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
+func (ToolExecutionEnd) FrameType() string             { return TypeToolExecutionEnd }
 func (PromptResult) FrameType() string                 { return TypePromptResult }
 func (Shutdown) FrameType() string                     { return TypeShutdown }
 func (AdoptWorkingCopy) FrameType() string             { return TypeAdoptWorkingCopy }
@@ -381,6 +621,13 @@ func (LauncherStart) FrameType() string                { return TypeLauncherStar
 func (LauncherStartResult) FrameType() string          { return TypeLauncherStartResult }
 func (LauncherStop) FrameType() string                 { return TypeLauncherStop }
 func (LauncherStopResult) FrameType() string           { return TypeLauncherStopResult }
+func (BundleWorkspace) FrameType() string              { return TypeBundleWorkspace }
+func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorkspaceResult }
+func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
+func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
+func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
+func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
+func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
 
 func (f Hello) MarshalJSON() ([]byte, error) {
 	type plain Hello
@@ -409,12 +656,27 @@ func (f GetState) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeGetState, plain(f))
 }
 
+func (f Compact) MarshalJSON() ([]byte, error) {
+	type plain Compact
+	return marshalFrame(TypeCompact, plain(f))
+}
+
 func (f AgentStart) MarshalJSON() ([]byte, error) {
 	type plain AgentStart
 	return marshalFrame(TypeAgentStart, plain(f))
 }
 
 func (AgentEnd) MarshalJSON() ([]byte, error) { return marshalFrame(TypeAgentEnd, struct{}{}) }
+
+func (f ToolExecutionStart) MarshalJSON() ([]byte, error) {
+	type plain ToolExecutionStart
+	return marshalFrame(TypeToolExecutionStart, plain(f))
+}
+
+func (f ToolExecutionEnd) MarshalJSON() ([]byte, error) {
+	type plain ToolExecutionEnd
+	return marshalFrame(TypeToolExecutionEnd, plain(f))
+}
 
 func (f PromptResult) MarshalJSON() ([]byte, error) {
 	type plain PromptResult
@@ -499,6 +761,41 @@ func (f LauncherStopResult) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherStopResult, plain(f))
 }
 
+func (f BundleWorkspace) MarshalJSON() ([]byte, error) {
+	type plain BundleWorkspace
+	return marshalFrame(TypeBundleWorkspace, plain(f))
+}
+
+func (f BundleWorkspaceResult) MarshalJSON() ([]byte, error) {
+	type plain BundleWorkspaceResult
+	return marshalFrame(TypeBundleWorkspaceResult, plain(f))
+}
+
+func (f LauncherBundle) MarshalJSON() ([]byte, error) {
+	type plain LauncherBundle
+	return marshalFrame(TypeLauncherBundle, plain(f))
+}
+
+func (f LauncherBundleResult) MarshalJSON() ([]byte, error) {
+	type plain LauncherBundleResult
+	return marshalFrame(TypeLauncherBundleResult, plain(f))
+}
+
+func (f LauncherRestored) MarshalJSON() ([]byte, error) {
+	type plain LauncherRestored
+	return marshalFrame(TypeLauncherRestored, plain(f))
+}
+
+func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
+	type plain LauncherLeakCheck
+	return marshalFrame(TypeLauncherLeakCheck, plain(f))
+}
+
+func (f LauncherLeakCheckResult) MarshalJSON() ([]byte, error) {
+	type plain LauncherLeakCheckResult
+	return marshalFrame(TypeLauncherLeakCheckResult, plain(f))
+}
+
 // Validate refuses a hello the listener would refuse (worker-stream-listener.ts:140-148).
 func (f Hello) Validate() error {
 	if f.BootToken == "" {
@@ -520,6 +817,276 @@ func (f AdoptWorkingCopy) Validate() error {
 		return fmt.Errorf("%w: adopt-working-copy timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
 	}
 	return nil
+}
+
+// Validate refuses a compaction request Oh My Pi could not answer for this daemon: one with no
+// request id to correlate its response by, and one with no instructions, which is the frame that
+// would let Oh My Pi archive the history onto snapcompact's images instead of writing a text
+// summary (Compact).
+func (f Compact) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: compact carries no id", ErrMalformedFrame)
+	case f.CustomInstructions == "":
+		return fmt.Errorf("%w: compact carries no customInstructions", ErrMalformedFrame)
+	}
+	return nil
+}
+
+// issueKeyShape is a Dispatch issue key, the one shape an issue has. The shim puts the issue into
+// a revset (`remote_bookmarks(exact:"legion/<issue>")`), so a frame whose issue is not one is
+// refused here rather than quoted into a command.
+var issueKeyShape = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]+$`)
+
+// Validate refuses a bundle request the shim would refuse. The daemon is its only sender.
+func (f BundleWorkspace) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: bundle-workspace carries no id", ErrMalformedFrame)
+	case !issueKeyShape.MatchString(f.Issue):
+		return fmt.Errorf("%w: bundle-workspace issue %q is not an issue key", ErrMalformedFrame, f.Issue)
+	case f.MaxBytes <= 0:
+		return fmt.Errorf("%w: bundle-workspace maxBytes is %d", ErrMalformedFrame, f.MaxBytes)
+	case f.TimeoutMs <= 0:
+		return fmt.Errorf("%w: bundle-workspace timeoutMs is %d", ErrMalformedFrame, f.TimeoutMs)
+	}
+	return nil
+}
+
+// Validate refuses a bundle result the daemon could not act on: one answering no request, a
+// refusal with no reason, or a bundle whose bytes and declared size disagree.
+func (f BundleWorkspaceResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: bundle-workspace-result carries no id", ErrMalformedFrame)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: bundle-workspace-result refuses without a reason", ErrMalformedFrame)
+	case f.OK && f.Head == "":
+		return fmt.Errorf("%w: bundle-workspace-result carries no head", ErrMalformedFrame)
+	case f.OK && f.SizeBytes != len(f.Bundle):
+		return fmt.Errorf("%w: bundle-workspace-result says %d bytes and carries %d", ErrMalformedFrame, f.SizeBytes, len(f.Bundle))
+	}
+	return nil
+}
+
+// Validate refuses a bundle slice the launcher could not place in its sequence.
+func (f LauncherBundle) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_bundle carries no id", ErrMalformedFrame)
+	case f.Count <= 0:
+		return fmt.Errorf("%w: launcher_bundle count is %d", ErrMalformedFrame, f.Count)
+	case f.Index < 0 || f.Index >= f.Count:
+		return fmt.Errorf("%w: launcher_bundle index %d of %d", ErrMalformedFrame, f.Index, f.Count)
+	case f.Release <= 0:
+		return fmt.Errorf("%w: launcher_bundle %d names no release", ErrMalformedFrame, f.Index)
+	case len(f.Payload) == 0:
+		return fmt.Errorf("%w: launcher_bundle %d carries no payload", ErrMalformedFrame, f.Index)
+	case len(f.Payload) > LauncherBundlePayloadBytes:
+		return fmt.Errorf("%w: launcher_bundle payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherBundlePayloadBytes)
+	case !digestShape.MatchString(f.SHA256):
+		return fmt.Errorf("%w: launcher_bundle sha256 %q is not a hex SHA-256", ErrMalformedFrame, f.SHA256)
+	}
+	return nil
+}
+
+// digestShape is a hex-encoded SHA-256: 64 lowercase hex characters.
+var digestShape = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// LauncherBundlePayloadBytes is how much of a bundle's body one launcher_bundle frame carries.
+// Base64 of it, plus the frame's other members, stays well inside MaxFrameBytes, which is the
+// whole reason the sequence exists: the launcher reads one frame per line and nothing reassembles
+// rpc_chunk on its side.
+const LauncherBundlePayloadBytes = 256 << 10
+
+// MaxWorkspaceBundleBodyBytes is the largest body a launcher_bundle sequence carries, and every
+// allocation this file makes for one is under it. It is the wire's own refusal rather than the
+// release's: a release stops above runtime.MaxWorkspaceBundleBytes long before a body reaches
+// here (outbox's release), and this bound says what the sequence itself will build, so a caller
+// that never read that policy cannot ask for a slice count or a body buffer sized by a length
+// nothing checked. 64 MiB leaves the release's 40 MiB its header and room to grow under a bound
+// a test keeps ordered (runtime's workspace_bundle_wire_test.go). A launcher_leak_check sequence
+// is held to the same bound, so a launcher's allocations for one are under it too.
+const MaxWorkspaceBundleBodyBytes = 64 << 20
+
+// LeakCheckTagPattern is the published shape of a tag of the shared public leak check. The pattern
+// is written here rather than imported so the wire depends on nothing of the daemon's; it is the
+// one copy, which internal/leakguard reads too (ValidLeakCheckTag), since a tag becomes a path of a
+// GitHub API endpoint there.
+const LeakCheckTagPattern = `^leak-check-v[1-9][0-9]*$`
+
+var leakCheckTagShape = regexp.MustCompile(LeakCheckTagPattern)
+
+// ValidLeakCheckTag is whether tag is of the published shape LeakCheckTagPattern.
+func ValidLeakCheckTag(tag string) bool { return leakCheckTagShape.MatchString(tag) }
+
+// maxLauncherSlices is the most slices a sequence of LauncherBundlePayloadBytes each may count
+// without the body they rebuild passing MaxWorkspaceBundleBodyBytes.
+const maxLauncherSlices = MaxWorkspaceBundleBodyBytes / LauncherBundlePayloadBytes
+
+// Validate refuses a leak check slice the launcher could not place in its sequence, or one whose
+// count asks it to hold more than the sequence's bound.
+func (f LauncherLeakCheck) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_leak_check carries no id", ErrMalformedFrame)
+	case f.Count <= 0:
+		return fmt.Errorf("%w: launcher_leak_check count is %d", ErrMalformedFrame, f.Count)
+	case f.Count > maxLauncherSlices:
+		return fmt.Errorf("%w: launcher_leak_check count is %d, which could pass the %d bytes a sequence carries",
+			ErrMalformedFrame, f.Count, MaxWorkspaceBundleBodyBytes)
+	case f.Index < 0 || f.Index >= f.Count:
+		return fmt.Errorf("%w: launcher_leak_check index %d of %d", ErrMalformedFrame, f.Index, f.Count)
+	case !ValidLeakCheckTag(f.Tag):
+		return fmt.Errorf("%w: launcher_leak_check tag %q is not of the shape %s", ErrMalformedFrame, f.Tag, LeakCheckTagPattern)
+	case len(f.Payload) == 0:
+		return fmt.Errorf("%w: launcher_leak_check %d carries no payload", ErrMalformedFrame, f.Index)
+	case len(f.Payload) > LauncherBundlePayloadBytes:
+		return fmt.Errorf("%w: launcher_leak_check payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherBundlePayloadBytes)
+	case !digestShape.MatchString(f.SHA256):
+		return fmt.Errorf("%w: launcher_leak_check sha256 %q is not a hex SHA-256", ErrMalformedFrame, f.SHA256)
+	}
+	return nil
+}
+
+// Validate refuses a leak check answer the daemon could not act on: one answering no sequence or
+// no slice of it, a refusal with no cause, or an install the launcher says it both made and refused.
+func (f LauncherLeakCheckResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_leak_check_result carries no id", ErrMalformedFrame)
+	case f.Index < 0:
+		return fmt.Errorf("%w: launcher_leak_check_result index is %d", ErrMalformedFrame, f.Index)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: launcher_leak_check_result refuses without a cause", ErrMalformedFrame)
+	case !f.OK && f.Installed:
+		return fmt.Errorf("%w: launcher_leak_check_result refuses an install it says it made", ErrMalformedFrame)
+	}
+	return nil
+}
+
+// SplitLeakCheck slices body, the shared public leak check's directory packed at tag, into the
+// launcher_leak_check sequence that carries it, every slice declaring the tag and the digest of
+// the whole body so the launcher can refuse one that did not arrive as it was sent or was read at
+// another tag than its pin. The sequence's id is the tag and the digest's first 12 hex, so the
+// same check pushed again is the same sequence and the launcher answers a slice it already took
+// with the answer it gave.
+func SplitLeakCheck(tag string, body []byte) ([]LauncherLeakCheck, error) {
+	switch {
+	case !ValidLeakCheckTag(tag):
+		return nil, fmt.Errorf("%w: a launcher_leak_check sequence of the tag %q, which is not of the shape %s",
+			ErrMalformedFrame, tag, LeakCheckTagPattern)
+	case len(body) == 0:
+		return nil, fmt.Errorf("%w: a launcher_leak_check sequence of %s carries no body", ErrMalformedFrame, tag)
+	case len(body) > MaxWorkspaceBundleBodyBytes:
+		return nil, fmt.Errorf("%w: a leak check body of %d bytes is over the %d a launcher_leak_check sequence carries",
+			ErrMalformedFrame, len(body), MaxWorkspaceBundleBodyBytes)
+	}
+	digest := BundleDigest(body)
+	id := "leak-check-" + tag + "-" + digest[:12]
+	count := (len(body) + LauncherBundlePayloadBytes - 1) / LauncherBundlePayloadBytes
+	frames := make([]LauncherLeakCheck, 0, count)
+	for payload := range slices.Chunk(body, LauncherBundlePayloadBytes) {
+		frames = append(frames, LauncherLeakCheck{
+			ID: id, Index: len(frames), Count: count, Tag: tag,
+			SHA256: digest, Payload: payload,
+		})
+	}
+	return frames, nil
+}
+
+// SplitWorkspaceBundle slices b, the work release saved, into the launcher_bundle sequence that
+// carries it, every slice declaring the release and the digest of the whole body so the launcher
+// can refuse one that did not arrive as it was sent. The sequence's id is name, the release and
+// that digest, so the same bundle sent again is the same sequence and another bundle, or the same
+// work saved by another release, is another one: a launcher whose connection was replaced
+// mid-sequence answers a slice it already took with the answer it gave, and refuses only a payload
+// that differs from the one that id carried (internal/launcher's bundleRestore.receive).
+func SplitWorkspaceBundle(name string, release int64, b WorkspaceBundle) ([]LauncherBundle, error) {
+	if name == "" {
+		return nil, fmt.Errorf("%w: a launcher_bundle sequence needs a name", ErrMalformedFrame)
+	}
+	if release <= 0 {
+		return nil, fmt.Errorf("%w: a launcher_bundle sequence needs the release that saved it", ErrMalformedFrame)
+	}
+	body, err := marshalWorkspaceBundle(b)
+	if err != nil {
+		return nil, err
+	}
+	digest := BundleDigest(body)
+	id := name + "-" + strconv.FormatInt(release, 10) + "-" + digest
+	count := len(body) / LauncherBundlePayloadBytes
+	if len(body)%LauncherBundlePayloadBytes != 0 {
+		count++
+	}
+	frames := make([]LauncherBundle, 0, count)
+	for index := range count {
+		end := min((index+1)*LauncherBundlePayloadBytes, len(body))
+		frames = append(frames, LauncherBundle{
+			ID: id, Index: index, Count: count, Release: release,
+			Payload: body[index*LauncherBundlePayloadBytes : end], SHA256: digest,
+		})
+	}
+	return frames, nil
+}
+
+// ParseWorkspaceBundle reads the body a launcher_bundle sequence rebuilt: one JSON line naming
+// the saved commits, then the git bundle's own bytes. The bundle is kept raw rather than encoded
+// into that line so a 40 MiB bundle is base64'd once, by the slices that carry it, and not twice.
+func ParseWorkspaceBundle(body []byte) (WorkspaceBundle, error) {
+	head, bundle, found := bytes.Cut(body, []byte("\n"))
+	if !found {
+		return WorkspaceBundle{}, fmt.Errorf("%w: a workspace bundle body carries no header line", ErrMalformedFrame)
+	}
+	var b WorkspaceBundle
+	if err := json.Unmarshal(head, &b); err != nil {
+		return WorkspaceBundle{}, fmt.Errorf("%w: a workspace bundle header: %w", ErrMalformedFrame, err)
+	}
+	if len(bundle) == 0 {
+		return WorkspaceBundle{}, fmt.Errorf("%w: a workspace bundle body carries no bundle", ErrMalformedFrame)
+	}
+	b.Bundle = bundle
+	return b, nil
+}
+
+// BundleDigest is the digest a launcher_bundle or launcher_leak_check sequence declares for the
+// body it carries.
+func BundleDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// marshalWorkspaceBundle renders b as the body ParseWorkspaceBundle reads. JSON escapes its own
+// newlines, so the header line is one line. The body it builds is the whole of what the sequence
+// carries — the header, the newline and the bundle's own bytes — so that whole is what
+// MaxWorkspaceBundleBodyBytes bounds, and the two parts are never measured apart: each under the
+// bound and the body over it is the shape this refuses, which TestABundleUnderTheBoundWhoseBodyIsOverItIsRefused
+// is.
+func marshalWorkspaceBundle(b WorkspaceBundle) ([]byte, error) {
+	if b.Head == "" {
+		return nil, fmt.Errorf("%w: a workspace bundle carries no head", ErrMalformedFrame)
+	}
+	if len(b.Bundle) == 0 {
+		return nil, fmt.Errorf("%w: a workspace bundle carries no bundle", ErrMalformedFrame)
+	}
+	head, err := json.Marshal(b)
+	if err != nil {
+		return nil, err
+	}
+	// The body's own size is measured once, as one value, and the allocation below takes that
+	// value and no arithmetic of its own: a reader of this function, and the analysis CI runs
+	// over it, sees the number the buffer is made from bounded by the constant on the line
+	// before. A size that is not positive is a sum that wrapped, which no caller can produce and
+	// which is refused here rather than passed to make.
+	size := len(head) + 1 + len(b.Bundle)
+	if size <= 0 || size > MaxWorkspaceBundleBodyBytes {
+		return nil, fmt.Errorf("%w: a workspace bundle of %d bytes and a header of %d are over the %d a launcher_bundle sequence carries",
+			ErrMalformedFrame, len(b.Bundle), len(head), MaxWorkspaceBundleBodyBytes)
+	}
+	body := make([]byte, 0, size)
+	body = append(body, head...)
+	body = append(body, '\n')
+	return append(body, b.Bundle...), nil
 }
 
 // thumbprintShape is a base64url-encoded SHA-256: 43 characters, no padding (RFC 7638).
@@ -547,7 +1114,9 @@ func (f Hello2) Validate() error {
 	return nil
 }
 
-// Validate refuses an unactionable launcher hello before the listener hands it to the runtime.
+// Validate refuses an unactionable launcher hello before the listener hands it to the runtime: a
+// leak check said to be installed with no tag is one. The tag's shape is the daemon's to refuse
+// when it serves the check (LauncherHello).
 func (f LauncherHello) Validate() error {
 	switch {
 	case f.Token == "":
@@ -560,6 +1129,8 @@ func (f LauncherHello) Validate() error {
 		return fmt.Errorf("%w: launcher_hello carries no podUid", ErrMalformedFrame)
 	case f.LauncherID == "":
 		return fmt.Errorf("%w: launcher_hello carries no launcherId", ErrMalformedFrame)
+	case f.LeakCheckInstalled && f.LeakCheckTag == "":
+		return fmt.Errorf("%w: launcher_hello says a leak check is installed and names no leakCheckTag", ErrMalformedFrame)
 	}
 	return nil
 }
@@ -643,10 +1214,16 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[Response](trimmed)
 	case TypeGetState:
 		return decodeInto[GetState](trimmed)
+	case TypeCompact:
+		return decodeInto[Compact](trimmed)
 	case TypeAgentStart:
 		return decodeInto[AgentStart](trimmed)
 	case TypeAgentEnd:
 		return AgentEnd{}, nil
+	case TypeToolExecutionStart:
+		return decodeInto[ToolExecutionStart](trimmed)
+	case TypeToolExecutionEnd:
+		return decodeInto[ToolExecutionEnd](trimmed)
 	case TypePromptResult:
 		return decodeInto[PromptResult](trimmed)
 	case TypeShutdown:
@@ -681,6 +1258,20 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherStop](trimmed)
 	case TypeLauncherStopResult:
 		return decodeInto[LauncherStopResult](trimmed)
+	case TypeBundleWorkspace:
+		return decodeInto[BundleWorkspace](trimmed)
+	case TypeBundleWorkspaceResult:
+		return decodeInto[BundleWorkspaceResult](trimmed)
+	case TypeLauncherBundle:
+		return decodeInto[LauncherBundle](trimmed)
+	case TypeLauncherBundleResult:
+		return decodeInto[LauncherBundleResult](trimmed)
+	case TypeLauncherRestored:
+		return decodeInto[LauncherRestored](trimmed)
+	case TypeLauncherLeakCheck:
+		return decodeInto[LauncherLeakCheck](trimmed)
+	case TypeLauncherLeakCheckResult:
+		return decodeInto[LauncherLeakCheckResult](trimmed)
 	default:
 		return Raw{Type: head.Type, JSON: bytes.Clone(trimmed)}, nil
 	}

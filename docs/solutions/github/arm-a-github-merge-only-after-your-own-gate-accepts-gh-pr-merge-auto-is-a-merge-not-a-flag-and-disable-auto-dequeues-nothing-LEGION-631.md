@@ -9,7 +9,7 @@ tags:
   - READY
   - merger
 date: 2026-10-10
-status: superseded by the daemon's READY merge submission (`ready_merge` outbox row, `ghautomerge.Submit`) — no role runs `gh pr merge --auto` any more; the daemon submits an accepted READY's merge itself, choosing an enqueue, an immediate merge or an arm from GitHub's own answers (`isMergeQueueEnabled`, `mergeStateStatus`, `autoMergeAllowed`), and waits rather than failing in a repository without auto-merge, whose `Auto merge is not allowed for this repository` refusal stranded READY here. The rule to submit only after your own gate accepts stands (the row is queued only when READY is accepted), and so do the `--disable-auto`/`dequeuePullRequest` facts the daemon's disarm uses
+status: superseded by INFRA-714 — the daemon arms, submits and disarms no merge at all: the `ready_merge` outbox row, `ghautomerge.Submit` and the disarm are deleted with the whole READY route, and the merger merges the pull request itself at the head it read, never turning auto-merge on. The `gh pr merge --auto`, `--disable-auto` and `dequeuePullRequest` facts this note measured stand as GitHub facts; nothing in Legion acts on them any more
 module: packages/daemon/internal/prompts
 related_issues:
   - "LEGION-631"
@@ -21,10 +21,11 @@ related_issues:
   rules are already satisfied (cli/cli#13880; the CLI only passes the request to GitHub). Treat it as
   the merge itself. Run it only after every gate of your own has accepted — in Legion, the moment the
   daemon accepts the merger's `handoff_complete` with `ready: true`, in the same turn, never before
-  and never from a later role — because each refusal that gate can still give (the design gate, a
-  head carrying `.legion/<issue>/`, a conflict, a check not green) names a condition an armed request
-  would merge through. A child issue's merger cannot even read its root's design gate (`designGate`
-  is on the root's record alone), so "check the gate yourself, then arm" is not available to it.
+  and never from a later role — because each refusal that gate can still give (the design gate, an
+  unreviewed change above the approved head, a conflict, a check not green) names a condition an
+  armed request would merge through. A child issue's merger cannot even read its root's design gate
+  (`designGate` is on the root's record alone), so "check the gate yourself, then arm" is not
+  available to it.
 - `--match-head-commit` is checked when the request is made, not when the merge lands: an armed
   request survives a later push. Any head that is no longer the one READY named therefore needs an
   explicit disarm. In Legion the daemon makes it, not a role (`packages/daemon/internal/ghautomerge`,

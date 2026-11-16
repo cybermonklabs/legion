@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,19 +12,68 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// maxEventReplay is one page of the event log readEventsAfterID reads: an events subscription's
-// catch-up and the relay's read each page through the log at it.
-const maxEventReplay = 1000
+const (
+	// maxEventPage is the most events one page of an issue's or a document's event log holds,
+	// and its default.
+	maxEventPage = 200
+	// maxEventReplay is the most events one page of the global event log holds (readEventsAfterID):
+	// the relay's read and GET /api/v1/events/log each page through the log at it, and it is that
+	// route's default. An events subscription's catch-up pages the same read at maxLiveReplay
+	// instead, the bound its resume is replayed within (replayThrough in live_events.go).
+	maxEventReplay = 1000
+)
 
 const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''), e.seq, e.type, e.actor, e.notify, e.created_at, e.payload
 	from events e
 	left join issues i on i.key = e.issue_key
 	left join artifacts ar on ar.id = e.artifact_id`
 
+// listIssueEvents answers an issue's activity feed under an ETag of metadata alone: every append
+// to this feed advances the issue's last_seq in the append's own transaction (events.Broker), so
+// the issue row this is the feed of, that column, the paging query that chooses the page and the
+// variant lines both lists' ETags carry are the whole of what decides the page. The feed's
+// validator is therefore read before the page is: a reader holding the ETag is answered 304 for
+// one short statement, and one that is not is answered from the kept bytes when the cache holds
+// them, having built, encoded and compressed nothing (list_answers.go).
+//
+// What the validator does not cover is the handful of fields an ask event's payload is given at
+// read time from rows elsewhere (attachAskEventFields). The validator decides both answers this
+// route gives: the 304 a reader holding the ETag is answered, and the kept bytes
+// (listAnswers.answer) a reader who sends no validator at all is written, which is a fresh page
+// load. So what follows is what either reader can be shown after it moved, and before this
+// change a fresh load always read all of it current.
+//
+// Each field, and what moves it:
+//
+//   - referenced_by_count, the edges that point at the ask. An inbound backlink is counted on
+//     the write that makes it, which is another issue's comment, message or document, and that
+//     write moves that issue's sequence and no sequence of this one. It can be stale.
+//   - The part ids of the options and the answer, and the ask's part revision, from ask_blocks.
+//     Every write of an ask indexes its parts in the transaction that appends the ask's event
+//     (refs.IndexAskPartsCounted, in asks.go, ask_transitions.go, issue_ask_lifecycle.go and
+//     reviews.go), so an ask's own writes move these and last_seq together. The one write that
+//     does not is the indexing of an ask the index owes - one written before its parts were
+//     indexed at all - which the block index pass makes on no event (refs.IndexOwedItemBlocks,
+//     docs/block_index.go): until that pass runs, a payload carries no part ids and no
+//     revision, and the page that was kept after it goes on carrying none.
+//   - anchor_artifact and approval_artifact: the project, slug, name and is_primary of the
+//     document an ask anchors or asks approval of (attachAskDocumentArtifacts). A document's
+//     rename, re-slug or primary flag moves the sequence of the issue that document belongs to,
+//     which is this issue only when the ask names a document of its own. An ask that anchors a
+//     document on another issue can be stale.
+//   - opened_event_id is the id of the ask.opened event itself, written once and never moved.
+//
+// Each of those lasts exactly as long as the validator does, for the 304 and the kept bytes
+// alike: the next event of this issue moves last_seq, which is a new ETag and so a new kept
+// entry, and the read behind it attaches all of them again. An entry the cache evicts and a
+// restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
+// Inbox, the ask read and the issue read answer them fresh, from no kept list.
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -33,7 +83,118 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	trees := wantsDisplayTrees(r)
+	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
+	if answerNotModified(w, r, etag) {
+		return
+	}
+	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
+	if s.listAnswers.answer(w, key) {
+		return
+	}
 	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// One pass over the page: the reader takes each payload's texts as the shaping registers
+	// them, reads their stored trees in one query and fills what the table did not hold.
+	reader := s.readDisplayTrees(r.Context(), trees)
+	attachEventTrees(events, reader)
+	reader.resolve()
+	encoded, err := encodeListAnswer(events)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeListAnswer(w, key, encoded, issueHeld)
+}
+
+// eventFeedETag hashes what one page of an issue's activity feed is made of: the issue whose feed
+// it is, that issue's newest event sequence and the query that pages it, closed with the lines
+// both lists' ETags carry (listETag). It is referencesETag's shape - one line per part, then the
+// hash of them - and it names no issue key: a validator is compared against the one URL that gave
+// it.
+//
+// The issue is named by its created_at rather than its key, because the key is the one part of it
+// that comes back. last_seq is a counter of the row, so a key taken by a new issue stands at
+// sequences the issue before it stood at, and nothing else in the hash would tell the two feeds
+// apart: a reader of the new issue would be answered 304, or written the bytes this server kept
+// for the old one. That is what the browser harness does between scenarios - it empties `issues`
+// and restarts each project's numbering, so every scenario's issues take the keys of the last
+// one's (packages/dispatch/e2e/seed.ts) - and it is the reading a restored database gives a
+// process that outlived the restore. The comment list is held to the same rule by a counter that
+// never comes back with the key (migration 20261106020619); the feed's column does come back, so
+// the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
+// tells the event relay an event log that was reset under its cursor from one that merely went
+// quiet (eventLogWasReset).
+func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
+		createdAt.UnixMicro(), lastSeq, options.after, options.before, options.hasBefore, options.descending, options.limit)
+	for _, id := range options.ids {
+		_, _ = fmt.Fprintf(hash, "id=%d\n", id)
+	}
+	return s.listETag(hash, trees)
+}
+
+// issueEventSequence is the newest event sequence of the issue key names and the created_at that
+// tells that issue from the next one to take its key, with whether any issue holds that key at
+// all. A key no issue holds reads zero for both, and its feed is the empty page readEvents
+// answers rather than a refusal; the server keeps that page under no key, since the key is the
+// path the caller spelled (writeListAnswer). Every append to the issue advances the column in
+// the append's own transaction (events/broker.go), and nothing moves the stamp, so this one
+// statement is the whole of what the feed's validator reads.
+func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.Time, bool, error) {
+	var lastSeq int
+	var createdAt time.Time
+	err := s.deps.Store.Pool.QueryRow(ctx,
+		`select last_seq, created_at from issues where key = $1`, key).Scan(&lastSeq, &createdAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, time.Time{}, false, nil
+	}
+	if err != nil {
+		return 0, time.Time{}, false, fmt.Errorf("read the issue's event sequence: %w", err)
+	}
+	return lastSeq, createdAt, true, nil
+}
+
+// listEventLog pages the whole event log by id, whatever owns each event: an issue, a document,
+// a project or nothing. It answers the events after ?after= (default 0) in ascending id order,
+// at most ?limit= of them. Any authenticated caller may read it, as the events view on a page's
+// live socket carries every event to them.
+//
+// Ids are not commit order (events.Broker.Append), so a caller that pages by the id of the last
+// row it was answered would step over a lower id still open and never see it. The page is
+// therefore capped at the safe horizon, at or below which every event is final, the same cap and
+// the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
+// before the request stands at or below it, so paging to the end of this answer skips nothing.
+func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	query := r.URL.Query()
+	after, err := parseNonNegativeInt(query.Get("after"), "after")
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	limit, err := parseEventLimit(query.Get("limit"), maxEventReplay)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	through, err := s.sinceHorizon(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	events, err := s.readEventsAfterID(r.Context(), after, through, limit)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -63,7 +224,7 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	if err != nil {
 		return eventListOptions{}, err
 	}
-	limit, err := parseEventLimit(query.Get("limit"))
+	limit, err := parseEventLimit(query.Get("limit"), maxEventPage)
 	if err != nil {
 		return eventListOptions{}, err
 	}
@@ -78,32 +239,6 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 		ids:        ids,
 		limit:      limit,
 	}, nil
-}
-
-// eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
-// from 1, or its newest id when none is missing: every id at or below it is a committed event.
-// It reads the whole log, so feedEvents asks it only of a log that was reset beneath the relay,
-// whose ids restart at 1 (`truncate events restart identity`) and which is as short as the time
-// since that reset.
-func (s *server) eventLogUnbrokenThrough(ctx context.Context) (int64, error) {
-	var through int64
-	err := s.deps.Store.Pool.QueryRow(ctx, `
-		select coalesce(
-			(select min(n) - 1 from (select id, row_number() over (order by id) as n from events) numbered where id <> n),
-			(select max(id) from events),
-			0)
-	`).Scan(&through)
-	return through, err
-}
-
-// eventLogHead is the event log's newest committed id, 0 for an empty log. It is no cursor: ids
-// are not commit order, so a lower id can still be open below it. feedEvents only compares a
-// page's since and the relay's cursor against it, to tell an id of this log from one of a log it
-// replaced.
-func (s *server) eventLogHead(ctx context.Context) (int64, error) {
-	var head int64
-	err := s.deps.Store.Pool.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&head)
-	return head, err
 }
 
 type eventListOptions struct {
@@ -149,15 +284,31 @@ func (s *server) readEvents(ctx context.Context, owner owner, options eventListO
 	`, ownerValue, options.after, options.limit)
 }
 
-// readEventsAfterID reads one page of the global event log in id order: the events whose ids are
-// in (after, through]. Ids are not commit order, so a reader that moves its cursor to a page's
-// last row passes a through at or below the safe horizon (events.Horizon), where every event is
-// final: no lower id the page skipped can commit later.
-func (s *server) readEventsAfterID(ctx context.Context, after, through int64) ([]model.Event, error) {
+// readEventsAfterID reads one page of the global event log in id order: at most limit of the
+// events whose ids are in (after, through]. Ids are not commit order, so a reader that moves its
+// cursor to a page's last row passes a through at or below the safe horizon (events.Horizon),
+// where every event is final: no lower id the page skipped can commit later.
+func (s *server) readEventsAfterID(ctx context.Context, after, through int64, limit int) ([]model.Event, error) {
 	return s.readEventRows(ctx, eventSelect+`
 		where e.id > $1 and e.id <= $2
 		order by e.id asc limit $3
-	`, after, through, maxEventReplay)
+	`, after, through, limit)
+}
+
+// eventLogUnbrokenThrough is the id before the first one missing from the event log counted up
+// from 1, or its newest id when none is missing: every id at or below it is a committed event.
+// It reads the whole log, so feedEvents asks it only of a log that was reset beneath the relay,
+// whose ids restart at 1 (`truncate events restart identity`) and which is as short as the time
+// since that reset.
+func (s *server) eventLogUnbrokenThrough(ctx context.Context) (int64, error) {
+	var through int64
+	err := s.deps.Store.Pool.QueryRow(ctx, `
+		select coalesce(
+			(select min(n) - 1 from (select id, row_number() over (order by id) as n from events) numbered where id <> n),
+			(select max(id) from events),
+			0)
+	`).Scan(&through)
+	return through, err
 }
 
 // eventFeedHeadWait bounds how long eventFeedHead waits on a process that has proven no horizon
@@ -251,16 +402,17 @@ type decodedAskEventPayload struct {
 }
 
 // attachAskEventFields fills the ask fields an event payload cannot carry from the write that
-// appended it: the id of the event that opened the ask, its inbound backlink count, and its anchor
-// document. Ask payloads are decoded because those fields are added, and an ask.answered payload's
-// selected lists are read as model.AskAnswer reads them (normalizeAnsweredSelected); every other
-// payload passes through as the database returned it.
+// appended it: the id of the event that opened the ask, its inbound backlink count, the part ids
+// of the options and answer it shows with the ask's part revision, and its anchor document. Each
+// is the ask's fact now, not the write's. Ask payloads are decoded because those fields are
+// added, and an ask.answered payload's selected lists are read as model.AskAnswer reads them
+// (normalizeAnsweredSelected); every other payload passes through as the database returned it.
 func (s *server) attachAskEventFields(ctx context.Context, events []model.Event) error {
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
 		switch events[index].Type {
-		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back":
+		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of":
 		default:
 			continue
 		}
@@ -281,22 +433,24 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 		if !ok || askID == "" {
 			return fmt.Errorf("decode %s payload: ask id missing", events[index].Type)
 		}
-		asks = append(asks, model.Ask{ID: askID})
+		shell, err := askEventShell(askID, raw)
+		if err != nil {
+			return err
+		}
+		asks = append(asks, shell)
 		payloads = append(payloads, decodedAskEventPayload{event: &events[index], payload: payload})
 	}
 	askPointers := make([]*model.Ask, len(asks))
 	for index := range asks {
 		askPointers[index] = &asks[index]
 	}
-	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, askPointers); err != nil {
-		return err
-	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, askPointers); err != nil {
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, askPointers); err != nil {
 		return err
 	}
 	for index := range payloads {
 		payloads[index].payload["opened_event_id"] = *asks[index].OpenedEventID
 		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
+		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
 	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {
 		return err
@@ -309,6 +463,49 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 		payload.event.Payload = json.RawMessage(encoded)
 	}
 	return nil
+}
+
+// askEventShell is the ask attachAskPartIDs matches the stored parts against: its id and the
+// options and the answer this payload itself carries, as the write recorded them. Their text is
+// what identifies a part, so a payload the ask has moved past - an ask.opened whose options an
+// edit has since replaced, an ask.answered superseded by another answer - matches no part of the
+// ask now and carries no id. The payload's own fields are never rewritten from the ask's row;
+// only the ids attachAskEventPartIDs writes are added.
+func askEventShell(askID string, raw json.RawMessage) (model.Ask, error) {
+	var shell struct {
+		Options []model.AskOption `json:"options"`
+		Answer  *model.AskAnswer  `json:"answer"`
+	}
+	if err := json.Unmarshal(raw, &shell); err != nil {
+		return model.Ask{}, fmt.Errorf("decode the options and answer of ask %s: %w", askID, err)
+	}
+	return model.Ask{ID: askID, Options: shell.Options, Answer: shell.Answer}, nil
+}
+
+// attachAskEventPartIDs writes the part ids attachAskPartIDs read onto the payload's own options
+// and answer, with the ask's part revision beside them, so a payload names each option it shows
+// as every other read of the ask names it. An option or an answer no part of the ask stands for
+// now - an ask.opened of an ask whose options an edit has since replaced, a superseded answer -
+// carries no id, and an ask whose parts are not indexed yet no revision either: attachAskPartIDs
+// filled neither.
+func attachAskEventPartIDs(payload map[string]any, ask model.Ask) {
+	if ask.Revision > 0 {
+		payload["revision"] = ask.Revision
+	}
+	options, _ := payload["options"].([]any)
+	for index, option := range options {
+		entry, decoded := option.(map[string]any)
+		if !decoded || ask.Options[index].ID == "" {
+			continue
+		}
+		entry["id"] = ask.Options[index].ID
+	}
+	if ask.Answer == nil || ask.Answer.ID == "" {
+		return
+	}
+	if answer, carried := payload["answer"].(map[string]any); carried {
+		answer["id"] = ask.Answer.ID
+	}
 }
 
 // normalizeAnsweredSelected writes model.AskAnswer's reading of selected into an ask.answered
@@ -424,13 +621,14 @@ func parseNonNegativeInt(raw, field string) (int64, error) {
 	return value, nil
 }
 
-func parseEventLimit(raw string) (int, error) {
+// parseEventLimit reads a page's limit: 1 to most, and most when absent.
+func parseEventLimit(raw string, most int) (int, error) {
 	if strings.TrimSpace(raw) == "" {
-		return 200, nil
+		return most, nil
 	}
 	limit, err := strconv.Atoi(raw)
-	if err != nil || limit < 1 || limit > 200 {
-		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be between 1 and 200")
+	if err != nil || limit < 1 || limit > most {
+		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be between 1 and %d", most)
 	}
 	return limit, nil
 }

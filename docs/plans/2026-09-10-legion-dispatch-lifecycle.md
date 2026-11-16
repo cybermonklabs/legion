@@ -1,7 +1,7 @@
 # Legion issue lifecycle on native Dispatch — implementation plan (T20)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. One
-> implementer per PR below, in its own jj workspace; echo the plan back before coding; every ruling
+> implementer per PR below, in its own jj workspace; echo the plan back before coding; every decision
 > from review rounds supersedes this document. Steps use `- [ ]` for tracking.
 
 **Goal:** The Legion daemon derives its issue lifecycle (triage → done), human design gate, and

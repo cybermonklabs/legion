@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import {
   focusManager,
   QueryClient,
@@ -10,8 +10,11 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { displayTree } from "../../__tests__/display-trees";
+import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { ApiError, api } from "../../api/client";
 import type { GraphReferences, IssueReferenceSummary } from "../../api/types";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import {
   blockQuery,
   documentSummaryQuery,
@@ -19,7 +22,14 @@ import {
   messageQuery,
   prefetchReference,
   useReferenceTarget,
+  watchPicturePath,
 } from "./reference-target";
+
+// A block reference's title is the plain words of the tree its graph read carries, which the
+// fixtures below build with the shared engine.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 let restore = () => {};
 
@@ -276,11 +286,21 @@ test("hovering a block of a comment or message warms its graph read alone, no su
   expect(reads.getMessage).not.toHaveBeenCalled();
 });
 
-/** A block's graph read: its current text, and the pin a pinned reference's read carries. */
+/** A block's graph read: its current text with the reading the server made of it, and the pin
+ *  a pinned reference's read carries, with its own. A reference's title is the tree's plain
+ *  words now, so a read with no tree has none. */
 function blockRead(text: string | undefined, pin?: NonNullable<GraphReferences["node"]["pin"]>) {
   return {
     edges: [],
-    node: { block_id: "b2", id: "CORE-1/spec#b2", kind: "block", pin, text },
+    node: {
+      ...graphNodeFields(),
+      block_id: "b2",
+      id: "CORE-1/spec#b2",
+      kind: "block",
+      pin,
+      text,
+      text_tree: text === undefined ? undefined : displayTree(text),
+    },
   } satisfies GraphReferences;
 }
 
@@ -317,13 +337,17 @@ test.each([
   [
     "a pinned comment block whose refresh answers it removed",
     { block: { id: "b2", pin: "1" }, id: "c-1", key: "CORE-1", kind: "comment" } as const,
-    blockRead(undefined, {
-      ref: "dispatch://CORE-1/comment/c-1#b-b2@v1",
-      removed_version: 2,
-      state: "removed",
-      text: "Beta as written.",
-      version: 1,
-    }),
+    // Built when the row runs, not when this table is: the tree a read carries needs the
+    // engine, which `beforeAll` warms.
+    () =>
+      blockRead(undefined, {
+        ref: "dispatch://CORE-1/comment/c-1#b-b2@v1",
+        removed_version: 2,
+        state: "removed",
+        text: "Beta as written.",
+        text_tree: displayTree("Beta as written."),
+        version: 1,
+      }),
     "Beta as written.",
   ],
 ] as const)("the link to %s is titled as the refresh leaves it", async (_case, route, refresh, kept) => {
@@ -333,13 +357,15 @@ test.each([
           ref: "dispatch://CORE-1/comment/c-1#b-b2@v1",
           state: "unchanged" as const,
           text: "Beta as written.",
+          text_tree: displayTree("Beta as written."),
           version: 1,
         }
       : undefined;
+  const answer = typeof refresh === "function" ? refresh() : refresh;
   const getReferences = spyOn(api, "getReferences")
     .mockResolvedValueOnce(blockRead("Beta as written.", pin))
     .mockImplementationOnce(() =>
-      refresh instanceof Error ? Promise.reject(refresh) : Promise.resolve(refresh)
+      answer instanceof Error ? Promise.reject(answer) : Promise.resolve(answer)
     );
   restore = () => getReferences.mockRestore();
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -356,4 +382,58 @@ test.each([
   } finally {
     hook.unmount();
   }
+});
+
+test("watchPicturePath reports an image's latest version and follows its summary as it changes", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const summary = (kind: "image" | "doc", latest: number): IssueReferenceSummary => ({
+    documents: [
+      {
+        id: "shot",
+        kind,
+        latest_version: latest,
+        name: "shot.png",
+        primary: false,
+        slug: "shot-png",
+      },
+    ],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Core one",
+  });
+  queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("image", 2));
+  const reported: (string | undefined)[] = [];
+  const stop = watchPicturePath(
+    queryClient,
+    { key: "CORE-1", kind: "artifact", slug: "shot-png" },
+    (path) => reported.push(path)
+  );
+
+  // A summary already read answers at once, so the picture draws with no link before it.
+  expect(reported).toEqual(["/api/v1/issues/CORE-1/artifacts/shot-png/versions/2"]);
+  // An event's refresh of the summary - a new version uploaded - reaches the watcher.
+  queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("image", 3));
+  await waitFor(() =>
+    expect(reported.at(-1)).toBe("/api/v1/issues/CORE-1/artifacts/shot-png/versions/3")
+  );
+  // A document is no picture.
+  queryClient.setQueryData(issueSummaryQuery("CORE-1").queryKey, summary("doc", 4));
+  await waitFor(() => expect(reported.at(-1)).toBeUndefined());
+
+  // Stopping unsubscribes: the summary query has no observer left to notify.
+  const query = queryClient
+    .getQueryCache()
+    .find({ queryKey: issueSummaryQuery("CORE-1").queryKey });
+  expect(query?.getObserversCount()).toBe(1);
+  stop();
+  expect(query?.getObserversCount()).toBe(0);
+});
+
+test("watchPicturePath answers undefined at once for a reference to no artifact", () => {
+  const reported: (string | undefined)[] = [];
+  watchPicturePath(new QueryClient(), { id: "ask-1", key: "CORE-1", kind: "ask" }, (path) =>
+    reported.push(path)
+  );
+  expect(reported).toEqual([undefined]);
 });

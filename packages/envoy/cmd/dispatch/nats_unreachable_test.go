@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // natsDownCommit is the commit the process started while NATS is down is stamped with, which its
@@ -143,6 +144,7 @@ func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
 // healthBody is the part of /healthz these tests read.
 type healthBody struct {
 	OK            bool  `json:"ok"`
+	DB            bool  `json:"db"`
 	NATS          *bool `json:"nats"`
 	SignIn        *bool `json:"signin"`
 	ServiceTokens *bool `json:"service_tokens"`
@@ -188,12 +190,8 @@ func (p *dispatchProcess) waitForHealth(t *testing.T, within time.Duration, what
 // waitUntil polls done until it holds, failing the test once within has passed.
 func waitUntil(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %v waiting for %s", within, what)
-		}
-		time.Sleep(200 * time.Millisecond)
+	if !testwait.Holds(within, 200*time.Millisecond, done) {
+		t.Fatalf("timed out after %v waiting for %s", within, what)
 	}
 }
 
@@ -341,16 +339,38 @@ func (p *dispatchProcess) waitForLog(t *testing.T, within time.Duration, parts .
 	}
 }
 
-// readStreamFrom is every envelope the stream retains past head, read by sequence rather than
-// through a consumer so the read creates nothing on the server and cannot miss a message a
-// consumer's filter would skip. A sequence the stream no longer holds is passed over.
+// readStreamFrom is every envelope the stream retains past head, in sequence order
+// (readStreamMessagesFrom).
 func readStreamFrom(t *testing.T, js natsgo.JetStreamContext, head uint64) []contracts.Envelope {
+	t.Helper()
+	messages := readStreamMessagesFrom(t, js, head)
+	items := make([]contracts.Envelope, len(messages))
+	for i, message := range messages {
+		items[i] = message.item
+	}
+	return items
+}
+
+// streamMessage is one envelope the stream retains, the subject it is stored on and its sequence
+// there.
+type streamMessage struct {
+	seq     uint64
+	subject string
+	item    contracts.Envelope
+}
+
+// readStreamMessagesFrom is every envelope the stream retains past head, in sequence order, read
+// by sequence rather than through a consumer so the read creates nothing on the server and cannot
+// miss a message a consumer's filter would skip. A sequence the stream no longer holds is passed
+// over, and so is a message that is no envelope: the stream also carries the listener's per-role
+// drain cursor, which is raw bytes of the writer's own (bus.PublishCursorAt).
+func readStreamMessagesFrom(t *testing.T, js natsgo.JetStreamContext, head uint64) []streamMessage {
 	t.Helper()
 	info, err := js.StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read the notification stream: %v", err)
 	}
-	var items []contracts.Envelope
+	var messages []streamMessage
 	for seq := head + 1; seq <= info.State.LastSeq; seq++ {
 		msg, err := js.GetMsg(bus.Stream, seq)
 		if err != nil {
@@ -361,11 +381,11 @@ func readStreamFrom(t *testing.T, js natsgo.JetStreamContext, head uint64) []con
 		}
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
-			t.Fatalf("decode message %d of the notification stream: %v", seq, err)
+			continue
 		}
-		items = append(items, item)
+		messages = append(messages, streamMessage{seq: seq, subject: msg.Subject, item: item})
 	}
-	return items
+	return messages
 }
 
 // deliveryDurables are the two push durables the delivery intakes bind, one subscriber each.

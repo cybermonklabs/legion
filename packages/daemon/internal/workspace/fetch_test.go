@@ -657,11 +657,11 @@ func TestFetchFailsWhatARealGitPrintsForAPermanentFailureAtOnce(t *testing.T) {
 }
 
 // The provisioning token is read as its file stands before every transfer from GitHub, never kept
-// from the fetch's start: the daemon keeps a provisioning pod's Secret fresh while its fetch runs,
-// and the kubelet rewrites the file projected from it in place. Against a real git reaching the
-// stand-in as github.com: a token file rewritten while the fetch waits on the repository cache is
-// the one the delta presents, the stand-in taking that token alone; and one rewritten during a
-// retry's backoff is the one the retry presents.
+// from the fetch's start: the daemon keeps every live issue pod's provisioning Secret fresh,
+// whatever that pod's fetch has already done, and the kubelet rewrites the file projected from it
+// in place. Against a real git reaching the stand-in as github.com: a token file rewritten while
+// the fetch waits on the repository cache is the one the delta presents, the stand-in taking that
+// token alone; and one rewritten during a retry's backoff is the one the retry presents.
 func TestFetchReadsTheProvisioningTokenAsItsFileStandsBeforeEveryTransfer(t *testing.T) {
 	t.Run("rewritten during the wait on the repository cache", func(t *testing.T) {
 		github := newGitHubStandIn(t, false, "ghs_fresh")
@@ -794,8 +794,11 @@ func TestFetchRemovesTheLocksAnInterruptedFetchLeftInTheFeed(t *testing.T) {
 		t.Errorf("the partial pack's removal was not logged: %q", logged)
 	}
 	for _, object := range objects {
+		// The probe reads the feed the fetch left, under the package's fixture environment, so
+		// the home it reads is the one the code under test and every other fixture read.
 		held := exec.Command("git", "--git-dir="+feed, "cat-file", "-e", object)
 		held.Dir = feed
+		held.Env = setupEnvironment()
 		if err := held.Run(); err != nil {
 			t.Errorf("the feed lost %s, an object the clone may borrow", object)
 		}
@@ -1156,13 +1159,15 @@ func TestFetchKeepsAFeedAfterGitGC(t *testing.T) {
 // pack, a tmp_pack_* entry under objects/pack. The kill is deliberate: a pod can end at this point,
 // leaving gc.pid and the partial pack. git gc writes gc.pid before it packs refs and expires the
 // reflog, both of which come before the repack, so a kill at gc.pid could land in pack-refs instead;
-// that kill is the "killed during pack-refs" case.
+// that kill is the "killed during pack-refs" case. The gc runs under the fixture's environment, so
+// no git configuration of the process running the tests reaches the repack, and the helper returns
+// only once the kill, and not a failure of git's own, ended that gc with its pack half written.
 func killGitGC(t *testing.T, feed string) {
 	t.Helper()
 	slowGitGC(t, feed)
 	command := exec.Command("/usr/bin/git", "--git-dir="+feed, "gc", "--prune=now")
 	command.Dir = feed
-	environment := without(os.Environ(), "PATH")
+	environment := without(setupEnvironment(), "PATH")
 	for _, key := range []string{"OMP_SESSION_ID", "PI_SESSION_FILE", "PI_TOOL_BRIDGE_URL", "AGENTBOX_SESSION"} {
 		environment = without(environment, key)
 	}
@@ -1179,16 +1184,18 @@ func killGitGC(t *testing.T, feed string) {
 	poll := time.NewTicker(time.Millisecond)
 	defer poll.Stop()
 	for {
-		packs, err := os.ReadDir(filepath.Join(feed, "objects", "pack"))
-		if err != nil {
-			t.Fatalf("read the feed's packs during git gc: %v", err)
-		}
-		if slices.ContainsFunc(packs, func(entry os.DirEntry) bool { return strings.HasPrefix(entry.Name(), "tmp_pack_") }) {
+		if writing, _ := writingAPack(t, feed); writing {
 			if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil {
 				t.Fatalf("kill git gc: %v", err)
 			}
-			if err := command.Wait(); err == nil {
-				t.Fatal("git gc exited cleanly after its process group was killed")
+			var ended *exec.ExitError
+			if err := command.Wait(); !errors.As(err, &ended) {
+				t.Fatalf("git gc exited cleanly after its process group was killed: %v", err)
+			} else if status, ok := ended.Sys().(syscall.WaitStatus); !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+				t.Fatalf("git gc ended on its own, not on the kill: %v", err)
+			}
+			if left, packs := writingAPack(t, feed); !left {
+				t.Fatalf("git gc finished its pack before the kill reached it: the feed holds %q, not a repack's partial pack", packs)
 			}
 			return
 		}
@@ -1196,14 +1203,36 @@ func killGitGC(t *testing.T, feed string) {
 		case <-deadline.C:
 			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 			_ = command.Wait()
-			t.Fatal("git gc did not start writing a pack during its repack")
+			_, packs := writingAPack(t, feed)
+			t.Fatalf("git gc did not start writing a pack during its repack: the feed holds %q", packs)
 		case <-poll.C:
 		}
 	}
 }
 
-// slowGitGC adds a large incompressible loose object, keeping git gc's repack live long enough to
-// kill while it writes its pack.
+// writingAPack answers whether the feed's repack is writing its pack, a tmp_pack_* entry under
+// objects/pack: the file pack-objects streams a pack into before it renames it into place, which
+// stays behind when the repack is killed. It answers what that directory holds either way, so a
+// wait that ends in neither state says what it saw instead.
+func writingAPack(t *testing.T, feed string) (bool, []string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(feed, "objects", "pack"))
+	if err != nil {
+		t.Fatalf("read the feed's packs during git gc: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return slices.ContainsFunc(names, func(name string) bool { return strings.HasPrefix(name, "tmp_pack_") }), names
+}
+
+// slowGitGC gives the feed a large incompressible object the repack must write into its pack, so
+// that the pack write lasts about a second and the wait above meets it. A ref holds the object:
+// `git gc --prune=now` repacks what the feed's refs reach and prunes the rest, so an object no ref
+// reaches never enters the pack at all. Without one, the repack wrote the feed's whole pack, 194
+// bytes, in 11 milliseconds: a window a wait polling every millisecond held only by luck, and lost
+// on a loaded runner, where the whole repack ran between two polls of a starved test.
 func slowGitGC(t *testing.T, feed string) {
 	t.Helper()
 	blob, err := os.Create(filepath.Join(t.TempDir(), "large-blob"))
@@ -1217,7 +1246,8 @@ func slowGitGC(t *testing.T, feed string) {
 	if err := blob.Close(); err != nil {
 		t.Fatal(err)
 	}
-	runSetup(t, feed, "git", "--git-dir="+feed, "hash-object", "-w", blob.Name())
+	object := strings.TrimSpace(runSetup(t, feed, "git", "--git-dir="+feed, "hash-object", "-w", blob.Name()))
+	runSetup(t, feed, "git", "--git-dir="+feed, "update-ref", "refs/large-blob", object)
 }
 
 // writeExecutable writes an executable script at path, making its directory.
@@ -1484,8 +1514,11 @@ func incompleteCacheOf(t *testing.T, remote string) string {
 		t.Fatal("the remote's history holds no blob to drop")
 	}
 	old := packOf(t, cache)
+	// The repack runs in the cache it rewrites, under the package's fixture environment, as every
+	// other git of these fixtures does.
 	command := exec.Command("git", "--git-dir="+cache, "pack-objects", "--quiet", filepath.Join(cache, "objects", "pack", "pack"))
 	command.Dir = cache
+	command.Env = setupEnvironment()
 	command.Stdin = strings.NewReader(strings.Join(kept, "\n") + "\n")
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("pack the cache without %s: %v\n%s", dropped, err, output)
@@ -1697,7 +1730,7 @@ func TestFetchStreamsTheRepositoryCacheThenFetchesTheDeltaFromGitHub(t *testing.
 	}
 	assertCredentialedEnvironmentBounded(t, fetch, fetch.Timeout)
 	if fetch.Timeout > FetchTimeout || fetch.Timeout < FetchTimeout-time.Minute {
-		t.Errorf("the delta was given %s, want its own %s, not what the stream and its verification left", fetch.Timeout, FetchTimeout)
+		t.Errorf("the delta was given %s, want its own %s, not what the verification of the cache's stream left", fetch.Timeout, FetchTimeout)
 	}
 	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
 		if got := strings.TrimSpace(runSetup(t, feed, "git", "--git-dir="+feed, "config", "--get", key)); got != want {
@@ -1778,15 +1811,15 @@ func TestFetchFailsWhenTheRepositoryCacheIsNeverReady(t *testing.T) {
 	}
 }
 
-// The cache's stream and its verification share one FetchTimeout, counted from when the cache is
-// ready, and the delta from GitHub gets a FetchTimeout of its own, so the fetch's waits, transfers
-// and checks end within FetchBudget however long it waited and however slow the stream was. A
-// cache ready 35 minutes in, whose history takes 25 minutes to check, gives the delta its whole
-// bound, and the fresh feed is filled. So does a cache ready on the wait's last ask, 129 min 50 s
-// in, whose history takes that whole first bound: before the delta had a bound of its own, the
-// fetch died there and its replacement streamed the cache again (sjawhar/legion#2235). The
-// fetch still ends inside FetchBudget.
-func TestFetchGivesTheCachesStreamAndTheDeltaTheirOwnBounds(t *testing.T) {
+// The verification of what the cache streamed gets one FetchTimeout, counted from the stream's
+// end, and the delta from GitHub one of its own, so the fetch's waits and its clocked stages end
+// within FetchBudget however long it waited; the stream between them holds the low-speed bound
+// and no clock at all (CacheStreamLowSpeedBytes). A cache ready 35 minutes in, whose history
+// takes 25 minutes to check, gives the delta its whole bound, and the fresh feed is filled. So
+// does a cache ready on the wait's last ask, 129 min 50 s in, whose history takes that whole
+// bound: before the delta had a bound of its own, the fetch died there and its replacement
+// streamed the cache again (sjawhar/legion#2235). The fetch still ends inside FetchBudget.
+func TestFetchGivesTheCachesVerificationAndTheDeltaTheirOwnBounds(t *testing.T) {
 	polls := func(d time.Duration) int { return int(d / CachePoll) }
 	for _, tc := range []struct {
 		name     string

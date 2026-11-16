@@ -27,6 +27,12 @@ longer meet on a port, so the port moves below are unneeded. A port variable set
 still used as given and fails with `address already in use` when taken; the rule never to stop or
 reuse a sibling's server stands. What follows is the record as it was written.
 
+**Update (2026-11-10, dispatch://INFRA-1410): `e2e/run.ts` is deleted.** Playwright exports the
+ports itself now: `e2e/global-setup.ts`, the config's `globalSetup`, starts one stack per worker
+through `e2e/harness-pool.ts` and writes every stack into the environment each worker inherits.
+The ports still come from the OS, so the rest of the update above stands, and so does the rule
+never to stop or reuse a sibling's server.
+
 Extends `packages/dispatch/AGENTS.md` ("`e2e/harness-ports.ts` resolves …", the port-probe
 paragraphs), whose remedy for a taken harness port is "stop whatever listens there, or move a
 local run to free ports and its own `DATABASE_URL`". In a Legion issue pod only the second half

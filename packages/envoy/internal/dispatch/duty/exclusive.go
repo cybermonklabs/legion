@@ -3,9 +3,11 @@ package duty
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,11 +25,15 @@ type Leases interface {
 // internal/dispatch/docs already fills - a document's room, a project's rank allocation, an agent's
 // artifacts and the migration runner are each a single key (the enumeration in docs/copied_asks.go,
 // at lockProjectCopies) - so a lease can never collide with one of those, whatever its name hashes
-// to. Within the two-key space the only other namespaces are the copy locks'
-// (docs.copiedAsksLockNamespace, "COPY") and the test hooks' (the api package's
-// testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), each a first key of its
-// own, so a lease's second key, its name's hashtext, separates the leases from each other and from
-// nothing else.
+// to. Within the two-key space the other namespaces are the copy locks'
+// (docs.copiedAsksLockNamespace, "COPY"), the test hooks' (the api package's
+// testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), a conditional edit's
+// admission's (docs.conditionalEditQueueLockNamespace), the issue dependencies' (api's
+// lockProjectIssueDependencies), the deployment's own issue dependencies' (api's
+// lockDeploymentIssueDependencies), one repository mapping's write (api's lockRepoProjectWrite)
+// and the rename graph's own (api's refuseRepoRenameChain), each a first key of its own, so a
+// lease's second key, its
+// name's hashtext, separates the leases from each other and from nothing else.
 const leaseNamespace int32 = 0x4C4F4F50
 
 // takeLease tries for a lease without queueing behind its holder, and freeLease gives it back. Both
@@ -37,6 +43,48 @@ const (
 	takeLease = `select pg_try_advisory_lock($1, hashtext($2))`
 	freeLease = `select pg_advisory_unlock($1, hashtext($2))`
 )
+
+// LeaseReader is what LeaseHeld reads through: the shared pool, or a transaction its caller
+// already holds. It is named here, as Leases is and for the same reason, so this package depends
+// on no store; *store.Pool satisfies it.
+type LeaseReader interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// leaseHeld answers whether any session of this database holds the lease named $1, this process's
+// own session included. A lease is a session-level two-key advisory lock (takeLease), and
+// Postgres shows the two keys of such a lock as classid and objid with objsubid 2, where a
+// single-key lock's one key spans both and reads objsubid 1. hashtext answers an int4, which can
+// be negative, while objid is an oid: the cast is the same reinterpretation Postgres makes of the
+// key itself, so a name whose hash is negative is found rather than missed.
+//
+// pg_locks holds every lock of every database of the server, so the read is kept to this
+// database's own, as every other advisory-lock read of this repository is: an advisory lock is
+// taken within one database, and two deployments on one server -- a test's database beside the
+// one the tests of another package run on -- would otherwise each read the other's lease as its
+// own.
+const leaseHeld = `
+	select exists (
+		select 1 from pg_locks
+		where locktype = 'advisory' and granted and objsubid = 2
+		  and database = (select oid from pg_database where datname = current_database())
+		  and classid = $1::oid and objid = hashtext($2)::oid)`
+
+// LeaseHeld reports whether some session of the database holds name's lease right now. It is the
+// read a diagnostic makes of a loop that holds its lease for as long as its pass runs: the CI
+// reconcile's record of its passes reads a row with no end time as a pass still running only
+// while this answers true, among other things (cireconcile.RecentPasses).
+//
+// It is a snapshot and never a guard. The lease can be taken or given back the moment after the
+// read, and nothing here reserves it: a caller that needs the lease takes it with Exclusive,
+// which is the only way two processes are kept out of one pass.
+func LeaseHeld(ctx context.Context, db LeaseReader, name string) (bool, error) {
+	var held bool
+	if err := db.QueryRow(ctx, leaseHeld, leaseNamespace, name).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether the lease %s is held: %w", name, err)
+	}
+	return held, nil
+}
 
 // readPeriod answers whether a pass has already served the period the tick about to run was due
 // in, given that period's aligned start, its boundary (periodBoundary). recordPass stores that
@@ -111,30 +159,47 @@ func periodBoundary(due time.Time, period time.Duration) time.Time {
 	return time.Unix(0, start)
 }
 
-// teardownTimeout bounds the three calls a pass makes once its own work is over: the record of the
-// pass, the unlock that gives the lease back, and the close of a connection whose unlock failed.
-// Each runs on a context of its own rather than the pass's, because the pass's is already
-// cancelled at shutdown and a lease must still be given back then - but a context that merely
-// cannot be cancelled is also one with no deadline, and that is a second failure. On a half-open
-// connection, one whose network path has gone away without an RST, a send draws neither an answer
-// nor an error, so an unbounded call waits for ever: it wedges the goroutine of the loop that
-// called Exclusive, which makes these calls on its own stack, and the Hijack and Close that exist
-// precisely to destroy a connection that may still hold the session lease never run, leaving the
-// lease with a session this process can no longer reach.
+// leaseCallTimeout bounds every statement Exclusive sends on the lease's own connection: the take,
+// the period read, the record of the pass, the unlock that gives the lease back, and the close of a
+// connection whose unlock failed. None runs on the pass's context. pgx ends a connection when the
+// context of its statement in flight is cancelled, and a lease connection ended that way cannot run
+// the unlock: the lease goes only when Postgres ends that session. Exclusive reads the pass's
+// context after the take and after the period read instead, and starts no pass when either check
+// finds it ended.
 //
-// Five seconds is far longer than any of the three takes on a connection that works, and that is
-// the point: it has to exceed a slow round trip, not a slow query. The record is one upsert on
-// duty_passes' primary key (lease, migration 0115); the unlock is pg_advisory_unlock on a lock
-// this very session holds, which touches Postgres's in-memory lock table and no relation at all;
-// and the close is a Terminate message and a socket close. It is the same five seconds
-// pglisten.DefaultPingTimeout gives the keepalive ping and the close of a connection that
-// listener gives up on (internal/pglisten/listener.go), chosen there against this same
-// half-open connection.
-const teardownTimeout = 5 * time.Second
+// A context that cannot be cancelled must still have a deadline. On a half-open connection, one
+// whose network path has gone away without an RST, a send draws neither an answer nor an error, so
+// an unbounded call waits for ever: it wedges the goroutine of the loop that called Exclusive,
+// which makes these calls on its own stack, and the Hijack and Close that exist precisely to
+// destroy a connection that may still hold the session lease never run, leaving the lease with a
+// session this process can no longer reach.
+//
+// Five seconds is each call's whole budget, a wait behind another session's lock included. On a
+// connection that works, the take and the unlock answer at once, since they touch Postgres's
+// in-memory lock table and no relation; the period read and the record touch one row of
+// duty_passes by its primary key (lease, migration 0115) and wait only behind a lock another
+// session holds on it; and the close is a Terminate message and a socket close. It is the same five
+// seconds pglisten.DefaultPingTimeout gives the keepalive ping and the close of a connection that
+// listener gives up on (internal/pglisten/listener.go), chosen there against this same half-open
+// connection. A call that reaches the bound fails, and a lock whose unlock fails is given back by
+// closing its connection (FreeSessionLock, which gives every session lock's unlock this bound).
+const leaseCallTimeout = 5 * time.Second
 
-// errLeaseNotHeld is pg_advisory_unlock answering false: the session this pass ran on did not hold
-// the lease it was about to give back, so what that connection holds is unknown.
-var errLeaseNotHeld = errors.New("the unlock reports this session did not hold the lease")
+// LeaseCall is the context of one statement on a session lock's own connection: a lease's, any
+// lock FreeSessionLock gives back, and the rollback a room's batch of browser updates sends on
+// that connection before its unlock (internal/dispatch/docs, appendRoomTx), which must be bounded
+// for the same reason the unlock is (leaseCallTimeout).
+func LeaseCall() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), leaseCallTimeout)
+}
+
+// ExclusiveFunc is Exclusive's signature. A loop that gates its passes on a lease takes one of
+// these and is handed Exclusive itself (RunWoken, the webhook redelivery sweep's Run), and a test
+// of that loop's schedule hands it a lease of its own making instead: the schedule is then a loop,
+// a fake clock and nothing else, which is what lets it run inside a synctest bubble, where a
+// Postgres connection may not go (a bubbled goroutine blocked on a socket never blocks durably,
+// so the clock never advances past the statement it waits on).
+type ExclusiveFunc func(ctx context.Context, leases Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool
 
 // Exclusive runs pass exactly when this process takes the lease named name and that loop's period
 // is not already served, and reports whether it ran. It is the once-per-period guard a periodic
@@ -157,8 +222,10 @@ var errLeaseNotHeld = errors.New("the unlock reports this session did not hold t
 // The lease is a session-level two-key advisory lock, leaseNamespace and the name's hashtext, taken
 // on a connection of its own with pg_try_advisory_lock: a lease the database reports held elsewhere
 // is a skip and not a queue, because the other process is running that very pass and waiting for it
-// would only run the same work again, late. The pass is called on ctx, and the lease is given back
-// when it returns, however it returns.
+// would only run the same work again, late. The lease's own statements run under LeaseCall, never
+// ctx, so a shutdown ends no statement on that connection. A shutdown that Exclusive sees after the
+// take or after the period read starts no pass; one that comes later is the pass's own to see. The
+// pass is called on ctx, and the lease is given back when it returns, however it returns.
 //
 // Everything the period decides happens under the lease: the record is read after the lease is
 // taken and written before it is given back, so the two processes' passes are ordered by the one
@@ -183,7 +250,10 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		return false
 	}
 	var held bool
-	if err := conn.QueryRow(ctx, takeLease, leaseNamespace, name).Scan(&held); err != nil {
+	takeCtx, cancelTake := LeaseCall()
+	err = conn.QueryRow(takeCtx, takeLease, leaseNamespace, name).Scan(&held)
+	cancelTake()
+	if err != nil {
 		conn.Release()
 		reportFailure(name, "dispatch duty: take the lease", err)
 		return false
@@ -196,7 +266,14 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	// Deferred, so a pass that panics gives its lease back on the way out rather than holding it
 	// for as long as the connection lives.
 	defer freeLeaseOn(conn, name)
-	boundary, served, err := periodServed(ctx, conn, name, due, period)
+	// Shutdown came while the lease was being taken: the period read would only delay giving the
+	// lease back.
+	if ctx.Err() != nil {
+		return false
+	}
+	readCtx, cancelRead := LeaseCall()
+	boundary, served, err := periodServed(readCtx, conn, name, due, period)
+	cancelRead()
 	if err != nil {
 		// The record could not be read, so whether this period is served is unknown. The pass
 		// does not run: a tick that runs on no answer is the duplicate work the record is here
@@ -204,11 +281,29 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		reportFailure(name, "dispatch duty: read the loop's last pass", err)
 		return false
 	}
+	if ctx.Err() != nil {
+		return false
+	}
 	if served {
-		// The same line a lease held elsewhere writes, and for the same reason: this tick would
-		// be the pass some process has already made of this period, and the loops' tests count
-		// one skip either way.
-		slog.Info("dispatch duty: leased pass skipped", "lease", name)
+		// The line a lease held elsewhere writes too, and for the same reason: this tick would be
+		// the pass some process has already made of this period, and the loops' tests count one
+		// skip either way. It carries the period as well, which the skip above cannot: that one
+		// has no lease and so no boundary read. Those tests only count these lines and read
+		// neither the period nor the due off them (countLease, cmd/dispatch/multiprocess_test.go);
+		// the period is on the line for a person reading two processes' logs, who can then tell a
+		// skip of this period from a skip of the next.
+		//
+		// It carries the tick's own due beside the period, which the period alone cannot give:
+		// the period is periodBoundary of this very due, so it already tells a tick of one
+		// period from a tick of the next, but it says nothing about where inside that period
+		// the tick fell. Two processes ticking minutes apart inside one period write the same
+		// period, and the stagger between them is what a person comparing two processes' logs
+		// needs. The test over this attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod
+		// (exclusive_test.go), holds its format rather than that need. Neither line is
+		// written at the moment its tick was due - this one after the lease and the period
+		// read, the line below after the whole pass - so the moment the line carries is not
+		// that stagger either (INFRA-1492).
+		slog.Info("dispatch duty: leased pass skipped", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 		return false
 	}
 	pass(ctx)
@@ -216,10 +311,10 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		// Shutdown cut this pass short, so what it did is a part of a pass and not one: the
 		// period is left unserved deliberately, and whichever process is up at the next tick
 		// makes the pass. A record here would be a period served by work that did not finish -
-		// for the webhook sweep, a window of failed deliveries nobody lists; for the daily
-		// compaction, a day - and a rolling update, which sends SIGTERM, is how that would
-		// ordinarily happen rather than rarely. The line says so, so the tick that looks like a
-		// skip is findable afterwards.
+		// for the webhook sweep, a window of failed deliveries nobody lists; for the document
+		// compaction sweep, an hour of documents no process's queue compacts - and a rolling
+		// update, which sends SIGTERM, is how that would ordinarily happen rather than rarely.
+		// The line says so, so the tick that looks like a skip is findable afterwards.
 		//
 		// A pass that finished microseconds before the cancellation arrived is read as cut short
 		// too, and costs one early pass next period. That is the safe direction of the two and
@@ -228,8 +323,44 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		return false
 	}
 	recordPassOn(conn, name, boundary, period)
-	slog.Info("dispatch duty: leased pass ran", "lease", name)
+	// The boundary is the period this pass served. A row whose own run time passes its period
+	// leaves the next honest pass in the next period, so a reader counting passes over a whole
+	// run cannot tell two passes of one period - which the lease forbids - from one pass each of
+	// two periods, which it allows; the period here is what tells them apart
+	// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go). The tick's own due is
+	// beside it for where inside that period the tick fell, which the period cannot say: two
+	// processes ticking minutes apart inside one period write the same period, and the stagger
+	// between them is what a person comparing two processes' logs needs. The test over this
+	// attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod (exclusive_test.go), holds its
+	// format rather than that need. This line is written when the pass ends rather than when
+	// the tick was due, so its own moment does not say that stagger either (INFRA-1492).
+	slog.Info("dispatch duty: leased pass ran", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 	return true
+}
+
+// servedPeriod is the log attribute naming the period a pass served or skipped, and nothing at
+// all for a loop that has no period (periodServed answers the zero time for one): a loop called
+// with a period of zero serves no period, and a line reading period=0001-01-01T00:00:00Z would
+// say it served the zero instant. The zero Attr is the one every handler drops (log/slog,
+// Handler).
+func servedPeriod(boundary time.Time) slog.Attr {
+	if boundary.IsZero() {
+		return slog.Attr{}
+	}
+	return slog.String("period", boundary.UTC().Format(time.RFC3339Nano))
+}
+
+// tickDue is the log attribute naming the moment a tick was due, and nothing at all for a pass
+// with no period, which is also a pass with no due: Exclusive's periodless callers pass the zero
+// time for it (duty.WokenLoop.attempt, delivery's consumer bind), so a line would read
+// due=0001-01-01T00:00:00Z and say the tick was due at the zero instant. It is judged by the
+// same boundary servedPeriod is, so the two attributes are always written together or not at
+// all, and formatted as that one is, so a reader compares them without converting a zone.
+func tickDue(due time.Time, boundary time.Time) slog.Attr {
+	if boundary.IsZero() {
+		return slog.Attr{}
+	}
+	return slog.String("due", due.UTC().Format(time.RFC3339Nano))
 }
 
 // periodServed answers the aligned start of the period this tick was due in (periodBoundary of
@@ -259,14 +390,14 @@ func periodServed(ctx context.Context, conn *pgxpool.Conn, name string, due time
 // This comment said the opposite until INFRA-66's second round: that a pass cut short by shutdown
 // still ran and still served its period, which was the behaviour and was wrong both times it was
 // written. A record that never lands only costs one early pass, which is why its failure is
-// logged and not returned - and why teardownTimeout bounds that context as well as detaching it,
+// logged and not returned - and why it runs under LeaseCall, bounded as well as detached,
 // since an upsert that never answers costs this loop its goroutine and the lease behind it rather
 // than one record. A pass with no period records nothing.
 func recordPassOn(conn *pgxpool.Conn, name string, boundary time.Time, period time.Duration) {
 	if period <= 0 {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
+	ctx, cancel := LeaseCall()
 	defer cancel()
 	if _, err := conn.Exec(ctx, recordPass, name, boundary, period.Nanoseconds()); err != nil {
 		slog.Error("dispatch duty: record the pass", "lease", name, "error", err)
@@ -281,9 +412,9 @@ func recordPassOn(conn *pgxpool.Conn, name string, boundary time.Time, period ti
 // not kept beside it: a call that got no answer inside a bound is the fault worth seeing, not a
 // shutdown. errors.Is already keeps the two apart - a context that reaches its deadline wraps
 // DeadlineExceeded and never Canceled - so the check below logs a deadline rather than swallowing
-// it, and the two are not to be tidied into one condition. The three calls teardownTimeout bounds
-// log their own failures directly rather than through here; what reaches this function is the
-// pass's own context, which carries a deadline whenever its caller gave it one.
+// it, and the two are not to be tidied into one condition. The record, the unlock and the close log
+// their own failures directly rather than through here. The acquire runs on the pass's own context;
+// the take and the period read run under LeaseCall, so neither is cancelled by shutdown.
 func reportFailure(name, message string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
@@ -291,37 +422,12 @@ func reportFailure(name, message string, err error) {
 	slog.Error(message, "lease", name, "error", err)
 }
 
-// freeLeaseOn unlocks name's lease on the connection that took it and gives that connection back.
-// The unlock runs on a context of its own, because the pass's ctx is cancelled at shutdown and a
-// lease must be given back then too, bounded by teardownTimeout because an unbounded unlock on a
-// half-open connection would hold the loop's goroutine here for the life of the process and never
-// reach the close below.
-//
-// A connection whose unlock fails - including by reaching that deadline - or reports that the
-// session held nothing, may still hold the lease, and the pool would hand it to the next pass,
-// which would take a lease it already holds and unlock it twice over. So it is destroyed instead
-// of returned: hijacked out of the pool and closed, which ends the session and drops whatever it
-// holds. The timed-out unlock is the case that needs this most, since nothing at all is known of
-// that session, and it is the path by which the lease is released by closing the session rather
-// than by the unlock. The close is given a teardownTimeout of its own, since the unlock's is
-// spent by the time its failure is what brings us here.
+// freeLeaseOn gives name's lease back on the connection that took it, and that connection back to
+// the lease pool (FreeSessionLock). It logs every failure, ErrSessionClosed included: a lease
+// connection is closed before its unlock only by a statement under LeaseCall that failed, so the
+// line says the lease went with its session rather than by its unlock.
 func freeLeaseOn(conn *pgxpool.Conn, name string) {
-	ctx, cancel := context.WithTimeout(context.Background(), teardownTimeout)
-	defer cancel()
-	freed := false
-	err := conn.QueryRow(ctx, freeLease, leaseNamespace, name).Scan(&freed)
-	if err == nil && !freed {
-		err = errLeaseNotHeld
-	}
-	if err == nil {
-		conn.Release()
-		return
-	}
-	slog.Error("dispatch duty: free the lease", "lease", name, "error", err)
-	dead := conn.Hijack()
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), teardownTimeout)
-	defer closeCancel()
-	if err := dead.Close(closeCtx); err != nil {
-		slog.Error("dispatch duty: close the lease's connection", "lease", name, "error", err)
+	if err := FreeSessionLock(conn, freeLease, leaseNamespace, name); err != nil {
+		slog.Error("dispatch duty: free the lease", "lease", name, "error", err)
 	}
 }

@@ -20,8 +20,9 @@ related_issues:
 - **Key every `pull_request` concurrency group on `github.event.pull_request.number`.** A merged
   pull request's `closed` event carries `github.ref` = the base branch, so a ref key misses the
   pull request and lands in main's group; where that group cancels in progress it cancels main's
-  own run (Docs' Pages build here). Keep push and merge_group keys on `github.sha` (or the ref
-  where main's runs must queue, as Docs does).
+  own run (Docs' Pages build here). Keep a merge_group key on `github.sha`, and a push key on the
+  ref where main's runs must not overlap, as Docs does: its group runs one build at a time and
+  replaces the one waiting with the next push.
 - **Never give an event whose jobs all skip (`closed`, `converted_to_draft`) to a workflow that
   posts required checks.** A job skipped by its `if:` reports `skipped`, which GitHub's
   required-check rule and the Legion daemon count as passing, and the newest check run of a name
@@ -59,7 +60,7 @@ related_issues:
 
 ## Evidence
 
-- sjawhar/legion#2356 (INFRA-600), code head 32dd5458. Before it, 72 h of sjawhar/legion runs held
+- sjawhar/legion#2356 (INFRA-600), code head 32dd5458. Before it, 72 h of cybermonklabs/legion runs held
   3,952 draft job minutes, 4,703 runner minutes after a pull request's close and 2,167 minutes of
   superseded Worker Image builds (dispatch://INFRA-600/artifact/ci-queue-waste-before-2026-10-27-md).
 - Scratch #2380 at 20fa840c: `Tests (closed pull request)` run 40465747080, its job `skipped` with

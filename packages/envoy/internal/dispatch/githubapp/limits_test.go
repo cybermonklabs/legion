@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -37,13 +39,31 @@ type limitGitHub struct {
 	// mints have arrived.
 	mintsAwaited int
 	mintsArrived chan struct{}
+	// graphQL is what POST /graphql answers, which a test sets to one of the shapes GitHub
+	// answers a rate-limited query with (answerGraphQL); unset, the query is answered as every
+	// other read is.
+	graphQL *graphQLAnswer
+}
+
+// graphQLAnswer is one answer to a query: the status, the headers and the body GitHub gives.
+// The three together are all a client may read a GraphQL rate limit from.
+type graphQLAnswer struct {
+	status int
+	header map[string]string
+	body   string
+}
+
+// answerGraphQL makes every later query answer this.
+func (f *limitGitHub) answerGraphQL(answer graphQLAnswer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.graphQL = &answer
 }
 
 func startLimitGitHub(t *testing.T) *limitGitHub {
 	t.Helper()
 	fake := &limitGitHub{installationID: 7}
-	fake.server = httptest.NewServer(http.HandlerFunc(fake.serve))
-	t.Cleanup(fake.server.Close)
+	fake.server = githubtest.Serve(t, githubtest.Spec{Handle: fake.serve})
 	return fake
 }
 
@@ -64,6 +84,7 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mints := f.mints
+	query := f.graphQL
 	f.mu.Unlock()
 	if held != nil {
 		// A client that sends fewer mints than awaited is answered anyway, a little later.
@@ -72,12 +93,19 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(2 * time.Second):
 		}
 	}
-	w.Header().Set("Content-Type", "application/json")
 	if limited {
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("Retry-After", "60")
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		return
+	}
+	if query != nil && r.URL.Path == "/graphql" {
+		for name, value := range query.header {
+			w.Header().Set(name, value)
+		}
+		w.WriteHeader(query.status)
+		fmt.Fprint(w, query.body)
 		return
 	}
 	switch {
@@ -168,6 +196,117 @@ func requireHeld(t *testing.T, err error, what string) {
 	limited, ok := AsRateLimit(err)
 	if !ok || !limited.Held || limited.Wait <= 0 {
 		t.Fatalf("%s: err = %v, want the recorded limit, held without a request", what, err)
+	}
+}
+
+// Which scope a rate-limited query is recorded under is which of GitHub's two limits it is.
+//
+// A primary limit is the App's GraphQL points spent, which GitHub budgets apart from the REST
+// calls made with the same token: it holds every process's queries and leaves every process's
+// REST reads going. A secondary limit -- too many points a minute, too many requests at once --
+// GitHub shares between REST and GraphQL, so it holds the installation whose token met it,
+// REST reads and all, and it is recorded with the doubling backoff GitHub asks of a client that
+// keeps meeting one (a strike), where a primary limit ends at GitHub's own reset.
+//
+// Each shape here is one GitHub answers a limited query with, at either status.
+func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	primary := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
+	wording := `{"data":null,"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`
+	// GitHub answers a secondary limit at 403 with its REST-shaped body as readily, the wording
+	// in the top-level message and no retry-after of any kind, which its documentation says may
+	// be absent.
+	restWording := `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"}`
+	cases := []struct {
+		name      string
+		answer    graphQLAnswer
+		secondary bool
+	}{{
+		name:   "the budget spent, at 200",
+		answer: graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: primary},
+	}, {
+		name:   "the budget spent, at 403",
+		answer: graphQLAnswer{status: http.StatusForbidden, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: primary},
+	}, {
+		name:      "a secondary limit with a retry-after, at 200",
+		answer:    graphQLAnswer{status: http.StatusOK, header: map[string]string{"Retry-After": "60"}, body: wording},
+		secondary: true,
+	}, {
+		name:      "a secondary limit worded alone, at 403",
+		answer:    graphQLAnswer{status: http.StatusForbidden, body: wording},
+		secondary: true,
+	}, {
+		name:      "a secondary limit in the body's own message, at 403",
+		answer:    graphQLAnswer{status: http.StatusForbidden, body: restWording},
+		secondary: true,
+	}}
+	for _, shape := range cases {
+		t.Run(shape.name, func(t *testing.T) {
+			fake := startLimitGitHub(t)
+			database, a, b := twoProcesses(t, fake)
+			ctx := context.Background()
+			tokenA, err := a.Token(ctx, 7)
+			if err != nil {
+				t.Fatalf("A's token: %v", err)
+			}
+			tokenB, err := b.Token(ctx, 7)
+			if err != nil {
+				t.Fatalf("B's token: %v", err)
+			}
+			installation := InstallationScope(7)
+			want := GraphQLScope
+			if shape.secondary {
+				want = installation
+			}
+
+			fake.answerGraphQL(shape.answer)
+			_, _, _, err = a.GraphQL(ctx, tokenA, "query { viewer { login } }", nil)
+			limited, ok := AsRateLimit(err)
+			if !ok || limited.Held || limited.Wait <= 0 {
+				t.Fatalf("A's limited query: err = %v, want GitHub's own answer as a *RateLimitError", err)
+			}
+			if limited.Scope != want {
+				t.Errorf("the limit names scope %q, want %q", limited.Scope, want)
+			}
+
+			limits := ratelimit.New(database.Pool)
+			recorded, found, err := limits.Get(ctx, want)
+			if err != nil || !found {
+				t.Fatalf("github_rate_limits holds no limit under %s: %v, %v", want, found, err)
+			}
+			if recorded.Wait <= 0 {
+				t.Errorf("the limit under %s has %s left, want GitHub's own wait still in force", want, recorded.Wait)
+			}
+			wantStrikes := 0
+			if shape.secondary {
+				wantStrikes = 1
+			}
+			if recorded.Strikes != wantStrikes {
+				t.Errorf("the limit under %s records %d strikes, want %d: a secondary limit is struck, so the next one doubles its wait, and a primary limit is recorded and ends at GitHub's own reset",
+					want, recorded.Strikes, wantStrikes)
+			}
+			if other := GraphQLScope; shape.secondary {
+				if _, found, err := limits.Get(ctx, other); err != nil || found {
+					t.Errorf("a secondary limit was recorded under %s as well: %v, %v; GitHub shares it with the installation's REST calls", other, found, err)
+				}
+			} else if _, found, err := limits.Get(ctx, installation); err != nil || found {
+				t.Errorf("a primary GraphQL limit was recorded under %s as well: %v, %v; the GraphQL budget is not the installation's REST budget",
+					installation, found, err)
+			}
+
+			// What the other process may still do under that installation: its REST reads go on
+			// inside a GraphQL budget spent, and stop inside a limit GitHub shares with them.
+			_, status, _, err := b.Read(ctx, tokenB, "/repos/acme/web/issues/2")
+			if shape.secondary {
+				requireHeld(t, err, "B's REST read inside a secondary limit of the installation")
+			} else if err != nil || status != http.StatusOK {
+				t.Fatalf("B's REST read inside a primary GraphQL limit: status %d, %v; want GitHub's own answer", status, err)
+			}
+			// Either limit holds the other process's queries: GraphQL's own scope holds them,
+			// and so does the installation's, which every query is sent under.
+			_, _, _, err = b.GraphQL(ctx, tokenB, "query { viewer { login } }", nil)
+			requireHeld(t, err, "B's query inside the limit A met")
+		})
 	}
 }
 
@@ -313,12 +452,12 @@ func TestAnExpiredTokensInstallationIsForgottenAtTheNextMint(t *testing.T) {
 		t.Fatalf("token past the first ones' expiry: %v", err)
 	}
 	for _, token := range expired {
-		if scope := client.tokenScope(token); scope != "" {
+		if scope := client.TokenScope(token); scope != "" {
 			t.Fatalf("expired token %s still answers scope %q", token, scope)
 		}
 	}
-	if scope := client.tokenScope(current); scope != installationScope(7) {
-		t.Fatalf("current token's scope = %q, want %q", scope, installationScope(7))
+	if scope := client.TokenScope(current); scope != InstallationScope(7) {
+		t.Fatalf("current token's scope = %q, want %q", scope, InstallationScope(7))
 	}
 }
 

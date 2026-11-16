@@ -1,0 +1,5 @@
+kind: Added
+body: everyBuildReadsSearch and SEARCH_MEMBERS_EVERY_BUILD_READS say whether every member a search request carries is one GET /api/v1/search has always read, which is the one rule that picks a search path. A request carrying anything else goes to GET /api/v1/search/results.
+time: 2026-11-10T05:23:51.857399694Z
+custom:
+    Issue: pr3431

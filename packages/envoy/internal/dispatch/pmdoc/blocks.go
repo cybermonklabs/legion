@@ -201,10 +201,19 @@ func tableIndexError(table *Node, axis, index, problem string) error {
 	}
 }
 
+// editTable is tableAt behind the validation an exported table edit pays for itself: it validates
+// doc (ValidateDocument), naming operation, and then reads the table.
 func editTable(doc *Node, blockID, operation string) ([]int, *Node, error) {
 	if _, err := ValidateDocument(doc, operation); err != nil {
 		return nil, nil, err
 	}
+	return tableAt(doc, blockID)
+}
+
+// tableAt is the path and the node of the table carrying blockID, over a tree its caller has
+// validated: a block the tree does not carry is ErrTargetNotFound, and one that is no table is
+// ErrSchema naming the type it is.
+func tableAt(doc *Node, blockID string) ([]int, *Node, error) {
 	path, _, ok := findBlock(doc, blockID)
 	if !ok {
 		return nil, nil, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
@@ -226,9 +235,23 @@ func TableIndexErrorFor(doc *Node, blockID, axis, index, problem string) error {
 	return tableIndexError(table, axis, index, problem)
 }
 
-// TableRowMarks returns the marks in the row a row deletion would remove.
+// TableRowMarks returns the marks in the row a row deletion would remove. It validates doc first
+// (ValidateDocument).
 func TableRowMarks(doc *Node, blockID string, index int) ([]MarkRef, error) {
-	_, table, err := editTable(doc, blockID, "TableRowMarks")
+	valid, err := ValidateDocument(doc, "TableRowMarks")
+	if err != nil {
+		return nil, err
+	}
+	return valid.TableRowMarks(blockID, index)
+}
+
+// TableRowMarks is TableRowMarks of d's tree without validating it again; the zero ValidDocument
+// wants a document.
+func (d ValidDocument) TableRowMarks(blockID string, index int) ([]MarkRef, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("TableRowMarks")
+	}
+	_, table, err := tableAt(d.doc, blockID)
 	if err != nil {
 		return nil, err
 	}
@@ -242,9 +265,22 @@ func TableRowMarks(doc *Node, blockID string, index int) ([]MarkRef, error) {
 }
 
 // TableColumnMarks returns the marks in the cells a column deletion would
-// remove.
+// remove. It validates doc first (ValidateDocument).
 func TableColumnMarks(doc *Node, blockID string, index int) ([]MarkRef, error) {
-	_, table, err := editTable(doc, blockID, "TableColumnMarks")
+	valid, err := ValidateDocument(doc, "TableColumnMarks")
+	if err != nil {
+		return nil, err
+	}
+	return valid.TableColumnMarks(blockID, index)
+}
+
+// TableColumnMarks is TableColumnMarks of d's tree without validating it again; the zero
+// ValidDocument wants a document.
+func (d ValidDocument) TableColumnMarks(blockID string, index int) ([]MarkRef, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("TableColumnMarks")
+	}
+	_, table, err := tableAt(d.doc, blockID)
 	if err != nil {
 		return nil, err
 	}
@@ -393,8 +429,23 @@ func padTable(table *Node, budget *WriteBudget) error {
 // the table carrying blockID. Row zero is the header; deleting it promotes the
 // first body row to the header so the table remains valid. A table's last body
 // row is refused so the table block survives.
+// It validates doc first (ValidateDocument).
 func DeleteTableRow(doc *Node, blockID string, index int) (*Node, error) {
-	path, table, err := editTable(doc, blockID, "DeleteTableRow")
+	valid, err := ValidateDocument(doc, "DeleteTableRow")
+	if err != nil {
+		return nil, err
+	}
+	return valid.DeleteTableRow(blockID, index)
+}
+
+// DeleteTableRow is DeleteTableRow of d's tree without validating it again; the zero
+// ValidDocument wants a document. The tree it returns is a new one, which it validates as
+// DeleteTableRow does.
+func (d ValidDocument) DeleteTableRow(blockID string, index int) (*Node, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("DeleteTableRow")
+	}
+	path, table, err := tableAt(d.doc, blockID)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +456,7 @@ func DeleteTableRow(doc *Node, blockID string, index int) (*Node, error) {
 		return nil, tableIndexError(table, "row", strconv.Itoa(index), fmt.Sprintf("row index %d would remove the last remaining body row", index))
 	}
 
-	out := cloneNode(doc)
+	out := cloneNode(d.doc)
 	outTable := nodeAtPath(out, path)
 	children := make([]*Node, 0, len(outTable.Children)-1)
 	if index == 0 {
@@ -431,8 +482,23 @@ func DeleteTableRow(doc *Node, blockID string, index int) (*Node, error) {
 // the table carrying blockID. The column must exist in every row; this keeps a
 // ragged table intact rather than silently deleting cells from only some rows.
 // Removing a row's only cell is refused so the table block survives.
+// It validates doc first (ValidateDocument).
 func DeleteTableColumn(doc *Node, blockID string, index int) (*Node, error) {
-	path, table, err := editTable(doc, blockID, "DeleteTableColumn")
+	valid, err := ValidateDocument(doc, "DeleteTableColumn")
+	if err != nil {
+		return nil, err
+	}
+	return valid.DeleteTableColumn(blockID, index)
+}
+
+// DeleteTableColumn is DeleteTableColumn of d's tree without validating it again; the zero
+// ValidDocument wants a document. The tree it returns is a new one, which it validates as
+// DeleteTableColumn does.
+func (d ValidDocument) DeleteTableColumn(blockID string, index int) (*Node, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("DeleteTableColumn")
+	}
+	path, table, err := tableAt(d.doc, blockID)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +514,7 @@ func DeleteTableColumn(doc *Node, blockID string, index int) (*Node, error) {
 		}
 	}
 
-	out := cloneNode(doc)
+	out := cloneNode(d.doc)
 	outTable := nodeAtPath(out, path)
 	for _, row := range outTable.Children {
 		row.Children = append(row.Children[:index:index], row.Children[index+1:]...)
@@ -574,19 +640,36 @@ func listItemRemoval(parent *Node, textblockPath []int) (removePath []int, hoist
 
 // MoveBlock returns a copy of doc with the block carrying blockID relocated to
 // the document-level boundary before or after the top-level block containing
-// target, the boundary a block insert uses. An empty target at the document
+// target, the boundary a block insert uses. A list item is relocated inside the
+// list holding target instead, the boundary an insert of list content takes
+// there (ListBoundary, moveListItem). An empty target at the document
 // start or end selects that edge. A target inside the moved block is
 // ErrMoveInsideItself; a block that cannot stand at document level is ErrSchema.
+// It validates doc first (ValidateDocument).
 func MoveBlock(doc *Node, blockID string, target Range, after bool) (*Node, error) {
-	if _, err := ValidateDocument(doc, "MoveBlock"); err != nil {
+	valid, err := ValidateDocument(doc, "MoveBlock")
+	if err != nil {
 		return nil, err
 	}
+	return valid.MoveBlock(blockID, target, after)
+}
+
+// MoveBlock is MoveBlock of d's tree without validating it again; the zero ValidDocument wants a
+// document. The tree it returns is a new one, which it validates as MoveBlock does.
+func (d ValidDocument) MoveBlock(blockID string, target Range, after bool) (*Node, error) {
+	if d.doc == nil {
+		return nil, wantsDocument("MoveBlock")
+	}
+	doc := d.doc
 	path, moved, ok := findBlock(doc, blockID)
 	if !ok {
 		return nil, fmt.Errorf("%w: block %q", ErrTargetNotFound, blockID)
 	}
 	if target.From < target.To && target.From >= moved.From && target.To <= moved.To {
 		return nil, fmt.Errorf("%w: block %q", ErrMoveInsideItself, blockID)
+	}
+	if out, relocated, err := moveListItem(doc, path, blockID, target, after); err != nil || relocated {
+		return out, err
 	}
 	if node := nodeAtPath(doc, path); !isBlockNodeType(node.Type) {
 		return nil, fmt.Errorf("%w: %s %q cannot stand at document level; move its enclosing block", ErrSchema, node.Type, blockID)
@@ -633,4 +716,101 @@ func MoveBlock(doc *Node, blockID string, target Range, after bool) (*Node, erro
 		return nil, err
 	}
 	return out, nil
+}
+
+// moveListItem relocates a list item to the boundary inside the list holding target, the boundary
+// an insert of list content takes there (ListBoundary): the item becomes a sibling of the item
+// holding target, or, where target is a list's own block, that list's first or last item. It
+// reports relocated=false for a block that is no list item, for a target in no list, and for an
+// empty target, which names a document edge rather than a block: each of those takes the
+// document-level move instead.
+//
+// The block a caller names is the one a listing shows it (documentBlocks), and a list's items are
+// listed by the paragraph each holds rather than by the item itself, so a move of an item is
+// written against that paragraph's id. Such a paragraph is read as its item, but only where it is
+// the item's whole content: an item that also holds a nested list would otherwise carry that list
+// along, which is not what a caller naming one paragraph asked for, and that move keeps the
+// document-level placement it has today.
+func moveListItem(doc *Node, path []int, blockID string, target Range, after bool) (*Node, bool, error) {
+	if target.From == target.To {
+		return nil, false, nil
+	}
+	if item, ok := listItemOfOnlyChild(doc, path); ok {
+		path = item
+	}
+	if nodeAtPath(doc, path).Type != "list_item" {
+		return nil, false, nil
+	}
+	found, ok := listAnchor(doc, target)
+	if !ok {
+		return nil, false, nil
+	}
+	out := cloneNode(doc)
+	item := nodeAtPath(out, path)
+	anchor := nodeAtPath(out, found.path)
+	list := anchor
+	if anchor.Type == "list_item" {
+		list = nodeAtPath(out, found.path[:len(found.path)-1])
+	}
+	removeAtPath(out, path)
+	// Taking the item out takes with it every list, item or blockquote it empties (removeAtPath),
+	// which can be the list the move anchored on: moving a list's only item to that list's own
+	// block leaves no list to put it in.
+	if !holdsNode(out, list) {
+		return nil, true, fmt.Errorf("%w: the anchor list was emptied by moving block %q out of it", ErrSchema, blockID)
+	}
+	index := len(list.Children)
+	switch {
+	case anchor.Type == "list_item":
+		index = childIndex(list, anchor)
+		if after {
+			index++
+		}
+	case !after:
+		index = 0
+	}
+	children := make([]*Node, 0, len(list.Children)+1)
+	children = append(children, list.Children[:index]...)
+	children = append(children, item)
+	children = append(children, list.Children[index:]...)
+	list.Children = children
+	if err := out.Validate(); err != nil {
+		return nil, true, err
+	}
+	return out, true, nil
+}
+
+// listItemOfOnlyChild is the path of the list item a block is the whole content of, and false for
+// every other block: one at document level, one of an item that holds more than it, and one whose
+// parent is no list item at all.
+func listItemOfOnlyChild(doc *Node, path []int) ([]int, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	parent := nodeAtPath(doc, path[:len(path)-1])
+	if parent == nil || parent.Type != "list_item" || len(parent.Children) != 1 {
+		return nil, false
+	}
+	return path[:len(path)-1], true
+}
+
+// holdsNode reports whether tree still holds node itself, by identity.
+func holdsNode(tree, node *Node) bool {
+	found := false
+	Walk(tree, func(candidate *Node) bool {
+		found = found || candidate == node
+		return !found
+	})
+	return found
+}
+
+// childIndex is the index of child among parent's children, by identity, or len(Children) for a
+// node parent no longer holds.
+func childIndex(parent, child *Node) int {
+	for index, candidate := range parent.Children {
+		if candidate == child {
+			return index
+		}
+	}
+	return len(parent.Children)
 }

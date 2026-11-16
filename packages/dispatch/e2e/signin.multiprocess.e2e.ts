@@ -1,10 +1,8 @@
-import { expect, test } from "@playwright/test";
-
 import { baseUrl } from "./api";
 import { type DispatchProcess, pinnedTo, processPinCookie } from "./harness-processes";
 import { oidcSignIn } from "./harness-signin";
 import type { ProxiedRequest } from "./round-robin-proxy";
-import { resetDatabase } from "./seed";
+import { expect, test } from "./test";
 
 /**
  * A deployment runs Dispatch as several processes behind one load balancer, so the browser's
@@ -26,8 +24,14 @@ import { resetDatabase } from "./seed";
  *  only for a person whose `/auth/whoami` answered (AuthGate). */
 const next = "/settings";
 
+// The one spec of DISPATCH_E2E_SIGNIN=oidc, where the servers mount no dev sign-in route at all
+// (e2e/harness-signin.ts), so the default context's sign-in has nothing to mint at. The row
+// below opens its own context and signs in through the issuer, which is its whole subject.
+test.use({ signedIn: false });
+
+// The reset is the `test` this file imports (e2e/test.ts); the proxy's own log is not in the
+// database, so it is cleared here.
 test.beforeEach(async () => {
-  await resetDatabase();
   const reset = await fetch(new URL("/_proxy/reset", baseUrl), { method: "POST" });
   expect(reset.status, "the round-robin proxy's log reset").toBe(204);
 });

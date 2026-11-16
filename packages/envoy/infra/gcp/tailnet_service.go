@@ -101,10 +101,6 @@ type tailnetServiceHost struct {
 	// node is approved, and is ready only once tailscaled holds it. Empty for a Service that
 	// terminates no TLS (TCP forwards).
 	certificate string
-	// health, when set, is a URL the advertiser GETs every tailnetHealthPeriodSeconds: it advertises
-	// after tailnetHealthRise answers of HTTP 200 in a row, and drains after tailnetHealthFall
-	// failures in a row.
-	health string
 }
 
 // tailnetServiceName is the Tailscale Service's name as tailscaled, the CLI and Tailscale's API
@@ -273,18 +269,10 @@ const (
 // so the orders are spaced with a jittered backoff.
 const tailnetCertOrderAttempts = 6
 
-// The health gate of a host with a health URL: a GET every tailnetHealthPeriodSeconds, each given
-// tailnetHealthTimeoutSeconds (wget -T, longer than the period, so a slow answer is waited for and
-// not counted as a failure while it is still coming), healthy only on HTTP 200. The host is
-// advertised after tailnetHealthRise healthy answers in a row and drained after tailnetHealthFall
-// failures in a row, so one slow answer neither drains a serving host nor advertises a flapping
-// one.
-const (
-	tailnetHealthPeriodSeconds  = 5
-	tailnetHealthTimeoutSeconds = 6
-	tailnetHealthRise           = 2
-	tailnetHealthFall           = 3
-)
+// tailnetAdvertiserPeriodSeconds is the advertiser's wait between two reads of tailscaled's status:
+// while it waits for a logged-in node, while it waits for a node that may advertise, and while it
+// watches a node it has advertised.
+const tailnetAdvertiserPeriodSeconds = 5
 
 // tailnetAdvertiserScript is the advertiser's whole program, for /bin/sh -c on the Tailscale
 // image's busybox shell, as the pod's uid with the state volume mounted: one cycle per node this
@@ -293,9 +281,8 @@ const (
 // A cycle reads the node id from tailscaled (the first string "ID" of `tailscale status --json
 // --peers=false` is Self's: ipnstate.Status lists no ID before Self, and PeerStatus.ID is its first
 // field, ipn/ipnstate/ipnstate.go:50,239) and writes it to the node id file. It waits until the
-// node may advertise: no preStop hook drains it, the advertise gate's flag names it (with a
-// certificate), and the health URL answered tailnetHealthRise times in a row (with a health URL).
-// It then advertises the Service, which containerboot is told not to do.
+// node may advertise: no preStop hook drains it, and the advertise gate's flag names it (with a
+// certificate). It then advertises the Service, which containerboot is told not to do.
 //
 // It then watches every 5 s. The node is approved once its service-host capability lists the
 // Service: the control server sends it in the self node's CapMap, as tailcfg.ServiceIPMappings
@@ -319,10 +306,9 @@ const (
 // logged-in node (a re-logged-in node gets a fresh cycle under its new id), when the node may no
 // longer advertise, when the node no longer advertises the Service (containerboot takes every
 // Service out of the preferences whenever the tailscale container stops,
-// cmd/containerboot/main.go:491-494, and a restarted container keeps its node), or, with a health
-// URL, after tailnetHealthFall failures in a row, when the advertiser first drains the Service.
-// A node whose approval is withdrawn loses the ready file and is watched as unapproved. No pod is
-// ever deleted for any of it.
+// cmd/containerboot/main.go:491-494, and a restarted container keeps its node). A node whose
+// approval is withdrawn loses the ready file and is watched as unapproved. No pod is ever
+// deleted for any of it.
 func tailnetAdvertiserScript(h tailnetServiceHost) string {
 	flag := ""
 	if h.certificate != "" {
@@ -338,16 +324,12 @@ func tailnetAdvertiserScript(h tailnetServiceHost) string {
 		{"flag_file", flag},
 		{"service", h.service()},
 		{"certificate", h.certificate},
-		{"health", h.health},
 		{"grace", strconv.Itoa(h.graceSeconds)},
 		{"stuck_first", strconv.Itoa(tailnetAdvertiseStuckSeconds)},
 		{"stuck_max", strconv.Itoa(tailnetAdvertiseStuckMaxSeconds)},
 		{"pause", strconv.Itoa(tailnetDrainPauseSeconds)},
 		{"attempts", strconv.Itoa(tailnetCertOrderAttempts)},
-		{"period", strconv.Itoa(tailnetHealthPeriodSeconds)},
-		{"health_timeout", strconv.Itoa(tailnetHealthTimeoutSeconds)},
-		{"rise", strconv.Itoa(tailnetHealthRise)},
-		{"fall", strconv.Itoa(tailnetHealthFall)},
+		{"period", strconv.Itoa(tailnetAdvertiserPeriodSeconds)},
 	}
 	var b strings.Builder
 	for _, v := range vars {
@@ -375,7 +357,6 @@ now() { date -u +%s; }
 log() { echo "$(at) $1 | $2 | $3"; }
 ts() { tailscale --socket="$socket" "$@"; }
 err=${TMPDIR:-/tmp}/tailnet-advertiser.err
-health_out=${TMPDIR:-/tmp}/tailnet-advertiser.health
 # follow sets id to Self.ID and st to the status it read, and keeps the node id file on id. It
 # fails, and writes nothing, while tailscaled does not answer as a logged-in node, or names an id
 # that is not alphanumeric, as no StableNodeID is.
@@ -431,20 +412,6 @@ approved() {
     }
     END { exit !found }'
 }
-# healthy: one GET of the health URL answered HTTP 200 (the last status line wget -S prints, after
-# any redirect). Each change of answer is logged once.
-last_code=unknown
-healthy() {
-  wget -S -O /dev/null -T "$health_timeout" "$health" >"$health_out" 2>&1
-  rc=$?
-  code=$(sed -n 's/^[[:space:]]*HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/\1/p' "$health_out" | tail -n 1)
-  [ -n "$code" ] || code="no answer: $(tr '\n' ' ' <"$health_out")"
-  if [ "$code" != "$last_code" ]; then
-    log "health" "wget $health" "HTTP $code, was $last_code"
-    last_code=$code
-  fi
-  [ "$rc" -eq 0 ] && [ "$code" = 200 ]
-}
 # unstick drains the Service and advertises it again once the node has been advertised and
 # unapproved for more than stuck seconds, doubling stuck up to stuck_max. It returns 1 when the
 # cycle must start again: the node changed or may no longer advertise during the pause, or the new
@@ -474,15 +441,7 @@ while :; do
   rm -f "$ready_file"
   until follow; do nap "$period"; done
   node=$id
-  good=0
-  while :; do
-    if may; then
-      [ -z "$health" ] && break
-      if healthy; then good=$((good + 1)); else good=0; fi
-      [ "$good" -ge "$rise" ] && break
-    else
-      good=0
-    fi
+  until may; do
     nap "$period"
     follow && [ "$id" = "$node" ] || continue 2
   done
@@ -496,20 +455,11 @@ while :; do
   since=$(now)
   stuck=$stuck_first
   recoveries=0
-  bad=0
   held=
   while :; do
     if ! follow; then gone="tailscaled answers as no logged-in node"; break
     elif [ "$id" != "$node" ]; then gone="tailscaled is node $id now, not $node"; break
     elif ! may; then gone="node $node may not advertise: a preStop hook drains it${flag_file:+, or the advertise flag does not name it}"; break
-    fi
-    if [ -n "$health" ]; then
-      if healthy; then bad=0; else bad=$((bad + 1)); fi
-      if [ "$bad" -ge "$fall" ]; then
-        ts serve drain "$service" >/dev/null 2>"$err" || log "service advertisement" "tailscale serve drain $service" "failed: $(tr '\n' ' ' <"$err")"
-        gone="$bad health checks of $health failed in a row: $service drained"
-        break
-      fi
     fi
     if ! advertising; then gone="node $node no longer advertises $service"; break; fi
     if ! approved; then

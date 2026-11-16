@@ -1,0 +1,13 @@
+-- The migration adds a nullable column with no default to embeddings, which rewrites no row,
+-- and replaces the two functions that write the table so that each sets the new column. It
+-- builds no index: the index the scoped arms read is 20261110155257's, built concurrently in a
+-- migration of its own. It refuses no row and rewrites no value any reader had before it: the
+-- column is new and no earlier release names it, and the functions keep the signatures and the
+-- behaviour the release before this one calls them for. It cannot count the rows it labels
+-- here, since the census is taken before any migration of the release applies and the column
+-- does not exist yet; those rows are 20261109120100's and its fill's, and they are new data
+-- rather than a rewrite. What this migration holds while it runs is embeddings' ACCESS
+-- EXCLUSIVE lock, taken by the ALTER for the one catalog row it writes, which is why the
+-- census's size limit exempts it (pgmigrate/exempt.go, catalogOnlyAlterTable) however large
+-- that table is.
+select 0

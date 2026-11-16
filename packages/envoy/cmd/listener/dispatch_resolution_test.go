@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
-	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
 )
 
@@ -39,8 +37,8 @@ import (
 
 const (
 	// rigMachineID is the machine both listeners and every session in this file run on, as the
-	// rest of the package's tests spell it. The deliverer pushes to a local session through its
-	// host bridge, so a session entry must carry this id to be pushed to at 127.0.0.1.
+	// rest of the package's tests spell it: a session entry must carry this id for this
+	// machine's listener to relay it.
 	rigMachineID = "test-machine"
 	// rigHuman is the person who writes the comments and sends the broadcasts here: a Dispatch
 	// write carries a human's login, and this one is recorded as having signed in.
@@ -103,9 +101,10 @@ func listenerRigLogger(t *testing.T, name string) *logging.Logger {
 }
 
 // startListenerDelivery runs the listener's own delivery loop over d: the durable JetStream
-// subscription main binds, with a real HTTP deliverer. A frame Dispatch publishes through
-// /v1/messages/send is then pushed to the session's endpoint exactly as the listener pushes it,
-// so a delivery is observed where the agent would receive it rather than in a log line.
+// subscription main binds, and the relay of the session consumers main starts beside it. A frame
+// Dispatch publishes through /v1/messages/send is then relayed to the session's own consumer
+// exactly as the listener relays it, so a delivery is observed where the agent would receive it
+// rather than in a log line.
 func startListenerDelivery(t *testing.T, d *listenerDeps) {
 	t.Helper()
 	dedupeCache := dedupe.New(10 * time.Minute)
@@ -119,14 +118,8 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		registry:    d.registry,
 		sessions:    d.sessions,
 		machineID:   rigMachineID,
-		deliverer: &session.Deliverer{
-			MachineID:    rigMachineID,
-			HostBridge:   "127.0.0.1",
-			RequestLimit: 5 * time.Second,
-			// No Sessions lookup: the delivery config above resolves the entry from its own
-			// sessions field and hands it to DeliverWithResultForEntry, so the deliverer holds
-			// no registry of its own (INFRA-141).
-		},
+		// The delivery config resolves the entry from its own sessions field and hands it to
+		// session.Resolve, which holds no registry of its own (INFRA-141).
 		dedupeCache:       dedupeCache,
 		attemptCache:      attemptCache,
 		logger:            listenerRigLogger(t, "delivery listener"),
@@ -141,10 +134,35 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 		// is zero, so nothing here is ever deferred, and these tests cover Dispatch resolution and
 		// delivery rather than the retry policy (INFRA-141).
 		deferredUnplaceable: newUnplaceableDeferrals(),
+		// The guards two drains of one role take inside one listener, which main.go keeps one set
+		// of for the process. This rig needs one for the same reason as the set above: the handler
+		// refuses a config without it, and nothing here keeps a role message.
+		roleKeepDrains: newRoleKeepGuards(),
 	}
-	// The durable path's pushes to serving-port sessions and the role lane's forwards run off the
-	// handler, as main.go wires them (wireDeliveryWorkers).
-	config = wireTestDeliveryWorkers(t, config)
+	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
+	config = wireTestRoleForwarder(t, config)
+	// The connection carries the threshold the listener's own windows derive, as main opens it
+	// (inactiveThresholdFor): nothing here waits one out, but no rig creates a consumer under a
+	// threshold the deployment would not.
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)},
+		inactiveThresholdFor(d.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), config.logger)
+	if err != nil {
+		t.Fatalf("the session-consumer connection did not open: %v", err)
+	}
+	t.Cleanup(delivery.close)
+	relays, err := startSessionRelays(delivery, config)
+	if err != nil {
+		t.Fatalf("start the session relays: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		relays.stop(ctx)
+	})
+	// This listener holds the machine's durable binding, which is what makes it relay the
+	// sessions it registered (sessionRelays.setOwned).
+	relays.setOwned(true)
+	d.consumers = delivery
 	subscription, err := startListenerSubscription(
 		d.client, "listener-dispatch-"+id.New(), jetStreamDeliveryHandler(config))
 	if err != nil {
@@ -219,61 +237,55 @@ func dispatchMux(t *testing.T, database *dispatchstore.Store, envoyURL string) h
 	return mux
 }
 
-// rigSession is a registered session with an endpoint of its own: the httptest server standing in
-// for the agent's serve process, which records every frame the listener pushes to it.
+// rigSession is a registered session on consumer delivery, with a stand-in of its own on the
+// session's relay subject: the NATS consumer a plugin holds, which records every frame the
+// listener relays to it (startSessionStandIn, session_relay_test.go).
 type rigSession struct {
-	id     string
-	title  string
-	frames chan string
+	id      string
+	title   string
+	standIn *sessionStandIn
 }
 
-// registerSession registers sessionID against the warm listener, with a push endpoint of its own,
-// and checks that the listener Dispatch asks has not seen it: a rig whose cold cache already held
-// the session would prove nothing.
+// registerSession registers sessionID against the warm listener, on consumer delivery with a
+// stand-in taking its frames, and checks that the listener Dispatch asks has not seen it: a rig
+// whose cold cache already held the session would prove nothing.
 func (rig *dispatchRig) registerSession(t *testing.T, sessionID, title string) *rigSession {
 	t.Helper()
-	live := &rigSession{id: sessionID, title: title, frames: make(chan string, 8)}
-	path := "/session/" + sessionID + "/prompt_async"
-	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != path {
-			t.Errorf("%s was pushed %s %s, want POST %s", sessionID, r.Method, r.URL.Path, path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		var body struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode the frame pushed to %s: %v", sessionID, err)
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		var frame strings.Builder
-		for _, part := range body.Parts {
-			frame.WriteString(part.Text)
-		}
-		live.frames <- frame.String()
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(endpoint.Close)
-
-	if err := rig.warm.sessions.Put(sessionID, session.SessionEntry{
-		Port:         endpointPort(t, endpoint.URL),
-		MachineID:    rigMachineID,
-		Host:         "127.0.0.1",
-		Dir:          "/test/" + sessionID,
-		Title:        title,
-		Capabilities: []string{"aside", "btw", "steer"},
-	}); err != nil {
-		t.Fatalf("register %s: %v", sessionID, err)
+	standIn := startSessionStandIn(t, testnats.URL(t), sessionID, answerDone)
+	body, err := json.Marshal(map[string]any{
+		"session_id":      sessionID,
+		"self_subscribed": true,
+		"topics":          []string{},
+		"title":           title,
+		"dir":             "/test/" + sessionID,
+		"capabilities":    []string{"aside", "btw", "steer"},
+		"delivery":        map[string]any{"consumer": true, "epoch": "rig-" + id.New()},
+	})
+	if err != nil {
+		t.Fatalf("marshal %s's registration: %v", sessionID, err)
+	}
+	recorder := httptest.NewRecorder()
+	subscribeHandler(rig.warm, rigMachineID, listenerRigLogger(t, "warm listener")).
+		ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("register %s: status %d %s", sessionID, recorder.Code, recorder.Body.String())
+	}
+	var answer struct {
+		Delivery *struct {
+			Mode string `json:"mode"`
+		} `json:"delivery"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode %s's registration answer %s: %v", sessionID, recorder.Body.String(), err)
+	}
+	if answer.Delivery == nil || answer.Delivery.Mode != "consumer" {
+		t.Fatalf("%s registered on delivery %s, want the consumer's: nothing would reach its stand-in", sessionID, recorder.Body.String())
 	}
 	if _, err := rig.cold.sessions.Get(sessionID); err == nil {
 		t.Fatalf("the listener Dispatch asks already holds %s, so its read-through is not under test",
 			sessionID)
 	}
-	return live
+	return &rigSession{id: sessionID, title: title, standIn: standIn}
 }
 
 // endSession removes a session from the bucket, as its plugin does when the agent stops. Nothing
@@ -285,37 +297,25 @@ func (rig *dispatchRig) endSession(t *testing.T, sessionID string) {
 	}
 }
 
-func endpointPort(t *testing.T, raw string) int {
-	t.Helper()
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse the session endpoint URL %q: %v", raw, err)
-	}
-	port, err := strconv.Atoi(parsed.Port())
-	if err != nil {
-		t.Fatalf("read the session endpoint's port from %q: %v", raw, err)
-	}
-	return port
-}
-
-// awaitFrame waits for the next frame the listener pushed to this session's endpoint.
+// awaitFrame waits for the next frame the listener relayed to this session, as the envelope its
+// consumer carried.
 func (s *rigSession) awaitFrame(t *testing.T) string {
 	t.Helper()
 	select {
-	case frame := <-s.frames:
-		return frame
+	case frame := <-s.standIn.frames:
+		return string(frame.msg.Data)
 	case <-time.After(15 * time.Second):
-		t.Fatalf("no frame reached %s's own endpoint", s.id)
+		t.Fatalf("no frame reached %s's own consumer", s.id)
 		return ""
 	}
 }
 
-// noFrame reports that nothing reached this session's endpoint in the window a frame would have.
+// noFrame reports that nothing reached this session's consumer in the window a frame would have.
 func (s *rigSession) noFrame(t *testing.T) {
 	t.Helper()
 	select {
-	case frame := <-s.frames:
-		t.Fatalf("%s received %q, want nothing", s.id, frame)
+	case frame := <-s.standIn.frames:
+		t.Fatalf("%s received %s, want nothing", s.id, frame.item.EventID)
 	case <-time.After(500 * time.Millisecond):
 	}
 }
@@ -399,7 +399,7 @@ func decodeRigBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return value
 }
 
-// rigDelivery is one mention's attempt row, as the comment create answers it.
+// rigDelivery is one mention's attempt row, as the comment's read answers it.
 type rigDelivery struct {
 	Target    string  `json:"target"`
 	Delivery  string  `json:"delivery"`
@@ -409,6 +409,7 @@ type rigDelivery struct {
 }
 
 type rigComment struct {
+	ID         string        `json:"id"`
 	Deliveries []rigDelivery `json:"deliveries"`
 }
 
@@ -461,8 +462,10 @@ type rigFailure struct {
 	Error string `json:"error"`
 }
 
-// mention posts one comment mentioning sessionID and returns what the create answered.
-func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) rigComment {
+// mention posts one comment mentioning sessionID and returns its mention's attempt once settled.
+// The create answers with the attempt pending and the mention sender settles it after that, on
+// the server's lifetime, so the comment is read back until the attempt carries its outcome.
+func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) rigDelivery {
 	t.Helper()
 	created := rig.asHuman(t, http.MethodPost, "/api/v1/issues/"+issueKey+"/comments", map[string]any{
 		"body":     body,
@@ -474,10 +477,26 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 			sessionID, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	if len(comment.Deliveries) != 1 {
-		t.Fatalf("the comment's deliveries = %#v, want the one mention's attempt", comment.Deliveries)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
+		if read.Code != http.StatusOK {
+			t.Fatalf("read the comment: status=%d body=%s", read.Code, read.Body.String())
+		}
+		stored := decodeRigBody[struct {
+			Comment rigComment `json:"comment"`
+		}](t, read).Comment
+		if len(stored.Deliveries) != 1 {
+			t.Fatalf("the comment's deliveries = %#v, want the one mention's attempt", stored.Deliveries)
+		}
+		if stored.Deliveries[0].State != "pending" {
+			return stored.Deliveries[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the mention's attempt is still pending: %#v", stored.Deliveries[0])
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return comment
 }
 
 // A person mentions a session the listener Dispatch asks has not refilled into its cache. Before
@@ -492,8 +511,7 @@ func TestDispatchMentionResolvesASessionTheCacheHasNotRefilled(t *testing.T) {
 	planner := rig.registerSession(t, "ses_planner", "Planner")
 	key := rig.issueKey(t, "A mention while the cache refills")
 
-	comment := rig.mention(t, key, planner.id, "Please take this one.")
-	attempt := comment.Deliveries[0]
+	attempt := rig.mention(t, key, planner.id, "Please take this one.")
 	if attempt.State != "sent" || attempt.Error != nil ||
 		attempt.SessionID == nil || *attempt.SessionID != planner.id {
 		t.Fatalf("the mention's attempt = %#v, want it sent to %s with no failure", attempt, planner.id)
@@ -574,7 +592,7 @@ func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
 	planner.noFrame(t)
 	tester.noFrame(t)
 
-	attempt := rig.mention(t, key, planner.id, "Please take this one.").Deliveries[0]
+	attempt := rig.mention(t, key, planner.id, "Please take this one.")
 	if attempt.State != "failed" || attempt.Error == nil {
 		t.Fatalf("the mention's attempt = %#v, want it failed with a recorded cause", attempt)
 	}

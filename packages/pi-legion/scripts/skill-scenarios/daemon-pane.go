@@ -4,8 +4,10 @@
 // daemon-pane.ts runs it with `go run -overlay` as a main inside a checkout's packages/daemon, the
 // one place the daemon's internal packages can be imported from.
 //
-//	phase <role>             prints the phase the role's worker runs in: the first phase
-//	                         workflow.RoleFor gives to the role
+//	phase <role>             prints the phase the role's worker runs in, the first phase
+//	                         workflow.RoleFor gives to the role, then on a second line the word of
+//	                         the handoff record that phase ends with (handoffWords), empty for a
+//	                         phase that ends with none
 //	pane                     reads a paneRequest (JSON) on stdin, writes the claim's gh bundle
 //	                         under its LEGION_GH_OWNERS_DIR, and prints its paneResponse (JSON)
 package main
@@ -55,10 +57,20 @@ func main() {
 	}
 }
 
+// handoffWords is the word of the handoff each handoff phase ends with: this program's one
+// restatement of the daemon, and its own copy rather than the daemon's phase table because one
+// program runs against each label's checkout of the daemon module, and that table has had more
+// than one name (phase.HandoffFile, then phase.Handoff). Every other answer here is the daemon's
+// own function (daemon-pane.ts).
+var handoffWords = map[phase.Phase]string{
+	phase.Planning: "plan", phase.Implementing: "implement", phase.Testing: "test", phase.Reviewing: "review",
+}
+
 func printPhase(role claim.Role) error {
 	for _, p := range phase.All {
 		if workflow.RoleFor(p) == role {
 			fmt.Println(p)
+			fmt.Println(handoffWords[p])
 			return nil
 		}
 	}
@@ -121,9 +133,12 @@ func pane() error {
 	ghRoot, gh := "", ""
 	if req.GHToken != "" {
 		// ghconfig's one writer of a role's gh bundle, so the rig's directory is the daemon's layout;
-		// the App label and expiry only feed the runtime's log lines, which the rig does not write.
+		// the App label and expiry only feed the runtime's log lines, which the rig does not write. The
+		// rig's project serves one repository of one owner, so its bundle holds that owner's directory
+		// alone, where a daemon serving more holds a `<owner>/<repo>` directory beside it per sibling
+		// repository.
 		ghRoot = runtime.GHConfigDir(req.StateDir, token)
-		bundle := ghconfig.Bundle{Default: rigOwner, Owners: map[string]ghconfig.Rendered{rigOwner: ghconfig.Render(req.GHToken, "", time.Time{})}}
+		bundle := ghconfig.Bundle{Default: rigOwner, Dirs: map[string]ghconfig.Rendered{rigOwner: ghconfig.Render(req.GHToken, "", time.Time{})}}
 		if _, err := ghconfig.WriteBundle(ghRoot, bundle); err != nil {
 			return fmt.Errorf("write the claim's gh files: %w", err)
 		}

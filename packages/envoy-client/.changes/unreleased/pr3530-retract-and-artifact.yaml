@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    `dispatch result --retract <result id> --reason <text>` records that a result is wrong. The
+    result stays readable beside its retraction, and nothing counts it as evidence.
+time: 2026-11-11T10:11:01.000000000Z
+custom:
+    Issue: pr3530

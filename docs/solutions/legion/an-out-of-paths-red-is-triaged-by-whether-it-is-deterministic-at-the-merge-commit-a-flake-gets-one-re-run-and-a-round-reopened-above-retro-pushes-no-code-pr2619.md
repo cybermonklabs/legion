@@ -28,20 +28,25 @@ post-retro head.
 
 - **Read the failing assertion before you choose, and triage by determinism at the merge commit,
   not by whether `main` has a fix.** A comparison that can go either way on the same tree (two
-  clock stamps under `toBeLessThan`, an ordering race) is a flake: `gh run rerun <run-id> --failed`
-  once, push nothing, and complete when it settles. A failure that is deterministic at the run's
+  clock stamps under `toBeLessThan`, an ordering race) is a flake: on a `pull_request` run,
+  `gh run rerun <run-id> --failed` once, push nothing, and complete when it settles. A flake in a
+  merge-group run is not re-run at all: every job of a re-run attempt of such a run skips, so the
+  implementer finishes its round and the pull request is tested again when it is queued again. A
+  failure that is deterministic at the run's
   merge commit (a type error, a missing symbol, a fixture `main` changed) fails the same way on a
   re-run, since the re-run fetches the same merge sha; only a head push refreshes it, and that is
   the forward-merge trigger "a fix for its only red check" of `skill://legion-worker`.
 - **A green re-run is the flake landing the other way, not `main`'s fix arriving.** Say so in the
   handoff and the pull request: the merge commit the re-run tested still held the old assertion.
-- **A round reopened above retro changes no code.** Write the round's handoff again (retro removed
-  `.legion/<issue>/`, and `handoff_complete` needs it on the branch), push it alone under the
-  `skip-checks: true` trailer, and let the daemon carry the code head's verdict to it. The audits of
-  the previous round stand when the compare from the previously audited head to the current code
-  head lists only `docs/solutions/` and `.legion/`: the tester re-runs the live proofs at the new
-  head and reads the new prose, the reviewer re-runs no thermonuclear pair, and the architect's
-  acceptance and the next retro follow. A code push here withdraws READY and reopens the review.
+- **A round reopened above retro changes no code.** Record the round's handoff again with
+  `dispatch handoff-write`, which writes a new version on the issue and pushes nothing, and
+  complete naming it. The audits of the previous round stand when the compare from the previously
+  audited head to the current code head lists only `docs/solutions/`: the tester re-runs the live
+  proofs at that head and reads the new prose, the reviewer re-runs no thermonuclear pair, and the
+  architect's acceptance and the next retro follow. A code push here withdraws READY and reopens
+  the review. Before sjawhar/legion#2354 the handoff was a committed file, so such a round still
+  pushed: the handoff went up alone under the `skip-checks: true` trailer, the daemon carried the
+  code head's verdict to it, and the compare also listed `.legion/`.
 - **Send the flake to the controller with its run, job and line, and file nothing.** Its fix
   belongs to the tree that owns the test; the controller answers where it went, or that `main`
   already carries it.

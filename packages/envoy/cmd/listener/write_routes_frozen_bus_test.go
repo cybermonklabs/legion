@@ -52,14 +52,17 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	mux := http.NewServeMux()
-	registerV1Routes(mux, &listenerDeps{client: client, registry: registry, sessions: sessions}, "test-machine", logging.New("test"))
+	// The session consumers connect to the server directly, not through the relay: the freeze
+	// under test is the store's, and a registration reaches the store only once it has its
+	// consumer.
+	registerV1Routes(mux, withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}), "test-machine", logging.New("test"))
 	return &writeRouteRig{relay: relay, registry: registry, sessions: sessions, mux: mux}
 }
 
 func (rig *writeRouteRig) register(t *testing.T, ids ...string) {
 	t.Helper()
 	for _, id := range ids {
-		if err := rig.sessions.Put(id, session.SessionEntry{Port: 1, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {
+		if err := rig.sessions.Put(id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {
 			t.Fatalf("register %s: %v", id, err)
 		}
 		if _, err := rig.sessions.Get(id); err != nil {
@@ -107,10 +110,13 @@ func wantWriteBusUnanswered(t *testing.T, route string, recorder *httptest.Respo
 //
 // The record each frozen request needs is not in the interest cache, so the read it makes first
 // goes to the bucket; for subscribe and unsubscribe a second request names a session whose record
-// is cached, so the read is answered from memory and the write itself is what meets the silent bus.
-// POST /v1/roles/set's first bucket call is the claimant's registration write, and DELETE
-// /v1/sessions/<session_id>'s the session bucket's read-then-delete. The negative control is each
-// route asked before the freeze, on the same rig, for a session of its own: each is served.
+// is cached, so the plan or the unsubscribe's first read is answered from memory and the write's
+// own work is what meets the silent bus - the row read a registration's compare-and-swap is built
+// from and fenced on (store.Registry.UpsertPlanned), and the unsubscribe's write itself. POST
+// /v1/roles/set's first bucket call is the read the claimant's registration write is built from
+// (store.Registry.UpsertWithin), and DELETE /v1/sessions/<session_id>'s the session bucket's
+// read-then-delete. The negative control is each route asked before the freeze, on the same rig,
+// for a session of its own: each is served.
 func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
 	const (
 		topic         = "notifications.team.write-routes"
@@ -134,7 +140,7 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 		}
 	}
 	subscribe := func(id, topic string) string {
-		return `{"session_id":"` + id + `","topics":["` + topic + `"],"self_subscribed":true}`
+		return `{"session_id":"` + id + `","topics":["` + topic + `"],"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"}}`
 	}
 	unsubscribe := func(id, topic string) string {
 		return `{"session_id":"` + id + `","topics":["` + topic + `"]}`
@@ -155,8 +161,12 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 			t.Fatalf("%s %s with the bus answering: status %d, body %s; want %d", request.method, request.path, recorder.Code, recorder.Body.String(), request.want)
 		}
 	}
+	listed, err := rig.registry.List()
+	if err != nil {
+		t.Fatalf("list the interest cache: %v", err)
+	}
 	var cachedIDs []string
-	for _, item := range rig.registry.List() {
+	for _, item := range listed {
 		cachedIDs = append(cachedIDs, item.SessionID)
 	}
 	for _, id := range []string{subscriber, unsubscriber, removed} {
@@ -199,12 +209,12 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 // role's holder are role-bucket calls the claimant's registration write does not reach, so each
 // is frozen on its own here: the relay passes everything up to the first protocol line naming the
 // role bucket and swallows that line and every one after it. For the claim's read that is the
-// direct get of the claim; for the claim's write it is the conditional create, which nats.go
-// publishes with headers (HPUB) after the read and the claimant's interest write have answered,
-// so the write itself is what meets the silent bus, and the rollback that follows a write that did
-// not answer must not take the request past its budget either. The negative control is a hard claim
-// of another role (role-store-control) by the same claimant on the same rig before the freeze: it
-// is served.
+// direct get of the claim, published to $JS.API.DIRECT.GET; for the claim's write it is the
+// hard claim's unconditional publish of the claim to its own subject, which nats.go sends after
+// the read and the claimant's interest write have answered, so the write itself is what meets the
+// silent bus, and the rollback that follows a write that did not answer must not take the request
+// past its budget either. The negative control is a hard claim of another role
+// (role-store-control) by the same claimant on the same rig before the freeze: it is served.
 func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.T) {
 	const claimant = "ses_role_store_claimant"
 	for _, freeze := range []struct {
@@ -212,7 +222,7 @@ func TestAClaimWhoseRoleStoreStopsAnsweringIsAnsweredInsideTheBudget(t *testing.
 	}{
 		{"the claim's read", "KV_" + bus.RoleClaimBucket, `{"session_id":"` + claimant + `","role":"role-store-read"}`},
 		{"a soft claim's read", "KV_" + bus.RoleClaimBucket, `{"session_id":"` + claimant + `","role":"role-store-soft","soft":true}`},
-		{"the claim's write", "HPUB $KV." + bus.RoleClaimBucket + ".", `{"session_id":"` + claimant + `","role":"role-store-write"}`},
+		{"the claim's write", "PUB $KV." + bus.RoleClaimBucket + ".", `{"session_id":"` + claimant + `","role":"role-store-write"}`},
 	} {
 		t.Run(freeze.name, func(t *testing.T) {
 			t.Parallel()

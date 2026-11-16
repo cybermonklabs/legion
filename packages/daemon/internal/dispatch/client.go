@@ -133,6 +133,71 @@ func (c *HTTPClient) SetStatus(ctx context.Context, key, status string) (Issue, 
 	return response.issue(), nil
 }
 
+// SetStatusAt is SetStatus fenced on the issue's sequence as the caller read it
+// (expected_sequence), as HandOver fences its own write: Dispatch refuses the write with
+// ISSUE_CHANGED when anything was recorded on the issue since that read, rather than writing over
+// it. Every event moves the sequence, the daemon's own messages among them, so a refusal says only
+// that the read is stale: the caller reads the issue again and decides from what it then shows
+// (the outbox's status row).
+func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error) {
+	var response issueResponse
+	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), daemonWrite{
+		Status:           status,
+		ExpectedSequence: issue.LastSeq,
+		Actor:            daemonActor(issue.Key),
+	}, &response); err != nil {
+		return Issue{}, err
+	}
+	return response.issue(), nil
+}
+
+// ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
+// the daemon's own session. The actor body is required, not an extra: Dispatch's route decodes
+// the request and refuses one that carries no Content-Type: application/json, which request sets
+// only for a non-nil body. Every other daemonWrite field is omitempty, so what goes over the wire
+// is the actor alone, which is all the route accepts. Dispatch answers 409 ISSUE_CLAIMED when
+// this caller may not release the holder, and 409 CLAIM_CONTENDED when the holder changed twice
+// while the request ran, so nothing was applied.
+func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
+	return c.request(ctx, http.MethodDelete, "/api/v1/issues/"+url.PathEscape(key)+"/claim", daemonWrite{Actor: daemonActor(key)}, nil)
+}
+
+// PutGatedSteps publishes the deployment's design-gate steps onto project's row through PUT
+// /api/v1/projects/{key}/gated-steps, as the daemon's own session, the actor every write of this
+// client carries. The list is always sent, empty for a deployment that gates nothing: Dispatch
+// refuses a body that names no list rather than read it as the empty one, so a nil slice would
+// be refused where it means the same thing. A Dispatch older than the route answers 404, which
+// the caller retries: the route arrives with the next server release, and nothing is lost by
+// waiting for it.
+func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []string) error {
+	if steps == nil {
+		steps = []string{}
+	}
+	return c.request(ctx, http.MethodPut, "/api/v1/projects/"+url.PathEscape(project)+"/gated-steps", gatedStepsWrite{
+		Steps: steps,
+		Actor: daemonActor(project),
+	}, nil)
+}
+
+// PutDesignGates publishes the document each of the issue's design-gate steps records onto its
+// row through PUT /api/v1/issues/{key}/design-gates, as the daemon's own session, the actor
+// every write of this client carries. The write replaces the issue's whole set, appends no event
+// and notifies nobody. The list is always sent, empty for an issue whose gates record no
+// document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
+// nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
+// for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
+// older than the route answers its router's 404 under the code NOT_FOUND, which the caller
+// retries until the server release that has it.
+func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
+	if gates == nil {
+		gates = []DesignGateDocument{}
+	}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/design-gates", designGatesWrite{
+		Gates: gates,
+		Actor: daemonActor(key),
+	}, nil)
+}
+
 // HandOver writes issue's status for its hand-over to Legion, on the issue's sequence as the client
 // read it (expected_sequence), so a person's move since that read is refused (ISSUE_CHANGED) rather
 // than overwritten. An issue that does not yet carry LegionLabel has it added in the same PATCH
@@ -154,6 +219,47 @@ func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 		Body:  body,
 		Actor: daemonActor(key),
 	}, nil)
+}
+
+// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts and returns the slug of every document
+// and file the issue holds. A caller that names its own document reads it before an upload, so
+// a retry finds the document its first attempt made rather than writing it a second version.
+func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
+	var artifacts []struct {
+		Slug string `json:"slug"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &artifacts); err != nil {
+		return nil, err
+	}
+	slugs := make([]string, len(artifacts))
+	for i, artifact := range artifacts {
+		slugs[i] = artifact.Slug
+	}
+	return slugs, nil
+}
+
+// UploadArtifact writes a markdown document on the issue through POST
+// /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
+// it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
+// fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
+// other. A name the issue already holds is that document's next version.
+func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
+	var response struct {
+		Artifact struct {
+			Slug string `json:"slug"`
+		} `json:"artifact"`
+	}
+	if err := c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", artifactUpload{
+		Name:    name,
+		Content: content,
+		Actor:   daemonActor(key),
+	}, &response); err != nil {
+		return "", err
+	}
+	if response.Artifact.Slug == "" {
+		return "", fmt.Errorf("upload Dispatch document %s of %s: the answer names no slug", name, key)
+	}
+	return response.Artifact.Slug, nil
 }
 
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
@@ -192,7 +298,10 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 const eventPageLimit = 200
 
 // MessageBodiesSince reads newest-first issue events until the bounded outbox recovery window.
-// Message bodies are carried by message.created events; Dispatch has no message-list route.
+// Message bodies are carried by message.created events, which hold at most the first part of a
+// long body (contracts.DispatchEventBodyMax) and say so with body_truncated; the whole of such a
+// body is read from GET /api/v1/issues/{key}/messages/{id}, since the outbox's marker closes a
+// body and the cut would drop it.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
@@ -219,7 +328,9 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				continue
 			}
 			var message struct {
-				Body string `json:"body"`
+				ID            string `json:"id"`
+				Body          string `json:"body"`
+				BodyTruncated bool   `json:"body_truncated"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
 				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
@@ -227,7 +338,15 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
 			}
-			bodies = append(bodies, message.Body)
+			body := message.Body
+			if message.BodyTruncated {
+				whole, err := c.messageBody(ctx, key, message.ID)
+				if err != nil {
+					return nil, err
+				}
+				body = whole
+			}
+			bodies = append(bodies, body)
 		}
 		if len(events) < eventPageLimit {
 			return bodies, nil
@@ -240,8 +359,29 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 	}
 }
 
-// Approval reads GET /api/v1/artifacts/{id} and returns the document's derived approval state and
-// the issue carrying it.
+// messageBody is the whole stored body of message id on issue key, read from
+// GET /api/v1/issues/{key}/messages/{id}, whose answer is the message with its deliveries and its
+// replies (the Dispatch server's messageRead). It is what an event carrying only the first part of
+// a long body points at.
+func (c *HTTPClient) messageBody(ctx context.Context, key, id string) (string, error) {
+	var response struct {
+		Message struct {
+			Body string `json:"body"`
+		} `json:"message"`
+	}
+	path := "/api/v1/issues/" + url.PathEscape(key) + "/messages/" + url.PathEscape(id)
+	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
+		return "", fmt.Errorf("read Dispatch message %s of %s: %w", id, key, err)
+	}
+	if response.Message.Body == "" {
+		return "", fmt.Errorf("read Dispatch message %s of %s: the message carries no body", id, key)
+	}
+	return response.Message.Body, nil
+}
+
+// Approval reads GET /api/v1/artifacts/{id} and returns the document's derived approval state,
+// the issue carrying it, and what the document is on that issue: its primary flag, its role and
+// its slug, which is how a design-gate step finds the document it binds to.
 func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval, error) {
 	var response artifactResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &response); err != nil {
@@ -260,6 +400,9 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 		LatestVersion: response.Approval.LatestVersion,
 		Version:       response.Approval.Version,
 		Reason:        response.Approval.Reason,
+		Primary:       response.Primary,
+		Role:          response.Role,
+		Slug:          response.Slug,
 	}
 	if response.Approval.At != nil {
 		at, err := time.Parse(time.RFC3339Nano, *response.Approval.At)
@@ -271,6 +414,9 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	if response.Approval.Seq != nil {
 		approved.Seq = *response.Approval.Seq
 	}
+	if response.Approval.By != nil {
+		approved.By = Actor(*response.Approval.By)
+	}
 	// Only an open request is named: Dispatch names the ask an older review answered too, which is
 	// no request anyone is asked to act on now.
 	if response.Approval.State == "awaiting" {
@@ -279,38 +425,14 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
-// BuildCommit reads GET /healthz and returns the build Dispatch's server fleet serves: its
-// `fleet_commit`, the commit of Dispatch's latest announcement that every live server process
-// serves one build (the same announcement its server.started carries, intake.ServerStarted), ""
-// when that is null, since no fleet-wide build has been announced. A body without the field is a
-// Dispatch older than the announcement, and its `commit` is read instead, the build of the one
-// process that answered, "" when that is null, from a build that stamped no commit
-// (packages/envoy/cmd/dispatch's buildCommit). The fleet's build, not the answering process's,
-// because the request goes through the Service, which mid-roll is any process's answer. The route
-// is served above Dispatch's API and needs no bearer; the client sends its own as on every call. A
-// Dispatch that answers other than 2xx — its own 503 while its database is down included — is an
-// *Error as every other call's, and one that does not answer a TransientError, so the caller tells
-// "reported none" from "could not be asked".
-func (c *HTTPClient) BuildCommit(ctx context.Context) (string, error) {
-	var response struct {
-		Commit *string `json:"commit"`
-		// FleetCommit is the field as sent, so a null one is told from one never sent.
-		FleetCommit json.RawMessage `json:"fleet_commit"`
+// Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
+// author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
+func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
+	var response handoffResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/handoffs/"+url.PathEscape(id), nil, &response); err != nil {
+		return Handoff{}, err
 	}
-	if err := c.request(ctx, http.MethodGet, "/healthz", nil, &response); err != nil {
-		return "", err
-	}
-	commit := response.Commit
-	if response.FleetCommit != nil {
-		commit = nil
-		if err := json.Unmarshal(response.FleetCommit, &commit); err != nil {
-			return "", fmt.Errorf("decode Dispatch /healthz fleet_commit: %w", err)
-		}
-	}
-	if commit == nil {
-		return "", nil
-	}
-	return *commit, nil
+	return response.handoff(), nil
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
@@ -489,6 +611,9 @@ type issueEventResponse struct {
 
 type artifactResponse struct {
 	IssueKey *string           `json:"issue_key"`
+	Slug     string            `json:"slug"`
+	Primary  bool              `json:"primary"`
+	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`
 }
 
@@ -505,6 +630,29 @@ type approvalResponse struct {
 	// that predates the sequence, or a review recorded before it kept one, sends no seq.
 	At  *string `json:"at"`
 	Seq *int64  `json:"seq"`
+	// By is who gave the review State shows, and is absent where Dispatch names nobody.
+	By *actor `json:"by"`
+}
+
+// handoffResponse is a handoff record as Dispatch answers it, its body left undecoded: Handoff's
+// callers hold a completion to who wrote which record, never to what it says.
+type handoffResponse struct {
+	ID       string `json:"id"`
+	IssueKey string `json:"issue_key"`
+	Phase    string `json:"phase"`
+	Version  int    `json:"version"`
+	Author   actor  `json:"author"`
+}
+
+// handoff is the record without its body.
+func (r handoffResponse) handoff() Handoff {
+	return Handoff{
+		ID:       r.ID,
+		IssueKey: r.IssueKey,
+		Phase:    r.Phase,
+		Version:  r.Version,
+		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
+	}
 }
 
 type actor struct {
@@ -519,4 +667,26 @@ type daemonWrite struct {
 	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
 	Body             string   `json:"body,omitempty"`
 	Actor            actor    `json:"actor"`
+}
+
+// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
+// all fields Dispatch's JSON upload reads.
+type artifactUpload struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	Actor   actor  `json:"actor"`
+}
+
+// gatedStepsWrite is the body of the gated-steps publish: the list, never omitted, and the
+// daemon's actor.
+type gatedStepsWrite struct {
+	Steps []string `json:"steps"`
+	Actor actor    `json:"actor"`
+}
+
+// designGatesWrite is the body of the design-gates publish: the set, never omitted, and the
+// daemon's actor.
+type designGatesWrite struct {
+	Gates []DesignGateDocument `json:"gates"`
+	Actor actor                `json:"actor"`
 }

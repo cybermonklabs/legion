@@ -1,3 +1,4 @@
+import type { Model } from "@oh-my-pi/pi-ai";
 import type { ExtensionAgentsApi } from "@oh-my-pi/pi-coding-agent";
 import type { Component } from "@oh-my-pi/pi-tui";
 
@@ -9,6 +10,30 @@ import type { Component } from "@oh-my-pi/pi-tui";
  * object; keep this contract complete instead of re-declaring partial copies
  * per extension — partial copies drift.
  */
+
+/** A model as the host names it: the provider and the id a model selector resolves to
+ * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:541-560` in
+ * Oh My Pi at the pinned tag `v18.16.0-sami.20261104-021732`). */
+export interface HostModel {
+  readonly provider: string;
+  readonly id: string;
+}
+
+/** The host's `ModelRegistry`, as far as this package reads it: the two members a retry fallback
+ * chain's resolution needs as its `RetryFallbackModelLookup`
+ * (`packages/coding-agent/src/session/retry-fallback-chains.ts:37-41` at the pinned tag), and the
+ * suppression the host's own turn recovery reads before it picks a fallback
+ * (`session/turn-recovery.ts:2026`), so an extension stepping down the same chain skips what the
+ * host already skips. Each is a method of the live registry, which reads private state of its
+ * own, so a caller calls it on the registry rather than handing it over detached. */
+export interface HostModelRegistry {
+  /** The model one provider and id name, or undefined when this deployment disables the provider
+   * or holds no such model. */
+  readonly find?: (provider: string, modelId: string) => Model | undefined;
+  /** Whether the host holds any model of this provider, discovery included. */
+  readonly hasProvider?: (provider: string) => boolean;
+  readonly isSelectorSuppressed?: (selector: string) => boolean;
+}
 
 export interface SessionContext {
   readonly cwd: string;
@@ -22,8 +47,10 @@ export interface SessionContext {
    */
   readonly hasUI: boolean;
   readonly taskDepth?: number;
-  /** Which runner the event belongs to: the top-level session's is `main`, a `task` subagent's `sub`. */
-  readonly agent?: { readonly kind: "main" | "sub" };
+  /** Which runner the event belongs to: the top-level session's is `main`, a `task` subagent's
+   * `sub`. `id` is the host's agent registry id for that runner (`ExtensionAgentIdentity`,
+   * `extensibility/extensions/types.ts:585-600` at the pinned tag). */
+  readonly agent?: { readonly kind: "main" | "sub"; readonly id?: string };
   readonly sessionManager: {
     readonly getSessionId: () => string;
     /**
@@ -86,12 +113,54 @@ export interface SessionContext {
    */
   readonly isIdle?: () => boolean;
   /**
+   * The host's `ctx.abort()`: it ends the turn that runs now, keeps the process and the session,
+   * and ends the running call's own child processes. Measured on omp/18.16.0 in `--mode rpc` on
+   * 2026-11-07, from an extension that aborted a never-returning `bash` call: it returns a
+   * Promise, the call's result comes back in the same millisecond as `Command aborted` with
+   * `isError: true`, the turn ends at once, the command's children are gone 30 s later while the
+   * agent is still alive, and the same process answered an RPC `get_state` and ran a fresh turn
+   * 34 s after the abort.
+   *
+   * `abort`, `isIdle` and `setInterval` are present on the handler context but are not own
+   * enumerable properties — `Object.keys(ctx)` lists `ui` alone (measured the same day) — so a
+   * reader probes each by `typeof`, never by a key list.
+   */
+  readonly abort?: () => void | Promise<void>;
+  /**
    * Whether the host holds a queued message for its turn to take (`queuedMessageCount > 0`): a
    * steered or follow-up card or user message. Measured on Oh My Pi 18.8.9: false once an
    * interrupt (`clearQueue({ forInterrupt: true })`) withdrew the queue, true at the `agent_end` of
    * a plain abort, whose queue the next run takes.
    */
   readonly hasPendingMessages?: () => boolean;
+  /** The models the host holds, the one the session runs now, and what one selector such as
+   * `anthropic/claude-opus-4-5` resolves to (`ExtensionModelQuery`,
+   * `extensibility/extensions/types.ts:541-560` at the pinned tag). */
+  readonly models?: {
+    readonly list: () => readonly HostModel[];
+    readonly current: () => HostModel | undefined;
+    readonly resolve: (spec: string) => HostModel | undefined;
+  };
+  /** The host's own `ModelRegistry` (`packages/coding-agent/src/config/model-registry.ts` at the
+   * pinned tag), as far as this package reads it. Every member is optional, as the neighbouring
+   * host declarations are: a host build that exposes none still satisfies the type, and the
+   * caller decides what it can do without. */
+  readonly modelRegistry?: HostModelRegistry;
+  /**
+   * The host's `ctx.getAsyncJobSnapshot()`: this session's async-job manager as it stands now, or
+   * null when no session owns the context (upstream `docs/extensions.md`, "Handler context"). Read
+   * live from a context kept since `session_start`. Absent on a host that predates it.
+   */
+  readonly getAsyncJobSnapshot?: () => AsyncJobSnapshot | null;
+  /**
+   * The host's `ctx.getContextUsage()`: how much of the current model's context window this
+   * session's conversation fills now, or undefined when the host holds no breakdown to answer
+   * with. It takes no argument on the extension surface, and it is read live from a context
+   * kept since `session_start`. Absent on a host that predates it, so a call site asks
+   * `typeof ctx.getContextUsage === "function"` first, as the host's own callers do
+   * (`typeof this.session.getContextUsage === "function"`).
+   */
+  readonly getContextUsage?: () => ContextUsage | undefined;
   readonly ui: {
     readonly notify: (message: string, level: "info" | "warning") => void;
     /**
@@ -101,6 +170,98 @@ export interface SessionContext {
      */
     readonly setWidget?: (key: string, lines: string[] | undefined) => void;
   };
+}
+
+/** The branch entry a model change leaves, as `sessionManager.getBranch()` hands it
+ * (`packages/coding-agent/src/session/session-entries.ts:132-152` at the pinned tag).
+ * `resolvedModelIsFallback` marks a change the host's own fallback walk made. */
+export interface ModelChangeEntry {
+  readonly type: "model_change";
+  readonly id: string;
+  readonly timestamp?: string;
+  readonly model?: string;
+  readonly role?: string;
+  readonly resolvedModelIsFallback?: boolean;
+}
+
+/** The branch entry a thinking-level change leaves (`session/session-entries.ts:132-152` at the
+ * pinned tag). */
+export interface ThinkingLevelChangeEntry {
+  readonly type: "thinking_level_change";
+  readonly id: string;
+  readonly timestamp?: string;
+  readonly thinkingLevel?: string | null;
+  readonly configured?: string | null;
+}
+
+/**
+ * `ctx.getAsyncJobSnapshot()`'s answer: the session's own async jobs, the running ones and the
+ * ones that have just ended, with the manager's delivery queue for the results it still owes the
+ * conversation.
+ *
+ * Measured on Oh My Pi 18.12.2, the pin this repository runs (`.omp-pin`), by reading the
+ * snapshot from an extension while a backgrounded `bash` job ran. Running:
+ * `{"running":[{"id":"bg_1","type":"bash","status":"running","label":"sleep 8",
+ * "command":"sleep 8","startTime":1793568518094,"ownerId":"Main"}],"recent":[],
+ * "delivery":{"queued":0,"delivering":false,"pendingJobIds":[]}}`; once it had ended, the same
+ * job moved to `recent` with an `endTime` beside its `startTime`.
+ */
+export interface AsyncJobSnapshot {
+  readonly running: readonly AsyncJob[];
+  /** The jobs that have ended, newest first; five of them unless the caller asked for more. */
+  readonly recent: readonly AsyncJob[];
+  readonly delivery: AsyncJobDelivery;
+}
+
+/** One async job of the session. Measured on Oh My Pi 18.12.2: `command`, `endTime`, `agentId`
+ * and `ownerId` are absent from the JSON when the host has none for the job. */
+export interface AsyncJob {
+  readonly id: string;
+  /**
+   * What registered the job with the manager. Measured on Oh My Pi 18.12.2: `bash` for a
+   * backgrounded shell command, `task` for a subagent, `eval` for an eval run. Any extension or
+   * tool may register another, so it stays a string.
+   */
+  readonly type: string;
+  /** Every status the manager writes on Oh My Pi 18.12.2. */
+  readonly status: "running" | "completed" | "failed" | "cancelled";
+  readonly label: string;
+  readonly command?: string;
+  /** Epoch milliseconds. */
+  readonly startTime: number;
+  readonly endTime?: number;
+  /** The subagent the job belongs to, and the session or agent that owns it. */
+  readonly agentId?: string;
+  readonly ownerId?: string;
+}
+
+/** The results the manager still owes the conversation: how many jobs wait, whether one is being
+ * delivered now, when the next retry is due (epoch milliseconds, absent when none is), and the
+ * jobs waiting. */
+export interface AsyncJobDelivery {
+  readonly queued: number;
+  readonly delivering: boolean;
+  readonly nextRetryAt?: number;
+  readonly pendingJobIds: readonly string[];
+}
+
+/**
+ * `ctx.getContextUsage()`'s answer: the context tokens the session's conversation holds now and
+ * the window they are measured against.
+ *
+ * Read out of the pinned binary (`.omp-pin`,
+ * `github:sjawhar/oh-my-pi@18.16.0-sami.20261105-032528`), which builds the extension context
+ * with `getContextUsage: () => this.#d()` over a session method answering
+ * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`, and nothing
+ * at all when it holds no context breakdown. `percent` is nullable because the same build
+ * carries a second wiring of this shape, the status line's startup session, which answers
+ * `{tokens: 0, contextWindow, percent: null}`: a reader of these figures handles a host that
+ * reports a window and no percentage.
+ */
+export interface ContextUsage {
+  readonly tokens: number;
+  readonly contextWindow: number;
+  readonly percent: number | null;
 }
 
 /** A side turn: one question to the session's model, answered without touching the transcript. */
@@ -158,10 +319,31 @@ export interface AgentEndMessage {
   /** How an assistant reply ended: `stop` settled normally, `aborted` was an interrupt, `error` a
    * provider failure, `length` a truncation. */
   readonly stopReason?: string;
+  /** What the provider said about an `error` stop, when it said anything: Oh My Pi carries
+   * Anthropic's `stop_details` on its `AssistantMessage` (`packages/ai/src/types.ts:1463-1471`,
+   * `StopDetails` at `packages/ai/src/providers/anthropic-wire.ts:472-478`, at the pinned tag). */
+  readonly stopDetails?: {
+    readonly type?: string | null;
+    readonly category?: string | null;
+    readonly explanation?: string | null;
+  } | null;
+  /** The error text of an `error` stop, which each provider writes its own way (`AssistantMessage`,
+   * `packages/ai/src/types.ts:1463-1471` at the pinned tag). `classifyProviderTurn`
+   * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
+  readonly errorMessage?: string;
 }
 
+/**
+ * The agent loop ended. Measured on omp/18.16.0 in `--mode rpc` on 2026-11-07, over an aborted
+ * run: the whole field set is `isTerminal`, `messages`, `type` and `yielded` — **there is no
+ * `stopReason` on `agent_end`**. An aborted turn is read from the last assistant message's
+ * `stopReason` (`"aborted"`, with `errorMessage: "Interrupted by user"`, carried on
+ * `message_start`, `message_end` and `turn_end` alike) or from `prompt_result.status`.
+ */
 export interface AgentEndEvent {
-  /** Set when OMP has already scheduled a continuation, so the turn is not settling. */
+  /** Set when OMP has already scheduled a continuation, so the turn is not settling: a
+   * background job's follow-up sets it, with `awaitingAsyncWork`; a steered run's non-terminal
+   * end does not, and reads instead as `ctx.hasPendingMessages()` true (measured 2026-11-08). */
   readonly willContinue?: boolean;
   /** The run's messages; the last assistant entry says how the run ended. */
   readonly messages?: readonly AgentEndMessage[];
@@ -224,9 +406,41 @@ export interface ToolCallEventResult {
   readonly additionalContext?: string;
 }
 
+/**
+ * A tool's execution began: the moment the host hands the call to the tool, after the queue and
+ * after the approval gate, which is where the stall watch starts a call's clock
+ * (`src/stall-watchdog.ts`). Measured on omp/18.16.0 in `--mode rpc` on 2026-11-07: the handler's
+ * payload names the call and its tool, and the stdout frame beside it carries the arguments under
+ * `args` where this in-process event, like `tool_call` and `tool_result`, carries them under
+ * `input`. The watch reads a call's arguments from `tool_call` rather than from here, because
+ * that is the one event the host fires before the call can run at all.
+ *
+ * A call the host fails closed — a `tool_call` handler that throws, and one that outruns the
+ * host's 30 s `extensionHandlers.toolCallTimeoutMs`, both measured that day — still gets this
+ * event with its arguments, and then an error `tool_execution_end` one millisecond later.
+ */
+export interface ToolExecutionStartEvent {
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly input: Record<string, unknown>;
+}
+
 /** A tool's execution ended, whatever its result; AskGate abandons a gate still waiting on it. */
 export interface ToolExecutionEndEvent {
   readonly toolCallId: string;
+}
+
+/**
+ * One turn of a run ended: the provider request and the tool round it drove are over, so every
+ * call the stall watch still holds open for that turn is closed by it. Only the member this
+ * package reads is typed. Measured on omp/18.16.0 in `--mode rpc` on 2026-11-07: the turn the
+ * host's `abort()` ended wrote `turn_end` with the assistant message that carries
+ * `stopReason: "aborted"` and `errorMessage: "Interrupted by user"`, 3 ms before `agent_end`,
+ * which carries no `stopReason` of its own.
+ */
+export interface TurnEndEvent {
+  /** The assistant message this turn settled on; how it ended is its `stopReason`. */
+  readonly message?: AgentEndMessage;
 }
 
 export interface ResourcesDiscoverResult {
@@ -294,6 +508,8 @@ export interface PiEventContract {
   /** Every turn of a run, each provider request and each tool round; it carries nothing an
    *  extension reads here. */
   readonly turn_start: { readonly event: unknown; readonly result: undefined };
+  /** The end of one such turn, which closes every tool call the stall watch holds open for it. */
+  readonly turn_end: { readonly event: TurnEndEvent; readonly result: undefined };
   /** A retry moved the session onto another model; the host fires no event for any other model or
    *  thinking-level change. */
   readonly retry_fallback_applied: {
@@ -320,6 +536,11 @@ export interface PiEventContract {
   };
   readonly tool_call: { readonly event: ToolCallEvent; readonly result: ToolCallEventResult };
   readonly tool_result: { readonly event: ToolResultEvent; readonly result: undefined };
+  /** A call handed to its tool, which is where the stall watch starts that call's clock. */
+  readonly tool_execution_start: {
+    readonly event: ToolExecutionStartEvent;
+    readonly result: undefined;
+  };
   readonly tool_execution_end: {
     readonly event: ToolExecutionEndEvent;
     readonly result: undefined;
@@ -327,12 +548,12 @@ export interface PiEventContract {
 }
 
 /** The context OMP hands a registered slash-command handler. Its `sessionManager` is the same
- * live object a `SessionContext` carries; only the members this package reads are typed. */
+ * live object a `SessionContext` carries; only the members a command reads are typed. */
 export interface CommandContext {
   readonly cwd: string;
   readonly sessionManager: Pick<
     SessionContext["sessionManager"],
-    "getSessionId" | "getSessionFile" | "ensureOnDisk"
+    "getSessionId" | "getSessionFile" | "ensureOnDisk" | "getBranch"
   >;
   readonly ui: {
     readonly notify: (message: string, level: "info" | "warning") => void;
@@ -518,6 +739,15 @@ export interface PiApi {
   readonly setSessionName: (name: string) => Promise<void>;
   readonly getActiveTools: () => readonly string[];
   readonly setActiveTools: (tools: string[]) => Promise<void>;
+  /**
+   * Switches the session's model, as `/model` does; false when no API key for that model is
+   * available (`ExtensionAPI`, `extensibility/extensions/types.ts:2168-2177` at the pinned tag).
+   */
+  readonly setModel?: (model: HostModel) => Promise<boolean>;
+  /** The session's thinking level, and a setter for it (same `ExtensionAPI` block at the pinned
+   * tag): a model switch that leaves a level the new model refuses needs both. */
+  readonly getThinkingLevel?: () => string | undefined;
+  readonly setThinkingLevel?: (level: string) => void;
   readonly on: <Event extends keyof PiEventContract>(
     event: Event,
     handler: (

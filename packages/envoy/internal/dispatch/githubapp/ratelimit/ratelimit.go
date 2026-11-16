@@ -4,10 +4,11 @@
 // GitHub budgets the App and each installation, not a process, and warns that requests sent while
 // limited may get the integration banned. So a limit one process meets is recorded here, and every
 // process reads it before it sends anything under that scope: githubapp.Client through the Limits
-// it is given (Wait and Record), and the webhook redelivery sweep for its own doubling backoff
-// (Strike, InForce, Get and Clear). The database's now() is the one clock both processes read, as
-// embeddings_rate_limit's is (migration 0078), so they agree on when a limit ends whatever their
-// hosts' clocks say.
+// it is given (Wait and Record, and Strike for a secondary limit, which GitHub shares between an
+// installation's REST calls and its GraphQL queries), and the webhook redelivery sweep for its own
+// doubling backoff (Strike, InForce, Get and Clear). The database's now() is the one clock both
+// processes read, as embeddings_rate_limit's is (migration 0078), so they agree on when a limit
+// ends whatever their hosts' clocks say.
 package ratelimit
 
 import (
@@ -37,7 +38,8 @@ type Limit struct {
 	// Wait is Until less the database's now() when the row was read or written: how long the limit
 	// had left then, zero or less once it has passed.
 	Wait time.Duration
-	// Strikes counts the limits Strike recorded with no Clear in between.
+	// Strikes counts the limits Strike recorded with no Clear and no StrikeReset of quiet in
+	// between: the run the doubling wait is taken from.
 	Strikes int
 	// updatedAt is the database's now() at the row's last write (every Record and Strike), which
 	// Clear matches so it deletes only the row as read, and which Wait answers as the limit's
@@ -123,22 +125,56 @@ func (s *Store) Record(ctx context.Context, scope string, wait time.Duration) er
 	return nil
 }
 
+// StrikeReset is how long a scope must go without a strike before its count starts again at one.
+//
+// The doubling is for a request that keeps failing on one secondary limit: GitHub asks a client
+// that meets one to back off further each time, and the sweep's waits run one, two, four minutes
+// and so on to a ceiling of 64. It is not a record of the scope's whole history. Without a reset
+// the count only ever rose, since Clear is reached solely by a sweep that found GitHub willing
+// again within the one pass that was already backing off, so a scope struck six times over a
+// month met its next limit, unrelated to any of them, with a 64-minute wait: an hour of webhook
+// redeliveries not made because of a limit six weeks old. An hour of quiet is far longer than
+// any secondary limit GitHub hands out and far shorter than the gap between two unrelated ones,
+// so a strike an hour after the last is treated as the first of a new run.
+const StrikeReset = time.Hour
+
 // strike is Strike's statement: one more strike, and the latest of now() plus GitHub's wait, one
 // minute doubled for each strike before this one (up to 64 minutes), and a limit already recorded.
+//
+// A scope whose last strike is older than StrikeReset starts again: its count goes to one and
+// its wait to a minute, exactly as the insert writes a scope that has no row at all. The clock
+// is struck_at (migration 20261110132532), which Strike alone writes, rather than updated_at,
+// which every write of the row moves. The two part on a scope that is both struck and recorded:
+// an installation's scope holds the secondary limits its queries meet, which are struck because
+// GitHub shares them with that installation's REST calls (githubapp.Client.recordGraphQLLimit),
+// and every ordinary REST limit of that installation, which Record writes. Read from updated_at,
+// a busy installation's REST limits would hold its run of strikes open for ever, and a secondary
+// limit days after the one before it would wait the full 64 minutes for limits unrelated to it.
+// The reset is an hour with no strike, which is what StrikeReset says it is.
+//
+// A null struck_at is a scope no strike has been recorded for: every row Record created and
+// nothing has struck -- an installation's scope that has met the ordinary REST limits alone --
+// and every row struck before the migration added the column, which nothing backfilled. The
+// first strike of such a scope begins its run at one minute, which is what '-infinity' says in
+// the reset condition below: a scope never struck is further back than any hour, so the one
+// condition reads the same in both the places it appears. For a row struck by the release
+// before the column, that costs one shorter wait, which the strike after it doubles again.
 const strike = `
-	insert into github_rate_limits as l (scope, until, strikes, updated_at)
-	values ($1, now() + greatest(make_interval(secs => $2), interval '1 minute'), 1, now())
+	insert into github_rate_limits as l (scope, until, strikes, struck_at, updated_at)
+	values ($1, now() + greatest(make_interval(secs => $2), interval '1 minute'), 1, now(), now())
 	on conflict (scope) do update set
-		strikes = l.strikes + 1,
-		until = greatest(l.until, now() + greatest(make_interval(secs => $2), interval '1 minute' * power(2, least(l.strikes, 6)))),
+		strikes = case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 1 else l.strikes + 1 end,
+		until = greatest(l.until, now() + greatest(make_interval(secs => $2),
+			interval '1 minute' * power(2, case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
+		struck_at = now(),
 		updated_at = now()
 	returning ` + columns
 
 // Strike records a limit GitHub answered with under scope, whose wait doubles with every limit met
-// before a Clear, as GitHub asks of a request that keeps failing on a secondary limit. It returns
-// the row it wrote.
+// before a Clear or before StrikeReset of quiet, as GitHub asks of a request that keeps failing on
+// a secondary limit. It returns the row it wrote.
 func (s *Store) Strike(ctx context.Context, scope string, wait time.Duration) (Limit, error) {
-	limit, err := scan(s.pool.QueryRow(ctx, strike, scope, wait.Seconds()))
+	limit, err := scan(s.pool.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds()))
 	if err != nil {
 		return Limit{}, fmt.Errorf("record the GitHub rate limit of %s: %w", scope, err)
 	}
@@ -153,7 +189,7 @@ func (s *Store) PreviewStrike(ctx context.Context, scope string, wait time.Durat
 		return Limit{}, fmt.Errorf("preview the GitHub rate limit of %s: %w", scope, err)
 	}
 	defer tx.Rollback(ctx)
-	limit, err := scan(tx.QueryRow(ctx, strike, scope, wait.Seconds()))
+	limit, err := scan(tx.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds()))
 	if err != nil {
 		return Limit{}, fmt.Errorf("preview the GitHub rate limit of %s: %w", scope, err)
 	}

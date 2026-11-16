@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -6,12 +6,11 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
 // session_psql, session_text and session_byte_len, taken from lib/session-db.sh by name, and
@@ -28,8 +27,10 @@ import { scriptFunctions } from "./script-functions";
 // a key refused costing no other session yet failing the run's teardown.
 const db = scriptFunctions(join(import.meta.dir, "session-db.sh"));
 const fn = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"));
-const dir = mkdtempSync(join(tmpdir(), "stage4b-session-text-test."));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+// The teardown's last check, which the script takes from lib/github-apps.sh rather than writing
+// itself: that library's own function, by name, as the functions above are the script's own.
+const appsFn = scriptFunctions(join(import.meta.dir, "github-apps.sh"));
+const dir = temporaryDirectory("stage4b-session-text-test");
 
 const sessions = "/home/legion/.omp/profiles/legion/agent/sessions";
 const key = `${sessions}/-legion-workspaces-sjawhar-legion-smoke-legsmoke-1/2026-10-25_4242.jsonl`;
@@ -930,6 +931,7 @@ ${fn("remove_run_container")}
 ${sessionCopy}
 ${fn("collect_transcripts")}
 ${fn("remove_negative_config")}
+${appsFn("app_key_left")}
 ${fn("cleanup")}
 trap cleanup EXIT
 exit ${status}`,

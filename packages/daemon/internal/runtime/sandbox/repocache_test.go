@@ -32,6 +32,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -79,22 +80,7 @@ func cachePod(repo ghrepo.Repository, uid, ownerUID, image string, phase corev1.
 }
 
 // logBuffer is a log the runtime writes while a test reads it.
-type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type logBuffer = testlog.Buffer
 
 // withLog has the runtime log at info and above to buffer.
 func withLog(buffer *logBuffer) rigOption {
@@ -195,7 +181,7 @@ func TestCacheIdentityIsTheAnnotationAndTheNameIsNeverParsed(t *testing.T) {
 
 // A repository's cache is made as an issue pod is: its Sandbox created Suspended, with a headless
 // Service, then its Secret written owned by the created Sandbox's uid, holding the implement App's
-// token for the repository's owner and a random bearer token of the cache's own, then one patch
+// token for the repository and a random bearer token of the cache's own, then one patch
 // sets its pod template and Running. The pod runs the cache process alone, ready once /readyz
 // answers, with both tokens read-only and the volume at CacheRoot, placed as every Legion pod is,
 // and with nothing of an agent's: no providers, no Dispatch. A cache already as it should be is
@@ -308,6 +294,82 @@ func TestEnsureRepositoryCacheCreatesSuspendedWritesTheSecretThenSetsRunning(t *
 	}
 }
 
+// The cache pod takes its tokens from files the kubelet keeps current (INFRA-1254).
+// refreshCacheTokens rewrites the cache's Secret every minute, and the kubelet rewrites the files
+// of a Secret volume in place when that Secret changes — but only for a volume mounted whole: a
+// mount with a non-empty subPath is copied once when the container starts and never written
+// again, and a value taken through an environment secretKeyRef or an envFrom is fixed for the
+// container's life. So the refresher's write reaches the running process only while three things
+// hold, which this test pins: the cache container's mount of the provisioning volume carries an
+// empty SubPath, that volume is the whole cache Secret with its two items (the provisioning token
+// and the bearer token its clients present), and no container is handed either token in its
+// environment — each is read from its projected file (LEGION_PROVISION_TOKEN_FILE,
+// LEGION_REPOSITORY_CACHE_TOKEN_FILE). Undo any one of them and the refresh becomes nothing: the
+// pod keeps serving the token it started with until it is replaced.
+func TestTheCachePodProjectsItsTokenSoTheKubeletKeepsItCurrent(t *testing.T) {
+	name := CacheSandboxName(testProject, cacheRepo)
+	spec := bareRuntime(t).cacheManifest(cacheRepo).Spec.PodTemplate.Spec
+	cache := containerNamed(t, spec, cacheContainer)
+
+	var mounts []corev1.VolumeMount
+	for _, m := range cache.VolumeMounts {
+		if m.Name == provisionVolume {
+			mounts = append(mounts, m)
+		}
+	}
+	if len(mounts) != 1 {
+		t.Fatalf("%s mounts the %s volume %d times (%+v), want once", cacheContainer, provisionVolume, len(mounts), mounts)
+	}
+	if m := mounts[0]; m.SubPath != "" || m.MountPath != ProvisionDir {
+		t.Errorf("%s mounts %s at %q with subPath %q, want the whole volume at %q with no subPath: the kubelet rewrites a whole-volume Secret projection in place when the Secret changes and never a subPath copy, so the refresher's write would not reach the file",
+			cacheContainer, provisionVolume, m.MountPath, m.SubPath, ProvisionDir)
+	}
+
+	volume := slices.IndexFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == provisionVolume })
+	if volume < 0 {
+		t.Fatalf("the cache pod has no %s volume, only %+v", provisionVolume, spec.Volumes)
+	}
+	secret := spec.Volumes[volume].Secret
+	if secret == nil || secret.SecretName != cacheSecretName(name) {
+		t.Fatalf("the %s volume is %+v, want the cache Secret %s whole", provisionVolume, spec.Volumes[volume], cacheSecretName(name))
+	}
+	var items []string
+	for _, item := range secret.Items {
+		items = append(items, item.Key+" at "+item.Path)
+	}
+	want := []string{provisionTokenKey + " at " + provisionTokenKey, cacheTokenKey + " at " + cacheTokenKey}
+	if !slices.Equal(items, want) {
+		t.Errorf("the %s volume projects %q, want %q", provisionVolume, items, want)
+	}
+
+	for _, c := range slices.Concat(spec.InitContainers, spec.Containers) {
+		for _, v := range c.Env {
+			if v.ValueFrom == nil || v.ValueFrom.SecretKeyRef == nil {
+				continue
+			}
+			ref := v.ValueFrom.SecretKeyRef
+			if ref.Key == provisionTokenKey || ref.Key == cacheTokenKey || v.Name == provisionTokenKey || v.Name == cacheTokenKey {
+				t.Errorf("%s is handed %s from the Secret %s key %s; want the token's file alone, since an environment value is fixed for the container's life and no refresh reaches it",
+					c.Name, v.Name, ref.Name, ref.Key)
+			}
+		}
+		for _, from := range c.EnvFrom {
+			if from.SecretRef != nil {
+				t.Errorf("%s takes envFrom the Secret %s, which carries %s and %s; want the tokens' files alone, since an environment value is fixed for the container's life",
+					c.Name, from.SecretRef.Name, provisionTokenKey, cacheTokenKey)
+			}
+		}
+	}
+
+	env := envOf(cache)
+	if file := ProvisionDir + "/" + provisionTokenKey; env["LEGION_PROVISION_TOKEN_FILE"] != file {
+		t.Errorf("LEGION_PROVISION_TOKEN_FILE = %q, want the projected file %q", env["LEGION_PROVISION_TOKEN_FILE"], file)
+	}
+	if file := ProvisionDir + "/" + cacheTokenKey; env[repocache.CacheTokenFileEnv] != file {
+		t.Errorf("%s = %q, want the projected file %q", repocache.CacheTokenFileEnv, env[repocache.CacheTokenFileEnv], file)
+	}
+}
+
 // The name of one repository's cache held by another repository's cache is a refusal naming both,
 // and nothing is written.
 func TestEnsureRepositoryCacheRefusesAnotherRepositorysCacheAtTheName(t *testing.T) {
@@ -336,7 +398,7 @@ func TestEnsureRepositoryCacheReplacesADriftedPodKeepingTheSandbox(t *testing.T)
 		resized bool
 		suspend bool
 	}{
-		{"a pod on another image", modeRunning, cachePod(cacheRepo, "uid-pod-old", "uid-cache", "ghcr.io/sjawhar/legion-worker@sha256:0ld", corev1.PodRunning), false, true},
+		{"a pod on another image", modeRunning, cachePod(cacheRepo, "uid-pod-old", "uid-cache", "ghcr.io/cybermonklabs/legion-worker@sha256:0ld", corev1.PodRunning), false, true},
 		{"a failed pod", modeRunning, cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodFailed), false, true},
 		{"a template reserving another cpu", modeRunning, cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning), true, true},
 		{"a template reserving another cpu, with no pod", modeRunning, nil, true, true},
@@ -787,7 +849,7 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 		return s != nil && s.Annotations[annotationCacheUnmappedAt] == ""
 	})
 
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Spec.Containers[0].Image = "ghcr.io/sjawhar/legion-worker@sha256:0ld" })
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Spec.Containers[0].Image = "ghcr.io/cybermonklabs/legion-worker@sha256:0ld" })
 	g.eventually("the drifted pod in the store", func() bool {
 		_, drifted := imageDrift(g.r.storedPod(name), testImage)
 		return drifted
@@ -820,7 +882,145 @@ func TestReconcileOrphansKeepsAMappedCacheAndRetiresAnUnmappedOne(t *testing.T) 
 	}
 }
 
-// A mapped repository whose cache cannot be made — its owner's token cannot be minted — is logged
+// The sweep reads a cache's repository as its annotation spells it, against the repositories the
+// mapping serves, and resolves no configured rename: nothing under this package does. With the
+// pair's two names both named in the configuration and the load serving them as one entry, the
+// repository GitHub holds the pair under now, the cache of that served name is kept and the cache
+// of the recorded name is marked unmapped, to be kept for its retention and retired after it, as
+// any cache whose repository left the mapping is.
+//
+// That is the sweep's verdict today, and resolving a rename per repository rather than per owner
+// does not move it: the sweep asks the mapping about a name, never about an owner, so neither
+// state of the owner set changes what it keeps. While the recorded name's cache is kept it stays
+// at its own address, with a token minted for the owner serving the repository now, which is what
+// keeps the pods addressed at it fetching.
+func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
+	g := newRig(t, nil, withOptions(servingRenamed(servingSmoke)))
+	for _, repo := range []ghrepo.Repository{recordedSmoke, servingSmoke} {
+		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
+			t.Fatalf("make the cache of %s: %v", repo, err)
+		}
+		name := CacheSandboxName(testProject, repo)
+		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+	}
+	kept, unmapped := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
+
+	if err := g.r.ReconcileOrphans(g.ctx, nil, 0); err != nil {
+		t.Fatalf("ReconcileOrphans over both of the pair's caches: %v", err)
+	}
+
+	g.eventually("the recorded name's cache marked unmapped", func() bool {
+		s, _ := g.r.storedSandbox(unmapped)
+		return s != nil && s.Annotations[annotationCacheUnmappedAt] != ""
+	})
+	marked := g.sandbox(unmapped)
+	if marked == nil || marked.Annotations[annotationCacheRepo] != recordedSmoke.String() {
+		t.Fatalf("the cache of %s is %+v, want it kept at its own address, annotated with the repository the record names", recordedSmoke, marked)
+	}
+	if at, err := time.Parse(time.RFC3339, marked.Annotations[annotationCacheUnmappedAt]); err != nil || !at.Equal(rigNow.Truncate(time.Second)) {
+		t.Errorf("the cache of %s is marked %q, want the sweep's time %s: the mapping serves the pair as one entry, %s", recordedSmoke, marked.Annotations[annotationCacheUnmappedAt], rigNow, servingSmoke)
+	}
+	if s := g.sandbox(kept); s == nil || s.Annotations[annotationCacheUnmappedAt] != "" {
+		t.Errorf("the cache of %s is %+v, want the mapped cache kept and marked with nothing", servingSmoke, s)
+	}
+	for name, repo := range map[string]ghrepo.Repository{kept: servingSmoke, unmapped: recordedSmoke} {
+		if got := string(g.secret(cacheSecretName(name)).Data[provisionTokenKey]); got != "ghs_provision_"+servingSmoke.Owner() {
+			t.Errorf("the cache of %s holds the token %q, want one minted for %s, the owner serving the repository now", repo, got, servingSmoke.Owner())
+		}
+	}
+}
+
+// A cache pod created under a ServiceAccount other than the configured one is made again, as one
+// on another image is (accountDrift beside imageDrift): the account is fixed for the pod's life,
+// so the cache's pod reaches the configured one no other way, and the pod the sweep makes names
+// it. The Sandbox and the volume holding the clone are kept through the replacement: a drifted
+// account costs a new pod, not a new clone. A cache pod already on the configured account is left
+// alone, and one still sending or queueing a tar waits for its streams to end, whichever drift is
+// replacing it.
+func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *testing.T) {
+	name := CacheSandboxName(testProject, cacheRepo)
+	// cacheOn is a rig configured to run its pods as otherAccount, holding a Running cache
+	// Sandbox and a live pod of it on podAccount, whose /healthz counts serving streams when the
+	// case gives it any.
+	cacheOn := func(t *testing.T, podAccount string, serving int) (*rig, *logBuffer) {
+		t.Helper()
+		live := cachePod(cacheRepo, "uid-pod-old", "uid-cache", testImage, corev1.PodRunning)
+		live.Spec.ServiceAccountName = podAccount
+		var routes map[string]string
+		if serving > 0 {
+			served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(workspace.CacheRepositoryHeader, cacheRepo.String())
+				n := serving
+				_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: cacheRepo.String(), Streams: &n})
+			}))
+			t.Cleanup(served.Close)
+			live.Status.PodIP = "10.0.0.5"
+			routes = map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}
+		}
+		logs := &logBuffer{}
+		g := newRig(t, []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), live}, withLog(logs),
+			withOptions(func(o *Options) { o.Pod.ServiceAccount = otherAccount }))
+		if routes != nil {
+			g.r.cacheDial = (&podNetwork{routes: routes}).dial
+		}
+		g.clearActions()
+		return g, logs
+	}
+
+	t.Run("a cache pod on another ServiceAccount is made again", func(t *testing.T) {
+		g, _ := cacheOn(t, "", 0)
+		before := g.sandbox(name)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		var suspended, running bool
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" && w.verb == "patch" {
+				suspended = suspended || modePatched(t, w.patch, modeSuspended)
+				running = running || modePatched(t, w.patch, modeRunning)
+			}
+		}
+		if !suspended || !running {
+			t.Errorf("the ensure of a cache pod on another account suspended %t and set Running %t, want both: writes %v", suspended, running, g.writes())
+		}
+		after := g.sandbox(name)
+		if after == nil || after.UID != before.UID || !jsonEqual(t, after.Spec.VolumeClaimTemplates, before.Spec.VolumeClaimTemplates) {
+			t.Fatalf("the cache Sandbox is %+v, want %s kept with its volume %+v", after, before.UID, before.Spec.VolumeClaimTemplates)
+		}
+		if got := after.Spec.PodTemplate.Spec.ServiceAccountName; got != otherAccount {
+			t.Errorf("the pod template the replacement wrote runs as %q, want the configured %s", got, otherAccount)
+		}
+	})
+
+	t.Run("a cache pod on the configured ServiceAccount is left alone", func(t *testing.T) {
+		g, _ := cacheOn(t, otherAccount, 0)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" || w.resource == "pods" {
+				t.Errorf("a cache pod on the configured account was written: %s", w)
+			}
+		}
+	})
+
+	t.Run("a cache pod on another ServiceAccount serving a stream waits", func(t *testing.T) {
+		g, logs := cacheOn(t, "", 2)
+		if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
+			t.Fatalf("EnsureRepositoryCache: %v", err)
+		}
+		for _, w := range g.writes() {
+			if w.resource == "sandboxes" || w.resource == "pods" {
+				t.Errorf("a cache pod on another account sending 2 streams was replaced: %s", w)
+			}
+		}
+		if !strings.Contains(logs.String(), "repository cache pod is replaced once it serves no stream") {
+			t.Errorf("the waiting replacement was not logged:\n%s", logs)
+		}
+	})
+}
+
+// A mapped repository whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
 // repository's cache.

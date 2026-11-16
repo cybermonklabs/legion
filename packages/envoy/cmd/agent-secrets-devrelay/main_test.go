@@ -74,7 +74,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	// devrelay calls the broker as the listed caller does in production: with its own projected
 	// ServiceAccount token, verified against a local OIDC issuer standing in for the cluster's.
 	issuer = oidctest.New(t)

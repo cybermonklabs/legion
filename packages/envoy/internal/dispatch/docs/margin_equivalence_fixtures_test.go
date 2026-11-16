@@ -481,7 +481,7 @@ func newEquivalenceSide(t *testing.T, name string, margin bool, write marginWrit
 	t.Helper()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('EQ', 'Equivalence')`); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('EQ', 'Equivalence', 'alice')`); err != nil {
 		t.Fatalf("create the %s's project: %v", name, err)
 	}
 	return &equivalenceSide{name: name, margin: margin, write: write, database: database, service: service}
@@ -611,19 +611,19 @@ func (side *equivalenceSide) cleanUp(t *testing.T, ids flowIDs) {
 	}
 }
 
-// storedRow is one doc_updates row.
-type storedRow struct {
+// historyRow is one doc_updates row.
+type historyRow struct {
 	version        int64
 	update         []byte
 	contentChanged bool
 }
 
-func (r storedRow) equal(o storedRow) bool {
+func (r historyRow) equal(o historyRow) bool {
 	return r.version == o.version && r.contentChanged == o.contentChanged && string(r.update) == string(o.update)
 }
 
 // storedHistory is artifactID's stored history, oldest first.
-func storedHistory(t *testing.T, database *store.Store, artifactID string) []storedRow {
+func storedHistory(t *testing.T, database *store.Store, artifactID string) []historyRow {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
 		select version, update, content_changed from doc_updates where artifact_id = $1 order by version
@@ -631,8 +631,8 @@ func storedHistory(t *testing.T, database *store.Store, artifactID string) []sto
 	if err != nil {
 		t.Fatalf("read the stored history: %v", err)
 	}
-	history, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (storedRow, error) {
-		var stored storedRow
+	history, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (historyRow, error) {
+		var stored historyRow
 		return stored, row.Scan(&stored.version, &stored.update, &stored.contentChanged)
 	})
 	if err != nil {

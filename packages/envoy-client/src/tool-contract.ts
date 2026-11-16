@@ -1,5 +1,7 @@
 import {
   EnvelopeSchema,
+  EXPECTS_REPLY_VALUES,
+  type ExpectsReply,
   type SchemaApi,
   type SchemaNode,
   SLACK_POST_TEXT_MAX,
@@ -8,16 +10,30 @@ import {
 } from "@legion/contracts";
 import { z } from "zod";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
-import type { MessageMetadataInput, SessionInfo } from "./transport";
+import {
+  type MessageMetadataInput,
+  type SessionInfo,
+  type SessionState,
+  UNRESPONSIVE_RULE,
+} from "./transport";
+
+// The rule itself lives beside the states it is about (`transport.ts`), so the tool
+// descriptions, the send confirmation and a refusal's message all say it in one wording.
+
+const SESSION_STATE_GUIDE =
+  "A session is live, unresponsive or gone, by how long ago it last registered: live within 5 " +
+  "minutes, unresponsive after that and within an hour, gone past the hour or with no record at " +
+  `all. ${UNRESPONSIVE_RULE} A session named with no state is live.`;
 
 const DELIVERY_CONTRACT =
   "Delivery is at-least-once, possibly out of order across topics; use id for dedupe and at for freshness.";
 
 const STORED_DELIVERY =
-  "Stored topics (agent, dispatch, github, slack, legion, ghostwispr, whatsapp; a role message " +
-  "reaches its holder as a stored copy on the holder's agent topic) reach each subscribed session " +
-  "once from the durable consumer its listener relays to it, also one that was away or restarted. " +
-  "Team and other ad-hoc topics are live only.";
+  "Every notification topic is stored (agent, dispatch, github, slack, legion, ghostwispr, " +
+  "whatsapp, team; a role message reaches its holder as a stored copy on the holder's agent " +
+  "topic), and reaches each subscribed session once from the durable consumer its listener " +
+  "relays to it, also one that was away or restarted. A 200 means the stream stored the message " +
+  "for each subscribed session's consumer, not that any recipient has read it.";
 
 const TOPIC_GUIDE =
   "Topic guide (all are under notifications.): agent.<session_id> (subscribe: own inbox); role.<role> " +
@@ -45,8 +61,6 @@ const URGENCY_VALUES = EnvelopeSchema.shape.urgency.unwrap().options as unknown 
   "high",
   "blocking",
 ];
-const EXPECTS_REPLY_VALUES = EnvelopeSchema.shape.expects_reply.unwrap()
-  .options as unknown as readonly ["none", "optional", "required"];
 
 /** Message metadata arguments shared by envoy_send and envoy_publish, built on the host's Zod. */
 export function messageMetadataShape<Element extends SchemaNode<Element>>(
@@ -62,8 +76,8 @@ export function messageMetadataShape<Element extends SchemaNode<Element>>(
       )
       .optional(),
     expects_reply: schema
-      .enum(EXPECTS_REPLY_VALUES)
-      .describe("none | optional | required")
+      .literal(EXPECTS_REPLY_VALUES)
+      .describe("false | optional | required")
       .optional(),
     expires_at: schema.number({ int: true }).optional(),
   };
@@ -77,7 +91,7 @@ export type MessageMetadataArguments = {
   readonly in_reply_to?: string;
   readonly supersedes?: string;
   readonly urgency?: (typeof URGENCY_VALUES)[number];
-  readonly expects_reply?: (typeof EXPECTS_REPLY_VALUES)[number];
+  readonly expects_reply?: ExpectsReply;
   readonly expires_at?: number;
 };
 
@@ -127,6 +141,7 @@ export interface ToolArgumentsByOperation {
   readonly send: MessageMetadataArguments & {
     readonly session_id: string;
     readonly message: string;
+    readonly idempotency_key?: string;
   };
   readonly publish: MessageMetadataArguments & { readonly topic: string; readonly message: string };
   readonly setRole: { readonly role: string };
@@ -156,7 +171,7 @@ export type ToolSpec = {
 export const envoyToolSpecs = [
   {
     name: "envoy_subscribe",
-    description: `Subscribe this session to Envoy notification topics. ${STORED_DELIVERY} ${TOPIC_GUIDE}`,
+    description: `Subscribe this session to Envoy notification topics. A notifications. topic no stream subject captures is refused by name: nothing would store it, so you would receive nothing on it; subscribe to a notifications.team.<name> topic instead. ${STORED_DELIVERY} ${TOPIC_GUIDE}`,
     arguments: (schema) => ({
       topics: schema.array(schema.string()).describe("NATS-style topic patterns to subscribe to."),
     }),
@@ -184,18 +199,24 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_send",
-    description: `Send an Envoy agent-to-agent message directly to another session by session ID. ${DELIVERY_CONTRACT}`,
+    description: `Send an Envoy agent-to-agent message directly to another session by session ID. The confirmation names the recipient's state. A message to an unresponsive session is stored and reaches it when it answers again, so an unresponsive recipient is not a failed send and no reason to send to someone else instead. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT} A send that is not confirmed delivered errs naming its idempotency_key; send the same message again with that idempotency_key within 72 hours, and Envoy drops it as a repeat if the first copy arrived.`,
     arguments: (schema) => ({
       session_id: schema
         .string()
         .describe("Target session ID; find it with envoy_sessions or envoy_whoami."),
       ...messageArguments(schema),
+      idempotency_key: schema
+        .string()
+        .describe(
+          "Only to send again a message whose envoy_send was not confirmed delivered: the idempotency_key that error named. Omit it for a new message."
+        )
+        .optional(),
     }),
     operation: EnvoyToolOperation.send,
   },
   {
     name: "envoy_publish",
-    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says; a role message errs when its holder did not confirm it within the listener's window. A team or ad-hoc topic (such as notifications.team.deploy-squad.all) reaches every session subscribed to it when you publish, and is not kept for a session that subscribes later. The listener confirms it with each other session that holds its own NATS connection and registered the topic, and errs naming each session that did not confirm; a session that stopped without unregistering stays registered for up to 5 minutes and is named in that time, and a named session is not a failed delivery to the other sessions. A session that holds its own NATS connection receives such a live topic directly, yours included; a session the listener delivers to over a serve port is not confirmed and receives it through its machine's listener when that listener subscribes to every topic (ENVOY_SUBSCRIBE_ALL_TOPICS=1; the shared hub's listener does not). ${DELIVERY_CONTRACT}`,
+    description: `Publish an Envoy message to a notifications. topic. ${STORED_DELIVERY} A role or built-in topic is delivered as its guide says. A role message has three possible answers. First, a session holds the role, and the stream stores the forward for that holder's consumer. Its 200 says the stream stored it, and it does not say that the holder read it; it names the holder and the state the listener resolved the holder in. Second, no session holds the role. The listener then keeps the message, and gives it to the next session that claims that role in the hour that follows. This is a success, and the result says that the listener kept the message. Third, the listener keeps nothing and errs, which tells you to reach the agent some other way: the holder refuses the message, or the forward is not stored within four seconds. A holder that stopped answering keeps its role but was not sent the message, and nothing waits for it, so publish the message again once that holder's holder_state reads live, and start no replacement for that session. A team topic (such as notifications.team.deploy-squad.all) is stored like every other, so a session subscribed to it that was away still receives it when it returns, and one that subscribes after you publish does not. A notifications. topic no stream subject captures is refused by name: nothing would store it. ${SESSION_STATE_GUIDE} ${DELIVERY_CONTRACT}`,
     arguments: (schema) => ({ topic: schema.string(), ...messageArguments(schema) }),
     operation: EnvoyToolOperation.publish,
   },
@@ -208,7 +229,7 @@ export const envoyToolSpecs = [
   },
   {
     name: "envoy_role_get",
-    description: "Get the live holder of a named Envoy role.",
+    description: `Get the holder of a named Envoy role, with its holder_state and the holder's last_seen. A holder that is only unresponsive still holds the role: nothing a lookup does releases its claim, and only a gone holder leaves the role unheld. ${SESSION_STATE_GUIDE}`,
     arguments: (schema) => ({ role: schema.string() }),
     operation: EnvoyToolOperation.getRole,
   },
@@ -222,7 +243,9 @@ export const envoyToolSpecs = [
   {
     name: "envoy_sessions",
     description:
-      "List all live sessions registered with Envoy. Filter by optional machine, directory, or title.",
+      "List the Envoy sessions that are live or unresponsive; a gone session is listed by neither. " +
+      "Filter by optional machine, directory, or title. Each row carries its state and its " +
+      `last_seen, the epoch milliseconds of its last registration. ${SESSION_STATE_GUIDE}`,
     arguments: (schema) => ({
       machine: schema.string().optional(),
       dir: schema.string().optional(),
@@ -247,13 +270,53 @@ export const envoyToolSpecs = [
   },
 ] as const satisfies readonly ToolSpec[];
 
-/** The envoy_send confirmation line both hosts show the model. */
+/** The envoy_send confirmation line both hosts show the model, naming the recipient's state and,
+ *  for one that stopped answering, since when (`lastSeen`, the listener's record of its last
+ *  registration): a send to an unresponsive session is stored for it, not a delivery that
+ *  failed, and how long it has been silent is what an agent judges the wait by. */
 export function sendConfirmationText(result: {
   readonly envelope: { readonly event_id: string };
   readonly recipient: string;
+  readonly recipientState: SessionState;
   readonly confirmed: boolean;
+  readonly lastSeen?: number;
+  readonly duplicate: boolean;
 }): string {
-  return `sent ${result.envelope.event_id} to ${result.recipient}${result.confirmed ? "" : " (recipient unconfirmed by listener)"}`;
+  if (result.duplicate) {
+    return `sent to ${result.recipient} once: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy`;
+  }
+  const since =
+    result.lastSeen === undefined ? "" : ` since ${new Date(result.lastSeen).toISOString()}`;
+  const state =
+    result.recipientState === "unresponsive"
+      ? `unresponsive${since}, so it is stored until that session answers; ${UNRESPONSIVE_RULE}`
+      : result.recipientState;
+  return `sent ${result.envelope.event_id} to ${result.recipient} (${state})${result.confirmed ? "" : " (recipient unconfirmed by listener)"}`;
+}
+
+/** The envoy_publish confirmation line both hosts show the model. A publish to a topic the
+ *  stream captures is answered with the envelope alone, so the line says the message was
+ *  published and nothing about who has read it. A role publish names its holder and the state
+ *  the listener resolved the holder in, and a kept answer says the message waits for the role's
+ *  next holder. */
+export function publishConfirmationText(result: {
+  readonly envelope: { readonly event_id: string };
+  readonly holder?: string;
+  readonly holderState?: SessionState;
+  readonly kept?: boolean;
+}): string {
+  const sentences = [`published ${result.envelope.event_id}.`];
+  // A kept answer is a success of its own: the listener holds the message on the role's kept
+  // lane and hands it to the session that claims the role next, and no holder received it.
+  if (result.kept === true) {
+    sentences.push(
+      "Envoy kept it for the role: no session holds it yet, and the message waits for the session that claims it next."
+    );
+  } else if (result.holder !== undefined) {
+    const state = result.holderState === undefined ? "" : ` (${result.holderState})`;
+    sentences.push(`Its role holder is ${result.holder}${state}.`);
+  }
+  return sentences.join(" ");
 }
 
 /**
@@ -276,6 +339,13 @@ export function sessionsOnMachine(
 const envoyToolSchemas = new Map<EnvoyToolOperation, z.ZodType>();
 
 /**
+ * The idempotency key envoy_send takes: the transport's `crypto.randomUUID()`. The listener stores
+ * a send once per target and key only for a key of this shape (`MINTED_DEDUPE_KEY_PATTERN`), so a
+ * resend under any other key would be a second delivery.
+ */
+const SEND_IDEMPOTENCY_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
  * Validates an Envoy tool call on real zod in one pass and returns its typed arguments,
  * or throws a `ToolInputError` naming every problem. Hosts register the tools with
  * lenient argument validation, so this is the single place a bad call is refused.
@@ -295,5 +365,17 @@ export function parseEnvoyToolArguments<Operation extends EnvoyToolOperation>(
   if (!parsed.success) {
     throw new ToolInputError(spec.name, formatZodIssues(parsed.error.issues, schema, spec.name));
   }
-  return parsed.data as ToolArgumentsByOperation[Operation];
+  const { data } = parsed;
+  if (
+    typeof data === "object" &&
+    data !== null &&
+    "idempotency_key" in data &&
+    typeof data.idempotency_key === "string" &&
+    !SEND_IDEMPOTENCY_KEY.test(data.idempotency_key)
+  ) {
+    throw new ToolInputError(spec.name, [
+      `idempotency_key must be the key an unconfirmed send named, a lower-case UUID; got ${JSON.stringify(data.idempotency_key)}`,
+    ]);
+  }
+  return data as ToolArgumentsByOperation[Operation];
 }

@@ -3,7 +3,6 @@ package sandbox
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -25,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 )
 
 var controllerToken = claim.ControllerToken(testProject)
@@ -203,7 +203,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
 		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
-		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "TMPDIR",
+		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
 		"XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 	}; !slices.Equal(told, want) {
 		t.Errorf("the controller is told the runtime's variables %v, want exactly %v", told, want)
@@ -243,7 +243,7 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 	if secret := g.secret(secretName(name)); secret != nil {
 		t.Errorf("the controller's launch wrote the provisioning Secret %s: %v", secretName(name), secret.Data)
 	}
-	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 2+2*len(staticOwners) || len(secret.Data[LauncherTokenFile]) == 0 {
+	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 2+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
 		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default and the review App's gh files of each owner, and nothing else", secret)
 	}
 	for _, role := range claim.Roles {
@@ -263,13 +263,14 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 }
 
 // A controller launch mints the review App's GitHub credential as a workflow role's does
-// (writeLauncherSecrets): a credential source that refuses every mint fails the launch naming the
-// controller role, exactly as it would an issue pod's role.
-func TestAControllerLaunchFailsWhenTheGitHubCredentialMintRefuses(t *testing.T) {
-	credential := func(context.Context, claim.Role, string) (ghconfig.Bundle, error) {
+// (writeLauncherSecrets), from the controller's own function (Options.ControllerCredential): a
+// credential source that refuses every mint fails the launch naming the controller role, exactly
+// as a refusing GitHubCredential would an issue pod's role.
+func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
+	credential := func(context.Context, string) (ghconfig.Bundle, error) {
 		return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 	}
-	g := newRig(t, nil, withOptions(func(o *Options) { o.GitHubCredential = credential }))
+	g := newRig(t, nil, withOptions(func(o *Options) { o.ControllerCredential = credential }))
 	spec := controllerSpec(t)
 	if err := failedLaunch(t, g, spec); err == nil || !strings.Contains(err.Error(), "write the github credential for "+string(claim.RoleController)) {
 		t.Fatalf("the controller's launch = %v, want the refusal naming its role", err)
@@ -286,11 +287,8 @@ func TestAControllerLaunchFailsWhenTheGitHubCredentialMintRefuses(t *testing.T) 
 // nothing to refresh and logs nothing.
 func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 	logs := &lockedLog{}
-	noOwner := func(context.Context, claim.Role, string) (ghconfig.Bundle, error) {
-		return ghconfig.Bundle{}, fmt.Errorf("the review App for controller: %w", runtime.ErrNoGitHubOwner)
-	}
 	options := withOptions(func(o *Options) {
-		o.GitHubCredential = noOwner
+		o.ControllerCredential = noOwnerControllerCredential
 		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	})
 	g := newRig(t, nil, options)
@@ -683,22 +681,7 @@ func TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays(t *testing.T) {
 }
 
 // lockedLog is a log the runtime's goroutines write to while a test reads it.
-type lockedLog struct {
-	mu  sync.Mutex
-	buf strings.Builder
-}
-
-func (l *lockedLog) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.Write(p)
-}
-
-func (l *lockedLog) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.buf.String()
-}
+type lockedLog = testlog.Buffer
 
 // setResourceVersion stamps the Sandbox name in the tracker with version, as a write to it would:
 // the fake tracker keeps whatever version an object carries.
@@ -745,6 +728,6 @@ func fenceSandboxDeletes(g *rig) k8stesting.ReactionFunc {
 // refusingTokens refuses every installation token, as a GitHub outage would.
 type refusingTokens struct{}
 
-func (refusingTokens) Token(context.Context, string) (string, error) {
+func (refusingTokens) Token(context.Context, ghrepo.Repository) (string, error) {
 	return "", errors.New("no installation token: GitHub is down")
 }

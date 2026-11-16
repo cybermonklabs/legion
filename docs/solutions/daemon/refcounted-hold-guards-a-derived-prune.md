@@ -75,7 +75,7 @@ is a defect, not a style choice.
   the lane queues it behind generation 1's blocked tmux call and makes the reproduction
   unobservable (the test deadlocks post-fix). The refcount alone closes the race; the boot token
   is generation-bound at `/process/started` (409 on a generation mismatch), so a stale pane that
-  reads the newer token cannot assume its identity. Ruling accepted in round 2. **Rule:** when
+  reads the newer token cannot assume its identity. Decision accepted in round 2. **Rule:** when
   two placements are equally correct, keep the one the deterministic regression test can
   observe.
 - **Steady-state prune walks only the names this process wrote or inherited** (`processSecretFiles`),

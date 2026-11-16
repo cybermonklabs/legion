@@ -8,72 +8,91 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
-	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The release before this one (#2379) judged these histories, every arrival naming no move, to
-// these digests: the run's own fuzz (randomHistory, with pushes lost, delivered twice and in random
-// order, settlements, reopens and required reads) and the fuzz of moves made again (movesMadeAgain,
-// in the reference order and in one random or bounded order each). A digest is the SHA-256 of one
-// line per history: its index, whether a head run is open, and its judgement (judgementOf) less
-// the moves made, whose record this release extends. LEGION_PRINT_RELEASE_DIGESTS prints this
-// tree's digests, which is how these were made: by this test, its helpers copied to the release
-// before (main at ec0263277), with no move named, as that release named none.
-var releaseBeforeDigests = map[string]string{
-	"run-1":          "10d09bc5b7092579c106aa940b30dd959cdbde2d9ecd83e76f6707d01f8ee5d6",
-	"run-7":          "f670e5f0717d84a8ccd925a1eac0f308120ee2afe2725d078f406eeec3579d2b",
-	"move-1-random":  "7609f3f4a48203e0535b2ff920378f58a332542b473f43d1960c07741e4a488e",
-	"move-1-bounded": "ad0c79f885cb28ecd1996193a17a4cfdc1c936c2f8360bd8aa62029fc03ae3ec",
-	"move-7-random":  "6fc60031e73feb2135b3d0085c1436c443c0668f4db6d87344bedcb5227b370d",
-	"move-7-bounded": "199af17d66f671cff86fc45007d6ef8f26de588892df0e865c2d16fb4a6063ed",
+// This release judges these histories, every arrival naming no move, to these digests: the run's
+// own fuzz (randomHistory, with pushes lost, delivered twice and in random order, settlements and
+// reopens) and the fuzz of moves made again (movesMadeAgain, in the reference order and in one
+// random or bounded order each). A digest is the SHA-256 of one line per history: its index,
+// whether a head run is open, and its judgement (judgementOf) less the moves made.
+// LEGION_PRINT_RELEASE_DIGESTS prints this tree's digests (printDigests), which is how these were
+// made.
+//
+// They are not the digests of the release before, and cannot be: that release's judgement carried
+// the fix-attempt accounting a CI result moved an issue by, which moves nothing now
+// (dispatch://INFRA-714/spec R1), and its histories carried reads of what the base branch
+// requires, which this release has no fact for. Every digest of both fuzzes moved again when each
+// run of the fence gained the head GitHub reported it on and what it concluded
+// (record.AttemptRun), which the judgement carries: both fuzzes settle heads, so every judgement
+// with a check run in it reads differently, and a settlement that is newer for some names and
+// older for others is applied per name now rather than dropped whole (ClassifySettlement), which
+// moves what the fences of the run fuzz's several heads come to. What they fence is this release
+// against itself: a daemon running ahead of its listener judges as recorded here, so a later
+// change that moves that judgement is seen rather than deployed.
+var noMoveNamedDigests = map[string]string{
+	"run-1":          "766fbd213a31cf9c05dc3144b1a0c4f5388803fa849b83a6a2c7233fdede0b1d",
+	"run-7":          "ef6c5b97ecbfc20e021c1bc6fe243c6ed18c5af5ae8027643e39eb86bbe17a1f",
+	"move-1-random":  "4335ce7e08f659833a709cda0ceb068f8e7138fba459901fe5d098636c88d4c7",
+	"move-1-bounded": "c7b409783de5e9d58e651d0210051ccca0f39f281d6183a8418785fb432b46f4",
+	"move-7-random":  "20cab3e755524b93e8355dcad36a68492897b186d9262fed851ac207daa35454",
+	"move-7-bounded": "ea6c805dc3e6c01642afed7cc4dcad7dd5fddee3bca1f9f88c79c87740a5c83f",
 }
 
-// The release before this one judged these histories, every arrival naming its before but no
-// sender, to these digests (made as releaseBeforeDigests were, at this pull request's e5c72dfb3,
-// design (c′) with the record keeping one push of each two heads as the release before did).
-var beforeAloneDigests = map[string]string{
-	"run-1":          "10d09bc5b7092579c106aa940b30dd959cdbde2d9ecd83e76f6707d01f8ee5d6",
-	"run-7":          "f670e5f0717d84a8ccd925a1eac0f308120ee2afe2725d078f406eeec3579d2b",
-	"move-1-random":  "0eb3cc26c5274f08d6a1dfc652e13200cea52dcdf9f0158a406b725994852993",
-	"move-1-bounded": "ef6d0f509f5901e3d9ee8c086b72047a6778173af097394a7df61cc404a614b4",
-	"move-7-random":  "d0ea35c954991b6d3ace2f076441e046f028c79f38ffd957dddba37761a498cb",
-	"move-7-bounded": "5c40f8ba3ff4ab32386be4a39fcef876cec1b7b6ded5eeb6d88ec9ed4e7591dd",
+// The same histories, every arrival naming its before but no sender, judge to these digests, made
+// as noMoveNamedDigests were. The run fuzz's are the no-move ones - its synchronizes name no
+// sender either way - and the move fuzz's are not: there the sender is what tells two pushes of
+// the same two heads apart.
+var noSenderNamedDigests = map[string]string{
+	"run-1":          "766fbd213a31cf9c05dc3144b1a0c4f5388803fa849b83a6a2c7233fdede0b1d",
+	"run-7":          "ef6c5b97ecbfc20e021c1bc6fe243c6ed18c5af5ae8027643e39eb86bbe17a1f",
+	"move-1-random":  "89200283a3b20a127c13aae45628706f8daf13f666904aa81aeae61eaab52861",
+	"move-1-bounded": "de66fdbccfd11787ee1e1a0a1a2a6e6bf300eaaeaa507ed0ff34d698bee32570",
+	"move-7-random":  "881a012880d0f58147ab10e75a83ed01ae2e94e248011437f65510814fb354f0",
+	"move-7-bounded": "59205c380ed8d18029751ed247a843272057f04f983bebb5374089917e44d1c2",
 }
 
 // A daemon of this release behind a listener that sends a synchronize's before but not its sender
-// judges every history of both fuzzes as design (c′) did: an arrival that names no sender takes no
-// push by it and names no move late (NameMove), so the sender is what changes the judgement.
-func TestAnArrivalThatNamesNoSenderIsJudgedAsBeforeAlone(t *testing.T) {
+// judges every history of both fuzzes as recorded: an arrival that names no sender takes no push
+// by it and names no move late (NameMove), so the sender is what changes the judgement.
+func TestAnArrivalThatNamesNoSenderIsJudgedAsRecorded(t *testing.T) {
 	got := fuzzDigests(t, 2000, func(f runFact) runFact {
 		f.sender = ""
 		return f
 	})
-	for kind, want := range beforeAloneDigests {
+	printDigests(t, got)
+	for kind, want := range noSenderNamedDigests {
 		if got[kind] != want {
-			t.Errorf("%s: histories with no sender named digest to %s, want design (c′)'s %s", kind, got[kind], want)
+			t.Errorf("%s: histories with no sender named digest to %s, want the recorded %s", kind, got[kind], want)
 		}
 	}
 }
 
 // A daemon of this release behind a listener that does not yet send a synchronize's before - an
-// arrival that names no move, everywhere - judges every history of both fuzzes exactly as the
-// release before did, and leaves the same head runs open: the daemon may deploy before the
-// listener. Its behaviour changes only once a listener that sends before is deployed.
-func TestAnArrivalThatNamesNoMoveIsJudgedAsTheReleaseBefore(t *testing.T) {
+// arrival that names no move, everywhere - judges every history of both fuzzes as recorded, and
+// leaves the same head runs open: the daemon may deploy before the listener. Its behaviour
+// changes only once a listener that sends before is deployed.
+func TestAnArrivalThatNamesNoMoveIsJudgedAsRecorded(t *testing.T) {
 	got := noMoveDigests(t, 2000)
-	if os.Getenv("LEGION_PRINT_RELEASE_DIGESTS") != "" {
-		for _, kind := range slices.Sorted(maps.Keys(got)) {
-			t.Logf("%q: %q,", kind, got[kind])
+	printDigests(t, got)
+	for kind, want := range noMoveNamedDigests {
+		if got[kind] != want {
+			t.Errorf("%s: histories with no move named digest to %s, want the recorded %s", kind, got[kind], want)
 		}
 	}
-	for kind, want := range releaseBeforeDigests {
-		if got[kind] != want {
-			t.Errorf("%s: histories with no move named digest to %s, want the release before's %s", kind, got[kind], want)
-		}
+}
+
+// printDigests prints digests under LEGION_PRINT_RELEASE_DIGESTS, which is how the maps above are
+// made.
+func printDigests(t *testing.T, digests map[string]string) {
+	if os.Getenv("LEGION_PRINT_RELEASE_DIGESTS") == "" {
+		return
+	}
+	for _, kind := range slices.Sorted(maps.Keys(digests)) {
+		t.Logf("%q: %q,", kind, digests[kind])
 	}
 }
 
@@ -110,8 +129,8 @@ func fuzzDigests(t *testing.T, iters int, arrive func(runFact) runFact) map[stri
 				drop := rng.IntN(len(pushes))
 				pushes = append(pushes[:drop:drop], pushes[drop+1:]...)
 			}
-			red := record.PullRequest{HeadSHA: "h2", CheckedHead: "h2", Failing: []string{"ci"}, Required: []string{"ci"},
-				CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, FixAttempts: 2, PlannedRed: rng.IntN(2) == 0}
+			red := record.PullRequest{HeadSHA: "h2", CheckedHead: "h2", Failing: []string{"ci"},
+				CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1}
 			order := append([]record.ClassifiedPush{}, pushes...)
 			rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 			if len(order) > 0 && rng.IntN(4) == 0 {
@@ -138,7 +157,6 @@ func fuzzDigests(t *testing.T, iters int, arrive func(runFact) runFact) map[stri
 				start := redAtH0()
 				if it%2 == 0 {
 					d := deliveries(rng, movesMadeAgain(rng), bounded)
-					start.PlannedRed = rng.IntN(2) == 0
 					pending = d.order
 					return start, d.reference
 				}
@@ -156,7 +174,7 @@ func namingNoMove(f runFact) runFact {
 	return f
 }
 
-// The one change a daemon of this release makes with no move named, on purpose: a head run that a
+// One change this release makes to the run with no move named, on purpose: a head run that a
 // lost push opened closes at its bound (TestARunOneLostPushOpenedClosesAtItsBound), where the
 // release before held it open for good once more heads than its bound on waiting pushes followed
 // with no other steps between them. Neither fuzz above reaches that bound.
@@ -173,58 +191,6 @@ func TestARunALostPushOpenedClosesAtItsBoundWithNoMoveNamed(t *testing.T) {
 	}
 	if closedAt != maxRunSteps {
 		t.Errorf("the run a lost push opened closed after n%d (0: never), want n%d", closedAt, maxRunSteps)
-	}
-}
-
-// With no move named, a push of two heads already recorded by a push that carries an approval
-// across replaces it, as the release before replaced every earlier push of the same two heads: a
-// handoff push h0..h1, then h0..h1 read as forced (a listener that predates the forced field, or a
-// force push of the same commits), leaves no approval carrier behind, so an approval of h0 does not
-// stand for h1 and h0's red is not carried to it once h1 arrives.
-func TestAPushReplacesAnApprovalCarrierOfItsTwoHeads(t *testing.T) {
-	carrier := record.ClassifiedPush{SHA: "h1", Before: "h0", HandoffOnly: true}
-	forced := record.ClassifiedPush{SHA: "h1", Before: "h0", HandoffOnly: true, Forced: true}
-	pr := delivered(t, redAtH0(), pushed(carrier), pushed(forced))
-	if len(pr.Pushes) != 1 || pr.Pushes[0] != forced {
-		t.Fatalf("pushes %+v, want the forced push alone", pr.Pushes)
-	}
-	pr = delivered(t, pr, arrives("h1"))
-	if ApprovalStands(pr, "h0") || len(pr.Pushes) != 0 {
-		t.Errorf("after h1: an approval of h0 stands %v, pushes %+v, want neither", ApprovalStands(pr, "h0"), pr.Pushes)
-	}
-	again := delivered(t, redAtH0(), pushed(forced), pushed(carrier))
-	if len(again.Pushes) != 1 || again.Pushes[0] != carrier {
-		t.Errorf("the carrier after the forced push: pushes %+v, want the carrier alone", again.Pushes)
-	}
-}
-
-// The required-checks pass rebuilds a lost push with the whole list GitHub's compare gives
-// (daemon's lostPushes), and the push webhook of the same two heads can arrive after it with its
-// list cut short, none listed, or none sent: that copy changes nothing. The handoff push h0..h1
-// the pass rebuilt stays a handoff push, so once h1 has arrived an approval of h0 still stands for
-// it and h0's settlement is still carried to it. The other way round, a pass push whose list was
-// cut is replaced by the webhook's handoff push of the same two heads, as before.
-func TestALatePushWithItsPathsCutShortKeepsTheHandoffPushThePassRebuilt(t *testing.T) {
-	rebuilt := record.ClassifiedPush{SHA: "h1", Before: "h0", HandoffOnly: true, Sender: "implementer"}
-	pr := delivered(t, redAtH0(), pushed(rebuilt), arrivesFrom("h0", "h1"))
-	if !ApprovalStands(pr, "h0") || !Settled(pr) {
-		t.Fatalf("after the rebuilt handoff push and h1: an approval of h0 stands %v, h0's settlement carried %v, want both", ApprovalStands(pr, "h0"), Settled(pr))
-	}
-	for _, unknown := range []string{"changed_paths truncated", "no commits listed", ClassifyPush(PushPayload{}, "").Unknown} {
-		late := record.ClassifiedPush{SHA: "h1", Before: "h0", Unknown: unknown, Sender: "implementer"}
-		got := delivered(t, pr, pushed(late))
-		if !reflect.DeepEqual(got, pr) {
-			t.Errorf("the webhook's copy (%s) changed the record:\n got %+v\nwant %+v", unknown, got, pr)
-		}
-		if !ApprovalStands(got, "h0") || !Settled(got) {
-			t.Errorf("after the webhook's copy (%s): an approval of h0 stands %v, h0's settlement carried %v, want both", unknown, ApprovalStands(got, "h0"), Settled(got))
-		}
-	}
-	cut := record.ClassifiedPush{SHA: "h1", Before: "h0", Unknown: "changed_paths truncated", Sender: "implementer"}
-	again := delivered(t, redAtH0(), pushed(cut), arrivesFrom("h0", "h1"), pushed(rebuilt))
-	if len(again.Pushes) != 1 || again.Pushes[0] != rebuilt || !ApprovalStands(again, "h0") || !Settled(again) {
-		t.Errorf("the webhook's handoff push after the pass's cut one: pushes %+v, an approval of h0 stands %v, h0's settlement carried %v, want the handoff push alone and both",
-			again.Pushes, ApprovalStands(again, "h0"), Settled(again))
 	}
 }
 

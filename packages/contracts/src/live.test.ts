@@ -27,7 +27,7 @@ import {
   type DeliveryLiveRevs,
   type DeliveryLiveSnapshot,
   type DeliveryLiveView,
-  type DeliveryTimelineResponse,
+  type DeliveryTimelineWithMeasures,
   type DispatchEvent,
   type EventsLiveResume,
   type EventsLiveView,
@@ -123,6 +123,7 @@ const EVENT_KEYS = allOf<keyof DispatchEvent>()([
   "notify",
   "created_at",
   "payload",
+  "trees",
 ]);
 /** The frames that are not one subscription's: freshness goes to every subscriber of the socket,
  *  heartbeat to the socket itself. */
@@ -130,7 +131,7 @@ const SOCKET_WIDE: Partial<Record<LiveServerFrame["type"], true>> = {
   freshness: true,
   heartbeat: true,
 };
-const TIMELINE_KEYS = allOf<keyof DeliveryTimelineResponse>()([
+const TIMELINE_KEYS = allOf<keyof DeliveryTimelineWithMeasures>()([
   "window",
   "prs",
   "waiting",

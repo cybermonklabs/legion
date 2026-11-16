@@ -11,10 +11,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
-const workerImage = "ghcr.io/sjawhar/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+const workerImage = "ghcr.io/cybermonklabs/legion-worker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // kubernetesFile is the smallest file `runtime: kubernetes` loads: every key a pod needs to reach
 // the daemon, Envoy, NATS, and Dispatch, and the required members of the block. The App
@@ -71,6 +72,8 @@ func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
     kubeconfig: kube/legion-daemon
     context: legion-daemon@example
     setup: [/bin/sh, -c, 'omp plugin marketplace add acme/agent-skills']
+    skills_repository: acme/agent-skills
+    idle_release: {idle_minutes: 20, backstop_minutes: 120}
     repository_cache:
       volume: 50Gi
       refresh_minutes: 5
@@ -128,8 +131,9 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		Context:      "legion-daemon@example",
 		// A store that keeps sessions in a database is required under this runtime, so the one
 		// kubernetesFile names settles on every load of the block.
-		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Setup:        []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
+		SessionStore:     ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Setup:            []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
+		SkillsRepository: ghrepo.MustParse("acme/agent-skills"),
 		Scheduling: Scheduling{
 			NodeSelector: map[string]string{"karpenter.k8s.aws/instance-family": "m7i", "zone": "4"},
 			Tolerations: []Toleration{
@@ -178,6 +182,7 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 			Volume: "50Gi", RefreshMinutes: 5, RetainHours: 24,
 			Resources: Reservation{CPU: "2", CPURequest: "2", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"},
 		},
+		IdleRelease: IdleReleaseConfig{IdleMinutes: 20, BackstopMinutes: 120},
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)
@@ -317,6 +322,7 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 		{"pod", block.Pod, PodConfig{}},
 		{"session_store", block.SessionStore, ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"}},
 		{"setup", block.Setup, []string(nil)},
+		{"skills_repository", block.SkillsRepository, ghrepo.Repository{}},
 		{"test_postgres", block.TestPostgres, false},
 		{"repository_cache", block.RepositoryCache, RepositoryCacheConfig{
 			Volume: "20Gi", RefreshMinutes: 10, RetainHours: 168,
@@ -569,12 +575,12 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			name: "image by tag",
-			body: kubernetesWith(workerImage, "ghcr.io/sjawhar/legion-worker:latest"),
+			body: kubernetesWith(workerImage, "ghcr.io/cybermonklabs/legion-worker:latest"),
 			want: "runtime.kubernetes.image must be pinned by digest (@sha256:…)",
 		},
 		{
 			name: "image with a short digest",
-			body: kubernetesWith(workerImage, "ghcr.io/sjawhar/legion-worker@sha256:0"),
+			body: kubernetesWith(workerImage, "ghcr.io/cybermonklabs/legion-worker@sha256:0"),
 			want: "runtime.kubernetes.image must be pinned by digest (@sha256:…)",
 		},
 		{
@@ -823,6 +829,11 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			name: "the TypeScript role_profiles",
 			body: kubernetesFile + "    role_profiles: {tester: large}\n",
 			want: "unknown key runtime.kubernetes.role_profiles: an issue pod's reservation is runtime.kubernetes.resources.issue, its cpu and memory limits with optional lower cpu_request and memory_request, and a field absent there takes the daemon's default",
+		},
+		{
+			name: "skills_repository that is no owner/name",
+			body: kubernetesFile + "    skills_repository: agent-skills\n",
+			want: `runtime.kubernetes.skills_repository must be "owner/name" (got "agent-skills")`,
 		},
 		{
 			name: "session_store omitted",
@@ -1450,10 +1461,15 @@ func TestLoadForValidationAcceptsBindUnspecifiedWithAdvertiseHost(t *testing.T) 
 // operator and each live harness run fill in their gateway's.
 const operatorRouteAudience = "operator-audience"
 
+// operatorRouteAccount is the ServiceAccount the tests fill into the operator route's placeholder,
+// as an operator and each live harness run fill in their own.
+const operatorRouteAccount = "operator-account"
+
 // operatorRoutePod is the operator route the Go live harnesses run on
-// (deploy/kubernetes/operator-route/pod.yml), its token audience filled in with audience when that
-// is not empty, indented to sit under `runtime.kubernetes.pod`.
-func operatorRoutePod(t *testing.T, audience string) string {
+// (deploy/kubernetes/operator-route/pod.yml), its token audience filled in with audience and its
+// ServiceAccount with account, each when that one is not empty, so a test may leave either
+// placeholder standing on its own. It is indented to sit under `runtime.kubernetes.pod`.
+func operatorRoutePod(t *testing.T, audience, account string) string {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy", "kubernetes", "operator-route", "pod.yml"))
 	if err != nil {
@@ -1462,6 +1478,9 @@ func operatorRoutePod(t *testing.T, audience string) string {
 	pod := string(raw)
 	if audience != "" {
 		pod = strings.ReplaceAll(pod, "${MODEL_TOKEN_AUDIENCE}", audience)
+	}
+	if account != "" {
+		pod = strings.ReplaceAll(pod, "${POD_SERVICE_ACCOUNT}", account)
 	}
 	var indented strings.Builder
 	for _, line := range strings.SplitAfter(pod, "\n") {
@@ -1476,9 +1495,21 @@ func operatorRoutePod(t *testing.T, audience string) string {
 // load: nothing expands the placeholder, and a pod carrying a token for its text would have every
 // model call refused.
 func TestLoadForValidationRefusesTheOperatorRouteWithItsAudienceUnfilled(t *testing.T) {
-	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, "")), noEnv)
+	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, "", "")), noEnv)
 	if err == nil || !strings.Contains(err.Error(), `.service_account_token.audience "${MODEL_TOKEN_AUDIENCE}" is an unfilled placeholder`) {
 		t.Fatalf("LoadForValidation = %v, want the unfilled audience placeholder refused", err)
+	}
+}
+
+// The sibling of the test above, and a pair rather than one test because readPod reads the volumes
+// before the ServiceAccount: the unfilled audience is refused first, so only a route whose
+// audience is filled ever reaches the account's own refusal. A copy taken as it stands with the
+// gateway's audience put in, and the account placeholder left standing, is refused too: nothing
+// expands the placeholder, and the API server admits no pod for an account that does not exist.
+func TestLoadForValidationRefusesTheOperatorRouteWithItsAccountUnfilled(t *testing.T) {
+	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    pod:\n"+operatorRoutePod(t, operatorRouteAudience, "")), noEnv)
+	if err == nil || !strings.Contains(err.Error(), `runtime.kubernetes.pod.service_account "${POD_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the pods run as in its place`) {
+		t.Fatalf("LoadForValidation = %v, want the unfilled ServiceAccount placeholder refused", err)
 	}
 }
 
@@ -1529,7 +1560,7 @@ runtime:
     kubeconfig: /home/ubuntu/.kube/legion-daemon-production
     context: legion-daemon@example
     pod:
-`+operatorRoutePod(t, operatorRouteAudience))
+`+operatorRoutePod(t, operatorRouteAudience, operatorRouteAccount))
 
 	cfg, err := LoadForValidation(path, noEnv)
 	if err != nil {
@@ -1538,13 +1569,13 @@ runtime:
 	if cfg.Runtime.Name != "kubernetes" || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want the kubernetes block", cfg.Runtime)
 	}
-	if cfg.Linger != 18*time.Minute || cfg.Gates.Design != DesignGateOff || cfg.AdmissionCap != 2 {
-		t.Errorf("Linger=%s Gates=%+v AdmissionCap=%d, want 18m, off, 2", cfg.Linger, cfg.Gates, cfg.AdmissionCap)
+	if cfg.Linger != 18*time.Minute || len(cfg.Gates.Design) != 0 || cfg.AdmissionCap != 2 {
+		t.Errorf("Linger=%s Gates=%+v AdmissionCap=%d, want 18m, no gated step, 2", cfg.Linger, cfg.Gates, cfg.AdmissionCap)
 	}
 	if block := cfg.Runtime.Kubernetes; block.Context != "legion-daemon@example" || block.Resources != DefaultResources() || block.Scheduling.NodeSelector != nil {
 		t.Errorf("kubernetes block = %+v, want the restricted context, both pods' default reservations, and no node selector", *block)
 	}
-	if pod := cfg.Runtime.Kubernetes.Pod; pod.ServiceAccount != "legion-worker" || len(pod.Volumes) != 2 || len(pod.VolumeMounts) != 3 ||
+	if pod := cfg.Runtime.Kubernetes.Pod; pod.ServiceAccount != operatorRouteAccount || len(pod.Volumes) != 2 || len(pod.VolumeMounts) != 3 ||
 		pod.Env["PI_CONFIG_FILES"] != "/etc/legion-operator/overlay.yml" {
 		t.Errorf("the operator pod settled as %+v, want the fixture's account, two volumes, three mounts, and its overlay", pod)
 	}

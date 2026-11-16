@@ -1,0 +1,5 @@
+kind: Fixed
+body: The plugin writes the session title file at each registration heartbeat and at each tool call of the main agent, whatever the tool, and it never writes an empty title over a title. Before, only a `bash` or an `eval` call wrote it, so a session whose Dispatch writes came from any other path had no name in Dispatch. A subagent still writes no title file.
+time: 2026-11-11T01:29:55.766273348Z
+custom:
+    Issue: pr3517

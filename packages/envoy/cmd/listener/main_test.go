@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -25,9 +26,11 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestStartingGate_Closed_Returns503(t *testing.T) {
@@ -205,13 +208,34 @@ func TestFullMux_StartingState(t *testing.T) {
 		}
 	})
 
-	t.Run("v1 sessions returns 503", func(t *testing.T) {
-		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, httptest.NewRequest("GET", "/v1/sessions", nil))
-		if rr.Code != http.StatusServiceUnavailable {
-			t.Fatalf("expected 503, got %d", rr.Code)
-		}
-	})
+	// The two list reads get the refilling answer the routes give while their copies cannot be
+	// served: before /v1 opens no copy has been read.
+	for _, path := range []string{"/v1/sessions", "/v1/interests/"} {
+		t.Run("GET "+path+" answers refilling", func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+			assertListRefilling(t, rr.Result())
+		})
+	}
+
+	// Every other request keeps "service starting", a write or a single read on a list path too.
+	for _, request := range []struct{ method, path string }{
+		{http.MethodPost, "/v1/sessions"},
+		{http.MethodDelete, "/v1/sessions/ses_x"},
+		{http.MethodGet, "/v1/interests/ses_x"},
+		{http.MethodPost, "/v1/interests/subscribe"},
+	} {
+		t.Run(request.method+" "+request.path+" answers service starting", func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, httptest.NewRequest(request.method, request.path, nil))
+			if body := rr.Body.String(); rr.Code != http.StatusServiceUnavailable || body != "{\"error\":\"service starting\"}\n" {
+				t.Fatalf("status %d body %q, want 503 service starting", rr.Code, body)
+			}
+			if retryAfter := rr.Header().Get("Retry-After"); retryAfter != "" {
+				t.Fatalf("Retry-After = %q, want none", retryAfter)
+			}
+		})
+	}
 }
 
 func TestPublishHandler_RejectsAgentTopics(t *testing.T) {
@@ -316,6 +340,21 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 	return client
 }
 
+// setupSessionConsumers is the session-consumer connection main's listener always holds, for a
+// test that drives the registration route: a listener without one refuses every registration
+// (consumer_error), as a session receives only what its own consumer holds. Its relay records
+// what it is told and relays nothing, since no test here reads a frame.
+func setupSessionConsumers(t *testing.T) *sessionDelivery {
+	t.Helper()
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, logging.NewWithWriter("test", io.Discard))
+	if err != nil {
+		t.Fatalf("open the session-consumer connection: %v", err)
+	}
+	t.Cleanup(delivery.close)
+	delivery.relay = &recordingRelay{}
+	return delivery
+}
+
 type listenerAcknowledgementClock struct {
 	mu        sync.Mutex
 	elapsed   time.Duration
@@ -370,67 +409,57 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 	}
 }
 
-// A publish through the listener's API to an ad-hoc topic, one no stream subject captures, answers
-// 200 at once with its envelope and reaches a session subscribed to the topic on NATS, as
-// envoy_publish does: the listener sends it over core NATS. Before, it went to JetStream, which never
-// answered while that subscriber held the subject, and the API answered 500 after five seconds.
-func TestPublishHandlerDeliversAnAdHocTopicToItsSubscriber(t *testing.T) {
+// A publish through the listener's API to a team topic, with no session connected to receive it,
+// answers 200 with its envelope and leaves the message on the stream under notifications.team.>,
+// where the consumer of every session that follows the topic reads it whenever it comes back.
+// Before team topics were stored the route published them over core NATS, which hands a message
+// only to whoever holds the subject at that moment, so this message would have reached nobody.
+func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
 	const topic = "notifications.team.deploy-squad"
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	client := harness.client
-	received, err := client.Conn.SubscribeSync("notifications.team.>")
-	if err != nil {
-		t.Fatalf("subscribe: %v", err)
-	}
-	t.Cleanup(func() { _ = received.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the subscription: %v", err)
-	}
 
 	state := harness.publishDeps(t)
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"`+topic+`","message":"deploy complete","source_session":"ses_publisher","idempotency_key":"adhoc-1"}`))
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"`+topic+`","message":"deploy complete","source_session":"ses_publisher","idempotency_key":"team-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	started := time.Now()
 	publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("publish to an ad-hoc topic: status %d, body %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("publish to a team topic: status %d, body %s", recorder.Code, recorder.Body.String())
 	}
 	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("publish to an ad-hoc topic took %s", elapsed)
+		t.Fatalf("publish to a team topic took %s", elapsed)
 	}
 	var answered contracts.Envelope
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answered); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
 
-	msg, err := received.NextMsg(5 * time.Second)
+	stored, err := client.JS().GetLastMsg(bus.Stream, topic)
 	if err != nil {
-		t.Fatalf("the subscriber received nothing: %v", err)
+		t.Fatalf("the stream holds nothing on %s: %v", topic, err)
 	}
-	var delivered contracts.Envelope
-	if err := json.Unmarshal(msg.Data, &delivered); err != nil {
-		t.Fatalf("decode the delivered envelope: %v", err)
+	var retained contracts.Envelope
+	if err := json.Unmarshal(stored.Data, &retained); err != nil {
+		t.Fatalf("decode the stored envelope: %v", err)
 	}
-	if delivered.Topic != topic || delivered.EventID != answered.EventID || delivered.PayloadSummary != "deploy complete" ||
-		delivered.SourceSession != "ses_publisher" || delivered.DedupeKey != "publish.adhoc-1" {
-		t.Fatalf("delivered %+v, want the answered envelope %+v", delivered, answered)
-	}
-	if _, err := received.NextMsg(500 * time.Millisecond); !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("a second copy reached the subscriber (err %v): the publish went out twice", err)
+	if retained.Topic != topic || retained.EventID != answered.EventID || retained.PayloadSummary != "deploy complete" ||
+		retained.SourceSession != "ses_publisher" || retained.DedupeKey != "publish.team-1" {
+		t.Fatalf("stored %+v, want the answered envelope %+v", retained, answered)
 	}
 }
 
 // The publish API takes only notification topics: a subject outside notifications., such as a KV
-// key's or a JetStream API request's, is a 400 naming the prefix and reaches nothing, while an ad-hoc
-// notification topic beside it is still published.
+// key's or a JetStream API request's, is a 400 naming the prefix and reaches nothing, while a team
+// topic beside it is still published.
 func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
-	const adhoc = "notifications.lxspec.probe.all"
+	const accepted = "notifications.team.probe.all"
 	refused := []string{"$KV.envoy_roles.x", "$JS.API.STREAM.INFO.x", "team.deploy-squad.all"}
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	client := harness.client
 	received := make(chan *natsgo.Msg, 16)
-	for _, subject := range append(slices.Clone(refused), adhoc) {
+	for _, subject := range append(slices.Clone(refused), accepted) {
 		subscription, err := client.Conn.ChanSubscribe(subject, received)
 		if err != nil {
 			t.Fatalf("subscribe %s: %v", subject, err)
@@ -471,16 +500,16 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	if recorder := publish(adhoc); recorder.Code != http.StatusOK {
-		t.Fatalf("publish to %q: status %d, want 200; body %s", adhoc, recorder.Code, recorder.Body.String())
+	if recorder := publish(accepted); recorder.Code != http.StatusOK {
+		t.Fatalf("publish to %q: status %d, want 200; body %s", accepted, recorder.Code, recorder.Body.String())
 	}
 	select {
 	case msg := <-received:
-		if msg.Subject != adhoc {
-			t.Fatalf("received subject %q, want %q", msg.Subject, adhoc)
+		if msg.Subject != accepted {
+			t.Fatalf("received subject %q, want %q", msg.Subject, accepted)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("the ad-hoc publish reached nobody")
+		t.Fatal("the team publish reached nobody")
 	}
 }
 
@@ -553,7 +582,7 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 // by the route itself rather than published on the role lane, and the stream keeps one copy of each
 // forward.
 func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	const role = "legion-delivery"
 	roleTopic := contracts.RoleTopicPrefix + role
 	if _, err := harness.registry.SetRole("ses_role_a", "test-machine", role, false); err != nil {
@@ -562,7 +591,7 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	// Set B as the KV value that the route must resolve. This models a
 	// publish that races the handover: the single listener chooses one current
 	// owner, rather than relying on two holders to observe the change first.
-	claimDeps := &listenerDeps{registry: harness.registry, sessions: harness.sessions}
+	claimDeps := &listenerDeps{registry: harness.registry, sessions: harness.sessions, delivery: &harness.config}
 	if err := harness.sessions.Put("ses_role_b", session.SessionEntry{
 		MachineID:      "test-machine",
 		SelfSubscribed: true,
@@ -587,15 +616,6 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 		t.Fatalf("subscribe B agent subject: %v", err)
 	}
 	t.Cleanup(func() { _ = probeB.Unsubscribe() })
-	receiptResponder, err := harness.client.Conn.Subscribe(contracts.AgentSubject("ses_role_b"), func(message *natsgo.Msg) {
-		if message.Reply != "" {
-			_ = message.Respond(nil)
-		}
-	})
-	if err != nil {
-		t.Fatalf("subscribe B receipt responder: %v", err)
-	}
-	t.Cleanup(func() { _ = receiptResponder.Unsubscribe() })
 	laneProbe, err := harness.client.Conn.SubscribeSync(contracts.RoleTopicPrefix + ">")
 	if err != nil {
 		t.Fatalf("subscribe to the role lane: %v", err)
@@ -695,13 +715,14 @@ func TestPublishHandler_RoleMessageReachesTheCurrentHolderWithoutTheRoleLane(t *
 	}
 }
 
-// A holder registered and holding the role with nothing subscribed to its agent subject leaves the
-// sender a 504 receipt_timeout, logged once, and no delivery exception: the sender has the answer.
-func TestPublishHandler_RoleFreshDeafHolderAnswersReceiptTimeout(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+// A holder registered and holding the role with nothing subscribed to its agent subject is
+// answered 200: the stream stored the forward for the holder's session consumer. The send is
+// logged once and raises no delivery exception, since the sender has the answer.
+func TestPublishHandler_RoleFreshDeafHolderIsAnsweredStored(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
 	role := "fresh-deaf-holder"
 	roleTopic := contracts.RoleTopicPrefix + role
-	claimState := &listenerDeps{registry: harness.registry, sessions: harness.sessions}
+	claimState := &listenerDeps{registry: harness.registry, sessions: harness.sessions, delivery: &harness.config}
 	if err := harness.sessions.Put("ses_deaf", session.SessionEntry{
 		MachineID:      "test-machine",
 		SelfSubscribed: true,
@@ -722,15 +743,15 @@ func TestPublishHandler_RoleFreshDeafHolderAnswersReceiptTimeout(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"`+roleTopic+`","message":"deaf role event","payload":"{\"type\":\"worker-queued\"}","source":"agent"}`))
 	publishHandler(state, logging.New("test")).ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusGatewayTimeout {
-		t.Fatalf("publish role event: status = %d, want 504; body = %s", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("publish role event: status = %d, want 200; body = %s", recorder.Code, recorder.Body.String())
 	}
-	var failure roleSendFailure
-	if err := json.NewDecoder(recorder.Body).Decode(&failure); err != nil {
+	var answer publishResponse
+	if err := json.NewDecoder(recorder.Body).Decode(&answer); err != nil {
 		t.Fatalf("decode the answer: %v", err)
 	}
-	if failure.Reason != "receipt_timeout" || failure.Holder != "ses_deaf" {
-		t.Fatalf("answer %+v, want receipt_timeout from ses_deaf", failure)
+	if answer.Holder != "ses_deaf" {
+		t.Fatalf("answer %+v, want the forward stored for ses_deaf", answer)
 	}
 	noException(t, probe)
 	logs := harness.logs.String()
@@ -740,16 +761,16 @@ func TestPublishHandler_RoleFreshDeafHolderAnswersReceiptTimeout(t *testing.T) {
 			lines = append(lines, candidate)
 		}
 	}
-	if len(lines) != 1 || !strings.Contains(lines[0], `"delivery_status":"receipt_timeout"`) || !strings.Contains(lines[0], `"event_id":"`+failure.EventID+`"`) {
-		t.Fatalf("listener log does not name receipt_timeout once for %s:\n%s", failure.EventID, logs)
+	if len(lines) != 1 || !strings.Contains(lines[0], `"delivery_status":"delivered"`) || !strings.Contains(lines[0], `"event_id":"`+answer.EventID+`"`) {
+		t.Fatalf("listener log does not name the delivered send once for %s:\n%s", answer.EventID, logs)
 	}
 	t.Logf("listener log line: %s", lines[0])
 }
 
-// A re-send under the key of a message its holder never confirmed is forwarded again, and one under
-// the key of a message it confirmed is not: the route answers each and publishes no exception.
-func TestPublishHandler_ExplicitDedupeKeyForwardsAgainAfterReceiptTimeoutOnly(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+// A re-send under the key of a message the stream already stored for its holder is not forwarded
+// again: the route answers each send and publishes no exception.
+func TestPublishHandler_ExplicitDedupeKeyIsNotForwardedAgainOnceStored(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
 	const role = "slow-holder"
 	roleTopic := contracts.RoleTopicPrefix + role
 	if err := harness.sessions.Put("ses_slow", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -758,15 +779,11 @@ func TestPublishHandler_ExplicitDedupeKeyForwardsAgainAfterReceiptTimeoutOnly(t 
 	if _, err := harness.registry.SetRole("ses_slow", "test-machine", role, false); err != nil {
 		t.Fatalf("claim role: %v", err)
 	}
-	var acknowledge atomic.Bool
 	forwards := make(chan contracts.Envelope, 8)
 	responder, err := harness.client.Conn.Subscribe(contracts.AgentSubject("ses_slow"), func(message *natsgo.Msg) {
 		var forwarded contracts.Envelope
 		if err := json.Unmarshal(message.Data, &forwarded); err == nil {
 			forwards <- forwarded
-		}
-		if acknowledge.Load() && message.Reply != "" {
-			_ = message.Respond(nil)
 		}
 	})
 	if err != nil {
@@ -811,16 +828,12 @@ func TestPublishHandler_ExplicitDedupeKeyForwardsAgainAfterReceiptTimeoutOnly(t 
 		}
 	}
 
-	// 1. The holder swallows every forward: the route answers receipt_timeout after two of them.
-	publish("first publish", http.StatusGatewayTimeout)
-	expectForwards("first publish", 2)
+	// 1. The first send: the holder is forwarded the message once, and the sender is answered 200
+	// as soon as the stream stored the forward.
+	publish("first publish", http.StatusOK)
+	expectForwards("first publish", 1)
 
-	// 2. Same dedupe_key after the timeout: forwarded again; the holder now acknowledges.
-	acknowledge.Store(true)
-	publish("re-publish after receipt_timeout", http.StatusOK)
-	expectForwards("re-publish after receipt_timeout", 1)
-
-	// 3. Same dedupe_key after a delivered forward: dedupe skip, nothing forwarded.
+	// 2. Same dedupe_key after a stored forward: dedupe skip, nothing forwarded.
 	publish("re-publish after delivery", http.StatusOK)
 	expectForwards("re-publish after delivery", 0)
 	noException(t, probe)
@@ -923,8 +936,9 @@ func TestSendHandler_RejectsUnknownTarget(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&response); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if response.Error != "no live session ses_missing" {
-		t.Fatalf("error = %q, want %q", response.Error, "no live session ses_missing")
+	const want = "no live session ses_missing; this listener does not know when it last registered"
+	if response.Error != want {
+		t.Fatalf("error = %q, want %q", response.Error, want)
 	}
 }
 
@@ -987,7 +1001,7 @@ func TestSendHandler_RejectsInvalidSource(t *testing.T) {
 
 func TestSendHandler_AcceptsHumanSource(t *testing.T) {
 	client := setupPublishTestClient(t)
-	registry, sessions := setupSessionsTest(t, nil, map[string]int{"ses_target": 1})
+	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 
 	rr := httptest.NewRecorder()
@@ -1010,11 +1024,20 @@ func TestSendHandler_AcceptsHumanSource(t *testing.T) {
 	}
 }
 
+// deregisterHandler is DELETE /v1/sessions/<session_id> over sessions alone. These rows
+// deregister sessions that were never in consumer delivery, so the deps carry no session
+// delivery and the route deletes no consumer: a nil sessionDelivery answers nothing
+// (sessionDelivery.deleteConsumer), as it does on a listener whose session-consumer connection
+// never opened.
+func deregisterHandler(sessions *session.SessionRegistry) http.HandlerFunc {
+	return deleteSessionHandler(&listenerDeps{sessions: sessions}, logging.New("test"))
+}
+
 // A deregistration that names no client instance deletes the registration whoever wrote it, and
 // answers 200 with no body at all, as this route always has.
 func TestDeleteSessionHandler_IsIdempotent(t *testing.T) {
-	_, sessions := setupSessionsTest(t, nil, map[string]int{"ses_closed": 1234})
-	handler := deleteSessionHandler(sessions)
+	_, sessions := setupSessionsTest(t, nil, []string{"ses_closed"})
+	handler := deregisterHandler(sessions)
 
 	for i := range 2 {
 		rr := httptest.NewRecorder()
@@ -1028,7 +1051,7 @@ func TestDeleteSessionHandler_IsIdempotent(t *testing.T) {
 			t.Fatalf("delete %d: answered with a body: %s", i+1, rr.Body.String())
 		}
 	}
-	if isSessionLive(sessions, "ses_closed") {
+	if _, err := sessions.Get("ses_closed"); err == nil {
 		t.Fatal("deleted session remains live")
 	}
 }
@@ -1045,7 +1068,7 @@ func TestDeleteSessionHandler_DeletesTheSameClientInstancesRegistration(t *testi
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/v1/sessions/"+sessionID+"?client_instance_id="+instanceID, nil)
-	deleteSessionHandler(sessions).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1053,8 +1076,8 @@ func TestDeleteSessionHandler_DeletesTheSameClientInstancesRegistration(t *testi
 	if got := strings.TrimSpace(rr.Body.String()); got != `{"deleted":true}` {
 		t.Fatalf("body = %s, want {\"deleted\":true}", got)
 	}
-	if isSessionLive(sessions, sessionID) {
-		t.Fatal("deleted session remains live")
+	if _, state := sessions.Lookup(sessionID); state != session.Gone {
+		t.Fatalf("the deleted session reads %s, want gone", state)
 	}
 }
 
@@ -1072,7 +1095,7 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 		"/v1/sessions/"+sessionID+"?client_instance_id=4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a",
 		nil,
 	)
-	deleteSessionHandler(sessions).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
@@ -1096,12 +1119,122 @@ func TestDeleteSessionHandler_KeepsAnotherClientInstancesRegistration(t *testing
 	}
 }
 
+// The finding this condition exists for (dispatch://INFRA-392): the daemon's clean stop of a dead
+// role's session can still be in flight when the very decision that asked for it has relaunched
+// the claim and the new process has registered the same session id again. The stop names the
+// moment its probe judged the process gone, and a registration written after that moment is the
+// relaunch's: it stays, and the route says so rather than taking a live session's registration.
+func TestDeleteSessionHandler_KeepsARegistrationWrittenAfterTheStopsMoment(t *testing.T) {
+	const sessionID = "ses_relaunched_under_the_stop"
+	_, sessions := setupSessionsTest(t, nil, nil)
+	putSessionForInstance(t, sessions, sessionID, "")
+	dead, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the dead launch's registration: %v", err)
+	}
+	// The moment the probe judged the process gone, which the stop carries, and the relaunch's
+	// own registration after it: the clock is waited past that moment so the second write is
+	// strictly newer, as a relaunch seconds later is.
+	stop := dead.UpdatedAt
+	for time.Now().UnixMilli() <= stop {
+		time.Sleep(time.Millisecond)
+	}
+	putSessionForInstance(t, sessions, sessionID, "")
+	relaunched, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the relaunch's registration: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", sessionID, stop), nil)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var answer struct {
+		Deleted bool   `json:"deleted"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&answer); err != nil {
+		t.Fatalf("decode the answer: %v", err)
+	}
+	if answer.Deleted || answer.Reason != "the registration was written after the moment the delete belongs to" {
+		t.Fatalf("answer = %+v, want the relaunch's registration kept with its reason", answer)
+	}
+	entry, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("the relaunch's registration is gone: %v", err)
+	}
+	if entry.UpdatedAt != relaunched.UpdatedAt {
+		t.Fatalf("the stored registration was written at %d, want the relaunch's %d", entry.UpdatedAt, relaunched.UpdatedAt)
+	}
+	if _, state := sessions.Lookup(sessionID); state != session.Live {
+		t.Fatalf("the relaunched session reads %s, want live", state)
+	}
+}
+
+// The stop that is still the stored registration's: nothing has registered that session id since
+// the probe judged its process gone, so the record goes and the session is gone at once.
+func TestDeleteSessionHandler_DeletesTheRegistrationTheStopsMomentCovers(t *testing.T) {
+	const sessionID = "ses_dead_launch"
+	_, sessions := setupSessionsTest(t, nil, nil)
+	putSessionForInstance(t, sessions, sessionID, "")
+	dead, err := sessions.Get(sessionID)
+	if err != nil {
+		t.Fatalf("read the dead launch's registration: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete,
+		fmt.Sprintf("/v1/sessions/%s?if_not_registered_after=%d", sessionID, dead.UpdatedAt), nil)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if got := strings.TrimSpace(rr.Body.String()); got != `{"deleted":true}` {
+		t.Fatalf("body = %s, want {\"deleted\":true}", got)
+	}
+	if _, state := sessions.Lookup(sessionID); state != session.Gone {
+		t.Fatalf("the deleted session reads %s, want gone", state)
+	}
+}
+
+// A moment this route cannot read is a refusal, not a delete: a caller whose condition was
+// silently dropped would remove exactly the registration it asked to keep.
+func TestDeleteSessionHandler_RefusesAMomentThatIsNotMilliseconds(t *testing.T) {
+	const sessionID = "ses_bad_moment"
+	_, sessions := setupSessionsTest(t, nil, nil)
+	putSessionForInstance(t, sessions, sessionID, "")
+
+	for _, asked := range []string{"just now", "0", "-1", "1762000000.5"} {
+		t.Run(asked, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodDelete,
+				"/v1/sessions/"+sessionID+"?if_not_registered_after="+url.QueryEscape(asked), nil)
+			deregisterHandler(sessions).ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d (body: %s)", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "if_not_registered_after") {
+				t.Fatalf("body = %s, want a refusal naming the parameter", rr.Body.String())
+			}
+			if _, err := sessions.Get(sessionID); err != nil {
+				t.Fatalf("the refused request deleted the registration: %v", err)
+			}
+		})
+	}
+}
+
 // putSessionForInstance registers sessionID as the client instance instanceID, which
 // setupSessionsTest's own seeding cannot name.
 func putSessionForInstance(t *testing.T, sessions *session.SessionRegistry, sessionID, instanceID string) {
 	t.Helper()
 	if err := sessions.Put(sessionID, session.SessionEntry{
-		Port:             1234,
+		SelfSubscribed:   true,
 		MachineID:        "test-machine",
 		Dir:              "/test/" + sessionID,
 		ClientInstanceID: instanceID,
@@ -1115,7 +1248,7 @@ func TestDeleteSessionHandler_RejectsOtherMethods(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions/ses_closed", nil)
-	deleteSessionHandler(sessions).ServeHTTP(rr, req)
+	deregisterHandler(sessions).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rr.Code)
@@ -1125,14 +1258,14 @@ func TestDeleteSessionHandler_RejectsOtherMethods(t *testing.T) {
 func TestIsValidRole(t *testing.T) {
 	valid := []string{"legion-controller", "pi_dev", "r2d2", "a"}
 	for _, role := range valid {
-		if !isValidRole(role) {
+		if !roles.Valid(role) {
 			t.Fatalf("expected role %q to be valid", role)
 		}
 	}
 
 	invalid := []string{"", "Legion", "-bad", "bad.role", "bad role"}
 	for _, role := range invalid {
-		if isValidRole(role) {
+		if roles.Valid(role) {
 			t.Fatalf("expected role %q to be invalid", role)
 		}
 	}
@@ -1149,7 +1282,7 @@ func TestSessionHealthFields_PopulatedAfterReady(t *testing.T) {
 	if err := sessions.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
-	if err := sessions.Put("ses_health", session.SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
+	if err := sessions.Put("ses_health", session.SessionEntry{SelfSubscribed: true, MachineID: "m1"}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
@@ -1215,7 +1348,7 @@ func TestRoleSetHandler_Validation(t *testing.T) {
 
 func TestRoleSetHandler_SetsRole(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions}
+	state := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions})
 	handler := roleSetHandler(state, "test-machine", logging.New("test"))
 	if err := sessions.Put("ses_role", session.SessionEntry{MachineID: "test-machine"}); err != nil {
 		t.Fatalf("register role session: %v", err)
@@ -1306,7 +1439,7 @@ func TestAdminInterestsHandler_ListAll(t *testing.T) {
 		"ses_list_b": {"notifications.test.>"},
 		"ses_list_a": {"notifications.github.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1331,7 +1464,7 @@ func TestAdminInterestsHandler_GetBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_get_test": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/interests/ses_get_test", nil)
 	rec := httptest.NewRecorder()
@@ -1370,7 +1503,7 @@ func TestAdminInterestsHandler_GetAnswers404OnlyForAnUnknownSession(t *testing.T
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 	get := func(sessionID string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/interests/"+sessionID, nil))
@@ -1399,7 +1532,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, map[string][]string{
 		"ses_delete_target": {"notifications.test.>"},
 	}, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_delete_target", nil)
 	rec := httptest.NewRecorder()
@@ -1418,7 +1551,7 @@ func TestAdminInterestsHandler_DeleteBySession(t *testing.T) {
 
 func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodDelete, "/v1/interests/ses_nonexistent", nil)
 	rec := httptest.NewRecorder()
@@ -1431,7 +1564,7 @@ func TestAdminInterestsHandler_DeleteIdempotent(t *testing.T) {
 
 func TestAdminInterestsHandler_MethodNotAllowed(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	handler := adminInterestsHandler(registry, sessions, nil)
+	handler := adminInterestsHandler(registry, sessions, nil, logging.New("test"))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/interests/", nil)
 	rec := httptest.NewRecorder()
@@ -1479,7 +1612,8 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 		}
 	}
 	waitFor(t, 5*time.Second, "the interest cache to hold every row", func() bool {
-		return len(registry.List()) == len(interests)
+		listed, err := registry.List()
+		return err == nil && len(listed) == len(interests)
 	})
 	return registry, sessions
 }
@@ -1487,7 +1621,7 @@ func setupInterestLastSeenTest(t *testing.T, interests []string, options ...sess
 // heartbeat registers sessionID now and answers the heartbeat time its live entry records.
 func heartbeat(t *testing.T, sessions *session.SessionRegistry, sessionID string) int64 {
 	t.Helper()
-	if err := sessions.Put(sessionID, session.SessionEntry{Port: 1, MachineID: "test-machine", Dir: "/test/" + sessionID}); err != nil {
+	if err := sessions.Put(sessionID, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + sessionID}); err != nil {
 		t.Fatalf("failed to put session entry for %s: %v", sessionID, err)
 	}
 	entry, err := sessions.Get(sessionID)
@@ -1545,7 +1679,7 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 	registry, sessions := setupInterestLastSeenTest(t, []string{live, unknown})
 	beat := heartbeat(t, sessions, live)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[live], beat)
 	wantLastSeen(t, "GET /v1/interests/"+live, single[live], beat)
 	for route, row := range map[string]interestRowLastSeen{"GET /v1/interests/": list[unknown], "GET /v1/interests/" + unknown: single[unknown]} {
@@ -1573,12 +1707,12 @@ func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testin
 	})
 	time.Sleep(sessionTTL + 200*time.Millisecond)
 
-	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil))
+	list, single := listedInterestRows(t, adminInterestsHandler(registry, sessions, nil, logging.New("test")))
 	wantLastSeen(t, "GET /v1/interests/", list[expired], beat)
 	wantLastSeen(t, "GET /v1/interests/"+expired, single[expired], beat)
 }
 
-func setupSessionsTest(t *testing.T, interests map[string][]string, ports map[string]int) (*store.Registry, *session.SessionRegistry) {
+func setupSessionsTest(t *testing.T, interests map[string][]string, live []string) (*store.Registry, *session.SessionRegistry) {
 	t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
 	if err != nil {
@@ -1594,6 +1728,7 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, ports map[st
 	if err != nil {
 		t.Fatalf("failed to create session registry: %v", err)
 	}
+	waitForSessions(t, sessions)
 	// Each session's row is written to the interest bucket as stored, not through Upsert, which
 	// drops a topic reaching a private stream subject: a test seeding one models a row an earlier
 	// build stored.
@@ -1621,11 +1756,11 @@ func setupSessionsTest(t *testing.T, interests map[string][]string, ports map[st
 			t.Fatalf("failed to read back interest for %s: %v", sessionID, err)
 		}
 	}
-	for sessionID, port := range ports {
+	for _, sessionID := range live {
 		if err := sessions.Put(sessionID, session.SessionEntry{
-			Port:      port,
-			MachineID: "test-machine",
-			Dir:       "/test/" + sessionID,
+			SelfSubscribed: true,
+			MachineID:      "test-machine",
+			Dir:            "/test/" + sessionID,
 		}); err != nil {
 			t.Fatalf("failed to put session entry for %s: %v", sessionID, err)
 		}
@@ -1663,16 +1798,26 @@ func waitForRegistry(t *testing.T, registry *store.Registry) {
 	}
 }
 
+// waitForSessions is waitForRegistry for the session registry: GET /v1/sessions answers the
+// refilling 503 until the session copy has completed a read of its bucket, so a test that seeds
+// rows with Put and then lists them waits here first. A test that asserts the refusal itself puts
+// the copy where it cannot answer after this wait, never before it.
+func waitForSessions(t *testing.T, sessions *session.SessionRegistry) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sessions.WaitForCacheReady(ctx); err != nil {
+		t.Fatalf("wait for the session registry's cache: %v", err)
+	}
+}
+
 func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 	registry, sessions := setupSessionsTest(t,
 		map[string][]string{
 			"ses_b": {"notifications.test.>"},
 			"ses_a": {"notifications.github.>"},
 		},
-		map[string]int{
-			"ses_a": 13382,
-			"ses_b": 13383,
-		},
+		[]string{"ses_a", "ses_b"},
 	)
 	handler := sessionsHandler(registry, sessions)
 
@@ -1694,8 +1839,10 @@ func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 	if items[0].SessionID != "ses_a" {
 		t.Fatalf("expected first item ses_a, got %s", items[0].SessionID)
 	}
-	if items[0].Port != 13382 {
-		t.Fatalf("expected ses_a port 13382, got %d", items[0].Port)
+	// Always 0: no registration carries a serving port, and the field stays in the answer
+	// because every released client parses it.
+	if items[0].Port != 0 {
+		t.Fatalf("expected ses_a port 0, got %d", items[0].Port)
 	}
 	if items[0].MachineID != "test-machine" {
 		t.Fatalf("expected machine_id test-machine, got %s", items[0].MachineID)
@@ -1706,8 +1853,8 @@ func TestSessionsHandler_JoinsRegistries(t *testing.T) {
 	if len(items[0].Topics) == 0 {
 		t.Fatal("expected ses_a to have topics")
 	}
-	if items[1].Port != 13383 {
-		t.Fatalf("expected ses_b port 13383, got %d", items[1].Port)
+	if items[1].Port != 0 {
+		t.Fatalf("expected ses_b port 0, got %d", items[1].Port)
 	}
 }
 
@@ -1733,14 +1880,15 @@ func TestSessionsHandler_IncludesTitle(t *testing.T) {
 		t.Fatalf("failed to upsert interest: %v", err)
 	}
 	if err := sessions.Put("ses_titled", session.SessionEntry{
-		Port:      13382,
-		MachineID: "test-machine",
-		Dir:       "/test/ses_titled",
-		Title:     "My Session Title",
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Dir:            "/test/ses_titled",
+		Title:          "My Session Title",
 	}); err != nil {
 		t.Fatalf("failed to put session entry: %v", err)
 	}
 	waitForRegistry(t, registry)
+	waitForSessions(t, sessions)
 
 	handler := sessionsHandler(registry, sessions)
 	req := httptest.NewRequest(http.MethodGet, "/v1/sessions", nil)
@@ -1794,13 +1942,13 @@ func TestSubscribeHandler_RejectsEmptySessionID(t *testing.T) {
 func TestSubscribeHandler_StoresSelfSubscribedSessionWithoutPort(t *testing.T) {
 	// Given
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	state := &listenerDeps{registry: registry, sessions: sessions}
+	state := &listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}
 	handler := subscribeHandler(state, "test-machine", logging.New("test"))
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/interests/subscribe",
-		strings.NewReader(`{"session_id":"ses_omp","topics":["notifications.agent.ses_omp"],"self_subscribed":true}`),
+		strings.NewReader(consumerRegistration("ses_omp", "e", "notifications.agent.ses_omp")),
 	)
 
 	// When
@@ -1890,10 +2038,8 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 			"ses_live": {"notifications.test.>"},
 			"ses_dead": {"notifications.github.>"},
 		},
-		map[string]int{
-			"ses_live": 13382,
-			// ses_dead intentionally not in sessions registry — it's dead
-		},
+		// ses_dead intentionally not in the sessions registry — it's dead
+		[]string{"ses_live"},
 	)
 	handler := sessionsHandler(registry, sessions)
 
@@ -1914,8 +2060,8 @@ func TestSessionsHandler_OnlyLiveSessions(t *testing.T) {
 	if items[0].SessionID != "ses_live" {
 		t.Fatalf("expected ses_live, got %s", items[0].SessionID)
 	}
-	if items[0].Port != 13382 {
-		t.Fatalf("expected port 13382, got %d", items[0].Port)
+	if items[0].Port != 0 {
+		t.Fatalf("expected port 0, got %d", items[0].Port)
 	}
 	if len(items[0].Topics) == 0 {
 		t.Fatal("expected ses_live to have topics from interests")
@@ -1926,9 +2072,7 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 	// Session in envoy_sessions but NOT in interests — still appears, just no topics
 	registry, sessions := setupSessionsTest(t,
 		nil, // no interests
-		map[string]int{
-			"ses_orphan": 13382,
-		},
+		[]string{"ses_orphan"},
 	)
 	handler := sessionsHandler(registry, sessions)
 
@@ -1946,8 +2090,8 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(items))
 	}
-	if items[0].Port != 13382 {
-		t.Fatalf("expected port 13382, got %d", items[0].Port)
+	if items[0].Port != 0 {
+		t.Fatalf("expected port 0, got %d", items[0].Port)
 	}
 	if len(items[0].Topics) != 0 {
 		t.Fatalf("expected no topics for orphan session, got %v", items[0].Topics)
@@ -1956,7 +2100,7 @@ func TestSessionsHandler_NoInterestsData(t *testing.T) {
 
 func TestIdempotencyKey_Send(t *testing.T) {
 	client := setupPublishTestClient(t)
-	registry, sessions := setupSessionsTest(t, nil, map[string]int{"tgt1": 1})
+	registry, sessions := setupSessionsTest(t, nil, []string{"tgt1"})
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 	handler := sendHandler(state, logging.New("test"))
 
@@ -2492,12 +2636,7 @@ func durableHeldElsewhere(t *testing.T, uri, consumer string) (*bus.Client, *nat
 // timeout passes.
 func waitFor(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(timeout); !cond(); {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", desc)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, 50*time.Millisecond, desc, cond)
 }
 
 // bindOutcome is what a bindListenerDurable run in a goroutine returned, and when.
@@ -2735,6 +2874,25 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 		t.Fatalf("boot migrated listener bus: %v", err)
 	}
 	t.Cleanup(client.Close)
+	// nats-server releases a push binding on the consumer's own goroutine, after the client's
+	// Close is answered, so only the consumer's own report tells this row that the legacy
+	// durable may be bound again: startListenerSubscription binds once and does not retry a
+	// "consumer is already bound" refusal, which is what took pull request #2817 out of the
+	// merge queue (run 42117898395). Production never binds through that primitive; its boot
+	// calls bindListenerDurable, which retries the bind every durableBindInterval up to
+	// durableBindDeadline. internal/bus/stream_config_test.go waits the same way.
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
+		if err != nil {
+			t.Fatalf("read the legacy durable consumer: %v", err)
+		}
+		if !info.PushBound {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the server still reports the legacy durable consumer push-bound 30s after the legacy connection closed")
+		}
+	}
 	durableReceived := make(chan struct{}, 1)
 	durableSub, err := startListenerSubscription(client, consumer, func(msg *natsgo.Msg) {
 		durableReceived <- struct{}{}
@@ -2748,7 +2906,7 @@ func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read migrated consumer: %v", err)
 	}
-	if consumerInfo.Config.FilterSubject != "" || len(consumerInfo.Config.FilterSubjects) != len(bus.StreamSubjects()) {
+	if consumerInfo.Config.FilterSubject != "" || !slices.Equal(consumerInfo.Config.FilterSubjects, bus.StreamSubjects()) {
 		t.Fatalf("migrated consumer filters = %#v", consumerInfo.Config)
 	}
 	if consumerInfo.Config.InactiveThreshold != consumerInactiveThreshold {
@@ -2820,8 +2978,10 @@ func TestIsControlTopic(t *testing.T) {
 	}
 }
 
-func TestListenerDeliveryHandler_RoleReleasedByReplacementHasNoHolder(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+// A role whose claim its replacement released has no holder, so the lane keeps the message for
+// the role's next holder and publishes no delivery exception.
+func TestListenerDeliveryHandler_RoleReleasedByReplacementIsKeptForItsNextHolder(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
 	const controller = "legion-controller"
 	if _, err := harness.registry.SetRole("ses_role", "test-machine", controller, false); err != nil {
 		t.Fatalf("claim controller role: %v", err)
@@ -2830,7 +2990,9 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementHasNoHolder(t *testing
 		t.Fatalf("claim reviewer role: %v", err)
 	}
 	controllerTopic := contracts.RoleTopicPrefix + controller
-	if err := harness.registry.Remove(context.Background(), "ses_role", []string{controllerTopic}); err != nil {
+	// The claims above name no process, so the release that frees one is the forced one DELETE
+	// /v1/interests/<session_id> makes (store.RoleReleaseAuthority.Force).
+	if _, err := harness.registry.Remove(context.Background(), "ses_role", []string{controllerTopic}, store.RoleReleaseAuthority{Force: true}); err != nil {
 		t.Fatalf("release controller role: %v", err)
 	}
 
@@ -2849,13 +3011,24 @@ func TestListenerDeliveryHandler_RoleReleasedByReplacementHasNoHolder(t *testing
 		t.Fatalf("flush subscriptions: %v", err)
 	}
 
-	if err := harness.client.PublishCore(item); err != nil {
+	if err := harness.client.Publish(item); err != nil {
 		t.Fatalf("publish released controller role: %v", err)
 	}
-	assertDeliveryException(t, probe, item, "no_holder")
+	kept := waitForKeptRoleMessage(t, harness.client, controller, item.EventID)
+	if kept.Topic != controllerTopic {
+		t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, controllerTopic)
+	}
+	noException(t, probe)
 }
-func TestListenerDeliveryHandler_ExpiredRoleDropsClaimAfterException(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+
+// A role-lane delivery whose holder is not answering reports the delivery failed and leaves the
+// claim exactly as it is: the role lane is one more reader of a session's state, and the one
+// caller that ends a claim is the role reaper, once the holder is gone. Dropping it here took the
+// role away from a holder stalled for a minute, and every message for that role then reached
+// nobody until it claimed again. Nothing is kept for it either: a claim that stands is a claim no
+// next holder will make, so a kept copy would wait for a claim that never comes (roleKeepable).
+func TestListenerDeliveryHandler_ExpiredRoleKeepsTheClaimAfterItsException(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
 	const role = "expired-holder"
 	if _, err := harness.registry.SetRole("ses_expired", "test-machine", role, false); err != nil {
 		t.Fatalf("claim expired role: %v", err)
@@ -2875,12 +3048,12 @@ func TestListenerDeliveryHandler_ExpiredRoleDropsClaimAfterException(t *testing.
 		t.Fatalf("flush role subscriptions: %v", err)
 	}
 
-	if err := harness.client.PublishCore(item); err != nil {
+	if err := harness.client.Publish(item); err != nil {
 		t.Fatalf("publish role delivery: %v", err)
 	}
 	assertDeliveryException(t, probe, item, "delivery_failed")
-	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "" {
-		t.Fatalf("expired role claim = %q, %v; want removed", holder, err)
+	if holder, err := harness.registry.RoleHolder(role); err != nil || holder != "ses_expired" {
+		t.Fatalf("the claim after the failed delivery = %q, %v; want ses_expired's, left for the reaper", holder, err)
 	}
 }
 
@@ -2891,7 +3064,7 @@ func TestListenerDeliveryHandler_ExpiredRoleDropsClaimAfterException(t *testing.
 // on the cache's word reports this message delivery_failed and leaves every later one no_holder until
 // the holder claims again.
 func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotSeen(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	const (
 		holderID = "ses_unseen_holder"
 		role     = "unseen-holder"
@@ -2915,13 +3088,13 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 	var mu sync.Mutex
 	var forwardedTo []string
 	cfg := harness.config
-	cfg.forwardRole = inlineForward(func(subject string, _ contracts.Envelope, _ time.Duration) error {
+	cfg.forwardRole = inlineForward(func(subject string, _ contracts.Envelope, _ string, _ time.Duration) error {
 		mu.Lock()
 		defer mu.Unlock()
 		forwardedTo = append(forwardedTo, subject)
 		return nil
 	})
-	cfg = wireTestDeliveryWorkers(t, cfg)
+	cfg = wireTestRoleForwarder(t, cfg)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "unseen-holder-delivery")
 	item.Payload = `{"type":"worker-queued"}`
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
@@ -2947,7 +3120,7 @@ func TestListenerDeliveryHandler_RoleLaneForwardsToAHolderItsSessionCacheHasNotS
 }
 
 func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	const role = "forward-publish-error"
 	if err := harness.sessions.Put("ses_unreachable", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
 		t.Fatalf("register holder: %v", err)
@@ -2957,11 +3130,11 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 	}
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, time.Duration) error {
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		forwards.Add(1)
 		return errors.New("nats: connection closed")
 	})
-	cfg = wireTestDeliveryWorkers(t, cfg)
+	cfg = wireTestRoleForwarder(t, cfg)
 	handler := coreNATSDeliveryHandler(cfg)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "forward-publish-error")
 	item.Payload = `{"type":"worker-queued"}`
@@ -2985,8 +3158,8 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 	if got := forwards.Load(); got != 2 {
 		t.Fatalf("forward attempts = %d, want 2: a failed forward must clear the attempt cache", got)
 	}
-	if logs := harness.logs.String(); strings.Contains(logs, "receipt_timeout") || !strings.Contains(logs, `"msg":"listener role forward failed"`) {
-		t.Fatalf("a forward publish error must log as a failed forward, never as a receipt timeout:\n%s", logs)
+	if logs := harness.logs.String(); !strings.Contains(logs, `"msg":"listener role forward failed"`) {
+		t.Fatalf("a forward publish error must log as a failed forward:\n%s", logs)
 	}
 }
 
@@ -2998,7 +3171,7 @@ func TestListenerDeliveryHandler_RoleForwardPublishErrorEmitsDeliveryFailed(t *t
 // reaching a holder that cannot execute it. Role forwarding never goes through
 // /v1/messages/send, so without its own guard it would bypass the send boundary's entirely.
 func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	const role = "refuse-unadvertised-mode"
 	if err := harness.sessions.Put("ses_holder", session.SessionEntry{
 		MachineID:      "test-machine",
@@ -3013,11 +3186,11 @@ func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *t
 	}
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, time.Duration) error {
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		forwards.Add(1)
 		return nil
 	})
-	cfg = wireTestDeliveryWorkers(t, cfg)
+	cfg = wireTestRoleForwarder(t, cfg)
 	handler := coreNATSDeliveryHandler(cfg)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "refuse-unadvertised-mode")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
@@ -3053,7 +3226,7 @@ func TestListenerDeliveryHandler_RoleForwardRefusesUnadvertisedDeliveryMode(t *t
 // probing the holder's locator and potentially resuming the worker -- a resume nobody needed,
 // triggered by a duplicate of a message that was, in fact, already delivered.
 func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedelivery(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	const role = "dedupe-before-guard"
 	if err := harness.sessions.Put("ses_holder", session.SessionEntry{
 		MachineID:      "test-machine",
@@ -3068,11 +3241,11 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 	}
 	var forwards atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, time.Duration) error {
+	cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error {
 		forwards.Add(1)
 		return nil
 	})
-	cfg = wireTestDeliveryWorkers(t, cfg)
+	cfg = wireTestRoleForwarder(t, cfg)
 	handler := coreNATSDeliveryHandler(cfg)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "dedupe-before-guard")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
@@ -3126,12 +3299,12 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 	}
 }
 
-// The reason is chosen by which error the forward returns, not by the fact that
-// it failed: only bus.ErrReceiptTimeout (the forward left this process and drew
-// no receipt) is receipt_timeout. A raw nats.ErrTimeout is what the client's
-// flush returns while a reconnecting or stalled connection still buffers the
-// forward, and that forward is not known to have reached anyone.
-func TestListenerDeliveryHandler_RoleForwardErrorSelectsTheReason(t *testing.T) {
+// Every failed forward is delivery_failed, whatever the error: the stream did
+// not acknowledge storing it (bus.ErrForwardNotStored), or the forward never
+// left this process -- a raw nats.ErrTimeout is what the client's flush returns
+// while a reconnecting or stalled connection still buffers it. No forward draws
+// a receipt (startRoleForward), so none is reported receipt_timeout.
+func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *testing.T) {
 	cases := []struct {
 		name       string
 		forwardErr error
@@ -3140,12 +3313,12 @@ func TestListenerDeliveryHandler_RoleForwardErrorSelectsTheReason(t *testing.T) 
 	}{
 		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed"},
 		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed"},
-		{"bus.ErrReceiptTimeout", bus.ErrReceiptTimeout, "receipt_timeout", "listener role receipt timed out"},
-		{"bus.ErrReceiptTimeout wrapped", fmt.Errorf("forward: %w", bus.ErrReceiptTimeout), "receipt_timeout", "listener role receipt timed out"},
+		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed"},
+		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed"},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			harness := newListenerDeliveryHarness(t, nil)
+			harness := newListenerDeliveryHarness(t)
 			role := fmt.Sprintf("forward-error-kind-%d", i)
 			sessionID := fmt.Sprintf("ses_error_kind_%d", i)
 			if err := harness.sessions.Put(sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -3155,8 +3328,8 @@ func TestListenerDeliveryHandler_RoleForwardErrorSelectsTheReason(t *testing.T) 
 				t.Fatalf("claim role: %v", err)
 			}
 			cfg := harness.config
-			cfg.forwardRole = inlineForward(func(string, contracts.Envelope, time.Duration) error { return tc.forwardErr })
-			cfg = wireTestDeliveryWorkers(t, cfg)
+			cfg.forwardRole = inlineForward(func(string, contracts.Envelope, string, time.Duration) error { return tc.forwardErr })
+			cfg = wireTestRoleForwarder(t, cfg)
 			handler := coreNATSDeliveryHandler(cfg)
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "forward-error-kind-"+role)
 			item.Payload = `{"type":"worker-queued"}`
@@ -3174,29 +3347,34 @@ func TestListenerDeliveryHandler_RoleForwardErrorSelectsTheReason(t *testing.T) 
 			assertDeliveryException(t, probe, item, tc.reason)
 
 			logs := harness.logs.String()
-			if !strings.Contains(logs, `"msg":"`+tc.logMessage+`"`) || !strings.Contains(logs, `"delivery_status":"`+map[string]string{"delivery_failed": "failed", "receipt_timeout": "receipt_timeout"}[tc.reason]+`"`) {
+			if !strings.Contains(logs, `"msg":"`+tc.logMessage+`"`) || !strings.Contains(logs, `"delivery_status":"failed"`) {
 				t.Fatalf("log does not carry %q for %s:\n%s", tc.logMessage, tc.reason, logs)
 			}
-			if tc.reason == "delivery_failed" && strings.Contains(logs, "receipt_timeout") {
-				t.Fatalf("a forward that never left this process must not be logged as a receipt timeout:\n%s", logs)
+			if strings.Contains(logs, "receipt") {
+				t.Fatalf("a failed forward must not be logged as a receipt outcome:\n%s", logs)
 			}
 		})
 	}
 }
 
-func TestListenerDeliveryHandler_EmitsExceptionForControlTopicWithNoHolder(t *testing.T) {
+// A control topic with no holder: an agent subject nobody has is still the no_holder exception,
+// while a role nobody holds is kept for the role's next holder and raises none.
+func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.T) {
 	cases := []struct {
 		name  string
 		topic string
+		// role is the role a kept copy is read back under; empty for the agent subject, which
+		// keeps nothing.
+		role string
 	}{
-		{name: "role", topic: contracts.RoleTopicPrefix + "unheld"},
+		{name: "role", topic: contracts.RoleTopicPrefix + "unheld", role: "unheld"},
 		{name: "agent", topic: contracts.AgentSubject("ses_unheld")},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Given
-			harness := newListenerDeliveryHarness(t, nil)
+			harness := newListenerDeliveryHarness(t)
 			item := listenerTestEnvelope(tc.topic, "dedupe-no-holder-"+tc.name)
 			item.Payload = `{"reason":"no_holder"}`
 			item.SourceSession = "ses_source_" + tc.name
@@ -3227,122 +3405,34 @@ func TestListenerDeliveryHandler_EmitsExceptionForControlTopicWithNoHolder(t *te
 			}
 
 			// Then
-			assertDeliveryException(t, probe, item, "no_holder")
+			if tc.role == "" {
+				assertDeliveryException(t, probe, item, "no_holder")
+				return
+			}
+			kept := waitForKeptRoleMessage(t, harness.client, tc.role, item.EventID)
+			if kept.Topic != tc.topic {
+				t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, tc.topic)
+			}
+			noException(t, probe)
 		})
 	}
 }
 
-// A duplicate of a message whose push is still in flight is skipped by the attempt cache: the
-// durable's handler hands each push to the session's worker and returns, so the duplicate is
-// judged while the first push is held.
-func TestListenerDeliveryHandler_SkipsDuplicateWhileDeliveryInFlight(t *testing.T) {
-	// Given
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(*http.Request) (*http.Response, error) {
-		if calls.Add(1) == 1 {
-			close(started)
-			<-release
-		}
-		return listenerDeliveryResponse(http.StatusNoContent), nil
-	}))
-	item := listenerTestEnvelope(contracts.AgentSubject("ses_in_flight"), "dedupe-in-flight")
-	harness.registerTarget(t, "ses_in_flight", item.Topic)
-	data := marshalListenerEnvelope(t, item)
-	// The durable's handler as main binds it, rather than the harness's, which waits for the
-	// pushes it handed over and so for the push this test holds.
-	handler := jetStreamDeliveryHandler(harness.config)
-	msg := &natsgo.Msg{Subject: item.Topic, Data: data}
-	handler(msg)
-	select {
-	case <-started:
-	case <-time.After(5 * time.Second):
-		t.Fatal("first delivery did not start")
-	}
-
-	// When
-	handler(msg)
-	close(release)
-	harness.config.servePorts.settled(t)
-
-	// Then
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("delivery attempts = %d, want 1 while duplicate is in flight", got)
-	}
-}
-
-// A push that fails on the live lane, which pushes the recipient itself, is reported
-// delivery_failed and clears the attempt, so the next copy of the message is pushed again. (On the
-// durable path a serving-port session's push is the worker's, which keeps the message at the head
-// of its queue and pushes it again rather than reporting it.)
-func TestListenerDeliveryHandler_RetriesFailedDelivery(t *testing.T) {
-	// Given
-	var calls atomic.Int32
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(*http.Request) (*http.Response, error) {
-		calls.Add(1)
-		return nil, errors.New("prompt_async unavailable")
-	}))
-	item := listenerTestEnvelope(contracts.AgentSubject("ses_retry"), "dedupe-retry")
-	item.Payload = `{"reason":"delivery_failed"}`
-	item.SourceSession = "ses_source_delivery_failed"
-	harness.registerTarget(t, "ses_retry", item.Topic)
-	data := marshalListenerEnvelope(t, item)
-	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
-	if err != nil {
-		t.Fatalf("subscribe exception probe: %v", err)
-	}
-	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	handler := coreNATSDeliveryHandler(harness.config)
-
-	// When
-	handler(&natsgo.Msg{Data: data})
-	assertDeliveryException(t, probe, item, "delivery_failed")
-	handler(&natsgo.Msg{Data: data})
-
-	// Then
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("delivery attempts = %d, want 2 after retryable failure", got)
-	}
-}
-
-func TestListenerDeliveryHandler_DedupesSuccessfulDelivery(t *testing.T) {
-	// Given
-	var calls atomic.Int32
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(*http.Request) (*http.Response, error) {
-		calls.Add(1)
-		return listenerDeliveryResponse(http.StatusNoContent), nil
-	}))
-	item := listenerTestEnvelope(contracts.AgentSubject("ses_success"), "dedupe-success")
-	harness.registerTarget(t, "ses_success", item.Topic)
-	data := marshalListenerEnvelope(t, item)
-
-	// When
-	harness.handler(&natsgo.Msg{Data: data})
-	harness.handler(&natsgo.Msg{Data: data})
-
-	// Then
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("delivery attempts = %d, want 1 after successful dedupe", got)
-	}
-}
-
 // TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode proves one
-// incapable subscriber cannot receive a tagged delivery or prevent a capable
-// subscriber on the same topic from receiving it.
+// incapable subscriber cannot be given a tagged delivery or keep a capable
+// subscriber on the same topic from taking it. Both subscribers are on consumer delivery, as
+// every live session is, so the message the capable one is given is its own consumer's to relay:
+// the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
+// publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
-	pushes := &pushLog{}
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(request *http.Request) (*http.Response, error) {
-		pushes.record(strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/session/"), "/prompt_async"))
-		return listenerDeliveryResponse(http.StatusNoContent), nil
-	}))
+	harness := newListenerDeliveryHarness(t)
 	const (
 		topic     = "notifications.github.owner.repo.issue.1"
 		capable   = "ses_capable"
 		incapable = "ses_incapable"
 	)
-	harness.registerFanoutTarget(t, capable, topic, []string{"btw"})
-	harness.registerFanoutTarget(t, incapable, topic, nil)
+	harness.registerConsumerTarget(t, capable, topic, []string{"btw"})
+	harness.registerConsumerTarget(t, incapable, topic, nil)
 	item := listenerTestEnvelope(topic, "fanout-refuse-unadvertised-mode")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
@@ -3355,7 +3445,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 	}
 
 	started := time.Now()
-	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 	elapsed := time.Since(started)
 	if elapsed >= 4*time.Second {
 		t.Fatalf("capability refusal took %s, want less than 4s", elapsed)
@@ -3365,11 +3455,13 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 		t.Fatalf("flush delivery exception: %v", err)
 	}
 
-	if got := pushes.count(capable); got != 1 {
-		t.Fatalf("capable subscriber deliveries = %d, want 1", got)
-	}
-	if got := pushes.count(incapable); got != 0 {
-		t.Fatalf("incapable subscriber deliveries = %d, want 0", got)
+	// Nothing the fan-out hands to nobody is recorded: the capable subscriber's copy is its own
+	// consumer's to relay and the incapable one's is refused, so neither leaves a dedupe key
+	// behind (fanoutDelivery).
+	for _, target := range []string{capable, incapable} {
+		if harness.config.dedupeCache.Seen(item.DedupeKey, target) || harness.config.attemptCache.Seen(item.DedupeKey, target) {
+			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", target)
+		}
 	}
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != incapable {
 		t.Fatalf("exception recipient = %q, want %q", recipient, incapable)
@@ -3380,6 +3472,9 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 	if !strings.Contains(body, `test_messages_delivered{delivery_status="failed"} 1`) {
 		t.Fatalf("expected per-recipient failure metric, got %s", body)
 	}
+	if !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 1`) {
+		t.Fatalf("expected the capable subscriber's message to be its own consumer's to relay, got %s", body)
+	}
 	if strings.Contains(body, `test_messages_naked 1`) {
 		t.Fatalf("terminal refusal must not NAK the fanout envelope, got %s", body)
 	}
@@ -3388,13 +3483,66 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 	}
 }
 
+// A fanout refusal of a team message is reported on the stream, where a reader of the team's
+// exception lane finds it: that lane is a stream subject (bus.StreamSubjects), so the report
+// survives the moment it was made and the consumer of a session following the lane carries it
+// when that session returns. Every fanout refusal took core NATS before team topics were stored,
+// which keeps nothing: the report of a team message nobody could take would reach nobody either.
+func TestListenerDeliveryHandler_FanoutRefusalOfATeamTopicIsStoredOnItsExceptionLane(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	const (
+		topic     = "notifications.team.refusal-stored"
+		incapable = "ses_team_incapable"
+	)
+	harness.registerFanoutTarget(t, incapable, topic, nil)
+	item := listenerTestEnvelope(topic, "fanout-refusal-team-stored")
+	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
+
+	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+
+	lane := bus.ExceptionTopicPrefix + topic
+	stored, err := harness.client.JS().GetLastMsg(bus.Stream, lane)
+	if err != nil {
+		t.Fatalf("the stream holds no report on %s: %v; a core publish of it would reach no session", lane, err)
+	}
+	var exception contracts.Envelope
+	if err := json.Unmarshal(stored.Data, &exception); err != nil {
+		t.Fatalf("decode the stored report: %v", err)
+	}
+	if exception.Topic != lane || exception.SourceEventID != item.EventID {
+		t.Fatalf("stored report %+v, want the lane %s and the refused event %s", exception, lane, item.EventID)
+	}
+	var payload struct {
+		OriginalTopic    string `json:"original_topic"`
+		Reason           string `json:"reason"`
+		RecipientSession string `json:"recipient_session"`
+	}
+	if err := json.Unmarshal([]byte(exception.Payload), &payload); err != nil {
+		t.Fatalf("decode the stored report's payload: %v", err)
+	}
+	if payload.OriginalTopic != topic || payload.Reason != "delivery_failed" || payload.RecipientSession != incapable {
+		t.Fatalf("stored report payload = %+v, want delivery_failed for %s on %s", payload, incapable, topic)
+	}
+	if logs := harness.logs.String(); strings.Contains(logs, exceptionPublishFailedLine) {
+		t.Fatalf("the refusal's report must publish successfully:\n%s", logs)
+	}
+}
+
 // TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery
 // proves a terminal refusal is recorded before its exception is published, so
 // a redelivery with the same key cannot emit another refusal.
 func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("incapable subscriber must not receive prompt_async")
-	}))
+	harness := newListenerDeliveryHarness(t)
+	// Both copies refill from their buckets on a goroutine the harness's registries start
+	// (kvwatch.Watcher.Start), and a write that lands while that first read runs carries no mark
+	// of it, so the sweep ending the read takes it back out of the copy
+	// (kvwatch.Copy.CompleteRead) until the watcher delivers the write's own record. The fan-out
+	// reads both copies for the message below, and a session whose record it cannot read is one
+	// it reports dead and sends no exception for ("listener delivery failed ... no session record
+	// for session ses_incapable", merge-queue job 127694167470), so both reads are waited out
+	// here, before registerFanoutTarget's two writes.
+	waitForRegistry(t, harness.registry)
+	waitForSessions(t, harness.sessions)
 	const (
 		topic     = "notifications.github.owner.repo.issue.4"
 		incapable = "ses_incapable"
@@ -3412,14 +3560,14 @@ func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *t
 	}
 	data := marshalListenerEnvelope(t, item)
 
-	harness.handler(&natsgo.Msg{Data: data})
+	harness.coreHandler(&natsgo.Msg{Data: data})
 	if err := harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush first refusal exception: %v", err)
 	}
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != incapable {
 		t.Fatalf("first exception recipient = %q, want %q", recipient, incapable)
 	}
-	harness.handler(&natsgo.Msg{Data: data})
+	harness.coreHandler(&natsgo.Msg{Data: data})
 	if err := harness.client.Conn.Flush(); err != nil {
 		t.Fatalf("flush duplicate refusal: %v", err)
 	}
@@ -3428,97 +3576,62 @@ func TestListenerDeliveryHandler_FanoutRefusalDedupesAfterExceptionDelivery(t *t
 	}
 }
 
-// TestListenerDeliveryHandler_FanoutRechecksCapabilitiesAtDelivery proves a
-// recipient capability changed while another recipient is receiving the same
-// fanout is authoritative for its own prompt_async attempt. It runs on the live
-// lane, where the fan-out pushes each recipient itself: on the durable path
-// every push is handed to its session's worker before any of them is made
-// (servePortWorkers), so each recipient's capabilities are read when the
-// message is taken rather than when its push leaves.
-func TestListenerDeliveryHandler_FanoutRechecksCapabilitiesAtDelivery(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, nil)
-	const (
-		topic        = "notifications.github.owner.repo.issue.5"
-		firstTarget  = "ses_first"
-		secondTarget = "ses_second"
-	)
-	harness.registerFanoutTarget(t, firstTarget, topic, []string{"btw"})
-	harness.registerFanoutTarget(t, secondTarget, topic, []string{"btw"})
-	pushes := &pushLog{}
-	// other names the recipient of the two that sessionID is not: the one whose capability the
-	// first push revokes, and the one no push may reach after that.
-	other := func(sessionID string) string {
-		if sessionID == firstTarget {
-			return secondTarget
-		}
-		return firstTarget
-	}
-	cfg := harness.config
-	cfg.deliverer.HTTPClient = &http.Client{Transport: listenerTransport(func(request *http.Request) (*http.Response, error) {
-		sessionID := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/session/"), "/prompt_async")
-		if pushes.record(sessionID) == 1 {
-			if err := harness.sessions.Put(other(sessionID), session.SessionEntry{
-				Port:      1,
-				MachineID: "test-machine",
-			}); err != nil {
-				t.Fatalf("revoke second recipient capability: %v", err)
-			}
-		}
-		return listenerDeliveryResponse(http.StatusNoContent), nil
-	})}
-	handler := coreNATSDeliveryHandler(cfg)
-	item := listenerTestEnvelope(topic, "fanout-recheck-delivery-capability")
-	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
-	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
-	if err != nil {
-		t.Fatalf("subscribe exception probe: %v", err)
-	}
-	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := harness.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush exception probe: %v", err)
-	}
-
-	handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-	if err := harness.client.Conn.Flush(); err != nil {
-		t.Fatalf("flush capability refusal: %v", err)
-	}
-
-	pushed := pushes.all()
-	if len(pushed) != 1 {
-		t.Fatalf("recipients pushed = %v, want exactly one: the recipient whose push revoked the other's capability", pushed)
-	}
-	revokedTarget := other(pushed[0])
-	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != revokedTarget {
-		t.Fatalf("exception recipient = %q, want capability-revoked %q", recipient, revokedTarget)
-	}
-}
-
 // TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload proves ordinary
 // notifications remain available to every matching subscriber regardless of
-// its delivery capabilities.
+// its delivery capabilities: each is given the message by its own consumer's relay, which the
+// fan-out counts skipped and refuses for nobody (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
-	pushes := &pushLog{}
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(request *http.Request) (*http.Response, error) {
-		pushes.record(strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/session/"), "/prompt_async"))
-		return listenerDeliveryResponse(http.StatusNoContent), nil
-	}))
+	harness := newListenerDeliveryHarness(t)
 	const (
 		topic       = "notifications.github.owner.repo.issue.2"
 		firstTarget = "ses_first"
 		nextTarget  = "ses_next"
 	)
-	harness.registerFanoutTarget(t, firstTarget, topic, nil)
-	harness.registerFanoutTarget(t, nextTarget, topic, nil)
+	// Both copies the fan-out reads refill on the goroutine the watcher starts, and a write that
+	// lands while that first read runs is taken back out of the copy until the watcher delivers
+	// its own record, so a target registered before the reads end is one the fan-out cannot see
+	// ("the untagged message was not given to ses_first", envoy-go-race job 128250468046). Both
+	// reads are waited out here, before registerConsumerTarget's writes, as the rows above do.
+	waitForRegistry(t, harness.registry)
+	waitForSessions(t, harness.sessions)
+	harness.registerConsumerTarget(t, firstTarget, topic, nil)
+	harness.registerConsumerTarget(t, nextTarget, topic, nil)
+	// The fan-out reaches only what these two registries answer for, so they are read here: a
+	// registration either cache lost would otherwise show up below as a missing dedupe entry,
+	// which says nothing about where it went.
+	var matched []string
+	for _, interest := range harness.registry.Match("test-machine", topic) {
+		matched = append(matched, interest.SessionID)
+	}
+	for _, target := range []string{firstTarget, nextTarget} {
+		if !slices.Contains(matched, target) {
+			t.Fatalf("the registry matches %q on %s, want %s among them", matched, topic, target)
+		}
+		if _, state := harness.sessions.Lookup(target); state != session.Live {
+			t.Fatalf("session %s reads %s before the delivery, want live", target, state)
+		}
+	}
 	item := listenerTestEnvelope(topic, "fanout-untagged")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"}}`
+	probe := exceptionProbe(t, harness.client)
 
-	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-
-	if got := pushes.count(firstTarget); got != 1 {
-		t.Fatalf("first untagged subscriber deliveries = %d, want 1", got)
+	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	if err := harness.client.Conn.Flush(); err != nil {
+		t.Fatalf("flush what the fan-out published: %v", err)
 	}
-	if got := pushes.count(nextTarget); got != 1 {
-		t.Fatalf("next untagged subscriber deliveries = %d, want 1", got)
+
+	body := metricsBody(t, harness)
+	if got := counterValue(t, body, deliveredSeries("skipped")); got != 2 {
+		t.Fatalf("%s = %d, want 2 - the untagged message is both subscribers' own consumers' to relay:\n%s", deliveredSeries("skipped"), got, body)
+	}
+	if got := counterValue(t, body, deliveredSeries("failed")); got != -1 {
+		t.Fatalf("%s = %d, want no series at all - an untagged message is refused for nobody:\n%s", deliveredSeries("failed"), got, body)
+	}
+	noException(t, probe)
+	for _, target := range []string{firstTarget, nextTarget} {
+		if harness.config.dedupeCache.Seen(item.DedupeKey, target) || harness.config.attemptCache.Seen(item.DedupeKey, target) {
+			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", target)
+		}
 	}
 }
 
@@ -3532,11 +3645,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 	}
 	for name, payload := range cases {
 		t.Run(name, func(t *testing.T) {
-			pushes := &pushLog{}
-			harness := newListenerDeliveryHarness(t, listenerTransport(func(request *http.Request) (*http.Response, error) {
-				pushes.record(strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/session/"), "/prompt_async"))
-				return listenerDeliveryResponse(http.StatusNoContent), nil
-			}))
+			harness := newListenerDeliveryHarness(t)
 			const (
 				topic       = "notifications.github.owner.repo.issue.3"
 				firstTarget = "ses_first"
@@ -3555,13 +3664,12 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 				t.Fatalf("flush exception probe: %v", err)
 			}
 
-			harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+			harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
-			if got := pushes.count(firstTarget); got != 0 {
-				t.Fatalf("first malformed subscriber deliveries = %d, want 0", got)
-			}
-			if got := pushes.count(nextTarget); got != 0 {
-				t.Fatalf("next malformed subscriber deliveries = %d, want 0", got)
+			for _, target := range []string{firstTarget, nextTarget} {
+				if harness.config.dedupeCache.Seen(item.DedupeKey, target) {
+					t.Fatalf("%s was given a message whose delivery mode cannot be read", target)
+				}
 			}
 			recipients := map[string]bool{}
 			for range 2 {
@@ -3575,76 +3683,45 @@ func TestListenerDeliveryHandler_FanoutRefusesUnreadableOrAmbiguousDeliveryMode(
 	}
 }
 
-func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsSkipped(t *testing.T) {
-	// Given
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("unexpected prompt_async request")
-	}))
-	item := listenerTestEnvelope("notifications.github.owner.repo.issue.1", "self-subscribed-skip")
-	if _, err := harness.registry.Upsert(store.Interest{
-		SessionID: "ses_omp",
-		MachineID: "test-machine",
-	}, []string{item.Topic}); err != nil {
-		t.Fatalf("register interest: %v", err)
-	}
-	if err := harness.sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
-		t.Fatalf("register self-subscribed session: %v", err)
-	}
+// An entry the previous build wrote for a portless self-subscribed session is unreachable now:
+// no consumer of its own holds its messages and no subscription of its own takes them, so the
+// delivery fails (session.ErrNoSessionRecord) instead of counting as skipped, on a followed
+// topic and on the session's agent subject alike. Only a message a consumer holds is skipped.
+func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedDeliveryAsFailed(t *testing.T) {
+	for _, topic := range []string{"notifications.github.owner.repo.issue.1", contracts.AgentSubject("ses_omp")} {
+		t.Run(topic, func(t *testing.T) {
+			// Given
+			harness := newListenerDeliveryHarness(t)
+			item := listenerTestEnvelope(topic, "self-subscribed-unreachable")
+			if _, err := harness.registry.Upsert(store.Interest{
+				SessionID: "ses_omp",
+				MachineID: "test-machine",
+			}, []string{item.Topic}); err != nil {
+				t.Fatalf("register interest: %v", err)
+			}
+			if err := harness.sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
+				t.Fatalf("register self-subscribed session: %v", err)
+			}
 
-	// When
-	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+			// When
+			harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
 
-	// Then
-	recorder := httptest.NewRecorder()
-	harness.metrics.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	body := recorder.Body.String()
-	if !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 1`) {
-		t.Fatalf("expected skipped delivery metric, got %s", body)
-	}
-	if strings.Contains(body, `test_messages_delivered{delivery_status="delivered"} 1`) {
-		t.Fatalf("expected no delivered metric for skipped push, got %s", body)
-	}
-}
-
-func TestListenerDeliveryHandler_RecordsPortlessSelfSubscribedAgentDeliveryAsSkipped(t *testing.T) {
-	// Given
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("unexpected prompt_async request")
-	}))
-	item := listenerTestEnvelope(contracts.AgentSubject("ses_omp"), "self-subscribed-agent-skip")
-	if _, err := harness.registry.Upsert(store.Interest{
-		SessionID: "ses_omp",
-		MachineID: "test-machine",
-	}, []string{item.Topic}); err != nil {
-		t.Fatalf("register agent interest: %v", err)
-	}
-	if err := harness.sessions.Put("ses_omp", session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine"}); err != nil {
-		t.Fatalf("register self-subscribed session: %v", err)
-	}
-
-	// When
-	harness.handler(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
-
-	// Then
-	recorder := httptest.NewRecorder()
-	harness.metrics.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	body := recorder.Body.String()
-	if !strings.Contains(body, `test_messages_delivered{delivery_status="skipped"} 1`) {
-		t.Fatalf("expected skipped agent delivery metric, got %s", body)
-	}
-	if strings.Contains(body, `test_messages_delivered{delivery_status="delivered"} 1`) {
-		t.Fatalf("expected no delivered metric for skipped agent push, got %s", body)
+			// Then
+			body := deliveredMetrics(t, harness)
+			if strings.Contains(body, `test_messages_delivered{delivery_status="skipped"}`) {
+				t.Fatalf("expected no skipped delivery metric, got %s", body)
+			}
+			if strings.Contains(body, `test_messages_delivered{delivery_status="delivered"}`) {
+				t.Fatalf("expected no delivered metric for an unreachable session, got %s", body)
+			}
+		})
 	}
 }
 
 // A delivery that fails on a non-control topic raises no exception: only control topics get one.
-// The recipient's record is gone, so the delivery ends there -- where a serving-port session whose
-// port refuses would be pushed again by its worker until the port accepts it, rather than failing.
+// The recipient's record is gone, so the delivery ends there.
 func TestListenerDeliveryHandler_FailedDeliveryOnNonControlTopic_NoException(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(request *http.Request) (*http.Response, error) {
-		t.Errorf("the recipient has no record, so nothing may be pushed to it; got a push to %s", request.URL)
-		return nil, errors.New("unexpected push")
-	}))
+	harness := newListenerDeliveryHarness(t)
 	// Use a non-control topic (not notifications.role.* or notifications.agent.*)
 	item := listenerTestEnvelope("notifications.github.owner.repo.issue.1", "dedupe-non-control")
 	// Register a subscriber for this topic, with no session record behind it.
@@ -3678,10 +3755,7 @@ func TestListenerDeliveryHandler_FailedDeliveryOnNonControlTopic_NoException(t *
 // A delivery that fails on an exceptions topic raises no exception: that would recurse. The
 // recipient's record is gone, so the delivery ends there.
 func TestListenerDeliveryHandler_FailedDeliveryOnExceptionTopic_NoException(t *testing.T) {
-	harness := newListenerDeliveryHarness(t, listenerTransport(func(request *http.Request) (*http.Response, error) {
-		t.Errorf("the recipient has no record, so nothing may be pushed to it; got a push to %s", request.URL)
-		return nil, errors.New("unexpected push")
-	}))
+	harness := newListenerDeliveryHarness(t)
 	// Use an exceptions topic (notifications.envoy.exceptions.*)
 	item := listenerTestEnvelope("notifications.envoy.exceptions.notifications.role.some-role", "dedupe-exception-topic")
 	// Register a subscriber for this exceptions topic, with no session record behind it.
@@ -3726,34 +3800,35 @@ type listenerDeliveryHarness struct {
 	config listenerDeliveryHandlerConfig
 }
 
-func newListenerDeliveryHarness(t *testing.T, transport http.RoundTripper) listenerDeliveryHarness {
+func newListenerDeliveryHarness(t *testing.T) listenerDeliveryHarness {
 	t.Helper()
-	return newListenerDeliveryHarnessOn(t, setupPublishTestClient(t), transport)
+	return newListenerDeliveryHarnessOn(t, setupPublishTestClient(t))
 }
 
 // newListenerDeliveryHarnessOn is newListenerDeliveryHarness over client, a listener's connection
-// to a server the test chose (one whose grant it sets, say).
-func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, transport http.RoundTripper) listenerDeliveryHarness {
+// to a server the test chose (one whose grant it sets, say), with sessionOptions on the session
+// registry it opens: a test that must cross a session window without waiting it out passes its
+// own clock and windows (session.WithSessionClock, session.WithSessionLiveWindow).
+func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptions ...session.SessionRegistryOption) listenerDeliveryHarness {
 	t.Helper()
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	// Both caches are waited for here, as the listener's own start waits for them: a Put that
+	// lands after a watch fixed its initial snapshot and before the read that turns its marks on
+	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
+	// registered in that window would be missing from what Match and Lookup answer.
+	waitForRegistry(t, registry)
+	sessions, err := session.OpenSessionRegistry(client.Conn, append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)...)
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	waitForSessions(t, sessions)
 	dedupeCache := dedupe.New(10 * time.Minute)
 	attemptCache := dedupe.New(5 * time.Minute)
 	t.Cleanup(dedupeCache.Stop)
 	t.Cleanup(attemptCache.Stop)
-	deliverer := session.Deliverer{
-		MachineID:    "test-machine",
-		RequestLimit: 5 * time.Second,
-	}
-	if transport != nil {
-		deliverer.HTTPClient = &http.Client{Transport: transport}
-	}
 	met := metrics.New()
 	logs := &cmdtest.LockedBuffer{}
 	t.Cleanup(func() {
@@ -3767,7 +3842,6 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, transport ht
 		registry:          registry,
 		sessions:          sessions,
 		machineID:         "test-machine",
-		deliverer:         &deliverer,
 		dedupeCache:       dedupeCache,
 		attemptCache:      attemptCache,
 		logger:            logging.NewWithWriter("test", logs),
@@ -3775,16 +3849,17 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, transport ht
 		messagesDelivered: met.NewCounter("test_messages_delivered", "test"),
 		messagesNAKed:     met.NewCounter("test_messages_naked", "test"),
 		deliveryDuration:  met.NewHistogram("test_delivery_duration", "test", metrics.DefaultBuckets),
-		// The handler refuses a config without its deferral set, as main.go's always has one;
-		// the harness's two handlers share this one as main.go's do.
+		roleKeptExpired:   met.NewCounter("test_role_kept_expired", "test"),
+		// The handler refuses a config without its deferral set or its kept-lane drain guards, as
+		// main.go's always has both; the harness's two handlers share these as main.go's do.
 		deferredUnplaceable: newUnplaceableDeferrals(),
+		roleKeepDrains:      newRoleKeepGuards(),
 	}
-	// The durable path's pushes to serving-port sessions run on the workers, and the role lane's
-	// forwards on the role forwarder, as main.go wires them: both are the one path those messages
-	// take. They are wired last, from the configuration above, so a test that overrides a seam of
-	// the harness's config wires its copy again (wireTestDeliveryWorkers), since each worker keeps
-	// the configuration it was built from.
-	deliveryConfig = wireTestDeliveryWorkers(t, deliveryConfig)
+	// The role lane's forwards run on the role forwarder, as main.go wires them: it is the one
+	// path those messages take. It is wired last, from the configuration above, so a test that
+	// overrides a seam of the harness's config wires its copy again (wireTestRoleForwarder),
+	// since the forwarder keeps the configuration it was built from.
+	deliveryConfig = wireTestRoleForwarder(t, deliveryConfig)
 	return listenerDeliveryHarness{
 		client:      client,
 		registry:    registry,
@@ -3799,8 +3874,6 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, transport ht
 
 // durableTestHandler is the durable's handler for a test that hands it messages itself: a message
 // without a subject is given its envelope's topic as one, the subject a publisher stores it on.
-// Each call returns once the pushes the message handed to the serving-port workers have ended, so
-// a test reads what the message did where main's durable hands them over and returns.
 func durableTestHandler(t *testing.T, cfg listenerDeliveryHandlerConfig) natsgo.MsgHandler {
 	handler := jetStreamDeliveryHandler(cfg)
 	return func(msg *natsgo.Msg) {
@@ -3814,41 +3887,15 @@ func durableTestHandler(t *testing.T, cfg listenerDeliveryHandlerConfig) natsgo.
 			msg.Subject = stored.Topic
 		}
 		handler(msg)
-		cfg.servePorts.settled(t)
 	}
 }
 
-// settled waits until every push the workers hold has ended, within 20 s: the durable's handler
-// hands a message's pushes over before it returns, so a test that waits here once the handler has
-// returned reads each one's outcome.
-func (w *servePortWorkers) settled(t *testing.T) {
+// wireTestRoleForwarder wires cfg's role forwarder as main.go wires it (wireRoleForwarder). A
+// test that overrides a seam of a config - the harness's, or one of its own - wires the copy it
+// overrode, so its forwards go through that seam.
+func wireTestRoleForwarder(t *testing.T, cfg listenerDeliveryHandlerConfig) listenerDeliveryHandlerConfig {
 	t.Helper()
-	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Millisecond) {
-		w.mu.Lock()
-		queued := len(w.queues)
-		w.mu.Unlock()
-		if queued == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d serving-port sessions still had pushes queued after 20s", queued)
-		}
-	}
-}
-
-// wireTestDeliveryWorkers wires cfg's delivery workers as main.go wires them
-// (wireDeliveryWorkers) and ends them when the test does. A test that overrides a seam of a
-// config - the harness's, or one of its own - wires the copy it overrode, so its forwards and
-// pushes go through that seam.
-func wireTestDeliveryWorkers(t *testing.T, cfg listenerDeliveryHandlerConfig) listenerDeliveryHandlerConfig {
-	t.Helper()
-	wired, stop := wireDeliveryWorkers(cfg)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		stop(ctx)
-	})
-	return wired
+	return wireRoleForwarder(cfg)
 }
 
 // settled waits until every forward the forwarder holds has been reported, within 20 s: a test
@@ -3862,19 +3909,11 @@ func (f *roleForwarder) settled(t *testing.T) {
 	}
 }
 
-func (h listenerDeliveryHarness) registerTarget(t *testing.T, sessionID, topic string) {
-	t.Helper()
-	if _, err := h.registry.Upsert(store.Interest{
-		SessionID: sessionID,
-		MachineID: "test-machine",
-	}, []string{topic}); err != nil {
-		t.Fatalf("register interest: %v", err)
-	}
-	if err := h.sessions.Put(sessionID, session.SessionEntry{Port: 1, MachineID: "test-machine"}); err != nil {
-		t.Fatalf("register session: %v", err)
-	}
-}
-
+// registerFanoutTarget records sessionID as a session of this machine following topic and
+// advertising capabilities, whose entry records no consumer of its own: the record a build
+// before dispatch://INFRA-771 left behind, which nothing reaches (session.ErrNoSessionRecord).
+// It is the recipient the fan-out alone reports, so a refusal of it records its attempt before
+// the exception (fanoutDelivery).
 func (h listenerDeliveryHarness) registerFanoutTarget(t *testing.T, sessionID, topic string, capabilities []string) {
 	t.Helper()
 	if _, err := h.registry.Upsert(store.Interest{
@@ -3884,68 +3923,42 @@ func (h listenerDeliveryHarness) registerFanoutTarget(t *testing.T, sessionID, t
 		t.Fatalf("register interest: %v", err)
 	}
 	if err := h.sessions.Put(sessionID, session.SessionEntry{
-		Port:         1,
-		MachineID:    "test-machine",
-		Capabilities: capabilities,
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Capabilities:   capabilities,
 	}); err != nil {
 		t.Fatalf("register session: %v", err)
 	}
 }
 
-type listenerTransport func(*http.Request) (*http.Response, error)
-
-func (f listenerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	return f(request)
-}
-
-func listenerDeliveryResponse(status int) *http.Response {
-	return &http.Response{StatusCode: status, Body: http.NoBody, Header: make(http.Header)}
-}
-
-// pushLog records what a harness's transport was pushed, for the test goroutine to read once the
-// pushes have ended. Every push to a serving-port session runs on that session's own worker
-// (servePortWorkers), so a transport records its pushes from the workers' goroutines, one session's
-// beside another's: a harness that counts what it was pushed shares the count through this log
-// rather than through a map or a slice of its own.
-type pushLog struct {
-	mu      sync.Mutex
-	entries []string
-}
-
-// record keeps one push -- named by whatever the test reads back, a session ID or a request URL --
-// and reports how many pushes the log holds, this one included.
-func (l *pushLog) record(entry string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.entries = append(l.entries, entry)
-	return len(l.entries)
-}
-
-// count reports how many of the pushes recorded were entry's.
-func (l *pushLog) count(entry string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	total := 0
-	for _, held := range l.entries {
-		if held == entry {
-			total++
-		}
+// registerConsumerTarget is registerFanoutTarget for a session on consumer delivery, the shape
+// every live registration has (consumerRegistration): its messages are held by its own consumer
+// and sent by that consumer's relay, so a delivery to it resolves as relayed and is counted
+// skipped, with nothing recorded (session.SessionEntry.ConsumerRelaysStored).
+func (h listenerDeliveryHarness) registerConsumerTarget(t *testing.T, sessionID, topic string, capabilities []string) {
+	t.Helper()
+	if _, err := h.registry.Upsert(store.Interest{
+		SessionID: sessionID,
+		MachineID: "test-machine",
+	}, []string{topic}); err != nil {
+		t.Fatalf("register interest: %v", err)
 	}
-	return total
-}
-
-// all reports every push recorded, in the order the log took them.
-func (l *pushLog) all() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return slices.Clone(l.entries)
+	if err := h.sessions.Put(sessionID, session.SessionEntry{
+		SelfSubscribed: true,
+		MachineID:      "test-machine",
+		Capabilities:   capabilities,
+		Delivery:       session.DeliveryConsumer,
+		Epoch:          "e",
+	}); err != nil {
+		t.Fatalf("register session: %v", err)
+	}
 }
 
 // inlineForward is a role forward seam (listenerDeliveryHandlerConfig.forwardRole) whose publish
-// always succeeds and whose wait is forward: a test that stands in for the holder's answer.
-func inlineForward(forward func(subject string, item contracts.Envelope, timeout time.Duration) error) func(string, contracts.Envelope, time.Duration, bool) (func() error, error) {
-	return func(subject string, item contracts.Envelope, timeout time.Duration, _ bool) (func() error, error) {
-		return func() error { return forward(subject, item, timeout) }, nil
+// always succeeds and whose wait is forward: a test that stands in for the stream's answer.
+func inlineForward(forward func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error) func(string, contracts.Envelope, string, time.Duration) (func() error, error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+		return func() error { return forward(subject, item, msgID, timeout) }, nil
 	}
 }
 
@@ -4551,7 +4564,11 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		found := false
-		for _, interest := range registry.List() {
+		interests, err := registry.List()
+		if err != nil {
+			t.Fatalf("list interests: %v", err)
+		}
+		for _, interest := range interests {
 			found = found || interest.SessionID == "ses_after_move"
 		}
 		if found {
@@ -5019,11 +5036,7 @@ func TestSelfHealthRebuildsAnInterestWatcherThatEndedWhileConnected(t *testing.T
 // watcher's error as a transient KV failure and /healthz answers 200 degraded over a frozen cache.
 func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	client := setupTestNATS(t)
-	sub, err := startListenerSubscription(client, "listener-healthz-interest", func(msg *natsgo.Msg) { _ = msg.Ack() })
-	if err != nil {
-		t.Fatalf("bind the durable: %v", err)
-	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	bindBoundDurable(t, client, "listener-healthz-interest", func(msg *natsgo.Msg) { _ = msg.Ack() })
 	registry, err := store.Open(client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
@@ -5059,113 +5072,6 @@ func TestHealthzAnswersUnhealthyWhileTheInterestWatcherIsDead(t *testing.T) {
 	code, body := get()
 	if code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || !strings.Contains(fmt.Sprint(body["error"]), "interest KV watcher") {
 		t.Fatalf("with the interest watcher dead: /healthz = %d %v, want 503 unhealthy naming the interest KV watcher", code, body)
-	}
-}
-
-// healthzWithLiveLane is a listener's /healthz over a bound durable and both registries, as main
-// publishes them once the durable binds, with the live topics lane on when lane is set: a client of
-// its own subscribed as main's openLiveTopics subscribes it. It returns the live client and the
-// subscription it holds (nil without the lane) and a get() that serves one /healthz request.
-func healthzWithLiveLane(t *testing.T, consumer string, lane bool) (*bus.Client, *natsgo.Subscription, func() (int, map[string]any)) {
-	t.Helper()
-	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
-	durable, err := startListenerSubscription(client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() })
-	if err != nil {
-		t.Fatalf("bind the durable: %v", err)
-	}
-	t.Cleanup(func() { _ = durable.Unsubscribe() })
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open interest registry: %v", err)
-	}
-	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
-	if err != nil {
-		t.Fatalf("open session registry: %v", err)
-	}
-	t.Cleanup(sessions.StopWatch)
-	readyCtx, readyCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer readyCancel()
-	if err := registry.WaitForCacheReady(readyCtx); err != nil {
-		t.Fatalf("wait for interest cache: %v", err)
-	}
-	if err := sessions.WaitForCacheReady(readyCtx); err != nil {
-		t.Fatalf("wait for session cache: %v", err)
-	}
-	deps := &listenerDeps{client: client, registry: registry, sessions: sessions, caches: []listenerCache{{name: "interest", cache: registry}, {name: "session", cache: sessions}}, consumer: consumer}
-	var live *bus.Client
-	var liveSub *natsgo.Subscription
-	if lane {
-		live, err = bus.Connect([]string{client.Conn.ConnectedUrl()}, bus.WithName("healthz-live-topics"))
-		if err != nil {
-			t.Fatalf("connect the live client: %v", err)
-		}
-		t.Cleanup(live.Close)
-		if liveSub, err = live.SubscribeCore(liveTopicsSubject, func(*natsgo.Msg) {}, bus.ListenerLiveQueue("healthz")); err != nil {
-			t.Fatalf("subscribe the live lane: %v", err)
-		}
-		if err := live.Conn.Flush(); err != nil {
-			t.Fatalf("flush the live subscription: %v", err)
-		}
-		deps.live = live
-	}
-	var state atomic.Pointer[listenerDeps]
-	state.Store(deps)
-	return live, liveSub, func() (int, map[string]any) {
-		recorder := httptest.NewRecorder()
-		healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-		var body map[string]any
-		_ = json.Unmarshal(recorder.Body.Bytes(), &body)
-		return recorder.Code, body
-	}
-}
-
-// /healthz says whether the live topics lane is on: "not_applicable" when ENVOY_SUBSCRIBE_ALL_TOPICS
-// leaves it off, "subscribed" while it holds its subscription.
-func TestHealthzNamesTheLiveTopicsLane(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		lane bool
-		want string
-	}{
-		{name: "off", want: "not_applicable"},
-		{name: "on", lane: true, want: "subscribed"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, get := healthzWithLiveLane(t, "listener-healthz-live-"+tc.name, tc.lane)
-			if code, body := get(); code != http.StatusOK || body["status"] != "healthy" || body["live_topics"] != tc.want {
-				t.Fatalf("/healthz = %d %v, want 200 healthy with live_topics %q", code, body, tc.want)
-			}
-		})
-	}
-}
-
-// With the live topics lane on, /healthz answers 503 once the lane's subscription or its client's
-// connection is gone: every topic the stream does not store then reaches no session on this
-// machine, while the rest of the listener answers as healthy as before.
-func TestHealthzAnswersUnhealthyWithoutTheLiveSubscription(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		lose func(t *testing.T, live *bus.Client, sub *natsgo.Subscription)
-	}{
-		{name: "subscription ended", lose: func(t *testing.T, _ *bus.Client, sub *natsgo.Subscription) {
-			if err := sub.Unsubscribe(); err != nil {
-				t.Fatalf("unsubscribe the live lane: %v", err)
-			}
-		}},
-		{name: "connection closed", lose: func(_ *testing.T, live *bus.Client, _ *natsgo.Subscription) { live.Close() }},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			live, sub, get := healthzWithLiveLane(t, "listener-healthz-live-lost", true)
-			if code, body := get(); code != http.StatusOK || body["status"] != "healthy" {
-				t.Fatalf("before the live lane is lost: /healthz = %d %v, want 200 healthy", code, body)
-			}
-			tc.lose(t, live, sub)
-			if code, body := get(); code != http.StatusServiceUnavailable || body["status"] != "unhealthy" || body["error"] != "live subscription inactive" {
-				t.Fatalf("with the live lane lost: /healthz = %d %v, want 503 unhealthy with error \"live subscription inactive\"", code, body)
-			}
-		})
 	}
 }
 
@@ -5259,4 +5165,55 @@ func TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt(t *testing.T
 	}
 	bind(drifted)
 	settle(creates, 0, "second start on the corrected durable")
+}
+
+// The default session reap interval is short enough for the adoption this change is accepted on:
+// the bucket's maximum age is read, and a record past the gone horizon deleted, only on a reaper
+// pass (session.ReapSessions), so an age another process set reaches a running listener within
+// two whole passes. A1 and A7 give that two minutes, and the setting's documentation
+// (packages/envoy/docs/architecture.md and the docs site's settings table) states one minute.
+func TestTheDefaultSessionReapIntervalMeetsTheTwoMinuteAdoption(t *testing.T) {
+	if got := 2 * defaultSessionReapInterval; got > 2*time.Minute {
+		t.Fatalf("two passes at the default session reap interval take %s, want them inside the two minutes a maximum-age change is given to reach a running listener", got)
+	}
+}
+
+// The role claim reaper runs on a period of its own, and its default is the five minutes the
+// fixed pass this change replaces ran at, which is also the age the session bucket ships with
+// (session.BucketMaxAge): a stalled session's key is expired by that age, and a holder whose
+// key is gone reads gone, so a pass more often than that frees a stalled holder's role sooner
+// than the fixed pass did - the harm this whole change exists to end. Two passes still fit well
+// inside the gone horizon, so a holder that really is gone loses its role promptly.
+//
+// The floor the bucket's age sets holds only while that age is below the gone horizon, as the
+// shipping age is: once dispatch://INFRA-887 raises it past the horizon, the session reaper
+// deletes a record at the horizon and the bucket expires none before it, so the floor is the
+// horizon's and a period as long as the raised age would keep a gone holder's role for hours.
+func TestTheDefaultRoleClaimReapIntervalIsFiveMinutesAndOutlastsTheSessionBucketsShippingAge(t *testing.T) {
+	if defaultRoleClaimReapInterval != 5*time.Minute {
+		t.Fatalf("the default role claim reap interval is %s, want the 5m fixed pass this change replaced: the deployment keeps that period, and a change to it is a change to how long a gone holder keeps its role", defaultRoleClaimReapInterval)
+	}
+	if session.BucketMaxAge < session.GoneHorizon && defaultRoleClaimReapInterval < session.BucketMaxAge {
+		t.Fatalf("the default role claim reap interval is %s, want at least the %s the session bucket keeps a record for: a stalled holder reads gone when its key expires, and a shorter pass takes its role sooner than the five-minute pass this change replaced", defaultRoleClaimReapInterval, session.BucketMaxAge)
+	}
+	if got := 2 * defaultRoleClaimReapInterval; got > session.GoneHorizon {
+		t.Fatalf("two passes at the default role claim reap interval take %s, want them inside the %s gone horizon, so a gone holder's role is free well before an operator waits out another horizon", got, session.GoneHorizon)
+	}
+}
+
+// The listener keeps no last-seen memory of its own: it opens the session registry on
+// session.LastSeenMemory, the package's own value, which must outlast both deadlines the
+// listener reads a departed session's last heartbeat for. The interest reaper can hold a dead
+// session's row until store.InterestReapAllowance after its last write, and /v1/interests/ gives
+// that row's session its real last heartbeat; and a refusal for a session past the gone horizon
+// says when it last registered. A retention shorter than either - the fifteen minutes the
+// listener used to set - leaves a row listed with no heartbeat to give and a gone session's
+// refusal unable to say when it was last seen.
+func TestTheRegistrysLastSeenMemoryOutlastsWhatTheListenerReadsItFor(t *testing.T) {
+	if allowance := store.InterestReapAllowance(store.InterestReapGrace); session.LastSeenMemory <= allowance {
+		t.Fatalf("session.LastSeenMemory is %s and the interest reaper holds a dead session's row for %s, so a row it still lists can have no last heartbeat", session.LastSeenMemory, allowance)
+	}
+	if session.LastSeenMemory <= session.GoneHorizon {
+		t.Fatalf("session.LastSeenMemory is %s and the gone horizon is %s, so a refusal for a session that has just gone cannot say when it was last seen", session.LastSeenMemory, session.GoneHorizon)
+	}
 }

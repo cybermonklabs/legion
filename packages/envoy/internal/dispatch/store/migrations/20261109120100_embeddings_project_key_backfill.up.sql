@@ -1,0 +1,76 @@
+-- 20261109120100_embeddings_project_key_backfill.up.sql — how far the labelling of the rows
+-- stored before 20261109120000 has got, and nothing else: one row holding the keyset cursor
+-- and whether the pass is finished.
+--
+-- 20261109120000 adds project_key and has both write functions set it from the row's owner from
+-- then on. That labels nothing already stored, and an unlabelled row is a row no
+-- project-scoped meaning search can return - which is the defect this change exists to end, so
+-- the stored rows have to be labelled once. The pass itself is
+-- store.FillEmbeddingProjectKeys, which the boot starts in the background in committed batches
+-- under the lease embeddings-project-key-fill (api.RunEmbeddingProjectKeyFill,
+-- cmd/dispatch/main.go), so one process of a roll labels and the other skips, and this
+-- migration is the one row it records its place in, as 20261101182501 is for document_search's
+-- fill.
+--
+-- It is batched, and so it is not one migration statement, because the work is hours of row
+-- rewrites. What a label costs is not the vector: embeddings.embedding is stored external
+-- (attstorage = 'e'), so it stays in TOAST and the update writes one new heap tuple of about
+-- 253 bytes. What it costs is the vector index - relabelling 20,000 rows grew embeddings_cosine
+-- from 133,328 KiB to 231,136 KiB, 4.9 KiB a row with embeddings_kind_project also present and
+-- 6.6 KiB without it, which vacuum does not give back, so over the load-test deployment's
+-- 1,109,536 embedded rows a whole pass asks for about 5.2 GiB of disk that stays taken until
+-- someone rebuilds the index (an extrapolation from the 20,000-row measurement, not a
+-- measurement of its own) - and the time that index work takes. Labelled in place, as this pass
+-- does, the deployment labelled 120,000 rows in 12 m 50 s and 19,650 in 86 s, 156 to 228 rows a
+-- second, which is one to two hours for 1,109,536 of them; relabelled whole, with the index work
+-- taken once at the end instead of row by row, those 1,109,536 rows took 31 m 41 s, of which
+-- about 31 m was the index alone. A single-statement backfill of the deployment's 723,015
+-- comment windows had not finished after 30 minutes (INFRA-988). A migration is one transaction
+-- (store/store.go, applyMigrationOnce): run here, those hours would be hours in which every row
+-- the statement had already touched is locked - a comment edit whose window the pass has passed
+-- waits for all of it - and hours of a deploy's migration step. In committed batches of
+-- store.EmbeddingProjectKeyBatch (200 rows, about a second at the rates above) such a writer
+-- waits for one batch.
+--
+-- The cursor is the table's own primary key, (kind, id), so each batch starts where the last
+-- one stopped instead of counting past it as an `offset` would, and the empty pair sorts below
+-- every row. done is what an ordinary boot reads and stops on, so a boot after the pass has
+-- finished costs this one row and no read of embeddings at all.
+--
+-- One row, as 20261101182501's cursor is one row, and the same singleton primary key keeps it
+-- one. Two processes filling at once - both releases of a rolling deploy at their boots - take
+-- different batches rather than the same one: the fill reads this row `for update`, so the
+-- second waits for the first's batch to commit and then reads the cursor it moved.
+--
+-- Rolling deploy. The column is nullable, so until this pass has run an unlabelled row is
+-- invisible to the statement that reads `e.project_key = $2` - worse than the release before
+-- this one, which found that row through the owner each meaning arm joins. So a project-scoped
+-- meaning search is answered by that older, joined predicate, and by the column's own only
+-- once the done below reads true (api/search.go, meaningProjectScope): done is the one column
+-- of this row a search reads, and the pass is what retires the older shape.
+--
+-- Two things that switch has to survive, both found when this change was measured (INFRA-988):
+--
+--   - a holder that dies mid-pass. The lease is one attempt (duty.Exclusive), so a process that
+--     found it held used to do nothing about the fill for the rest of its life, and the
+--     labelling stopped where the dead holder left it until something next booted.
+--     api.RunEmbeddingProjectKeyFill now tries again every five minutes until this row reads
+--     done, so that costs the labelling one wait; a scoped meaning search keeps the
+--     owner-joined predicate for exactly as long as the labelling lasts, and no longer.
+--   - a null project_key written after done reads true, which nothing would ever label: the
+--     fill is over and no later write touches a row whose text does not change. The release
+--     before this one serves through a roll's drain and through a rollback, and its coverage
+--     insert is its own Go naming no project_key (embedqueue/coverage.go, insertMissingIssues at
+--     0bf41f394392caa9451ab8d6973e14d4d98c8e1d), so it can write one at any moment of its life.
+--     20261110064913 closes that in the database: a BEFORE INSERT trigger labels a null
+--     project_key from the row's owner, whichever release's statement inserted it.
+--
+-- This migration creates one table and inserts its one row. It reads no large table, takes no
+-- lock that grows with any table, and commits in milliseconds; its census answers 0.
+create table embeddings_project_key_backfill (
+  singleton boolean primary key default true check (singleton),
+  kind text not null default '',
+  id text not null default '',
+  done boolean not null default false
+);
+insert into embeddings_project_key_backfill default values;

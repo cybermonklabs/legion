@@ -11,13 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/client-go/rest"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -118,7 +117,7 @@ func TestTheSweepDeletesACarriedChildsOwnSandboxOnceItLeavesTheLine(t *testing.T
 type carriedCleanup struct {
 	t                         *testing.T
 	ctx                       context.Context
-	pool                      *pgxpool.Pool
+	pool                      *store.Pool
 	st                        *store.Store
 	records                   record.Store
 	api                       *issueSandboxAPI
@@ -179,13 +178,15 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 	t.Cleanup(stopRuntime)
 	newRuntime := func() *sandbox.Runtime {
 		t.Helper()
-		rt, err := sandbox.New(runtimeCtx, &rest.Config{Host: server.URL}, sandbox.Options{
+		rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
 			Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
 			StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
 			SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 			Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 			BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionOwner), Conns: fake.NewConns(), Log: logger,
+			Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
+			ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
+			GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
 			RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
 		})
 		if err != nil {
@@ -204,6 +205,7 @@ func newCarriedCleanup(t *testing.T, opened bool) *carriedCleanup {
 		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	architect := supervise.Claim{Token: "legion-legion-legion-207-architect", Project: "legion", Tree: rootKey, TreeEpoch: 1, Issue: rootKey,
@@ -259,5 +261,6 @@ func (f *carriedCleanup) launchedChildSandbox(uid string) {
 	s := issueSandbox(f.childSandbox, uid, f.childKey, f.childKey)
 	f.api.mu.Lock()
 	defer f.api.mu.Unlock()
-	f.api.objects[f.childSandbox] = s
+	f.api.objects["sandboxes"][f.childSandbox] = s
+	f.api.disks[f.childSandbox] = true
 }

@@ -14,9 +14,11 @@ import (
 )
 
 // A write to a document no room holds forks the stored document and loads no room while it runs:
-// a room beside the fork would hold a second copy of a heavy document until the write commits
-// (LEGION-504). Once committed and published, the room holds the write and the write keeps no fork.
-func TestAColdWriteLoadsNoRoomUntilItCommits(t *testing.T) {
+// a room beside the fork would hold a second copy of a heavy document until the write commits.
+// Its publish loads none either, which would hold the document with no reader in it
+// (audit finding 11): the write keeps no fork, its verdict on what it inserted is judged on the
+// store (nothing was lost), and the next read loads the room from the store, holding the write.
+func TestAColdWriteLoadsNoRoom(t *testing.T) {
 	for _, conditional := range []bool{false, true} {
 		name := "unconditional"
 		if conditional {
@@ -44,6 +46,7 @@ func TestAColdWriteLoadsNoRoomUntilItCommits(t *testing.T) {
 				precondition = &model.EditPrecondition{Document: token}
 			}
 			var write *liveWrite
+			var ledger *Ledger
 			err := joinedWrite(service, func(ctx context.Context) error {
 				if _, err := service.ApplyOps(ctx, artifactID, ops, model.Actor{Kind: "user", ID: "alice"}, precondition); err != nil {
 					return err
@@ -51,7 +54,7 @@ func TestAColdWriteLoadsNoRoomUntilItCommits(t *testing.T) {
 				if service.srv.GetDoc(artifactID) != nil {
 					t.Error("the write loaded the document's room before it committed")
 				}
-				write = joinedLiveWrite(ctx, artifactID)
+				write, ledger = joinedLiveWrite(ctx, artifactID), ledgerFrom(ctx)
 				if write == nil || write.fork == nil || !write.cold {
 					t.Errorf("the write's fork is not the stored document's: %+v", write)
 				}
@@ -63,8 +66,11 @@ func TestAColdWriteLoadsNoRoomUntilItCommits(t *testing.T) {
 			if write.fork != nil || write.tree != nil || write.updates != nil || write.renderings != nil || write.forkMarkdown != nil {
 				t.Error("the committed write kept its fork, its rendering, its updates or the renderings beside them")
 			}
-			if service.srv.GetDoc(artifactID) == nil {
-				t.Fatal("the published write left no room holding it")
+			if service.roomHeld(artifactID) {
+				t.Fatal("the published write loaded a room of the document")
+			}
+			if lost, verdict := ledger.LostOps(artifactID); !verdict || len(lost) != 0 {
+				t.Fatalf("the write's lost operations = %v (verdict %t), want none, judged on the store", lost, verdict)
 			}
 			got, err := service.Text(context.Background(), artifactID)
 			if err != nil {
@@ -77,20 +83,24 @@ func TestAColdWriteLoadsNoRoomUntilItCommits(t *testing.T) {
 	}
 }
 
-// roomDuringColdReadStore runs opened once, inside the first store read of room after it is armed
-// and before that read returns: a browser's room load takes no lock a write holds, so it can land
-// there, while a cold write reads the store.
-type roomDuringColdReadStore struct {
+// insideFirstLoadStore runs during once, inside the first store read of room that succeeds after
+// the store is armed and before that read hands its result back. That window is where a test puts
+// what has to happen while a load of this document is running: a browser's room load, which takes
+// no lock a cold write holds, lands there while the write reads the store
+// (TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits), and a hold there keeps the room's own
+// load inside its read (TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad). Every other
+// read goes straight through.
+type insideFirstLoadStore struct {
 	VersionedStore
 	room   string
 	armed  atomic.Bool
-	opened func()
+	during func()
 }
 
-func (s *roomDuringColdReadStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
+func (s *insideFirstLoadStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
 	result, err := s.VersionedStore.Load(ctx, room)
 	if err == nil && room == s.room && s.armed.CompareAndSwap(true, false) {
-		s.opened()
+		s.during()
 	}
 	return result, err
 }
@@ -109,7 +119,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "# First")
-			store := &roomDuringColdReadStore{VersionedStore: NewPgVersioned(database), room: artifactID}
+			store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID}
 			service := New(Deps{
 				Store:       database,
 				Persistence: store,
@@ -137,7 +147,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				}
 			}
 			if during {
-				store.opened = browserOpens
+				store.during = browserOpens
 				store.armed.Store(true)
 			} else {
 				opened := false

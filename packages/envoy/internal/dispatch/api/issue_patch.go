@@ -8,9 +8,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -24,24 +26,33 @@ import (
 // column backwards either.
 const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
+// updateIssueInput is the body of PATCH /api/v1/issues/{key}.
+type updateIssueInput struct {
+	Title         *string               `json:"title"`
+	Status        *string               `json:"status"`
+	Rank          *rankInput            `json:"rank"`
+	Labels        *[]string             `json:"labels"`
+	LabelsAdd     *[]string             `json:"labels_add"`
+	ExpectedSeq   *int64                `json:"expected_sequence"`
+	Priority      json.RawMessage       `json:"priority"`
+	Route         *string               `json:"route"`
+	ExternalLinks *[]model.ExternalLink `json:"external_links"`
+	Assignee      json.RawMessage       `json:"assignee"`
+	Parent        json.RawMessage       `json:"parent"`
+	BlockedBy     *[]string             `json:"blocked_by"`
+	// Advances is the replacement list of priority ids this issue advances ([] clears it), and
+	// AdvancesRevision the revision the read this write is answering returned. A write that
+	// carries the revision is a whole-set write; one that carries none writes single acts and
+	// may change at most one relation (refuseAdvancesRevision).
+	Advances         *[]string       `json:"advances"`
+	AdvancesRevision *int64          `json:"advances_revision"`
+	Components       json.RawMessage `json:"components"`
+	Repo             json.RawMessage `json:"repo"`
+	Actor            *model.Actor    `json:"actor"`
+}
+
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Title         *string               `json:"title"`
-		Status        *string               `json:"status"`
-		Rank          *rankInput            `json:"rank"`
-		Labels        *[]string             `json:"labels"`
-		LabelsAdd     *[]string             `json:"labels_add"`
-		ExpectedSeq   *int64                `json:"expected_sequence"`
-		Priority      json.RawMessage       `json:"priority"`
-		Route         *string               `json:"route"`
-		ExternalLinks *[]model.ExternalLink `json:"external_links"`
-		Assignee      json.RawMessage       `json:"assignee"`
-		Parent        json.RawMessage       `json:"parent"`
-		BlockedBy     *[]string             `json:"blocked_by"`
-		Components    json.RawMessage       `json:"components"`
-		Repo          json.RawMessage       `json:"repo"`
-		Actor         *model.Actor          `json:"actor"`
-	}
+	var input updateIssueInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -59,13 +70,22 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var advances []string
+	if input.Advances != nil {
+		var err error
+		advances, err = normalizeIssueAdvances(*input.Advances)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if input.Title != nil {
 		*input.Title = strings.TrimSpace(*input.Title)
 		if *input.Title == "" {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, "title must not be blank")
 			return
 		}
-		if length := len16(*input.Title); length > contracts.IssueTitleMax {
+		if length := itemblocks.Units16(*input.Title); length > contracts.IssueTitleMax {
 			capExceeded(w, "title", length, contracts.IssueTitleMax)
 			return
 		}
@@ -155,6 +175,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	defer ledger.Discard()
 
 	dependencyWrite := input.BlockedBy != nil || parentProvided
+	// A credential that names one project is refused a target outside it where a target's
+	// project is read, since this route's own address names no target (project_scope.go): the
+	// lock step refuses it before any lock, and writeBlockedBy again under them.
+	callerProject, _ := s.callerProject(r)
 	if dependencyWrite || input.Rank != nil {
 		var project string
 		if err := tx.QueryRow(r.Context(), `select project_key from issues where key = $1`, key).Scan(&project); err != nil {
@@ -162,7 +186,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if dependencyWrite {
-			if err := lockProjectIssueDependencies(r.Context(), tx, project); err != nil {
+			if err := lockIssueDependencyWrite(r.Context(), tx, project, callerProject, blockers); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}
@@ -230,9 +254,21 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		// reopening status; every other field, its repository included, and closing it again,
 		// waits for a reopen.
 		addsLink := input.ExternalLinks != nil && !isExternalLinksSubset(*input.ExternalLinks, before.ExternalLinks)
-		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || repoProvided
+		others := input.Title != nil || input.Labels != nil || input.LabelsAdd != nil || priorityProvided || input.Route != nil || addsLink || assigneeProvided || parentProvided || input.BlockedBy != nil || input.Advances != nil || repoProvided
 		if others || (input.Status != nil && !reopening) || (input.Status == nil && input.Rank == nil && !componentsProvided && input.ExternalLinks == nil) {
 			writeError(w, "ISSUE_CLOSED", http.StatusConflict, "issue is closed")
+			return
+		}
+	}
+	// The `advances` revision rule is decided here, beside the other refusals of this handler
+	// and before the first row is written: a refused write leaves the issue exactly as it was.
+	// The held set and the revision are the issue as this write's own row lock read it, so two
+	// writes of one issue decide the rule one after the other rather than together.
+	var heldAdvances []string
+	if input.Advances != nil {
+		heldAdvances = ownAdvances(before.Advances)
+		if err := refuseAdvancesRevision(heldAdvances, before.AdvancesRevision, input.AdvancesRevision, advances); err != nil {
+			s.writeHandlerError(w, err)
 			return
 		}
 	}
@@ -312,7 +348,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if repoProvided {
 		set("repo", repo)
 	}
-	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil
+	changed := len(sets) > 0 || componentsProvided || input.BlockedBy != nil || input.Advances != nil
 	if changed {
 		sets = append(sets, "updated_at = "+issueUpdatedNow)
 		if _, err := tx.Exec(r.Context(), `update issues set `+strings.Join(sets, ", ")+` where key = $1`, args...); err != nil {
@@ -334,7 +370,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if input.BlockedBy != nil {
-		if err := writeBlockedBy(r.Context(), tx, key, before.Project, blockers); err != nil {
+		if err := writeBlockedBy(r.Context(), tx, key, before.Project, callerProject, blockers); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if input.Advances != nil {
+		if err := writeIssueAdvances(r.Context(), tx, key, heldAdvances, advances, actor, time.Now().UTC()); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -386,7 +428,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if !changed {
 		advice := s.writeAdvice(
-			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status,
+			r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", before.Status, false,
 		)
 		if err := ledger.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
@@ -451,10 +493,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		eventType = "issue.closed"
 	}
 	after.LastSeq++
-	// What the write changed, the issue's ancestors, and, for a status move, whose Replies count
-	// it can move, all read in this transaction. A retitle keeps the issue's child_of and
-	// blocked_by edges but moves the excerpt they show, so it names their targets; a blocked_by
-	// change moves the count of each blocker it added or removed, so it names those.
+	// What the write changed, the issue's ancestors, and, for a status or an assignee move, whose
+	// Inbox rows it can move, all read in this transaction. A retitle keeps the issue's child_of
+	// and blocked_by edges but moves the excerpt they show, so it names their targets; a
+	// blocked_by change moves the count of each blocker it added or removed, so it names those.
 	changedFields := issueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {
@@ -466,8 +508,16 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if statusChanged {
-		payload.ThreadLogins, err = issueThreadLogins(r.Context(), tx, key, slices.Contains(changedFields, "closed_at"))
+	// nil on a write that left the assignee alone, which is what tells issueWriteThreadLogins to
+	// name the status move's logins and nobody else.
+	var movedAssignees []*string
+	if slices.Contains(changedFields, "assignee") {
+		movedAssignees = []*string{before.Assignee, after.Assignee}
+	}
+	if statusChanged || movedAssignees != nil {
+		payload.ThreadLogins, err = issueWriteThreadLogins(
+			r.Context(), tx, key, statusChanged, slices.Contains(changedFields, "closed_at"), movedAssignees,
+		)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -523,23 +573,39 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	advice := s.writeAdvice(
-		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status,
+		r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, "", after.Status, false,
 	)
+	if closing {
+		// The close's last statement before its commit stamps closed_at again, at the moment it
+		// runs (clock_timestamp()), over the start of the transaction (now()) the update above
+		// wrote. The document append gate takes a browser's update the room observed no later than
+		// closeMargin after closed_at as one made while the issue was open (docs.closeMargin), and
+		// the asks' withdrawal above holds each document it writes locked until this commit, a
+		// flush to every process and the waits on other writers included: a keystroke that waited
+		// on that lock reaches the gate only after the commit, and was made while the issue was
+		// still open however long the transaction ran. The second write of closed_at fires
+		// migration 20261101181500's trigger again, whose notification Postgres folds into the
+		// first (same channel, same payload, one transaction). The events appended above carry the
+		// first stamp; the response carries this one, the stored value.
+		if err := tx.QueryRow(r.Context(), `
+			update issues set closed_at = clock_timestamp() where key = $1 and closed_at is not null returning closed_at
+		`, key).Scan(&after.ClosedAt); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if (before.ClosedAt == nil) != (after.ClosedAt == nil) {
-		// The refresh runs after the commit, so a client that hangs up now must not stop it:
-		// rooms that never got the closed flag keep taking edits until they are reloaded.
-		// Dropping only the cancellation keeps the context's transaction mark, which is what
-		// lets the pool refuse a refresh run while a transaction is still open.
-		s.deps.Docs.SetIssueClosed(outlivingTheClient(r), key, after.ClosedAt != nil)
-	}
-	s.publish(events...)
+	// A change of closed_at reaches the document rooms of every process, this one's included, from
+	// the commit itself: migration 20261101181500's trigger notifies, and each process closes its
+	// rooms of the issue's documents so their browsers reconnect with the scope the issue now
+	// allows.
+	s.publish(r.Context(), events...)
 	if closing {
-		// The rooms are closed now, so no browser of this process writes another ask block
-		// into them; the sweep catches the ones written since the close forked each document.
+		// The commit's notification closes the issue's rooms on every process; the sweep catches
+		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).
 		// It runs after the publish so every event reaches subscribers in commit order.
 		s.sweepClosedIssueAsks(outlivingTheClient(r), key, withdrawn, actor)
 	}

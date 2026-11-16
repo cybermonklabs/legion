@@ -97,6 +97,9 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from, which main holds in its own
+	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
+	BuildCommit    string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -105,15 +108,23 @@ type AppContextOptions struct {
 	Store          *store.Store
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	InsecureCookie bool
-	EnvoyURL       string
+	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
+	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
+	// where the deployment configured neither. See api.DepsInput.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	InsecureCookie  bool
+	EnvoyURL        string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
 	Docs       docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
-	Embedder      embed.Embedder
+	Embedder embed.Embedder
+	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
+	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
+	Answerer      api.Answerer
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -137,6 +148,16 @@ type AppContextOptions struct {
 	// RouteRosterTTL replaces how long a stored listener answer serves issue reads; zero keeps the
 	// server's five seconds. See api.Deps.RouteRosterTTL.
 	RouteRosterTTL time.Duration
+	// ListenerTakeoverWindow replaces how long a sender keeps trying a listener that is being
+	// replaced; zero keeps the server's twelve seconds. See api.Deps.ListenerTakeoverWindow.
+	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning and how often each of that
+	// Horizon's three warnings repeats - the stall warning, the failed-observation warning and
+	// the failed-persist warning; zero keeps the horizon's own five and thirty seconds. See
+	// api.Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
@@ -177,11 +198,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Identity:               opts.Identity,
 		AgentTokens:            opts.AgentTokens,
 		DefaultProject:         opts.DefaultProject,
+		NewIssueLabel:          opts.NewIssueLabel,
+		NewIssueSession:        opts.NewIssueSession,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
+		Answerer:               opts.Answerer,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,
@@ -193,8 +217,12 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
+		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
+		HorizonStallAfter:      opts.HorizonStallAfter,
+		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
+		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -228,9 +256,10 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 // errNoEventLog is what a context built with no Store answers for the event log's head.
 var errNoEventLog = errors.New("this server holds no store, so no event log to read the head of")
 
-// Architecture is the shared architecture importer the HTTP routes use, so the
-// server's five-minute sync ticker drives the same serialized Sync the Refresh
-// route and the sync tool do.
+// Architecture is the shared architecture importer the HTTP routes use, so
+// the server's five-minute sync ticker, the Refresh route and the sync tool
+// drive one importer, and so share one flight per source instead of each
+// fetching that source for itself.
 func (ctx *AppContext) Architecture() *architecture.Importer {
 	return ctx.apiDeps.Architecture
 }
@@ -651,7 +680,7 @@ func isRetainedAssetPath(normalized string) bool {
 // the request until that read ends: a client that abandons each request the moment it reaches
 // the store cannot hold more store reads at once than the cap has room for.
 func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, key string) {
-	if asset, ok := r.assets.get(key); ok {
+	if asset, ok := r.assets.Get(key); ok {
 		writeRetainedAsset(w, req, key, asset)
 		return
 	}
@@ -712,7 +741,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-chan singleflight.Result, error) {
 	read := r.assets.reads.DoChan(key, func() (any, error) {
 		// A read that finished between this request's cache miss and its flight answers it.
-		if asset, ok := r.assets.get(key); ok {
+		if asset, ok := r.assets.Get(key); ok {
 			return asset, nil
 		}
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedAssetFetchTimeout)
@@ -721,7 +750,7 @@ func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-c
 		if err != nil {
 			return nil, err
 		}
-		r.assets.put(key, asset)
+		r.assets.Put(key, asset)
 		return asset, nil
 	})
 	select {

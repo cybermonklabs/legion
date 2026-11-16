@@ -1,0 +1,68 @@
+Experiment 9, DBOS: a change against a recorded run.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+system-database: legion_dbos_eval
+system-database-schema: exp9_28540_838861
+workflow-name: exp9PhaseWorkflow
+recorded-run-workflow-id: exp9-phase-1794091026453214507
+code-before-the-change: plan, implement, deliver
+code-after-the-change: plan, review, implement, deliver
+the-change: one new step, review, inserted in the middle
+[oldcode] dbosworker: pid=28548
+old-code-pid: 28548
+[oldcode] dbosworker: workflow-started=exp9-phase-1794091026453214507
+sql-recorded-run-before-kill: status=PENDING executor=exp9-phase-host version=exp9-code-v1 queue=none recovery_attempts=1 owner_xid=4821d393-2f97-4a10-8f0e-4e1d2ce3755a output=null error=null
+sql-recorded-run-steps-before-kill: 0:plan 1:implement
+old-code-process-killed: 28548
+sql-stranded-run: status=PENDING executor=exp9-phase-host version=exp9-code-v1 queue=none recovery_attempts=1 owner_xid=4821d393-2f97-4a10-8f0e-4e1d2ce3755a output=null error=null
+sql-stranded-run-steps: 0:plan 1:implement
+changed-code-executor-id: exp9-phase-host
+changed-code-application-version: exp9-code-v2
+changed-code-observed-for: 6s
+sql-after-the-changed-code-launched: status=PENDING executor=exp9-phase-host version=exp9-code-v1 queue=none recovery_attempts=1 owner_xid=4821d393-2f97-4a10-8f0e-4e1d2ce3755a output=null error=null
+changed-code-recovered-the-recorded-run: false
+side-effect-lines-after-the-changed-code-launched: 3
+version-gate-exists: true
+version-gate-where: two places: launch-time recovery re-enqueues only PENDING rows whose application_version equals the process's own, and a dequeue takes only rows of its own version (plus rows with no version at all, when the process is on the latest registered version)
+version-gate-keyed-on: workflow_status.application_version, written at dispatch from the process's application version: Config.ApplicationVersion, or DBOS__APPVERSION, or -- when neither is set -- sha256 of the running executable's hash and the application name, so an ordinary redeploy of changed code is a new version
+why-not-recovered-here: the executor id matched; only the version differed, and experiment 7 shows the same executor id with a matching version does recover
+sql-right-after-resume: status=ENQUEUED executor=exp9-phase-host version=exp9-code-v1 queue=_dbos_internal_queue recovery_attempts=0 owner_xid=none output=null error=null
+sql-after-resume-and-waiting: status=ENQUEUED executor=exp9-phase-host version=exp9-code-v1 queue=_dbos_internal_queue recovery_attempts=0 owner_xid=none output=null error=null
+resumed-run-was-dispatched: false
+side-effect-lines-after-resume: 3
+what-happens-to-a-pending-workflow-whose-code-moved-on: it sits: resume puts it back on the internal queue under its recorded version, and a process on another version never dequeues it, so it waits for a process on its own version or for an operator to restamp it
+rewind-refused-while-not-terminal: cannot rewind workflow exp9-phase-1794091026453214507 while it is ENQUEUED: only a workflow in a terminal state can be rewound, so cancel it first
+sql-after-cancel: status=CANCELLED executor=exp9-phase-host version=exp9-code-v1 queue=none recovery_attempts=0 owner_xid=none output=null error=null
+restamped-onto: exp9-code-v2, keeping the first two recorded steps
+sql-after-the-changed-code-replayed-it: status=ERROR executor=exp9-phase-host version=exp9-code-v2 queue=_dbos_internal_queue recovery_attempts=1 owner_xid=none output=IiI= error=/9MQAA8qZGJvcy5EQk9TRXJyb3J/AwEBBUVycm9yAf+AAAEMAQdNZXNzYWdlAQwAAQRDb2RlAQQAAQpXb3JrZmxvd0lEAQwAAQ1EZXN0aW5hdGlvbklEAQwA... (756 bytes of serialized value)
+sql-after-the-changed-code-steps: 0:plan 1:implement
+changed-code-replay-outcome: ERROR
+changed-code-replay-error-text: DBOS Error StepExecution: Step review in workflow exp9-phase-1794091026453214507 execution error: checking operation execution: DBOS Error UnexpectedStep: During execution of workflow exp9-phase-1794091026453214507 step 1, function implement was recorded when review was expected. Check that your workflow is deterministic.
+side-effect-lines-after-the-changed-code-replayed-it: 3
+what-the-changed-code-did: it refused: DBOS compares the step name the code presents at a step id with the function_name recorded there, and a step inserted in the middle shifts every later id, so the first shifted step is rejected before its body runs
+did-it-re-run-the-steps-before-the-change: no: they were returned from their records, unchanged
+did-it-skip-the-new-step: no: the new step never ran, and nothing was written for it
+supported-way: dbos.Patch: the inserted step runs only for a workflow that had not already recorded a step at that id, and dbos.DeprecatePatch removes the guard later
+patched-code-application-version: exp9-code-v3-patched
+sql-old-run-under-the-patched-code: status=SUCCESS executor=exp9-phase-host version=exp9-code-v3-patched queue=_dbos_internal_queue recovery_attempts=1 owner_xid=none output=InN0ZXA9ZGVsaXZlciB3b3JrZmxvdz1leHA5LXBoYXNlLTE3OTQwOTEwMjY0NTMyMTQ1MDcgdmVyc2lvbj1leHA5LWNvZGUtdjEgcGlkPTI4NTQwIGF0PTIw... (160 bytes of serialized value) error=empty
+sql-old-run-steps-under-the-patched-code: 0:plan 1:implement 2:deliver
+old-run-took-the-new-step: false
+new-run-workflow-id: exp9-fresh-1794091039383032425
+sql-new-run-under-the-patched-code: status=SUCCESS executor=exp9-phase-host version=exp9-code-v3-patched queue=none recovery_attempts=1 owner_xid=none output=InN0ZXA9ZGVsaXZlciB3b3JrZmxvdz1leHA5LWZyZXNoLTE3OTQwOTEwMzkzODMwMzI0MjUgdmVyc2lvbj1leHA5LWNvZGUtdjMtcGF0Y2hlZCBwaWQ9Mjg1... (172 bytes of serialized value) error=empty
+sql-new-run-steps-under-the-patched-code: 0:plan 1:DBOS.patch-review-before-implement 2:review 3:implement 4:deliver
+new-run-took-the-new-step: true
+side-effect-line-1: step=plan workflow=exp9-phase-1794091026453214507 version=exp9-code-v1 pid=28548 at=2026-11-07T22:37:06.525695441Z
+side-effect-line-2: step=implement workflow=exp9-phase-1794091026453214507 version=exp9-code-v1 pid=28548 at=2026-11-07T22:37:06.540504041Z
+side-effect-line-3: step=deliver workflow=exp9-phase-1794091026453214507 version=exp9-code-v1 pid=28548 at=2026-11-07T22:37:06.546268911Z
+side-effect-line-4: step=deliver workflow=exp9-phase-1794091026453214507 version=exp9-code-v1 pid=28540 at=2026-11-07T22:37:19.145435744Z
+side-effect-line-5: step=plan workflow=exp9-fresh-1794091039383032425 version=exp9-code-v3-patched pid=28540 at=2026-11-07T22:37:19.389015845Z
+side-effect-line-6: step=review workflow=exp9-fresh-1794091039383032425 version=exp9-code-v3-patched pid=28540 at=2026-11-07T22:37:19.398711769Z
+side-effect-line-7: step=implement workflow=exp9-fresh-1794091039383032425 version=exp9-code-v3-patched pid=28540 at=2026-11-07T22:37:19.404644384Z
+side-effect-line-8: step=deliver workflow=exp9-fresh-1794091039383032425 version=exp9-code-v3-patched pid=28540 at=2026-11-07T22:37:19.411782505Z
+side-effect-lines-total: 8
+limit: one workflow of four steps, one inserted step, one stranded run, on one PostgreSQL: it shows the version gate, what an unguarded change does to a recorded prefix and what a patch does instead, not what a fleet half-way through a deployment does, nor what happens to a change that reorders or removes a step rather than inserting one
+schema-dropped: exp9_28540_838861
+experiment 9: PASS

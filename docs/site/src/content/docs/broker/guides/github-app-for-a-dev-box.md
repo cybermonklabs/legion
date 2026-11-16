@@ -92,8 +92,10 @@ sign-in that you leave there. Thus, on the box, delete the key files and delete 
 you complete the step.
 
 Sign in one time with `gcloud auth login`. This command does not change the credentials of the
-box. When the credentials of the box are not your own, `agent-secrets` writes the secret with your
-gcloud login. For more information, refer to
+box. `agent-secrets` writes with the credentials that its environment gives it: first an access
+token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, then the Application Default Credentials, then your gcloud
+login. A box usually has Application Default Credentials of its own. Thus, on the box, give your
+access token to the command, as the `set` command below does. For more information, refer to
 [Before you start](/legion/broker/guides/manage-a-secret/#before-you-start) in "Manage a secret".
 Then build the file and set the secret.
 
@@ -110,7 +112,8 @@ Set the secret from standard input, then delete the two key files. Do not put th
 command line.
 
 ```sh
-agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json
+CLOUDSDK_AUTH_ACCESS_TOKEN="$(gcloud auth print-access-token)" \
+  agent-secrets secret set GITHUB_APP_<PERSON> < app-key.json
 rm app-key.json '<private key file>.pem'
 ```
 
@@ -199,27 +202,36 @@ secret:
   one time for each repository, at most 100 times. Give the repository name without the account.
   The token keeps every permission the App holds, its organization permissions too, unless you
   also give `--github-read-only`.
-- `--github-read-only` limits the token to `contents: read` and `metadata: read`. A machine that
-  must only read needs it, with or without `--github-repo`.
+- `--github-read-only` limits the token to `contents: read`, `metadata: read`,
+  `pull_requests: read` and `actions: read`, the last of which an App whose installation has not
+  been granted Actions does not get. A machine that must only read needs it, with or without
+  `--github-repo`.
+- `--github-token` hands over that one installation's token alone, in place of the JSON object
+  of installations. A command that sends the token to GitHub in a header needs this form.
 
-`--github-repo` and `--github-read-only` need `--github-owner`. `agent-secrets` checks the flags
-before it asks for the secret: a flag the broker would refuse exits 2, and nothing is sent.
+`--github-repo`, `--github-read-only` and `--github-token` need `--github-owner`.
+`agent-secrets` checks the flags before it asks for the secret: a flag the broker would refuse
+exits 2, and nothing is sent.
 
 ```sh
 agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON> \
-  --github-owner <owner> --github-repo <repository> --github-read-only -- sh -ceu '
-printf %s "$GITHUB_APP_<PERSON>" | jq -er ".installations[].token"
+  --github-owner <owner> --github-repo <repository> --github-read-only --github-token -- sh -ceu '
+printf %s "$GITHUB_APP_<PERSON>"
 '
 ```
 
-The release JSON has one entry, keyed by the account's login as GitHub spells it, so the example
-reads that one entry whatever case you typed. The broker sends the narrowing to GitHub, which
-refuses a repository or permission the installation does not have: `agent-secrets` then exits 1
-with `NARROWING_REFUSED`, naming the repositories, and an account the `github-owners` tag does
-not list exits 1 with `NARROWING_OWNER_NOT_LISTED`. The broker gives out the token only when
-GitHub's answer shows that the token holds no more than you asked. The command runs only when
-the broker tells `agent-secrets` that it applied the narrowing. A broker that cannot narrow
-releases the token for all repositories, so `agent-secrets` runs nothing and exits 1.
+With `--github-token` the variable holds that one account's token, so the example needs no `jq`
+and no account key. The case you type in `--github-owner` therefore does not matter to it.
+Without the flag the variable holds the JSON object of installations, which the examples
+earlier on this page read with `jq`.
+
+The broker sends the narrowing to GitHub, which refuses a repository or permission the
+installation does not have: `agent-secrets` then exits 1 with `NARROWING_REFUSED`, naming the
+repositories, and an account the `github-owners` tag does not list exits 1 with
+`NARROWING_OWNER_NOT_LISTED`. The broker gives out the token only when GitHub's answer shows
+that the token holds no more than you asked. The command runs only when the broker tells
+`agent-secrets` that it applied the narrowing. A broker that cannot narrow releases the token
+for all repositories, so `agent-secrets` runs nothing and exits 1.
 
 The narrowing applies to this read only. The next read without these flags gives the token for
 all repositories of each installation. Keep a narrowed token apart from the other tokens, so

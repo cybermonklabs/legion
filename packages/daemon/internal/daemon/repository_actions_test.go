@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -31,9 +31,8 @@ type twoOwnersGitHub struct {
 func newTwoOwnersGitHub(t *testing.T) *twoOwnersGitHub {
 	t.Helper()
 	g := &twoOwnersGitHub{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
 			var request struct {
@@ -53,12 +52,9 @@ func newTwoOwnersGitHub(t *testing.T) *twoOwnersGitHub {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(w, `{}`)
 		default:
-			t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+			githubtest.Unexpected(t, w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
 }
 
@@ -112,11 +108,7 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 		if err := runner.provisionWorkspace(context.Background(), issue); err != nil {
 			t.Fatalf("provision the workspace of %s: %v", issue.Key, err)
 		}
-		row := mustOutboxRow(t, issue.Key, record.AutoMergeDisable{Number: 42}, time.Now())
-		if err := runner.autoMergeDisable(context.Background(), row, record.AutoMergeDisable{Number: 42}); err != nil {
-			t.Fatalf("disarm the pull request of %s: %v", issue.Key, err)
-		}
-		row = mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: 1}, time.Now())
+		row := mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: 1}, time.Now())
 		if err := runner.removeWorkspace(context.Background(), row, record.WorkspaceRemove{Linger: 1}); err != nil {
 			t.Fatalf("remove the workspace of %s: %v", issue.Key, err)
 		}
@@ -125,10 +117,8 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 	want := []string{
 		"GET /repos/acme/widgets/git/ref/heads/main implement-app-token-for-acme",
 		"POST /repos/acme/widgets/git/refs implement-app-token-for-acme",
-		"GRAPHQL acme/widgets implement-app-token-for-acme",
 		"GET /repos/zeta/tools/git/ref/heads/release/v7.1 implement-app-token-for-zeta",
 		"POST /repos/zeta/tools/git/refs implement-app-token-for-zeta",
-		"GRAPHQL zeta/tools implement-app-token-for-zeta",
 	}
 	if got := github.called(); !slices.Equal(got, want) {
 		t.Fatalf("GitHub calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -160,12 +150,11 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	enqueueOutbox(t, pool, records.Store, mustOutboxRow(t, "LEGION-7", record.IssueBranch{Generation: 1}, time.Now()))
-	enqueueOutbox(t, pool, records.Store, mustOutboxRow(t, "LEGION-7", record.AutoMergeDisable{Number: 42}, time.Now()))
 
 	named := newRepositoryGitHubFor(t, "Zeta/Tools", "release/v7.1")
 	client := &listingDispatch{summaries: []dispatch.IssueSummary{{Key: "LEGION-7", ResolvedRepo: "zeta/tools"}}}
 	if err := backfillRepositories(context.Background(), pool, records, client, "LEGION", t.TempDir(),
-		newDefaultBranches(roleTokens{}, named, defaultBranchTTL, time.Now), quietLogger()); err != nil {
+		newDefaultBranches(roleTokens{}, nil, named, defaultBranchTTL, time.Now), ghrepo.Renames{}, quietLogger()); err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
 
@@ -178,7 +167,6 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 	want := []string{
 		"GET /repos/Zeta/Tools/git/ref/heads/release/v7.1 implement-app-token-for-Zeta",
 		"POST /repos/Zeta/Tools/git/refs implement-app-token-for-Zeta",
-		"GRAPHQL Zeta/Tools implement-app-token-for-Zeta",
 	}
 	if got := github.called(); !slices.Equal(got, want) {
 		t.Fatalf("GitHub calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -189,9 +177,7 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 // defaultBranch.
 func newRepositoryGitHubFor(t *testing.T, fullName, defaultBranch string) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+defaultBranch+`"}`)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }

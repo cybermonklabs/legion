@@ -13,6 +13,7 @@ import (
 	"authelia.com/provider/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/api"
+	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
@@ -22,9 +23,11 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
-// withOAuth wires the OAuth provider on the test server's own database, its device login
-// answering deviceLogin.
-func withOAuth(t *testing.T, deviceLogin func(context.Context, url.Values, string) error) func(*api.Deps) {
+// withProvider wires the broker's OAuth provider on the test server's own database. adjust, nil
+// for none, changes the configuration before the provider is built, which is where a test states
+// the one thing it needs of it.
+func withProvider(t *testing.T, adjust func(*oauth.Config)) func(*api.Deps) {
+	t.Helper()
 	return func(d *api.Deps) {
 		store := oauthstore.New(d.MachineLogin.Store.Pool)
 		store.Reused = enroll.RevokeReusedCredential
@@ -32,14 +35,28 @@ func withOAuth(t *testing.T, deviceLogin func(context.Context, url.Values, strin
 		if err != nil {
 			t.Fatalf("Secret: %v", err)
 		}
-		provider, err := oauth.New(oauth.Config{
+		config := oauth.Config{
 			Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute, RefreshLifetime: time.Hour,
-			VerificationURL: "https://dispatch.example/credentials/machine", ProofSkew: time.Minute,
-		}, store)
+			VerificationURL: brokertest.MachineLoginURL, ProofSkew: time.Minute,
+		}
+		if adjust != nil {
+			adjust(&config)
+		}
+		provider, err := oauth.New(config, store)
 		if err != nil {
 			t.Fatalf("oauth.New: %v", err)
 		}
 		d.OAuth = provider
+	}
+}
+
+// withOAuth is withProvider with the machine-login routes' own device login and token hooks: the
+// device login answers deviceLogin, and each hook answers without changing anything.
+func withOAuth(t *testing.T, deviceLogin func(context.Context, url.Values, string) error) func(*api.Deps) {
+	t.Helper()
+	provider := withProvider(t, nil)
+	return func(d *api.Deps) {
+		provider(d)
 		d.DeviceLogin = deviceLogin
 		d.TokenHooks = oauth.TokenHooks{
 			Before: func(context.Context, oauth2.GrantType, map[string]any) error { return nil },

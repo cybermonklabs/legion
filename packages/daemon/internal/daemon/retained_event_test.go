@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -20,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -103,17 +103,19 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 				if err := records.PutIssue(ctx, tx, root); err != nil {
 					return err
 				}
-				return records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()})
+				if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
+					return err
+				}
+				// The tree runs, which its open lifecycle is what says (record.TreeLive): without
+				// it admission would find a root at a running status with no tree of it running
+				// and take it out (admit's unslotted), which is not the fence this test is about.
+				return openTreeTx(ctx, tx, "LEGION", root.Tree)
 			}); err != nil {
 				t.Fatal(err)
 			}
-			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, DesignGate: config.DesignGateOff}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
-			conn, err := nats.Connect(workflowNATS(t))
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(conn.Close)
+			conn := testnats.Connect(t, workflowNATS(t))
 			js, err := jetstream.New(conn)
 			if err != nil {
 				t.Fatal(err)
@@ -121,7 +123,7 @@ func TestARetainedEventKeepsTheSessionFenceOfItsActor(t *testing.T) {
 			client := &detailDispatch{resolved: map[string]string{root.Key: "acme/gadgets"}}
 			spec := intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")}, AckWait: time.Second, Logger: quietLogger()}
 			if tc.prepared {
-				w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: newRepositories("LEGION")}
+				w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: newRepositories("LEGION", ghrepo.Renames{})}
 				spec.PrepareRepository = w.prepareRepository
 			}
 			consumers, err := intake.OpenConsumers(ctx, js, pool, spec)
@@ -189,22 +191,18 @@ func TestARetainedEventOfAnUnrecordedIssueReadsItsRepositoryFromDispatch(t *test
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	conn, err := nats.Connect(workflowNATS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := &detailDispatch{resolved: map[string]string{"LEGION-301": "acme/widgets"}, seq: 4, failures: 1}
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@release/v7.1"})
-	repos := newRepositories("LEGION")
+	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
 	w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos,
-		defaultBranches: newDefaultBranches(roleTokens{}, github.url, defaultBranchTTL, time.Now)}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+		defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)}
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{Project: "LEGION", Repositories: []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
 		AckWait: time.Second, NakDelay: 10 * time.Millisecond, Logger: quietLogger(), PrepareRepository: w.prepareRepository})
@@ -251,22 +249,18 @@ func TestAnAdmissionWhoseApplyFailedIsAppliedAsDispatchNowShowsIt(t *testing.T) 
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	conn, err := nats.Connect(workflowNATS(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	client := &detailDispatch{resolved: map[string]string{"LEGION-310": "acme/widgets"}, seq: 5}
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"})
-	repos := newRepositories("LEGION")
+	repos := newRepositories("LEGION", ghrepo.Renames{})
 	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
 	w := &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos,
-		defaultBranches: newDefaultBranches(roleTokens{}, github.url, defaultBranchTTL, time.Now)}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+		defaultBranches: newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)}
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	// The first apply fails, as a database error would, while the person withdraws the issue; each
 	// apply's fact is kept.

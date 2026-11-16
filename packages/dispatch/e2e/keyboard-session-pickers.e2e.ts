@@ -1,15 +1,6 @@
-import {
-  type Browser,
-  type BrowserContext,
-  expect,
-  type Page,
-  type TestInfo,
-  test,
-} from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import { listAgentMessages, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -23,16 +14,13 @@ import { asUser } from "./users";
  * step taken while held survives the switch's end, so `Enter` afterwards switches to it.
  *
  * The rule holds only because every engine dispatches a closed select's `change` inside the key's
- * own task, so the file runs in WebKit and Firefox as well as in Chromium. What a switch sends is
- * read back from the fake Envoy.
+ * own task, so every row of this file carries `@webkit @firefox`, the tags those two projects
+ * select by (`playwright.config.ts`). What a switch sends is read back from the fake Envoy.
  *
  * The frames are spelt here as the wire carries them, and the file imports nothing the change
  * added, so it runs unchanged against the commit before the change and each row fails there on
  * its own assertion.
  */
-
-/** The phone layout's project: the file runs in Chromium's `iphone`, never in `webkit-iphone`. */
-const PHONE_PROJECTS = ["iphone"];
 
 const MODELS = ["anthropic/model-a", "anthropic/model-b", "openai/model-c"];
 const LEVELS = ["auto", "low", "medium", "high"];
@@ -52,7 +40,7 @@ function liveSession(row: number): FakeSession {
 }
 
 /** The settings of a session at `model` on thinking `level`, offering every model and level. */
-function reported(seq: number, model: string, level: string): object {
+function reported(seq: number, model: string, level: string): Record<string, unknown> {
   return {
     kind: "settings",
     model,
@@ -65,7 +53,7 @@ function reported(seq: number, model: string, level: string): object {
 }
 
 /** The `commands` frame of a session that runs typed input, listing the built-ins a pick runs. */
-function commandsFrame(seq: number): object {
+function commandsFrame(seq: number): Record<string, unknown> {
   return {
     commands: [
       { description: "Switch the session's model", name: "model", source: "builtin" },
@@ -80,7 +68,7 @@ function commandsFrame(seq: number): object {
 
 /** What a session at `model-a` on `auto` that runs `/model` and `/effort` replays before any
  *  turn: its settings and its commands, and nothing else. */
-function freshReplay(sessionID: string): object {
+function freshReplay(sessionID: string): Record<string, unknown> {
   return {
     frames: [reported(1, "anthropic/model-a", "auto"), commandsFrame(2)],
     session_id: sessionID,
@@ -88,20 +76,18 @@ function freshReplay(sessionID: string): object {
   };
 }
 
-/** A browser context signed in as `login`, and a page at the row's width: a 390 px phone, or a
- *  1280 × 800 desktop. */
+/** Every fact this file polls for lands in milliseconds: Playwright's default 100/250/500/1000
+ *  ladder would first see it a quarter-second late. */
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
+
+/** A browser context signed in as `login`, and a page at a 1280 × 800 desktop. */
 async function viewer(
   browser: Browser,
-  testInfo: TestInfo,
   login: string
 ): Promise<{ context: BrowserContext; page: Page }> {
   const context = await asUser(browser, login);
   const page = await context.newPage();
-  await page.setViewportSize(
-    PHONE_PROJECTS.includes(testInfo.project.name)
-      ? { height: 844, width: 390 }
-      : { height: 800, width: 1280 }
-  );
+  await page.setViewportSize({ height: 800, width: 1280 });
   return { context, page };
 }
 
@@ -143,9 +129,12 @@ async function storedSwitch(
   await expect
     .poll(async () => {
       const read = (await listAgentMessages(sessionID)).find((row) => row.message.body === body);
-      found = read === undefined || read.message.deliveries.length === 0 ? undefined : read.message;
+      found =
+        read === undefined || (read.message.deliveries ?? []).length === 0
+          ? undefined
+          : read.message;
       return found !== undefined;
-    })
+    }, PROBE)
     .toBe(true);
   if (found === undefined) throw new Error(`no stored ${body}`);
   return { author: found.author, id: found.id };
@@ -183,23 +172,23 @@ function answer(sessionID: string, messageID: string, body: string): Promise<unk
   );
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // A2: a picker whose change switches a live session follows the rule the issue picker already
 // keeps (`markKeyStep` in `AgentMessageComposer.tsx`, `keyboard-agents-picker.e2e.ts`): the arrows
 // choose and Enter commits, so a keyboard reader can pass the next model to reach the one after
 // it. An engine that commits a closed select's arrow step would switch the session to every model
 // it passes on the way.
-test("the arrows move a header picker's choice without switching the session, and Enter switches it once @phone", async ({
+// SLOW(>=2s): two switches through the fake Envoy and back, each read from the server, in every
+// engine the rule has to hold in.
+// @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
+// @pr: A write a person makes: the header picker must step without switching the session, and Enter must switch it once.
+test("the arrows move a header picker's choice without switching the session, and Enter switches it once @webkit @firefox @pr", async ({
   browser,
-}, testInfo) => {
+}) => {
   const session = liveSession(11);
   const id = session.session_id;
   await setLiveSessions([session]);
   await publishAgentStreamFrame(id, freshReplay(id), "replay");
-  const { context, page } = await viewer(browser, testInfo, "alice");
+  const { context, page } = await viewer(browser, "alice");
   try {
     await page.goto(livePath(id));
     await expectPicked(page, "anthropic/model-a", "auto");
@@ -215,8 +204,9 @@ test("the arrows move a header picker's choice without switching the session, an
     expect(await sentSwitches()).toEqual([]);
     await page.keyboard.press("Enter");
     await expect(status).toHaveText("Switching model to openai/model-c…");
-    await expect.poll(async () => (await sentSwitches()).length).toBe(1);
-    expect((await sentSwitches()).map((sent) => sent.message)).toEqual(["/model openai/model-c"]);
+    await expect
+      .poll(async () => (await sentSwitches()).map((sent) => sent.message), PROBE)
+      .toEqual(["/model openai/model-c"]);
 
     const stored = await storedSwitch(id, "/model openai/model-c");
     await answer(id, stored.id, "Model set to openai/model-c.");
@@ -230,11 +220,9 @@ test("the arrows move a header picker's choice without switching the session, an
     expect((await sentSwitches()).map((sent) => sent.message)).toEqual(["/model openai/model-c"]);
     await page.keyboard.press("Enter");
     await expect(status).toHaveText("Switching thinking level to medium…");
-    await expect.poll(async () => (await sentSwitches()).length).toBe(2);
-    expect((await sentSwitches()).map((sent) => sent.message)).toEqual([
-      "/model openai/model-c",
-      "/effort medium",
-    ]);
+    await expect
+      .poll(async () => (await sentSwitches()).map((sent) => sent.message), PROBE)
+      .toEqual(["/model openai/model-c", "/effort medium"]);
   } finally {
     await context.close();
   }
@@ -251,14 +239,16 @@ for (const [row, way, leave] of [
     (page: Page) => page.getByTestId("agent-thread-empty").click(),
   ],
 ] as const) {
-  test(`a header picker's step left by ${way} sends nothing and puts the picker back on the reported model @phone`, async ({
+  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task, left
+  // without Enter the way this engine takes focus out of a select.
+  test(`a header picker's step left by ${way} sends nothing and puts the picker back on the reported model @webkit @firefox`, async ({
     browser,
-  }, testInfo) => {
+  }) => {
     const session = liveSession(row);
     const id = session.session_id;
     await setLiveSessions([session]);
     await publishAgentStreamFrame(id, freshReplay(id), "replay");
-    const { context, page } = await viewer(browser, testInfo, "alice");
+    const { context, page } = await viewer(browser, "alice");
     try {
       await page.goto(livePath(id));
       await expectPicked(page, "anthropic/model-a", "auto");
@@ -280,8 +270,7 @@ for (const [row, way, leave] of [
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(status).toHaveText("Switching model to openai/model-c…");
-      await expect.poll(async () => (await sentSwitches()).length).toBe(1);
-      expect(await sentSwitches()).toEqual([
+      await expect.poll(sentSwitches, PROBE).toEqual([
         {
           actor: { id: "alice", kind: "user" },
           message: "/model openai/model-c",
@@ -298,14 +287,15 @@ for (const [row, way, leave] of [
 // Decision 6a: type-ahead is a step as the arrows are. A letter moves the choice to the next
 // option it starts, here `o` to openai/model-c past both anthropic models, and sends nothing;
 // Enter switches to it.
-test("type-ahead on a header picker moves its choice without switching the session, and Enter switches it once @phone", async ({
+// @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
+test("type-ahead on a header picker moves its choice without switching the session, and Enter switches it once @webkit @firefox", async ({
   browser,
-}, testInfo) => {
+}) => {
   const session = liveSession(14);
   const id = session.session_id;
   await setLiveSessions([session]);
   await publishAgentStreamFrame(id, freshReplay(id), "replay");
-  const { context, page } = await viewer(browser, testInfo, "alice");
+  const { context, page } = await viewer(browser, "alice");
   try {
     await page.goto(livePath(id));
     await expectPicked(page, "anthropic/model-a", "auto");
@@ -320,8 +310,7 @@ test("type-ahead on a header picker moves its choice without switching the sessi
 
     await page.keyboard.press("Enter");
     await expect(status).toHaveText("Switching model to openai/model-c…");
-    await expect.poll(async () => (await sentSwitches()).length).toBe(1);
-    expect(await sentSwitches()).toEqual([
+    await expect.poll(sentSwitches, PROBE).toEqual([
       {
         actor: { id: "alice", kind: "user" },
         message: "/model openai/model-c",
@@ -338,14 +327,18 @@ test("type-ahead on a header picker moves its choice without switching the sessi
 // so a held picker keeps focus and its keys still step its choice, but Enter sends nothing. The
 // step survives the switch's end, since the session reported no new thinking level meanwhile, so
 // Enter afterwards switches to it.
-test("a held header picker keeps focus and steps its choice but Enter sends nothing until the switch ends, and Enter then switches to that step @phone", async ({
+// SLOW(>=2s): a replay seed and two switch round trips through the fake listener, in Firefox and
+// WebKit, each of which lays out the live view's header afresh.
+// @webkit @firefox: a closed select's `change` dispatched inside the key's own task, here while
+// the picker is held.
+test("a held header picker keeps focus and steps its choice but Enter sends nothing until the switch ends, and Enter then switches to that step @webkit @firefox", async ({
   browser,
-}, testInfo) => {
+}) => {
   const session = liveSession(15);
   const id = session.session_id;
   await setLiveSessions([session]);
   await publishAgentStreamFrame(id, freshReplay(id), "replay");
-  const { context, page } = await viewer(browser, testInfo, "alice");
+  const { context, page } = await viewer(browser, "alice");
   try {
     await page.goto(livePath(id));
     await expectPicked(page, "anthropic/model-a", "auto");
@@ -353,7 +346,7 @@ test("a held header picker keeps focus and steps its choice but Enter sends noth
 
     await model.selectOption("anthropic/model-b");
     await expect(status).toHaveText("Switching model to anthropic/model-b…");
-    await expect.poll(async () => (await sentSwitches()).length).toBe(1);
+    await expect.poll(async () => (await sentSwitches()).length, PROBE).toBe(1);
     const stored = await storedSwitch(id, "/model anthropic/model-b");
 
     await thinking.focus();
@@ -380,8 +373,7 @@ test("a held header picker keeps focus and steps its choice but Enter sends noth
 
     await page.keyboard.press("Enter");
     await expect(status).toHaveText("Switching thinking level to low…");
-    await expect.poll(async () => (await sentSwitches()).length).toBe(2);
-    expect(await sentSwitches()).toEqual([
+    await expect.poll(sentSwitches, PROBE).toEqual([
       {
         actor: { id: "alice", kind: "user" },
         message: "/model anthropic/model-b",

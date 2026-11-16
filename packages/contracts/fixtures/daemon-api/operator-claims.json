@@ -45,14 +45,55 @@
       "uncertainStreak": 0,
       "pending": {
         "id": "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
-        "task": "Implement the plan in .legion/plan.json.",
+        "task": "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
         "queuedAt": "2026-09-22T09:30:58Z",
         "deliveredAt": "2026-09-22T09:31:04Z",
         "confirmedAt": "2026-09-22T09:31:04Z",
-        "interrupted": true
+        "interrupted": true,
+        "sendFailures": 2,
+        "lastSendFailureAt": "2026-09-22T09:31:02Z",
+        "lastSendError": "prompt the agent: context deadline exceeded"
       },
       "suspensionHeld": true,
-      "pluginContract": 0
+      "pluginContract": 0,
+      "updateRound": "plugin:43",
+      "updateHead": "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+      "step": {
+        "at": "2026-09-22T09:31:22Z",
+        "turnStartedAt": "2026-09-22T09:31:06Z",
+        "tool": "eval",
+        "callId": "toolu_impl_209_4",
+        "argsBytes": 412,
+        "argsHash": "c40d9e1b7a52f368",
+        "startedAt": "2026-09-22T09:31:22Z"
+      }
+    },
+    {
+      "token": "legion-legion-legion-211-tester",
+      "tree": "LEGION-211",
+      "issue": "LEGION-211",
+      "role": "tester",
+      "generation": 3,
+      "state": "launching",
+      "session": "",
+      "sessionFile": "",
+      "budgets": {
+        "launchFailures": 2,
+        "deaths": 0,
+        "promptFailures": 0,
+        "promptRetires": 0
+      },
+      "uncertainStreak": 0,
+      "pluginContract": 0,
+      "leakCheckCause": "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s"
     }
-  ]
+  ],
+  "pod_update_rounds": {
+    "swept": false,
+    "max_open_rounds": null,
+    "rounds_per_minute": null,
+    "in_round": [],
+    "waiting_on_max_open_rounds": [],
+    "waiting_on_rounds_per_minute": []
+  }
 }

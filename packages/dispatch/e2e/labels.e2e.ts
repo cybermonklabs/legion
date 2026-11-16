@@ -1,8 +1,6 @@
-import { expect, type Locator, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { filterPicker, pickFilterOption } from "./filters";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test } from "./test";
 import { asUser } from "./users";
 
 async function expectTouchTarget(locator: Locator): Promise<void> {
@@ -10,13 +8,10 @@ async function expectTouchTarget(locator: Locator): Promise<void> {
   expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("edits issue labels from a searchable multi-select and filters project issues by every selected label @phone", async ({
+// @pr: A keyed write a person makes: labels edited from the multi-select, and the project list filtered by every one picked.
+test("edits issue labels from a searchable multi-select and filters project issues by every selected label @pr", async ({
   browser,
-}, testInfo) => {
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const edited = await createIssue({ project: "CORE", title: "Editable labels" });
   const matching = await createIssue({ project: "CORE", title: "Frontend documentation" });
@@ -52,17 +47,12 @@ test("edits issue labels from a searchable multi-select and filters project issu
       "true"
     );
 
-    if (process.env.DISPATCH_LABEL_SCREENSHOT_DIR !== undefined) {
-      const screenshotName =
-        testInfo.project.name === "iphone" ? "labels-390.png" : "labels-1280.png";
+    const shots = process.env.DISPATCH_LABEL_SCREENSHOT_DIR;
+    if (shots !== undefined) {
       await page.screenshot({
         fullPage: true,
-        path: `${process.env.DISPATCH_LABEL_SCREENSHOT_DIR}/${screenshotName}`,
+        path: `${shots}/labels-${page.viewportSize()?.width}.png`,
       });
-    }
-    if (testInfo.project.name === "iphone") {
-      await expectTouchTarget(editLabels);
-      await expectTouchTarget(labelSearch);
     }
 
     await editLabels.click();
@@ -75,20 +65,17 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await page.goto("/projects/CORE?label=docs");
     await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=docs$/);
     await filterPicker(page, "Labels").click();
-    await expect(page.getByRole("option", { exact: true, name: "docs" })).toHaveAttribute(
+    await expect(page.getByRole("option", { exact: true, name: "docs, 2 issues" })).toHaveAttribute(
       "aria-selected",
       "true"
     );
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
     await expect(page.getByText("Backend documentation", { exact: true })).toBeVisible();
     await expect(page.getByText("Editable labels", { exact: true })).toHaveCount(0);
-    if (testInfo.project.name === "iphone") {
-      await expectTouchTarget(filterPicker(page, "Labels"));
-      await expectTouchTarget(page.getByRole("option", { exact: true, name: "docs" }));
-      await expectTouchTarget(page.getByRole("button", { name: "Clear labels" }));
-    }
     await pickFilterOption(page, "Labels", "docs");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).toHaveURL(
+      (url) => url.pathname === "/projects/CORE/issues" && !url.searchParams.has("label")
+    );
     await pickFilterOption(page, "Labels", "Frontend");
     await expect(page.getByText("Editable labels", { exact: true })).toBeVisible();
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
@@ -96,14 +83,55 @@ test("edits issue labels from a searchable multi-select and filters project issu
     await pickFilterOption(page, "Labels", "docs");
     await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
     await expect(page.getByText("Editable labels", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("Backend documentation", { exact: true })).toHaveCount(0);
+  } finally {
+    await context.close();
+  }
+});
 
-    if (testInfo.project.name === "iphone") {
-      await expect(
-        page.evaluate(
-          () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
-        )
-      ).resolves.toBe(true);
+// The label controls' phone half: the header's Edit labels and its search box, and the project
+// list's Labels picker with its options and Clear, are what a finger presses, so each holds the
+// 44 px touch target and the filtered list fits the screen. What those controls do is the row
+// above, which holds at any width.
+test("the label controls keep touch-sized targets and the filtered list fits the screen @phone @phone-only", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const edited = await createIssue({ project: "CORE", title: "Editable labels" });
+  const matching = await createIssue({ project: "CORE", title: "Frontend documentation" });
+  await patchIssue(edited.key, { labels: ["Frontend", "api"] });
+  await patchIssue(matching.key, { labels: ["Frontend", "docs"] });
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto(`/issues/${edited.key}`);
+    const editLabels = page.getByRole("button", { name: "Edit labels" });
+    await editLabels.click();
+    const labelSearch = page.getByRole("combobox", { name: "Search or create label" });
+    await expect(labelSearch).toBeVisible();
+    await expectTouchTarget(editLabels);
+    await expectTouchTarget(labelSearch);
+    const shots = process.env.DISPATCH_LABEL_SCREENSHOT_DIR;
+    if (shots !== undefined) {
+      await page.screenshot({
+        fullPage: true,
+        path: `${shots}/labels-${page.viewportSize()?.width}.png`,
+      });
     }
+    await editLabels.click();
+
+    await page.goto("/projects/CORE?label=docs");
+    await expect(page.getByText("Frontend documentation", { exact: true })).toBeVisible();
+    await filterPicker(page, "Labels").click();
+    await expectTouchTarget(filterPicker(page, "Labels"));
+    await expectTouchTarget(page.getByRole("option", { exact: true, name: "docs, 1 issue" }));
+    await expectTouchTarget(page.getByRole("button", { name: "Clear labels" }));
+    await expect(
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth
+      )
+    ).resolves.toBe(true);
   } finally {
     await context.close();
   }

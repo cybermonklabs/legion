@@ -1,0 +1,5 @@
+kind: Changed
+body: The secrets broker now denies a credential request that carries no reason when any secret it names would wait for a person to approve it.
+time: 2026-11-08T08:04:05.801362244Z
+custom:
+    Issue: pr2998

@@ -10,6 +10,12 @@ import { ChildrenTab } from "./ChildrenTab";
 const issue: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [],
   children: [
     {
@@ -34,6 +40,7 @@ const issue: IssueDetails = {
   closed_at: null,
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
+  design_gates: [],
   external_links: [],
   key: "CORE-1",
   labels: [],
@@ -46,7 +53,10 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   project: "CORE",
   referenced_by_count: 0,
   route: null,

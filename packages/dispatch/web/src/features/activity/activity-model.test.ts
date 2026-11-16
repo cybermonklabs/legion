@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 
-import type { Event } from "../../api/types";
+import type { DispatchEvent } from "../../api/types";
 import { activityDescription, buildActivityItems, dateKey } from "./activity-model";
 
-function message(seq: number, at: string): Event {
+function message(seq: number, at: string): DispatchEvent {
   const actor = { id: "alice", kind: "user" as const };
   return {
     actor,
@@ -14,6 +14,8 @@ function message(seq: number, at: string): Event {
     payload: {
       author: actor,
       body: `Message ${seq}`,
+      broadcast_id: null,
+      reply_block: null,
       created_at: at,
       deliveries: [],
       id: `message-${seq}`,
@@ -92,4 +94,77 @@ test("an architecture import names the repository it came from; a retained event
   expect(
     activityDescription({ ...projectEvent, payload: { error }, type: "architecture.sync_failed" })
   ).toEqual(["failed to sync the architecture model: duplicate component id api"]);
+});
+
+test("a project's default assignee names the person it moved to; a retained clear reads as cleared", () => {
+  expect(
+    activityDescription({
+      ...projectEvent,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+      type: "settings.project_default_assignee.updated",
+    })
+  ).toEqual(["set the default assignee of CORE to bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(
+    activityDescription({
+      ...projectEvent,
+      payload: { assignee: null, project: "CORE" },
+      type: "settings.project_default_assignee.updated",
+    })
+  ).toEqual(["cleared the default assignee of CORE"]);
+});
+
+function commentDelivery(receipt: {
+  state: "sent" | "failed";
+  duplicate?: boolean;
+}): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 1,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      attempt: 1,
+      comment_id: "comment-1",
+      delivery: "btw",
+      reply_id: null,
+      session_id: null,
+      target: "session:planner",
+      ...(receipt.state === "failed" ? { error: "no live session planner" } : {}),
+      ...receipt,
+    },
+    seq: 1,
+    type: "comment.delivery",
+  };
+}
+
+test("a mention receipt says whether the mention reached its target", () => {
+  expect(activityDescription(commentDelivery({ state: "sent" }))).toEqual([
+    "delivered a comment mention to session:planner",
+  ]);
+  expect(activityDescription(commentDelivery({ state: "failed" }))).toEqual([
+    "could not deliver a comment mention to session:planner",
+  ]);
+  // A repeat the stream already held reached nobody new, which the line says rather than
+  // counting it as a second delivery.
+  expect(activityDescription(commentDelivery({ duplicate: true, state: "sent" }))).toEqual([
+    "already delivered a comment mention to session:planner",
+  ]);
+});
+
+test("a recorded handoff names its phase and version", () => {
+  expect(
+    activityDescription({
+      actor: { id: "session-1", kind: "session" },
+      created_at: "2026-10-26T00:00:00Z",
+      id: 2,
+      issue_key: "CORE-1",
+      notify: true,
+      payload: { handoff_id: "handoff-1", phase: "implement", version: 2 },
+      seq: 2,
+      type: "handoff.recorded",
+    })
+  ).toEqual(["recorded the implement handoff, version 2"]);
 });

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -39,17 +40,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
 var (
-	projectKeyPattern  = regexp.MustCompile(contracts.ProjectKeyPattern)
-	issueKeyPattern    = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
-	externalRefPattern = regexp.MustCompile(`^([^/\s]+)/([^/\s#]+)#([1-9][0-9]*)$`)
+	projectKeyPattern = regexp.MustCompile(contracts.ProjectKeyPattern)
+	issueKeyPattern   = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
 )
 
 // projectKeyProblem is every route's refusal of a value that is not a project key: the field it
@@ -77,13 +77,25 @@ type Deps struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	Docs           docs.API
+	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
+	// from the words a person typed when those words match nothing it found
+	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
+	// DISPATCH_NEW_ISSUE_SESSION). NewIssueLabel empty is an issue that carries no label;
+	// NewIssueSession empty is an issue made with no conversation started on it.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	Docs            docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549), and its Identity
 	// is the only one search compares queries with (INFRA-393); nil means Dispatch has no
 	// embedder, and search answers keyword-only on every request, always setting
 	// SearchResponse.Degraded.
 	Embedder embed.Embedder
+	// Answerer answers one question from what Dispatch holds (INFRA-1279), for the three going
+	// routes; nil means the deployment configured no model, where a run is still recorded and
+	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
+	// capability route says no model is configured.
+	Answerer Answerer
 	Envoy    *envoy.Client
 	Events   *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
@@ -126,11 +138,21 @@ type Deps struct {
 	// that reads two processes inside one answer's life needs no timing window.
 	RouteRosterTTL time.Duration
 	// ListenerTakeoverWindow replaces how long a sender keeps trying a listener that is being
-	// replaced (listenerTakeoverWindow, envoy_resolve.go). Zero keeps twelve seconds; neither
-	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment runs twelve seconds.
-	// Only this package's tests set another, so a send to a session that is gone settles without
-	// sleeping the production window.
+	// replaced (listenerTakeoverWindow, envoy_resolve.go). Zero keeps twelve seconds; a
+	// deployment leaves it zero, and only a test process sets another (cmd/dispatch:
+	// DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW, under the test hooks), so a send to a session that
+	// is gone settles without sleeping the production window.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning, and how often each of that
+	// Horizon's three warnings repeats - the stall warning while the stall stands, the
+	// failed-observation warning and the failed-persist warning (events.Horizon.SetStallWarning).
+	// Zero keeps the horizon's own five and thirty seconds; a deployment leaves both zero, and
+	// only a test process sets another (cmd/dispatch: DISPATCH_TEST_HORIZON_STALL_AFTER and
+	// DISPATCH_TEST_HORIZON_WARN_EVERY, under the test hooks), so a test whose wait keys on the
+	// stall warning sees it inside its own patience.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces how long a test hook waits for every process's acknowledgement
 	// (testHookTimeout, test_hooks_fanout.go). Zero keeps ten seconds; neither
 	// routes.BuildAppContext nor cmd/dispatch sets it, so every deployment with the hooks on and
@@ -151,6 +173,13 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
+	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
+	// is hashed into every list validator (listETag), so two builds never answer one ETag for
+	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
+	// it empty, which is one identity for every such build and is why a deploy is what it is
+	// for rather than a key anything depends on being unique.
+	BuildCommit string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -162,8 +191,12 @@ type DepsInput struct {
 	Identity       identity.Identity
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
-	ServerURL      string
-	EnvoyURL       string
+	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
+	// than one an issue may carry, or a session id that is no session id, refuses startup.
+	NewIssueLabel   string
+	NewIssueSession string
+	ServerURL       string
+	EnvoyURL        string
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
@@ -173,6 +206,9 @@ type DepsInput struct {
 	Docs         docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
+	// Answerer answers a going request's question (INFRA-1279); nil means no model is
+	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
+	Answerer Answerer
 	Events   *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
@@ -203,6 +239,10 @@ type DepsInput struct {
 	// ListenerTakeoverWindow replaces the twelve-second listener take-over window; see
 	// Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace the five-second stall threshold and the
+	// thirty-second repeat of every event-horizon warning; see Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// TestHookTimeout replaces the ten-second test-hook acknowledgement timeout; see
 	// Deps.TestHookTimeout.
 	TestHookTimeout time.Duration
@@ -211,6 +251,8 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
+	BuildCommit string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -218,6 +260,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 	defaultProject := strings.TrimSpace(input.DefaultProject)
 	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
 		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
+	}
+	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
+	switch problem {
+	case "label":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+	case "session":
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
@@ -261,9 +310,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
 		DefaultProject:         defaultProject,
+		NewIssueLabel:          newIssue.Label,
+		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
+		Answerer:               input.Answerer,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
@@ -277,9 +329,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 		StreamHeartbeat:        heartbeat,
 		RouteRosterTTL:         input.RouteRosterTTL,
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
+		HorizonStallAfter:      input.HorizonStallAfter,
+		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		BuildCommit:            input.BuildCommit,
 	}, nil
 }
 
@@ -319,14 +374,27 @@ type server struct {
 	// shutdown for it (detached). Register sets it from its lifetime parameter and refuses a nil one, since nothing would
 	// ever end the work it bounds; a test passes its own t.Context(). A server a test builds
 	// directly has none unless the test sets it (directServer sets context.Background()).
-	lifetime        context.Context
-	routeIndex      []routeIndexEntry
+	lifetime   context.Context
+	routeIndex []routeIndexEntry
+	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
+	// write, held to the table this server mounts (going_catalogue.go).
+	going           GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
 	// rather than its machine's speed.
 	suggestionTimeout time.Duration
+	// beforeCrossProjectRead runs at the head of relatedOtherProjects, before it reads, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds that one
+	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
+	// as it runs in production.
+	beforeCrossProjectRead func(ctx context.Context) error
+	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
+	// (the forced create whose check does not answer), so a case's outcome is its own choice
+	// rather than its machine's speed.
+	duplicateBound time.Duration
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the
@@ -336,6 +404,12 @@ type server struct {
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
 	rosters rosterCache
+	// listAnswers keeps what the comment list and the activity feed last answered, under the ETag
+	// each answers with, so a warm read of either writes bytes instead of making them again
+	// (list_answers.go). Every server register mounts has one; a server a test builds directly
+	// (directServer) has none, and every method of the cache takes a nil one, which keeps
+	// nothing.
+	listAnswers *listAnswerCache
 	// deliveryHub keeps the open Delivery and Pipeline pages current (LEGION-690); every server
 	// register mounts has one, and only a server a test builds directly (directServer) has none.
 	deliveryHub *deliveryHub
@@ -350,8 +424,9 @@ type server struct {
 	// agentWatchInterval is how often an agent view re-arms its session: agentStreamWatchInterval,
 	// which a test replaces.
 	agentWatchInterval time.Duration
-	// eventRelay is the live feed every events subscription reads (INFRA-66), on every server
-	// register mounts: it starts its listening connection on the first subscription.
+	// eventRelay is the live feed every events subscription and the delivery hub read (INFRA-66),
+	// on every server register mounts: it starts its listening connection on the first of them to
+	// subscribe and stops it with the last.
 	eventRelay *eventStreamRelay
 	// testHooks carries every test hook to every process serving the database
 	// (test_hooks_fanout.go); nil without Deps.TestHooksEnabled, and on a server with no Store,
@@ -366,9 +441,12 @@ type server struct {
 	// bootMark closes once the server's boot mark has been taken (takeBootMark), which the marks
 	// in eventMarks begin with; nil on a server with no Store.
 	bootMark chan struct{}
-	// eventMarks is the event log marks the relay's first start and GET /auth/whoami bound the ids
-	// a writer can still hold open by (event_marks.go).
+	// eventMarks is the event log marks the relay's generation starts and GET /auth/whoami bound
+	// the ids a writer can still hold open by (event_marks.go).
 	eventMarks eventMarks
+	// mentions sends comment mentions after their comment's response (comment_mention_sender.go),
+	// on every server register mounts.
+	mentions *mentionSender
 	// detached is everything a request started that runs on past its client: every keyed write's
 	// handler (keyedWrites, which runs it on a context the client's going away does not cancel) and
 	// every delivery a handler started and did not wait for (a broadcast's recipients, a sweep's
@@ -397,6 +475,16 @@ type server struct {
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
 	slowWrites sync.Map
+	// slowWriteRuns is the slowWriteRecord of each route the slow-write test hook has delayed a
+	// run of, by the same "METHOD path" slowWrites uses. A disarm takes the route out of
+	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
+	// hook did before and since.
+	slowWriteRuns sync.Map
+	// newIssueOverride is what the new-issue test hook last set
+	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
+	// place of the two settings Deps carries; nil until a hook call sets one, which is every
+	// server without TestHooksEnabled, since that mounts no hook.
+	newIssueOverride atomic.Pointer[newIssueSettings]
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -411,6 +499,20 @@ type server struct {
 	// (recordRelatedChecks, run as detached work) hold or wait on a pool connection right now, at
 	// most relatedRecordRetryLimit.
 	relatedRecordRetrying atomic.Int32
+	// branches is what the results reads last learned about each repository's default branch
+	// (delivery.Branches), held across requests so the Verification tab's refetch on every
+	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
+	// every branch a check is compared with, and caches the default branch alone, since what
+	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
+	// delivery's; the server holds the one cache the process shares.
+	branches delivery.Branches
+	// commitPulls is the moment before which the results read will not read GitHub again for the
+	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
+	// comparisonReader.readThroughHead), held across requests so one commit costs at most one such
+	// read per delivery.CommitPullReadStaleAfter however often the tab refetches, and one per
+	// delivery.CommitPullSettledFor once GitHub has put that pull request's head elsewhere. The
+	// policy is delivery's; the server holds the one cache the process shares.
+	commitPulls delivery.CommitPullReads
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
@@ -422,11 +524,14 @@ type warnedProductionRun struct {
 	applyStep string
 }
 
-// queryer is the pgx surface shared by *pgxpool.Pool and pgx.Tx, so one loader
-// serves both the plain-read and in-transaction paths.
+// queryer is the pgx surface shared by *store.Pool and pgx.Tx, so one loader
+// serves both the plain-read and in-transaction paths. A loader that reads
+// several statements at once queues them in one batch on it (loadArtifactDetails,
+// loadAskDetails) rather than spending a round trip on each.
 type queryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults
 }
 
 // Register mounts every native-workspace route on mux. The routes live in routes_table.go; the
@@ -500,6 +605,7 @@ func (s *server) waitBackground() {
 	s.liveSockets.wait()
 	s.deliveryHub.wait()
 	s.eventRelay.wait()
+	s.mentions.wait()
 	if s.testHooks != nil {
 		s.testHooks.wait()
 	}
@@ -567,7 +673,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	if lifetime == nil {
 		panic("api.Register: the lifetime parameter is required: it is the context that ends the delivery hub, the event stream relay and every live socket (a test passes t.Context())")
 	}
-	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, rosters: rosterCache{
+	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
 	}}
 	s.liveKinds = map[string]liveKind{
@@ -576,6 +682,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	}
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
+	s.mentions = s.startMentionSender()
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -585,6 +692,32 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		// A mutating row the project check cannot decide would serve a project-scoped caller a
 		// write nothing judged, so the table is refused rather than mounted (project_scope.go).
 		panic("api.Register: the route table holds a mutating row the project-scope check cannot decide: " + strings.Join(undecidable, "; "))
+	}
+	if unmounted := scopedRoutesNotMounted(); len(unmounted) > 0 {
+		// A scope named on a route nothing serves is a scope nothing enforces — a row renamed or
+		// deleted and its entry left behind — so the table is refused rather than mounted
+		// (routeScopes).
+		panic("api.Register: the route table's scope map names a route the table does not mount: " + strings.Join(unmounted, "; "))
+	}
+	going, err := buildGoingCatalogue(routes)
+	if err != nil {
+		// A catalogue entry naming a row this table does not hold or does not class as a write,
+		// a placeholder no argument of the tool fills, or a relation named in neither edge
+		// family, is refused rather than mounted (going_catalogue.go).
+		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	}
+	s.going = going
+	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
+		// A row with no shape is a row the generated OpenAPI document would leave out, so the
+		// one definition of the API would stop being one; the table is refused rather than
+		// mounted (routes_shapes.go).
+		panic("api.Register: the route table holds a row with no request and response shape: " + strings.Join(shapeless, "; "))
+	}
+	if unshaped := shapedRoutesNotMounted(); len(unshaped) > 0 {
+		// A shape for a route nothing serves is a shape the document would describe and no
+		// caller could reach — a row renamed or deleted and its entry left behind — so the
+		// table is refused rather than mounted (routeShapes).
+		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
 	replays := s.keyedReplays()
@@ -598,13 +731,41 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		}
 		if route.Method != http.MethodGet {
 			// Outside the keyed layer and the upload's spool, so a write to another project's
-			// object, or into another session's own rows, claims no idempotency key and costs
-			// no body (withinProjectScope, withinSessionScope).
+			// object, into another session's own rows, or by a credential that names no person
+			// claims no idempotency key and costs no body (withinProjectScope,
+			// withinSessionScope, writeNeedsASignedInPerson).
 			handler = s.withinProjectScope(route, handler)
 			handler = s.withinSessionScope(route, handler)
+			// Outermost of the three, so a caller that may make no write at all is told that
+			// rather than which session the write it tried belongs to. The project check has
+			// nothing to tell it: a token naming a service is held to no one project
+			// (broker_token.go).
+			handler = s.writeNeedsASignedInPerson(handler)
 			handler = s.refuseChangedLogin(handler)
 		}
+		// Outside the two scope checks and outside the GET test, so it runs before them and
+		// before every handler, on a read as on a write: the whole id it resolves a path
+		// prefix into is the value the project check resolves and the value the handler
+		// addresses its row by, one value for both (resolveIDPrefixes, project_scope.go).
+		handler = s.resolveIDPrefixes(route, handler)
 		handler = s.refuseUnstorableParameters(route.Pattern, handler)
+		if len(route.OAuthScopes) > 0 {
+			// Ahead of the keyed layer and the project and session checks, so the row's own
+			// scopes are the first thing a request is held to: a credential that holds none is
+			// told so rather than told its write belongs to another project or another session,
+			// and its refusal claims no idempotency key, so the person who ticks the scope back
+			// is not answered the stored refusal under the same key. It is inside the drain, so
+			// a client that asked to be told to continue is handled as it is for every other
+			// early answer.
+			handler = s.gateRouteScopes(route.OAuthScopes, handler)
+		}
+		// One place for the whole table: every answer says its body depends on Dispatch-Trees
+		// (varyOnDisplayTrees), so no cache between a browser and Dispatch hands a reader with
+		// trees an answer written for a reader without them. It is outside the scope gate, so a
+		// refusal of the row's own scopes carries the header too. The answer's other Vary, on
+		// Accept-Encoding, is added by the same loop, where the encoding is chosen
+		// (compressAnswers).
+		handler = varyOnDisplayTrees(handler)
 		if route.Method != http.MethodGet {
 			// Every layer above may answer before the body is read; the answer waits for the body.
 			//
@@ -623,8 +784,11 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		}
 		// The access-log line is outermost, so it records what every layer answered - a keyed
 		// replay, a refused login, an early answer the drain held - and the caller the first of
-		// them resolved.
-		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, s.decideBrokerToken(trackTransactions(handler))))
+		// them resolved. Compression sits just inside it, so every one of those answers is
+		// compressed for a caller that takes gzip and the line counts the bytes that went on the
+		// wire. The two websockets below carry no compressed answer: the upgrade is not a body,
+		// and the frames after it are the socket's (compressAnswers).
+		mux.HandleFunc(route.Method+" "+route.Pattern, accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler)))))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -688,6 +852,11 @@ type apiError struct {
 	// that carries none. Only a refusal that knows when the caller may come back sets it
 	// (brokerTokenActor's 429); writeHandlerError writes the header.
 	retryAfter int
+	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
+	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
+	// from it, so a refusal a handler returns as an error is the same answer refuseMissingScope
+	// writes directly.
+	scope string
 }
 
 func (e *apiError) Error() string { return e.message }
@@ -713,206 +882,38 @@ func parseQueryInt(query url.Values, field string, min, max int) (value int, pre
 	return parsed, true, true
 }
 
-// The codes writeHandlerError answers a document it cannot read or serve and an unclassified
-// failure with, which a comment's or ask's single read also carries as anchor_block_error
-// (anchorBlock).
-const (
-	codeDocSchema             = "DOC_SCHEMA"
-	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
-	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
-	codeInternal              = "INTERNAL"
-)
-
-// documentErrorCode names an error a document operation returns when it could not read or serve
-// the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
-// document error by it, and both in one order, so the two cannot name one error differently.
-//
-// A room or store that could not serve the document is DOC_SERVICE_UNAVAILABLE whatever failed it,
-// so both take that code before any branch that reads the error's cause. A failed room carries the
-// error another operation failed it with - settlement's schema refusal, a settlement that failed
-// three times (its warm-up refused because the issue had closed, among others), a writer's commit
-// that failed or its client cancelled, a store write or load that failed, a history that did not
-// decode - and that error says nothing of this request: the caller retries once the room is
-// evicted, and its retry meets the document itself.
-//
-// A stored history this request itself could not decode is DOCUMENT_UNLOADABLE, the state a
-// rebuild repairs. A tree outside the schema is DOC_SCHEMA, which both take only after the
-// branches that name the caller's own input or a block the document does not hold, so a refusal
-// whose reason the renderer gave (an ask block that cannot render) stays that refusal.
-func documentErrorCode(err error) string {
-	switch {
-	case errors.Is(err, docs.ErrServiceUnavailable):
-		return codeDocServiceUnavailable
-	case errors.Is(err, docs.ErrDocumentUnloadable):
-		return codeDocumentUnloadable
-	case errors.Is(err, docs.ErrDocSchema):
-		return codeDocSchema
+// parseQueryBool reads one query parameter as true or false, as parseQueryInt reads one as an
+// integer: present is false when the request carried no value the route reads, and a value that
+// is neither "true" nor "false" is present with valid false, so each route writes its own code
+// and message around it. The two routes that read such a parameter read it differently, and
+// both readings are carried here rather than either being changed: trim cuts the value's
+// surrounding whitespace before it is read, which search's ?keywords_only= does and GET
+// /api/v1/projects/{key}/related does not, and readFirst reads the parameter as url.Values.Get
+// does - the first value, however many were sent, and a blank one as no value at all - which
+// that related route does where search refuses a repeated or a blank one.
+func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value, present, valid bool) {
+	values, ok := query[field]
+	if !ok {
+		return false, false, false
 	}
-	return ""
-}
-
-func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
-		if apiErr.retryAfter > 0 {
-			// Before the body: writeError writes the status and the headers go with it.
-			w.Header().Set("Retry-After", strconv.Itoa(apiErr.retryAfter))
+	first := values[0]
+	if trim {
+		first = strings.TrimSpace(first)
+	}
+	if readFirst {
+		if first == "" {
+			return false, false, false
 		}
-		writeError(w, apiErr.code, apiErr.status, apiErr.message)
-		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
-		if apiErr.status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", apiErr.code, "error", err)
-		}
-		return
+	} else if len(values) != 1 {
+		return false, true, false
 	}
-	documentCode := documentErrorCode(err)
-	switch documentCode {
-	case codeDocServiceUnavailable:
-		writeError(w, documentCode, http.StatusServiceUnavailable, docs.ErrServiceUnavailable.Error())
-		return
-	case codeDocumentUnloadable:
-		writeError(w, documentCode, http.StatusConflict, docs.ErrDocumentUnloadable.Error())
-		slog.Warn("dispatch: API document history cannot load", "error", err)
-		return
+	switch first {
+	case "false":
+		return false, true, true
+	case "true":
+		return true, true, true
 	}
-	// The edit route's own ambiguity error names the operation and the quote; the bare pmdoc one
-	// still serves every other caller of FindQuote.
-	var ambiguousQuote *docs.ErrAnchorAmbiguous
-	if errors.As(err, &ambiguousQuote) {
-		writeAmbiguousTarget(w, ambiguousQuote.Error(), ambiguousQuote.Candidates)
-		return
-	}
-	var ambiguous *pmdoc.ErrTargetAmbiguous
-	if errors.As(err, &ambiguous) {
-		writeAmbiguousTarget(w, ambiguous.Error(), ambiguous.Candidates)
-		return
-	}
-
-	var preconditionFailed *docs.ErrPreconditionFailed
-	if errors.As(err, &preconditionFailed) {
-		currentBlocks := make([]model.EditBlockPrecondition, 0)
-		for _, mismatch := range preconditionFailed.Mismatches {
-			if mismatch.Scope == "block" && mismatch.Current != nil {
-				currentBlocks = append(currentBlocks, model.EditBlockPrecondition{
-					ID: mismatch.BlockID, Token: *mismatch.Current,
-				})
-			}
-		}
-		WriteJSON(w, http.StatusConflict, map[string]any{
-			"error":      preconditionFailed.Error(),
-			"code":       "PRECONDITION_FAILED",
-			"current":    map[string]any{"document": preconditionFailed.CurrentDocument, "blocks": currentBlocks},
-			"mismatches": preconditionFailed.Mismatches,
-		})
-		return
-	}
-	// A write whose text a concurrent browser change removed before the write could be versioned
-	// (LEGION-269). Nothing was written, so this reads like PRECONDITION_FAILED: re-read the
-	// document and decide again.
-	var lostEdit *docs.ErrEditLost
-	if errors.As(err, &lostEdit) {
-		body := map[string]any{
-			"error":        lostEdit.Error(),
-			"code":         "EDIT_LOST_TO_CONCURRENT_CHANGE",
-			"participants": participantsOrEmpty(lostEdit.Participants),
-		}
-		if lostEdit.Suggestion != "" {
-			body["suggestion"] = lostEdit.Suggestion
-		} else {
-			body["lost_ops"] = lostEdit.Ops
-		}
-		WriteJSON(w, http.StatusConflict, body)
-		return
-	}
-	var invalidPrecondition *docs.ErrInvalidPrecondition
-	if errors.As(err, &invalidPrecondition) {
-		writeError(w, "INVALID_PRECONDITION", http.StatusBadRequest, invalidPrecondition.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrPreconditionBusy) {
-		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
-		return
-	}
-	var invalidAskBlock *docs.ErrInvalidAskBlock
-	if errors.As(err, &invalidAskBlock) {
-		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
-		return
-	}
-	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
-	if errors.As(err, &unrepresentableAsk) {
-		writeError(w, "ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())
-		return
-	}
-	var invalidOp *docs.ErrInvalidOp
-	if errors.As(err, &invalidOp) {
-		writeError(w, "INVALID_OP", http.StatusBadRequest, invalidOp.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTargetSpansBlocks) {
-		writeError(w, "TARGET_SPANS_BLOCKS", http.StatusBadRequest, err.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTableWidth) {
-		writeError(w, "TABLE_WIDTH", http.StatusBadRequest, err.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrAnchorMissing) {
-		writeError(w, "ANCHOR_MISSING", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, docs.ErrAnchorOrphaned) {
-		writeError(w, "ANCHOR_ORPHANED", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, pmdoc.ErrTargetNotFound) {
-		writeError(w, "TARGET_NOT_FOUND", http.StatusNotFound, err.Error())
-		return
-	}
-	// A block pointer refused on any route but the edit route (which answers INVALID_OP) is the
-	// caller's markdown to fix, as a schema refusal of it is.
-	if errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, pmdoc.ErrBlockPointer) {
-		writeError(w, "INVALID_MARKDOWN", http.StatusBadRequest, err.Error())
-		return
-	}
-	if docs.IsTooLarge(err) {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, err.Error())
-		slog.Warn("dispatch: API refused a document too large to store", "error", err)
-		return
-	}
-	// A tree outside the schema that the document holds answers 409 with its one message, the same
-	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
-	// refusal is a tree an operation produced, which is the server's fault.
-	if documentCode == codeDocSchema {
-		var outside *docs.OutsideSchemaError
-		if errors.As(err, &outside) {
-			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", err)
-			return
-		}
-		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", err)
-		return
-	}
-	if errors.Is(err, docs.ErrIssueClosed) {
-		writeError(w, "ISSUE_CLOSED", http.StatusConflict, err.Error())
-		return
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
-		return
-	}
-	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")
-	slog.Error("dispatch: API handler failed", "error", err)
-}
-
-// writeAmbiguousTarget serves a quote that resolved in several places: the caller picks one by
-// the candidates' positions, or narrows the quote.
-func writeAmbiguousTarget(w http.ResponseWriter, message string, candidates []pmdoc.Candidate) {
-	WriteJSON(w, http.StatusConflict, map[string]any{
-		"error":      message,
-		"code":       "TARGET_AMBIGUOUS",
-		"candidates": candidates,
-	})
+	return false, true, false
 }
 
 // refuseChangedLogin runs a write route's handler only for the person who pressed the write, when
@@ -972,7 +973,9 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		}
 		if auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
 			accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
-			return model.Actor{}, false, nil
+			// A credential that holds no scope, not the absence of one: the deployment's one
+			// shared token is nobody's, so it acts as no person.
+			return model.Actor{Credential: scopelessCredential}, false, nil
 		}
 		if s.deps.OIDC != nil && oidc.LooksLikeJWT(token) {
 			return s.serviceTokenActor(r, token)
@@ -995,8 +998,21 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		return model.Actor{}, false, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
-	return model.Actor{Kind: "user", ID: login}, true, nil
+	// A person at a browser is the person, so their cookie holds every scope and names no agent
+	// that acted for them.
+	return model.Actor{Kind: "user", ID: login, Credential: personCredential}, true, nil
 }
+
+// The two credentials every request of their kind shares. Each is a fact of the deployment
+// rather than of one request — a browser's cookie holds both scopes, and the shared token and a
+// service-account token hold none — and the cookie's is on the dashboard's hottest path, so
+// allocating either per request would be waste. Nothing writes a Credential or appends to its
+// Scopes: Holds reads, actingPerson copies the slice header onto the act it records, and
+// tokenScopes builds a set of its own.
+var (
+	scopelessCredential = &model.Credential{}
+	personCredential    = &model.Credential{Scopes: model.Scopes}
+)
 
 // serviceTokenActor authenticates a JWT-shaped bearer as a Kubernetes pod's
 // projected service-account token. A rejected token is a 401 of its own: it
@@ -1022,18 +1038,26 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 			"service-account token rejected (%s)", reason)
 	}
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
-	return model.Actor{Service: &claims.Subject}, false, nil
+	// A credential that holds no scope, not the absence of one: a pod's projected token proves a
+	// workload and no person, so it acts as nobody.
+	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil
 }
 
+// actorFrom is the actor a write records: the caller optionalActor resolved, or, for a bearer
+// that proves no session of its own, the session its body names. The request's credential stops
+// here (model.Actor.Recorded): a handler stores this actor and compares it with a stored one,
+// which carries none.
 func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor, error) {
 	actor, present, err := s.optionalActor(r)
 	if err != nil {
 		return model.Actor{}, err
 	}
-	if present {
-		return actor, nil
+	if !present {
+		if actor, err = bearerSessionActor(r, actor, supplied); err != nil {
+			return model.Actor{}, err
+		}
 	}
-	return bearerSessionActor(r, actor, supplied)
+	return actor.Recorded(), nil
 }
 
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
@@ -1058,7 +1082,9 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
 		}
-		actor := authenticated
+		// Recorded: the actor a handler writes and compares carries no credential, as a stored
+		// actor decoded from JSON carries none (model.Actor.Recorded).
+		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
 		}
@@ -1075,6 +1101,9 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		Origin:  supplied.Origin,
 		Owner:   authenticated.Owner,
 		Service: authenticated.Service,
+		// No Credential: this actor is one a handler records and compares, and a stored actor
+		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
+		// the request's own credential reads it from optionalActor (callerHoldsScope).
 	}, nil
 }
 
@@ -1122,21 +1151,201 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 	return true
 }
 
-func (s *server) requireHuman(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
-	actor, present, err := s.optionalActor(r)
+// codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
+// needs: the deployment's shared token and a pod's projected token hold none, and a personal
+// token holds the set its own row names.
+const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
+
+// insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
+// for a scope the credential does not hold. Both ways of writing that refusal go through it, so
+// a caller cannot tell them apart by the challenge.
+func insufficientScopeChallenge(scope string) string {
+	return fmt.Sprintf("Bearer error=%q, scope=%q", "insufficient_scope", scope)
+}
+
+// refuseMissingScope answers 403 OAUTH_SCOPE_REQUIRED for one scope the request's credential
+// does not hold, under the challenge RFC 6750 section 3.1 gives that refusal. writeError sets no
+// header, so the header goes on here and the body through it, which keeps the refusal the same
+// shape as every other.
+func refuseMissingScope(w http.ResponseWriter, scope, message string) {
+	w.Header().Set("WWW-Authenticate", insufficientScopeChallenge(scope))
+	writeError(w, codeScopeRequired, http.StatusForbidden, message)
+}
+
+// missingScopeError is refuseMissingScope as an error, for a check that cannot run at the gate
+// because what it reads is known only once a row is loaded (answerAsk's approval asks).
+// writeHandlerError writes the challenge header from the error's scope, so such a refusal is the
+// gate's own answer in every part a caller can see.
+func missingScopeError(scope, message string) *apiError {
+	return &apiError{status: http.StatusForbidden, code: codeScopeRequired, message: message, scope: scope}
+}
+
+// gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
+// that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
+// table is what decides and a handler restates nothing. A credential the deployment configured
+// rather than a person — the shared token, a pod's service-account token, a broker-issued token
+// scoped to a project — holds none of them; a personal token holds the set its own row names.
+// The first scope the credential lacks, in the order the row declares them, is 403
+// OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
+// through writeAuthenticationError, as every gate on this server does.
+//
+// The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
+// same bearer twice or presents the same DPoP proof twice.
+func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, human, err := s.optionalActor(r)
+		if err != nil {
+			s.writeAuthenticationError(w, err)
+			return
+		}
+		for _, scope := range scopes {
+			if !actor.Credential.Holds(scope) {
+				refuseMissingScope(w, scope, fmt.Sprintf(
+					"this request's credential does not hold the %s scope, which this route requires", scope))
+				return
+			}
+		}
+		handler(w, r.WithContext(context.WithValue(
+			r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})))
+	}
+}
+
+// actingPerson answers the person a request acts for, on a route gateRouteScopes has already
+// held to the `person` scope. It names no scope of the route's own: the table decides those, and
+// a handler that repeated them could drift from the row it serves. On a row the table gives the
+// `person` scope, the refusal below is a backstop the gate makes unreachable. On the calls whose
+// row declares no scope — `GET /api/v1/issues?pinned=true` (issue_queries.go), a reword of
+// another session's ask (asks.go) and a follow for another session (ask_followers.go) — it is
+// the only check of the scope, and those calls must not lose it.
+//
+// The actor it hands back is the person and not the agent beside them. Every route this opens
+// reads the person from actor.ID (inbox.go, agent_tokens.go, ask_transitions.go), and three
+// readers of what such a route records match on the actor being the person: the answers query
+// (answerEventsQuery in asks.go), the event broker's notice (events.Broker.Notify) and the
+// approval review read (docs/approval_review.go). A personal token's own actor carries no ID at
+// all and a broker-issued token's is its session, so either would be recorded as somebody else.
+// The person is the cookie caller's own login, and otherwise the owner the credential names,
+// which is the one field every credential that holds a scope carries; the login is canonical
+// (model.CanonicalLogin), the form everything that compares logins compares.
+//
+// The agent is not lost: Act names the credential that acted — its scopes, the personal token it
+// is, the session a broker-issued token proved — so a write records which credential made it and
+// not only whom it was made for. A browser's cookie names no agent, since the person themselves
+// acted, and carries none. A credential that proved no session takes the one the `session` query
+// parameter names where the caller gives it, the convention messages.go already reads; one that
+// proved a session is refused a parameter naming another, 403 ACTOR_SESSION_MISMATCH, which is
+// what bearerSessionActor answers the same disagreement in a body.
+func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
+	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return model.Actor{}, false
 	}
-	if !present {
-		writeError(w, "HUMAN_ONLY", http.StatusForbidden, "only users may perform this action")
+	if !actor.Credential.Holds(model.ScopePerson) {
+		refuseMissingScope(w, model.ScopePerson, fmt.Sprintf(
+			"this request's credential does not hold the %s scope, which this route requires", model.ScopePerson))
 		return model.Actor{}, false
 	}
+	// Past that check the credential is not nil: Credential.Holds answers false for nothing at
+	// all.
+	credential := actor.Credential
+	person := actor.ID
+	if actor.Owner != nil {
+		person = *actor.Owner
+	}
+	var act *model.ActorAct
+	if credential.TokenID != "" || credential.Session != "" {
+		session := credential.Session
+		if named := strings.TrimSpace(r.URL.Query().Get("session")); named != "" {
+			if session != "" && named != session {
+				writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+					"this request's credential acts for session %s; its session parameter names another session", session))
+				return model.Actor{}, false
+			}
+			session = named
+		}
+		act = &model.ActorAct{
+			Session:   session,
+			TokenID:   credential.TokenID,
+			TokenName: credential.TokenName,
+			Scopes:    credential.Scopes,
+		}
+	}
+	return model.Actor{Kind: "user", ID: model.CanonicalLogin(person), Act: act}, true
+}
+
+// actSessionFromBody records on actor's act the session the request body names, for the
+// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
+// the follower routes. A
+// credential that proved no session of its own - a personal token - names its agent nowhere
+// else on a route whose body is already read, so the body's actor is taken for it, exactly as
+// `?session=` is taken on every other route (actingPerson). A credential that did prove one - a
+// broker-issued token - decides it, and a body naming another session is the disagreement
+// bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
+// write recorded as a session the caller merely asked for.
+//
+// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
+// whose input struct does not declare one is a 400, and four of the mutating rows a person's
+// scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
+// so there is nothing for a body to name, and its body actor is ignored here as it always was.
+func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
+	named := ""
+	if supplied != nil && supplied.Kind == "session" {
+		named = strings.TrimSpace(supplied.ID)
+	}
+	if actor.Act == nil || named == "" {
+		return actor, true
+	}
+	if actor.Act.Session != "" && actor.Act.Session != named {
+		writeError(w, "ACTOR_SESSION_MISMATCH", http.StatusForbidden, fmt.Sprintf(
+			"this request acts for session %s; its actor names another session", actor.Act.Session))
+		return model.Actor{}, false
+	}
+	// A copy, so a handler holding the actor actingPerson answered keeps the act it was given.
+	act := *actor.Act
+	act.Session = named
+	actor.Act = &act
 	return actor, true
 }
 
+// callerHoldsScope reports whether this request's credential holds one OAuth scope. It is the
+// question every check inside a handler asks that a person's own credential must pass as the
+// person at a browser passes it: taking a live holder's claim and releasing anyone's claim
+// (issue_claim.go), following or unfollowing an ask for any session (ask_followers.go),
+// rewording any ask (asks.go) and reading any direct conversation (messages.go). None of them
+// can read it off the actor they hold: a bearer's recorded actor is the session it acts for,
+// and actorFrom drops the credential from what it hands back (model.Actor.Recorded). A caller
+// that does not resolve at all holds nothing, and the route's own gate answers it.
+func (s *server) callerHoldsScope(r *http.Request, scope string) bool {
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		return false
+	}
+	return actor.Credential.Holds(scope)
+}
+
+// requireCallerScope refuses a request whose credential does not hold one scope, for a field
+// that is not a route's own gate: the claim's `force` (issue_claim.go), which every
+// authenticated caller may send and only a person's own credential may set. Where such a check
+// passes a caller it lacks the scope for rather than refusing it, callerHoldsScope above is the
+// predicate to read instead.
+func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scope string) bool {
+	actor, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return false
+	}
+	if !actor.Credential.Holds(scope) {
+		refuseMissingScope(w, scope, fmt.Sprintf(
+			"this request's credential does not hold the %s scope, which this field requires", scope))
+		return false
+	}
+	return true
+}
+
 // capExceededError names how far a text field is over its cap so one trim lands:
-// "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units (len16).
+// "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units
+// (itemblocks.Units16).
 func capExceededError(field string, length, limit int) *apiError {
 	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
 		"%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
@@ -1148,35 +1357,61 @@ func countExceededError(code, field string, count, limit int) *apiError {
 		"%s is %d over the %d-item limit (%d/%d)", field, count-limit, limit, count, limit)
 }
 
+// blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
+// rule, else the refusal the typed error words, under the code that rule is refused by. A bound
+// broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
+// what it holds rather than how long it is. Every route that checks a body calls this one
+// helper, so a route added later cannot word the same refusal differently.
+func blockBoundError(err error) *apiError {
+	if err == nil {
+		return nil
+	}
+	var decision *itemblocks.DecisionBlock
+	if errors.As(err, &decision) {
+		return errorf(http.StatusBadRequest, "DECISION_BLOCK_IN_BODY", "%s", err)
+	}
+	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s", err)
+}
+
 func capExceeded(w http.ResponseWriter, field string, length, limit int) {
 	err := capExceededError(field, length, limit)
 	writeError(w, err.code, err.status, err.message)
 }
 
-// requireUUIDPath rejects a non-uuid `{id}` path value with 400 <KIND>_ID_INPUT before it
-// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or "message".
+// requireUUIDPath rejects a `{id}` path value that is no id with 400 <KIND>_ID_INPUT before it
+// reaches a uuid column (where pgx would surface it as a 500). kind is "ask", "comment", or
+// "message".
+//
+// The value it reads is the one the prefix layer left (resolveIDPrefixes): an id written as a
+// unique prefix is already the whole id by the time this runs, and what reaches here is an id
+// nothing carries or a value that is no id at all. So the refusal states the rule a caller can
+// act on - a whole uuid, or a prefix of it long enough to name one item - rather than telling
+// them to write the whole id, which is no longer what the route needs.
+//
+// A value uuid.Parse reads in one of its other spellings reaches here already rewritten to the
+// canonical one: the prefix layer canonicalizes the {id} of every route that takes one
+// (canonicalizeUUIDPath), so this parse only decides whether the value is an id at all.
 func requireUUIDPath(w http.ResponseWriter, r *http.Request, kind string) bool {
-	id := r.PathValue("id")
-	if _, err := uuid.Parse(id); err != nil {
-		if kind == "ask" {
-			writeError(w, "ASK_ID_INPUT", http.StatusBadRequest, "ask IDs are UUIDs; use the full ask ID")
-		} else {
-			writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, kind+" id must be a full uuid")
-		}
+	if _, err := uuid.Parse(r.PathValue("id")); err != nil {
+		writeError(w, strings.ToUpper(kind)+"_ID_INPUT", http.StatusBadRequest, idPathProblem(kind))
 		return false
 	}
 	return true
 }
 
-func len16(value string) int {
-	length := 0
-	for _, rune := range value {
-		length++
-		if rune > 0xffff {
-			length++
-		}
+// idPathProblem is how a route refuses a path id that names nothing, worded once so every route
+// that reads one says the same thing. An ask's, a comment's and a message's id is resolved from
+// a prefix before a handler sees it (idRoutes), so their rule is a whole uuid or a prefix of one
+// long enough to name a single item. A handoff's and a thread's is not, so theirs is the whole
+// uuid it has always been.
+func idPathProblem(kind string) string {
+	switch kind {
+	case "ask", "comment", "message":
+		return kind + " id must be a whole uuid or a unique prefix of 8 characters or more"
 	}
-	return length
+	return kind + " id must be a full uuid"
 }
 
 const maxJSONRequestBytes int64 = 1 << 20
@@ -1187,22 +1422,33 @@ func (maxBytesDiscarder) Header() http.Header             { return nil }
 func (maxBytesDiscarder) Write(value []byte) (int, error) { return len(value), nil }
 func (maxBytesDiscarder) WriteHeader(int)                 {}
 
+// actorInput is the body of every route whose only input is who acts.
+type actorInput struct {
+	Actor *model.Actor `json:"actor"`
+}
+
 // decodeJSON decodes r's body, one JSON value of at most maxJSONRequestBytes, into value, which
 // declares every member the body may carry. A string the body holds anywhere that carries U+0000
 // is refused, naming where it stands (unstorableJSON).
 func decodeJSON(r *http.Request, value any) error {
+	return decodeJSONWithin(r, value, maxJSONRequestBytes, errJSONTooLarge)
+}
+
+// decodeJSONWithin is decodeJSON for a route whose body has a limit of its own (routeBody): a body
+// past limit bytes is tooLarge, the 413 that route answers one with.
+func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiError) error {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || (contentType != "application/json" && !strings.HasSuffix(contentType, "+json")) {
 		return errorf(http.StatusUnsupportedMediaType, "JSON_CONTENT_TYPE", "JSON mutations require Content-Type application/json")
 	}
-	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, maxJSONRequestBytes)
+	r.Body = http.MaxBytesReader(maxBytesDiscarder{}, r.Body, limit)
 	var read bytes.Buffer
 	decoder := json.NewDecoder(io.TeeReader(r.Body, &read))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		var maxBytes *http.MaxBytesError
 		if errors.As(err, &maxBytes) {
-			return errJSONTooLarge
+			return tooLarge
 		}
 		return errorf(http.StatusBadRequest, "INVALID_JSON", "invalid JSON body: %v", err)
 	}
@@ -1224,8 +1470,14 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
+// errorBody is the body of every refusal writeError answers, on every route.
+type errorBody struct {
+	Code  string `json:"code"`
+	Error string `json:"error"`
+}
+
 func writeError(w http.ResponseWriter, code string, status int, message string) {
-	WriteJSON(w, status, map[string]string{"error": message, "code": code})
+	WriteJSON(w, status, errorBody{Code: code, Error: message})
 }
 
 func encodeJSON(value any) ([]byte, error) {
@@ -1240,10 +1492,16 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
-func (s *server) publish(events ...model.Event) {
+// publish hands each event to the broker and then stores the display trees of the stored texts
+// their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
+// context, which by here has committed and holds no connection of the pool, or a background
+// writer's. A caller that publishes while its transaction is still open stores nothing, and loses
+// no tree by it: such an event carries a text its own write already stored.
+func (s *server) publish(ctx context.Context, events ...model.Event) {
 	for _, event := range events {
 		s.deps.Events.Publish(event)
 	}
+	s.storeEventDisplayTrees(ctx, events)
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
@@ -1257,26 +1515,68 @@ func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	return tx, nil
 }
 
-// requireOpenIssue locks an issue row and returns its lifecycle status, rejecting mutations
-// after completion without a second issue query.
-func (s *server) requireOpenIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	return issueOpenStatus(ctx, tx, key, ownerRowLock)
+// readyPool is the pool a route reads through before it opens its transaction, with the
+// refusal begin would make when there is no database.
+func (s *server) readyPool() (*store.Pool, error) {
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
+	}
+	return s.deps.Store.Pool, nil
 }
 
-// issueOpenStatus is that same read and refusal made through q under lock, so the check a
-// comment makes from the pool before its transaction opens refuses exactly what the locked
-// check will.
-func issueOpenStatus(ctx context.Context, q queryer, key, lock string) (string, error) {
+// lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
+// lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
+// still takes: a message, its deliveries and the agent's reply to one.
+func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
+	status, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	return status, err
+}
+
+// issueStatus reads an issue's lifecycle status, and whether it is open, through q under
+// lock. It refuses nothing: each write that a closed issue refuses decides that from open.
+func issueStatus(ctx context.Context, q queryer, key, lock string) (string, bool, error) {
 	var status string
 	var open bool
 	if err := q.QueryRow(ctx, `
 		select status, closed_at is null from issues where key = $1`+lock, key).Scan(&status, &open); err != nil {
-		return "", err
+		return "", false, err
 	}
-	if !open {
-		return "", errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+	return status, open, nil
+}
+
+// closedWrite says, of one write that takes the owner's lock through ownerStatus, whether a
+// closed issue takes it. A closed issue still takes a comment that is not a suggestion, a
+// message, their deliveries and an agent's reply to one (takenWhenClosed); every other write that
+// asks here -- an ask, a suggestion, an upload, a document edit and a named version (before the
+// document service is called), a handoff, a review, an action on an existing comment -- is
+// refusedWhenClosed. The writes that read the issue row for themselves never reach this and
+// refuse on their own: a claim (issue_claim.go), a PATCH outside a closed issue's allow-list
+// (issue_patch.go), a check result, which a closed issue takes for an after_merge or
+// default_branch check (results.go), and a document rebuild with supplied markdown
+// (artifact_rebuild.go), which the document service refuses with docs.ErrIssueClosed
+// (docs/rebuild.go; writeHandlerError turns it into the same 409 ISSUE_CLOSED).
+type closedWrite bool
+
+const (
+	takenWhenClosed   closedWrite = false
+	refusedWhenClosed closedWrite = true
+)
+
+// errIssueClosed is the refusal of a write that a closed issue does not take.
+var errIssueClosed error = errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+
+// refuseClosed is the one place the writes that take the owner's lock through ownerStatus refuse
+// a closed owner: the locked checks (requireOpenOwnerStatus, lockCommentOwner, lockedComment) and
+// the pooled pre-check a comment with mentions and an upload make before their transaction opens
+// (refuseOwnerBeforeResolving) all decide here. It is not every closed-issue refusal the API
+// makes: closedWrite names the writes that decide for themselves. open is what the owner's row
+// read (ownerStatus, issueStatus): an issue is open until it closed, and a project document
+// always is.
+func refuseClosed(open bool, write closedWrite) error {
+	if write == refusedWhenClosed && !open {
+		return errIssueClosed
 	}
-	return status, nil
+	return nil
 }
 
 // A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a
@@ -1308,29 +1608,4 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID str
 	}
 	diff := text.UnifiedDiff(previous, current)
 	return &diff, nil
-}
-
-func externalRef(ref string) (repo string, number string, err error) {
-	match := externalRefPattern.FindStringSubmatch(strings.TrimSpace(ref))
-	if match == nil {
-		return "", "", errorf(http.StatusBadRequest, "INVALID_ISSUE_REF", "invalid issue reference %q", ref)
-	}
-	return canonicalRepo(match[1], match[2]), match[3], nil
-}
-
-func canonicalRepo(owner, repo string) string {
-	owner = strings.ToLower(strings.TrimSpace(owner))
-	repo = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(repo)), ".git")
-	return owner + "/" + repo
-}
-
-func externalURL(repo, number string) string {
-	return "https://github.com/" + repo + "/issues/" + number
-}
-
-func externalURLs(repo, number string) []string {
-	return []string{
-		externalURL(repo, number),
-		"https://github.com/" + repo + "/pull/" + number,
-	}
 }

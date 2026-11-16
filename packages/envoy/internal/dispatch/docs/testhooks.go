@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
+	"sync/atomic"
 
 	"github.com/reearth/ygo/crdt"
 
@@ -106,7 +109,7 @@ func AppendStoredChangeForTest(ctx context.Context, database *store.Store, artif
 		return fmt.Errorf("load document before crafted update: %w", err)
 	}
 	doc := crdt.New()
-	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
+	if err := decodeStoredState(doc, loaded.Update); err != nil {
 		return fmt.Errorf("decode document before crafted update: %w", err)
 	}
 	before := doc.StateVector()
@@ -172,7 +175,7 @@ func appendTextEmbed(ctx context.Context, database *store.Store, artifactID stri
 		return fmt.Errorf("load document before crafted embed: %w", err)
 	}
 	doc := crdt.New()
-	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
+	if err := decodeStoredState(doc, loaded.Update); err != nil {
 		return fmt.Errorf("decode document before crafted embed: %w", err)
 	}
 	before := doc.StateVector()
@@ -209,7 +212,7 @@ func AppendNestedLinkForTest(ctx context.Context, database *store.Store, artifac
 		return fmt.Errorf("load document before crafted link: %w", err)
 	}
 	doc := crdt.New()
-	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
+	if err := decodeStoredState(doc, loaded.Update); err != nil {
 		return fmt.Errorf("decode document before crafted link: %w", err)
 	}
 	update, err := crafted.NestedLinkUpdate(doc, crafted.NestedValue(100))
@@ -239,4 +242,56 @@ func DocumentReadWeightForTest(markdown string) (int64, error) {
 		return 0, err
 	}
 	return read.weight, nil
+}
+
+// documentRenders is the record a test installs over every rendering of a document tree this
+// package makes, in place of a hook field on Service: the renders are made by the package's
+// render helpers (countDocumentRender), which hold no service. A render loads it and, outside a
+// test, finds it nil and does nothing else, so no production path changes. One test at a time
+// holds it, as the hook fields on Service are held, and clears it in t.Cleanup.
+var documentRenders atomic.Pointer[renderRecord]
+
+// renderRecord is what the renderings a test watches produced: the markdown of each, in the
+// order the renders finished. It is the markdown and not a count alone because what a write
+// costs is which documents it rendered and not only how many times it rendered one: a write
+// that renders the text it was given twice costs the same count as one that renders the
+// document it replaces and then that text. A document's writes render on the request's
+// goroutine and its room renders on the room's, so the lock is held for every record.
+type renderRecord struct {
+	mu       sync.Mutex
+	markdown []string
+}
+
+func (r *renderRecord) record(markdown string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.markdown = append(r.markdown, markdown)
+}
+
+// rendered is the markdown of every rendering recorded so far, a copy the caller may read while
+// later renders are recorded.
+func (r *renderRecord) rendered() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.markdown)
+}
+
+// countDocumentRender records one rendering of a document tree, and the markdown that rendering
+// produced, on the record a test installed. It runs after the render, so what it records is what
+// the render answered - the empty string for a render that failed, which is a rendering made all
+// the same. Every rendering of a whole document goes through one of its callers, so what a read
+// or a write costs in renderings is what it records. A rendering of a tree derived from a
+// document - the copy without ask blocks an approval carry compares (renderWithoutAskBlocks), a
+// single block (renderBlock) - is not one of them.
+func countDocumentRender(markdown string) {
+	if record := documentRenders.Load(); record != nil {
+		record.record(markdown)
+	}
+}
+
+// RoomCapsForTest is the service's room and connection caps (reserveRoom, reserveConnection).
+// cmd/dispatch's settings test reads it to see DISPATCH_MAX_LIVE_ROOMS and
+// DISPATCH_MAX_DOC_CONNECTIONS reach the service through Deps.
+func (s *Service) RoomCapsForTest() (rooms, connections int) {
+	return s.roomCap, s.connectionCap
 }

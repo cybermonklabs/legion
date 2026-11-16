@@ -7,40 +7,26 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
-
-// socketDir answers a directory short enough to hold a unix socket path: Linux's sun_path is 107
-// bytes, and t.TempDir() sits under TMPDIR, which is no longer short anywhere — a Legion role's
-// TMPDIR is the issue's shared scratch on its volume (/legion/scratch/tmp), and a
-// developer's macOS TMPDIR is a ~49-byte path under /var/folders. Under either, t.TempDir()'s own
-// per-test name pushes the socket past sun_path and the listen fails with "bind: invalid argument"
-// before the test does anything. /tmp is the shortest base every machine has, so the socket's
-// directory is made there and removed with the test; every other file a test writes stays under
-// t.TempDir().
-func socketDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "legion-shim")
-	if err != nil {
-		t.Fatalf("socket directory: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
-}
 
 // Every refusal the shipped command makes before it dials or spawns (worker-shim.ts:630-676,
 // 590-620), each naming the flag or path at fault: the daemon's pane has nothing to show but
 // this line, and a shim that dialled first would register a pane that can never start OMP.
 func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 	dir := t.TempDir()
-	socket := filepath.Join(socketDir(t), "s")
+	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -119,7 +105,7 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 // pane, and the runtime watching it, see.
 func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 	dir := t.TempDir()
-	socket := filepath.Join(socketDir(t), "s")
+	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -188,7 +174,7 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 // ends with the agent (the test below), and the shim returns the moment both are done.
 func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing.T) {
 	dir := t.TempDir()
-	socket := filepath.Join(socketDir(t), "s")
+	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -245,7 +231,7 @@ func TestWorkerShimWarmsTheWorkspacesCodegraphIndexOnceTheAgentStarts(t *testing
 // lease must be gone.
 func TestWorkerShimLetsAnInFlightWarmUpReleaseItsLeaseBeforeItExits(t *testing.T) {
 	dir := t.TempDir()
-	socket := filepath.Join(socketDir(t), "s")
+	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -306,7 +292,7 @@ esac
 // directory cannot be made, the shim refuses naming it, before anything is dialled or spawned.
 func TestWorkerShimStartsAPodsAgentOnTheBaselineAndAPanesAsBefore(t *testing.T) {
 	dir := t.TempDir()
-	socket := filepath.Join(socketDir(t), "s")
+	socket := testtmp.Socket(t, "s")
 	ln, err := net.Listen("unix", socket)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -317,10 +303,6 @@ func TestWorkerShimStartsAPodsAgentOnTheBaselineAndAPanesAsBefore(t *testing.T) 
 		t.Fatal(err)
 	}
 	t.Setenv("PI_CONFIG_FILES", "/etc/operator.yml")
-	// Restored by t.Setenv's cleanup; unset so the pod row proves the baseline fills it and the
-	// pane row that nothing does.
-	t.Setenv("OMP_SESSION_STORAGE", "")
-	os.Unsetenv("OMP_SESSION_STORAGE")
 	t.Setenv("OMP_PROFILE", "legion")
 	marker := filepath.Join(dir, "spawned")
 	// told is every scratch directory the role was told of, as the child reads it: the shim's own
@@ -434,4 +416,105 @@ func acknowledgeHello(ln net.Listener) chan error {
 		}()
 	}()
 	return daemon
+}
+
+// A tmux pane's server gives every process of the pane SIGHUP when the pane is killed
+// (internal/runtime/tmux's stop, which ends a pane with `kill-pane`), and `legion worker-shim`
+// runs on it the stop it runs for SIGTERM: Oh My Pi is SIGTERMed, the shim exits with its
+// status, and the git and jj the shim has running end with it, each of them in a process group
+// of its own the pane's signal never reaches (internal/procgroup, internal/shim's Run, whose
+// context every command site builds from). Before, the hangup's default action killed the shim
+// outright: the agent was never told, and a save's or an adoption's jj ran on against the clone
+// every role of the issue shares until its own budget ended it, up to five minutes after the
+// pane was gone.
+//
+// Each signal runs a real `legion worker-shim` of its own (TestMain's rig), because what is
+// under test is this process's disposition for the signal, and reads the same three things of
+// both: the line the stop logs to the pane, the agent's own SIGTERM, and the agent's status as
+// the command's.
+func TestWorkerShimStopsOnSIGHUP(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal syscall.Signal
+	}{
+		{"the hangup a killed pane gives every process of the pane", syscall.SIGHUP},
+		{"the SIGTERM it has always stopped on", syscall.SIGTERM},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			socket := testtmp.Socket(t, "s")
+			ln, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			token := filepath.Join(dir, "token")
+			if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			record, running := filepath.Join(dir, "agent"), filepath.Join(dir, "running")
+			daemon := acknowledgeHello(ln)
+
+			// The stand-in Oh My Pi: it says it is running once its trap is set — a stop that
+			// landed before that line would kill it under the default disposition, with nothing
+			// recorded — and ends 7 on the shim's SIGTERM, which is then the shim's own status.
+			//
+			// It waits in a loop of short foreground sleeps, and never in a loop of `sleep &
+			// wait $!`: a shell runs no trap while a foreground command of its own is still
+			// going, so this trap is acted on within one 50 ms tick of the shim's signal, and
+			// nothing is in flight when it runs. A `wait $!` would return on that signal and the
+			// loop would fork its next sleep before the shell ran the pending trap, and the
+			// trap's exit would leave that sleep behind holding the shim's output pipes with no
+			// signal of its own, the shim signalling the process it wrapped and not a group
+			// (measured on this machine: 3 of 60 stops of that shape left one behind, and 0 of
+			// 60 of the loop below). The loop gives up after a minute, so a run whose stop never
+			// arrives leaves nothing behind for long, and ends 9, which the exit status below
+			// reads as the failure it is.
+			agent := `trap 'printf "the agent caught SIGTERM\n" >>"$1"; exit 7' TERM
+: >"$2"
+ticks=0
+while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks=$((ticks+1)); done
+exit 9
+`
+			command := exec.Command(os.Args[0], "worker-shim",
+				"--connect", "unix://"+socket, "--boot-token-file", token,
+				"--", "sh", "-c", agent, "sh", record, running)
+			command.Env = append(os.Environ(), testMainEnv+"=1")
+			var printed bytes.Buffer
+			command.Stdout, command.Stderr = &printed, &printed
+			// A shim that ran no stop leaves the agent holding these pipes until it gives up on
+			// its own, and Wait would sit there for the whole of that minute before the failure
+			// below could be read: the delay closes them a few seconds after the shim's exit
+			// instead. It changes nothing where the stop ran, the agent being gone by then.
+			command.WaitDelay = 5 * time.Second
+			if err := command.Start(); err != nil {
+				t.Fatalf("start the shim: %v", err)
+			}
+			// The signal is sent once the agent is up: before that there is no child to stop,
+			// and the shim's answer to a signal is a different one (it exits 143 itself).
+			testwait.Eventually(t, "the stand-in Oh My Pi to be running", func() bool {
+				_, err := os.Stat(running)
+				return err == nil
+			})
+			// The signal goes to this one pid, never to the group: the shim shares this test
+			// binary's own group, and a group signal would end the test run with it.
+			if err := command.Process.Signal(tc.signal); err != nil {
+				t.Fatal(err)
+			}
+
+			waited := command.Wait()
+			if code := command.ProcessState.ExitCode(); code != 7 {
+				t.Fatalf("the shim under %s = %v, exit %d, want the agent's own 7: it ran no stop; it printed:\n%s", tc.signal, waited, code, printed.String())
+			}
+			if want := "[worker-shim] signalled to stop: sending SIGTERM to the wrapped process"; !strings.Contains(printed.String(), want) {
+				t.Errorf("the shim under %s printed:\n%swant the pane to be told %q", tc.signal, printed.String(), want)
+			}
+			if got := readRecord(t, record); !strings.Contains(got, "the agent caught SIGTERM\n") {
+				t.Errorf("the agent recorded %q under %s, want the shim's SIGTERM", got, tc.signal)
+			}
+			if err := <-daemon; err != nil {
+				t.Fatalf("the daemon side: %v", err)
+			}
+		})
+	}
 }

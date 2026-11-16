@@ -38,7 +38,7 @@ import {
   QuestionsOutput,
   SharedRunsFile,
 } from "./judge-prompts";
-import { byCreatedAt } from "./production-dispatch";
+import { byCreatedAt, parseInstant } from "./production-dispatch";
 import {
   CREATED,
   SessionEntry,
@@ -84,45 +84,58 @@ const Call = z.looseObject({
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
-/** rig.sh's worker_fixture: the tester's world, `head` the PR's head and `code` the commit under it. */
+/** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
+ * head, the implementer's code commit. */
 const World = z.object({
   key: z.string(),
   repo: z.string(),
   pr: z.number(),
   branch: z.string(),
   head: z.string(),
-  code: z.string(),
+});
+/** `seed.ts capture-handoffs`: every handoff record of the run's issue, newest first, each with the
+ * body Dispatch stores (the exact text its writer sent). */
+const Handoffs = z.array(
+  z.looseObject({
+    id: z.string(),
+    issue_key: z.string(),
+    phase: z.string(),
+    version: z.number().int(),
+    author: z.looseObject({ kind: z.string(), id: z.string().nullish() }),
+    created_at: z.string(),
+    body: z.string(),
+  })
+);
+/** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
+ * answered; a completion's line names the handoff record it reported. */
+const DaemonLine = z.looseObject({
+  at: z.string(),
+  path: z.string(),
+  status: z.number(),
+  handoffId: z.string().optional(),
+  handoffVersion: z.number().optional(),
 });
 const nonEmpty = z.string().min(1);
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
- * (`schemaVersion` 1, `phase` test, its `issue`, and `previousHandoff`, the newest commit on the
- * branch that changed its handoff's file, empty when there is none), the implementer's proof
- * verdict, the failures, and the tester's own proof, each entry's six fields non-empty.
- * `previousHandoff` is optional because the score reads the runs of every label at once while each
- * label's agent gets the role prompt of its own checkout: a checkout whose prompt predates the
- * field writes a handoff without it, and requiring it would fail those runs on the prompt the
- * comparison varies rather than on the rule the score measures.
- * Nothing stamps a handoff for the tester: it writes the whole file with `write`. */
+ * (`schemaVersion` 1, `phase` test and its `issue`), the verdict on the implementer's recorded
+ * results, and the failures, each naming the check it is against. What the tester ran is no part
+ * of the handoff: it is a result recorded against a `check` block of the issue's Verification
+ * document (`dispatch result`), which the pull request body carries one line of per check. The
+ * body carries
+ * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
+ * versions it; the object is loose, so a body from a checkout whose prompt still asks for
+ * `previousHandoff` (main's, since sjawhar/legion#2585) or for a `completed` time (the prompt
+ * before it) reads too, and the comparison measures the rule the score is about rather than the
+ * fields the labels' prompts vary.
+ * Nothing stamps a handoff for the tester: it writes the whole body and records it with
+ * `dispatch handoff-write`. */
 export const TestHandoff = z.looseObject({
   schemaVersion: z.literal(1),
   phase: z.literal("test"),
   issue: nonEmpty,
-  previousHandoff: z.string().optional(),
   implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
-  failures: z.array(z.looseObject({ criterion: z.string(), evidence: z.string() })).optional(),
-  proof: z
-    .array(
-      z.looseObject({
-        criterion: nonEmpty,
-        surface: nonEmpty,
-        command: nonEmpty,
-        observed: nonEmpty,
-        headSha: nonEmpty,
-        negativeControl: nonEmpty,
-      })
-    )
-    .optional(),
+  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
 });
 
 function lines(file: string): string[] {
@@ -614,131 +627,164 @@ function askgateReview(runDir: string, run: string, label: string, dirCase: stri
   );
 }
 
-/** A commit this run can name: the PR's head, or one its tester pushed. A seven-or-more-digit
- * prefix counts. The implementer's code commit does not, since the fixture's own `E2E
- * (implementer)` line names it. */
+/** A commit this run can name: the PR's head (the implementer's code commit), or one its tester
+ * pushed. A seven-or-more-digit prefix counts. */
 function namesOwnCommit(text: string, commits: string[]): boolean {
   return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([sha]) =>
     commits.some((commit) => commit.startsWith(sha))
   );
 }
 
-/** tester-proof: the legion-worker skill's rule for a tester whose predecessor's proof holds.
- * worker_fixture writes a valid implement handoff whose proof reproduces, and its CLI meets all
- * three acceptance criteria, so the skill's answer is `verified` with a proof of the tester's own
- * and no red test to push (a handoff that failed validation would read as missing, and the answer
- * would be `rejected`). The handoff write is the session's `write` tool call of
- * .legion/<key>/test.json and the completion its `legion` tool call with `op: "handoff_complete"`
- * that the tool answered without error, each timed at the call; the pushes are the run's own
- * remote's record. A run passes when all of these hold:
- *   1. before the handoff write, the run's `bun` stand-in recorded a run of greet.ts (the first
- *      argument that is not a flag, after an optional `run`): the tester drove the CLI, whatever
- *      command line it wrote to do so. The stand-in records only a bun reached through PATH:
- *      `mise exec bun@… -- bun greet.ts` and a bun named by its absolute path bypass it, and such
- *      a run reads as having run nothing;
- *   2. that write comes before the first push carrying .legion/<key>/test.json, which comes before
- *      the accepted completion: a push before you complete is the rule, since the `legion` tool's
- *      handoff_complete reports the pushed commit carrying the handoff and refuses an unpushed one;
- *   3. the branch as the tester completed it (its last push before the completion) changes nothing
- *      under the PR's head but .legion/<key>/test.json, which is a test handoff (TestHandoff) of
- *      this issue with `implementerProof.verdict` `verified`, no failures, and a proof whose every
- *      `headSha` names a commit of this run's own (namesOwnCommit);
- *   4. the PR body the gh stand-in kept last has an `E2E (tester)` line, up to the next field, that
- *      names a commit of this run's own.
- * A line naming another run's PR head instead is two runs meeting in the shared /tmp, where agents
- * draft the body whatever TMPDIR says: a rig error, thrown, not a failure.
- * `ref`: the agent read skill://legion-worker/references/pr-body.md, where the line is defined. */
+/** The instant an RFC 3339 `text` names, in nanoseconds, so a Dispatch time (microseconds) and a
+ * stand-in's (milliseconds) compare at full precision; a time that does not parse is the rig's
+ * fault. */
+function instant(text: string, what: string): bigint {
+  const at = parseInstant(text);
+  if (at === undefined) throw new Error(`${what} ${JSON.stringify(text)} is no RFC 3339 time`);
+  return at;
+}
+
+/** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
+ * worker_fixture's implement record (seed.ts implement-handoff) is the implementer's, and seed.ts
+ * records its passing result against the issue's one `before_merge` check, whose words the CLI
+ * meets, so the skill's answer is `verified` with a result of the tester's own and no red test to
+ * push. Each fact is read from what recorded it: the
+ * tester's record from the run's issue on Dispatch (handoffs.json, `seed.ts capture-handoffs`),
+ * timed at Dispatch's `created_at`; the accepted completion from the daemon stand-in's log
+ * (daemon.log), its first 200 answer to `handoff/complete`, timed at the answer and naming the
+ * record the `legion` tool reported; the pushes from the run's own remote. A run passes when all
+ * of these hold:
+ *   1. before Dispatch recorded the tester's record, the run's `bun` stand-in recorded a run of
+ *      greet.ts (the first argument that is not a flag, after an optional `run`): the tester drove
+ *      the CLI, whatever command line it wrote to do so. The stand-in records only a bun reached
+ *      through PATH: `mise exec bun@… -- bun greet.ts` and a bun named by its absolute path bypass
+ *      it, and such a run reads as having run nothing;
+ *   2. the accepted completion names a record of the run's issue, at its version, recorded before
+ *      the completion: the record comes first, since the `legion` tool's handoff_complete reports
+ *      the phase's newest record and refuses when there is none;
+ *   3. that record is a `test` record this run's own session wrote (the transcript header's id, the
+ *      session `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) of this
+ *      issue with `implementerProof.verdict` `verified` and no failures; and the branch as the
+ *      tester
+ *      completed it (its last push before the completion, if it pushed) changes nothing under the
+ *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
+ *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
+ *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <the reading>`,
+ *      naming a commit of this run's own.
+ * Without an accepted completion, rule 3 reads the run's own newest test record, so the notes say
+ * what was wrong with it. A line naming another run's PR head instead is two runs meeting in the
+ * shared /tmp, where agents draft the body whatever TMPDIR says: a rig error, thrown, not a
+ * failure. `ref`: the agent read skill://legion-worker/references/pr-body.md, where the line is
+ * defined. */
 function testerProof(runDir: string, run: string, label: string, heads: string[]): Row {
   const world = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
-  const handoffPath = `.legion/${world.key}/test.json`;
-  // Each tool result, by the call it answers: whether the tool refused it.
-  const refusedResults = new Map<string, boolean>();
-  for (const { message } of entries) {
-    if (message?.role === "toolResult" && message.toolCallId !== undefined)
-      refusedResults.set(message.toolCallId, message.isError === true);
-  }
-  // The session's tool calls, each timed at the assistant message that made it.
-  const timedCalls = entries.flatMap((entry) =>
-    entry.message?.role !== "assistant"
-      ? []
-      : (entry.message.content ?? [])
-          .filter((part) => part.type === "toolCall")
-          .map((part) => {
-            const args =
-              typeof part.arguments === "object" && part.arguments !== null
-                ? (part.arguments as Record<string, unknown>)
-                : {};
-            return { at: entry.timestamp ?? "", id: part.id ?? "", tool: part.name ?? "", args };
-          })
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  // The `legion` tool's handoff_complete calls it refused, before posting or with the daemon's
+  // refusal.
+  const refusedIds = new Set(
+    entries.flatMap(({ message }) =>
+      message?.role === "toolResult" && message.isError === true && message.toolCallId
+        ? [message.toolCallId]
+        : []
+    )
   );
-  const write = timedCalls.find(
-    (c) =>
-      c.tool === "write" && typeof c.args.path === "string" && c.args.path.endsWith(handoffPath)
+  const refused = entries
+    .flatMap((entry) => (entry.message?.role === "assistant" ? (entry.message.content ?? []) : []))
+    .filter((part) => {
+      const args = part.arguments;
+      return (
+        part.type === "toolCall" &&
+        part.name === "legion" &&
+        typeof args === "object" &&
+        args !== null &&
+        "op" in args &&
+        args.op === "handoff_complete" &&
+        refusedIds.has(part.id ?? "")
+      );
+    }).length;
+  const complete = parsed(path.join(runDir, "daemon.log"), DaemonLine).find(
+    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
   );
-  const completions = timedCalls
-    .filter((c) => c.tool === "legion" && c.args.op === "handoff_complete")
-    .map((c) => ({ at: c.at, accepted: refusedResults.get(c.id) === false }));
-  // A completion the tool refused never counts.
-  const complete = completions.find((c) => c.accepted);
-  const refused = completions.filter((c) => !c.accepted).length;
+  const completedAt =
+    complete === undefined ? undefined : instant(complete.at, "the completion's time");
+  const named =
+    complete === undefined ? undefined : records.find((r) => r.id === complete.handoffId);
+  const record =
+    complete === undefined
+      ? records.find(
+          (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+        )
+      : named;
+  const recordedAt =
+    record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
   const remote = path.join(runDir, "remote.git");
   const git = (...args: string[]) => Bun.spawnSync(["git", "-C", remote, ...args]);
   const pushes = lines(path.join(runDir, "pushes.log"))
     .map((line) => {
       const [at = "", ref = "", , sha = ""] = line.split(" ");
-      return { at, ref, sha };
+      return { at: instant(at, "a push's time"), ref, sha };
     })
     .filter((p) => p.ref === `refs/heads/${world.branch}`);
-  const own = [world.head, ...pushes.map((p) => p.sha)];
+  const commits = [world.head, ...pushes.map((p) => p.sha)];
   const drove = calls.find((c) => {
     if (c.as !== "bun") return false;
     const args = c.argv.filter((arg) => !arg.startsWith("-"));
     return (args[0] === "run" ? args[1] : args[0])?.endsWith("greet.ts") ?? false;
   });
-  const push = pushes.find((p) => git("cat-file", "-e", `${p.sha}:${handoffPath}`).exitCode === 0);
-  const ran = drove !== undefined && write !== undefined && drove.at < write.at;
+  const ran =
+    drove !== undefined &&
+    recordedAt !== undefined &&
+    instant(drove.at, "a bun call's time") < recordedAt;
   const ordered =
-    write !== undefined &&
-    push !== undefined &&
-    complete !== undefined &&
-    write.at < push.at &&
-    push.at < complete.at;
-  const tip = pushes.filter((p) => complete === undefined || p.at < complete.at).at(-1);
+    named !== undefined &&
+    recordedAt !== undefined &&
+    completedAt !== undefined &&
+    complete?.handoffVersion === named.version &&
+    recordedAt < completedAt;
   const problems: string[] = [];
-  if (tip === undefined) problems.push("nothing pushed");
+  if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
-    const changed = git("diff", "--name-only", world.head, tip.sha).stdout.toString().trim();
-    if (changed !== handoffPath) problems.push(`the push changed [${changed.split("\n")}]`);
-    const shown = git("show", `${tip.sha}:${handoffPath}`);
-    const read = TestHandoff.safeParse(
-      shown.exitCode === 0 ? JSON.parse(shown.stdout.toString()) : undefined
-    );
+    if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
+    if (record.author.kind !== "session" || record.author.id !== ownSession)
+      problems.push(
+        `${record.author.kind} ${record.author.id ?? ""} wrote the record, not this run's session ${ownSession}`
+      );
+    let body: unknown;
+    try {
+      body = JSON.parse(record.body);
+    } catch {
+      body = undefined;
+    }
+    const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
     else {
-      const { issue, implementerProof, failures = [], proof = [] } = read.data;
+      const { issue, implementerProof, failures = [] } = read.data;
       if (issue !== world.key) problems.push(`issue is ${issue}, not ${world.key}`);
       if (implementerProof.verdict !== "verified")
         problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
       if (failures.length > 0) problems.push(`${failures.length} failures`);
-      if (proof.length === 0) problems.push("no proof of the tester's own");
-      for (const [i, entry] of proof.entries())
-        if (!namesOwnCommit(entry.headSha, own))
-          problems.push(`proof.${i}.headSha ${entry.headSha} is not this run's`);
     }
+  }
+  const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
+  if (tip !== undefined) {
+    const changed = git("diff", "--name-only", world.head, tip.sha).stdout.toString().trim();
+    if (changed !== "") problems.push(`the push changed [${changed.split("\n")}]`);
   }
   const proof = problems.length === 0;
   const bodies = calls.filter((c) => c.as === "gh" && c.exit === 0 && c.body !== undefined);
-  const edit = bodies.find((c) => c.body?.includes("E2E (tester)"));
+  const edit = bodies.find((c) => c.body?.includes("recorded by tester"));
   const testerLine =
-    /\*\*E2E \(tester\):\*\*[\s\S]*?(?=\n\*\*|$)/.exec(bodies.at(-1)?.body ?? "")?.[0] ?? "";
-  const ownHead = namesOwnCommit(testerLine, own);
+    (bodies.at(-1)?.body ?? "")
+      .split("\n")
+      .find((line) => /^\s*-\s+Check .*recorded by tester\b/.test(line)) ?? "";
+  const ownHead = namesOwnCommit(testerLine, commits);
   const foreign = heads.filter((head) => head !== world.head);
   if (!ownHead && namesOwnCommit(testerLine, foreign))
-    throw new Error(
-      `its PR body carries another run's E2E (tester) line: ${testerLine.slice(0, 160)}`
-    );
+    throw new Error(`its PR body carries another run's check line: ${testerLine.slice(0, 160)}`);
   const pass = ran && ordered && proof && ownHead;
   const opened = readCalls(entries).map((call) => call.target);
   const ref = opened.some((target) =>
@@ -748,8 +794,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     .filter((target) => target.includes("legion-worker"))
     .map((target) => target.replace("skill://legion-worker", "") || "/");
   const notes = [
-    `ran=${ran} write=${write !== undefined} proof=${proof} push=${push !== undefined} complete=${complete !== undefined} refusedCompletions=${refused} ordered=${ordered} testerLine=${testerLine !== ""} ownHead=${ownHead}`,
-    `editBeforeWrite=${edit !== undefined && write !== undefined && edit.at < write.at}`,
+    `ran=${ran} record=${record === undefined ? "none" : `v${record.version}`} proof=${proof} pushes=${pushes.length} complete=${complete !== undefined} refusedCompletions=${refused} ordered=${ordered} testerLine=${testerLine !== ""} ownHead=${ownHead}`,
+    `editBeforeRecord=${edit !== undefined && recordedAt !== undefined && instant(edit.at, "a gh call's time") < recordedAt}`,
     ...(proof ? [] : [`proofProblems=${JSON.stringify(problems)}`]),
     `refs=[${worker.join(",")}]`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
@@ -792,7 +838,8 @@ const BATCH_DISPATCH_NOTE =
 // (turns.txt, state-<turn>.json), the captured issue (spec.md, spec-versions/, agent-asks.json,
 // agent-texts.json, documents/, plan.md) and the judges' answers (faults.json and the rest).
 
-/** The outline every spec must follow: its `##` headings, exactly and in this order. */
+/** The outline every spec must follow: its `##` headings, exactly and in this order. The checks
+ * are not among them: they live in the issue's Verification document, as `check` blocks. */
 export const OUTLINE = [
   "Summary",
   "Problem",
@@ -800,7 +847,6 @@ export const OUTLINE = [
   "Requirements",
   "Design",
   "Decisions",
-  "Acceptance",
 ] as const;
 /** The Dispatch skill the change removes. `routed` fails a run that reads it, so this name stays
  * when the skill is renamed everywhere else. */
@@ -857,6 +903,9 @@ export const AgentAsks = z.array(
     question: z.string(),
     options: z.array(AskOption).nullish(),
     created_at: z.string().nullish(),
+    /** Dispatch's time of the person's answer, which `conversationOrder` compares with the spec's
+     *  versions; absent while the ask is open. */
+    answer: z.looseObject({ at: z.string().nullish() }).nullish(),
   })
 );
 /** agent-texts.json: each message, comment and ask the run's session wrote. */
@@ -1856,7 +1905,7 @@ function namedTasks(step: Step): { name: string; assignment: string }[] | undefi
   }
   return parts;
 }
-/** Whether a check's assignment is a spec-only check's: it holds the seven outline headings as `##`
+/** Whether a check's assignment is a spec-only check's: it holds the six outline headings as `##`
  * lines and names no path under a checkout in `reach`. */
 function specOnly(assignment: string, reach: string[]): boolean {
   const outlined = OUTLINE.every((heading) =>
@@ -1912,8 +1961,9 @@ function wordRuns(text: string): Set<string> {
     runs.add(words.slice(start, start + 5).join(" "));
   return runs;
 }
-/** Each spec an assignment pastes: from a `## Summary` line to the end of the `## Acceptance`
- * section after it (the next `#` or `##` heading, or the end), or to the next `## Summary` line.
+/** Each spec an assignment pastes: from a `## Summary` line to the end of the `## Decisions`
+ * section after it, the last of the outline (the next `#` or `##` heading, or the end), or to the
+ * next `## Summary` line.
  * What the assignment adds after a spec (instructions, the person's messages, the answered asks)
  * is in no slice, so it neither lowers nor raises a spec's share. */
 function specSlices(assignment: string): string[] {
@@ -1923,12 +1973,12 @@ function specSlices(assignment: string): string[] {
   for (let start = 0; start < lines.length; start++) {
     if (!summary.test(lines[start] ?? "")) continue;
     let end = start + 1;
-    let acceptance = false;
+    let decisions = false;
     for (; end < lines.length; end++) {
       const line = lines[end] ?? "";
       if (summary.test(line)) break;
-      if (/^[ \t]*## Acceptance[ \t]*$/.test(line)) acceptance = true;
-      else if (acceptance && /^[ \t]*#{1,2} /.test(line)) break;
+      if (/^[ \t]*## Decisions[ \t]*$/.test(line)) decisions = true;
+      else if (decisions && /^[ \t]*#{1,2} /.test(line)) break;
     }
     slices.push(lines.slice(start, end).join("\n"));
     start = end - 1;
@@ -1937,7 +1987,7 @@ function specSlices(assignment: string): string[] {
 }
 /** The least share of a version the run's session wrote that a pasted spec covers, for the check
  * to be of this run's spec. An agent that splits out a sibling issue can send the sibling's spec
- * for review, alone or after its own spec in one assignment; that spec holds the seven headings
+ * for review, alone or after its own spec in one assignment; that spec holds the six headings
  * too, but the report's findings on it are about another spec. Each spec of an assignment is
  * measured on its own (specWork's kindOf), and one that pastes both is `mixed`. The share is
  * recall over the written version (how much of the version's 5-word runs the pasted spec holds,
@@ -1964,7 +2014,7 @@ function ownSpecShares(assignment: string, versions: Set<string>[]): number[] {
 }
 /** The spec writes of the run's session (writesSpec, against the run's fixture.json) and the
  * spec-only checks before them: the one list of checks that both specRow's `checked` and the
- * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the seven
+ * findings judge (judgeInputs, judge.ts) read. A spec-only check's assignment holds the six
  * outline headings as `##` lines and names no path under a checkout in `reach` (specOnly). A check
  * is either of:
  * - a `task` call of the session's transcript. It counts for the first spec write after it when its
@@ -2226,31 +2276,40 @@ export function specWork(runDir: string, reach: string[], fixture: SpecFixture):
   };
 }
 
-/** Each `**R<n>.**` or `**A<n>.**` paragraph of a spec: its mark and its text, up to a blank line,
- * a heading or the next list item. */
-function marked(spec: string): { mark: string; body: string }[] {
-  const found: { mark: string; body: string }[] = [];
-  let current: { mark: string; body: string } | undefined;
-  for (const line of spec.split("\n")) {
-    const mark = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?\*\*([RA]\d+)\.\*\*/.exec(line)?.[1];
+/** Each `**R<n>.**` paragraph of a spec: its mark, the line it starts on, and its text, up to a
+ * blank line, a heading or the next list item. */
+function marked(spec: string): { mark: string; line: number; body: string }[] {
+  const found: { mark: string; line: number; body: string }[] = [];
+  let current: { mark: string; line: number; body: string } | undefined;
+  spec.split("\n").forEach((line, index) => {
+    const mark = /^\s*(?:[-*+]\s+|\d+[.)]\s+)?\*\*(R\d+)\.\*\*/.exec(line)?.[1];
     if (mark !== undefined) {
-      current = { mark, body: line };
+      current = { mark, line: index, body: line };
       found.push(current);
     } else if (
       current === undefined ||
       line.trim() === "" ||
-      /^\s*(#|[-*+]\s|\d+[.)]\s)/.test(line)
+      /^\s*(#|:::|[-*+]\s|\d+[.)]\s)/.test(line)
     )
       current = undefined;
     else current.body += `\n${line}`;
-  }
+  });
   return found;
+}
+/** Every line of a spec that a `:::requirement` block holds. */
+function requirementBlockLines(spec: string): Set<number> {
+  const inside = new Set<number>();
+  let open = false;
+  spec.split("\n").forEach((line, index) => {
+    if (/^\s*:::+\s*requirement\b/.test(line)) open = true;
+    else if (/^\s*:::+\s*$/.test(line)) open = false;
+    else if (open) inside.add(index);
+  });
+  return inside;
 }
 /** The requirement marks of a spec (`R1`, `R2`, …), in order. */
 export function requirements(spec: string): string[] {
-  return marked(withoutFences(spec))
-    .map((paragraph) => paragraph.mark)
-    .filter((mark) => mark.startsWith("R"));
+  return marked(withoutFences(spec)).map((paragraph) => paragraph.mark);
 }
 /** Replaces each match of `pattern` with spaces and keeps the line breaks, so an offset into the
  * result still points into the text. */
@@ -2259,8 +2318,9 @@ function blank(text: string, pattern: RegExp): string {
 }
 const withoutFences = (text: string) => blank(text, /^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm);
 /** outline: what keeps a spec from the outline. Its `##` headings are exactly OUTLINE's, in order.
- * It holds a requirement and a check. Each `**R<n>.**` paragraph names its source after `From:`,
- * and each `**A<n>.**` paragraph names at least one `R<n>`. */
+ * It holds a requirement, each one a `:::requirement` block whose `**R<n>.**` paragraph names its
+ * source after `From:`. The checks are not in the spec: they are the `check` blocks of the issue's
+ * Verification document. */
 function outlineProblems(spec: string): string[] {
   const text = withoutFences(spec);
   const headings = [...text.matchAll(/^##[ \t]+(.+?)[ \t#]*$/gm)].map((hit) => hit[1] ?? "");
@@ -2269,15 +2329,13 @@ function outlineProblems(spec: string): string[] {
     problems.push(
       `headings are ${headings.map((heading) => `## ${heading}`).join(", ") || "none"}`
     );
-  const paragraphs = marked(text);
-  const reqs = paragraphs.filter((paragraph) => paragraph.mark.startsWith("R"));
-  const checks = paragraphs.filter((paragraph) => paragraph.mark.startsWith("A"));
+  const reqs = marked(text);
+  const inBlock = requirementBlockLines(text);
   if (reqs.length === 0) problems.push("no **R<n>.** requirement");
-  if (checks.length === 0) problems.push("no **A<n>.** check");
-  for (const req of reqs)
+  for (const req of reqs) {
     if (!/From:\s*\S/.test(req.body)) problems.push(`${req.mark} names no source (From:)`);
-  for (const check of checks)
-    if (!/\bR\d+\b/.test(check.body)) problems.push(`${check.mark} names no requirement`);
+    if (!inBlock.has(req.line)) problems.push(`${req.mark} is in no :::requirement block`);
+  }
   return problems;
 }
 
@@ -2617,10 +2675,16 @@ const indented = (text: string, depth = 6) =>
     .map((line) => `${" ".repeat(depth)}${line}`)
     .join("\n");
 
-/** spec-writing and spec-rewrite: one row per run, with the eight scores below.
- * The row passes when its eight scores pass; `judged` gives the judges' counts, which pass or fail
+/** spec-writing and spec-rewrite: one row per run, with the ten scores below.
+ * The row passes when its ten scores pass; `judged` gives the judges' counts, which pass or fail
  * nothing here: the acceptance run of the skills that replace dispatch-brainstorming holds each
  * count to its own bound.
+ *   - asked and grew: the run held the conversation before it wrote the design
+ *     (conversationOrder). `asked` is the session's first question to the person being older than
+ *     its first spec version, so a run that writes a draft and asks after it fails however short
+ *     that draft is; `grew` is no version stating a design (`## Requirements`, `## Design` or
+ *     `## Acceptance`) before the person has answered a question of the run's own. A session that
+ *     wrote no version fails both.
  *   - outline: outlineProblems finds nothing.
  *   - checked: the transcript holds at least one spec write (writesSpec: a write Dispatch made of
  *     the run's own primary spec, each `dispatch` command of a call apart), a spec-only check
@@ -2658,6 +2722,107 @@ const indented = (text: string, depth = 6) =>
  *     questions.json's `dominated`, `settled` and kinds; numbers.json's `names_number`;
  *     preamble.json's passages by kind; proposal.json's verdicts. Each row whose id is in
  *     seeded.json is left out. */
+/** The `##` headings whose sections hold a design, compared without case or inner spacing. */
+const DESIGN_HEADINGS = ["requirements", "design", "acceptance"];
+
+/** Whether this version of a spec states a design, which is what the conversation rule holds back
+ *  until the person has answered.
+ *
+ *  Read from the text's own structure, never from three literal heading strings: a spec written
+ *  under `##  Requirements` with two spaces states a design as plainly as one written under
+ *  `## Requirements`, and a `## Design` heading with nothing under it states none (both measured
+ *  on this scorer by the review of 2026-11-05). So a version states a design when either holds:
+ *
+ *  - it carries a `**R<n>.**` requirement or `**A<n>.**` check paragraph, the outline's own design
+ *    content, wherever in the document it sits - which also catches a design written out under
+ *    `## Summary` before the conventional headings arrive;
+ *  - a heading whose title is Requirements, Design or Acceptance has text of its own under it,
+ *    read with the heading pattern `outlineProblems` uses, so spacing and a trailing `#` change
+ *    nothing.
+ *
+ *  Fenced code is blanked first, so a heading or a marked paragraph inside an example counts for
+ *  neither. */
+export function statesDesign(spec: string): boolean {
+  const text = withoutFences(spec);
+  if (marked(text).some((paragraph) => /^[RA]\d/.test(paragraph.mark))) return true;
+  const headings = [...text.matchAll(/^(#{1,6})[ \t]+(.+?)[ \t#]*$/gm)];
+  for (const [index, heading] of headings.entries()) {
+    const title = (heading[2] ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+    if (!DESIGN_HEADINGS.includes(title)) continue;
+    const start = (heading.index ?? 0) + heading[0].length;
+    const end = headings[index + 1]?.index ?? text.length;
+    if (text.slice(start, end).trim() !== "") return true;
+  }
+  return false;
+}
+
+/** Whether the run held the conversation before it wrote the design (`skill://dispatch-writing-specs`,
+ *  "The conversation"), read from what Dispatch recorded rather than from the transcript's prose.
+ *  Both scores are measured against the first version that states a design (`DESIGN_HEADINGS`),
+ *  which is what the rule names - "before the spec states any design" - and not against the
+ *  document's first version: creating the document and opening the first question are one act of
+ *  an agent's turn, and a measurement two seconds wide would read the order of two writes nobody
+ *  made in an order.
+ *
+ *  - `asked`: the session's first question to the person (agent-asks.json, the seeded asks and
+ *    the approval request left out) is older than that version. A run that states a design and
+ *    asks after it fails, however short that first draft is.
+ *  - `grew`: a person had answered a question of the run's own before that version.
+ *
+ *  A run whose session wrote no version at all fails both, as a run that wrote a spec with no
+ *  question does. A run that stated no design yet passes both: it has written nothing the rule
+ *  holds back. */
+export function conversationOrder(
+  runDir: string,
+  own: string
+): { asked: boolean; grew: boolean; notes: string[] } {
+  const seeded = seededIds(runDir);
+  const asks = json(path.join(runDir, "agent-asks.json"), AgentAsks).filter(
+    (ask) => ask.kind !== "approval" && !seeded.has(ask.id)
+  );
+  const versions = sessionVersions(runDir, own);
+  const first = versions[0];
+  if (first === undefined)
+    return {
+      asked: false,
+      grew: false,
+      notes: ["conversation: the session wrote no spec version"],
+    };
+  // Every comparison below is between instants, never between the strings Dispatch wrote: with a
+  // variable-width fraction ".5Z" is before ".51Z" and sorts after it, which the review of
+  // 2026-11-05 reproduced both ways round on this function.
+  const earliest = (times: (string | null | undefined)[]): bigint | undefined =>
+    times
+      .filter((at): at is string => typeof at === "string" && at !== "")
+      .map((at) => parseInstant(at))
+      .filter((at): at is bigint => at !== undefined)
+      .reduce<bigint | undefined>(
+        (best, at) => (best === undefined || at < best ? at : best),
+        undefined
+      );
+  const firstAsk = earliest(asks.map((ask) => ask.created_at));
+  const firstAnswer = earliest(asks.map((ask) => ask.answer?.at));
+  const design = versions.find((version) => {
+    const file = path.join(runDir, "spec-versions", `${version.version}.md`);
+    return existsSync(file) && statesDesign(readFileSync(file, "utf8"));
+  });
+  // A design whose own time is unreadable decides nothing, as a version that states no design
+  // does not: both leave the run passing, since nothing provably came before anything.
+  const designAt = design === undefined ? undefined : earliest([design.created_at]);
+  const asked = designAt === undefined || (firstAsk !== undefined && firstAsk < designAt);
+  const grew = designAt === undefined || (firstAnswer !== undefined && firstAnswer < designAt);
+  const notes: string[] = [];
+  if (!asked && design !== undefined)
+    notes.push(
+      `conversation: version ${design.version} (${design.created_at ?? "?"}) states a design, and the run had asked the person nothing by then (${asks.find((ask) => ask.created_at)?.created_at ?? "no question"})`
+    );
+  if (!grew && design !== undefined)
+    notes.push(
+      `conversation: version ${design.version} (${design.created_at ?? "?"}) states a design, and the person had answered nothing by then (${asks.find((ask) => ask.answer?.at)?.answer?.at ?? "no answer"})`
+    );
+  return { asked, grew, notes };
+}
+
 function specRow(
   runDir: string,
   run: string,
@@ -2801,6 +2966,9 @@ function specRow(
   for (const row of passages) details.push(`preamble ${row.kind} in ${row.source}: ${row.passage}`);
   const proposals = judged(runDir, "proposal.json", ProposalOutput, inputs).rows;
 
+  const conversation = conversationOrder(runDir, id);
+  details.push(...conversation.notes);
+
   const scores = {
     outline: outline.length === 0,
     checked,
@@ -2810,6 +2978,8 @@ function specRow(
     chat,
     quoted,
     self,
+    asked: conversation.asked,
+    grew: conversation.grew,
   };
   const notes = [
     `source=${source} turns=${turns} approved=${approved}`,
@@ -3295,8 +3465,9 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           which point a person at the asks to read and do not check a recommendation.",
       "           brainstorm: the design went to the issue's spec and nothing leaked the project",
       "           lookup (brainstormSurface); a person still reads notes for unagreed points.",
-      "           spec-writing and spec-rewrite: the eight scores of specRow pass (outline,",
-      "           checked, refusals, plan, routed, chat, quoted, self); the judges' counts follow",
+      "           spec-writing and spec-rewrite: the ten scores of specRow pass (outline,",
+      "           checked, refusals, plan, routed, chat, quoted, self, asked, grew); the judges'",
+      "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
       "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",

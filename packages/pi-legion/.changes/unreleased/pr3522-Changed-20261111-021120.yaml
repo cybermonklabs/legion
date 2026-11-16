@@ -1,0 +1,5 @@
+kind: Changed
+body: The plugin declares daemon API contract 62, which adds the backward-move counts to each worker view of `GET /legion/v1/state`.
+time: 2026-11-11T02:11:20.355301171Z
+custom:
+    Issue: pr3522

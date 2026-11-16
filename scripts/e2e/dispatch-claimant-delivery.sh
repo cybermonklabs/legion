@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The live proof that Dispatch's outbox publishes a person's answer, comment or untargeted message
 # on an issue a session has claimed to that session's own topic, `notifications.agent.<session>`
-# (publishClaimantRoute, packages/envoy/internal/dispatch/outbox/publisher.go). It runs the real
+# (addClaimantRoute, packages/envoy/internal/dispatch/outbox/publisher.go). It runs the real
 # envoy-dispatch binary against a PostgreSQL the caller names, a NATS server of the run's own
 # (internal/testnats/cmd/natsd) and the e2e harness's fake Envoy listener
 # (packages/dispatch/e2e/fake-envoy.ts), drives it over HTTP as three sessions and one person, and
@@ -15,8 +15,9 @@
 #   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh
 #
-# DATABASE_URL is required and must name a loopback host: the run drops and recreates its `public`
-# schema before the server migrates it, and leaves what the run wrote there for inspection.
+# DATABASE_URL is required and must name a loopback host: the run empties its `public` schema
+# before the server migrates it, keeping the extensions that schema holds, and leaves what the run
+# wrote there for inspection.
 # DISPATCH_BIN names a prebuilt envoy-dispatch (the negative control runs one built from the base
 # commit); unset, the script builds ./cmd/dispatch from this checkout. The ports are
 # CLAIMANT_E2E_DISPATCH_PORT (19051) and CLAIMANT_E2E_ENVOY_PORT (19053), each refused when
@@ -48,12 +49,12 @@ envoy_port=${CLAIMANT_E2E_ENVOY_PORT:-19053}
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
-# psql reads PGHOSTADDR, which would replace the URL's host for the reset below while the server,
-# which never reads it, connects to the host the check admitted.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR) unset "$name" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
   esac
 done
 
@@ -87,39 +88,17 @@ trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
-
 begin prerequisites
 [ -n "$database_url" ] ||
   fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
-# The host of postgres://[user[:password]@]host[:port]/database[?params]: the run drops the
-# database's public schema, so it must be this machine's, as the dev sign-in the server runs with
-# also insists. A host given by a parameter, or several hosts, are refused rather than parsed.
+for tool in go bun curl psql openssl python3; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
 case "$database_url" in
   postgres://* | postgresql://*) ;;
   *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
 esac
-authority=${database_url#*://}
-authority=${authority%%[/?]*}
-hostport=${authority##*@}
-if [[ "$hostport" == \[* ]]; then
-  db_host=${hostport#\[}
-  db_host=${db_host%%\]*}
-else
-  db_host=${hostport%%:*}
-fi
-case "$db_host" in
-  127.0.0.1 | localhost | ::1) ;;
-  *) fail "DATABASE_URL must name 127.0.0.1, localhost or ::1, not '$db_host': this run resets the database" ;;
-esac
-[[ "$database_url" != *[?\&]host=* && "$database_url" != *[?\&]hostaddr=* ]] ||
-  fail "DATABASE_URL must not name its host in a parameter"
-for tool in go bun curl psql openssl; do
-  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
-done
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
 if [ -n "$dispatch_bin" ]; then
   [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
 fi
@@ -151,10 +130,9 @@ pass
 
 begin reset-database
 # Empty, migrations included: the server migrates the new schema at boot, so a base binary and this
-# checkout's each start from a database of their own migrations.
-psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c 'set client_min_messages = warning' \
-  -c 'drop schema if exists public cascade' -c 'create schema public' >/dev/null ||
-  fail "could not reset the database's public schema"
+# checkout's each start from a database of their own migrations. empty_public_schema
+# (lib/loopback-dsn.sh) says what goes and why the schema's extensions stay.
+empty_public_schema "$database_url" || fail "could not empty the database's public schema"
 pass
 
 begin nats

@@ -4,9 +4,19 @@
 // import it; Go cannot share test-only code across packages.
 //
 // Open clones each database from a template this test process migrates once. Running every
-// migration, each in its own committed transaction, is most of the Postgres work a test would
+// migration in its declared execution mode is most of the Postgres work a test would
 // otherwise do, so a package's wall time would scale with its test count times the speed of the
 // Postgres it runs against; a clone costs one create database.
+//
+// A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
+// wal_log, writes every page of the template into the write-ahead log instead: 6.4 MB of the
+// 12.7 MB template per clone, 16 GiB over one run of the api and docs packages. A file copy writes
+// a few hundred bytes of log; Postgres forces a checkpoint before and after the copy.
+//
+// The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the
+// whole server DatabaseURLEnv names, which can hold other databases (the one
+// packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
+// outlives the run.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops. Dropping a database forces a checkpoint and waits for it, and every package testing
@@ -18,12 +28,15 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -66,7 +79,7 @@ func Open(t testing.TB) *store.Store {
 
 	ctx := context.Background()
 	name := randomName(t, "dispatch_test_")
-	if _, err := shared.admin.Exec(ctx, "create database "+name+" template "+shared.template); err != nil {
+	if _, err := shared.admin.Exec(ctx, cloneStatement(name)); err != nil {
 		t.Fatalf("clone isolated database from template: %v", err)
 	}
 	t.Cleanup(func() { dropDatabase(name) })
@@ -76,6 +89,12 @@ func Open(t testing.TB) *store.Store {
 	}
 	t.Cleanup(database.Pool.Close)
 	return database
+}
+
+// cloneStatement returns the create database that makes name a copy of the template's files
+// rather than a copy through the write-ahead log (the package comment says why).
+func cloneStatement(name string) string {
+	return "create database " + name + " template " + shared.template + " strategy file_copy"
 }
 
 // Main runs the package's tests, waits for their databases to drop, then drops the template Open
@@ -107,15 +126,48 @@ func Main(m *testing.M) int {
 	return code
 }
 
+// dropWindow and dropPause bound the plain drop's retry: how long a drop is tried again while
+// Postgres says the database is still in use, and the wait between tries.
+const (
+	dropWindow = 15 * time.Second
+	dropPause  = 200 * time.Millisecond
+)
+
 // dropDatabase drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
+//
+// `with (force)` terminates whatever is still connected, which needs pg_signal_backend: a login
+// that is only the database's owner is refused `permission denied to terminate process`. The
+// test's own pool is closed before this runs (Open's cleanups are LIFO), but Postgres tears a
+// backend down after the client has closed its socket, so a drop that lands inside that window
+// finds a connection and, without that right, cannot clear it. So the drop is tried plainly
+// and tried again while Postgres answers SQLSTATE 55006 (object_in_use), the code it gives
+// whatever words it puts on the message, up to dropWindow; `force` is the last attempt, for a
+// connection that really is somebody else's.
 func dropDatabase(name string) {
 	shared.drops.Go(func() {
-		if _, err := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			shared.dropMu.Lock()
-			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop isolated database %s: %v", name, err))
-			shared.dropMu.Unlock()
+		deadline := time.Now().Add(dropWindow)
+		var err error
+		for {
+			if _, err = shared.admin.Exec(context.Background(), "drop database "+name); err == nil {
+				return
+			}
+			var pgError *pgconn.PgError
+			if !errors.As(err, &pgError) || pgError.Code != "55006" || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(dropPause)
 		}
+		_, forced := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)")
+		if forced == nil {
+			return
+		}
+		// The forced drop is what ended the cleanup, so its error is the one reported; the
+		// plain drop's says what the force was for.
+		shared.dropMu.Lock()
+		shared.dropFails = append(shared.dropFails,
+			fmt.Sprintf("drop isolated database %s: %v, after the plain drop answered: %v", name, forced, err))
+		shared.dropMu.Unlock()
 	})
 }
 
@@ -145,7 +197,8 @@ func prepare(raw string) error {
 		return err
 	}
 	name := "dispatch_template_" + suffix
-	if _, err := admin.Exec(ctx, "create database "+name); err != nil {
+	// The template is a file copy of template1, for the reason each clone of it is one.
+	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		return fmt.Errorf("create template database: %w", err)
 	}
 	shared.template = name

@@ -15,6 +15,11 @@
       "LEGION-210",
       "LEGION-211"
     ],
+    "trees": [
+      "LEGION-208",
+      "LEGION-210",
+      "LEGION-211"
+    ],
     "blocked": [
       {
         "issue": "LEGION-209",
@@ -28,6 +33,15 @@
           "LEGION-301"
         ]
       }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "design_gate",
+        "heldBy": [
+          "LEGION-208"
+        ]
+      }
     ]
   },
   "issues": {
@@ -36,6 +50,7 @@
       "generation": 1,
       "phase": "admitted",
       "status": "in_progress",
+      "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
@@ -70,45 +85,105 @@
             }
           ]
         },
-        "pluginContract": 0
+        "pluginContract": 0,
+        "step": {
+          "at": "2026-10-06T18:03:01Z",
+          "turnStartedAt": "2026-10-06T18:02:51Z",
+          "tool": "dispatch",
+          "callId": "toolu_arch_7",
+          "argsBytes": 96,
+          "argsHash": "5a1c7e03b94d26f8",
+          "startedAt": "2026-10-06T18:03:01Z"
+        }
       },
       "workers": {},
       "slot": {
         "index": 0,
         "admittedAt": "2026-10-06T18:02:11Z"
-      }
+      },
+      "treeMovedAt": "2026-10-06T18:03:01Z",
+      "quietHours": 0.002777777777777778
     },
     "LEGION-209": {
       "key": "LEGION-209",
       "generation": 1,
       "phase": "admitted",
       "status": "todo",
+      "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "The design gate of its tree stands shut: LEGION-208 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."
+      },
+      "treeMovedAt": "2026-10-06T18:03:01Z",
+      "quietHours": 0.002777777777777778
     },
     "LEGION-210": {
       "key": "LEGION-210",
       "generation": 1,
       "phase": "admitted",
       "status": "todo",
+      "tree": "LEGION-210",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "waitingLine": {
+        "place": 1,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00010",
+        "ownRank": "00010",
+        "rootKey": "LEGION-210",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank. It waits on LEGION-301, which is not done."
+      },
+      "treeMovedAt": "0001-01-01T00:00:00Z",
+      "quietHours": 2562047.7880152157
     },
     "LEGION-211": {
       "key": "LEGION-211",
       "generation": 2,
       "phase": "implementing",
       "status": "todo",
+      "tree": "LEGION-211",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "waitingLine": {
+        "place": 2,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 2,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "treeMovedAt": "0001-01-01T00:00:00Z",
+      "quietHours": 2562047.7880152157
     }
   },
   "pendingStatusWrites": [],
   "heldOutboxRows": [],
   "strandedClaims": [],
+  "wakesWaiting": [],
+  "claimsToRefresh": 0,
   "controllerLocator": {
     "runtime": "kubernetes",
     "external": true,
@@ -148,22 +223,47 @@
     "launch_failure_limit": 3,
     "prompt_failure_limit": 3,
     "prompt_retire_limit": 2,
+    "worker_wakes_per_minute": 8,
+    "worker_wake_burst": 1,
     "envoy_url": "http://127.0.0.1:9020",
     "nats_urls": [],
     "projects": {},
     "gates": {
-      "design": "root-issues"
+      "design": [
+        "spec"
+      ]
     },
     "linger_hours": 72,
     "production_check_hours": 336,
+    "pod_update_grace_minutes": 30,
+    "stalled_tree_notice_hours": 6,
+    "worker_silence_minutes": 30,
+    "worker_background_hours": 4,
+    "pod_update_max_open_rounds": null,
+    "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
-    "max_fix_attempts": 3,
     "controller": "operator",
     "capabilities": {
       "decided": {}
     },
     "worker_backends": {},
-    "role_config_files": {}
+    "role_config_files": {},
+    "repository_renames": [],
+    "hooks": [
+      {
+        "name": "work-back",
+        "on": "work_back",
+        "moves": [
+          "any"
+        ],
+        "every": 5,
+        "roles": [
+          "implementer",
+          "tester",
+          "reviewer"
+        ]
+      }
+    ]
   },
   "consumers": []
 }

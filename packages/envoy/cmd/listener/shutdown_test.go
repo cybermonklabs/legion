@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"regexp"
@@ -16,7 +16,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -26,10 +25,11 @@ var errorLine = regexp.MustCompile(`"level":"ERROR"|level=ERROR|^\d{4}/\d{2}/\d{
 
 // A SIGTERM is an ordered shutdown, not a failure: the listener stops HTTP, drains NATS and exits,
 // and nothing on that path is an error or a reconnect. The listener is stopped with role-lane
-// traffic in flight, as a production listener is: a holder on its own connection answers each
-// receipt after 150 ms and a role message arrives every 100 ms, so at the signal one forward is
-// in its handler and more are queued behind it. Each must reach the holder: the forward opens a
-// receipt subscription, which a connection that is already draining refuses. The drain also
+// traffic in flight, as a production listener is: a holder on its own connection takes each
+// forward and a role message arrives every 10 ms, so at the signal one forward is in its handler
+// and more are queued behind it. Each must reach the stream: the forward opens a reply
+// subscription for the stream's acknowledgement, which a connection that is already draining
+// refuses. The drain also
 // closes the session registry's KV watcher, which logs at ERROR if the registry still expects
 // it, and looks like a lost connection to the bus client, whose recovery would re-dial NATS.
 // Whether a goroutine logs before the exit is a race, so the test stops the real binary several
@@ -48,13 +48,10 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 
 		role := "sigterm-test-" + strconv.Itoa(run)
 		sessionID := "ses_sigterm_holder_" + strconv.Itoa(run)
-		postListener(t, listener.port, "/v1/interests/subscribe", `{"session_id":"`+sessionID+`","topics":[],"self_subscribed":true}`)
+		postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 		postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)
 		holder := testnats.Connect(t, uri)
-		if _, err := holder.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
-			time.Sleep(150 * time.Millisecond)
-			_ = message.Respond(nil)
-		}); err != nil {
+		if _, err := holder.Subscribe(contracts.AgentSubject(sessionID), func(*natsgo.Msg) {}); err != nil {
 			t.Fatalf("run %d: holder subscribe: %v", run, err)
 		}
 		if err := holder.Flush(); err != nil {
@@ -68,7 +65,7 @@ func TestListenerSIGTERMIsAnOrderedShutdown(t *testing.T) {
 				select {
 				case <-stopTraffic:
 					return
-				case <-time.After(100 * time.Millisecond):
+				case <-time.After(10 * time.Millisecond):
 				}
 				item := contracts.Envelope{
 					EventID:        "evt-sigterm-" + strconv.Itoa(run) + "-" + strconv.Itoa(index),
@@ -136,54 +133,6 @@ func TestASIGTERMWhileAnotherTaskHoldsTheDurableIsAnOrderedShutdown(t *testing.T
 	}
 	if !holder.IsValid() {
 		t.Fatal("the old task's subscription to the durable is gone after the replacement's shutdown")
-	}
-}
-
-// With the live topics lane on, a SIGTERM is an ordered shutdown inside the 30 s every runtime
-// gives even while a live delivery is blocked on a serving port that never answers: the live
-// lane's drain gives that delivery its 3 s and no more, as core NATS retries nothing, and the main
-// client drains after it. Nothing on the path is an error.
-func TestASIGTERMWithALiveDeliveryBlockedIsAnOrderedShutdown(t *testing.T) {
-	uri := testnats.URL(t)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "sigterm-live", liveLaneEnv...)
-	listener.waitHealthy(t)
-
-	arrived := make(chan struct{}, 1)
-	release := make(chan struct{})
-	blocked := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		select {
-		case arrived <- struct{}{}:
-		default:
-		}
-		<-release
-	}))
-	// Cleanups run last first: the handler returns before the server's Close waits for it.
-	t.Cleanup(blocked.Close)
-	t.Cleanup(func() { close(release) })
-	topic := "notifications.team." + id.New()
-	sessionID := "ses_blocked_" + id.New()
-	postListener(t, listener.port, "/v1/interests/subscribe", `{"session_id":"`+sessionID+`","topics":["`+topic+`"],"port":`+strconv.Itoa(endpointPort(t, blocked.URL))+`,"host":"127.0.0.1"}`)
-	publish(t, connectPublisher(t, uri), newEnvelope("agent", topic, "a message the session never answers"))
-	select {
-	case <-arrived:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the live delivery never reached the session's port:\n%s", listener.Output.String())
-	}
-
-	signalled := listener.Terminate(t)
-	listener.WaitExit(t, "SIGTERM")
-	output := listener.Output.String()
-	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
-		t.Fatalf("exit code = %d, want 1 (-1 is a death by the signal, with no ordered shutdown):\n%s", code, output)
-	}
-	t.Logf("the listener exited %s after the SIGTERM", time.Since(signalled).Round(time.Millisecond))
-	if !strings.Contains(output, "envoy-listener shutdown complete") {
-		t.Fatalf("the listener did not finish its ordered shutdown:\n%s", output)
-	}
-	for line := range strings.SplitSeq(output, "\n") {
-		if errorLine.MatchString(line) {
-			t.Fatalf("a SIGTERM with a live delivery blocked logged an error: %s", line)
-		}
 	}
 }
 
@@ -398,6 +347,13 @@ func postListener(t *testing.T, port int, path, body string) {
 // answers 200 with "starting" from the moment the listener serves, before NATS connects and
 // before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
 // process without an ordered shutdown.
+//
+// A listener that exits during its start-up fails this wait at once, naming its exit status and
+// its last output line, rather than waiting the whole 30 s out: a process that has exited answers
+// nothing, so every further poll reads the same closed port, and the health timeout the wait
+// would report names neither the exit nor its reason. Either failure also names the last /healthz
+// answer, so a listener still binding ("starting") reads differently from one whose dependency
+// is down ("unhealthy", with the error that endpoint reports).
 func (p *listenerProcess) waitHealthy(t *testing.T) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
@@ -407,20 +363,54 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
 	deadline := time.Now().Add(30 * time.Second)
+	answer := "none: no request to /healthz was answered"
+	// failIfExited ends the wait the moment the process is gone. It is read inside the loop and
+	// once more after it, because a listener that dies in the last sleep, or between the last poll
+	// and the deadline, would otherwise fall out below and be reported as still running, which is
+	// the misreading this helper exists to remove.
+	failIfExited := func() {
+		t.Helper()
+		select {
+		case <-p.Exited:
+			// Exited closes only once the output is whole, so this read is final.
+			output := p.Output.String()
+			t.Fatalf("the listener exited during its start-up with %s; its last line was %q, and the last /healthz answer was %s:\n%s",
+				p.Cmd.ProcessState, lastOutputLine(output), answer, output)
+		default:
+		}
+	}
 	for time.Now().Before(deadline) {
 		response, err := client.Get(url)
 		if err == nil {
 			var health struct {
 				Status string `json:"status"`
+				Error  string `json:"error"`
 			}
 			decodeErr := json.NewDecoder(response.Body).Decode(&health)
 			_ = response.Body.Close()
 			if decodeErr == nil && health.Status == "healthy" {
 				return
 			}
+			if decodeErr == nil {
+				answer = fmt.Sprintf("%d %q", response.StatusCode, health.Status)
+				if health.Error != "" {
+					answer += fmt.Sprintf(", error %q", health.Error)
+				}
+			} else {
+				answer = fmt.Sprintf("%d, which is no health report: %v", response.StatusCode, decodeErr)
+			}
 		}
+		failIfExited()
 		time.Sleep(200 * time.Millisecond)
 	}
+	failIfExited()
 	_ = p.Cmd.Process.Kill()
-	t.Fatalf("the listener never became healthy:\n%s", p.Output.String())
+	t.Fatalf("the listener never became healthy within 30s; it was still running, and the last /healthz answer was %s:\n%s", answer, p.Output.String())
+}
+
+// lastOutputLine is the final non-empty line of a process's output, the one a start-up that ended
+// in log.Fatal wrote.
+func lastOutputLine(output string) string {
+	trimmed := strings.TrimRight(output, "\n")
+	return trimmed[strings.LastIndexByte(trimmed, '\n')+1:]
 }

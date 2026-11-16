@@ -1,0 +1,61 @@
+Experiment 7, DBOS: a step whose process is killed inside it.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+system-database: legion_dbos_eval
+system-database-schema: exp7_28491_658150
+application-name: legion-exp7
+application-version: exp7-code-1
+executor-id: exp7-session-host
+workflow-id: exp7-prompt-1794091011740626820
+side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e7/exp7-side-effects.log
+[worker1] dbosworker: pid=28499
+[worker1] dbosworker: launch-seconds=0.020
+worker1-pid: 28499
+[worker1] dbosworker: workflow-started=exp7-prompt-1794091011740626820
+side-effect-1: attempt=1 pid=28499 at=2026-11-07T22:36:51.864119017Z
+release-file-exists-while-step-blocked: false
+sql-before-kill-workflow_status: status=PENDING executor=exp7-session-host version=exp7-code-1 queue=none recovery_attempts=1 owner_xid=b5dd586e-5aa1-4360-8f3d-b746c0c80ba0 output=null error=null
+sql-before-kill-operation_outputs: none
+sql-before-kill-recorded-step-count: 0
+kill-sent: true
+killed-pid: 28499
+kill-signal: SIGKILL
+killed-process-still-alive: false
+sql-after-kill-workflow_status: status=PENDING executor=exp7-session-host version=exp7-code-1 queue=none recovery_attempts=1 owner_xid=b5dd586e-5aa1-4360-8f3d-b746c0c80ba0 output=null error=null
+sql-after-kill-operation_outputs: none
+sql-after-kill-recorded-step-count: 0
+state-for-a-step-that-ran-with-its-outcome-unknown: none: DBOS writes an operation_outputs row only when a step returns, so a step killed inside its body leaves no row at all, and workflow_status reads PENDING -- the same two readings a workflow that never entered the step gives
+in-flight-step-marker-in-the-schema: none: the system schema has no started_at, no lease and no attempt row per step; workflow_status.started_at_epoch_ms and owner_xid are per workflow, not per step
+other-executor-id: exp7-other-host
+other-executor-observed-for: 6s
+other-executor-ran-the-step: false
+sql-with-only-another-executor-alive: status=PENDING executor=exp7-session-host version=exp7-code-1 queue=none recovery_attempts=1 owner_xid=b5dd586e-5aa1-4360-8f3d-b746c0c80ba0 output=null error=null
+side-effects-while-only-another-executor-was-alive: 1
+[worker2] dbosworker: pid=28507
+[worker2] dbosworker: launch-seconds=0.015
+[worker2] dbosworker: recovery-launched=true
+replacement-pid: 28507
+workflow-recovered: true
+recovered-by: the replacement process itself, inside dbos.Launch: it re-enqueues the PENDING workflows whose executor_id is its own and whose application_version is its own, then its queue runner dequeues them
+recovery-latency-seconds: 6.291
+side-effect-2: attempt=2 pid=28507 at=2026-11-07T22:36:58.161194149Z
+sql-during-recovered-attempt-workflow_status: status=PENDING executor=exp7-session-host version=exp7-code-1 queue=_dbos_internal_queue recovery_attempts=2 owner_xid=9c1a2be3-704a-4a30-9098-73ac7ef49bb6 output=null error=null
+sql-final-workflow_status: status=SUCCESS executor=exp7-session-host version=exp7-code-1 queue=_dbos_internal_queue recovery_attempts=2 owner_xid=none output=eyJhdHRlbXB0IjoyLCJwaWQiOjI4NTA3fQ== error=empty
+sql-final-operation_outputs: 0:prompt-into-session
+sql-final-step: id=0 name=prompt-into-session output=eyJhdHRlbXB0IjoyLCJwaWQiOjI4NTA3fQ== error=null
+sql-final-step-output-decoded: map[attempt:2 pid:28507]
+sql-final-workflow-output-decoded: map[attempt:2 pid:28507]
+side-effect-line-1: attempt=1 pid=28499 at=2026-11-07T22:36:51.864119017Z
+side-effect-line-2: attempt=2 pid=28507 at=2026-11-07T22:36:58.161194149Z
+side-effect-performed-times: 2
+steps-recorded-in-postgres: 1
+what-that-means: a step whose outcome DBOS never recorded is run again by the replacement: DBOS's guarantee for a step is at-least-once, and exactly-once only for a step whose outcome did reach operation_outputs
+work-bound-to-the-dead-process-by: workflow_status.executor_id, written at dispatch
+binding-is-exclusive-until-a-process-of-that-id-returns: yes for recovery: launch recovers only its own executor id, so no other process picks the work up on its own
+if-that-process-never-comes-back: the row stays PENDING for ever: nothing in the OSS library times an executor out, so the work waits for a process that opens DBOS under the same executor id and the same application version, or for an operator calling ResumeWorkflow, RewindWorkflow or ForkWorkflow
+limit: one workflow, one step, one kill, on one PostgreSQL: it shows what DBOS records and re-runs when the process inside a step dies, not how a fleet of executors behaves, nor what happens when the database rather than the process is the thing that fails
+schema-dropped: exp7_28491_658150
+experiment 7: PASS

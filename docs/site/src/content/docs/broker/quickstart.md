@@ -12,9 +12,10 @@ in](/legion/broker/guides/log-a-machine-in/) first and start each agent with
 `agent-secrets register --wait 10 --exec -- <agent>`.
 
 No broker yet? [Run the local stack](/legion/broker/guides/run-locally/) and log its helper in, as
-that page shows. Its two secrets are `ada@example.com`'s: `DEMO_READ_TOKEN` at the agent tier,
-which her own sessions get without asking, and `DEMO_API_KEY` at the human tier, which she
-approves. It has no Dispatch: step 2's Inbox row is absent there, and the page a person approves
+that page shows. Two of its three secrets are `ada@example.com`'s: `DEMO_READ_TOKEN` at the agent
+tier, which her own sessions get without asking, and `DEMO_API_KEY` at the human tier, which she
+approves; the third is a registered service's, which only a pod session of that service gets.
+It has no Dispatch: step 2's Inbox row is absent there, and the page a person approves
 on is the one `agent-secrets` prints, as [approving without
 Dispatch](/legion/broker/guides/approve-a-request/#without-dispatch) shows. Every terminal output
 below is from that stack, with the record id in the approval link written as `<record>`.
@@ -50,8 +51,8 @@ That line is why a reader never has to guess which store answered: another secre
 machine can hold a different value under the same name, and every `agent-secrets` answer and
 refusal names its own broker and the kind of its store. These lines land in the agent's own
 output, which is often quoted, so none names the broker's host or the store's account, region or
-project; `agent-secrets secret show`, which a person runs under their own cloud sign-in, names the
-account or project.
+project; `agent-secrets secret show`, which calls the store itself under a cloud credential, names
+the account or project.
 
 When it needs a person's approval, `agent-secrets` says so, with the request's id, where it was
 made, who approves it, and the page on the secrets broker where they decide it, and waits (up to
@@ -81,11 +82,11 @@ prints means).
 ## 2. The approver decides on the broker's page
 
 The approver (here `ada@example.com`, the secret's owner and the operator of the machine the agent
-runs on) opens that page. A secret request is decided there and nowhere else: a person signs in to
-the broker itself with their Workspace account, which asks nothing of someone already signed in to
-it, and lands back on the request. Where there is a Dispatch, the same page is one click away: the
-request is at the top of their **Inbox**, under **Credential requests**, as a **Secret request**
-row naming `DEMO_API_KEY` and when it was asked, and that row is a link to it.
+runs on) opens that page. A person decides a secret request there and nowhere else: they sign in
+to the broker itself with their Workspace account, which asks nothing of someone already signed
+in to it, and lands back on the request. Where there is a Dispatch, the same page is one click
+away: the request is at the top of their **Inbox**, under **Credential requests**, as a **Secret
+request** row naming `DEMO_API_KEY` and when it was asked, and that row is a link to it.
 
 The page prints the broker's own record of the request:
 
@@ -94,7 +95,7 @@ The page prints the broker's own record of the request:
 | Secrets | The secrets asked for: `DEMO_API_KEY` |
 | Requested by (verified by the broker) | The enrollment asking, as kind, operator and runtime id: `session · example-host-build:2150654:335907311 · ada@example.com` |
 | Reason | The `--reason` the agent gave: Deploy the example service |
-| Lasts once approved | How long a grant would last: until the session ends, or the `--ttl` the agent asked for |
+| Lasts once approved | How long a grant would last: the `--ttl` the agent asked for; with none, 15 minutes when any secret is human tier and 12 hours otherwise, or until the session ends for a secret tagged `default-grant=session` |
 | Requested, Expires | When it was asked, and when it [expires](/legion/broker/concepts/#approvals) undecided |
 | Approver | `ada@example.com` |
 | State | pending, or how it was decided, by whom and when |
@@ -102,6 +103,17 @@ The page prints the broker's own record of the request:
 and two buttons, **Approve** and **Deny**. The broker records the decision under the email the
 approver signed in to the broker as; [approving a request](/legion/broker/guides/approve-a-request/)
 covers the page in full.
+
+Some requests never reach that page. Where the deployment configures a model judge, the broker
+that wrote a request pending puts it to a model in the background, as long as it asks for one
+secret, for 15 minutes or less that the secret's airlock rules let the judge decide, with a
+reason naming a Dispatch issue that is not done. The judge approves such a request or leaves it
+here for the approver, and it never denies. A judged approval takes the request out of every
+Inbox, and the **State** line names `judge:<model id>` as the decider, as
+`agent-secrets status <request id>` then does under `decided_by`
+([Concepts](/legion/broker/concepts/#the-model-judge)). The local stack this page
+uses runs no judge; the airlock stack does ([let the judge decide a
+request](/legion/broker/guides/run-locally/#let-the-judge-decide-a-request)).
 
 ## 3. The command runs
 
@@ -114,8 +126,9 @@ agent-secrets: DEMO_API_KEY from the broker AGENT_SECRETS_URL names (AWS Secrets
 deploying with a 18-character key
 ```
 
-The grant outlives the command: it lasts until the session ends, unless the agent asked for less
-with `--ttl`. Meanwhile the same session asking for exactly the same secrets gets it again without
+The grant outlives the command: it lasts 15 minutes for a human-tier secret such as this one and
+12 hours otherwise (or until the session ends for a secret tagged `default-grant=session`), unless
+the agent asked for another lifetime with `--ttl`. Meanwhile the same session asking for exactly the same secrets gets it again without
 asking anyone; `agent-secrets self` lists the session's live grants, and the broker and kind of
 store they are at:
 
@@ -126,8 +139,8 @@ kind: session
 operator: ada@example.com
 lease_expires_at: 2026-10-03T03:36:40Z
 source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-grant: f5167d29-1789-4719-8e8c-9aec6f1229e7 (request ce11549a-ab03-4a13-95cf-896961c36fc0, until this session ends)
-grant: be34ed2a-78e2-4457-9a75-71283a87c16b (request 7db349e6-ad3c-4f40-86d7-c6a38e899306, until this session ends)
+grant: f5167d29-1789-4719-8e8c-9aec6f1229e7 (request ce11549a-ab03-4a13-95cf-896961c36fc0, expires 2026-10-11T03:56:07Z)
+grant: be34ed2a-78e2-4457-9a75-71283a87c16b (request 7db349e6-ad3c-4f40-86d7-c6a38e899306, expires 2026-10-11T03:56:07Z)
 ```
 
 ## When the answer is no

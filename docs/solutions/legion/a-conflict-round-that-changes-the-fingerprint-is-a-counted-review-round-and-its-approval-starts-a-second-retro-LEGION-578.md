@@ -9,7 +9,7 @@ tags:
   - retro
   - workflow-table
 date: 2026-10-08
-status: superseded in part by sjawhar/legion#2010 — a conflict merge pushed after retro with no review round after it brings the base's paths above the approved head, so READY refuses it `READY_UNREVIEWED_CHANGE` and the reviewer runs a new round; it no longer goes straight to the merger with the approval standing. The counted conflict round and the second retro below still hold
+status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold
 module: packages/daemon
 related_issues:
   - "LEGION-578"
@@ -38,8 +38,8 @@ related_issues:
   and brings the body's `Size` and `Chain` lines up to date for its commit.
 - A first retro's note that states a current number, a head or a "no release has shipped" claim can
   become a review finding in the next round, fixable only by the implementer in an implementing
-  round (retro never edits `.legion/`, and a round-4 sweep had to edit two retro notes). Write such
-  facts as history with their moment, or as pointers
+  round (a retro commit carries learnings and nothing else, and a round-4 sweep had to edit two
+  retro notes). Write such facts as history with their moment, or as pointers
   (docs/solutions/legion/a-contract-numbers-prose-is-declaration-history-or-current-write-current-as-a-pointer-and-sweep-docs-solutions-too-LEGION-578.md).
 
 ## Evidence

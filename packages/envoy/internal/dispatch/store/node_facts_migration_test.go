@@ -70,6 +70,7 @@ func TestTheWrittenVersionTriggerRecordsWhatAnyBuildInserts(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	seedCoreWithADefaultAssignee(t, store)
 	spec, doc := seedNodeFactsDocuments(t, store)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into artifact_versions (artifact_id, number, markdown) values
@@ -192,6 +193,7 @@ func TestTheWrittenVersionBackfillFillsOlderRows(t *testing.T) {
 		returning id::text`, doc)
 	assertWrittenVersion(t, store, "a comment the trigger recorded", "comments", raced, new(2))
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -226,6 +228,7 @@ func TestComponentFactsSeedEveryComponentUnrecorded(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed components: %v", err)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

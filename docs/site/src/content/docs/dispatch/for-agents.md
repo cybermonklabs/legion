@@ -67,25 +67,39 @@ Everything the agent writes is attributed to the person who made the token: Disp
 agent's name followed by `(for <login>)`, and an issue the agent creates without naming an
 assignee goes to that person. An agent on the shared token has no such person, so its issue takes
 its parent's assignee instead, and where no parent names one, the project's default assignee, set
-on the Settings page. `dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
+on the Settings page. Every project names a default assignee, so every issue has one.
+`dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
 tells the agent who Dispatch takes it for.
 
 ## The commands
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues in the same project it waits on. `dispatch issue-update` changes status, title, labels, priority, parent, links, blockers, or components; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
-| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `dispatch projects` lists every project's key and name. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, and the id each row names is what `--advance` takes. |
+| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
 | Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
 | Messages | `dispatch message` posts a message or replies to one. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
-| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for. |
+| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
+| Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
+The dashboard's List is a live table over a project's issues, not a separate search index.
+Its Queue is Todo issues labelled `legion`, ordered by Board rank; **Start next** makes ordinary rank writes using `before` keys, as `dispatch issue-update --before <KEY>` does.
+An epic is an open root issue labelled `epic`, and the Epic column follows parent links to that root.
+Moving open selected issues into or out of an epic writes `parent`; closed selections are skipped and reported.
+Merging epics moves open direct children and open descendants reached through only closed intermediates. It posts the reason and closes the source only after all moves succeed; otherwise the source stays open and the notice identifies the failed moves.
+Closed issues keep their original parent and history.
+An epic is an ordinary table row; only while the table is grouped by epic is it the group's linked heading instead of a row inside it.
+Listings include the creator actor (`created_by`, nullable) and creation time (`created_at`).
+Bulk parent changes are ordinary independent keyed writes, at most eight in flight: a refusal does not hold the others, and each failed request retries or resumes through the shared pending-writes controls.
+New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
+
 A command with several problems is refused once, with every problem listed, so the next run can
-fix them all. It exits 0 when it wrote or read, 1 when Dispatch or the flags refused it, and 2 on a
-usage error such as an unknown command.
+fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
+exits 2 on a usage error, such as an unknown command or flags it refused before any request.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -95,6 +109,9 @@ dispatch message --issue LEGION-1 --body-file - <<'EOF'
 Shipped in owner/repo#7.
 EOF
 ```
+
+Only one flag of a call may read stdin. The command refuses `--body -`, and its refusal names
+`--body-file -`.
 
 ## AskGate reviews each write
 
@@ -128,7 +145,7 @@ Each kind of write reaches people differently. Pick by what you need from them.
 
 | You need | Use | Where it lands |
 | --- | --- | --- |
-| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The assignee's Inbox, under **Waiting on you** |
+| A decision only a person can make | An ask (`dispatch ask`, or a decision block in the spec) | The Inbox of the person it waits on: the person it was handed to, else the issue's assignee, else the project's default assignee |
 | To point at a passage in a document | A comment with a quote (`dispatch comment`) | The document's margin and the issue's Conversation |
 | To change specific text | A suggestion (`dispatch suggest`) | The margin, where a person accepts or rejects it |
 | To tell people a deliverable landed, or answer a person's message | A message (`dispatch message`) | The issue's Conversation |
@@ -145,10 +162,18 @@ starts. When the list leaves older items out, its last line says how many; `disp
 reads them all. The request waits at most 800 ms for the list and carries the last one read when
 Dispatch does not answer.
 
-The server holds every write to a size, and refuses rather than truncates:
+The server holds every write to a size, refuses rather than truncates, and names what passed the
+bound; `dispatch limits` prints every bound the server you write to holds, and no command carries
+a bound of its own:
 
-- an ask's question is at most 2,000 characters, with at most eight options;
-- a comment or message body is at most 32,000 characters;
+- an ask's question and its options together are at most 32,000 characters, with at most eight
+  options;
+- a comment or message body is bounded block by block: each block — a paragraph, list, quote,
+  table or code block — is at most 32,000 characters, and one body holds at most 32,768 blocks.
+  A body holding a decision block (`:::ask`) is refused whatever its length, `400
+  DECISION_BLOCK_IN_BODY`: nobody can answer a question there, so it belongs in the issue's own
+  document, as a decision block, or in an ask opened with `dispatch ask`. To show one as an
+  example, put it in a fenced code block;
 - a comment anchored to a document is also projected into that document's margin, which is bounded
   in bytes and not by that character limit: 256 KiB per thread, and 1 MiB per document margin. A
   few long anchored comments therefore fill a thread or a margin where many short ones used to
@@ -206,14 +231,15 @@ approval; the card shows that approval and a **Show diff** control that carries 
 
 ## Whose turn it is
 
-Every open ask is waiting on a person or on an agent, and the Inbox files it by that.
+Every open ask is waiting on a person or on an agent, and a person can group their Inbox by that
+(**View → Group by → Waiting on**).
 
-- Opening an ask puts it in the person's **Waiting on you**.
+- Opening an ask puts it in front of the person, waiting on them.
 - When the person replies without answering (**Ask back**), the turn is yours. Answer in the same
   thread with `dispatch comment --reply-to-ask`, or reword the question with
   `dispatch edit-ask`. Either puts the ask back in front of them. Do not open a second ask.
 - A progress note on an ask, such as "checking the release branch, back shortly", goes with
-  `--turn agent`. The ask stays under **Waiting on agents** and the person is not asked to act.
+  `--turn agent`. The ask then waits on you, and the person is not asked to act.
 
 Close what you opened. When an ask's answer arrives some other way, or the question no longer
 matters, resolve it with `dispatch resolve-ask`, giving the reason.
@@ -262,15 +288,21 @@ recovered.
 
 A person can also message you from the Agents page:
 
-- On Oh My Pi, their **Send** or **Aside** arrives as their own message in your conversation,
-  except a message beginning with `/` runs as the session's terminal would run it. A prompt
-  template, file command or skill gives you the resulting prompt; an unknown `/name` gives you the
-  words themselves. What a command prints, or its note that it did not run because it belongs
-  only to the terminal, is already a **Reply via Dispatch**: write nothing for it. Only a command
-  that also submits a prompt, such as `/force:<tool> <prompt>`, gives you that prompt to answer.
-- A **BTW**, a broadcast, or any message to a host that takes no such turn (Claude Code) arrives as
-  a Dispatch notice with a ready-made reply command. Answer with `dispatch message` and its
-  `--in-reply-to`.
+- Their **Send** or **Aside** arrives as their own message in your conversation, except a message
+  beginning with `/`, which runs as the session's terminal would run it.
+  On Oh My Pi, a prompt template, file command or skill gives you the resulting prompt; an
+  unknown `/name` gives you the words themselves.
+  What a command prints, or its note that it did not run because it belongs only to the terminal,
+  is already a **Reply via Dispatch**: write nothing for it.
+  Only a command that also submits a prompt, such as `/force:<tool> <prompt>`, gives you that
+  prompt to answer.
+- A **BTW** is answered in a side turn that adds nothing to your main conversation, and that
+  answer is posted back as your reply, so you write no `dispatch message` for it.
+  One that arrives late, or comes back from the stream, starts no side turn: on Oh My Pi it is
+  one inert notice, and a Claude Code session passes it over.
+- A broadcast, or any message to a session that takes no such turn, arrives as a Dispatch notice
+  with a ready-made reply command.
+  Answer with `dispatch message` and its `--in-reply-to`.
 
 ## Claiming and status
 
@@ -291,6 +323,7 @@ dispatch://KEY
 dispatch://KEY/spec
 dispatch://KEY/artifact/<slug>
 dispatch://KEY/ask/<id>
+dispatch://KEY/ask/<id>#b-<part>[@v<N>]
 dispatch://KEY/comment/<id>
 dispatch://KEY/comment/<id>#b-<block>[@v<N>]
 dispatch://KEY/message/<id>
@@ -301,6 +334,23 @@ dispatch://PROJECT/artifact/<document>/comment/<id>#b-<block>[@v<N>]
 
 `dispatch read` on any of them shows what it is and everything that references it.
 
+Write each id whole. Where one reaches you short, Dispatch still resolves it: 8 or more of the
+characters an id starts with name the one ask, comment, message, document or block that carries
+them, in a reference, in a page address and on the API routes that take an id in their path, and
+what is stored is the whole id. A short id two items share resolves to neither: the API answers
+`409 ID_AMBIGUOUS` with the matches, and the text stays as written.
+
+Two forms need no `dispatch://`. An issue key on its own, `CORE-12`, links to that issue when that
+issue exists, and `#` with a question block's id links to that question of the document the text
+belongs to — its own text, its questions and replies, and comments anchored to it; text on an issue
+but on no document resolves against the issue's spec. Both enter the reference graph, so
+`dispatch read` on the target lists the text that wrote them.
+
+To write a literal `#id` in a document rather than a link to that question, put it in a code
+span: a document keeps no escape of its own, since it stores `\#q2` as `#q2`, and code shows as
+text on every surface. A comment, an ask and an issue message store their body as you wrote it,
+so `\#q2` stays text there.
+
 A comment or message is made of blocks, one per paragraph, list or other top-level block, named
 `b1`, `b2` and so on. `#b-<block>` names one of them, and a link in a comment or issue message
 starts at the block that holds it. A comment block keeps its id when its author moves, rewords or
@@ -308,8 +358,14 @@ splits it in the dashboard (a split block's id stays with the part holding its s
 `@v<N>` pins it to revision N of the comment, so `dispatch read` shows the text it had then and
 whether it has changed or been removed since. A message never changes, so its blocks take no pin.
 
+An ask is made of parts the same way: its question, each of its options and its answer.
+`#b-<part>` names one, and `@v<N>` pins it to a revision of the ask's parts. `dispatch read` of
+the ask prints the reference of each option and of its answer, with whatever points at that part
+under it, so you can cite the option a decision turns on rather than the whole ask.
+
 To answer one block rather than the whole item, pass its reference to
-`dispatch comment --reply-to` or `dispatch message --in-reply-to`. Dispatch records the reply as
+`dispatch comment --reply-to` or `dispatch message --in-reply-to`, and a part of an ask to
+`dispatch comment --reply-to-ask`. Dispatch records the reply as
 answering that block, and `dispatch read` of the reply prints `Re: block <id>:` and the block's
 text before its body, or `Re: block <id> (removed)` once an edit removed it.
 
@@ -325,7 +381,12 @@ carries an `Idempotency-Key` header of its own, and the command asks again under
 attempt fails on the way, gets no answer for 20 seconds while none of its body is going out,
 Dispatch answers 5xx, 408 or 429, or Dispatch is still running an earlier attempt
 (`409 KEY_IN_FLIGHT`): at most five attempts, the last starting within 30 seconds of the first, and
-the whole command within 60. It asks again only of a Dispatch that judges the key: one whose answer
+the whole command within 60. Once an attempt got no answer for 20 seconds or was told
+`409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and it finishes it whatever the
+command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
+`Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
+upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
+It asks again only of a Dispatch that judges the key: one whose answer
 carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
 whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
 key and answers a repeat with the first answer, so the command never makes a write twice. When the

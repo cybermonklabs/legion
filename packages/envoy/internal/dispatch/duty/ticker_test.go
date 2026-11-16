@@ -1,4 +1,4 @@
-package duty
+package duty_test
 
 import (
 	"context"
@@ -7,15 +7,16 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // fixJitter makes every jittered wait draw what draw answers for its bound, until the test ends.
 func fixJitter(t *testing.T, draw func(n time.Duration) time.Duration) {
 	t.Helper()
-	saved := jitterN
-	jitterN = draw
-	t.Cleanup(func() { jitterN = saved })
+	saved := *duty.JitterN
+	*duty.JitterN = draw
+	t.Cleanup(func() { *duty.JitterN = saved })
 }
 
 // passClock records the fake-clock time each pass started at.
@@ -60,7 +61,7 @@ func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *test
 				booted := time.Now()
 				go func() {
 					defer close(done)
-					RunJittered(ctx, interval, func() bool { return false }, func(_ context.Context, due time.Time) {
+					duty.RunJittered(ctx, interval, func() bool { return false }, func(_ context.Context, due time.Time) {
 						if now := time.Now(); !due.Equal(now) {
 							t.Errorf("a pass at %v was handed due %v, want the moment its timer fired", now.Sub(booted), due.Sub(booted))
 						}
@@ -96,7 +97,7 @@ func TestRunJitteredWaitsBetweenOneAndOnePointOneIntervalsAfterEveryPass(t *test
 func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ran := false
-		RunJittered(context.Background(), time.Minute, func() bool { return true }, func(context.Context, time.Time) { ran = true })
+		duty.RunJittered(context.Background(), time.Minute, func() bool { return true }, func(context.Context, time.Time) { ran = true })
 		if ran {
 			t.Error("an idle loop ran a pass")
 		}
@@ -126,7 +127,7 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 	started := time.Now()
 	go func() {
 		defer close(done)
-		RunLeasedAfterEachPass(ctx, leases, "block-index", interval, func(ctx context.Context) time.Duration {
+		duty.RunLeasedAfterEachPass(ctx, leases, "block-index", interval, func(ctx context.Context) time.Duration {
 			began := time.Now()
 			// A pass's own time, so a loop that ticks on a fixed cadence instead of after the
 			// pass shows here as a gap shorter than the step.
@@ -161,8 +162,8 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 }
 
 // A loop whose first tick is one interval in - the issue-ask repair (the boot makes its own pass
-// first) and the daily compaction - must not pass at start: a compaction that ran at every boot
-// would walk every document on each deploy.
+// first) - must not pass at start: the issue-ask repair's boot pass would run twice on each
+// deploy.
 func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 	leases := leasesOf(t, storetest.Open(t))
 	const interval = 300 * time.Millisecond
@@ -173,7 +174,7 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 	started := time.Now()
 	go func() {
 		defer close(done)
-		RunLeased(ctx, leases, "document-compaction", interval, TickAfterInterval, func(context.Context) {
+		duty.RunLeased(ctx, leases, "issue-ask-repair", interval, duty.TickAfterInterval, func(context.Context) {
 			select {
 			case ran <- time.Now():
 			default:

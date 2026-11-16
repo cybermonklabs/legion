@@ -1,0 +1,190 @@
+Experiment 12, Restate: a change against a recorded journal.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+restate-server-version: 1.8.1
+restate-server-started-by-this-experiment: true
+restate-ingress-address: 127.0.0.1:30877
+restate-admin-address: 127.0.0.1:37143
+invocation-status-read-from: POST /query against the server's sys_invocation and sys_journal views: restate-server 1.8.1's admin API has no GET /invocations, only the per-invocation pause, resume, kill, cancel and purge operations
+the-change: one new durable step, review, inserted between plan and implement -- the ordinary Legion change
+recorded-code-steps: [plan implement] then deliver
+changed-code-steps: [plan review implement] then deliver
+[service-recorded] restateservice: pid=28826
+[service-recorded] time=2026-11-07T22:37:56.790Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service-recorded] restateservice: goroutines=5
+[service-recorded] restateservice: handlers-in-flight=0
+old-deployment-id: dp_11HEhhQi9dF3enoeOJfLWw1
+old-deployment-endpoint: http://127.0.0.1:36879
+service-revision-after-the-old-deployment: 1
+deployment-new-invocations-go-to-after-the-old-deployment: dp_11HEhhQi9dF3enoeOJfLWw1
+held-invocation-id: inv_171hCcXVa3e31C8DU3JrInsDMbAlDz6bAO
+[service-recorded] restateservice: goroutines=12
+[service-recorded] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=12
+[service-recorded] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=12
+[service-recorded] restateservice: handlers-in-flight=0
+held-invocation-before-the-new-deployment: status=running in_flight=true pinned_deployment_id=dp_11HEhhQi9dF3enoeOJfLWw1 retry_count=1 journal_size=6
+held-invocation-journal-before-the-new-deployment: 0:Command: Input(-), 1:Command: Run(plan), 2:Notification: Run(-), 3:Command: Run(implement), 4:Notification: Run(-), 5:Command: Run(deliver)
+[service-changed] restateservice: pid=28851
+[service-changed] time=2026-11-07T22:37:57.937Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service-changed] restateservice: goroutines=5
+[service-changed] restateservice: handlers-in-flight=0
+new-deployment-id: dp_13PfsyWuEBK70WI30EItvSp
+new-deployment-endpoint: http://127.0.0.1:42658
+service-revision-after-the-new-deployment: 2
+deployment-new-invocations-go-to-after-the-new-deployment: dp_13PfsyWuEBK70WI30EItvSp
+both-deployments-registered: dp_11HEhhQi9dF3enoeOJfLWw1=http://127.0.0.1:36879/ dp_13PfsyWuEBK70WI30EItvSp=http://127.0.0.1:42658/
+[service-recorded] restateservice: goroutines=14
+[service-recorded] restateservice: handlers-in-flight=1
+[service-changed] restateservice: goroutines=9
+[service-changed] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=14
+[service-recorded] restateservice: handlers-in-flight=1
+held-invocation-after-the-new-deployment: status=running in_flight=true pinned_deployment_id=dp_11HEhhQi9dF3enoeOJfLWw1 retry_count=1 journal_size=6
+held-invocation-stayed-on-the-old-deployment: true
+new-invocation-id: inv_137K1Fhx5cB04GEi8fIY7LhYrLCkmWnJIF
+[service-changed] restateservice: goroutines=12
+[service-changed] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=14
+[service-recorded] restateservice: handlers-in-flight=1
+[service-changed] restateservice: goroutines=12
+[service-changed] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=14
+[service-recorded] restateservice: handlers-in-flight=1
+[service-changed] restateservice: goroutines=12
+[service-changed] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=14
+[service-recorded] restateservice: handlers-in-flight=1
+[service-changed] restateservice: goroutines=11
+[service-changed] restateservice: handlers-in-flight=0
+[service-recorded] restateservice: goroutines=14
+[service-recorded] restateservice: handlers-in-flight=1
+new-invocation-final: status=completed in_flight=false pinned_deployment_id=dp_13PfsyWuEBK70WI30EItvSp retry_count=0 journal_size=10 completion_result=success
+new-invocation-pinned-to-the-new-deployment: true
+new-invocation-steps: plan,review,implement,deliver
+[service-changed] restateservice: goroutines=11
+[service-changed] restateservice: handlers-in-flight=0
+held-invocation-final: status=completed in_flight=false pinned_deployment_id=dp_11HEhhQi9dF3enoeOJfLWw1 retry_count=0 journal_size=8 completion_result=success
+held-invocation-steps: plan,implement,deliver
+held-invocation-ran-the-inserted-step: false
+new-invocation-ran-the-inserted-step: true
+deployment-versioning-works-as-documented: true
+[service-recorded-2] restateservice: pid=28858
+[service-recorded-2] restateservice: goroutines=4
+[service-recorded-2] restateservice: handlers-in-flight=0
+[service-recorded-2] time=2026-11-07T22:37:59.799Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+replay-deployment-id: dp_15FkWud2VMcBZA57sJYd66Z
+replay-deployment-endpoint: http://127.0.0.1:45670
+replayed-invocation-id: inv_155ui7gQt06Z4aPA4r0rGp9kvAnHd4PNOU
+[service-recorded-2] restateservice: goroutines=12
+[service-recorded-2] restateservice: handlers-in-flight=0
+[service-recorded-2] restateservice: goroutines=12
+[service-recorded-2] restateservice: handlers-in-flight=0
+[service-recorded-2] restateservice: goroutines=12
+[service-recorded-2] restateservice: handlers-in-flight=0
+journal-recorded-by-the-old-code: 0:Command: Input(-), 1:Command: Run(plan), 2:Notification: Run(-), 3:Command: Run(implement), 4:Notification: Run(-), 5:Command: Run(deliver)
+steps-the-old-code-ran: plan,implement,deliver
+old-code-process-killed-pid: 28858
+[service-changed-2] restateservice: pid=28866
+[service-changed-2] time=2026-11-07T22:38:00.868Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service-changed-2] restateservice: goroutines=5
+[service-changed-2] restateservice: handlers-in-flight=0
+changed-code-process-pid: 28866
+changed-code-endpoint: http://127.0.0.1:45670
+deployment-was-re-registered: false
+[service-changed-2] restateservice: goroutines=7
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=10
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=10
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=10
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] time=2026-11-07T22:38:02.343Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp12Phase/Phase invocationID=inv_155ui7gQt06Z4aPA4r0rGp9kvAnHd4PNOU err="[570] (570) Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.\nThis typically happens when some parts of the code are non-deterministic.\n- The mismatch happened while executing 'run' (index '2')\n- Difference:\n   name: implement != review\nRelated command: run [review]"
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+replayed-invocation-sample-1: status=backing-off in_flight=false pinned_deployment_id=dp_15FkWud2VMcBZA57sJYd66Z retry_count=2 journal_size=6 next_retry_at=2026-11-07T22:38:03.571Z last_failure=[570 Journal mismatch] Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution. This typically happens when some parts of the code are non-deterministic. - The mismatch happened while executing 'run' (index '2') - Difference: name: implement != review
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] time=2026-11-07T22:38:03.575Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp12Phase/Phase invocationID=inv_155ui7gQt06Z4aPA4r0rGp9kvAnHd4PNOU err="[570] (570) Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.\nThis typically happens when some parts of the code are non-deterministic.\n- The mismatch happened while executing 'run' (index '2')\n- Difference:\n   name: implement != review\nRelated command: run [review]"
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+replayed-invocation-sample-2: status=ready in_flight=false pinned_deployment_id=dp_15FkWud2VMcBZA57sJYd66Z retry_count=0 journal_size=6
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] time=2026-11-07T22:38:06.011Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp12Phase/Phase invocationID=inv_155ui7gQt06Z4aPA4r0rGp9kvAnHd4PNOU err="[570] (570) Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.\nThis typically happens when some parts of the code are non-deterministic.\n- The mismatch happened while executing 'run' (index '2')\n- Difference:\n   name: implement != review\nRelated command: run [review]"
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+replayed-invocation-sample-3: status=ready in_flight=false pinned_deployment_id=dp_15FkWud2VMcBZA57sJYd66Z retry_count=0 journal_size=6
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+replayed-invocation-sample-4: status=ready in_flight=false pinned_deployment_id=dp_15FkWud2VMcBZA57sJYd66Z retry_count=0 journal_size=6
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+[service-changed-2] time=2026-11-07T22:38:11.013Z level=ERROR msg="Invocation panicked, returning error to Restate" method=Exp12Phase/Phase invocationID=inv_155ui7gQt06Z4aPA4r0rGp9kvAnHd4PNOU err="[570] (570) Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution.\nThis typically happens when some parts of the code are non-deterministic.\n- The mismatch happened while executing 'run' (index '2')\n- Difference:\n   name: implement != review\nRelated command: run [review]"
+replayed-invocation-sample-5: status=ready in_flight=false pinned_deployment_id=dp_15FkWud2VMcBZA57sJYd66Z retry_count=0 journal_size=6
+steps-after-the-code-changed: plan,implement,deliver
+journal-after-the-code-changed: 0:Command: Input(-), 1:Command: Run(plan), 2:Notification: Run(-), 3:Command: Run(implement), 4:Notification: Run(-), 5:Command: Run(deliver)
+events-after-the-code-changed: after 5: TransientError [500] unexpected error while reading the response body: stream closed because of a broken pipe; after 5: TransientError [570] Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution. This typically happens when some parts of the code are non-deterministic. - The mismatch happened while executing 'run' (index '2') - Difference: name: implement != review; after 5: TransientError [570] Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution. This typically happens when some parts of the code are non-deterministic. - The mismatch happened while executing 'run' (index '2') - Difference: name: implement != review; after 5: TransientError [570] Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution. This typically happens when some parts of the code are non-deterministic. - The mismatch happened while executing 'run' (index '2') - Difference: name: implement != review
+divergence-detected-by-the-server: true
+divergence-error: Found a mismatch between the code paths taken during the previous execution and the paths taken during this execution. This typically happens when some parts of the code are non-deterministic. - The mismatch happened while executing 'run' (index '2') - Difference: name: implement != review
+divergence-error-code: 570
+invocation-after-the-divergence: retried: the server is attempting it again, against the same pinned deployment, and has not given up
+is-a-journal-mismatch-terminal: no: the server records it as a TransientError and retries the invocation against the same pinned deployment, so a change deployed this way leaves the invocation retrying rather than failing
+if-nobody-intervenes: it keeps retrying on the server-wide policy -- initial-interval 500ms, factor 2.0, max-interval 1m -- until max-attempts 70, and then pause
+what-an-operator-can-do-about-it: put the old code back behind that endpoint, or resume the invocation onto another deployment with PATCH /invocations/{id}/resume?deployment=<id>, or kill it
+kill-http-status: 200 OK
+[service-changed-2] restateservice: goroutines=9
+[service-changed-2] restateservice: handlers-in-flight=0
+replayed-invocation-final: status=completed in_flight=false pinned_deployment_id=dp_15FkWud2VMcBZA57sJYd66Z retry_count=0 journal_size=6 completion_result=failure completion_failure=[409] killed
+the-supported-way: a new deployment: register the changed code at a new endpoint URL, leave the old endpoint running, and Restate keeps every in-flight invocation on the deployment it was pinned to while sending new ones to the latest -- which is what the first half of this experiment measured and found to hold
+limit: one service, one inserted step, two deployments and one replay on a single-node server with one partition: it shows what Restate's shared core does with a journal whose code moved on and whether deployment pinning keeps an in-flight invocation on the code it started with, not what a change of a handler's input or output type does, nor what happens when many versions are live at once
+experiment 12: PASS

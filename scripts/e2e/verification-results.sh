@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# The live proof that a recorded check result says where its commit stands against the commits and
+# branches its check compares with (comparisonReader,
+# packages/envoy/internal/dispatch/api/results_comparison.go), and that the head it is compared with
+# moves with the pull-request events Dispatch takes off the bus
+# (recordPullRequestHead, packages/envoy/internal/dispatch/delivery/pull_request_heads.go). It runs
+# the real envoy-dispatch binary against a PostgreSQL the caller names, a NATS server of the run's
+# own (internal/testnats/cmd/natsd), the e2e harness's fake Envoy listener
+# (packages/dispatch/e2e/fake-envoy.ts) and its fake GitHub (packages/dispatch/e2e/fake-github.ts,
+# which the server reads as DISPATCH_GITHUB_API_BASE), drives it over HTTP as one session and one
+# person seeded through dev sign-in, and publishes each pull-request event as the normalized
+# `pull_request` envelope on `notifications.github.<owner>.<repo>.pr.<number>`, which is the one
+# path Dispatch's delivery intake reads (verification-results.ts beside this script).
+#
+# Its cases: the run's first result write, which reaches the record route and is refused 400
+# UNKNOWN_CHECK for a check nobody has; a result recorded and read back under its check (A2); a
+# push that moves the pull request's head, after which the earlier result stands at none of the
+# compared commits with no write of Dispatch's, and no pass of the check stands until a result at
+# the new head is recorded (A4); a fork's pull request taken for no basis, where the same pull
+# request with its head in this repository is one; a result for an `after_merge` check recorded on
+# a closed issue, where a document write is still refused 409 ISSUE_CLOSED (A5); a `default_branch`
+# check whose result at a commit the compare calls `behind` stands at the branch, while its result
+# at a commit the compare calls `diverged` stands at another commit (A10); a result at a 40-hex
+# commit the fake was seeded with nowhere, refused 400 RESULT_COMMIT_UNKNOWN naming the commit and
+# the `owner/repo`, which leaves the check no row; an issue whose repository the fake's
+# installation lookup does not find, whose results are answered unknown; the bases one issue's
+# three checks compare with, read through the `dispatch results` command and through the API,
+# with no commit named, with a commit every check is compared with instead, and again after an
+# event moves one head; and what decides a pull request's issue, where a branch, a body and a
+# person's link each decide one row and the reconcile re-judges two stored rows of the rule before
+# this build's. Three more cases run the `dispatch` command as a process against the
+# run's server and judge each step by its exit code and what it printed: `dash-refused`, where the
+# reported call `dispatch result ... --run - --observed - --negative-control -`, `--run=-`,
+# `--observed -` with `--dry-run`, `dispatch comment --body -`, `dispatch message --body -` and
+# `dispatch issue --title -` each exit 2 with the spec's line for each flag and leave no result,
+# comment, message or issue, while the call the refusal leads to records what two files and stdin
+# hold and `dispatch artifact --path -` uploads a local file named `-`;
+# `dash-refused-every-flag`, where each text flag the command's help lists, given `-` with
+# `--dry-run`, exits 2 with its line, over at least 28 commands and 112 flags; and `values-kept`,
+# where a value that starts with `-`, a value written `--observed=<value>` and a `-` a file or
+# stdin gives are stored byte for byte, while `--observed '--- PASS ...'` still reads as a flag.
+# Each case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>`; the first case
+# failing stops the run, since every later case records a result too, and any FAIL exits 1.
+#
+#   DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+#     [DISPATCH_BIN=<envoy-dispatch>] \
+#     [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+#     bash scripts/e2e/verification-results.sh
+#
+# DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
+# (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own
+# parser) whose `public` schema this run empties before the server migrates it, keeping the
+# extensions that schema holds, and it leaves what the run wrote there for inspection. The driver
+# reads it too, for the one fixture no route of Dispatch can write: a stored pull request row of
+# the attribution rule before this build's. DISPATCH_BIN is optional and names a prebuilt
+# envoy-dispatch: built from the base commit it is this change's negative control, and it fails at
+# the first result write, the route it does not serve; unset, the script builds ./cmd/dispatch from
+# this checkout.
+# VERIFICATION_RESULTS_E2E_DISPATCH_CLI is optional and names the bin/dispatch.ts the driver runs
+# in place of this checkout's packages/envoy-client/bin/dispatch.ts; the run refuses a value that
+# is not a readable file and makes it absolute, since `dash-refused` runs the command in another
+# directory. It is the negative control of the three cases above: naming the command of a git
+# worktree of the commit this change starts from (`bun install --frozen-lockfile` run in it),
+# `dash-refused` fails at step 1, which exits 0 and stores `-` in run, observed and
+# negative_control, and `dash-refused-every-flag` fails at its first call, whose output holds no
+# line for its flag; naming the command of a worktree of the head whose rule refuses every value
+# that starts with `-`, `values-kept` fails at step 1, which exits 2 with the line for
+# --negative-control.
+#
+# The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
+# (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
+# answers on it; NATS listens on a port the kernel picks. The work directory, under TMPDIR, holds
+# the binaries and every process's log: removed when the run passes, kept and printed when it
+# fails.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/../.." && pwd)
+started=$SECONDS
+check=setup
+
+begin() {
+  check=$1
+  echo "== $check"
+}
+note() { echo "   $*"; }
+pass() { echo "ok $check"; }
+fail() {
+  echo "FAIL $check: $*" >&2
+  exit 1
+}
+# What lib/rig.sh reads of its caller: start_process and await_start log under $evidence/logs, the
+# work directory's once the build makes it.
+evidence=''
+timeout_hook=''
+# shellcheck source-path=SCRIPTDIR source=lib/rig.sh
+. "$root/scripts/e2e/lib/rig.sh"
+
+# DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
+# VERIFICATION_RESULTS_E2E_DISPATCH_CLI, its other input, is read beside it; the sweep leaves it.
+dispatch_bin=${DISPATCH_BIN:-}
+dispatch_cli=${VERIFICATION_RESULTS_E2E_DISPATCH_CLI:-}
+database_url=${DATABASE_URL:-}
+dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
+envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
+github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
+
+# A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
+# DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
+# PGHOSTADDR, PGSERVICE and PGSERVICEFILE go with them: require_loopback_dsn in
+# scripts/e2e/lib/loopback-dsn.sh says why a caller of the loopback guard clears the three.
+mapfile -t inherited < <(compgen -e)
+for name in "${inherited[@]}"; do
+  case "$name" in
+    DISPATCH_* | ENVOY_* | NATS_* | FAKE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
+  esac
+done
+
+# The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
+work=''
+nats_pid=''
+fake_envoy_pid=''
+fake_github_pid=''
+dispatch_pid=''
+
+# cleanup stops what the run started and exits with rc: the script's own status for EXIT, 128 plus
+# the signal's number for INT and TERM, so an interrupted run never reports success.
+cleanup() {
+  local rc=$1
+  trap - EXIT INT TERM
+  set +e
+  stop_pid "$dispatch_pid"
+  stop_pid "$fake_github_pid"
+  stop_pid "$fake_envoy_pid"
+  stop_pid "$nats_pid"
+  if [ -z "$work" ]; then
+    echo "verification results e2e: FAIL at $check after $((SECONDS - started))s" >&2
+  elif [ "$rc" -eq 0 ]; then
+    rm -rf "$work"
+    echo "verification results e2e: PASS in $((SECONDS - started))s"
+  else
+    rm -rf "${work:?}/bin" "${work:?}/nats-store"
+    echo "verification results e2e: FAIL at $check after $((SECONDS - started))s (logs: $work)" >&2
+  fi
+  exit "$rc"
+}
+trap 'cleanup "$?"' EXIT
+trap 'cleanup 130' INT
+trap 'cleanup 143' TERM
+
+begin prerequisites
+[ -n "$database_url" ] ||
+  fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
+for tool in go bun curl psql openssl python3; do
+  command -v "$tool" >/dev/null || fail "$tool is not on PATH"
+done
+case "$database_url" in
+  postgres://* | postgresql://*) ;;
+  *) fail "DATABASE_URL must be a postgres:// or postgresql:// URL" ;;
+esac
+require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the database" || fail "$db_host"
+if [ -n "$dispatch_bin" ]; then
+  [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
+fi
+if [ -n "$dispatch_cli" ]; then
+  if [ ! -f "$dispatch_cli" ] || [ ! -r "$dispatch_cli" ]; then
+    fail "VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli is not a readable file"
+  fi
+  dispatch_cli=$(cd "$(dirname "$dispatch_cli")" && pwd)/$(basename "$dispatch_cli")
+fi
+for port in "$dispatch_port" "$envoy_port" "$github_port"; do
+  if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
+    fail "'$port' is not a port"
+  fi
+  port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
+done
+[ "$(printf '%s\n' "$dispatch_port" "$envoy_port" "$github_port" | sort -u | wc -l)" -eq 3 ] ||
+  fail "the Dispatch, fake Envoy and fake GitHub ports are not three different ports"
+note "database host $db_host (URL not printed)"
+pass
+
+begin build
+work=$(mktemp -d "${TMPDIR:-/tmp}/verification-results.XXXXXXXX")
+evidence=$work
+note "work directory $work"
+mkdir -p "$work/bin" "$work/web-dist" "$work/logs"
+if [ -z "$dispatch_bin" ]; then
+  dispatch_bin=$work/bin/envoy-dispatch
+  go -C "$root/packages/envoy" build -o "$dispatch_bin" ./cmd/dispatch || fail "./cmd/dispatch did not build"
+  note "built envoy-dispatch from $root/packages/envoy"
+else
+  note "envoy-dispatch is DISPATCH_BIN=$dispatch_bin"
+fi
+go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
+  fail "./internal/testnats/cmd/natsd did not build"
+pass
+
+begin reset-database
+# Empty, migrations included: the server migrates the new schema at boot, so a base binary and this
+# checkout's each start from a database of their own migrations. empty_public_schema
+# (lib/loopback-dsn.sh) says what goes and why the schema's extensions stay.
+empty_public_schema "$database_url" || fail "could not empty the database's public schema"
+pass
+
+begin nats
+# The port is the kernel's pick (`-p -1`), read back from the line the server logs once it listens.
+start_process nats "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
+await_start nats "$nats_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$work/logs/nats.log"
+nats_port=$(report_port "$work/logs/nats.log" 'Listening for client connections on [^ ]*:') ||
+  fail "natsd logged no client port; see $work/logs/nats.log"
+nats_url=nats://127.0.0.1:$nats_port
+note "JetStream on $nats_url"
+pass
+
+begin fake-envoy
+FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
+  curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
+note "fake Envoy listener on http://127.0.0.1:$envoy_port"
+pass
+
+begin fake-github
+FAKE_GITHUB_PORT=$github_port start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
+await_start fake_github "$fake_github_pid" 60 "the fake GitHub to answer /healthz" \
+  curl -fsS --max-time 2 "http://127.0.0.1:$github_port/healthz"
+github_url=http://127.0.0.1:$github_port
+note "fake GitHub on $github_url"
+pass
+
+begin dispatch
+# The server gets this environment and nothing else. Identity is the production cookie, minted at
+# the dev sign-in route (DISPATCH_DEV_SIGNIN=1) with a signing key the process generates for itself;
+# HOME and the XDG directories name nothing, so no envoy.json, data directory or AWS profile of the
+# caller's is read. The GitHub App is a throwaway RSA key beside a fake client id, as the browser
+# harness's own server runs with (packages/dispatch/e2e/run-server.sh): it is what makes the
+# delivery intake run at all, and every call it makes goes to the fake GitHub above.
+#
+# The delivery reconcile runs every two seconds here, under the test hooks, in place of the five
+# minutes a deployment runs it at (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
+# packages/dispatch/e2e/run-server.sh runs it the same way), and its first pass runs as the server
+# starts: the attribution case waits for a pass to re-judge two stored rows, and a run that waited
+# five minutes for one would be no proof a reader runs.
+agent_token=$(openssl rand -hex 24)
+app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
+dispatch_url=http://127.0.0.1:$dispatch_port
+start_process dispatch env -i \
+  PATH="$PATH" \
+  TMPDIR="$work" \
+  HOME=/nonexistent \
+  XDG_CACHE_HOME=/nonexistent \
+  XDG_CONFIG_HOME=/nonexistent \
+  XDG_DATA_HOME=/nonexistent \
+  DATABASE_URL="$database_url" \
+  DISPATCH_AGENT_TOKEN="$agent_token" \
+  DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
+  DISPATCH_APP_PEM_B64="$app_pem" \
+  DISPATCH_DEV_SIGNIN=1 \
+  DISPATCH_GITHUB_API_BASE="$github_url" \
+  DISPATCH_IDENTITY=cookie \
+  DISPATCH_INSECURE_COOKIE=1 \
+  DISPATCH_LISTEN_HOST=127.0.0.1 \
+  DISPATCH_PORT="$dispatch_port" \
+  DISPATCH_SERVER_URL="$dispatch_url" \
+  DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s \
+  DISPATCH_TEST_HOOKS=1 \
+  DISPATCH_TEST_RECONCILE_AT_START=1 \
+  DISPATCH_WEB_DIST="$work/web-dist" \
+  ENVOY_URL="http://127.0.0.1:$envoy_port" \
+  NATS_URLS="$nats_url" \
+  "$dispatch_bin"
+await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
+  curl -fsS --max-time 2 "$dispatch_url/healthz"
+note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
+pass
+
+check=cases
+status=0
+VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
+  VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
+  VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
+  bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
+  status=$?
+kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
+case "$status" in
+  0) ;;
+  1) fail "a case failed (above)" ;;
+  *) fail "the driver stopped before its cases (status $status)" ;;
+esac

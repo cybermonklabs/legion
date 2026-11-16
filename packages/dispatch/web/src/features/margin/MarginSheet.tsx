@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useRef } from "react";
 
-import type { Artifact, Ask, Event } from "../../api/types";
+import type { Artifact, Ask, DispatchEvent } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   activeTabIndicatorBorder,
@@ -27,6 +27,7 @@ import { PinnedTab } from "./PinnedTab";
 import { ThreadCard } from "./ThreadCard";
 import type { CommentActionFailure } from "./useCommentActionQueue";
 import type {
+  DecisionMarginItem,
   MarginItemAction,
   MarginOwner,
   MarginTab,
@@ -61,6 +62,9 @@ export interface MarginSheetModel {
     asksPending: boolean;
     commentsError: boolean;
     commentsPending: boolean;
+    /** The decisions beside the spec's blocks, in the spec's order; none beside any other
+     *  document. */
+    decisions: readonly DecisionMarginItem[];
     historicalAsks: Ask[];
     marginRef: RefObject<HTMLElement | null>;
     isClosed: boolean;
@@ -71,7 +75,7 @@ export interface MarginSheetModel {
     onSelectCard: (id: string, blockID?: string) => void;
     openAskCount: number;
     pendingActionIds: ReadonlySet<string>;
-    pinned: Event[];
+    pinned: DispatchEvent[];
     pinnedConversations: PinnedConversationCard[];
     pinnedIds: string[];
     resolvedThreads: Thread[];
@@ -137,6 +141,7 @@ export function MarginSheet({
       asksPending,
       commentsError,
       commentsPending,
+      decisions,
       historicalAsks,
       marginRef,
       isClosed,
@@ -352,6 +357,7 @@ export function MarginSheet({
               asksPending={asksPending}
               commentsError={commentsError}
               commentsPending={commentsPending}
+              decisions={decisions}
               expandedThreadKey={selection.expandedThreadKey}
               editingCommentId={selection.editingCommentId}
               savingCommentEditId={selection.savingCommentEditId}

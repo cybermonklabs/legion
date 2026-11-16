@@ -5,12 +5,14 @@ import {
   LAST_MESSAGE_LIMIT,
   phaseStallEntryFrom,
   REMINDER,
+  recordedPhaseStall,
   stepPhaseStall,
+  turnEndOf,
 } from "./phase-stall";
 
 const assistant = (...content: unknown[]) => ({ role: "assistant", content });
 
-// Oh My Pi's `message_end` hands `toolCall` (the shape packages/pi-envoy/src/agent-stream.ts
+// Oh My Pi's `message_end` hands `toolCall` (the shape packages/pi-shared/src/agent-stream.ts
 // reads); Claude Code names it `tool_use`. Matching one name only once had a working Oh My Pi
 // worker reported to its architect as stalled.
 test("a tool call under either host's block name is a tool call the turn ran", () => {
@@ -53,6 +55,38 @@ test("an assistant message's text is its text blocks joined, and nothing of its 
   ).toBe("Pushed.\n\nWAITING: CI.");
 });
 
+// Oh My Pi stops a reply the provider refused with `error` and words it in `errorMessage`
+// (`AssistantMessage` in `src/omp-host.d.ts`), which is how the turn that ends the run reads at
+// `session_stop` and at `agent_end`.
+test("a reply the provider refused classifies as the refusal, not as what the worker said", () => {
+  expect(
+    turnEndOf({
+      ...assistant({ type: "text", text: "" }),
+      stopReason: "error",
+      errorMessage: "Overloaded: the model is busy",
+    })
+  ).toEqual({ kind: "refused", message: "Overloaded: the model is busy" });
+  // A refusal the host could not word still has to read as a refusal.
+  expect(turnEndOf({ ...assistant(), stopReason: "error" })).toEqual({
+    kind: "refused",
+    message: "error",
+  });
+  expect(
+    turnEndOf({ ...assistant({ type: "text", text: "Pushed." }), stopReason: "stop" })
+  ).toEqual({ kind: "settle", lastAssistantText: "Pushed." });
+});
+
+// Reminding a session the provider is refusing buys another refused turn, which is what left the
+// implementer of dispatch://INFRA-264 reminded for ever.
+test("a refused turn earns no reminder and moves nothing", () => {
+  const open = { state: "open", count: 2 } as const;
+  expect(stepPhaseStall(open, { kind: "refused", message: "Overloaded" })).toEqual({ state: open });
+  const waiting = { state: "waiting", count: 1 } as const;
+  expect(stepPhaseStall(waiting, { kind: "refused", message: "Overloaded" })).toEqual({
+    state: waiting,
+  });
+});
+
 test("a record an earlier build wrote, with no last message, still reads", () => {
   expect(phaseStallEntryFrom({ state: "open", count: 2, reported: false })).toEqual({
     state: "open",
@@ -73,6 +107,61 @@ test("a record's last message reads back no longer than the notice quotes", () =
     state: "open",
     count: 1,
     reported: false,
+  });
+});
+
+// INFRA-484: the worker has answered the daemon's update message (`ready_for_update`), so it is to
+// start nothing until the daemon comes back to it. A reminder here would continue the answering
+// turn in the same run: the work that continuation did would go with the pod, and the daemon
+// would see no turn end.
+test("a worker that answered the update message stands in awaiting-update, where a settle earns no reminder", () => {
+  const answered = stepPhaseStall({ state: "open", count: 2 }, { kind: "update-answered" });
+  expect(answered).toEqual({ state: { state: "awaiting-update", count: 0 } });
+  expect(
+    stepPhaseStall(answered.state, { kind: "settle", lastAssistantText: "Pushed and answered." })
+  ).toEqual({ state: { state: "awaiting-update", count: 0 } });
+  // The answering tool call itself, which the host reports from its own hook, leaves the wait as
+  // it is, whichever of the two the host applies first.
+  expect(stepPhaseStall(answered.state, { kind: "tool-call" })).toEqual({
+    state: { state: "awaiting-update", count: 0 },
+  });
+  // What ends this wait is the daemon: the round replaces the pod, and the task it held behind
+  // the round arrives in the process that comes back as its own prompt, which opens the phase
+  // again.
+  expect(stepPhaseStall(answered.state, { kind: "assignment" })).toEqual({
+    state: { state: "open", count: 0 },
+  });
+  // Anything else arriving from outside is something happening too, and the wait is over.
+  expect(stepPhaseStall(answered.state, { kind: "inbound-event" })).toEqual({
+    state: { state: "open", count: 0 },
+  });
+  // Nothing reminds into this wait, so `reminded` can only be a timer armed before the answer;
+  // it is counted and the phase is open again, as it is out of a WAITING reply's wait.
+  expect(stepPhaseStall(answered.state, { kind: "reminded" })).toEqual({
+    state: { state: "open", count: 1 },
+  });
+});
+
+// The record holds no `awaiting-update`: a record is read only by the process a relaunch starts,
+// and that relaunch is the round the wait belonged to ending, so what is restored is the plain
+// wait the reminder times out — and a build that knows only the three states still reads it.
+test("awaiting-update is recorded as the waiting it is a kind of", () => {
+  expect(recordedPhaseStall("awaiting-update")).toBe("waiting");
+  for (const state of ["closed", "open", "waiting"] as const) {
+    expect(recordedPhaseStall(state)).toBe(state);
+  }
+  expect(phaseStallEntryFrom({ state: "waiting", count: 0 })).toEqual({
+    state: "waiting",
+    count: 0,
+    reported: false,
+  });
+});
+
+// Answering is not completing, and a phase that is closed is not reopened by one: a worker
+// between phases that answers is told nothing, and `handoff_complete` would refuse it anyway.
+test("the update message's answer closes no phase, and reopens none", () => {
+  expect(stepPhaseStall({ state: "closed", count: 0 }, { kind: "update-answered" })).toEqual({
+    state: { state: "closed", count: 0 },
   });
 });
 

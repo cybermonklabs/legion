@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,8 +50,8 @@ const (
 	relayReplyProgress = "progress"
 	// relayReplyDone: the frame is written (or skipped); the message is acked. Also a receipt.
 	relayReplyDone = "done"
-	// relayReplyNak: the session cannot take the frame; the server delivers it again after
-	// relayNakDelay.
+	// relayReplyNak: the session cannot take the frame; the server delivers it again after the
+	// delay the message's own delivery count earns (relayNakDelayFor).
 	relayReplyNak = "nak"
 )
 
@@ -73,21 +75,34 @@ const (
 	// 2, 4, 8, 16, then 30 s, each after a 3 s receipt wait, so the fifth probe is 42 s in).
 	relayPauseFirst = 2 * time.Second
 	relayPauseMax   = 30 * time.Second
-	// relayNakDelay is how long the server waits to deliver a message a session refused (nak).
+	// relayNakDelay is how long the server waits to deliver a message a session refused (nak)
+	// again on that message's first delivery. The wait doubles with the message's delivery count
+	// and stops at relayNakDelayMax, so one frame the session goes on refusing comes back 1, 2, 4,
+	// 8, 16 s and then 30 s apart (relayNakDelayFor), while a session that is merely busy sees its
+	// first retry a second after it refused, as before.
+	//
+	// The ladder is the whole bound on a frame nobody can take -- a host that is gone, a frame the
+	// session refuses every time: the session consumer carries MaxDeliver -1
+	// (internal/bus/session_consumers.go, applySettings), so the server delivers such a frame for
+	// as long as the stream holds it, and over the stream's 72-hour retention the ladder leaves
+	// room for at most 8,644 relays of it to one consumer, about two a minute, against the 259,201
+	// a flat second costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention). A
+	// relay restart recreates a consumer whose frame still awaits an ack, so the frame comes back
+	// as delivery 1 and the ladder climbs again: each restart adds the five relays of its first
+	// rungs.
 	relayNakDelay = time.Second
+	// relayNakDelayMax is the ladder's ceiling, the delay of every nak from a message's sixth
+	// delivery on. It is the ladder's own rather than the pause backoff's relayPauseMax, whose
+	// value a relay carries as sessionRelays.pauseMax and a test shortens: 30 s each, two bounds.
+	relayNakDelayMax = 30 * time.Second
+	// relayNakShiftMax is the most relayNakDelay is doubled: relayNakDelay << relayNakShiftMax
+	// (32 s) is the first rung at or above relayNakDelayMax, so a delivery count past the rung
+	// after it takes the ceiling and the shift overflows no time.Duration (relayNakDelayFor).
+	relayNakShiftMax = 5
 	// relayRetryFirst and relayRetryMax bound the wait before a relay whose consumer call or pull
 	// failed restarts at the ack floor; it doubles from the first to the max.
 	relayRetryFirst = time.Second
 	relayRetryMax   = 30 * time.Second
-	// pushRetryFirst and pushRetryMax bound the wait before a serving-port relay pushes its head
-	// message again after the port refused it, failed or timed out; it doubles from the first to
-	// the max.
-	pushRetryFirst = time.Second
-	pushRetryMax   = 30 * time.Second
-	// relayHeldRecheck is how often the relay judges a message it holds again: one another path is
-	// already pushing (holdWhilePushedElsewhere), which it neither pushes nor acks until that push
-	// lands or the attempt record naming it is gone.
-	relayHeldRecheck = time.Second
 	// relayPruneInterval is how often the relay drops lapsed session entries from the cache
 	// (session.SessionRegistry.PruneLapsed), so a session that stopped registering stops being
 	// relayed: a lapse has no watch event.
@@ -122,8 +137,15 @@ const (
 	relayRestart
 )
 
-// relayOutcome is how one pull of a session's consumer ended (sessionRelays.relayNATS,
-// sessionRelays.relayServingPort).
+// relayNotice is what the relay loop has been told about a session since it last took its events:
+// their flags, and heard, the highest mark (sessionDelivery.mark) of the registrations with a new
+// epoch among them.
+type relayNotice struct {
+	event relayEvent
+	heard uint64
+}
+
+// relayOutcome is how one pull of a session's consumer ended (sessionRelays.relayNATS).
 type relayOutcome uint8
 
 const (
@@ -140,40 +162,42 @@ const (
 
 // sessionRelays relays the session consumers this listener owns (sessionRelays.wanted): one relay
 // per session, which restarts the session's consumer at its ack floor whenever it starts, then pulls
-// it and hands each message on in stream order. A session on NATS (port 0) gets each message as a
-// core frame on its relay subject, answered on a reply subject under the listener's one reply
-// inbox; a session on a serving port gets each as the prompt_async push, one at a time.
+// it and hands each message on in stream order, as a core frame on the session's relay subject,
+// answered on a reply subject under the listener's one reply inbox.
 //
 // Among the tasks of one machine id, only the one holding the machine's durable binding relays
 // (setOwned), so a rolling deploy's second task relays nothing until the first lets go. The relay
 // set follows the watched session cache (session.SessionRegistry.OnChange), so a session that
 // moves to another machine id stops being relayed here at once, and a listener that starts relays
-// every session the cache holds for it with no registration.
+// every session the cache holds for it with no registration. A relay cancelled that way returns
+// every message it still holds to the server before its run ends (sessionRelays.release), so the
+// listener the session moved to is delivered them at once rather than after the consumer's ack
+// wait, and writes one line saying it has.
 //
 // One loop goroutine owns the set of relays (relays) and applies the events it is sent in order;
 // each relay runs on a goroutine of its own.
 type sessionRelays struct {
-	delivery  *sessionDelivery
-	registry  *store.Registry
-	deliverer *session.Deliverer
-	// client publishes the exception of a stored message a serving-port relay refuses to push.
-	client *bus.Client
-	// rules are the refusals a message on a topic the session follows is judged by
-	// (judgeFollowedTopic), the durable path's fan-out and this relay alike; its sessions are the
-	// session entries this relay reads too.
-	rules     followedTopicRules
+	delivery *sessionDelivery
+	registry *store.Registry
+	// sessions is the session cache this relay reads its entries from; it is the same registry
+	// the durable path's fan-out judges a followed topic against (judgeFollowedTopic).
+	sessions  *session.SessionRegistry
 	machineID string
 	logger    *logging.Logger
 	// replyPrefix is the listener's reply inbox and a dot: a frame's reply subject is
 	// replyPrefix<token>, and one subscription to the inbox's wildcard hears every reply.
 	replyPrefix string
 	// pauseFirst and pauseMax are the bounds of a paused relay's backoff, relayPauseFirst and
-	// relayPauseMax; a test shortens them. Set before the first relay starts and read-only after.
-	pauseFirst time.Duration
-	pauseMax   time.Duration
+	// relayPauseMax; a test shortens them. receiptWait is relayReceiptWait, how long the oldest
+	// unanswered frame may wait before the relay pauses, and a test shortens it the same way, so
+	// a row about what an unreachable session leaves behind spends its own short wait rather
+	// than three seconds of the clock. Set before the first relay starts and read-only after.
+	pauseFirst  time.Duration
+	pauseMax    time.Duration
+	receiptWait time.Duration
 
 	ctx    context.Context
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	owned  atomic.Bool
 	// stopChange unregisters the session cache's change callback.
 	stopChange func()
@@ -183,7 +207,7 @@ type sessionRelays struct {
 
 	// eventsMu guards events and ownershipChanged, which the loop takes each time wake fires.
 	eventsMu         sync.Mutex
-	events           map[string]relayEvent
+	events           map[string]relayNotice
 	ownershipChanged bool
 	wake             chan struct{}
 
@@ -191,9 +215,10 @@ type sessionRelays struct {
 	relays map[string]*relayRun
 	// listed holds, by session id, the consumers listed for the relays that gaining the durable
 	// binding starts together (listConsumers), until each relay's start takes its own; nil
-	// otherwise. listRefusedLogged is set once a list refused for want of the grant is logged.
-	// Only the loop reads or writes them.
+	// otherwise. listedAt is the mark taken before that list. listRefusedLogged is set once a list
+	// refused for want of the grant is logged. Only the loop reads or writes them.
 	listed            map[string]*jetstream.ConsumerInfo
+	listedAt          uint64
 	listRefusedLogged bool
 
 	// restarts holds a token for each relay restarting its consumer, relayRestartLimit at most.
@@ -206,17 +231,120 @@ type sessionRelays struct {
 	nextToken atomic.Uint64
 }
 
-// relayRun is one start of a session's relay: it runs until it is stopped or replaced. A run of a
-// NATS session that the session stops answering pauses (relayPaused) and goes on probing it.
+// relayCancelReason is why the loop cancelled a run. It is the cause the cancellation carries
+// (context.WithCancelCause), which sets it atomically with the cancellation and propagates the
+// set's own cause to every run under it, so the run's goroutine reads the reason from its context
+// once it has returned, the line it writes then names it, and a person reading that line needs no
+// source to hand. It is an unsigned integer over named constants rather than a distinct error per
+// reason because this file already names its small sets that way (relayEvent, relayOutcome) and
+// the zero value is a constant of the set.
+type relayCancelReason uint32
+
+const (
+	// relayCancelUnknown: the context carries no cause of this set, which no cancellation of a
+	// run or of the set leaves behind; the word keeps the log field readable rather than empty.
+	relayCancelUnknown relayCancelReason = iota
+	// relayCancelNotOurs: the session is no longer this listener's to relay, because it
+	// registered again through another listener or its entry left consumer delivery. Its record
+	// stands and so does its consumer, so the messages the run gives back go to that consumer's
+	// next pull at once rather than after its ack wait.
+	relayCancelNotOurs
+	// relayCancelSessionGone: the session has no record in the cache, so no listener relays it
+	// (sessionRelays.wanted). A clean stop (sessionDelivery.deleteAfterAnswer,
+	// session_consumer_delete.go) and the session reaper (session.SessionReaper.DeleteConsumer)
+	// each delete the session's consumer with the record they delete, which is where most relays
+	// end, a clean stop being where most sessions end; the messages the run gives back are naked
+	// into a consumer the server no longer holds, which drops them, and nothing reports that, a
+	// nak being a publish the server answers nothing to. A record that lapsed out of the bucket
+	// instead leaves the consumer standing with those messages on it for as long as it stands:
+	// the reaper judges the records the cache holds, and a record whose bucket age is under the
+	// gone horizon - five minutes against an hour where the deployment sets no
+	// ENVOY_SESSION_MAX_AGE (session.BucketMaxAge, session.GoneHorizon) - leaves that cache
+	// before a pass of it judges the session gone. The sweep is what ends such a consumer, one
+	// pass after the record left the bucket (sessionConsumerSweep), and the stream's inactive
+	// threshold (bus.SessionConsumerInactiveThreshold) is the backstop behind the sweep; until
+	// one of them takes it, the session is delivered those messages when it registers again,
+	// which is what a laptop that slept through its heartbeats does. The cache reports a record
+	// deleted and one lapsed the same way, so the hand-over line names both (relayHandOverLines).
+	relayCancelSessionGone
+	// relayCancelNewEpoch: the session registered with a new epoch, so a run starting at the ack
+	// floor replaced this one.
+	relayCancelNewEpoch
+	// relayCancelListenerStopping: this listener is stopping, so every relay stops with it.
+	relayCancelListenerStopping
+	// relayCancelBindingLost: this task lost its machine's durable binding, so it relays nothing
+	// until it holds the binding again.
+	relayCancelBindingLost
+)
+
+// String is the word the log line carries for the reason.
+func (r relayCancelReason) String() string {
+	switch r {
+	case relayCancelNotOurs:
+		return "session_not_ours"
+	case relayCancelSessionGone:
+		return "session_gone"
+	case relayCancelNewEpoch:
+		return "new_epoch"
+	case relayCancelListenerStopping:
+		return "listener_stopping"
+	case relayCancelBindingLost:
+		return "binding_lost"
+	default:
+		return "unknown"
+	}
+}
+
+// Error is the same word as String, so a reason is usable as the cause of a cancellation
+// (context.WithCancelCause), which takes an error.
+func (r relayCancelReason) Error() string { return r.String() }
+
+// relayHandOverLines is what a cancelled run's one hand-over line says for the reason it was
+// cancelled for: whole once it has given the server back every message it held, failed when a
+// nak of one of them, or the drain of its pull, did not reach the server (sessionRelays.release,
+// bus.SessionPull.Release).
+//
+// A session whose record is gone gets lines of its own because no listener relays it
+// (sessionRelays.wanted), so the messages the run gives back wait on its consumer instead of
+// going to a next owner. What becomes of them turns on how the record went: a stop or a reap
+// took the consumer with the record and the server drops the naks, while a record that lapsed
+// leaves the consumer standing and the session is delivered those messages when it registers
+// again (relayCancelSessionGone). The line names both, since the run has nothing to tell the
+// two apart by and a sleeping laptop's line reads as loss otherwise. The other reasons leave
+// the session's record and its consumer where they are, so the naks have the server deliver
+// those messages to that consumer's next pull at once.
+func relayHandOverLines(reason relayCancelReason) (whole, failed string) {
+	if reason == relayCancelSessionGone {
+		return "session relay stopped; the session has no record, so nothing relays it; the messages it held stand on the session's consumer, which delivers them when the session registers again, and nobody is delivered them where a stop or a reap deleted that consumer with the record",
+			"session relay stopped; it could not give the server back every message it held, and the session has no record, so nothing relays it; the messages it held stand on the session's consumer, those it could not give back only once their ack wait passes, and nobody is delivered them where a stop or a reap deleted that consumer with the record"
+	}
+	return "session relay stopped; it gave the server back the messages it held, so they are delivered again at once rather than after the consumer's ack wait",
+		"session relay stopped; it could not give the server back every message it held, and each one it did not is delivered again only after the consumer's ack wait"
+}
+
+// relayCancelledFor is why the run on ctx was cancelled, as the line a stopped run writes names
+// it. A stop cancels the whole set's context (sessionRelays.stop), whose cause every run's
+// context carries, so a run that returned before the loop reached stopAll still says that the
+// listener is stopping.
+func relayCancelledFor(ctx context.Context) relayCancelReason {
+	reason, ok := context.Cause(ctx).(relayCancelReason)
+	if !ok {
+		return relayCancelUnknown
+	}
+	return reason
+}
+
+// relayRun is one start of a session's relay: it runs until it is stopped or replaced. A run whose
+// session stops answering pauses (relayPaused) and goes on probing it.
 type relayRun struct {
-	sessionID   string
-	servingPort bool
-	cancel      context.CancelFunc
+	sessionID string
+	cancel    context.CancelCauseFunc
 	// done is closed once the run's goroutine has returned.
 	done chan struct{}
-	// restarted is set once the run has restarted the consumer at its ack floor, so a new epoch
-	// heard after that needs a restart of its own, and one heard before it does not.
-	restarted atomic.Bool
+	// restartedAt is the mark (sessionDelivery.mark) the run's last successful restart at the ack
+	// floor took before it read the session's topics and consumer, 0 before the first one
+	// (relayRun.restartedBefore).
+	restartedAt atomic.Uint64
 	// resume carries, at most one at a time, the registrations heard for the session: a paused run
 	// takes one instead of waiting its backoff out (sessionRelays.apply, relayRun.waitPause).
 	resume chan struct{}
@@ -227,21 +355,64 @@ type relayRun struct {
 	// listed is the session's consumer as the burst that started the run listed it
 	// (sessionRelays.listed), which its first restart keeps without a call when it can
 	// (bus.SessionConsumers.KeepListed); nil for a run started alone, and after that first restart.
-	listed *jetstream.ConsumerInfo
+	// listedAt is the mark taken before that list.
+	listed   *jetstream.ConsumerInfo
+	listedAt uint64
 	// outstanding holds the run's frames awaiting done or nak, by token; unanswered holds, in the
 	// order they were sent, its frames the session may not have answered yet. Both under
 	// sessionRelays.framesMu.
 	outstanding map[string]*relayFrame
 	unanswered  []*relayFrame
+	// exitMu orders the run's return against the loop's wakes. exiting is set under it once the
+	// run returns, and a wake the loop sends after that is refused (relayRun.wake), so the loop starts
+	// a run in its place; a wake sent before it is taken by the exit (relayRun.exit), which asks the
+	// loop for that run. A registration heard while the run was returning is never lost.
+	exitMu  sync.Mutex
+	exiting bool
 }
 
-// wake has a paused run restart at once: the session registered. A wake sent while the run is not
-// paused is dropped by the next pause, which names a registration heard before it.
-func (r *relayRun) wake() {
+// wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
+// sent while the run relays is dropped by its next pause, which names a registration heard before
+// it. It reports false, sending nothing, once the run is returning: the caller then starts a run in
+// its place.
+func (r *relayRun) wake() bool {
+	r.exitMu.Lock()
+	defer r.exitMu.Unlock()
+	if r.exiting {
+		return false
+	}
 	select {
 	case r.resume <- struct{}{}:
 	default:
 	}
+	return true
+}
+
+// exit marks the run as returning, and reports whether a wake was waiting for it: a registration
+// the loop heard since the run's last pause began, for which no run would start otherwise.
+func (r *relayRun) exit() bool {
+	r.exitMu.Lock()
+	defer r.exitMu.Unlock()
+	r.exiting = true
+	select {
+	case <-r.resume:
+		return true
+	default:
+		return false
+	}
+}
+
+// restartedBefore reports whether the run's last restart at the ack floor took its mark before
+// heard, a registration's (sessionDelivery.mark), so the registration's new epoch restarts it: that
+// restart may have read the session's topics and consumer, and the run sent frames, before the
+// plugin subscribed the connection the registration names. A run that has not restarted yet reads
+// both after, and so does one whose restart took its mark after heard, which every run that
+// registration's own entry write started does: the loop can hear the registration only after such
+// a run has restarted and sent frames, and a second restart would send the session every unacked
+// message again and forget the frames it is answering.
+func (r *relayRun) restartedBefore(heard uint64) bool {
+	at := r.restartedAt.Load()
+	return at != 0 && at < heard
 }
 
 // waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
@@ -251,6 +422,21 @@ func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
 	case <-r.resume:
 	default:
 	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-r.resume:
+	case <-timer.C:
+	}
+	return true
+}
+
+// waitRetry waits out a run's retry backoff after a failed call or pull, d, a wake, or the end of
+// the run, and reports whether the run goes on. Unlike a pause it takes a wake sent before it began:
+// a registration heard while the failed call or pull ran restarts the run at once.
+func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
 	select {
@@ -278,28 +464,31 @@ type relayFrame struct {
 	run    *relayRun
 	acker  bus.SessionAcker
 	sentAt time.Time
+	// delivered is the message's delivery count, 1 the first, as the consumer reported it to the
+	// pull that published the frame (bus.SessionMessage.Delivered, relayHeaderDelivered). The
+	// count is the message's and not the reply's, so the frame carries it from publishFrame to
+	// the nak onReply sends (relayNakDelayFor).
+	delivered uint64
 	// answered is set once the session sent any reply for the frame, under framesMu.
 	answered bool
 }
 
 // startSessionRelays starts the relay of delivery's session consumers and makes it delivery's
-// relay, serving-port sessions included (sessionDelivery.relay). It relays nothing until
-// setOwned(true).
+// relay (sessionDelivery.relay). It relays nothing until setOwned(true).
 func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerConfig) (*sessionRelays, error) {
 	inbox := nats.NewInbox()
 	m := &sessionRelays{
 		delivery:    delivery,
 		registry:    cfg.registry,
-		deliverer:   cfg.deliverer,
-		client:      cfg.client,
-		rules:       cfg.followedTopicRules(),
+		sessions:    cfg.sessions,
 		machineID:   cfg.machineID,
 		logger:      cfg.logger,
 		replyPrefix: inbox + ".",
 		pauseFirst:  relayPauseFirst,
 		pauseMax:    relayPauseMax,
+		receiptWait: relayReceiptWait,
 		loopDone:    make(chan struct{}),
-		events:      map[string]relayEvent{},
+		events:      map[string]relayNotice{},
 		wake:        make(chan struct{}, 1),
 		relays:      map[string]*relayRun{},
 		restarts:    make(chan struct{}, relayRestartLimit),
@@ -308,7 +497,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
 	}
-	m.ctx, m.cancel = context.WithCancel(context.Background())
+	m.ctx, m.cancel = context.WithCancelCause(context.Background())
 	m.stopChange = cfg.sessions.OnChange(m.onChange)
 	delivery.relay = m
 	go m.loop()
@@ -330,29 +519,34 @@ func (m *sessionRelays) setOwned(owned bool) {
 }
 
 // registered implements sessionRelay: the session registered, so a relay that paused resumes and a
-// new epoch restarts it at the ack floor.
-func (m *sessionRelays) registered(sessionID string, epochChanged bool) {
-	event := relayResume
+// new epoch restarts it at the ack floor, unless it restarted after heard (relayRun.restartedBefore).
+func (m *sessionRelays) registered(sessionID string, epochChanged bool, heard uint64) {
 	if epochChanged {
-		event |= relayRestart
+		m.enqueue(sessionID, relayResume|relayRestart, heard)
+		return
 	}
-	m.enqueue(sessionID, event)
+	m.enqueue(sessionID, relayResume, 0)
 }
 
 // onChange hears every change to a session's cached entry.
 func (m *sessionRelays) onChange(sessionID string) {
 	if m.owned.Load() {
-		m.enqueue(sessionID, relayCheck)
+		m.enqueue(sessionID, relayCheck, 0)
 	}
 }
 
-func (m *sessionRelays) enqueue(sessionID string, event relayEvent) {
+// enqueue tells the loop event about sessionID, with heard, the mark of a registration with a new
+// epoch, or 0. The flags merge with those the loop has not taken yet, and the highest mark stays.
+func (m *sessionRelays) enqueue(sessionID string, event relayEvent, heard uint64) {
 	m.eventsMu.Lock()
 	if m.events == nil {
 		m.eventsMu.Unlock()
 		return
 	}
-	m.events[sessionID] |= event
+	notice := m.events[sessionID]
+	notice.event |= event
+	notice.heard = max(notice.heard, heard)
+	m.events[sessionID] = notice
 	m.eventsMu.Unlock()
 	m.signal()
 }
@@ -374,7 +568,7 @@ func (m *sessionRelays) stop(ctx context.Context) {
 	m.eventsMu.Lock()
 	m.events = nil
 	m.eventsMu.Unlock()
-	m.cancel()
+	m.cancel(relayCancelListenerStopping)
 	select {
 	case <-m.loopDone:
 	case <-ctx.Done():
@@ -395,11 +589,11 @@ func (m *sessionRelays) loop() {
 	for {
 		select {
 		case <-m.ctx.Done():
-			m.stopAll()
+			m.stopAll(relayCancelListenerStopping)
 			return
 		case <-prune.C:
 			// Each lapse it finds is a change, which onChange hears.
-			m.rules.sessions.PruneLapsed()
+			m.sessions.PruneLapsed()
 			continue
 		case <-m.wake:
 		}
@@ -411,14 +605,14 @@ func (m *sessionRelays) loop() {
 			m.eventsMu.Unlock()
 			continue
 		}
-		m.events = map[string]relayEvent{}
+		m.events = map[string]relayNotice{}
 		m.eventsMu.Unlock()
 		if ownershipChanged {
 			if !m.owned.Load() {
-				m.stopAll()
+				m.stopAll(relayCancelBindingLost)
 				continue
 			}
-			entries, err := m.rules.sessions.List()
+			entries, err := m.sessions.List()
 			if err != nil {
 				m.logger.Warn("session relays could not list the session cache", slog.String("error", err.Error()))
 			}
@@ -426,80 +620,81 @@ func (m *sessionRelays) loop() {
 			// nothing (wanted).
 			for _, entry := range entries {
 				if _, ok := events[entry.SessionID]; !ok && (entry.Delivery == session.DeliveryConsumer || m.relays[entry.SessionID] != nil) {
-					events[entry.SessionID] = relayCheck
+					events[entry.SessionID] = relayNotice{}
 				}
 			}
+			m.listedAt = m.delivery.mark()
 			m.listed = m.listConsumers()
 		}
-		for sessionID, event := range events {
-			m.apply(sessionID, event)
+		for sessionID, notice := range events {
+			m.apply(sessionID, notice)
 		}
 		m.listed = nil
 	}
 }
 
-// apply makes sessionID's relay match its entry and event: started when the session is this
-// listener's to relay, stopped when it is not, started again when it registered and the run ended
-// (or, for a serving port, when its entry changed: such a session may register through a listener
-// other than its owner), restarted at the ack floor on a new epoch, and, for a run waiting out a
-// pause, woken by the registration so it probes the session at once.
-func (m *sessionRelays) apply(sessionID string, event relayEvent) {
-	want, servingPort := m.wanted(sessionID)
+// apply makes sessionID's relay match its entry and notice: started when the session is this
+// listener's to relay, stopped when it is not, started again when it registered and the run
+// ended or is returning on its own (relayRun.wake), restarted at the ack floor on a new epoch
+// registered after the run's last restart (relayRun.restartedBefore), and, for a run waiting out a
+// pause or a retry, woken by the registration so it restarts at once.
+func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
+	event := notice.event
 	run := m.relays[sessionID]
-	if !want {
+	if ours, why := m.wanted(sessionID); !ours {
 		if run != nil {
-			run.cancel()
+			run.cancel(why)
 			delete(m.relays, sessionID)
 		}
 		return
 	}
 	switch {
 	case run == nil:
-		m.start(sessionID, servingPort, nil)
-	case run.servingPort != servingPort:
-		run.cancel()
-		m.start(sessionID, servingPort, run.done)
+		m.start(sessionID, nil)
 	case run.ended():
-		if event&relayResume != 0 || servingPort {
-			m.start(sessionID, servingPort, run.done)
+		if event&relayResume != 0 {
+			m.start(sessionID, run.done)
 		}
-	case event&relayRestart != 0 && run.restarted.Load():
-		run.cancel()
-		m.start(sessionID, servingPort, run.done)
+	case event&relayRestart != 0 && run.restartedBefore(notice.heard):
+		run.cancel(relayCancelNewEpoch)
+		m.start(sessionID, run.done)
 	case event&relayResume != 0:
-		run.wake()
+		if !run.wake() {
+			// The run is returning on its own: a run in its place takes the registration.
+			m.start(sessionID, run.done)
+		}
 	}
 }
 
-// stopAll stops every relay.
-func (m *sessionRelays) stopAll() {
+// stopAll stops every relay, each cancelled for reason: the listener is stopping, or the machine's
+// durable binding went. Each caller names its own, so the line a stopped run writes says which
+// happened.
+func (m *sessionRelays) stopAll(reason relayCancelReason) {
 	for sessionID, run := range m.relays {
-		run.cancel()
+		run.cancel(reason)
 		delete(m.relays, sessionID)
 	}
 }
 
-// wanted reports whether this listener relays sessionID, and whether the session is on a serving
-// port: it holds its machine's durable binding, and the session's entry records consumer delivery
-// and names this machine. A serving-port session is the machine's on its stored interest row, else
-// on its entry, as the durable path's push decides (session.Deliverer), since only that machine
-// reaches its port.
-func (m *sessionRelays) wanted(sessionID string) (want, servingPort bool) {
+// wanted reports whether this listener relays sessionID: it holds its machine's durable binding,
+// and the session's entry records consumer delivery and names this machine. The reason it
+// answers beside that is why the relay of a session it does not want is cancelled, taken from
+// the very lookup that decided it rather than from a second one, which the session could have
+// changed under; it is relayCancelUnknown for a session this listener does relay.
+func (m *sessionRelays) wanted(sessionID string) (bool, relayCancelReason) {
 	if !m.owned.Load() {
-		return false, false
+		return false, relayCancelBindingLost
 	}
-	entry, err := m.rules.sessions.Get(sessionID)
-	if err != nil || entry.Delivery != session.DeliveryConsumer {
-		return false, false
+	// Get answers nats.ErrKeyNotFound and nothing else: the cache holds no record of the
+	// session, or holds one the bucket's maximum age has passed (session.SessionRegistry.Get).
+	entry, err := m.sessions.Get(sessionID)
+	if err != nil {
+		return false, relayCancelSessionGone
 	}
-	if entry.Port <= 0 {
-		return entry.MachineID == m.machineID, false
+	if entry.Delivery != session.DeliveryConsumer || entry.MachineID != m.machineID {
+		return false, relayCancelNotOurs
 	}
-	owner := entry.MachineID
-	if interest, err := m.registry.Get(m.ctx, sessionID); err == nil && interest.MachineID != "" {
-		owner = interest.MachineID
-	}
-	return owner == m.machineID, true
+	return true, relayCancelUnknown
 }
 
 // listConsumers reads every session consumer at once (bus.SessionConsumers.ListSessionConsumers)
@@ -527,9 +722,9 @@ func (m *sessionRelays) listConsumers() map[string]*jetstream.ConsumerInfo {
 
 // start starts a run of sessionID's relay, once the run it replaces, previous, has returned. A run
 // started by the burst of gaining the durable binding takes the session's listed consumer.
-func (m *sessionRelays) start(sessionID string, servingPort bool, previous <-chan struct{}) {
-	ctx, cancel := context.WithCancel(m.ctx)
-	run := &relayRun{sessionID: sessionID, servingPort: servingPort, cancel: cancel, done: make(chan struct{}), resume: make(chan struct{}, 1), listed: m.listed[sessionID]}
+func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
+	ctx, cancel := context.WithCancelCause(m.ctx)
+	run := &relayRun{sessionID: sessionID, cancel: cancel, done: make(chan struct{}), resume: make(chan struct{}, 1), listed: m.listed[sessionID], listedAt: m.listedAt}
 	delete(m.listed, sessionID)
 	m.relays[sessionID] = run
 	m.runs.Go(func() {
@@ -540,25 +735,24 @@ func (m *sessionRelays) start(sessionID string, servingPort bool, previous <-cha
 			<-previous
 		}
 		m.relay(ctx, run)
+		if run.exit() && ctx.Err() == nil {
+			// The loop heard a registration while the run returned on its own.
+			m.enqueue(sessionID, relayResume, 0)
+		}
 	})
 }
 
 // relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
 // call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax, and after a pause
-// (relayPaused), with a wait that doubles from pauseFirst to pauseMax, cut short by the session's
-// next registration. Both only while the session is still this listener's.
+// (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
+// session's next registration. Both only while the session is still this listener's.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
 func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 	retry, pause, paused := relayRetryFirst, m.pauseFirst, false
 	for {
-		var outcome relayOutcome
-		if run.servingPort {
-			outcome = m.relayServingPort(ctx, run)
-		} else {
-			outcome = m.relayNATS(ctx, run)
-		}
+		outcome := m.relayNATS(ctx, run)
 		switch outcome {
 		case relayEnded:
 			return
@@ -571,7 +765,7 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 				paused = true
 				m.logger.Info("session relay paused: the session answered no frame within the receipt wait; it sends again after the pause backoff, or at the session's next registration",
 					slog.String("session_id", run.sessionID),
-					slog.String("receipt_wait", relayReceiptWait.String()),
+					slog.String("receipt_wait", m.receiptWait.String()),
 					slog.String("backoff", pause.String()))
 			}
 			if !run.waitPause(ctx, pause) {
@@ -579,12 +773,12 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 			}
 			pause = min(pause*2, m.pauseMax)
 		default:
-			if waitUnlessDone(ctx, retry) != nil {
+			if !run.waitRetry(ctx, retry) {
 				return
 			}
 			retry = min(retry*2, relayRetryMax)
 		}
-		if want, servingPort := m.wanted(run.sessionID); !want || servingPort != run.servingPort {
+		if ours, _ := m.wanted(run.sessionID); !ours {
 			return
 		}
 	}
@@ -601,26 +795,39 @@ func (m *sessionRelays) relay(ctx context.Context, run *relayRun) {
 // restart loses the session's position. Only a consumer missing with no start pending (never
 // created, or removed after its inactive threshold) pauses the relay until the next registration.
 //
+// The restart reads the session's stored topics from the bucket under the session's lock, as an
+// unsubscribe reads them before it writes the filter, and a registration holds that lock from the
+// filter it sets, on the plan it is about to store, through that plan's write (registerPass): so
+// the restart never reads the row between a registration's filter and that registration's write,
+// and the filter it writes is the row as the bucket held it when it read it under that lock. The
+// lock orders only this listener's calls, so the write is fenced on the row it was built from
+// against a registration made on another listener (storedFilter, settleFilter). The restart takes
+// its mark (sessionDelivery.mark) first, under the lock, and records it once it succeeds
+// (relayRun.restartedAt).
+//
 // The first restart of a run the burst of gaining the durable binding started has the session's
 // consumer as that burst listed it (relayRun.listed): when the restart would keep it unchanged
-// (bus.SessionConsumers.KeepListed), the relay takes no turn and sends no call before it pulls.
+// (bus.SessionConsumers.KeepListed), the relay takes no turn and sends no call before it pulls,
+// and its mark is the one taken before that list (relayRun.listedAt).
 func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.SessionConsumerStart, *bus.SessionPull, relayOutcome) {
 	sessionID := run.sessionID
-	topics, err := storedInterestTopics(ctx, m.registry, sessionID)
-	if err != nil {
-		m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return bus.SessionConsumerStart{}, nil, relayRetry
-	}
-	filter := sessionConsumerFilter(sessionID, topics)
 	if listed := run.listed; listed != nil {
 		run.listed = nil
 		unlock := m.delivery.locks.lock(sessionID)
 		callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 		defer cancel()
+		filter, _, ok := m.storedFilter(callCtx, sessionID)
+		if !ok {
+			unlock()
+			return bus.SessionConsumerStart{}, nil, relayRetry
+		}
+		// A keep sends no call at all (bus.SessionConsumers.KeepListed): nothing of this filter
+		// lands on the server, so there is nothing for a fence to hold. A restart the row moved
+		// under is the one below.
 		start, kept, err := m.delivery.consumers.KeepListed(callCtx, sessionID, filter, listed)
 		unlock()
 		if err == nil && kept {
-			run.restarted.Store(true)
+			run.restartedAt.Store(run.listedAt)
 			var pull *bus.SessionPull
 			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
 				return start, pull, relayRetry
@@ -641,18 +848,78 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	}
 	defer func() { <-m.restarts }()
 	unlock := m.delivery.locks.lock(sessionID)
+	at := m.delivery.mark()
 	callCtx, cancel := context.WithTimeout(ctx, sessionConsumerCallTimeout)
 	defer cancel()
+	filter, revision, ok := m.storedFilter(callCtx, sessionID)
+	if !ok {
+		unlock()
+		return bus.SessionConsumerStart{}, nil, relayRetry
+	}
 	start, err := m.delivery.consumers.RestartAtFloor(callCtx, sessionID, filter)
+	// A restart the server answered with a refusal left no filter of this row on the consumer; a
+	// restart whose answer did not come back may have created it on that filter, so it is settled
+	// against the bucket's newest row like one that answered (consumerCallAnswered).
+	if err == nil || !consumerCallAnswered(err) {
+		m.settleFilter(callCtx, sessionID, revision)
+	}
 	unlock()
 	if err == nil {
-		run.restarted.Store(true)
+		run.restartedAt.Store(at)
 		var pull *bus.SessionPull
 		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
 			return start, pull, relayRetry
 		}
 	}
 	return m.restartFailed(ctx, sessionID, err)
+}
+
+// storedFilter is the filter of sessionID's consumer for its stored interest topics, with the KV
+// revision of the interest row it was built from, read within ctx under the session's lock, which
+// the caller holds; false, logged, when they cannot be read.
+//
+// The row is read from the bucket and not from the watched cache (storedTopics): a registration
+// on another listener may have added a topic this listener's watch has not delivered
+// yet, and a restart filtering on the cached row would drop a topic that registration was
+// answered 200 for while keeping the consumer's position, at the cost fenceFilterWrite's doc
+// states. The revision is what the write of this filter is fenced on (settleFilter).
+func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, bool) {
+	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
+	if err != nil {
+		m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return nil, 0, false
+	}
+	if m.delivery.afterStoredRowRead != nil {
+		m.delivery.afterStoredRowRead()
+	}
+	return sessionConsumerFilter(sessionID, topics), revision, true
+}
+
+// settleFilter holds a restart's filter write to the interest row it was built from: wrote is the
+// KV revision of that row, and while the bucket answers a higher one the consumer's filter is set
+// again from the newest row (fenceFilterWrite), since the restart's write may be an older row's
+// filter over the one a registration on another listener set. The correction is a filter update
+// and no second restart: the consumer the restart left keeps the position it has, which is where
+// the restart put it.
+//
+// The caller holds the session's lock, as it does for the restart's own call, so the corrections
+// are ordered with every other consumer call this listener makes for the session, and each one
+// is the step every writer of the stored row's filter takes (storedFilterStep): a consumer gone
+// by the time a correction is sent is left to the session's next registration, as the restart
+// itself leaves it. A restart whose answer did not come back is settled here too, since it may
+// have created the consumer on the filter it carried (restart, consumerCallAnswered).
+func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
+	// The restart's own write is this fence's first pass: it is made, or may have been made,
+	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
+	// sends nothing, and the passes after it correct it from the bucket's newest row.
+	restart := true
+	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome) {
+		if restart {
+			restart = false
+			return wrote, filterWriteLanded
+		}
+		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
+	})
 }
 
 // restartFailed is the outcome of a restart (sessionRelays.restart) whose call or pull failed
@@ -676,22 +943,79 @@ func (m *sessionRelays) restartFailed(ctx context.Context, sessionID string, err
 // relayNATS restarts a NATS session's consumer at its ack floor and publishes each message it pulls
 // as a frame on the session's relay subject, in stream order, with up to the consumer's
 // MaxAckPending in flight. It pauses, sending nothing more, once the oldest frame the session has
-// not answered has waited relayReceiptWait: the frames in flight are left to their ack wait, and
-// the relay starts again at the ack floor after its pause backoff or at the session's next
-// registration, whichever comes first (sessionRelays.relay), so the messages it was sending reach
-// a session that was only slow without waiting for a registration.
+// not answered has waited the receipt wait (receiptWait): the frames in flight are left to their
+// ack wait, and the relay starts again at the ack floor after its pause backoff or at the
+// session's next registration, whichever comes first (sessionRelays.relay), so the messages it
+// was sending reach a session that was only slow without waiting for a registration.
 func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutcome {
 	sessionID := run.sessionID
 	start, pull, outcome := m.restart(ctx, run)
 	if pull == nil {
 		return outcome
 	}
-	defer pull.Stop()
+	// A run whose context was cancelled lost its session: the session was deregistered or
+	// reaped, it moved to another listener, the machine's durable binding was lost, the listener
+	// is stopping, or a new epoch replaced the run. Such a run returns everything it holds; one
+	// that ended for a reason of its own leaves it where it is.
+	defer func() {
+		if ctx.Err() == nil {
+			m.forget(run)
+			pull.Stop()
+			return
+		}
+		// The pull is detached before anything is naked. A cancelled pull still has a pull
+		// request standing at the server, so a nak sent while that pull is subscribed can be
+		// delivered straight back into the pull this run is giving up; its drain queues the
+		// message and the Release below naks it again, so the next owner gets it once more, as a
+		// further delivery and behind messages of higher sequences. Detached, the pull has no
+		// interest left and the frames reach the session's next owner, where it has one, in the
+		// order they are naked.
+		// TestSessionConsumerRelayLosingItsSessionReturnsEveryMessageItHoldsInStreamOrder
+		// holds that order. The detach's error is not read here: Release calls Detach again,
+		// which answers the same result, and joins it into the error it returns.
+		_ = pull.Detach()
+		// Every frame the run published was read from the pull's queue before anything still in
+		// it, so the frames are naked first and the queue after, each in the order it was sent or
+		// queued.
+		returned, err := m.release(run)
+		fromPull, pullErr := pull.Release()
+		returned += fromPull
+		// What the line says depends on the reason, because a session with no record is
+		// delivered these messages only when it registers again, and not at all where the
+		// delete that took the record took its consumer: the line for every other reason
+		// promises the delivery of a next pull that neither case makes (relayHandOverLines).
+		reason := relayCancelledFor(ctx)
+		whole, failed := relayHandOverLines(reason)
+		// The run writes its hand-over line itself rather than the loop that cancelled it: only
+		// once the run's goroutine has given the messages back is it true that this listener
+		// relays the session no more, so a reader, and a test waiting for the hand-over, can
+		// order on it. One line per run stopped while it was pulling, so a listener that stops
+		// writes one for each session it was pulling for; a run cancelled before its pull
+		// opened, or while it waited out a pause or a retry, held nothing and writes none.
+		//
+		// The logger stamps every line with the machine id of the process it runs in; the
+		// relay_machine_id field is the relay set's own, which a test rig names apart from its
+		// logger, and a second machine_id key in one record would leave a reader to guess which
+		// won.
+		if err := errors.Join(err, pullErr); err != nil {
+			m.logger.Warn(failed,
+				slog.String("session_id", sessionID),
+				slog.String("relay_machine_id", m.machineID),
+				slog.String("reason", reason.String()),
+				slog.Int("returned", returned),
+				slog.String("error", err.Error()))
+			return
+		}
+		m.logger.Info(whole,
+			slog.String("session_id", sessionID),
+			slog.String("relay_machine_id", m.machineID),
+			slog.String("reason", reason.String()),
+			slog.Int("returned", returned))
+	}()
 	if start.StreamID == "" {
 		m.logger.Warn("session relay could not read the stream's identity; retrying", slog.String("session_id", sessionID), slog.String("error", bus.ErrNoStreamID.Error()))
 		return relayRetry
 	}
-	defer m.forget(run)
 	streamID, gap := start.StreamID, start.Gap
 	for {
 		next := ctx
@@ -729,7 +1053,7 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 // of its own under the listener's reply inbox.
 func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus.SessionMessage, streamID string, gap bool) error {
 	token := strconv.FormatUint(m.nextToken.Add(1), 36)
-	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now()}
+	frame := &relayFrame{run: run, acker: msg.SessionAcker, sentAt: time.Now(), delivered: msg.Delivered}
 	m.framesMu.Lock()
 	if run.outstanding == nil {
 		run.outstanding = map[string]*relayFrame{}
@@ -755,8 +1079,8 @@ func (m *sessionRelays) publishFrame(ctx context.Context, run *relayRun, msg bus
 	})
 }
 
-// receiptDeadline is when the oldest frame of run the session has not answered reaches
-// relayReceiptWait, and whether there is one.
+// receiptDeadline is when the oldest frame of run the session has not answered reaches the
+// receipt wait (receiptWait), and whether there is one.
 func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
@@ -767,25 +1091,78 @@ func (m *sessionRelays) receiptDeadline(run *relayRun) (time.Time, bool) {
 	if len(run.unanswered) == 0 {
 		return time.Time{}, false
 	}
-	return run.unanswered[0].sentAt.Add(relayReceiptWait), true
+	return run.unanswered[0].sentAt.Add(m.receiptWait), true
 }
 
-// forget drops every frame of run still awaiting an answer: a reply to one is ignored, and its
-// message waits out its ack wait or the next restart at the ack floor.
-func (m *sessionRelays) forget(run *relayRun) {
+// forget drops every frame of run still awaiting an answer and returns them by their tokens: a
+// reply to one is ignored from here on. It answers nothing to the server, so each dropped frame's
+// message is delivered again only once its ack wait has passed, or at the next restart at the ack
+// floor. That is right for a run that ended for a reason of its own, and wrong for one that was
+// cancelled, which calls release instead.
+//
+// It hands back the run's own map rather than a copy of it, since the map is the run's no longer:
+// the common caller throws the result away, and framesMu, the one lock every session's replies
+// wait on, is held over no allocation.
+func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 	m.framesMu.Lock()
 	defer m.framesMu.Unlock()
-	for token := range run.outstanding {
+	dropped := run.outstanding
+	for token := range dropped {
 		delete(m.frames, token)
 	}
 	run.outstanding = nil
 	run.unanswered = nil
+	return dropped
+}
+
+// release forgets run and returns the message of every frame it dropped to the server, so the
+// session's next owner is delivered them at once rather than after their ack wait
+// (bus.SessionConsumerAckWait). A session whose record is gone has no owner at all, since no
+// listener relays a session with no record: the naks of such a hand-over reach the consumer a
+// lapsed record leaves standing, which holds those messages for the session's next
+// registration, and are publishes the server drops where a stop or a reap took the consumer
+// with the record; the run's line says both (relayCancelSessionGone, relayHandOverLines). A nak
+// is safe to repeat as far as the server goes, since the session consumer sets MaxDeliver = -1
+// (internal/bus/session_consumers.go, applySettings): a message returned here spends no server
+// redelivery budget. Each delivery still raises the message's delivery count, which the nak
+// ladder climbs by (relayNakDelayFor), so a message handed over is naked a rung higher the next
+// time the session refuses it. It returns how many messages it returned, and the naks that failed
+// as one error, so that the run's one hand-over line can say whether the hand-over was whole
+// rather than claiming it was.
+func (m *sessionRelays) release(run *relayRun) (int, error) {
+	dropped := slices.Collect(maps.Values(m.forget(run)))
+	// The frames are naked in the order they were sent, which is stream order except for a
+	// message the session naked and the relay sent again. No nak is sent under framesMu: it is a
+	// publish, and the lock answers every session's replies.
+	slices.SortFunc(dropped, func(a, b *relayFrame) int { return a.sentAt.Compare(b.sentAt) })
+	held := make([]bus.SessionAcker, 0, len(dropped))
+	for _, frame := range dropped {
+		held = append(held, frame.acker)
+	}
+	return bus.ReturnMessages("the relay of session "+run.sessionID, held)
+}
+
+// relayNakDelayFor is how long the server waits before it delivers a frame the session refused
+// (nak) again: relayNakDelay for a message on its first delivery, doubled for every delivery it
+// has had before this one, and relayNakDelayMax from the rung that reaches that ceiling on, so
+// one frame the session goes on refusing comes back 1, 2, 4, 8, 16 s and then 30 s apart.
+//
+// delivered is the message's own delivery count, which the frame carried from the pull that
+// published it (relayFrame.delivered); a pulled message is on its first delivery at 1. A count
+// of 0 is no count at all, and so is one past relayNakShiftMax+1: both take the ceiling, rather
+// than a delay shorter than the rung before it or one the shift overflowed.
+func relayNakDelayFor(delivered uint64) time.Duration {
+	if delivered == 0 || delivered > relayNakShiftMax+1 {
+		return relayNakDelayMax
+	}
+	return min(relayNakDelay<<(delivered-1), relayNakDelayMax)
 }
 
 // onReply hears a session's reply to a frame: received marks the frame answered, progress restarts
-// its ack wait, done acks it and nak has the server deliver it again after relayNakDelay; done and
-// nak end the frame. Any of them is the session answering, which puts the run's pause backoff back
-// to its first wait. A reply to a token no frame awaits, or with any other body, is ignored.
+// its ack wait, done acks it and nak has the server deliver it again after the delay the message's
+// delivery count earns (relayNakDelayFor); done and nak end the frame. Any of them is the session
+// answering, which puts the run's pause backoff back to its first wait. A reply to a token no
+// frame awaits, or with any other body, is ignored.
 func (m *sessionRelays) onReply(msg *nats.Msg) {
 	token, ok := strings.CutPrefix(msg.Subject, m.replyPrefix)
 	if !ok {
@@ -818,213 +1195,10 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 	case relayReplyDone:
 		err = frame.acker.Ack()
 	case relayReplyNak:
-		err = frame.acker.NakWithDelay(relayNakDelay)
+		err = frame.acker.NakWithDelay(relayNakDelayFor(frame.delivered))
 	}
 	if err != nil {
 		m.logger.Warn("session relay could not answer the consumer for a frame", slog.String("session_id", frame.run.sessionID), slog.String("reply", reply), slog.String("error", err.Error()))
-	}
-}
-
-// relayServingPort restarts a serving-port session's consumer at its ack floor and pushes each
-// message it pulls to the session's port, one at a time, in stream order (pushUntilAccepted).
-func (m *sessionRelays) relayServingPort(ctx context.Context, run *relayRun) relayOutcome {
-	_, pull, outcome := m.restart(ctx, run)
-	if pull == nil {
-		return outcome
-	}
-	defer pull.Stop()
-	var pushedThrough uint64
-	for {
-		msg, err := pull.Next(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return relayEnded
-			}
-			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", run.sessionID), slog.String("error", err.Error()))
-			return relayRetry
-		}
-		if msg.StreamSeq <= pushedThrough {
-			// A copy of a message this pull already pushed and acked: the server delivered it again
-			// once its ack wait ran out while it waited in the pull behind a head message the port
-			// kept refusing.
-			_ = msg.Ack()
-			continue
-		}
-		if !m.pushUntilAccepted(ctx, run.sessionID, msg) {
-			return relayEnded
-		}
-		pushedThrough = msg.StreamSeq
-	}
-}
-
-// pushUntilAccepted pushes msg to the session's serving port until the port answers 204, then
-// records the dedupe key and acks it. Any other answer, a transport error or a timeout keeps it at
-// the head of the session's messages: it is pushed again after a wait that doubles from
-// pushRetryFirst to pushRetryMax (pushWithBackoff, the durable path's worker pushing likewise),
-// kept in progress so its ack wait never runs out. It returns false when the relay was stopped
-// first.
-//
-// A message on a topic a session follows (not its own agent subject or a role) is judged as the
-// durable path's fan-out judges it (followedTopicVerdict): one the session already has is acked
-// unpushed, and one another path is already pushing is held until that push lands or ends
-// (holdWhilePushedElsewhere).
-func (m *sessionRelays) pushUntilAccepted(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
-	var item contracts.Envelope
-	if err := decodeStoredEnvelope(msg.Data, &item); err != nil {
-		m.logger.Error("session relay dropped a stored message that is no valid envelope", slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
-		_ = msg.Ack()
-		return true
-	}
-	switch m.holdWhilePushedElsewhere(ctx, sessionID, item, msg) {
-	case relayAcksIt:
-		_ = msg.Ack()
-		return true
-	case relayStopped:
-		// The relay was stopped while it held the message, which stays unacked: whichever relay
-		// starts next pulls it again.
-		return false
-	}
-	return pushWithBackoff(ctx, m.logger, sessionID, item, func(attempt int) (bool, error) {
-		if err := m.push(ctx, sessionID, item, msg); err != nil {
-			_ = msg.InProgress()
-			return false, err
-		}
-		// The port took it, so the key is recorded as a delivery of the durable path records it
-		// (applyDeliveryOutcome's recordDedupe): another copy of the same event, stored on another
-		// topic this session follows, is refused rather than pushed again.
-		m.rules.dedupeCache.Record(item.DedupeKey, sessionID)
-		if ackErr := msg.Ack(); ackErr != nil {
-			m.logger.Warn("session relay could not ack a pushed message", slog.String("session_id", sessionID), slog.String("event_id", item.EventID), slog.String("error", ackErr.Error()))
-		}
-		m.logger.DeliveryLog(slog.LevelInfo, "session relay pushed", sessionID, item.Topic, item.EventID, "delivered", slog.Int("attempts", attempt))
-		return true, nil
-	})
-}
-
-// push makes one prompt_async push of item to the session's port at the address its current entry
-// gives, keeping msg in progress first.
-func (m *sessionRelays) push(ctx context.Context, sessionID string, item contracts.Envelope, msg bus.SessionMessage) error {
-	entry, err := m.rules.sessions.Get(sessionID)
-	if err != nil {
-		return err
-	}
-	_ = msg.InProgress()
-	return m.deliverer.Push(ctx, item, sessionID, entry)
-}
-
-// relayVerdict is what the relay of a serving-port session's consumer does with a message on a
-// topic the session follows (sessionRelays.followedTopicVerdict).
-type relayVerdict uint8
-
-const (
-	// relayPushesIt: the relay pushes the message to the session's port.
-	relayPushesIt relayVerdict = iota
-	// relayAcksIt: the message is refused, and acked unpushed.
-	relayAcksIt
-	// relayHoldsIt: another path is already pushing this message (an attempt record), so the relay
-	// neither pushes nor acks it yet (holdWhilePushedElsewhere).
-	relayHoldsIt
-	// relayStopped: the relay was stopped while it held the message, which stays unacked.
-	relayStopped
-)
-
-// followedTopicVerdict applies the durable path's judgement to item, a message on a topic the
-// session follows, as if no attempt record of it stood (judgeFollowedTopicWithoutAttempt), and
-// says what the relay does with it: a copy the session already took, an echo of its own message,
-// and a delivery mode it does not advertise or that cannot be read are acked unpushed.
-//
-// A mode refusal is reported as a delivery_failed exception, as the fan-out reports it, unless an
-// attempt record of the message stands: the fan-out records a refusal only together with the
-// exception that reports it (fanoutRefusalOutcome), so that refusal has been reported already and
-// the message is acked without a second report of it. A record therefore holds the relay only
-// where the relay would otherwise push the message, which is the push in flight a hold is for
-// (holdWhilePushedElsewhere), and no refusal record can hold it, whatever the session's entry
-// said when the fan-out wrote it.
-//
-// A message on the session's agent subject, a role forward included, is addressed to this session
-// alone and is never refused here.
-func (m *sessionRelays) followedTopicVerdict(sessionID string, item contracts.Envelope) relayVerdict {
-	if isControlTopic(item.Topic) {
-		return relayPushesIt
-	}
-	mode, modeErr := envelopeDeliveryMode(item)
-	verdict, _, err := judgeFollowedTopicWithoutAttempt(m.rules, sessionID, item, mode, modeErr)
-	switch verdict {
-	case followedTopicEcho:
-		m.logger.DeliveryLog(slog.LevelInfo, "session relay skipped an echo", sessionID, item.Topic, item.EventID, "skipped")
-		return relayAcksIt
-	case followedTopicDeduped:
-		m.logger.DeliveryLog(slog.LevelInfo, "session relay skipped a copy the session already has", sessionID, item.Topic, item.EventID, "dedupe", slog.String("dedupe_key", item.DedupeKey))
-		return relayAcksIt
-	}
-	// What is left -- the message the relay pushes, and a refusal the session's own state earns --
-	// is what an attempt record speaks to.
-	attempted := m.rules.attemptCache.Seen(item.DedupeKey, sessionID)
-	if verdict == takeFollowedTopic {
-		if attempted {
-			return relayHoldsIt
-		}
-		return relayPushesIt
-	}
-	if attempted {
-		m.logger.DeliveryLog(slog.LevelInfo, "session relay skipped a refusal the fan-out reported", sessionID, item.Topic, item.EventID, "skipped", slog.String("error", err.Error()))
-		return relayAcksIt
-	}
-	m.logger.DeliveryLog(slog.LevelWarn, "session relay refused a message the session cannot take", sessionID, item.Topic, item.EventID, "failed", slog.String("error", err.Error()))
-	if publishErr := publishDeliveryException(m.client, item, "delivery_failed", sessionID, true, ""); publishErr != nil {
-		m.logger.Warn("session relay could not publish a delivery exception", slog.String("session_id", sessionID), slog.String("event_id", item.EventID), slog.String("error", publishErr.Error()))
-	}
-	return relayAcksIt
-}
-
-// holdWhilePushedElsewhere judges item for the relay and holds msg while another path's push of it
-// is in flight, judging it again every relayHeldRecheck and keeping it in progress meanwhile. It
-// returns the verdict the hold ended on, relayStopped when the relay was stopped first.
-//
-// Only a message the relay would otherwise push is held: followedTopicVerdict judges as if no
-// record stood, and acks a refusal the fan-out recorded as it reported it, so no refusal record
-// reaches this hold.
-//
-// An attempt record is a push in flight, not a delivery: the path that wrote it pushed the
-// message to the session's port itself, or is a serving-port worker handed that push before the
-// session's entry moved to consumer delivery under it (serve_port_workers.go). Acking the message
-// on that record would rest the session's only copy on a process-local cache that expires and on
-// a worker that may yet drop or hand back its push, so the message is held unacked instead, and
-// judged again:
-//   - the worker's 204 records the dedupe key: the session has the message, so it is acked;
-//   - the worker drops its push (its session is relayed now) or hands it back, either of which
-//     clears the attempt: the relay pushes the message itself;
-//   - neither happens and the record expires (attemptCacheTTL, 5 minutes from when it was
-//     written): the relay pushes the message itself. A copy that lands from both pushes is one the
-//     session drops by its dedupe key, so an expiry race costs a duplicate, never the message.
-//
-// The hold is therefore bounded by attemptCacheTTL plus one relayHeldRecheck, and it stalls
-// nothing beyond the session's own later messages, which wait behind it in stream order as they
-// wait behind a head message the port keeps refusing (pushUntilAccepted) -- a wait with no bound at
-// all. The message is kept in progress, so the consumer's ack wait (bus.SessionConsumerAckWait)
-// never runs out under it; the messages the server delivers behind it are bounded by the
-// consumer's MaxAckPending (bus.SessionConsumerMaxAckPending) and are redelivered without limit
-// (MaxDeliver -1) until the relay takes each in turn, the redelivered copies of the ones it has
-// pushed by then acked and skipped (relayServingPort's pushedThrough).
-func (m *sessionRelays) holdWhilePushedElsewhere(ctx context.Context, sessionID string, item contracts.Envelope, msg bus.SessionMessage) relayVerdict {
-	var since time.Time
-	for {
-		verdict := m.followedTopicVerdict(sessionID, item)
-		if verdict != relayHoldsIt {
-			if !since.IsZero() && verdict == relayPushesIt {
-				m.logger.DeliveryLog(slog.LevelInfo, "session relay pushes a message whose other push ended unlanded", sessionID, item.Topic, item.EventID, "retrying",
-					slog.String("dedupe_key", item.DedupeKey), slog.String("held", time.Since(since).String()))
-			}
-			return verdict
-		}
-		if since.IsZero() {
-			since = time.Now()
-			m.logger.DeliveryLog(slog.LevelInfo, "session relay holds a message another path is pushing", sessionID, item.Topic, item.EventID, "retrying", slog.String("dedupe_key", item.DedupeKey))
-		}
-		_ = msg.InProgress()
-		if waitUnlessDone(ctx, relayHeldRecheck) != nil {
-			return relayStopped
-		}
 	}
 }
 

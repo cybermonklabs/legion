@@ -21,7 +21,9 @@ const SETTINGS = `INSERT INTO delivery_settings (
 export async function seedDeliveryFixture(): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    // Every project names a default assignee, so the column takes none of these rows without
+    // one; alice is the person every row of this fixture is read as.
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-1', 'ACME', 1, 'Ship the widgets', 'todo', 0, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -47,6 +49,14 @@ export async function seedDeliveryFixture(): Promise<void> {
   );
 }
 
+/** The window `/delivery` is opened on to see `seedDeliveryFixture()`'s rows, as a query string
+ *  without the leading "?": it spans the day that fixture writes its pull requests and runs in.
+ *  It is read from here by `e2e/delivery.e2e.ts` and by `e2e/review-seed.ts`, which hands it to
+ *  the review layers, rather than written out in each, because a window that no longer spans the
+ *  rows fails nothing: `/delivery` still draws its heading, so a readiness locator passes and the
+ *  baseline silently becomes an empty chart. */
+export const TIMELINE_FIXTURE_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
+
 /** The session-groups fixture, relative to now so the window control's presets see it: two
  *  population pull requests merged in the last seven days, first written by sessions
  *  `e2e-planner-1` and `e2e-planner-2`, and one merged 20 days ago, first written by
@@ -55,7 +65,7 @@ export async function seedDeliveryFixture(): Promise<void> {
 export async function seedSessionGroupsFixture(): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank)
      VALUES ('ACME-7', 'ACME', 7, 'Group the planners', 'todo', 1, ${SEED_ACTOR}, 'U')`,
     `INSERT INTO delivery_pull_requests (
@@ -89,7 +99,7 @@ export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20
 export async function seedMeasuresFixture(): Promise<void> {
   await sql(
     SETTINGS,
-    `INSERT INTO projects (key, name) VALUES ('ACME', 'Acme') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('ACME', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, route, claimed_by, claimed_at, created_by, rank) VALUES
        ('ACME-100', 'ACME', 100, 'Build timeline UI', 'in_progress', 1, null,
         '{"kind":"session","id":"01a1-e2e-session"}', now(), ${SEED_ACTOR}, 'U100'),

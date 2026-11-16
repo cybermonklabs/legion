@@ -11,7 +11,7 @@ import { Pill } from "./Pill";
 export interface TabDefinition<Id extends string> {
   id: Id;
   label: string;
-  /** Shown as a small pill after the label; the tab's accessible name is `<label> (<count>)`. */
+  /** Shown as a small pill after the label; the tab's accessible name is `<label> <count>`. */
   count?: number;
 }
 
@@ -100,7 +100,7 @@ export function Tabs<Id extends string>({
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
   // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line. The
-  // issue's five tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
+  // issue's nine tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
   // tablist scrolls sideways, as it already did at 360 px, and `revealTab` keeps the focused or
   // selected tab fully visible. Every tab stays reachable and keeps its 44 px target.
   const tabPadding = compact ? "px-1.5 md:px-2" : "px-3";
@@ -118,7 +118,12 @@ export function Tabs<Id extends string>({
         {tabs.map((tab) => (
           <button
             aria-controls={`${idPrefix}-${tab.id}-panel`}
-            aria-label={tab.count === undefined ? undefined : `${tab.label} (${tab.count})`}
+            // The name has to contain the visible text, word for word, or a voice user who says
+            // what the tab reads cannot press it (WCAG 2.5.3, axe's
+            // `label-content-name-mismatch`). The pill's count is part of that text, and
+            // parentheses around it are dropped before the two are compared, so the name spells
+            // the count plainly.
+            aria-label={tab.count === undefined ? undefined : `${tab.label} ${tab.count}`}
             aria-selected={activeTab === tab.id}
             className={
               activeTab === tab.id
@@ -141,7 +146,15 @@ export function Tabs<Id extends string>({
             type="button"
           >
             {tab.label}
-            {tab.count === undefined ? null : <Pill>{tab.count}</Pill>}
+            {/* The space is the one between the label and the count: a flex container does not
+                render a white-space-only child, so this changes no pixel, and without it the
+                label and the count read as one word against the name above. */}
+            {tab.count === undefined ? null : (
+              <>
+                {" "}
+                <Pill>{tab.count}</Pill>
+              </>
+            )}
           </button>
         ))}
       </div>

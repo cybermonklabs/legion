@@ -7,7 +7,21 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// RendererVersion numbers what this build writes of a document: its rendering (Render,
+// RenderWithBlockOffsets) and the token a read answers beside it (EncodeTokenJSON). A stored
+// rendering is served in place of rendering the document again only while the version that stored
+// it was written by a build standing at this number (docs' TextWithToken), so a change to either
+// raises it and every stored rendering made before it is rendered again. The golden
+// testdata/renderer-version.json holds it beside a hash of the corpus's renderings and one of the
+// corpus's document tokens, and TestRendererVersionGoldenHoldsTheCorpus holds this build to both.
+// A hash also moves when the corpus itself gains or loses a document, which changes nothing a
+// stored rendering holds: that writes the new hash and leaves this number where it is. Only a
+// change to what the renderer writes of a document the corpus already held raises it.
+const RendererVersion = 1
 
 type renderer struct {
 	b                bytes.Buffer
@@ -47,14 +61,21 @@ type renderer struct {
 	spanBudget   int
 	err          error
 	blockOffsets []BlockOffset
+	// layout, when the render records one (RenderWithLayout), is what it records of the
+	// document's top-level blocks as it writes them.
+	layout *Layout
 }
 
-// BlockOffset identifies one rendered block in byte offsets of the markdown.
+// BlockOffset identifies one rendered block in byte offsets of the markdown, with the
+// attributes a typed block's opening line wrote (renderTypedAttributes), nil for every other
+// block and for a typed block carrying none: the render encodes each value once, and no reader
+// of the rendered document walks the tree again for them.
 type BlockOffset struct {
-	ID   string
-	Type string
-	From int
-	To   int
+	ID         string
+	Type       string
+	From       int
+	To         int
+	Attributes []model.BlockAttributeValue
 }
 
 // Render returns doc as canonical Markdown. A mark the rendering does not write
@@ -69,11 +90,11 @@ func Render(doc *Node) (string, error) {
 }
 
 // renderSpanless is Render writing no cell for a table's spans: each cell once, and the header as
-// wide as the widest row as it holds cells (tableGrid). The checks that read one document-level
-// block at a time (BlockReadError, BlockShapeError) read it so. They run once for each block a
-// write changed, where a budget for each render would let a write across many tables add
-// maxSpanCells cells for every one of them; a render of the whole document, the one a write stores
-// or reads back (NewMisread), spends one budget in all.
+// wide as the widest row as it holds cells (tableGrid). The read-back of one document-level block
+// at a time (ReadBackBlock) reads it so. It runs once for each block a write changed, where a
+// budget for each render would let a write across many tables add maxSpanCells cells for every one
+// of them; a render of the whole document, the one a write stores or reads back (NewMisread),
+// spends one budget in all.
 func renderSpanless(doc *Node) (string, error) {
 	r, err := render(doc, 0)
 	if err != nil {
@@ -118,7 +139,7 @@ func (d ValidDocument) RenderWithBlockOffsets() (string, []BlockOffset, error) {
 // renderWithBlockOffsets is the markdown of doc and its blocks' byte ranges in it, validating doc
 // first only when validate says so (renderDocument).
 func renderWithBlockOffsets(doc *Node, validate bool) (string, []BlockOffset, error) {
-	r, err := renderDocument(doc, maxSpanCells, validate)
+	r, err := renderDocument(doc, maxSpanCells, validate, false)
 	if err != nil {
 		return "", nil, err
 	}
@@ -128,14 +149,14 @@ func renderWithBlockOffsets(doc *Node, validate bool) (string, []BlockOffset, er
 // render writes doc, its tables' spans adding at most spanCells empty cells (tableGrid), after
 // validating doc.
 func render(doc *Node, spanCells int) (*renderer, error) {
-	return renderDocument(doc, spanCells, true)
+	return renderDocument(doc, spanCells, true, false)
 }
 
-// renderDocument is render, validating doc first only when validate says so: ValidDocument's
-// rendering passes false for the tree it validated once already. A nil or non-doc tree is refused
-// either way, every refusal of the renderer's own runs either way, and a panic is an ErrPanic
-// either way.
-func renderDocument(doc *Node, spanCells int, validate bool) (r *renderer, err error) {
+// renderDocument is render, validating doc first only when validate says so and recording the
+// renderer's layout as well when recordLayout says so: ValidDocument's rendering passes false for
+// the tree it validated once already. A nil or non-doc tree is refused either way, every refusal
+// of the renderer's own runs either way, and a panic is an ErrPanic either way.
+func renderDocument(doc *Node, spanCells int, validate, recordLayout bool) (r *renderer, err error) {
 	// The renderer reads back what it writes (blockKinds, parseInlineWithDefinitions).
 	defer recoverPanic(&r, &err, "rendering a document")
 	if doc == nil || doc.Type != "doc" {
@@ -155,27 +176,39 @@ func renderDocument(doc *Node, spanCells int, validate bool) (r *renderer, err e
 	// breaks the browser editor holds that markdown has no form for are written as it draws them.
 	doc = asWritten(doc)
 	if holdsOnlyAnEmptyParagraph(doc) {
-		return &renderer{spanBudget: spanCells}, nil
+		r = &renderer{spanBudget: spanCells}
+		if recordLayout {
+			r.layout = onlyAnEmptyParagraphLayout()
+		}
+		return r, nil
 	}
 	labels := definedFootnoteLabels(doc)
-	r = renderBlocks(doc, labels, false, spanCells)
+	r = renderBlocks(doc, labels, false, spanCells, recordLayout)
+	blankEmptyCode := r.wroteBlankEmptyCode
 	// An empty code block in a typed block in a spread list item is written with a line between its
 	// fences, as the writer before sjawhar/legion#1464 wrote it, except in a document holding a
 	// shape this parser reads only as the browser editor does, where that line is refused
 	// (emptyCodeWrittenBare): there the document is written again with the fences alone.
 	if r.err == nil && r.wroteBlankEmptyCode && holdsBrowserOnlyShape(r.b.Bytes()) {
-		r = renderBlocks(doc, labels, true, spanCells)
+		r = renderBlocks(doc, labels, true, spanCells, recordLayout)
 	}
 	if r.err != nil {
 		return nil, r.err
+	}
+	if recordLayout {
+		r.layout.finish(doc, spanCells, r, blankEmptyCode)
 	}
 	return r, nil
 }
 
 // renderBlocks writes doc's blocks, an empty code block in a typed block in a spread list item as
-// its fences alone when bareEmptyCode says so, its tables' spans adding at most spanCells cells.
-func renderBlocks(doc *Node, labels footnoteLabelSet, bareEmptyCode bool, spanCells int) *renderer {
+// its fences alone when bareEmptyCode says so, its tables' spans adding at most spanCells cells,
+// recording the layout of its top-level blocks when recordLayout says so.
+func renderBlocks(doc *Node, labels footnoteLabelSet, bareEmptyCode bool, spanCells int, recordLayout bool) *renderer {
 	r := &renderer{footnoteLabels: labels, bareEmptyCode: bareEmptyCode, spanBudget: spanCells}
+	if recordLayout {
+		r.layout = newLayout(len(doc.Children))
+	}
 	r.blocks(doc.Children, "")
 	if r.err != nil {
 		return r
@@ -259,6 +292,8 @@ func definedFootnoteLabels(doc *Node) footnoteLabelSet {
 	return labels
 }
 
+// blocks writes the document's top-level blocks (renderBlocks), each separated from the next by a
+// blank line, recording each block's layout when the render records one.
 func (r *renderer) blocks(nodes []*Node, prefix string) {
 	otherMarkers := otherListMarkers(nodes)
 	for i, n := range nodes {
@@ -266,7 +301,11 @@ func (r *renderer) blocks(nodes []*Node, prefix string) {
 			r.writeSyntax("\n" + strings.TrimRight(prefix, " ") + "\n")
 		}
 		r.otherListMarker = otherMarkers[i]
+		spans := r.spanBudget
 		r.block(n, prefix)
+		if r.layout != nil {
+			r.layout.record(r, n, otherMarkers[i], spans)
+		}
 	}
 	if len(nodes) > 0 {
 		r.writeSyntax("\n")
@@ -349,7 +388,7 @@ func (r *renderer) block(n *Node, prefix string) {
 		r.writeSyntax("> ")
 		r.enter(n, prefix+"> ")
 		r.blocksNoTrailing(n.Children, prefix+"> ")
-		r.blanksEndingQuotedList(n.Children, prefix+"> ", false)
+		r.blanksEndingQuotedList(n.Children, prefix+"> ", r.quoteEndsAtFence())
 		r.leave()
 	case "bullet_list", "ordered_list":
 		r.list(n, prefix)
@@ -401,10 +440,9 @@ func (r *renderer) block(n *Node, prefix string) {
 		}
 		// The browser editor's parser reads the lines of a definition a list item holds as the
 		// item's, so in a tight item a blank line between two of its blocks would spread the item.
-		around := r.scope().node
-		tightItem := around != nil && around.Type == "list_item" && around.Attrs["spread"] != true
+		tightAround := r.inTightItemBelowQuotes()
 		r.enter(n, prefix+definitionIndent)
-		if tightItem {
+		if tightAround {
 			r.itemBlocks(n.Children, false, prefix, prefix+definitionIndent, false)
 		} else {
 			r.blocksNoTrailing(n.Children, prefix+definitionIndent)
@@ -416,24 +454,56 @@ func (r *renderer) block(n *Node, prefix string) {
 			r.err = fmt.Errorf("%w: cannot render block %q", ErrSchema, n.Type)
 			return
 		}
-		attrs, err := renderTypedAttributes(n, typ)
+		attrs, values, err := renderTypedAttributes(n, typ)
 		if err != nil {
 			r.err = err
 			return
 		}
+		if blockOffset >= 0 {
+			r.blockOffsets[blockOffset].Attributes = values
+		}
 		colons := typedFence(n, len(prefix))
 		fence := strings.Repeat(":", colons)
-		if holdsOnlyAnEmptyParagraph(n) && r.inItemBelowQuotes() {
+		if holdsOnlyAnEmptyParagraph(n) && r.itemBelowQuotes() != nil && !itemWritesOnly(r.itemBelowQuotes(), n) {
 			// Its empty paragraph written as a line would be a blank line in a typed block in a
 			// list item, which the browser editor reads as spacing the item; written as nothing,
-			// both parsers read the typed block back holding it.
+			// both parsers read the typed block back holding it. The one place that line is
+			// written is a spread item this block alone fills (itemWritesOnly), where nothing else
+			// of the item carries the spread - not a tight item, not a spread one whose other
+			// blocks a blank line already stands between, and not a footnote definition the item
+			// holds, where that line is read as the definition's end and as the item's alike
+			// (readSpreads).
 			r.writeSyntax(fence + n.Type + "{" + attrs + "}\n" + prefix + fence)
 			return
 		}
 		r.writeSyntax(fence + n.Type + "{" + attrs + "}\n" + prefix)
+		tight := r.inTightItemBelowQuotes()
+		// The block's own schema fills an empty paragraph in ahead of another block
+		// (opensWithAParagraph, emptyParagraphFirst), so writing that paragraph's line would put a
+		// blank line in the block that neither parser reads back as it: written as nothing, both
+		// read the block holding it again.
+		children := n.Children
+		if opensWithAParagraph(n.Type) && opensWithUnwrittenParagraph(n) {
+			children = children[1:]
+		}
 		r.enterTyped(n, prefix, colons)
-		r.blocksNoTrailing(n.Children, prefix)
+		if tight {
+			// A typed block's lines are the list item's, so a tight item's typed block writes its
+			// blocks as the item writes its own (itemBlocks): a blank line between two of them
+			// would be a blank line of the item, which the browser editor reads as spacing it.
+			r.itemBlocks(children, false, prefix, prefix, false)
+		} else {
+			r.blocksNoTrailing(children, prefix)
+		}
 		r.blanksEndingQuotedList(n.Children, prefix, true)
+		// A spread item whose only written block is this one has no blank line between two of its
+		// own blocks to be spread by, so the line that spreads it stands inside the typed block,
+		// above its closing fence, where the browser editor's parser reads it as the item's
+		// (readSpreads). A footnote definition the item holds reads that line as its end and as the
+		// item's alike, so the writer puts none inside one.
+		if !r.inFootnote() && !holdsOnlyAnEmptyParagraph(n) && itemWritesOnly(r.itemBelowQuotes(), n) {
+			r.writeSyntax("\n" + strings.TrimRight(prefix, " "))
+		}
 		r.leave()
 		r.writeSyntax("\n" + prefix + fence)
 	}
@@ -571,6 +641,20 @@ func spreadElsewhere(blocks []*Node) bool {
 	return false
 }
 
+// itemWritesOnly reports whether block is the one block item writes, an empty paragraph it opens
+// with writing nothing (opensWithUnwrittenParagraph): no blank line between two of item's blocks
+// is written there, so a spread item is spread by a line inside block alone.
+func itemWritesOnly(item, block *Node) bool {
+	if item == nil || item.Attrs["spread"] != true {
+		return false
+	}
+	children := item.Children
+	if opensWithUnwrittenParagraph(item) {
+		children = children[1:]
+	}
+	return len(children) == 1 && children[0] == block
+}
+
 // opensWithUnwrittenParagraph reports whether item's first block is an empty paragraph with another
 // block after it, which the renderer writes as nothing, the next block on the marker's line.
 func opensWithUnwrittenParagraph(item *Node) bool {
@@ -579,31 +663,35 @@ func opensWithUnwrittenParagraph(item *Node) bool {
 }
 
 // itemBlocks writes blocks the browser editor's parser reads as a list item's lines - the item's
-// own, or those of a footnote definition the item holds - at indent, their lines' prefix, where
-// prefix is the list's. A tight item writes its blocks on consecutive lines, where a paragraph
+// own, those of a footnote definition the item holds, or those of a typed block it holds - at
+// indent, their lines' prefix, where prefix is the list's. A tight item writes its blocks on consecutive lines, where a paragraph
 // would run on into a paragraph after it and underline itself with a rule's `---`, and a block
 // whose first line would be a row of a table before it (continuesTable) would be one. The browser
 // editor's writer puts a blank line between two paragraphs (the item then reads back spread) and
 // writes a rule `***`, and so does this renderer, which writes a blank line after such a table too;
 // firstRule reports whether a rule opening the blocks is written `***` too.
+//
+// One blank line is written wherever the block after would otherwise be absorbed: a block that
+// cannot open on the line after the block before it (opensAfterBlock, mergesIntoQuote), written after a block that
+// ends in a paragraph a lazy line continues (blockEndsInParagraph), would be read as that
+// paragraph's own text - a paragraph taken into the quote before it, a list that interrupts no
+// paragraph read as text, an empty item's marker read as a setext underline. The item then reads
+// back spread, which a write refuses (RefuseMisreadDocument) and a rendering with no read-back -
+// a delete op, settlement - would otherwise store as a document holding less than it was given.
 func (r *renderer) itemBlocks(blocks []*Node, spread bool, prefix, indent string, firstRule bool) {
 	otherMarkers := otherListMarkers(blocks)
 	for index, child := range blocks {
 		afterParagraph := index > 0 && blocks[index-1].Type == "paragraph"
 		if index > 0 {
 			blanks := 0
-			if spread || afterParagraph && child.Type == "paragraph" || blocks[index-1].Type == "table" && continuesTable(child) {
+			previous := blocks[index-1]
+			if spread || afterParagraph && child.Type == "paragraph" || previous.Type == "table" && continuesTable(child) ||
+				!opensAfterBlock(previous, child) && blockEndsInParagraph(previous) || mergesIntoQuote(previous, child) {
 				blanks = 1
 			}
-			if previous := blocks[index-1]; isList(previous) {
-				after, exact := r.blanksAfterList(previous, child)
-				switch {
-				case exact:
+			if isList(previous) {
+				if after, exact := r.blanksAfterList(previous, child); exact {
 					blanks = after
-				// One blank line keeps a block that cannot open on the line after a paragraph off
-				// the paragraph the list ends in.
-				case !isList(child) && !opensAfterParagraph(child) && endsInParagraph(previous):
-					blanks = 1
 				}
 			} else if previous.Type == "footnote_definition" && r.scope().quotes > 0 && !quoteListOrDefinition(child) {
 				// In a quote the blank lines after a footnote definition are the definition's, an
@@ -619,7 +707,7 @@ func (r *renderer) itemBlocks(blocks []*Node, spread bool, prefix, indent string
 				switch {
 				case spread && !spreadElsewhere(blocks):
 					blanks = definitionSpreadBlanks(child) - own
-				case spread || own == 0 && !opensAfterParagraph(child) && !endsInClosedList(previous):
+				case spread || own == 0 && !opensAfterParagraphAlone(child) && !endsInClosedList(previous):
 					blanks = 1
 				}
 			}
@@ -971,32 +1059,31 @@ func hardBreaksAsSpaces(nodes []*Node) []*Node {
 }
 
 // asWritten is doc as its markdown writes it: without the marks the rendering does not write
-// (renderedMarkTypes) and with adjacent text runs under equal marks merged, as StripAnchorMarks
-// gives it, with each line break its textblocks hold in the one form markdown carries, and with
-// each U+0000 as U+FFFD (withNulsWritten). The browser editor holds two more line breaks. A soft
-// line break it keeps from a paste (a hard break with isInline) it draws as a space, and one is
-// written: both parsers read a soft break as one too. A line feed in text outside code it draws as
-// a line break (white-space: break-spaces), and a hard break is written, which both parsers read
-// back as the editor draws it, except where nothing but whitespace follows it in its textblock: a
-// hard break there reads back as a backslash, and a line feed as nothing, as trailing whitespace
-// does.
+// (renderedMarkTypes) and with adjacent text runs under equal marks merged (writtenTree, which is
+// what StripAnchorMarks copies), with each line break its textblocks hold in the one form markdown
+// carries, and with each U+0000 as U+FFFD (nulsWrittenTree). The U+0000s are written last, once
+// every merge is decided, so each decision is taken on the values as they are: two runs whose
+// links differ only in a U+0000 and a U+FFFD stay two runs. The browser editor holds two more line
+// breaks. A soft line break it keeps from a paste (a hard break with isInline) it draws as a
+// space, and one is written: both parsers read a soft break as one too. A line feed in text
+// outside code it draws as a line break (white-space: break-spaces), and a hard break is written,
+// which both parsers read back as the editor draws it, except where nothing but whitespace follows
+// it in its textblock: a hard break there reads back as a backslash, and a line feed as nothing,
+// as trailing whitespace does.
 //
 // It never writes doc, and shares doc's nodes, their attributes and their marks wherever they are
 // written as they are: only a node written otherwise, and the nodes above it, is a copy, so a
 // document with no anchor mark, no line break to rewrite and no U+0000 is doc itself. What it
 // returns is only read.
 func asWritten(doc *Node) *Node {
-	out := writtenTree(doc, true)
-	if holdsNul(out) {
-		out = withNulsWritten(out)
-	}
-	return out
+	return nulsWrittenTree(writtenTree(doc, true))
 }
 
-// writtenTree is node as asWritten writes it but for a U+0000 in its own text and attributes,
-// which its parent writes once it has merged its children (childrenAsWritten); node itself where
-// nothing under it is written otherwise. lineBreaks is whether a paragraph or heading at or under
-// node has its line breaks written (writtenLineBreaks): not under a textblock or a code block.
+// writtenTree is node as asWritten writes it but for the U+0000s under it, which nulsWrittenTree
+// writes after every merge is decided (childrenAsWritten); node itself where nothing under it is
+// written otherwise. lineBreaks is whether a paragraph or heading at or under node has its line
+// breaks written (writtenLineBreaks): not under a textblock or a code block, and under none of
+// them for StripAnchorMarks, which copies what it gives with lineBreaks false.
 func writtenTree(node *Node, lineBreaks bool) *Node {
 	marks, marksKept := renderedMarks(node.Marks)
 	children, childrenKept := childrenAsWritten(node, lineBreaks)
@@ -1032,10 +1119,11 @@ func renderedMarks(marks []Mark) ([]Mark, bool) {
 
 // childrenAsWritten is node's children as asWritten writes them, and whether that is node's own
 // slice. Each child is written (writtenTree), and adjacent text runs whose written marks are equal
-// merge into one that keeps the first's attributes. A paragraph or heading's children then have
-// their line breaks written where they hold one to rewrite (holdsLineBreakToWrite). Only after
-// those decisions is each child's own U+0000 written, so they are taken on the values as they are:
-// two runs whose links differ only in a U+0000 and a U+FFFD stay two runs.
+// merge into one that keeps the first's attributes and children. A paragraph or heading's children
+// then have their line breaks written where they hold one to rewrite (holdsLineBreakToWrite).
+// Nothing here writes a U+0000, which nulsWrittenTree writes after every one of these decisions is
+// taken, so each is taken on the values as they are: two runs whose links differ only in a U+0000
+// and a U+FFFD stay two runs.
 func childrenAsWritten(node *Node, lineBreaks bool) ([]*Node, bool) {
 	textblock := lineBreaks && (node.Type == "paragraph" || node.Type == "heading")
 	childLineBreaks := lineBreaks && !textblock && node.Type != "code_block"
@@ -1079,16 +1167,6 @@ func childrenAsWritten(node *Node, lineBreaks bool) ([]*Node, bool) {
 		out = writtenLineBreaks(out)
 		kept = false
 	}
-	for index, child := range out {
-		if !holdsNul(child) {
-			continue
-		}
-		if kept {
-			out = slices.Clone(out)
-			kept = false
-		}
-		out[index] = withNulsWritten(child)
-	}
 	return out, kept
 }
 
@@ -1115,12 +1193,17 @@ func holdsLineBreakToWrite(nodes []*Node) bool {
 
 // nulAsReplacement is text with each U+0000 written as U+FFFD, which is what CommonMark reads the
 // character as (§2.3 Insecure characters), so no markdown carries one back; PostgreSQL's text and
-// jsonb cannot store one either. A browser's edit can still put one in a live document, past every
-// check a route makes, so text Dispatch takes from a document's tree passes through this: its
-// rendering (asWritten), an anchor's quote (FindMark), an ask block's question and options and a
-// heading's text (TextContent), and the text a quote is matched against (buildFlattenedText). A
-// document's settlement and every write that versions it store that text, so one U+0000 left in it
-// as it is would fail all of them, and text copied from what a read serves would match nothing.
+// jsonb cannot store one either. Every reader of a caller's markdown reads the character that way
+// too, as the browser editor's parser does, where it takes the caller's bytes in (parseUnstamped,
+// readInline): goldmark keeps a U+0000 in the tree it builds, so a write holding one would
+// otherwise be accepted into a tree whose rendering holds U+FFFD instead.
+//
+// A browser's edit can still put one in a live document, past every check a route makes, so text
+// Dispatch takes from a document's tree passes through this: its rendering (asWritten), an anchor's
+// quote (FindMark), an ask block's question and options and a heading's text (TextContent), and the
+// text a quote is matched against (buildFlattenedText). A document's settlement and every write
+// that versions it store that text, so one U+0000 left in it as it is would fail all of them, and
+// text copied from what a read serves would match nothing.
 func nulAsReplacement(text string) string {
 	if strings.IndexByte(text, 0) < 0 {
 		return text
@@ -1135,12 +1218,7 @@ func holdsNul(node *Node) bool {
 		return true
 	}
 	if attrsHoldNul(node.Attrs) {
-		if !IsTypedBlock(node.Type) {
-			return true
-		}
-		if id, _ := node.Attrs[BlockIDAttr].(string); strings.IndexByte(id, 0) >= 0 {
-			return true
-		}
+		return true
 	}
 	for _, mark := range node.Marks {
 		if attrsHoldNul(mark.Attrs) {
@@ -1159,20 +1237,43 @@ func attrsHoldNul(attrs Attrs) bool {
 	return false
 }
 
-// withNulsWritten is a copy of node, which holds a U+0000 (holdsNul), with each U+0000 the
-// rendering would write as it is - in its text, in a string attribute a node or mark writes (a
-// link's href, an image's alt, a code block's language), or in a block's id - as U+FFFD
-// (nulAsReplacement). node may be asWritten's input, so the copy's attributes and marks are its
-// own before any is written. A typed block's other attributes are written quoted
-// (renderTypedAttributes), U+0000 as the escape \x00 that its parser unquotes back, so they keep
-// it; its id is written as TypedBlockIDAttribute writes it, with no such escape.
-func withNulsWritten(node *Node) *Node {
-	out := &Node{Type: node.Type, Attrs: cloneAttrs(node.Attrs), Text: nulAsReplacement(node.Text), Marks: cloneMarks(node.Marks), Children: node.Children}
-	if !IsTypedBlock(out.Type) {
-		writeNulsInAttrs(out.Attrs)
-	} else if id, ok := out.Attrs[BlockIDAttr].(string); ok && strings.IndexByte(id, 0) >= 0 {
-		out.Attrs[BlockIDAttr] = nulAsReplacement(id)
+// nulsWrittenTree is node, the tree writtenTree gives, with each U+0000 under it written
+// (withNulsWritten): node itself where nothing under it holds one. It copies only a node holdsNul
+// reports and the nodes above it, and shares every other node, its attributes and its marks, as
+// asWritten's contract says.
+func nulsWrittenTree(node *Node) *Node {
+	children, kept := node.Children, true
+	for index, child := range children {
+		written := nulsWrittenTree(child)
+		if written == child {
+			continue
+		}
+		if kept {
+			children, kept = slices.Clone(children), false
+		}
+		children[index] = written
 	}
+	if holdsNul(node) {
+		return withNulsWritten(node, children)
+	}
+	if kept {
+		return node
+	}
+	return &Node{Type: node.Type, Attrs: node.Attrs, Text: node.Text, Marks: node.Marks, Children: children}
+}
+
+// withNulsWritten is a copy of node, which holds a U+0000 (holdsNul), holding children in place of
+// its own children and with each U+0000 the rendering would write as it is - in its text, in a
+// string attribute a node or mark writes (a link's href, an image's alt, a code block's language),
+// or in a block's id - as U+FFFD (nulAsReplacement). node may be asWritten's input, so the copy's
+// attributes and marks are its own before any is written. A typed block's attributes are its own
+// case only in that they are written quoted (renderTypedAttributes): that value holds its
+// characters as they are, since the browser editor's parser ends it at the next quote and decodes
+// character references alone, so a U+0000 there is written as U+FFFD like every other, which is
+// what that parser's preprocessor reads one as.
+func withNulsWritten(node *Node, children []*Node) *Node {
+	out := &Node{Type: node.Type, Attrs: cloneAttrs(node.Attrs), Text: nulAsReplacement(node.Text), Marks: cloneMarks(node.Marks), Children: children}
+	writeNulsInAttrs(out.Attrs)
 	for _, mark := range out.Marks {
 		writeNulsInAttrs(mark.Attrs)
 	}

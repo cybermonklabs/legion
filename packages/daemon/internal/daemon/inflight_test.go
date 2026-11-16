@@ -31,9 +31,19 @@ import (
 )
 
 // stopBound is how long run may take to return once its context is cancelled, given the stop's
-// budget: the budget, then the stamp's and the store close's own bounds (stopBudget).
+// budget: the budget, then the NATS close's, the stamp's and the store close's own bounds
+// (stopBudget).
 func stopBound(budget time.Duration) time.Duration {
-	return budget + stampTimeout + storeCloseTimeout
+	return budget + natsCloseTimeout + stampTimeout + storeCloseTimeout
+}
+
+// stopHangGuard is the bound for a row whose claim is that the stop needed none of its budget,
+// which neededNoBudget reads from the log: there the elapsed time is a hang guard and not a
+// measurement, so it is far from the work's own duration. Held to stopBound instead, such a row
+// reds on a machine that spends a few milliseconds more than the budget on a stop that in fact
+// waited for nothing - 3.005826798 s against 3 s, which is what INFRA-985 was filed for.
+func stopHangGuard(budget time.Duration) time.Duration {
+	return stopBound(budget) + time.Minute
 }
 
 // stoppedWaiting is the line the stop logs when its budget runs out with work still running.
@@ -188,7 +198,7 @@ func runLogging(t *testing.T, cfg config.Config, o overrides) (context.CancelFun
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, cfg, Build{}, slog.New(slog.NewJSONHandler(logs, nil)), o) }()
+	go func() { done <- run(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)), o) }()
 	return cancel, done, logs
 }
 
@@ -308,7 +318,7 @@ func TestRunStopsInsideAPodGraceWhileRelaunchesWaitOnTheCluster(t *testing.T) {
 	logs := &syncBuffer{}
 	d, relaunching := superviseMany(t, cfg, fakeRuntime(rt, &built{}), rt, logs, 3)
 
-	took, stopLog := stopWithin(t, d, logs, stopBound(stopBudget))
+	took, stopLog := stopWithin(t, d, logs, stopHangGuard(stopBudget))
 
 	t.Logf("stopped in %s with %d relaunches waiting in the runtime", took, len(relaunching))
 	stopping := logsStopping(t, stopLog)
@@ -416,7 +426,12 @@ func TestRunStopsInsideAPodGraceWhileItRelaunchesAnUnfinishedLaunch(t *testing.T
 				return logLine(logs.String(), "legion daemon started") != ""
 			})
 
-			took, stopLog := stopRun(t, cancel, done, logs, stopBound(o.stopBudget))
+			bound := stopHangGuard(o.stopBudget)
+			if tc.ignoresContext {
+				// Here the budget is the measurement: the stop must wait it out and say so.
+				bound = stopBound(o.stopBudget)
+			}
+			took, stopLog := stopRun(t, cancel, done, logs, bound)
 
 			t.Logf("stopped in %s while it relaunched %s", took, token)
 			namesDeciding(t, logsStopping(t, stopLog), "supervise.RequestSpawn", token)
@@ -450,7 +465,7 @@ func TestRunStopsInsideAPodGraceWhileItsBootReconcilesOrphans(t *testing.T) {
 		t.Fatalf("the boot never reconciled orphans; log:\n%s", logs)
 	}
 
-	took, stopLog := stopRun(t, cancel, done, logs, stopBound(o.stopBudget))
+	took, stopLog := stopRun(t, cancel, done, logs, stopHangGuard(o.stopBudget))
 
 	t.Logf("stopped in %s while its boot reconciled orphans", took)
 	logsStopping(t, stopLog)
@@ -552,7 +567,7 @@ func TestRunEndsAnOperatorSpawnInFlightWithTheDrainAndNamesIt(t *testing.T) {
 	}
 
 	bootSwept(t, logs)
-	took, stopLog := stopWithin(t, d, logs, stopBound(o.stopBudget))
+	took, stopLog := stopWithin(t, d, logs, stopHangGuard(o.stopBudget))
 
 	t.Logf("stopped in %s with the operator's spawn of %s waiting in the runtime; it was answered %d", took, spawning, <-answered)
 	namesDeciding(t, logsStopping(t, stopLog), "supervise.RequestSpawn", spawning)
@@ -616,8 +631,8 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 		if err != nil {
 			t.Fatalf("run: %v", err)
 		}
-	case <-time.After(stopBound(stopBudget)):
-		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopBound(stopBudget), logs.String()[mark:])
+	case <-time.After(stopHangGuard(stopBudget)):
+		t.Fatalf("run had not returned %s after its context was cancelled; it logged:\n%s", stopHangGuard(stopBudget), logs.String()[mark:])
 	}
 	stopLog := logs.String()[mark:]
 
@@ -664,12 +679,8 @@ exec sleep 600`},
 // awaitLog waits up to bound for log to hold want, failing the test with what it does hold.
 func awaitLog(t *testing.T, log *syncBuffer, want string, bound time.Duration, why string) {
 	t.Helper()
-	deadline := time.Now().Add(bound)
-	for !strings.Contains(log.String(), want) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: no %q within %s; the log holds:\n%s", why, want, bound, log)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(bound, testwait.Poll, func() bool { return strings.Contains(log.String(), want) }) {
+		t.Fatalf("%s: no %q within %s; the log holds:\n%s", why, want, bound, log)
 	}
 }
 

@@ -25,6 +25,7 @@ func TestMigrate0071AddressesAnAgentsArtifactsAndKeepsEveryOtherRefKey(t *testin
 	`); err != nil {
 		t.Fatalf("seed artifacts at 0070: %v", err)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0071: %v", err)
 	}

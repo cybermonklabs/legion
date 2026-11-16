@@ -2,7 +2,7 @@ import type { UseMutationResult } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { apiErrorMessage } from "../../api/client";
-import type { CredentialDecisionResponse } from "../../api/types";
+import type { DecisionResponse, StateResponse } from "../../api/types";
 import type { SubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -15,9 +15,8 @@ import {
 } from "../../theme/classes";
 
 /**
- * The Approve/Deny button pair `MachineLoginPage` renders for a pending machine login, and
- * `CredentialRecordPage` for a pending record the broker names no page for: each page builds its
- * own `approve`/`deny` mutations, whose POST bodies carry the typed code where the page has one,
+ * The Approve/Deny button pair `MachineLoginPage` renders for a pending machine login: that page
+ * builds its own `approve`/`deny` mutations, whose POST bodies carry the code the operator typed,
  * then hands them here for the shared disabled-guard, click-wiring, and verbatim broker-error
  * rendering. With no `approve`, only Deny shows: a record nobody may approve any more, such as a
  * service's machine login from before services logged in with their tokens.
@@ -27,8 +26,8 @@ export function CredentialDecisionButtons({
   deny,
   submitGuard,
 }: {
-  approve?: UseMutationResult<CredentialDecisionResponse | null, Error, void>;
-  deny: UseMutationResult<CredentialDecisionResponse | null, Error, void>;
+  approve?: UseMutationResult<DecisionResponse | null, Error, void>;
+  deny: UseMutationResult<StateResponse | null, Error, void>;
   submitGuard: SubmitGuard;
 }): ReactNode {
   const deciding = approve?.isPending === true || deny.isPending;

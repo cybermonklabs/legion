@@ -25,6 +25,8 @@ describe("fakeSearchResponse", () => {
       limit: 20,
       offset: 0,
       took_ms: 0,
+      filters: {},
+      query: { operators: [], broadened: false },
     });
   });
 
@@ -44,6 +46,8 @@ describe("fakeSearchResponse", () => {
       limit: 2,
       offset: 10,
       took_ms: 4,
+      filters: {},
+      query: { operators: [], broadened: false },
     });
   });
 

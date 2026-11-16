@@ -1,0 +1,43 @@
+-- 20261111041503_tree_stalled_told_at.up.sql — records, on a tree's root, the movement the
+-- daemon has already told that tree's controller the tree stopped for, so that one stall is one
+-- notice (INFRA-2560).
+--
+-- What the column holds. The admission pass tells the project's controller once of a tree of
+-- its own that has stopped: quiet for longer than `stalled_tree_notice_hours`, no claim of it
+-- at work, and at least one quiet issue of it waiting by no rule of the daemon's own. In the
+-- same transaction as the notice it writes here the tree's newest movement at that moment
+-- (record.TreeQuiet.MovedAt, record.Store.MarkTreeStalledTold), which is the one fact that says
+-- which stall was told. A later pass tells the same tree again only when the tree has moved
+-- past the mark, so a tree that has stopped is reported once and a tree that moves and stops
+-- again is reported anew.
+--
+-- Why a column and not a time of the telling. A clock of the telling would need a rule of its
+-- own to decide when to tell again — an hour, a day — and every such rule either tells about a
+-- tree nothing has happened to or stays silent about a tree that moved and stopped again. The
+-- tree's own movement is what the rule already reads, so the mark is a movement too, and the
+-- two are compared directly.
+--
+-- Why the root. The stall is the tree's, not an issue's: the measure is read per tree root and
+-- the notice names the root. One mark per tree is therefore one mark on the root's row, and no
+-- child's row is ever written for it.
+--
+-- There is no backfill, and the empty column is the point: the first admission pass after this
+-- deploy reads every tree of the project as one it has told nobody about, and tells its
+-- controller of each that is quiet past the bound. The column that carries the movement itself
+-- (moved_at) was filled with the deploy's own moment by the change before this one, so no tree
+-- reads as quiet for longer than the measure has run and the first pass after the deploy tells
+-- the controller of nothing at all.
+--
+-- The column is null for every row the daemon writes: record.Store.PutIssue names it nowhere,
+-- as it names moved_at nowhere, so a copy of an issue read before the telling can never write
+-- the mark away, and only the one writer above sets it.
+--
+-- Migrations here are forward-only and this one has no down file. A daemon of an earlier
+-- release on a shared database names the column nowhere — it neither selects it nor inserts it
+-- — so a marked row keeps its mark across a rollback, and the roll forward goes on holding the
+-- tree to the stall it was already told about. What a rollback costs is the notice nobody
+-- writes: the earlier release has no stalled-tree rule at all. One operator step is the
+-- outbox's, not this file's: a tree-stalled row still in the outbox is a notice kind the
+-- earlier release cannot decode, so every such row has to be deleted before that image runs,
+-- as the rows of every other kind it cannot decode are.
+alter table issues add column tree_stalled_told_at timestamptz;

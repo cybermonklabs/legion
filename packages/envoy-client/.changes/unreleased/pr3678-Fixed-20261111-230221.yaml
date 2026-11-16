@@ -1,0 +1,5 @@
+kind: Fixed
+body: The line a reply prints on a moved approval request now reads every document of the request. A request over a spec and its issue's Verification document whose Verification document moved printed no line at all before this.
+time: 2026-11-11T23:02:21.891634449Z
+custom:
+    Issue: pr3678

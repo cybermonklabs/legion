@@ -8,8 +8,9 @@
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["bun"],
-    // How Bun resolves the upstream modules at runtime: proof-sdk's package.json `exports`
-    // publishes only its built dist, so its sources are unreachable by bare specifier.
+    // How Bun resolves the upstream modules at runtime: proof-sdk's package.json declares no
+    // main, no module, no types, no exports and no files, so the package publishes no entry
+    // point and its sources are unreachable by bare specifier.
     // packages/dispatch/web/vite.config.ts carries the same mapping for the browser build;
     // tsconfig.check.json drops it, because no tsc program may open those sources.
     "paths": {

@@ -3,21 +3,35 @@ import type {
   Actor,
   Ask,
   Comment,
-  Event,
+  DispatchEvent,
+  HandoffSummary,
   IssueAskThreadRow,
   Message,
   MessageRead,
 } from "../../api/types";
 import { activityDescription } from "../activity/activity-model";
 import type { AgentPart } from "../refs/AgentName";
-import { buildConversations, focusConversation, matchesFilter } from "./conversation-model";
+import {
+  buildConversations,
+  focusConversation,
+  handoffFields,
+  matchesFilter,
+} from "./conversation-model";
 
-const session: Actor = { id: "session-1", kind: "session" };
+// A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
+// read states a plain string, so this one is written as the literal it is: a `block.invalid`
+// frame below names it, and so do the route reads here.
+const session = { id: "session-1", kind: "session" } as const satisfies Actor;
 const bob: Actor = { id: "bob", kind: "user" };
 
 const baseAsk: Ask = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  block_id: null,
   author: session,
   created_at: "2026-09-10T09:00:00Z",
   edited_at: null,
@@ -49,6 +63,7 @@ function askRow(ask: Partial<Ask> = {}, replies: Comment[] = []): IssueAskThread
       route: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
     },
   };
 }
@@ -56,6 +71,9 @@ function askRow(ask: Partial<Ask> = {}, replies: Comment[] = []): IssueAskThread
 function comment(overrides: Partial<Comment> & Pick<Comment, "id" | "created_at">): Comment {
   return {
     anchor: null,
+    answers: null,
+    artifact_id: null,
+    reply_block: null,
     ask_id: null,
     author: bob,
     body: `body of ${overrides.id}`,
@@ -76,6 +94,8 @@ function comment(overrides: Partial<Comment> & Pick<Comment, "id" | "created_at"
 function message(overrides: Partial<Message> & Pick<Message, "id" | "created_at">): Message {
   return {
     author: bob,
+    broadcast_id: null,
+    reply_block: null,
     body: `body of ${overrides.id}`,
     deliveries: [],
     in_reply_to: null,
@@ -89,16 +109,30 @@ function thread(root: Message, replies: Message[] = []): MessageRead {
   return { message: root, replies };
 }
 
+function handoff(
+  overrides: Partial<HandoffSummary> & Pick<HandoffSummary, "id" | "created_at">
+): HandoffSummary {
+  return {
+    author: session,
+    issue_key: "CORE-1",
+    phase: "implement",
+    version: 1,
+    ...overrides,
+  };
+}
+
 const build = (input: {
   asks?: IssueAskThreadRow[];
   comments?: Comment[];
   messages?: MessageRead[];
+  handoffs?: HandoffSummary[];
   unreadFrom?: string;
 }) =>
   buildConversations({
     asks: input.asks ?? [],
     comments: input.comments ?? [],
     messages: input.messages ?? [],
+    handoffs: input.handoffs ?? [],
     ...(input.unreadFrom === undefined ? {} : { unreadFrom: input.unreadFrom }),
   });
 
@@ -316,6 +350,7 @@ test("an item id resolves to the conversation that holds it", () => {
     asks: [askRow({}, [askReply])],
     comments: [askReply, root, threadReply],
     messages: [thread(messageRoot, [messageReply])],
+    handoffs: [handoff({ created_at: "2026-09-10T09:03:00Z", id: "handoff-1" })],
   };
 
   expect(focusConversation("ask-1", lists)).toEqual({ id: "ask:ask-1" });
@@ -329,13 +364,92 @@ test("an item id resolves to the conversation that holds it", () => {
     id: "message:message-1",
     replyId: "message-2",
   });
+  expect(focusConversation("handoff-1", lists)).toEqual({ id: "handoff:handoff-1" });
   expect(focusConversation("nothing", lists)).toBeUndefined();
+});
+
+test("each handoff version is a card of its own, closed, ordered by when it was written", () => {
+  const conversations = build({
+    comments: [comment({ created_at: "2026-09-10T09:01:00Z", id: "comment-1" })],
+    handoffs: [
+      handoff({ created_at: "2026-09-10T09:00:00Z", id: "handoff-1", version: 1 }),
+      handoff({ created_at: "2026-09-10T09:02:00Z", id: "handoff-2", version: 2 }),
+    ],
+  });
+
+  expect(conversations.map((item) => item.id)).toEqual([
+    "handoff:handoff-2",
+    "comment:comment-1",
+    "handoff:handoff-1",
+  ]);
+  const newest = conversations[0];
+  if (newest?.kind !== "handoff") throw new Error("expected the newest card to be a handoff");
+  expect(newest.at).toBe("2026-09-10T09:02:00Z");
+  expect(newest.handoff.version).toBe(2);
+  // A handoff is a finished record: listed under Closed and All, never under Open.
+  expect(
+    conversations.filter((item) => matchesFilter(item, "closed")).map((item) => item.id)
+  ).toEqual(["handoff:handoff-2", "handoff:handoff-1"]);
+  expect(
+    conversations.filter((item) => matchesFilter(item, "open")).map((item) => item.id)
+  ).toEqual(["comment:comment-1"]);
+});
+
+test("a handoff is unread from the boundary on, as every other card is", () => {
+  const conversations = build({
+    handoffs: [
+      handoff({ created_at: "2026-09-10T09:00:00Z", id: "read" }),
+      handoff({ created_at: "2026-09-10T09:05:00Z", id: "unread", version: 2 }),
+    ],
+    unreadFrom: "2026-09-10T09:05:00Z",
+  });
+
+  expect(conversations.filter((item) => item.unread).map((item) => item.id)).toEqual([
+    "handoff:unread",
+  ]);
+});
+
+test("a handoff body expands to one row per top-level field and one per proof entry", () => {
+  const body = JSON.stringify({
+    schemaVersion: 1,
+    phase: "implement",
+    verified: true,
+    note: null,
+    files: ["a.ts", "b.ts"],
+    ci: { status: "green" },
+    proof: ["bun test passed", { command: "bun run typecheck", exit: 0 }],
+  });
+
+  expect(handoffFields(body)).toEqual([
+    { field: "schemaVersion", json: false, label: "schemaVersion", text: "1" },
+    { field: "phase", json: false, label: "phase", text: "implement" },
+    { field: "verified", json: false, label: "verified", text: "true" },
+    { field: "note", json: false, label: "note", text: "null" },
+    { field: "files", json: true, label: "files", text: '[\n  "a.ts",\n  "b.ts"\n]' },
+    { field: "ci", json: true, label: "ci", text: '{\n  "status": "green"\n}' },
+    { field: "proof", json: false, label: "proof 1", text: "bun test passed" },
+    {
+      field: "proof",
+      json: true,
+      label: "proof 2",
+      text: '{\n  "command": "bun run typecheck",\n  "exit": 0\n}',
+    },
+  ]);
+});
+
+test("a proof that is not a list is one row, and a body that is not a JSON object has none", () => {
+  expect(handoffFields('{"proof":"see CI"}')).toEqual([
+    { field: "proof", json: false, label: "proof", text: "see CI" },
+  ]);
+  expect(handoffFields("{not json")).toBeUndefined();
+  expect(handoffFields("[1, 2]")).toBeUndefined();
+  expect(handoffFields("null")).toBeUndefined();
 });
 
 // The activity line is the Activity tab's (`features/activity/activity-model.ts`); these cases
 // moved here with the Conversation's own and still describe the one writer of that text.
 test("describes a malformed decision block", () => {
-  const event: Extract<Event, { type: "block.invalid" }> = {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
     actor: session,
     created_at: "2026-09-13T17:00:00Z",
     id: 9,
@@ -356,6 +470,29 @@ test("describes a malformed decision block", () => {
   ]);
 });
 
+test("describes a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: session,
+    created_at: "2026-09-13T17:01:00Z",
+    id: 10,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "ci_check takes when of before_merge",
+      disturbed_by: session,
+      block_type: "check",
+    },
+    seq: 10,
+    type: "block.invalid",
+  };
+
+  expect(activityDescription(event)).toEqual([
+    "refused check k1: ci_check takes when of before_merge",
+  ]);
+});
+
 test("describes a status change out of Done as reopening the issue", () => {
   const reopened = {
     actor: bob,
@@ -366,7 +503,7 @@ test("describes a status change out of Done as reopening the issue", () => {
     payload: { status: "backlog" },
     seq: 2,
     type: "issue.updated",
-  } as Event;
+  } as DispatchEvent;
 
   expect(activityDescription(reopened, "done")).toEqual(["reopened the issue into backlog"]);
 });
@@ -379,7 +516,7 @@ const claimOf = (id: string, title: string) => ({
   at: "2026-09-24T06:00:00Z",
 });
 
-type ClaimEvent = Extract<Event, { type: "issue.claimed" | "issue.released" }>;
+type ClaimEvent = Extract<DispatchEvent, { type: "issue.claimed" | "issue.released" }>;
 
 function claimEvent(
   type: ClaimEvent["type"],
@@ -400,7 +537,7 @@ function claimEvent(
 }
 
 // A line that names another holder keeps that holder's actor as a part, for `AgentName` to draw.
-const releaseCases: Array<[string, Event, AgentPart[]]> = [
+const releaseCases: Array<[string, DispatchEvent, AgentPart[]]> = [
   [
     "a session releasing its own claim",
     claimEvent("issue.released", claimOf("session-one", "Implementer").actor, {
@@ -478,7 +615,7 @@ test("an answer that replaced an earlier one reads as a change in the activity l
     payload: { ...baseAsk, answer, state: "answered" },
     seq: 5,
     type: "ask.answered",
-  } as Event;
+  } as DispatchEvent;
   expect(activityDescription(answered)).toEqual(["answered “Ship it?”"]);
   expect(
     activityDescription({
@@ -489,6 +626,6 @@ test("an answer that replaced an earlier one reads as a change in the activity l
         previous_answer: { ...answer, at: "2026-09-10T09:01:00Z", selected: ["Ship"] },
         state: "answered",
       },
-    } as Event)
+    } as DispatchEvent)
   ).toEqual(["changed the answer to “Ship it?”"]);
 });

@@ -1,6 +1,6 @@
 ---
 title: Manage a secret
-description: Create an agent secret, change its value or tags, and delete or restore it with agent-secrets secret under your own cloud sign-in.
+description: Create an agent secret, change its value or tags, and delete or restore it with agent-secrets secret under the cloud credential your environment gives it.
 sidebar:
   order: 9
 ---
@@ -9,9 +9,10 @@ An agent secret is a secret in the broker's own store - AWS Secrets Manager or G
 Manager, whichever the broker's deployment uses - under the broker's namespace, encrypted with
 its key, and tagged with owner, tier, optional kind and optional max grant
 ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
-`agent-secrets secret` manages them. It reads and writes the store itself, under your own cloud
-sign-in, so that cloud's own IAM decides what you may do; the broker never writes a secret. After
-every write the CLI asks the broker to reread that one secret, and the broker that answers tells
+`agent-secrets secret` manages them. It reads and writes the store itself, under whatever cloud
+credential its environment gives it, so that cloud's own IAM decides what it may do; the broker
+never writes a secret. After every write the CLI asks the broker to reread that one secret, and the
+broker that answers tells
 every other broker process serving the same database to reread it too, so the change is served
 across the whole deployment within seconds rather than at each process's next read of the
 namespace. The examples on this page are AWS's; GCP's
@@ -28,46 +29,47 @@ You need three things:
 - **`AGENT_SECRETS_URL`, the broker's address.** The CLI asks the broker for the namespace, the
   agent-secrets key, and that key's store and account/project (`GET /v1/settings`), so you
   configure none of them.
-- **A cloud sign-in in the broker's account or project.** AWS: every form takes it from
-  `--profile`, else `AWS_PROFILE`, else the AWS SDK's default credential chain; a write needs your
-  own IAM Identity Center sign-in. GCP: every form takes your own Google sign-in, and a write never
-  runs as a machine.
+- **A cloud credential that may reach the broker's account or project.** The CLI takes whatever
+  credential its environment gives it, a person's or a machine's, for every form, and refuses none
+  for what kind of identity it is: the store's IAM decides what each may read and write. AWS:
+  `--profile`, else `AWS_PROFILE`, else the AWS SDK's default credential chain, in the broker's
+  account. GCP: an access token in `CLOUDSDK_AUTH_ACCESS_TOKEN`, else your Application Default
+  Credentials, of any type, else your gcloud login.
 
 ```sh
 export AGENT_SECRETS_URL=https://secrets.internal.example
 aws sso login --profile <profile>   # AWS
 export AWS_PROFILE=<profile>
-gcloud auth login                   # GCP, once
+gcloud auth login                   # GCP, once, where no other credential is set
 ```
 
-On GCP, `gcloud auth login` is all a laptop or a dev box needs. A read runs under your Application
-Default Credentials, and so does a write where they are your own Google Account sign-in. Where they
-are a machine's own identity - a dev box's workload identity federation credential, a service
-account key, or a VM's or pod's metadata-server identity - a write runs under your gcloud login
-instead, and so does every form on a machine with no Application Default Credentials. The CLI
-asks the first `gcloud` on your `PATH` for that login (`gcloud auth list`, then
-`gcloud auth print-access-token`), so gcloud keeps it fresh, and its own error says when you must
-run `gcloud auth login` again; the CLI reads none of gcloud's files, and `gcloud auth login`
-leaves the machine's Application Default Credentials as they are. gcloud runs with its log files
-off and prints the token to the CLI alone, and with impersonation, an access token and a
-credential file override cleared wherever they are set, so the token is your login's; a write
-whose token Google answers as anyone else's is refused.
+On GCP, `CLOUDSDK_AUTH_ACCESS_TOKEN` is the caller's own choice, so when it is set every form uses
+it, before any Application Default Credentials and any gcloud login: an agent session that holds a
+grant of a person's Google login writes with that token, and the store's IAM decides what it may
+change. Otherwise every form runs under your Application Default Credentials, whatever they are -
+your own Google Account sign-in, a dev box's workload identity federation credential, a service
+account key, or a VM's or pod's metadata-server identity - and only on a machine with none does it
+use your gcloud login. The CLI asks the first `gcloud` on your `PATH` for that login
+(`gcloud auth list`, then `gcloud auth print-access-token`), so gcloud keeps it fresh, and its own
+error says when you must run `gcloud auth login` again; the CLI reads none of gcloud's files.
+gcloud runs with its log files off and prints the token to the CLI alone, and with impersonation,
+an access token file and a credential file override cleared wherever they are set, so the token is
+that login's.
 
-Your gcloud login is the account `gcloud auth list` names by a plain email address: not a service
-account (`…gserviceaccount.com`), and not a workload or workforce identity federation login
-(`principal://…`). Where it lists more than one person, the command uses the one
-`CLOUDSDK_CORE_ACCOUNT` names, and a command it prints for running again keeps that variable:
+The login is the one gcloud itself would use: the one `CLOUDSDK_CORE_ACCOUNT` names, else the
+active one, whatever kind of account it is. An account `CLOUDSDK_CORE_ACCOUNT` names that gcloud
+holds no login for is refused, never replaced by another login. A command the CLI prints for
+running again keeps the variable:
 
 ```sh
 CLOUDSDK_CORE_ACCOUNT=ada@example.com agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
 ```
 
-`GOOGLE_APPLICATION_CREDENTIALS`, when you set it, names the credentials every form uses, and the
-CLI never replaces them with your gcloud login: a write under a machine's credentials named there
-is refused.
+`GOOGLE_APPLICATION_CREDENTIALS`, when you set it, names the Application Default Credentials every
+form uses, and the CLI never replaces them with your gcloud login.
 
-When you have made your writes, remove that sign-in from the machine, so nothing else that runs as
-your user there can use it:
+When you have made your writes, remove a sign-in you made for them from the machine, so nothing
+else that runs as your user there can use it:
 
 ```sh
 gcloud auth revoke '<your email>'
@@ -85,38 +87,106 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 Every line names the store it wrote to or read, so a secret is never taken for one of the same
 name in another store.
 
-On GCP the same command writes as you on a dev box too: it uses your gcloud login where the
-machine's Application Default Credentials are its own identity, and so does every write below.
+Every form below runs under the same credential, on GCP as on AWS, and a write the store's IAM
+refuses names the identity it refused ([Which sign-in may do what](#which-sign-in-may-do-what)).
 
 - **The name** is the one agents ask for, and the environment variable their command gets it in:
   uppercase letters, digits and single underscores, starting with a letter. In Secrets Manager it
   is `<namespace>demo-deploy-token`. Any other name is refused at once (exit 2).
-- **`--owner me`** writes your sign-in's email in lowercase: your Identity Center session name
-  (AWS) or the Google account the write runs as (GCP: your Application Default Credentials', or
-  your gcloud login's). It must be an email the broker accepts, or the command refuses before
-  writing. The broker matches it against the email a person signs in to the broker's approval page
-  with (and to Dispatch, for a machine login), so `me`
+- **`--owner me`** writes the email of the person your credential names, in lowercase: your
+  Identity Center session name (AWS) or the email Google's userinfo endpoint answers for the token
+  the command runs under (GCP). Where the credential names no person - a machine's role, a service
+  account, or a token minted without an email scope, which Google will not name - the command
+  refuses `me` before it reads the value, and **`--owner <email>`** names the owner outright,
+  written in lowercase whatever case you give it. Either must be an email the broker accepts, or
+  the command refuses before writing. The broker matches it against the email a person signs in to
+  the broker's approval page with (and to Dispatch, for a machine login), so `me`
   names you where that session name or Google account is the same email. **`--owner shared`**
   makes the secret everyone's. GCP stores owner and tier as the secret's **annotations**, never
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
-- **`--kind`** is optional. Use `github-app` for a GitHub App key and `google-login` for an
-  authorized-user Google login. Use `none`, or omit the flag, for a stored secret. A kind also
+- **`--kind`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
+  authorized-user Google login, and `google-service-account` for one Google service account the
+  broker mints an access token as, whose stored value names that account:
+  `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`. That last one is an
+  administrator's to write and to set a new value for, not a self-service step, even for the
+  person who owns it: which account the broker mints for is the deployment's choice, bound to the
+  secret's name in `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to
+  nothing releases no token at all, however good its value. Ask whoever runs your deployment to
+  create it and bind it.
+  Use `none`, or omit the flag, for a stored secret. A kind also
   writes `mint-service-account: kind-secret`, which makes an earlier broker refuse the secret
   rather than serve its stored key.
 - **`--github-owners`** is required with `--kind github-app`, and refused with any other kind. It
   lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
-- **`--max-grant`** is optional. It is the longest `--ttl` a request for this secret may use.
+- **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
+  lowercase sign-in email, services by the name the deployment registers them under — separated
+  by spaces, so the shell quotes it: `--requesters "ada@example.com legion-daemon"`. Nobody else
+  may ask, whatever the owner and tier allow. The list bounds no grant by itself: an ordinary
+  secret keeps whatever `--max-grant` you give it, or none, so your own mail and Drive logins
+  stay at their tier and are capped by nothing. A `google-service-account` secret is served to
+  the one person who owns it, so the administrator who writes it gives it that person's own
+  address: `--owner <their email> --requesters <their email>`. With `--tier human` it may name
+  registered services beside that owner, so a service's pod can ask and the owner approves each
+  request; with `--tier agent` it may not, and neither may a secret the deployment binds to a
+  `dev-<name>` account, whose token is that one person's own. A comma, an email with a
+  capital letter and a list that names nobody are refused
+  before anything is written. Whether an entry naming a service is one your deployment registers
+  is the broker's to say
+  ([what the broker answers after a write](#what-the-broker-answers-after-a-write)).
+- **`--scopes`** is optional, and read with `--kind google-service-account` alone; with any other
+  kind it is refused before anything is written. It lists the OAuth scopes the minted token
+  carries, each the part of a Google scope after `https://www.googleapis.com/auth/`, separated by
+  spaces, so the shell quotes it: `--scopes "cloud-platform bigquery"`. Without it the token
+  carries `cloud-platform` alone. The short names keep the list inside an AWS tag value's 256
+  characters. A comma, a whole scope URL, a capital letter, and a scope named twice are each
+  refused before anything is written.
+- **`--admin true`** is optional. It marks a secret whose grant is an administrator's, which the
+  broker cannot read off the kind: an admin console password and a personal API key are both
+  stored strings. Such a secret is `--tier human`, names its `--requesters`, and takes a
+  `--max-grant` of an hour or less, so a person approves every release, only someone it names may
+  ask, and the grant is short enough to review while it is live. A person approves every release
+  of one even where a deployment runs a model judge: the judge refuses an administrator's
+  secret, so no airlock rules entry can move one of its requests off the person who approves it
+  ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
+- **`--shape`** is optional. It says what the stored value is, so the broker knows what it may do
+  to that value before it spends it. **`--shape token`** is a one-line credential, an API key or a
+  bearer token: the broker removes the whole trailing run of carriage returns and line feeds
+  before it hands the value over, unless the value is nothing but line endings, which it leaves as
+  it is. **`--shape document`** is a value whose every byte is part of it, a PEM key or a JSON
+  file: the broker removes nothing. A secret with no tag is read by the broker's own reading of
+  the value: that trailing run goes only where the rest of the value is not empty and holds no
+  carriage return and no line feed, so a PEM document keeps the line feed that ends it. Any word
+  but `token` and `document` is refused before anything is written.
+- **`--max-grant`** is optional, except with `--admin true` and with
+  `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
+  `--ttl` a request for this secret may use.
   It must be a duration of at least one second.
+- **`--default-grant session`** is optional. A request with no `--ttl` for secrets that all carry it
+  gets a grant that lasts until its session ends, instead of the default: 15 minutes when any
+  secret the request names is human tier, and 12 hours otherwise.
 - **The value.** At a terminal the CLI reads one hidden line. Enter or Ctrl-D ends it; Backspace,
   Ctrl-W and the terminal's kill-line character edit it. An unhandled control byte, including
   Ctrl-S, Ctrl-Q, and Ctrl-C, Ctrl-\\ or Ctrl-Z inside a bracketed paste, refuses the value. The
   prompt keeps discarding through Enter or Ctrl-D and the paste's end before reporting the error
   and naming the pipe command. Anywhere
-  else the CLI reads standard input to its end, less one trailing newline. Empty values and
+  else the CLI reads standard input to its end. The CLI then reads what it stores by the same rule
+  the broker spends a value under, the secret's `--shape` above: a token loses its whole trailing
+  run of carriage returns and line feeds, a document loses nothing, and a value whose secret
+  carries no shape tag loses that run only where the rest of it is not empty and holds no carriage
+  return and no line feed. Where that rule removes nothing, one final line feed goes, so `echo`
+  and a file that ends in a newline store the value without one. `secret set` reads the secret's
+  own shape tag first, so a document's owner stores a document. Empty values and
   invalid UTF-8 are refused (exit 2) and write nothing.
+
+**Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
+nothing from its value. The CLI still removes one final line feed wherever the rule removes
+nothing, which covers a document and a value holding a line ending inside it, so pipe one more line
+ending than the value needs. For a value the rule trims, a one-line credential under
+`--shape token` or under no shape tag at all, no number of piped endings survives, so
+`--shape document` is the only way to keep one.
 
 The CLI checks your sign-in before it asks for the value, so a refused sign-in never has you type a
 secret for nothing. The secret is created on the broker's key with its tags, and the broker serves
@@ -195,39 +265,31 @@ $ agent-secrets secret list
 agent-secrets secret list: your AWS sign-in arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com is in account 999999999999, but the agent secrets are in account 111122223333: sign in to account 111122223333 (--profile or AWS_PROFILE names the sign-in)
 ```
 
-A write (`create`, `set`, `retag`, `delete`, `restore`) also refuses any sign-in that is not a
-person's own Identity Center sign-in in that account, naming what it found, so a machine's role,
-an assumed service role or an IAM user writes no secret:
+That account check is the one check the CLI makes of a sign-in. A write (`create`, `set`, `retag`,
+`delete`, `restore`) runs under any sign-in in that account - a person's Identity Center sign-in,
+a machine's role, an assumed service role, an IAM user - and on GCP under any credential the CLI
+found ([Before you start](#before-you-start)), since the store's IAM, not this CLI, decides what a
+sign-in may change. Where IAM refuses one, the refusal names the identity it refused - the AWS
+sign-in's ARN, or on GCP the lent token, the gcloud login, or what the Application Default
+Credentials are, never a file path:
+
+```console
+$ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
+agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused Application Default Credentials of type "external_account" acting as robot@example-project.iam.gserviceaccount.com; looked in GCP Secret Manager project 100000000001
+```
+
+`--owner me` is the one place a sign-in must name a person. Under one that names none, the command
+refuses `me` (exit 2) before it reads the value, and `--owner <email>` names the owner instead:
 
 ```console
 $ agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
-agent-secrets secret create: arn:aws:sts::111122223333:assumed-role/example-devbox-instance-role/i-0abc is not a person's Identity Center sign-in: a secret is written under your own sign-in to account 111122223333 (aws sso login, then --profile or AWS_PROFILE), never a machine's role
+agent-secrets secret create: --owner me: arn:aws:sts::111122223333:assumed-role/example-devbox-instance-role/i-0abc is no IAM Identity Center sign-in, so it names no person: name the owner with --owner <email>; looked in AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-GCP write checks are the same shape, with one difference: where the Application Default
-Credentials are not a person's own Google Account sign-in (a service account key file, a workload
-identity federation credential such as a dev box's, a workforce identity federation sign-in, or a
-GCE/GKE metadata-server identity), a write runs under your gcloud login
-([Before you start](#before-you-start)) rather than being refused, and leaves those credentials as
-they are. It is refused, naming what it found, only where gcloud has no login to lend:
-
-```console
-$ agent-secrets secret create DEMO_DEPLOY_TOKEN --owner me --tier agent
-agent-secrets secret create: a secret is written under your own Google sign-in, never this machine's (its Application Default Credentials are credentials of type "external_account"), so a write uses your gcloud login, but gcloud holds no person's login: sign in once with `gcloud auth login`, which leaves this machine's own credentials as they are
-```
-
-A machine's credentials that `GOOGLE_APPLICATION_CREDENTIALS` names are refused for a write
-rather than replaced, since the variable is your own choice.
-
-GCP has no wrong-account read check: every call already names `projects/<project number>/...`
+GCP has no wrong-account check: every call already names `projects/<project number>/...`
 explicitly in the resource, so IAM on that resource, not this CLI, is what decides whether a read
-succeeds.
-
-A read (`list`, `show`) takes any sign-in the cloud's own IAM lets read the namespace's secrets, a
-machine's role or service account included. These
-checks are the CLI's own; what a sign-in may actually read or change is each cloud's IAM to decide,
-and [Operating the broker](/legion/broker/operate/#people-who-manage-secrets) lists the calls each
-form makes.
+or a write succeeds. [Operating the broker](/legion/broker/operate/#people-who-manage-secrets)
+lists the calls each form makes.
 
 ## See what is there
 
@@ -235,10 +297,10 @@ form makes.
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND          MAX_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  1h         yes    -        -
+NAME               OWNER            TIER   KIND          SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  -      1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -256,7 +318,13 @@ secret_name: example/agent-secrets/demo-deploy-token
 owner: ada@example.com
 tier: agent
 kind: -
+github_owners: -
+requesters: -
+scopes: -
+admin: -
+shape: -
 max_grant: -
+default_grant: -
 created: 2026-10-06T20:31:08Z
 last_changed: 2026-10-06T20:31:08Z
 version: 8ae2ea20-8e93-4f1a-b3d1-2e5396ecef72 AWSCURRENT
@@ -278,7 +346,7 @@ input, which is how a value of more than one line goes in. The broker never keep
 reads it from Secrets Manager each time a session reads a grant, so the next read of a live grant
 gets the new one.
 
-## Change its owner, tier, kind or max grant
+## Change its owner, tier, kind, requesters or max grant
 
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
@@ -286,17 +354,23 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--max-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
 
 `--kind none` removes the kind tag and the `mint-service-account` tag written with it,
-`--github-owners none` removes the GitHub owners and `--max-grant none` removes the max grant. A
+`--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
+ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
+`--admin none` removes the administrator's mark, `--shape none` removes the shape, so the broker
+reads the value for itself again, `--max-grant none` removes the max grant, and
+`--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
 So is a retag that would leave a `github-app` secret without `--github-owners`, as the broker would
-then refuse to serve it, and one that names `--github-owners` on a secret of another kind.
+then refuse to serve it, one that names `--github-owners` on a secret of another kind, one that
+names `--scopes` on a secret of another kind, and one that would leave an `admin` or
+`google-service-account` secret without a `--max-grant` of an hour or less.
 Run the removal and the other change as two retags:
 
 ```console
@@ -411,10 +485,10 @@ that moment is both), and the **earliest** it can be purged:
 
 ```console
 $ agent-secrets secret list
-NAME               OWNER            TIER   KIND  MAX_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -          yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -          yes    -                     -
+NAME               OWNER            TIER   KIND  SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -      -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -      -          -              yes    -                     -
 EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
 ```
 
@@ -460,6 +534,22 @@ agent-secrets secret retag: the broker at secrets.internal.example refuses DEMO_
 ```
 
 Here the secret has no value; `secret set DEMO_EMPTY_KEY` gives it one, and the broker serves it.
+
+A `requesters` entry naming a service is answered the same way. This CLI holds no list of the
+services a deployment registers, so it checks such an entry's shape and nothing more; the broker
+is what knows the names, and it refuses a secret naming one it does not register with
+`reason=requesters-malformed`, after the write, with the list already in the store. Retag the
+secret with the name the deployment registers, and the broker serves it:
+
+```console
+$ agent-secrets secret retag DEMO_DEPLOY_TOKEN --requesters "ada@example.com legion-daemn"
+retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-east-1 (owner=ada@example.com, tier=agent)
+broker: refusing DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1 (reason=requesters-malformed)
+agent-secrets secret retag: the broker at secrets.internal.example refuses DEMO_DEPLOY_TOKEN after the write to AWS Secrets Manager account 111122223333 in us-east-1 (reason=requesters-malformed)
+$ agent-secrets secret retag DEMO_DEPLOY_TOKEN --requesters "ada@example.com legion-daemon"
+retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-east-1 (owner=ada@example.com, tier=agent)
+broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
+```
 
 When the broker cannot be asked at all (it is unreachable, or its
 [reread limit](/legion/broker/operate/#network-and-trust) refuses the call), the write still stands

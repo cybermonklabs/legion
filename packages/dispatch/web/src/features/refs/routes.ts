@@ -1,4 +1,5 @@
 import {
+  ASK_URGENCIES,
   decodeBlockId,
   hasControlCharacter,
   isSessionId,
@@ -10,6 +11,8 @@ import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
+import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
   type BlockTarget,
@@ -24,12 +27,16 @@ import { pageInBound, routeInBound } from "./target-id";
 export type IssueRoute =
   | { key: string; kind: "issue" }
   | ({ key: string; kind: "spec" } & BlockTarget)
+  | { key: string; kind: "verification" }
+  | { key: string; kind: "plan" }
   | { key: string; kind: "conversation" }
   | { key: string; kind: "activity" }
+  | { key: string; kind: "decisions" }
   | { key: string; kind: "children" }
   | { key: string; kind: "artifacts" }
+  | { key: string; kind: "collaborators" }
   | ({ key: string; kind: "artifact"; slug: string; version?: number } & BlockTarget)
-  | { key: string; kind: "ask"; id: string }
+  | ({ key: string; kind: "ask"; id: string } & BlockTarget)
   | ({ key: string; kind: "comment"; id: string } & BlockTarget)
   | ({ key: string; kind: "message"; id: string } & BlockTarget);
 
@@ -60,20 +67,119 @@ export type AgentArtifactRoute = {
   version?: number;
 };
 export type DispatchReferenceRoute = IssueRoute | ProjectDocumentRoute | AgentArtifactRoute;
+/**
+ * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
+ * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
+ * `unassigned` - because a person's email is not a word this page invented, so it rides in
+ * `InboxRoute.assignees` rather than in `filters` below.
+ */
+export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
+export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
+
+/** The four dimensions whose chosen values are comma lists in the address. */
+export const INBOX_FILTER_FIELDS = ["priority", "urgency", "type", "project"] as const;
+export type InboxFilterField = (typeof INBOX_FILTER_FIELDS)[number];
+
+/** How the list is ordered, `?sort=`; `newest` is the default and is left out of the address. */
+export const INBOX_SORTS = ["newest", ...INBOX_DIMENSIONS] as const;
+export type InboxSort = (typeof INBOX_SORTS)[number];
+
+/** How the list is banded, `?group=`; `priority` is the default and is left out of the address.
+ *  `waiting-on` is the turn banding the Inbox had before it had any other, the one
+ *  `?section=needs-you` narrows to: the address keeps that older name for the link that was
+ *  already written, and Group by says `waiting-on` for the same idea. */
+export const INBOX_GROUP_BYS = [...INBOX_DIMENSIONS, "waiting-on", "none"] as const;
+export type InboxGroupBy = (typeof INBOX_GROUP_BYS)[number];
+
+/** Which of the reader's two lists is shown, the View menu's **Show**: their Inbox - every
+ *  undismissed row, read or not - or what they have dismissed out of it. `inbox` is the default
+ *  and is left out of the address, where the other is `?show=dismissed`. */
+export const INBOX_SHOWS = ["inbox", "dismissed"] as const;
+export type InboxShow = (typeof INBOX_SHOWS)[number];
+
+/** The value every filter uses for a row the field says nothing about: an issue with no
+ *  priority, a thread with no urgency, a row belonging to no project. */
+export const NO_FILTER_VALUE = "none";
+
+/** The values each filter field offers, in the order the control lists them. A project key is
+ *  whatever the workspace holds, so that field takes any non-empty word and `none`. */
+export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] as const;
+export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
+export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
+
 /** The Inbox at `/`, optionally narrowed to one agent's asks (`?agent=<session id>`); with
- *  `section=needs-you` only the asks waiting on the viewer are shown. */
+ *  `section=needs-you` only the asks waiting on the viewer are shown. Every field below is
+ *  absent while it holds its default, so a plain `/` is the Inbox as it opens. */
 export interface InboxRoute {
   agent?: string;
-  /** The ask the Inbox has selected, the one its reading pane shows: an ask id. The address is
-   *  the whole memory of that selection, so a link carries the reader's place in the list. */
+  /** The row the Inbox has selected, the one its reading pane shows: an ask's id, or a thread's
+   *  `reply:<thread id>` / `agent:<message id>` (`rowId`, `features/inbox/list-row.ts`). The
+   *  address is the whole memory of that selection, so a link carries the reader's place. */
   item?: string;
   section?: "needs-you";
+  /** The text the Inbox's search box narrows the list by, as typed. It is a field of the route
+   *  rather than a search parameter of its own because `buildInboxPath` rebuilds the whole query
+   *  string from this type and `usePaneSelection` navigates with it on every selection change, so
+   *  a parameter outside the type would be dropped by the next `j`. */
+  q?: string;
   /** Who the listed asks are for. Absent is the page's default, the reader's own work; an empty
    *  array is the cleared filter, every question; a value is a person's lowercase email or the
    *  literal `unassigned`. */
   assignees?: readonly string[];
+  /** `?show=dismissed`, the View menu's **Show** switch on **Dismissed**: what the reader has
+   *  dismissed out of their Inbox, newest dismissal first. Absent is the Inbox itself, every
+   *  undismissed row, read or not. */
+  show?: "dismissed";
+  sort?: InboxSort;
+  group?: InboxGroupBy;
+  /** The chosen values of each filter field, one comma list per field in the address. A field
+   *  with nothing chosen is absent, never an empty array. */
+  filters?: Partial<Record<InboxFilterField, readonly string[]>>;
 }
-export type IssueTab = "spec" | "conversation" | "children" | "artifacts" | "activity";
+export type IssueTab =
+  | "spec"
+  | "verification"
+  | "plan"
+  | "conversation"
+  | "children"
+  | "artifacts"
+  | "activity"
+  | "decisions"
+  | "collaborators";
+
+/** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
+export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
+
+/** The issue tabs whose whole route is the tab itself: no block, no slug, no id. Each one is
+ *  parsed from the segment of its own name, built as `<issue>/<kind>`, shown as `<KEY> <kind>`
+ *  and is the tab of its own name, so the chains below hold the six in one arm rather than one
+ *  apiece and a seventh tab is this list. The spec, the conversation and the decisions stay out
+ *  of it: a spec route carries a block, the conversation is written `log` in a reference and
+ *  `conversation` in a path, and the Decisions tab is a view of the issue's `decisions.md`, which
+ *  a reference names as that document. */
+const PLAIN_ISSUE_TABS = [
+  "verification",
+  "plan",
+  "activity",
+  "children",
+  "artifacts",
+  "collaborators",
+] as const;
+
+type PlainIssueTab = (typeof PLAIN_ISSUE_TABS)[number];
+
+/** The plain tab a path segment names, or `undefined` for anything else. */
+function plainIssueTab(value: string): PlainIssueTab | undefined {
+  return PLAIN_ISSUE_TABS.find((tab) => tab === value);
+}
+
+type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
+
+/** Whether the route is one of those tabs, narrowing it for the builders below and leaving the
+ *  rest of the union to the arms that follow. */
+function isPlainIssueRoute(route: DispatchRoute | AgentArtifactRoute): route is PlainIssueRoute {
+  return PLAIN_ISSUE_TABS.some((tab) => tab === route.kind);
+}
 
 const projectKeyPattern = "[A-Z][A-Z0-9]{1,9}";
 const issueKeyPattern = `${projectKeyPattern}-[1-9]\\d*`;
@@ -97,6 +203,8 @@ const agentArtifactReferencePattern = new RegExp(
   "u"
 );
 const agentArtifactPathPattern = /^\/agents\/([^/]+)\/artifacts\/([^/]+)$/;
+/** One machine's page: `/machines/<machine>`, the machine name as one percent-encoded segment. */
+const machinePathPattern = /^\/machines\/([^/]+)$/;
 
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
@@ -125,17 +233,14 @@ export function issueTabForRoute(
   route: IssueRoute,
   artifact: Pick<Artifact, "kind" | "primary"> | undefined
 ): IssueTab {
-  if (route.kind === "children") {
-    return "children";
+  if (isPlainIssueRoute(route)) {
+    return route.kind;
   }
   if (route.kind === "conversation") {
     return "conversation";
   }
-  if (route.kind === "activity") {
-    return "activity";
-  }
-  if (route.kind === "artifacts") {
-    return "artifacts";
+  if (route.kind === "decisions") {
+    return "decisions";
   }
   if (route.kind === "artifact") {
     return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
@@ -229,17 +334,12 @@ function parseIssueReference(key: string, target: string | undefined): IssueRout
   if (target === "spec") {
     return { key, kind: "spec" };
   }
+  const plain = plainIssueTab(target);
+  if (plain !== undefined) {
+    return { key, kind: plain };
+  }
   if (legacyLogReferencePattern.test(target) || target === "conversation") {
     return { key, kind: "conversation" };
-  }
-  if (target === "activity") {
-    return { key, kind: "activity" };
-  }
-  if (target === "children") {
-    return { key, kind: "children" };
-  }
-  if (target === "artifacts") {
-    return { key, kind: "artifacts" };
   }
   const artifact = target.match(issueArtifactReferencePattern);
   if (artifact !== null) {
@@ -337,17 +437,15 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
   if (target === "spec") {
     return { key, kind: "spec" };
   }
+  const plain = plainIssueTab(target);
+  if (plain !== undefined) {
+    return { key, kind: plain };
+  }
   if (target === "conversation") {
     return { key, kind: "conversation" };
   }
-  if (target === "activity") {
-    return { key, kind: "activity" };
-  }
-  if (target === "children") {
-    return { key, kind: "children" };
-  }
-  if (target === "artifacts") {
-    return { key, kind: "artifacts" };
+  if (target === "decisions") {
+    return { key, kind: "decisions" };
   }
   const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
   if (artifact !== null) {
@@ -417,11 +515,39 @@ export function parseAgentArtifactPath(
   return agentArtifactRoute(session, match[2] ?? "", new URLSearchParams(search).get("v"));
 }
 
+/** The page of one machine's tmux layout (`features/machines/MachinePage.tsx`). The machine name
+ *  is percent-encoded as a session id is, because it holds dots and may be a whole domain name.
+ *  The builder lives here, with every other path the app builds, so a page links to a machine
+ *  without importing `features/machines`. */
+export function buildMachinePath(host: string): string {
+  return `/machines/${encodeURIComponent(host)}`;
+}
+
+/** The `?machine=` the Agents page filters on, named once here so the page reading it
+ *  (`useAgentMachine`) and the links building it cannot drift apart. */
+export const AGENTS_MACHINE_PARAM = "machine";
+
+/** The Agents page narrowed to one machine, `/agents?machine=<host>`: the link a machine's own
+ *  page sends a reader to its sessions by. */
+export function buildAgentsMachinePath(host: string): string {
+  return `/agents?${new URLSearchParams({ [AGENTS_MACHINE_PARAM]: host })}`;
+}
+
+/** The machine `/machines/<machine>` names, its segment percent-decoded as every other segment
+ *  is (`decodedSegment`); `undefined` for any other path and for a segment naming nothing. */
+export function parseMachinePath(pathname: string): string | undefined {
+  const match = pathname.match(machinePathPattern);
+  return match === null ? undefined : decodedSegment(match[1] ?? "");
+}
+
 /** The project a route is about: a project path's own key, or an issue path's key without its
- *  number (an issue key is `<PROJECT>-<n>`, `issueKeyPattern` above); `undefined` elsewhere. */
+ *  number (`issueProject`, the one key-to-project rule); `undefined` elsewhere. */
 export function routeProjectOf(pathname: string): string | undefined {
   const issueKey = parseIssuePath(pathname)?.key;
-  return parseProjectPath(pathname)?.project ?? issueKey?.slice(0, issueKey.lastIndexOf("-"));
+  return (
+    parseProjectPath(pathname)?.project ??
+    (issueKey === undefined ? undefined : issueProject(issueKey))
+  );
 }
 
 /** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as
@@ -460,12 +586,11 @@ export function nodeRouteFromHref(
  * control character, naming a slug Dispatch never gives a document, or that is no issue/document
  * reference names nothing. A document page carrying `?comment=`/`?ask=` names that item whatever
  * its fragment, at any version of the document: the dashboard writes a document block's fragment
- * beside `?comment=`, never a block of the comment. A version of the spec (`?v=N`) is the spec's
- * artifact at N, as `dispatch read` reads the page. The fragment names a block of a live
- * document, or of the issue comment or message its own page shows; no block of an ask, nor of a
- * document's version page, whose stored text holds no block ids (`withBlock`). A raw `@` in a
- * fragment is no pin, since pins are written only in `dispatch://` references; any other fragment
- * leaves the page. */
+ * beside it, never a block of the item. A version of the spec (`?v=N`) is the spec's artifact at
+ * N, as `dispatch read` reads the page. The fragment names a block of a live document, or of the
+ * issue ask, comment or message its own page shows; no block of a document's version page, whose
+ * stored text holds no block ids (`withBlock`). A raw `@` in a fragment is no pin, since pins are
+ * written only in `dispatch://` references; any other fragment leaves the page. */
 function pageRoutes(
   href: string,
   appOrigin: string
@@ -488,6 +613,14 @@ function pageRoutes(
     parseAgentArtifactPath(url.pathname, url.search);
   if (route === undefined || (isProjectRoute(route) && route.kind !== "document")) {
     return undefined;
+  }
+  // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
+  // whatever its fragment, as the server's `text` and the agent client read the page.
+  if (route.kind === "decisions") {
+    return {
+      block: undefined,
+      page: { key: route.key, kind: "artifact", slug: DECISIONS_DOCUMENT_SLUG },
+    };
   }
   if ("slug" in route && !artifactSlugOnlyPattern.test(route.slug)) {
     return undefined;
@@ -572,19 +705,16 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   if (route.kind === "spec") {
     return `${issue}/spec${block}`;
   }
+  if (isPlainIssueRoute(route)) {
+    return `${issue}/${route.kind}`;
+  }
   // The conversation keeps the `log` spelling every reference written before the Activity tab
   // existed used; activity, newer, is spelled as its own path is.
   if (route.kind === "conversation") {
     return `${issue}/log`;
   }
-  if (route.kind === "activity") {
-    return `${issue}/activity`;
-  }
-  if (route.kind === "children") {
-    return `${issue}/children`;
-  }
-  if (route.kind === "artifacts") {
-    return `${issue}/artifacts`;
+  if (route.kind === "decisions") {
+    return `${issue}/artifact/${DECISIONS_DOCUMENT_SLUG}`;
   }
   if (route.kind === "artifact") {
     return `${issue}/artifact/${encodeURIComponent(route.slug)}${
@@ -724,7 +854,7 @@ export function itemRoute(
  *  the shape every in-app thread link already uses. A typed ask block is named by its block
  *  fragment, which is how a decision block is focused, rather than by the ask's id. */
 export function documentItemPath(
-  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "slug">,
+  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
   item: { blockID?: string; id: string; kind: "ask" | "comment" }
 ): string {
   const path = buildReferencePath(documentRoute(artifact));
@@ -749,6 +879,9 @@ export function shortForm(route: DispatchReferenceRoute): string {
     const base = `${route.project}/${route.slug}`;
     return route.item === undefined ? `${base}${block}` : `${base} ${route.item.kind}${block}`;
   }
+  if (isPlainIssueRoute(route)) {
+    return `${route.key} ${route.kind}`;
+  }
   switch (route.kind) {
     case "issue":
       return route.key;
@@ -756,16 +889,12 @@ export function shortForm(route: DispatchReferenceRoute): string {
       return `${route.key} spec${block}`;
     case "conversation":
       return `${route.key} log`;
-    case "activity":
-      return `${route.key} activity`;
-    case "children":
-      return `${route.key} children`;
-    case "artifacts":
-      return `${route.key} artifacts`;
+    case "decisions":
+      return `${route.key} decisions`;
     case "artifact":
       return `${route.key} ${route.slug}${block}`;
     case "ask":
-      return `${route.key} ask`;
+      return `${route.key} ask${block}`;
     case "comment":
       return `${route.key} comment${block}`;
     case "message":
@@ -819,17 +948,14 @@ export function buildIssuePath(route: IssueRoute): string {
   if (route.kind === "spec") {
     return `${issue}/spec`;
   }
+  if (isPlainIssueRoute(route)) {
+    return `${issue}/${route.kind}`;
+  }
   if (route.kind === "conversation") {
     return `${issue}/conversation`;
   }
-  if (route.kind === "activity") {
-    return `${issue}/activity`;
-  }
-  if (route.kind === "children") {
-    return `${issue}/children`;
-  }
-  if (route.kind === "artifacts") {
-    return `${issue}/artifacts`;
+  if (route.kind === "decisions") {
+    return `${issue}/decisions`;
   }
   if (route.kind === "artifact") {
     const artifact = `${issue}/artifacts/${encodeURIComponent(route.slug)}`;
@@ -860,12 +986,25 @@ export function buildProjectPath(route: ProjectRoute): string {
   return search === "" ? document : `${document}?${search}`;
 }
 
+/** The values a filter field accepts, or undefined for the one field whose vocabulary is the
+ *  workspace's own: a project key is whatever somebody created, so only `none` is reserved. */
+function filterVocabulary(field: InboxFilterField): readonly string[] | undefined {
+  if (field === "priority") return INBOX_PRIORITY_VALUES;
+  if (field === "urgency") return INBOX_URGENCY_VALUES;
+  return field === "type" ? INBOX_TYPE_VALUES : undefined;
+}
+
 /**
  * The page's `?assignee=` deliberately spells its default the opposite way round from the
  * server's own `?assignee=` on `GET /api/v1/inbox`
  * (`packages/envoy/internal/dispatch/api/inbox.go`), where an absent parameter means everybody:
  * here absent means the reader alone and `assignee=everyone` means everybody, so the same name
  * now means different things on the two sides and neither reads the other's URL.
+ *
+ * Every other field is absent while it holds its default, so the Inbox as it opens is `/` and a
+ * link says only what the reader changed. A value this build does not know - an older link, a
+ * typo - is dropped rather than refused: the list is a client-side split of what the two reads
+ * answered, so an unknown word would match no row anyway.
  */
 export function parseInboxSearch(search: string): InboxRoute {
   const params = new URLSearchParams(search);
@@ -880,6 +1019,12 @@ export function parseInboxSearch(search: string): InboxRoute {
   }
   if (params.get("section") === "needs-you") {
     route.section = "needs-you";
+  }
+  // Neither trimmed nor cut: a reader mid-word has a trailing space that is part of what they
+  // typed, and the box rewrites no address a link arrived with.
+  const q = params.get("q");
+  if (q !== null && q !== "") {
+    route.q = q;
   }
   // Nothing refuses an email the page has never heard of: the filter is a client-side split of
   // one inbox response, so an unlisted or misspelled person simply matches no row.
@@ -897,6 +1042,38 @@ export function parseInboxSearch(search: string): InboxRoute {
   if (assignees.length > 0 || everyone) {
     route.assignees = assignees;
   }
+  if (params.get("show") === "dismissed") {
+    route.show = "dismissed";
+  }
+  const sort = params.get("sort");
+  if (sort !== null && sort !== "newest" && (INBOX_SORTS as readonly string[]).includes(sort)) {
+    route.sort = sort as InboxSort;
+  }
+  const group = params.get("group");
+  if (
+    group !== null &&
+    group !== "priority" &&
+    (INBOX_GROUP_BYS as readonly string[]).includes(group)
+  ) {
+    route.group = group as InboxGroupBy;
+  }
+  const filters: Partial<Record<InboxFilterField, readonly string[]>> = {};
+  for (const field of INBOX_FILTER_FIELDS) {
+    const vocabulary = filterVocabulary(field);
+    const chosen: string[] = [];
+    for (const raw of params.getAll(field)) {
+      for (const part of raw.split(",")) {
+        const value = part.trim();
+        if (value === "" || chosen.includes(value)) continue;
+        if (vocabulary !== undefined && !vocabulary.includes(value)) continue;
+        chosen.push(value);
+      }
+    }
+    if (chosen.length > 0) filters[field] = chosen;
+  }
+  if (Object.keys(filters).length > 0) {
+    route.filters = filters;
+  }
   return route;
 }
 
@@ -911,6 +1088,9 @@ export function buildInboxPath(route: InboxRoute = {}): string {
   if (route.section !== undefined) {
     query.set("section", route.section);
   }
+  if (route.q !== undefined) {
+    query.set("q", route.q);
+  }
   if (route.assignees !== undefined) {
     if (route.assignees.length === 0) {
       query.append("assignee", EVERYONE_FILTER_VALUE);
@@ -918,6 +1098,19 @@ export function buildInboxPath(route: InboxRoute = {}): string {
     for (const assignee of route.assignees) {
       query.append("assignee", assignee);
     }
+  }
+  if (route.show !== undefined) {
+    query.set("show", route.show);
+  }
+  if (route.sort !== undefined && route.sort !== "newest") {
+    query.set("sort", route.sort);
+  }
+  if (route.group !== undefined && route.group !== "priority") {
+    query.set("group", route.group);
+  }
+  for (const field of INBOX_FILTER_FIELDS) {
+    const chosen = route.filters?.[field];
+    if (chosen !== undefined && chosen.length > 0) query.set(field, chosen.join(","));
   }
   const search = query.toString();
   return search === "" ? "/" : `/?${search}`;
@@ -937,17 +1130,20 @@ export function routeHasMargin(pathname: string, search = ""): boolean {
   );
 }
 
-/** Whether this route is the Inbox page itself, the one place a peek at it has nothing to add. */
+/** Whether this route is the Inbox page itself, the one place a peek at it has nothing to add.
+ *  `app.tsx` renders `InboxPage` at `/credentials/*` as well, for an address kept from before
+ *  Dispatch's credential record page was deleted, and ranks `/credentials/machine`, a page of its
+ *  own, above that splat, as this does. */
 export function routeIsInbox(pathname: string): boolean {
-  return pathname === "/";
+  return (
+    pathname === "/" ||
+    (matchPath("/credentials/*", pathname) !== null &&
+      matchPath("/credentials/machine", pathname) === null)
+  );
 }
 
 /** The signed-in person's answers and ask replies (`AnswersPage`), linked from the Inbox page. */
 export const ANSWERS_PATH = "/answers";
-
-/** The threads the signed-in person wrote in where someone else has written since they last read
- *  them (`RepliesPage`), linked from the sidebar and the compact header's `Replies N`. */
-export const REPLIES_PATH = "/replies";
 
 /** The live agent view's route pattern, shared by the router and `routeFillsViewport`. */
 export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
@@ -961,4 +1157,11 @@ export const AGENT_LIVE_PATH = "/agents/:sessionId/live";
  */
 export function routeFillsViewport(pathname: string): boolean {
   return matchPath(AGENT_LIVE_PATH, pathname) !== null;
+}
+
+/** The session whose live view `pathname` names, and `undefined` on every other address. The
+ *  address is read here, beside the pattern, because a surface outside this module holds no
+ *  live route of its own: its link into a live view is `AgentName`'s (`biome.json`). */
+export function liveViewSessionOf(pathname: string): string | undefined {
+  return matchPath(AGENT_LIVE_PATH, pathname)?.params.sessionId;
 }

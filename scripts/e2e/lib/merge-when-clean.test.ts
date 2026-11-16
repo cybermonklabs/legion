@@ -1,12 +1,12 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
-// merge_when_clean and await_ready_merge (lib/workflow.sh) against a fake gh first on PATH.
-// merge_when_clean is the proof human's merge of a pull request no accepted READY covers: it reads
-// the pull request's state first and merges by hand only when nothing is armed. await_ready_merge
-// waits for the merge the daemon submits on an accepted READY and never merges by hand.
+// merge_when_clean and await_merger_merge (lib/workflow.sh) against a fake gh first on PATH.
+// merge_when_clean is the proof human's merge of a pull request the merger does not merge: it
+// reads the pull request's state first and merges by hand only when nothing is armed.
+// await_merger_merge waits for the merger agent's own merge and never merges by hand.
 //
 // The fake answers the merge record's GraphQL query from FAKE_GH_DIR/answers/<n>, one answer per
 // read in the order the proof reads (the last answer repeats), each the nine lines the query's
@@ -20,13 +20,13 @@ import { join } from "node:path";
 // delete is refused 422 when FAKE_GH_BRANCH_GONE is set, as GitHub refuses a branch its own
 // auto-delete already removed.
 const lib = join(import.meta.dir, "workflow.sh");
-const dir = mkdtempSync(join(tmpdir(), "merge-when-clean-test."));
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+const dir = temporaryDirectory("merge-when-clean-test");
 const bin = join(dir, "bin");
-mkdirSync(bin);
-writeFileSync(
-  join(bin, "gh"),
-  `#!/usr/bin/env bash
+beforeAll(() => {
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "gh"),
+    `#!/usr/bin/env bash
 set -euo pipefail
 state=$FAKE_GH_DIR
 printf '%s\\n' "\${*//$'\\n'/ }" >>"$state/calls"
@@ -49,8 +49,9 @@ case " $* " in
   *) echo "fake gh: no answer for $*" >&2; exit 1 ;;
 esac
 `,
-  { mode: 0o755 }
-);
+    { mode: 0o755 }
+  );
+});
 
 // The stage scripts' shell options, ERR trap and check helpers, then the lib, then the call and
 // its record.
@@ -111,7 +112,7 @@ type Fake = {
   mergeFail?: string;
   branchGone?: boolean;
   bound?: number;
-  fn?: "merge_when_clean" | "await_ready_merge";
+  fn?: "merge_when_clean" | "await_merger_merge";
 };
 let runs = 0;
 function run(reads: PullRequest[], flags = "--squash --delete-branch", fake: Fake = {}) {
@@ -168,17 +169,17 @@ describe("merge_when_clean", () => {
     );
   });
 
-  test("a pull request already merged is the daemon's submission: no hand merge, the branch deleted", () => {
+  test("a pull request already merged is the merger's own: no hand merge, the branch deleted", () => {
     const r = run([merged]);
     expect(r.status).toBe(0);
     expect(r.merges).toHaveLength(0);
-    expect(r.by).toBe("the daemon's submission");
+    expect(r.by).toBe("the merger's own merge");
     expect(r.commit).toBe(mergeCommit);
     expect(r.deletes).toEqual([
       `api -X DELETE repos/sjawhar/legion-smoke/git/refs/heads/${branch}`,
     ]);
     expect(r.stdout).toContain(
-      `sjawhar/legion-smoke#7 merged by the daemon's submission at ${mergeCommit}`
+      `sjawhar/legion-smoke#7 merged by the merger's own merge at ${mergeCommit}`
     );
     expect(r.stdout).toContain(`deleted sjawhar/legion-smoke's branch ${branch}`);
   });
@@ -191,7 +192,7 @@ describe("merge_when_clean", () => {
     expect(r.stderr).toBe("");
   });
 
-  test("without --delete-branch the daemon's merged pull request keeps its branch", () => {
+  test("without --delete-branch the merged pull request keeps its branch", () => {
     const r = run([merged], "--squash");
     expect(r.status).toBe(0);
     expect(r.merges).toHaveLength(0);
@@ -203,12 +204,10 @@ describe("merge_when_clean", () => {
     expect(r.status).toBe(0);
     expect(r.reads).toHaveLength(4);
     expect(r.merges).toHaveLength(0);
-    expect(r.by).toBe("the daemon's submission");
+    expect(r.by).toBe("the merger's own merge");
     expect(r.commit).toBe(mergeCommit);
     expect(r.deletes).toHaveLength(1);
-    const armed = r.stdout
-      .split("\n")
-      .filter((l) => l.includes("armed by the daemon's submission"));
+    const armed = r.stdout.split("\n").filter((l) => l.includes("is armed ("));
     expect(armed).toHaveLength(1);
     expect(armed[0]).toContain(
       `(auto-merge enabled at ${enabledAt} (SQUASH); mergeStateStatus BLOCKED): no hand merge`
@@ -220,7 +219,7 @@ describe("merge_when_clean", () => {
     expect(r.status).toBe(0);
     expect(r.reads).toHaveLength(3);
     expect(r.merges).toHaveLength(0);
-    expect(r.by).toBe("the daemon's submission");
+    expect(r.by).toBe("the merger's own merge");
     expect(r.commit).toBe(mergeCommit);
     expect(r.stdout).toContain(
       "(merge queue position 2, AWAITING_CHECKS; mergeStateStatus BLOCKED)"
@@ -246,14 +245,14 @@ describe("merge_when_clean", () => {
     );
   });
 
-  test("the race: a hand merge refused as already merged is the daemon's outcome", () => {
+  test("the race: a hand merge refused as already merged is the merger's outcome", () => {
     const r = run([clean, merged], "--squash --delete-branch", {
       mergeFail: "! Pull request sjawhar/legion-smoke#7 was already merged",
     });
     expect(r.status).toBe(0);
     expect(r.merges).toHaveLength(1);
     expect(r.reads).toHaveLength(2);
-    expect(r.by).toBe("the daemon's submission");
+    expect(r.by).toBe("the merger's own merge");
     expect(r.commit).toBe(mergeCommit);
     expect(r.deletes).toHaveLength(1);
     expect(r.stdout).toContain("the hand merge of sjawhar/legion-smoke#7 was refused");
@@ -307,10 +306,10 @@ describe("merge_when_clean", () => {
   });
 });
 
-describe("await_ready_merge", () => {
-  const fn = "await_ready_merge" as const;
+describe("await_merger_merge", () => {
+  const fn = "await_merger_merge" as const;
 
-  test("waits through BLOCKED for the daemon's merge, never merging by hand", () => {
+  test("waits through BLOCKED for the merger's merge, never merging by hand", () => {
     const r = run([blocked, blocked, merged], "--delete-branch", { fn });
     expect(r.status).toBe(0);
     expect(r.reads).toHaveLength(3);
@@ -321,7 +320,7 @@ describe("await_ready_merge", () => {
     ]);
   });
 
-  test("CLEAN with nothing armed is still the daemon's to merge: no hand merge, a timeout names it", () => {
+  test("CLEAN with nothing armed is still the merger's to merge: no hand merge, a timeout names it", () => {
     const r = run([clean], "--delete-branch", { fn, bound: 1 });
     expect(r.status).toBe(1);
     expect(r.merges).toHaveLength(0);

@@ -68,7 +68,7 @@ type commentEventThread struct {
 // reply to an open ask whom that ask waits on now that the reply is its newest
 // (commentEventThread.AskWaitingOn, under the same name the comment's event carries it).
 type commentWriteResponse struct {
-	model.Comment
+	shapedComment
 	AskWaitingOn string `json:"ask_waiting_on,omitempty"`
 }
 
@@ -90,6 +90,9 @@ func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *mo
 		ThreadRootID:            thread.ThreadRootID,
 		ReferenceChangesPayload: model.NewReferenceChangesPayload(changes),
 	}
+	// A body is bounded block by block, so it can be longer than one event carries: the event
+	// takes its first part and says so, and a reader gets the rest from the comment itself.
+	payload.Body, payload.BodyTruncated = model.EventBody(comment.Body)
 	if comment.ArtifactID == nil {
 		return payload, nil
 	}

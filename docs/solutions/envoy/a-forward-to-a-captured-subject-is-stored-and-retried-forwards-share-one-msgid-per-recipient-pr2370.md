@@ -14,8 +14,15 @@ module: packages/envoy
 
 # A forward to a captured subject is stored too, and its retries share one MsgId per recipient
 
+**Written before dispatch://INFRA-771, when a forward also drew a receipt.** Since that change a
+forward is stored only: the listener waits for the stream's acknowledgement alone and no session
+answers a receipt (`packages/envoy/AGENTS.md`, "Session consumers"). Everything below about the
+stored copy — one `Nats-Msg-Id` per message and recipient, the topic/subject mismatch as the
+forward's one in-band mark, and reading the envelope's `topic` rather than the subject — still
+holds; the header-and-replies note is the receipt's own history.
+
 When you send an envelope straight to a session's `notifications.agent.<id>` subject over core
-NATS (a request with a receipt, a forward of another topic's message), remember the notification
+NATS (a forward of another topic's message), remember the notification
 stream captures that subject:
 
 - Every attempt is stored. Give each attempt of one forward the same `Nats-Msg-Id`, keyed by the
@@ -32,7 +39,9 @@ stream captures that subject:
 
 ## Evidence
 
-- `packages/envoy/internal/bus/nats.go`: `ForwardMsgID`, set on every `RequestCoreTo` forward;
+- `packages/envoy/internal/bus/nats.go`: `ForwardMsgID`, which `RequestCoreTo` sets when its caller
+  passes it (since #2395: the publish route on every forward, the role lane only for a key that
+  names its event);
   the receipt test is `len(response.Data) == 0 && len(response.Header) == 0`.
 - `packages/envoy/internal/bus/request_core_test.go`,
   `TestRequestCoreToStoresOneCopyPerMessageAndRecipientAcrossAttempts`: two forwards to one

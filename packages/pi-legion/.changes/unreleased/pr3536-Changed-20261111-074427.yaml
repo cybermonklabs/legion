@@ -1,0 +1,5 @@
+kind: Changed
+body: The plugin declares daemon API contract 73, which adds `claimsToRefresh` to the daemon state and replaces the `plugin-task` wake kind with `plugin-refresh`.
+time: 2026-11-11T07:44:27.122527203Z
+custom:
+    Issue: pr3536

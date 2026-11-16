@@ -5,9 +5,10 @@
 # as `legion claude-bridge -- claude -p …` in its pane. The proof holds that the Claude Code
 # implementer registers its transcript as its session and takes its phase, is reminded by Claude
 # Code's own `Stop` hook when a turn of its ends with that phase still open, completes the phase
-# through the `legion` MCP tool's handoff_complete with a pushed `.legion/<issue>/` handoff commit,
-# and, once its pane is killed, comes back with `--resume` into the same Claude Code session, its
-# transcript's earlier turns intact and in its context.
+# through the `legion` MCP tool's handoff_complete naming the Dispatch handoff record it wrote with
+# `dispatch handoff-write` under that session, beside its pushed code commit, which carries no
+# `.legion/` path, and, once its pane is killed, comes back with `--resume` into the same Claude
+# Code session, its transcript's earlier turns intact and in its context.
 #
 # Run it as `LEGION_E2E_MODEL_ROUTE=<gateway|key-file> … bash scripts/e2e/claude-backend-tmux.sh`.
 # LEGION_E2E_MODEL_ROUTE is required, as Stage 2's and Stage 3's is, and picks how the Oh My Pi
@@ -36,12 +37,19 @@
 # that prints that copy (Claude Code's apiKeyHelper), so the key reaches no pane's environment, no
 # argv and no transcript.
 # The rig is Stage 3's without its GitHub ingress bridge: scratch
-# Postgres, NATS, Envoy listener and Dispatch, Legion's role Apps through the App key runner
-# (LEGION_E2E_APP_KEY_RUNNER, `agent-secrets` by default; this
-# deployment's own pair unless the four LEGION_E2E_*_APP_* inputs name another deployment's,
-# lib/github-apps.sh; each key is resolved by the daemon's private_key_command and once by
-# lib/app-logins.ts, which proves it is its id's App before the run writes anything, never in this
-# shell), and the smoke repository
+# Postgres, NATS, Envoy listener and Dispatch, Legion's role Apps from their own inputs
+# (lib/github-apps.sh; the implement App's id and the name of the secrets broker github-app secret
+# `agent-secrets` releases its installation tokens from, and the review App's id, are this
+# deployment's own unless LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and
+# LEGION_E2E_REVIEW_APP_ID name another deployment's, while LEGION_E2E_REVIEW_APP_KEY_COMMAND is
+# required and has no default: shell text that prints the review App's PEM private key on stdout,
+# which prerequisites runs once, here on the driver, in the operator's own environment — so it may
+# read their HOME and their own configuration — into $work/app-key/review/key.pem, 0600 and
+# removed on every exit: the daemon never runs that command, reads the key from that file through
+# a `cat` private_key_command, and mints and renews that App's tokens from the key itself; either
+# App is proved once to lib/app-logins.ts, which reads its bot login and
+# refuses a credential that is not its id's App's, before the run writes anything and never in
+# this shell), and the smoke repository
 # sjawhar/legion-smoke, where the implementer pushes a branch and opens no pull request.
 set -Eeuo pipefail
 
@@ -149,6 +157,10 @@ cleanup() {
   # the same.
   rm -f "$work/claude-model-key" "$work/claude-key-header" "$work/agent-model-key" "$work/agent-key-header"
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key goes with them, and for the same reason: prerequisites resolved
+  # the operator's key command into $work/app-key for the daemon to read, and $work itself is kept
+  # when a run fails.
+  rm -rf "$work/app-key" || true
   stop_tree "$watcher_pid"
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
@@ -168,6 +180,9 @@ cleanup() {
   printf "the run's evidence is %s\n" "$evidence" >&2
   [ -n "${ok:-}" ] || [[ $status =~ ^(129|130|143)$ ]] || [ ! -d "$evidence/model-gateway" ] ||
     bash "$root/scripts/e2e/lib/model-gateway-unserved.sh" --notes "$evidence/model-gateway" "$check_started" "$check" >&2 || true
+  # The review App's private key must be gone, whatever else the teardown did: the lib's own check
+  # of the directory the removals above were to take (lib/github-apps.sh, app_key_left).
+  app_key_left "$work/app-key" || exit 1
   return 0
 }
 trap cleanup EXIT
@@ -238,6 +253,9 @@ projects:
 gates:
   design: off
 admission_cap: 1
+# The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at
+# the default of 8 wakes a minute every wake after the first would spend those waits queueing.
+worker_wakes_per_minute: 0
 instructions: $work/instructions.md
 worker_backends:
   implementer: claude
@@ -561,7 +579,7 @@ if [ "$model_route" = key-file ]; then
 fi
 refuse_leftovers legion-e2ecc
 for tool in go docker jq curl python3 tmux bun mise gh jj pgrep claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-command -v "$app_key_runner" >/dev/null || fail "$app_key_runner, the App key runner LEGION_E2E_APP_KEY_RUNNER names, is required"
+command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's token_command runs, is required"
 [ "$model_route" != gateway ] || command -v hawk-token >/dev/null || fail "hawk-token is required under LEGION_E2E_MODEL_ROUTE=gateway"
 (umask 077 && tr -d '[:space:]' <"$key_file" >"$work/claude-model-key")
 [ -s "$work/claude-model-key" ] || fail "$key_file_var ($key_file) holds no key"
@@ -578,14 +596,16 @@ if [ -n "$model_base_url" ] && [ "$agent_key_file" != "$key_file" ]; then
   note "the Oh My Pi agents' key from $agent_key_file: $model_base_url accepts it"
 fi
 # Legion's two role Apps proved against GitHub before the run writes anything (lib/github-apps.sh);
-# legion.yaml's github_apps is the block proved.
-write_github_apps implement review
+# legion.yaml's github_apps is the block proved. The review App's key command runs once, here, in
+# this shell's own environment, into $work/app-key, which the daemon reads the key from and
+# cleanup removes.
+write_github_apps --key-dir "$work/app-key" implement review
 # The Bun on PATH must be the release the repository's .bun-version pins, the file
 # packages/claude-envoy/scripts/build.ts reads: the rig builds the run's claude-envoy with it, and
 # that build refuses any other (assertPinnedBun, LEGION-568). Checked here, before the first bun this
 # run starts (lib/app-logins.ts, just below), so a devbox whose version manager defaults to another
 # release is refused by name rather than at the build line in the rig. After write_github_apps, so
-# the App keys' own checks above run whatever the Bun.
+# the App inputs' own checks above run whatever the Bun.
 bun_pin=$(tr -d '[:space:]' <"$root/.bun-version")
 bun_running=$(bun --version 2>/dev/null | tr -d '[:space:]') || bun_running=
 [ "$bun_running" = "$bun_pin" ] ||
@@ -696,7 +716,7 @@ pass
 begin planner-handoff
 send_agent "$issue" planner "Claude backend proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 wait_for_phase "$issue" implementing
-assert_handoff_committer "$issue" planner planning 0
+assert_handoff_record "$issue" planner planning 0
 pass
 
 begin claude-implementer-registers
@@ -751,15 +771,15 @@ pass
 
 begin claude-implementer-handoff
 marker="claude-proof-marker-$ptoken-$RANDOM$RANDOM"
-send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, write and commit the required implementation handoff, push the branch to origin, then call the legion tool's handoff_complete with a concise summary. Do not open a pull request and do not merge."
+send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, then call the legion tool's handoff_complete with a concise summary. Do not open a pull request and do not merge."
 until_true 900 "the daemon to record the implementer's handoff_complete" handoff_recorded
 commit=$(role_handoff "$issue" implementer implementing)
-assert_handoff_committer "$issue" implementer implementing 0
+assert_handoff_record "$issue" implementer implementing 0
 files=$(smoke_commit_files "$commit") || exit 1
-grep -q "^\.legion/$issue/" <<<"$files" || fail "the handoff commit $commit changes nothing under .legion/$issue/: $(tr '\n' ' ' <<<"$files")"
+! grep -q '^\.legion/' <<<"$files" || fail "the implementer's commit $commit changes files under .legion/, where no handoff goes now: $(tr '\n' ' ' <<<"$files")"
 legion_handoff_in || fail "the transcript $transcript holds no successful legion handoff_complete call"
 until_true 300 "the implementer's turn to end" issue_worker_state "$issue" implementer idle
-note "handoff_complete through mcp__legion__legion recorded commit $commit, pushed to $repo under .legion/$issue/"
+note "handoff_complete through mcp__legion__legion named the implementer's Dispatch handoff record, written under its Claude Code session $session, and its pushed commit $commit on $repo, which changes nothing under .legion/"
 pass
 
 # Background work on the Claude Code backend. The runtime sets no

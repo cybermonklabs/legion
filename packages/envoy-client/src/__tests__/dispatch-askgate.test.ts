@@ -1,18 +1,17 @@
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { mintMarker } from "../askgate-marker";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keepStore, MARKER_MAX_AGE_MS, mintMarker, setRecordMode } from "../askgate-marker";
 import { cliRefusals, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { pruneSessions } from "../dispatch-session-state";
@@ -50,6 +49,17 @@ const server = Bun.serve({
         version: { number: 1 },
       });
     }
+    // What the issue holds, which the upload reads to refuse a name that exists: this issue
+    // holds no document, so every upload below writes a first version.
+    if (request.method === "GET" && pathname === ARTIFACTS) {
+      return Response.json([]);
+    }
+    // The markdown the store would hold for inline text: this stub stores it as it stands, so
+    // no upload below is refused for its spelling.
+    if (request.method === "POST" && pathname === "/api/v1/markdown/round-trip") {
+      const asked: { markdown?: string } = await request.json();
+      return Response.json({ markdown: asked.markdown });
+    }
     if (request.method === "POST" && (pathname === MESSAGES || pathname === COMMENTS)) {
       record(await request.json());
       return Response.json({
@@ -70,13 +80,13 @@ const ARTIFACTS = "/api/v1/issues/DSP-1/artifacts";
 const postsTo = (route: string) => posts.filter((p) => p.method === "POST" && p.path === route);
 const messagePosts = () => postsTo(MESSAGES);
 
+const makeDirectory = temporaryDirectories("dispatch-askgate");
 let stateDir = "";
 beforeEach(() => {
   posts.length = 0;
-  stateDir = mkdtempSync(join(tmpdir(), "dispatch-askgate-"));
+  stateDir = makeDirectory();
   resetAdviceMemory();
 });
-afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 
 const sha = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
@@ -99,11 +109,12 @@ function ownerFile(id: string, owner: { pid: number; start: string | null }): st
  * The record a live gate writes for session `id`: this test process stands in for Oh My Pi. `mode`
  * is the check mode the owner file carries for the CLI's marker checks: `block`, as a session that
  * chose block does (most tests here), `warn`, or null for a record whose owner file carries no
- * mode, which the CLI reads as warn.
+ * mode, which the CLI reads as warn. An owner with no `ns` is one written before the pid
+ * namespace was kept.
  */
 function writeRecord(
   id = "ses-1",
-  owner: { pid: number; start: string | null; store: string } = {
+  owner: { pid: number; start: string | null; ns?: string | null; store: string } = {
     pid: process.pid,
     start: startOf(process.pid),
     store: store(),
@@ -121,15 +132,17 @@ const fileSha = (file: string) => createHash("sha256").update(readFileSync(file)
 
 /**
  * One marker as the gate mints it: keyed by the argv's digest, bound to the arguments' digest and
- * to each file the argv names, with the digest of its bytes as the gate read them.
+ * to each file the argv names, with the digest of its bytes as the gate read them. `into` is the
+ * minting process's store, this test process's by default.
  */
 function mint(
   argv: readonly string[],
   args: Record<string, unknown> | null,
   createdAt = Date.now(),
-  files: ReadonlyArray<{ flag: string; operand: string; sha256: string }> = []
+  files: ReadonlyArray<{ flag: string; operand: string; sha256: string }> = [],
+  into = store()
 ): string {
-  const file = join(markers(), `${sha(argv)}.${randomBytes(16).toString("hex")}`);
+  const file = join(into, "markers", `${sha(argv)}.${randomBytes(16).toString("hex")}`);
   writeFileSync(
     file,
     JSON.stringify({
@@ -271,7 +284,7 @@ describe("AskGate at the dispatch CLI", () => {
   // reads each file the argv names once before it posts, and a file that changed since the review
   // is refused with what to do, since its call is literal already.
   describe("a file the write posts", () => {
-    const CHANGED = "a file this write posts changed after AskGate reviewed it";
+    const CHANGED = "a file this write posts changed after AskGate read it";
     /** The marker the gate mints for `argv` once it reviewed `file`, which `flag` names. */
     const reviewed = async (argv: readonly string[], flag: string, file: string) =>
       mint(argv, await dryArgs(argv), Date.now(), [
@@ -309,7 +322,9 @@ describe("AskGate at the dispatch CLI", () => {
       expect(code).toBe(1);
       expect(stdout).toStartWith("dispatch comment was not called: AskGate is on for this session");
       expect(stdout).toContain(`${CHANGED} (\`--body-file ${note()}\`)`);
-      expect(stdout).toContain("Send the call again in a later message.");
+      expect(stdout).toContain(
+        "Send the call again in a later message than the one that changes the file."
+      );
       expect(stdout).not.toContain("literal words");
       expect(posts).toHaveLength(0);
       expect(existsSync(marker)).toBe(true);
@@ -338,7 +353,9 @@ describe("AskGate at the dispatch CLI", () => {
       const { code, stdout } = await run(upload(brief));
       expect(code).toBe(1);
       expect(stdout).toContain(`${CHANGED} (\`--path ${brief}\`)`);
-      expect(stdout).toContain("Send the call again in a later message.");
+      expect(stdout).toContain(
+        "Send the call again in a later message than the one that changes the file."
+      );
       expect(posts).toHaveLength(0);
     });
 
@@ -615,16 +632,123 @@ describe("AskGate at the dispatch CLI", () => {
     expect(existsSync(dir)).toBe(true);
     rmSync(ownerFile("ses-1", { pid: process.pid, start: startOf(process.pid) }));
     writeRecord("ses-1", { pid: process.pid, start: "1", store: store() });
+    // The gone process's store went with it (at its exit, or by the store sweep).
+    rmSync(store(), { recursive: true });
     utimesSync(dir, old, old);
     writeFileSync(join(stateDir, ".pruned"), "");
     utimesSync(join(stateDir, ".pruned"), old, old);
     pruneSessions(stateDir, Date.now());
     expect(existsSync(dir)).toBe(false);
   });
+
+  // A session moved into an agent box: its Oh My Pi process runs in the box's own pid namespace and
+  // keeps its record in the state directory the box shares with the host. The host's CLI, and
+  // every other box's, cannot look that process up by its pid, which there is free or another
+  // process's. Judged by pid, the host's daily prune removed the box process's store once no marker
+  // had changed it for two hours, and the box's CLI then refused every gated write as a record that
+  // names a missing store. This test process stands in for the host: the owner names another pid
+  // namespace and a pid no process of this one holds.
+  test("a record of another pid namespace's process stays live while its process touches its store", async () => {
+    const child = Bun.spawn(["true"]);
+    await child.exited;
+    const boxStore = join(stateDir, "askgate", `${child.pid}-15039164-1`);
+    writeRecord("ses-1", { pid: child.pid, start: "15039164", ns: "1", store: boxStore });
+    const dir = join(stateDir, "sessions", "ses-1");
+    // The box process minted its last marker three hours ago and has been idle since, as the
+    // session has for fifteen days; only its beat (`keepStore`) has touched the store.
+    const idle = (Date.now() - MARKER_MAX_AGE_MS - 3_600_000) / 1000;
+    utimesSync(join(boxStore, "markers"), idle, idle);
+    utimesSync(boxStore, idle, idle);
+    keepStore(boxStore, Date.now());
+    const longIdle = (Date.now() - 15 * 86_400_000) / 1000;
+    utimesSync(dir, longIdle, longIdle);
+    pruneSessions(stateDir, Date.now());
+    expect(existsSync(join(boxStore, "markers"))).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+    // The record is live here too: a write from this namespace needs the box process's marker.
+    const refused = await run(MESSAGE);
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toStartWith(REFUSAL);
+    expect(refused.stdout).toContain("carries no AskGate marker");
+    mint(MESSAGE, null, Date.now(), [], boxStore);
+    expect((await run(MESSAGE)).code).toBe(0);
+    expect(messagePosts()).toHaveLength(1);
+
+    // The process ended without removing its store: its beat stops, so after MARKER_MAX_AGE_MS the
+    // next prune takes the store, and the one after it the session directory, whose record then
+    // names no live owner and no store that is still there.
+    utimesSync(join(boxStore, "markers"), idle, idle);
+    utimesSync(boxStore, idle, idle);
+    utimesSync(join(stateDir, ".pruned"), longIdle, longIdle);
+    utimesSync(dir, longIdle, longIdle);
+    pruneSessions(stateDir, Date.now());
+    expect(existsSync(boxStore)).toBe(false);
+    expect(existsSync(dir)).toBe(true);
+    utimesSync(join(stateDir, ".pruned"), longIdle, longIdle);
+    utimesSync(dir, longIdle, longIdle);
+    pruneSessions(stateDir, Date.now());
+    expect(existsSync(dir)).toBe(false);
+    expect((await run(MESSAGE)).code).toBe(0);
+  });
+
+  // A box process on an earlier pi-envoy writes a record with no pid namespace. Here its pid reads
+  // gone, so the record reads off, but its store is still there: the prune keeps the session
+  // directory with it, so that process's own CLI never finds its record gone. Once the store sweep
+  // has taken the store (14 days with no marker), the next prune takes the directory.
+  test("pruning keeps an idle session whose record names no namespace while its store is there", async () => {
+    const child = Bun.spawn(["true"]);
+    await child.exited;
+    const oldStore = join(stateDir, "askgate", `${child.pid}-15039164`);
+    writeRecord("ses-1", { pid: child.pid, start: "15039164", store: oldStore });
+    const dir = join(stateDir, "sessions", "ses-1");
+    const minted = (Date.now() - 3 * 3_600_000) / 1000;
+    utimesSync(join(oldStore, "markers"), minted, minted);
+    utimesSync(oldStore, minted, minted);
+    const longIdle = (Date.now() - 15 * 86_400_000) / 1000;
+    utimesSync(dir, longIdle, longIdle);
+    pruneSessions(stateDir, Date.now());
+    expect(existsSync(oldStore)).toBe(true);
+    expect(existsSync(dir)).toBe(true);
+    utimesSync(join(oldStore, "markers"), longIdle, longIdle);
+    utimesSync(oldStore, longIdle, longIdle);
+    utimesSync(join(stateDir, ".pruned"), longIdle, longIdle);
+    utimesSync(dir, longIdle, longIdle);
+    pruneSessions(stateDir, Date.now());
+    expect(existsSync(oldStore)).toBe(false);
+    utimesSync(join(stateDir, ".pruned"), longIdle, longIdle);
+    utimesSync(dir, longIdle, longIdle);
+    pruneSessions(stateDir, Date.now());
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  // The owner remakes its store before each write of its own owner file, so a store another
+  // process removed is back, empty, by the owner's next call: a write it never reviewed still finds
+  // no marker.
+  test("a record whose store another process removed is whole again at the owner's next record write", async () => {
+    const self = { pid: process.pid, start: startOf(process.pid), ns: null, store: store() };
+    writeRecord("ses-1", self);
+    mint(MESSAGE, null);
+    rmSync(store(), { recursive: true });
+    const broken = await run(MESSAGE);
+    expect(broken.code).toBe(1);
+    expect(broken.stdout).toContain(`names the marker store ${store()}`);
+    setRecordMode(join(stateDir, "sessions", "ses-1"), self, "block");
+    expect(readdirSync(markers())).toEqual([]);
+    const unmarked = await run(MESSAGE);
+    expect(unmarked.code).toBe(1);
+    expect(unmarked.stdout).toContain("carries no AskGate marker");
+    expect(posts).toHaveLength(0);
+  });
 });
 
 describe("AskGate at the dispatch entry, across processes", () => {
   const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+  // The 30 s limit is a hang guard, not a budget: the row spawns two child processes that each
+  // start the dispatch entry, and bun's unwritten 5,000 ms per-test default is a limit on that
+  // work rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out,
+  // 3 runs of 3, at 5,104 to 5,202 ms with this file alone. Measured there: 0.71 s idle in a
+  // whole-suite run and 3.00 s with this file alone; under those loops, 8.78 s at most in a
+  // whole-suite run and 5.20 s with this file alone. It fires only if a child never exits.
   test("one marker and two concurrent calls of its argv: exactly one posts", async () => {
     writeRecord();
     mint(MESSAGE, null);
@@ -648,11 +772,19 @@ describe("AskGate at the dispatch entry, across processes", () => {
     expect(results.find((r) => r.code === 1)?.stdout).toStartWith(REFUSAL);
     expect(messagePosts()).toHaveLength(1);
     expect(readdirSync(markers())).toEqual([]);
-  });
+  }, 30_000);
 
   // Every form AskGate's gate does not read, run as an agent would run it: each reaches the CLI as
   // the session, finds the live record and no marker, and is refused before any request. With no
   // record the same form posts: the check is inert outside a gated Oh My Pi session.
+  //
+  // The 240 s limit is a hang guard, not a budget, and sits above the suite's 30 s default. The row
+  // runs twelve child process trees, six caller forms twice, and none of that is spare: each form
+  // is a caller kind the row covers, and the second pass is the inertness claim, so the work cannot
+  // shrink without dropping an assertion. Measured in a 2-CPU pod: 3.67 s idle in a whole-suite run
+  // and 23.90 s with this file alone; under 16 busy loops (8 x nproc), 58.37 s at most in a
+  // whole-suite run and 56.71 s with this file alone, which left its old 60 s limit 1.03x in hand.
+  // It fires only if a child never exits.
   test("a gated write from xargs, python3 -c, node -e, bun -e, an alias or a script is refused; with no record it posts", async () => {
     const bin = join(stateDir, "bin");
     mkdirSync(bin);
@@ -711,5 +843,5 @@ describe("AskGate at the dispatch entry, across processes", () => {
     rmSync(join(stateDir, "sessions", "ses-1", "askgate"), { recursive: true });
     for (const [, command] of forms) await runForm(command);
     expect(messagePosts()).toHaveLength(forms.length);
-  }, 60_000);
+  }, 240_000);
 });

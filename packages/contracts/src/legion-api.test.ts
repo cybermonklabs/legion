@@ -2,11 +2,17 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import * as legionApi from "./legion-api";
 import {
+  LEGION_FAILURE_CAUSES,
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PHASES,
   LEGION_WORKFLOW_PHASES,
+  LegionActivityRequest,
+  LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimRequest,
+  LegionCompactResponse,
   LegionControllerCredentialResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
@@ -14,24 +20,32 @@ import {
   LegionEmptyResponse,
   LegionErrorResponse,
   LegionEscalateRequest,
+  LegionFreshSessionResponse,
   LegionGateRegisterRequest,
   LegionGrantRequest,
   LegionGrantResponse,
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
+  LegionInstant,
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionReadyForUpdateRequest,
   LegionReadyRequest,
   LegionRegisterResponse,
+  LegionReleaseRecordsRequest,
+  LegionReleaseRecordsResponse,
   LegionRootCloseRequest,
+  LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "./legion-api";
+import { DISPATCH_KEY_PATTERN, isLegionRole, LEGION_ROLES } from "./legion-roles";
 
 const fixtureDir = path.join(import.meta.dir, "..", "fixtures", "daemon-api");
 
@@ -45,9 +59,18 @@ const schemas: Record<string, z.ZodType> = {
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
-  // The claim wire's `claim.ReadyRequest` with a capability report, the one request body a Go
-  // golden test writes: what a session posts on `claims/ready` (contract 21).
+  // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
+  // `claims/ready` (contract 21).
   "ready.json": LegionReadyRequest,
+  // `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update message, saying it has
+  // pushed everything it wants kept and its process may be replaced.
+  "ready-for-update.json": LegionReadyForUpdateRequest,
+  // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
+  // refused turns the claim now ends with and whether this report failed it.
+  "turn-outcome.json": LegionTurnOutcomeResponse,
+  // What a pod reads of its deployment's idle release: every release, resume and hold of the
+  // window it named (`api.ReleaseRecordsResponse`).
+  "release-records.json": LegionReleaseRecordsResponse,
   "register-controller.json": LegionControllerRegisterResponse,
   "controller-secret.json": LegionControllerSecretResponse,
   "controller-github-credential.json": LegionControllerCredentialResponse,
@@ -58,6 +81,8 @@ const schemas: Record<string, z.ZodType> = {
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
   "issue-status.json": LegionEmptyResponse,
+  "fresh-session.json": LegionFreshSessionResponse,
+  "compact.json": LegionCompactResponse,
   "gate-register.json": LegionEmptyResponse,
   "wave-release.json": LegionWaveReleaseResponse,
   "phase-backward.json": LegionEmptyResponse,
@@ -70,22 +95,361 @@ const schemas: Record<string, z.ZodType> = {
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
   "version.json": z.strictObject({ daemonApiVersion: z.number().int().positive() }),
+  // Nor this one: the numbers a worker's own stall watch runs on, written from the daemon's
+  // copies of them (`internal/config/stalldefaults.go`) so that
+  // `packages/pi-shared/src/stall-limits.test.ts` can hold the plugin's own numbers — the one
+  // source — to the numbers the daemon computes its backstop floor from. The three defaults are
+  // `src/stall-limits.ts`'s; `declaredDeadlineMostMs` is the hour the host clamps a call's own
+  // declared deadline to (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), the other half of
+  // that floor.
+  "stall-defaults.json": z.strictObject({
+    callGraceMs: z.number().int().positive(),
+    callBoundMs: z.number().int().positive(),
+    stepMs: z.number().int().positive(),
+    declaredDeadlineMostMs: z.number().int().positive(),
+    callBoundMsByRole: z.record(
+      z.enum([...LEGION_ROLES, "controller"]),
+      z.number().int().nonnegative()
+    ),
+  }),
+  // Nor this one: the closed set of words a claim can fail under
+  // (`supervise.FailureCauses`), written by `internal/api`'s TestFailureCausesGolden so that
+  // the Go roster and `LEGION_FAILURE_CAUSES` are held to each other here, by the case "the
+  // cause set is the daemon's, word for word" below. A word the enum does not name fails the
+  // parse of this fixture, which is what the gate above reports.
+  "failure-causes.json": z.strictObject({ causes: z.array(z.enum(LEGION_FAILURE_CAUSES)) }),
+  // Nor this one: the code of a completion refused for its phase entry and the words that
+  // refusal tells the worker to act on (`staleEntryCode` and `staleEntryInstruction` in
+  // `internal/api/handoff.go`), written by `internal/api`'s TestStaleEntryInstructionGolden so
+  // that `packages/pi-shared/src/legion-phase-ops.test.ts` can hold the `legion` tool's
+  // description for that code to the daemon's own text, word for word.
+  "stale-entry.json": z.strictObject({
+    code: z.literal("HANDOFF_STALE_ENTRY"),
+    instruction: z.string().min(1),
+  }),
 };
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(path.join(fixtureDir, name), "utf8"));
 }
 
-test("every Go-written fixture parses through the strict schema", () => {
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A golden read as the JSON object a route's body is. */
+function fixtureBody(name: string): Record<string, unknown> {
+  const body = fixture(name);
+  if (!isJsonObject(body)) {
+    throw new Error(`${name} is not a JSON object`);
+  }
+  return body;
+}
+
+/** The path of the first key the parse dropped: the first key present in `file` and absent from
+ * `parsed`, descending objects by key and arrays by index. A Go field with no line in its schema
+ * reads as its own path — `issues.LEGION-207.workers.implementer.claim.somethingNew` — rather
+ * than as a diff of two large documents. */
+function firstDroppedKey(file: unknown, parsed: unknown, path = ""): string | undefined {
+  if (Array.isArray(file) && Array.isArray(parsed)) {
+    for (const [index, element] of file.entries()) {
+      const dropped = firstDroppedKey(element, parsed[index], `${path}[${index}]`);
+      if (dropped !== undefined) {
+        return dropped;
+      }
+    }
+    return undefined;
+  }
+  if (!isJsonObject(file) || !isJsonObject(parsed)) {
+    return undefined;
+  }
+  for (const [key, value] of Object.entries(file)) {
+    const keyPath = path === "" ? key : `${path}.${key}`;
+    if (!(key in parsed)) {
+      return keyPath;
+    }
+    const dropped = firstDroppedKey(value, parsed[key], keyPath);
+    if (dropped !== undefined) {
+      return dropped;
+    }
+  }
+  return undefined;
+}
+
+/** What the gate below reads of one state document: the path of the first key its parse dropped. */
+function droppedFromState(state: unknown): string | undefined {
+  return firstDroppedKey(state, LegionStateResponse.parse(state));
+}
+
+// The drift gate. The answer schemas strip a key they do not name, so a parse that reports no
+// problem proves nothing on its own: a Go field with no line in the schema is dropped in silence
+// and the parse still succeeds. Every key of a Go-written file has a line in its schema exactly
+// when the parse equals the file by value, so that equality is the gate. By value and not by
+// text: a stripping object rebuilds a value's keys in its shape's order, so a key-order
+// comparison of the state goldens would be red before any drift.
+test("every Go-written fixture parses to a value equal to the file", () => {
   const names = readdirSync(fixtureDir).filter((name) => name.endsWith(".json"));
   expect(names.length).toBeGreaterThan(0);
 
   for (const name of names) {
     const schema = schemas[name];
     expect(schema, `${name} has no schema in legion-api.test.ts`).toBeDefined();
-    const parsed = schema?.safeParse(fixture(name));
+    const file = fixture(name);
+    const parsed = schema?.safeParse(file);
     expect(parsed?.error?.issues ?? [], `${name} failed the schema`).toEqual([]);
+    const dropped = firstDroppedKey(file, parsed?.data);
+    expect(dropped, `${name}: the Go field ${dropped} has no line in its schema`).toBeUndefined();
+    expect(parsed?.data, `${name} parses to a value the file does not equal`).toEqual(file);
   }
+});
+
+// The other direction of that gate, and the hole a merge opened in it: the case above walks the
+// goldens, so an answer schema no golden names is walked by nothing and a Go field it gains is
+// dropped in silence — which is what `LegionReleaseRecordsResponse` was between the merge that
+// brought it and the fixture above. Every answer schema the module exports must therefore be the
+// schema of some golden, and the roster is derived (`exportedSchemas`), so the next answer
+// schema added with no fixture fails here by its own name. `LegionEmptyResponse` is the schema
+// of eight fact-route goldens, so it is a value of the map eight times over and passes as any
+// other does.
+test("every answer schema the module exports is the schema of a golden", () => {
+  const held = new Set(Object.values(schemas));
+  const roster = exportedSchemas("answer");
+  const names = Object.keys(roster).sort();
+  console.log(`answer roster (${names.length} schemas) held by a golden: ${names.join(", ")}`);
+
+  // A roster that matched nothing would leave the assertion below holding vacuously.
+  expect(names.length).toBeGreaterThan(0);
+  const without = Object.entries(roster)
+    .filter(([, schema]) => !held.has(schema))
+    .map(([name]) => name)
+    .sort();
+  expect(
+    without,
+    `these answer schemas have no Go-written golden under fixtures/daemon-api: ${without.join(", ")}`
+  ).toEqual([]);
+});
+
+// What that equality catches, and the one place it is blind. A key no schema names is dropped
+// wherever an object names its keys, at the top level and at the depth INFRA-1048's incident
+// took, and the gate names its path. Under `settings` (a `z.looseObject`) and under a pending
+// status write's `payload` (a `z.record`) nothing is dropped, so the gate sees nothing there:
+// both blocks are loose by design — legion.yaml's keys and the workflow's payload are not this
+// wire's shape — and that is the limit of what the gate can hold.
+test("the gate names a key no schema names, and is blind under the loose blocks", () => {
+  const topLevel = fixtureBody("state.json");
+  topLevel.workerAdmission = { queue: [] };
+  expect(droppedFromState(topLevel)).toBe("workerAdmission");
+
+  const underClaim = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: Record<string, unknown> }> }>;
+  };
+  const claim = underClaim.issues["LEGION-207"]?.workers.implementer?.claim;
+  if (claim === undefined) {
+    throw new Error("state fixture lacks LEGION-207's implementer claim");
+  }
+  claim.somethingNew = "a field the Go view grew";
+  expect(droppedFromState(underClaim)).toBe(
+    "issues.LEGION-207.workers.implementer.claim.somethingNew"
+  );
+
+  const settings = fixture("state.json") as { settings: Record<string, unknown> };
+  settings.settings.a_later_legion_yaml_key = "ridden loosely";
+  const parsedSettings = LegionStateResponse.parse(settings);
+  expect(firstDroppedKey(settings, parsedSettings)).toBeUndefined();
+  expect<unknown>(parsedSettings).toEqual(settings);
+
+  const payload = fixture("state-stage3.json") as {
+    pendingStatusWrites: { payload: Record<string, unknown> }[];
+  };
+  const write = payload.pendingStatusWrites[0];
+  if (write === undefined) {
+    throw new Error("state-stage3 fixture lacks its pending status write");
+  }
+  write.payload.somethingNew = "the workflow owns this shape";
+  const parsedPayload = LegionStateResponse.parse(payload);
+  expect(firstDroppedKey(payload, parsedPayload)).toBeUndefined();
+  expect<unknown>(parsedPayload).toEqual(payload);
+});
+
+// `workers` is keyed by a plain string, so the schema no longer holds the role names and the gate
+// above cannot see a role the Go side adds. The key list it held is held here instead: every
+// worker key of every golden is one of this build's roles.
+test("every golden's worker keys are roles this build knows", () => {
+  const states = Object.keys(schemas).filter((name) => schemas[name] === LegionStateResponse);
+  expect(states.length).toBeGreaterThan(0);
+
+  let seen = 0;
+  for (const name of states) {
+    const state = LegionStateResponse.parse(fixture(name));
+    for (const [key, issue] of Object.entries(state.issues)) {
+      for (const role of Object.keys(issue.workers)) {
+        expect(isLegionRole(role), `${name}: ${key} carries the worker ${role}`).toBeTrue();
+        seen += 1;
+      }
+    }
+  }
+  expect(seen).toBeGreaterThan(0);
+});
+
+// A role key this build does not know arrives under `issues.<key>.workers` the day the daemon
+// grows a role. It used to refuse the whole document, so every reader lost its state over a key
+// it merely did not know; now the unknown entry is read beside the known roles, whose views come
+// through unchanged.
+test("a worker role this build does not know leaves the rest of the state readable", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, unknown> }>;
+  };
+  const workers = state.issues["LEGION-208"]?.workers;
+  if (workers?.planner === undefined || workers.implementer === undefined) {
+    throw new Error("state fixture lacks LEGION-208's planner and implementer");
+  }
+  workers.auditor = workers.planner;
+
+  const parsed = LegionStateResponse.parse(state).issues["LEGION-208"]?.workers;
+  expect<unknown>(parsed?.planner).toEqual(workers.planner);
+  expect<unknown>(parsed?.implementer).toEqual(workers.implementer);
+  expect<unknown>(parsed?.auditor).toEqual(workers.planner);
+});
+
+/** Whether `value` is a zod schema this walk can read. */
+function isSchema(value: unknown): value is z.ZodType {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "def" in value &&
+    "safeParse" in value &&
+    typeof value.safeParse === "function"
+  );
+}
+
+/** The module's exported schemas of one side of the wire, keyed by export name: the answer side
+ * is every exported schema whose name ends in `Response`, the request side every one whose name
+ * does not. The roster is derived rather than listed so that a schema a later change adds is
+ * held by the cases that walk it without anyone adding a row — a list somebody must remember to
+ * extend is the very defect this issue is about, and a merge has already brought a schema no
+ * list named. The exports that are no schema at all (`LEGION_PHASES` and the other frozen
+ * lists) are left out by `isSchema`, so the suffix alone is not trusted. */
+function exportedSchemas(side: "answer" | "request"): Record<string, z.ZodType> {
+  const roster: Record<string, z.ZodType> = {};
+  for (const [name, value] of Object.entries(legionApi)) {
+    if (isSchema(value) && name.endsWith("Response") === (side === "answer")) {
+      roster[name] = value;
+    }
+  }
+  return roster;
+}
+
+/** What zod 4.3.6 marks an object node with, read rather than built: a stripping object has no
+ * `catchall`, a refusing one a `never`, a loose one an `unknown`. */
+type ObjectMark = "strips" | "refuses" | "loose";
+
+function objectMark(node: z.ZodObject): ObjectMark {
+  const catchall = node.def.catchall?._zod.def.type;
+  if (catchall === undefined) {
+    return "strips";
+  }
+  return catchall === "never" ? "refuses" : "loose";
+}
+
+/** The node kinds the schemas of either side are built from that hold no object below them. A
+ * kind outside this list and the walk's own branches throws: a `z.tuple`, a `z.intersection`, a
+ * `.pipe()` or a `z.lazy()` added later would otherwise take its whole subtree out of the census
+ * in silence. */
+const CENSUS_LEAF_KINDS: Record<string, true> = {
+  boolean: true,
+  enum: true,
+  literal: true,
+  number: true,
+  string: true,
+  unknown: true,
+};
+
+/** Every object node of the given schemas, by mark and by path. The walk descends an object's
+ * shape, an array's element (`[]`), a record's value type (`{}`), a union's options (`|0`, `|1`;
+ * `.refine()` wraps nothing, so a refined object is still an object node and a refined
+ * discriminated union still a union node) and the inner type of an optional or a nullable. A node
+ * two paths reach is one node, counted at the first path that reaches it: the claim view under
+ * `architect`, the cache view under `repositories.mapped[].cache`. */
+function objectCensus(roots: Record<string, z.ZodType>): Record<ObjectMark, string[]> {
+  const found: Record<ObjectMark, string[]> = { strips: [], refuses: [], loose: [] };
+  const seen = new Set<z.core.$ZodType>();
+
+  const walk = (node: z.core.$ZodType, path: string): void => {
+    if (seen.has(node)) {
+      return;
+    }
+    seen.add(node);
+    if (node instanceof z.ZodObject) {
+      found[objectMark(node)].push(path);
+      for (const [key, value] of Object.entries(node.def.shape)) {
+        walk(value, `${path}.${key}`);
+      }
+      return;
+    }
+    if (node instanceof z.ZodArray) {
+      walk(node.def.element, `${path}[]`);
+      return;
+    }
+    if (node instanceof z.ZodRecord) {
+      walk(node.def.valueType, `${path}{}`);
+      return;
+    }
+    if (node instanceof z.ZodUnion) {
+      for (const [index, option] of node.def.options.entries()) {
+        walk(option, `${path}|${index}`);
+      }
+      return;
+    }
+    if (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
+      walk(node.def.innerType, path);
+      return;
+    }
+    const kind = node._zod.def.type;
+    if (CENSUS_LEAF_KINDS[kind] !== true) {
+      throw new Error(`the census reached a ${kind} node it does not walk, at ${path}`);
+    }
+  };
+
+  for (const [name, schema] of Object.entries(roots)) {
+    walk(schema, name);
+  }
+  for (const paths of Object.values(found)) {
+    paths.sort();
+  }
+  return found;
+}
+
+// The whole answer side strips, not only what a golden passes through: a body reaches the eight
+// or so objects its own route carries, so a partial edit that left one nested view refusing would
+// pass every other case here. The census walks every answer schema the module exports — the
+// roster is derived, so a schema a later change adds is walked without anyone adding a row — and
+// every node below them, and reads zod's own mark on each object. What it holds is the shape:
+// nothing refuses, and `settings` alone is loose. The roster and the number of nodes walked are
+// printed rather than pinned, since a count goes stale at every addition.
+test("every answer-side object strips a key it does not name", () => {
+  // The mark first, on three nodes built here: were a zod release to stop setting `catchall`,
+  // every node would read as stripping and the census below would pass proving nothing.
+  expect({
+    strict: objectMark(z.strictObject({})),
+    stripping: objectMark(z.object({})),
+    loose: objectMark(z.looseObject({})),
+  }).toEqual({ strict: "refuses", stripping: "strips", loose: "loose" });
+
+  const roster = exportedSchemas("answer");
+  const found = objectCensus(roster);
+  const names = Object.keys(roster).sort();
+  const nodes = found.strips.length + found.loose.length + found.refuses.length;
+  console.log(
+    `answer roster (${names.length} schemas, ${nodes} object nodes): ${names.join(", ")}`
+  );
+
+  // A predicate that matched nothing would leave every assertion below holding vacuously.
+  expect(names.length).toBeGreaterThan(0);
+  expect(found.refuses).toEqual([]);
+  // `settings` is the one loose block (contract 35). A pending status write's `payload` is a
+  // record, not an object, and is no node of this census.
+  expect(found.loose).toEqual(["LegionStateResponse.settings"]);
+  expect(found.strips.length).toBeGreaterThan(0);
 });
 
 test("state accepts optional fields emitted by later workflow slices", () => {
@@ -146,11 +510,11 @@ test("a backward move rejects future read-only phases", () => {
   ).toBeFalse();
 });
 
-// Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
+// Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merge closes the issue
-// (`done`), and the production check after the close is no phase, so no phase follows
-// `awaiting_merge` and `integrating` but the close itself.
+// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
+// check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
   expect(LEGION_WORKFLOW_PHASES).toEqual([
     "admitted",
@@ -162,7 +526,6 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "accepting",
     "retro",
     "merging",
-    "awaiting_merge",
     "integrating",
     "done",
     "held",
@@ -176,7 +539,6 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
     "accepting",
     "retro",
     "merging",
-    "awaiting_merge",
     "done",
     "held",
   ]);
@@ -191,8 +553,8 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
 });
 
 // Contract 40: the state golden carries LEGION-212, a root waiting on a person whose question the
-// person answered. Both shapes of `waitingOn` parse, an answer comes with the act that gave it, and
-// the strict shapes refuse a field of the other kind.
+// person answered. Both shapes of `waitingOn` parse, an answer comes with the act that gave it,
+// and a wait half answered, an act no answer names, or a `kind` no shape has is refused.
 test("the state golden carries what an awaiting_person root waits on", () => {
   const state = fixture("state.json") as {
     issues: Record<string, { phase: string; waitingOn?: Record<string, unknown> }>;
@@ -230,15 +592,63 @@ test("the state golden carries what an awaiting_person root waits on", () => {
   expect(
     parses({ kind: "ask", ask: "ask-7", answeredAt: "2026-09-22T09:21:00Z", answeredBy: "guess" })
   ).toBeFalse();
-  expect(parses({ kind: "ask", ask: "ask-7", gateVersion: 3 })).toBeFalse();
   expect(parses({ kind: "gate", gateVersion: 3 })).toBeFalse();
   expect(parses({ kind: "other", ask: "ask-7" })).toBeFalse();
 });
 
+// Contract 49: the state golden carries LEGION-208, a root drawn into a memory group, and
+// LEGION-209, a child of that tree, each with the group, the mode it was drawn under and the
+// instant of the draw. The three are a tree's and are shown on every issue of it; an issue of a
+// tree no draw has reached carries none of them, so each is optional. A daemon before this
+// contract sent none, and its state must still parse.
+test("the state golden carries each issue's tree memory draw", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  for (const key of ["LEGION-208", "LEGION-209"]) {
+    const issue = state.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    expect({
+      memoryGroup: issue.memoryGroup,
+      memoryDrawMode: issue.memoryDrawMode,
+      memoryDrawnAt: issue.memoryDrawnAt,
+    }).toEqual({
+      memoryGroup: "memory",
+      memoryDrawMode: "random",
+      memoryDrawnAt: "2026-09-20T11:04:05Z",
+    });
+  }
+
+  const drawn = state.issues["LEGION-208"];
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 49, and one served to a pod below it.
+  for (const key of ["memoryGroup", "memoryDrawMode", "memoryDrawnAt"]) {
+    delete drawn[key];
+  }
+  expect(parses()).toBeTrue();
+
+  // A word no draw ever wrote, and a draw time that is no time.
+  drawn.memoryGroup = "both";
+  expect(parses()).toBeFalse();
+  drawn.memoryGroup = "none";
+  expect(parses()).toBeTrue();
+  drawn.memoryDrawMode = "sometimes";
+  expect(parses()).toBeFalse();
+  drawn.memoryDrawMode = "off";
+  drawn.memoryDrawnAt = "the morning";
+  expect(parses()).toBeFalse();
+});
+
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
-// repository, pull request and merge commit the check looks for, its looks, the wake that started
-// the latest and the bound. The check is present only while open, so an issue without one parses,
-// and the strict shape refuses a field the Go view does not carry and a wake with no kind.
+// repository, pull request and merge commit the check looks for, the role that works it, its
+// looks, the wake that started the latest and when the next look is due. Its role is the
+// implementer, a check opened before the release that made the role the project's choice, which
+// the migration leaves on every check already open. The check is present only while open, so an
+// issue without one parses, and a wake with no kind, or a check with no role, is refused.
 test("the state golden carries a done issue's open production check", () => {
   const state = fixture("state.json") as {
     issues: Record<string, { phase: string; check?: Record<string, unknown> }>;
@@ -253,6 +663,7 @@ test("the state golden carries a done issue's open production check", () => {
     pullRequest: 1239,
     mergeCommit: "3e9c0a7b5d2f4e8a1c6b9d0f2a4e7c5b8d1f3a60",
     openedAt: "2026-09-22T08:40:12Z",
+    role: "implementer",
     looks: 2,
     lookOpen: true,
     lastWake: {
@@ -265,7 +676,7 @@ test("the state golden carries a done issue's open production check", () => {
   });
 
   // Before the first look wakes there is no wake, and a merge commit the daemon never recorded is
-  // empty until the first build compare fills it.
+  // empty: nothing fills it now, and the checking agent reads it from GitHub.
   const { lastWake: _, ...unwoken } = closed.check;
   closed.check = { ...unwoken, mergeCommit: "", looks: 0, lookOpen: false };
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
@@ -276,20 +687,486 @@ test("the state golden carries a done issue's open production check", () => {
   closed.check = { ...unwoken, lastWake: { kind: "", detail: "", at: "2026-09-22T09:10:51Z" } };
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 
-  closed.check = { ...unwoken, closedAt: "2026-09-22T09:10:51Z" };
+  closed.check = { ...unwoken, role: "" };
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
-// The implementer's check report carries no commit (the look pushed nothing) and a verdict the
-// daemon holds to pass, pending or fail; a phase completion keeps its commit.
+// The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
+// their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
+// moved that head and no settled check run on it yet, with no state read and no told marks — and
+// LEGION-219, stuck, carrying the state read and both marks the telling left. A round waiting on
+// nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
+// state read that is no time, is refused.
+test("the state golden carries the rounds waiting on GitHub's merge state", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { phase: string; mergeWait?: Record<string, unknown> }>;
+  };
+  const first = state.issues["LEGION-218"];
+  const stuck = state.issues["LEGION-219"];
+  if (first?.mergeWait === undefined || stuck?.mergeWait === undefined) {
+    throw new Error("state fixture lacks LEGION-218 or LEGION-219 or their merge waits");
+  }
+  expect(first.phase).toBe("reviewing");
+  expect(stuck.phase).toBe("reviewing");
+
+  // LEGION-218's fixture: no merge state, no read time, and neither told mark.
+  expect(first.mergeWait).toEqual({
+    waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+    headUpdatedAt: "2026-09-22T08:58:40Z",
+    checkRuns: 0,
+  });
+  // Stuck: GitHub holds the head on a check or a review the repository requires, the architect
+  // and the reviewer have been told, and the marks name the head and state told of.
+  expect(stuck.mergeWait).toEqual({
+    waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    mergeState: "blocked",
+    stateReadAt: "2026-09-22T09:16:12Z",
+    headUpdatedAt: "2026-09-20T14:05:33Z",
+    checkRuns: 2,
+    toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+    toldState: "blocked",
+  });
+
+  const told = stuck.mergeWait;
+  // A round that waits on nothing from GitHub, and the body the route serves a caller below the
+  // contract that added the merge wait (api's mergeWaitContract).
+  first.mergeWait = undefined;
+  stuck.mergeWait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  stuck.mergeWait = { ...told, mergeState: "stuck", toldState: "stuck" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, stateReadAt: "the morning" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+
+  stuck.mergeWait = { ...told, waitsOn: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
+// The checking role's report carries no commit (the look pushed nothing) and a verdict the
+// daemon holds to pass, pending or fail; a phase completion keeps its commit. A pending report
+// names when the agent asks to be woken for its next look, an offset timestamp.
 test("a check report is a completion without a commit", () => {
-  const report = { grantId: "grant-207", summary: "Driven in production.", ready: false };
+  const report = { grantId: "grant-207", summary: "Driven in production." };
   for (const verdict of ["pass", "pending", "fail"]) {
     expect(LegionHandoffCompleteRequest.safeParse({ ...report, verdict }).success).toBeTrue();
   }
   expect(
     LegionHandoffCompleteRequest.safeParse({ ...report, verdict: "pass", commit: "" }).success
   ).toBeFalse();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({
+      ...report,
+      verdict: "pending",
+      wakeAt: "2026-10-19T09:00:00Z",
+    }).success
+  ).toBeTrue();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...report, verdict: "pending", wakeAt: "tomorrow" })
+      .success
+  ).toBeFalse();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({
+      ...report,
+      verdict: "pending",
+      wake_at: "2026-10-19T09:00:00Z",
+    }).success
+  ).toBeFalse();
+});
+
+// What `z.iso.datetime({ offset: true })` alone would take and Go's `time.Time` decode refuses:
+// a time with no seconds. The plugin's `wake_at` validates against this same schema
+// (`packages/pi-shared/src/legion-phase-ops.ts`), so both sides refuse the same strings and the
+// agent is told which field is wrong rather than reading the daemon's generic invalid-body error.
+test("wakeAt refuses a time with no seconds, as the daemon's decode does", () => {
+  const report = {
+    grantId: "grant-207",
+    summary: "Driven in production.",
+    verdict: "pending",
+  };
+  const refused = LegionHandoffCompleteRequest.safeParse({
+    ...report,
+    wakeAt: "2026-11-06T10:00Z",
+  });
+  expect(refused.success).toBeFalse();
+  expect(refused.error?.issues.map((issue) => issue.path.join("."))).toEqual(["wakeAt"]);
+  expect(LegionInstant.safeParse("2026-11-06T10:00Z").success).toBeFalse();
+  for (const wakeAt of [
+    "2026-11-06T10:00:00Z",
+    "2026-11-06T10:00:00.5Z",
+    "2026-11-06T10:00:00+02:00",
+  ]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...report, wakeAt }).success).toBeTrue();
+  }
+});
+
+// A file-backed phase's completion names the Dispatch handoff record the worker wrote: the
+// planner, tester and reviewer report it alone, the implementer with the commit it pushed. A record
+// is named by a non-empty id and a positive version.
+test("a phase completion names its handoff record", () => {
+  const planner = {
+    grantId: "grant-208",
+    summary: "Planned.",
+    verdict: "",
+    handoffId: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
+    handoffVersion: 1,
+  };
+  expect(LegionHandoffCompleteRequest.safeParse(planner).success).toBeTrue();
+  expect(
+    LegionHandoffCompleteRequest.safeParse({ ...planner, commit: "abc123" }).success
+  ).toBeTrue();
+  expect(LegionHandoffCompleteRequest.safeParse({ ...planner, handoffId: "" }).success).toBeFalse();
+  for (const handoffVersion of [0, -1, 1.5]) {
+    expect(
+      LegionHandoffCompleteRequest.safeParse({ ...planner, handoffVersion }).success
+    ).toBeFalse();
+  }
+});
+
+// The state shows the record a worker's completion of its current file-backed phase named, its id
+// and positive version; a worker that named none shows no field.
+test("the state golden carries a worker's handoff record", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { handoffRecord?: unknown }> }>;
+  };
+  const planner = state.issues["LEGION-208"]?.workers.planner;
+  if (planner === undefined) {
+    throw new Error("state fixture lacks LEGION-208's planner");
+  }
+  expect(planner.handoffRecord).toEqual({ id: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", version: 1 });
+
+  planner.handoffRecord = { id: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", version: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  planner.handoffRecord = { id: "", version: 1 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  planner.handoffRecord = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// The state shows what the daemon last saw a claim's agent do: the turn it is in, the call it is
+// in, and the length and fingerprint of that call's arguments, never their text. A call still
+// open carries `startedAt` and no `endedAt`, which is the shape a turn that stopped moving
+// leaves behind; a claim whose agent has not stepped carries no `step` at all, as does every
+// claim view served to a pod below contract 57.
+test("the state golden carries what the daemon last saw an agent do", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        architect?: { step?: Record<string, unknown> };
+        workers: Record<string, { claim: { step?: Record<string, unknown> } }>;
+      }
+    >;
+  };
+  const implementer = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const architect = state.issues["LEGION-208"]?.architect;
+  if (implementer === undefined || architect === undefined) {
+    throw new Error("state fixture lacks LEGION-208's architect and implementer");
+  }
+  expect(implementer.step).toEqual({
+    at: "2026-09-22T09:17:12Z",
+    turnStartedAt: "2026-09-22T09:16:30Z",
+    tool: "bash",
+    callId: "toolu_impl_11",
+    argsBytes: 128,
+    argsHash: "9b2e45c0d1f8a673",
+    startedAt: "2026-09-22T09:17:12Z",
+  });
+  expect(architect.step?.endedAt).toBe("2026-09-22T09:16:58Z");
+
+  implementer.step = { argsBytes: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = { tool: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// The only surface a controller's record reaches is the operator's claim listing: the state puts
+// the controller's claim on no issue, so no claim view of it can carry one.
+test("an operator's claim carries what the daemon last saw its agent do", () => {
+  const claim = fixture("operator-claim.json") as { step?: Record<string, unknown> };
+  expect(claim.step).toEqual({
+    at: "2026-09-22T09:31:22Z",
+    turnStartedAt: "2026-09-22T09:31:06Z",
+    tool: "eval",
+    callId: "toolu_impl_209_4",
+    argsBytes: 412,
+    argsHash: "c40d9e1b7a52f368",
+    startedAt: "2026-09-22T09:31:22Z",
+  });
+
+  claim.step = { argsBytes: -1 };
+  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  claim.step = undefined;
+  expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
+});
+
+// Contract 75: a claim the daemon holds a cause for says why it failed — the one word of
+// `supervise.FailureCause`, the sentence beside it, the moment and the counts it failed with —
+// and a held issue says which phase its hold stopped, beside the reason the hold may have. The
+// state golden carries LEGION-210, held from implementing after its implementer failed, and the
+// forget-session golden carries the operator's shape of the same record. A claim that never
+// failed carries no `failure`, a backfilled one carries no `at`, and a word the seven do not
+// name is refused rather than read.
+test("a failed claim carries its cause", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        holdReason?: string;
+        heldFrom?: string;
+        workers: Record<string, { claim: { failure?: Record<string, unknown> } }>;
+      }
+    >;
+  };
+  const held = state.issues["LEGION-210"];
+  const failed = held?.workers.implementer?.claim;
+  if (held === undefined || failed === undefined) {
+    throw new Error("state fixture lacks LEGION-210's implementer");
+  }
+  expect({ holdReason: held.holdReason, heldFrom: held.heldFrom }).toEqual({
+    holdReason: "escalated",
+    heldFrom: "implementing",
+  });
+  const record = {
+    cause: "died" as const,
+    detail: "launch failures ran out",
+    at: "2026-09-22T08:47:03Z",
+    attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
+  };
+  expect(failed.failure).toEqual(record);
+
+  // Both keys survive the parse: the answer side strips what it does not name, so a reader of
+  // the state sees them only because `legion-api.ts` names both.
+  const parsed = LegionStateResponse.parse(state).issues["LEGION-210"];
+  expect(parsed?.heldFrom).toBe("implementing");
+  expect(parsed?.workers.implementer?.claim.failure).toEqual(record);
+
+  // A failure the migration backfilled carries no moment, and the record outlives the claim's
+  // retirement; a cause outside the seven words, or a held phase outside the workflow's, is
+  // refused.
+  failed.failure = {
+    cause: "unrecorded",
+    detail: "launch failures ran out",
+    attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
+  };
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+  failed.failure = { ...failed.failure, cause: "exploded" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  failed.failure = undefined;
+  held.heldFrom = "unrecorded";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  held.heldFrom = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  const claim = fixture("operator-forget-session.json") as { failure?: Record<string, unknown> };
+  expect(claim.failure).toEqual({
+    cause: "launch_refused",
+    detail: "launch failures ran out: resume the pane: the session table holds no such session",
+    at: "2026-09-22T09:28:41Z",
+    attempts: { launchFailures: 3, deaths: 0, promptFailures: 0, promptRetires: 0 },
+  });
+  claim.failure = { cause: "died", detail: "it died" };
+  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  claim.failure = undefined;
+  expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
+});
+
+// The set those words come from is closed, and it is written twice: the constants of
+// `supervise.FailureCause` and `LEGION_FAILURE_CAUSES` here. Nothing compares two hand-kept
+// lists, and a Go word with no word here would make this enum refuse the whole state body of
+// every plugin that reads it. So Go writes its own roster into a fixture
+// (`internal/api`'s TestFailureCausesGolden) and this holds the enum to it, word for word and
+// in the daemon's own order: a cause added to one side alone fails here, and a cause renamed
+// on either side does too.
+test("the cause set is the daemon's, word for word", () => {
+  const written = fixture("failure-causes.json") as { causes: string[] };
+  expect(written.causes).toEqual([...LEGION_FAILURE_CAUSES]);
+});
+
+// The rest of contract 75: every field of the claim record and of the issue record is served or
+// withheld by a decision (the daemon's `internal/api/recordfields.go`), and these are the seven
+// keys that decision added beside `failure` and `heldFrom`. The schema must name each, since a
+// key it does not name is stripped from the body and the seat never sees it: the state golden
+// carries all seven, and this reads them before the parse and after it. The task's own text is
+// in none of them — `pendingTask` is five facts, and the operator routes serve the text whole —
+// so a `task` key under it would be a leak this catches.
+test("a claim and an issue carry the fields the record decides they serve", () => {
+  type claimView = {
+    servingGeneration?: number;
+    updateReasons?: string;
+    providerErrorRun?: number;
+    pendingTask?: Record<string, unknown>;
+    pendingCause?: string;
+  };
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      { lingerUntil?: string; ancestry?: string[]; workers: Record<string, { claim: claimView }> }
+    >;
+  };
+  const working = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const failed = state.issues["LEGION-210"]?.workers.implementer?.claim;
+  const released = state.issues["LEGION-211"]?.workers.implementer?.claim;
+  if (working === undefined || failed === undefined || released === undefined) {
+    throw new Error(
+      "state fixture lacks the implementers of LEGION-208, LEGION-210 and LEGION-211"
+    );
+  }
+  expect({
+    servingGeneration: working.servingGeneration,
+    providerErrorRun: working.providerErrorRun,
+    updateReasons: working.updateReasons,
+    pendingTask: working.pendingTask,
+  }).toEqual({
+    servingGeneration: 3,
+    providerErrorRun: 2,
+    updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+    pendingTask: { phase: "implementing", queuedAt: "2026-09-22T09:16:58Z" },
+  });
+  // The sends that never reached a turn ride the task a released claim still holds.
+  expect(released.pendingTask).toEqual({
+    phase: "implementing",
+    queuedAt: "2026-09-22T08:54:20Z",
+    sendFailures: 2,
+    lastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+  });
+  // The cause of the death whose relaunch the runtime refused, which stands beside `failure`.
+  expect(failed.pendingCause).toBe("died");
+  expect(state.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
+  expect(state.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
+
+  // All seven survive the parse: the answer side strips what it does not name.
+  const parsed = LegionStateResponse.parse(state);
+  const parsedWorking = parsed.issues["LEGION-208"]?.workers.implementer?.claim;
+  expect({
+    servingGeneration: parsedWorking?.servingGeneration,
+    providerErrorRun: parsedWorking?.providerErrorRun,
+    updateReasons: parsedWorking?.updateReasons,
+    pendingTask: parsedWorking?.pendingTask,
+  }).toEqual({
+    servingGeneration: 3,
+    providerErrorRun: 2,
+    updateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+    pendingTask: { phase: "implementing", queuedAt: "2026-09-22T09:16:58Z" },
+  });
+  expect(parsed.issues["LEGION-210"]?.workers.implementer?.claim.pendingCause).toBe("died");
+  expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
+  expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
+  // The pending task is the five facts and the text is not one of them, here or anywhere in the
+  // body: the operator routes are the only surface that serves it.
+  expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
+  expect(JSON.stringify(parsed)).not.toContain('"task"');
+
+  // A cause outside the seven words, a linger that is no instant and an empty key in the chain
+  // are each refused rather than read.
+  failed.pendingCause = "exploded";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  failed.pendingCause = undefined;
+  const lingering = state.issues["LEGION-207"];
+  if (lingering === undefined) {
+    throw new Error("state fixture lacks LEGION-207");
+  }
+  lingering.lingerUntil = "2026-09-22";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  lingering.lingerUntil = undefined;
+  const root = state.issues["LEGION-211"];
+  if (root === undefined) {
+    throw new Error("state fixture lacks LEGION-211");
+  }
+  root.ancestry = [""];
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  root.ancestry = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// Contract 87: a claim whose launch the runtime refused because the shared public leak check
+// could not be installed in the role's pod carries that sentence under a key of its own, on both
+// shapes the daemon serves a claim in — the state's claim views, which every worker and architect
+// reads, and the operator claim, which is where the controller's own is read. The schema must
+// name the key on both, since a key it does not name is stripped and the seat never sees it: the
+// goldens carry it, and this reads it before the parse and after. A daemon narrows it away for a
+// caller below 87 (`api.withoutLeakCheckCause`), so a body without it parses, and an empty
+// sentence — which the daemon never writes, leaving the key off instead — is refused.
+test("a claim carries the leak check's cause beside its failure", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { leakCheckCause?: string } }> }>;
+  };
+  const refused = state.issues["LEGION-210"]?.workers.implementer?.claim;
+  if (refused === undefined) {
+    throw new Error("state fixture lacks LEGION-210's implementer");
+  }
+  const sentence =
+    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+  expect(refused.leakCheckCause).toBe(sentence);
+  expect(
+    LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
+  ).toBe(sentence);
+
+  refused.leakCheckCause = "";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  refused.leakCheckCause = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  const listing = fixture("operator-claims.json") as {
+    claims: { token: string; leakCheckCause?: string }[];
+  };
+  const launching = listing.claims.find(
+    (claim) => claim.token === "legion-legion-legion-211-tester"
+  );
+  if (launching === undefined) {
+    throw new Error("operator-claims fixture lacks legion-legion-legion-211-tester");
+  }
+  const pending =
+    "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s";
+  expect(launching.leakCheckCause).toBe(pending);
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find(
+      (claim) => claim.token === "legion-legion-legion-211-tester"
+    )?.leakCheckCause
+  ).toBe(pending);
+  launching.leakCheckCause = "";
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+});
+
+// The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
+// or above the contract carries the two numbers — the contract the daemon declares and the one
+// the caller's own pod records — and the body it narrows for a caller below it carries no such
+// key at all, since a key added to a narrowed body is exactly what the narrowing exists to
+// prevent. The daemon writes that narrowing to its own log instead (`api.stateFor`). The
+// operator's `legion state --json` is served whole and carries the daemon's number alone, which
+// is how the one reader that is never narrowed says which contract its answer was built at.
+test("the state says which contract it was built at", () => {
+  const { daemonApiVersion } = fixture("version.json") as { daemonApiVersion: number };
+  const golden = fixture("state.json") as { contract?: Record<string, unknown> };
+  expect(golden.contract).toEqual({ daemon: daemonApiVersion, caller: daemonApiVersion });
+  expect(LegionStateResponse.parse(golden).contract).toEqual({
+    daemon: daemonApiVersion,
+    caller: daemonApiVersion,
+  });
+
+  const operator = fixture("state.json") as { contract?: Record<string, unknown> };
+  operator.contract = { daemon: daemonApiVersion };
+  expect(LegionStateResponse.parse(operator).contract).toEqual({ daemon: daemonApiVersion });
+
+  // A narrowed body carries no mark, and parses: the readers of this schema are never served one
+  // — a caller below 75 reads with the schema of its own contract — and the state as
+  // internal/projection answers it, before the route marks it, carries none either.
+  const narrowed = fixture("state.json") as Record<string, unknown>;
+  delete narrowed.contract;
+  expect(LegionStateResponse.safeParse(narrowed).error?.issues ?? []).toEqual([]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).contract).toBeUndefined();
+
+  // A number that is no contract is refused rather than read, and the daemon's own is required
+  // of a body that carries the mark at all: a mark naming the caller alone says nothing about
+  // which contract the answer was built at.
+  const wrong = fixture("state.json") as { contract?: Record<string, unknown> };
+  wrong.contract = { daemon: 0 };
+  expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
+  wrong.contract = { caller: daemonApiVersion };
+  expect(LegionStateResponse.safeParse(wrong).success).toBeFalse();
 });
 
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
@@ -301,7 +1178,47 @@ test("a backward move may name its issue", () => {
   expect(LegionPhaseBackwardRequest.safeParse({ ...move, issue: "" }).success).toBeFalse();
 });
 
-test("every workflow request has a strict schema", () => {
+// Check c4: every schema the module exports whose name does not end in `Response` is a body the
+// plugin sends or a part of one, and each refuses a body carrying a key it does not name — at its
+// own level and at every object below it. The roster is derived from the module's exports, so a
+// request shape a later change adds is held to this without anyone adding a row, and the walk
+// reaches each nested object, the capability report's `rows` among them, rather than a row of the
+// case below standing in for one.
+test("every request-side object refuses a key it does not name", () => {
+  const roster = exportedSchemas("request");
+  const found = objectCensus(roster);
+  const names = Object.keys(roster).sort();
+  const nodes = found.strips.length + found.loose.length + found.refuses.length;
+  console.log(
+    `request roster (${names.length} schemas, ${nodes} object nodes): ${names.join(", ")}`
+  );
+
+  // A predicate that matched nothing would leave every assertion below holding vacuously.
+  expect(names.length).toBeGreaterThan(0);
+  expect(found.strips).toEqual([]);
+  expect(found.loose).toEqual([]);
+  expect(found.refuses.length).toBeGreaterThan(0);
+});
+
+// What only a real body can prove, route by route: the body each route sends parses, and a body
+// missing a required field is refused. That a body carrying a key no schema names is refused is
+// held at every depth by the census above, for every request schema the module exports.
+test("every request the plugin sends parses and names its required fields", () => {
+  const ready = fixtureBody("ready.json");
+  const readyForUpdate = fixtureBody("ready-for-update.json");
+  const report = LegionCapabilityReport.parse(ready.capabilities);
+  const activity = {
+    at: "2026-11-05T05:10:00Z",
+    backgroundWork: { running: true, kinds: ["subagent"] },
+    phase: { nextReminderAt: null },
+  };
+  const activityRequest = {
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    activity,
+  };
+  // A route and a body it must accept, whose first key is a field the schema requires.
   const requests: ReadonlyArray<readonly [string, z.ZodType, Record<string, unknown>]> = [
     [
       "grant",
@@ -316,12 +1233,24 @@ test("every workflow request has a strict schema", () => {
     [
       "handoff complete",
       LegionHandoffCompleteRequest,
-      { grantId: "grant-208", summary: "completed", verdict: "", ready: false, commit: "abc123" },
+      {
+        grantId: "grant-208",
+        summary: "completed",
+        verdict: "",
+        commit: "abc123",
+        handoffId: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
+        handoffVersion: 2,
+      },
     ],
     [
       "issue status",
       LegionIssueStatusRequest,
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
+    ],
+    [
+      "claim recovery",
+      LegionClaimRequest,
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
     ],
     [
       "gate register",
@@ -356,14 +1285,27 @@ test("every workflow request has a strict schema", () => {
       { grantId: "grant-208", issue: "LEGION-208", reason: "no change" },
     ],
     ["child", LegionChildRequest, { grantId: "grant-208", issue: "LEGION-209" }],
+    // The claim wire's own bodies (contracts 21 and 46), read from the goldens the Go side
+    // writes rather than invented here.
+    ["ready", LegionReadyRequest, ready],
+    ["ready for update", LegionReadyForUpdateRequest, readyForUpdate],
+    ["capability report", LegionCapabilityReport, report],
+    // The claim wire's activity report and the window a pod reads its release records over.
+    ["activity", LegionActivityRequest, activityRequest],
+    ["activity report", LegionSessionActivity, activity],
+    [
+      "release records",
+      LegionReleaseRecordsRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+        since: "2026-11-01T12:00:00Z",
+      },
+    ],
   ];
 
   for (const [name, schema, request] of requests) {
     expect(schema.safeParse(request).success, `${name} accepts its route request`).toBeTrue();
-    expect(
-      schema.safeParse({ ...request, unexpected: true }).success,
-      `${name} refuses an added field`
-    ).toBeFalse();
     const [required] = Object.keys(request);
     const missing = { ...request };
     delete missing[required ?? ""];
@@ -390,11 +1332,14 @@ test("a workflow refusal preserves its stable code and message", () => {
   ).toBeTrue();
 });
 
-test("a field the Go shape does not carry is refused", () => {
-  const mutated = fixture("state.json") as Record<string, unknown>;
-  mutated.workerAdmission = { queue: [] };
-
-  expect(LegionStateResponse.safeParse(mutated).success).toBeFalse();
+// `LegionEmptyResponse` names no field, so it accepts any JSON object a fact route answers; a
+// field a fact route grows is caught by the drift gate above, not here. What it refuses is a body
+// that is not an object at all.
+test("the empty answer refuses a body that is not an object", () => {
+  expect(LegionEmptyResponse.safeParse({}).success).toBeTrue();
+  expect(LegionEmptyResponse.safeParse({ note: "ignored" }).success).toBeTrue();
+  expect(LegionEmptyResponse.safeParse([]).success).toBeFalse();
+  expect(LegionEmptyResponse.safeParse("{}").success).toBeFalse();
 });
 
 test("a field the Go shape requires cannot be dropped", () => {
@@ -408,7 +1353,8 @@ test("a field the Go shape requires cannot be dropped", () => {
 // nobody has finished — a child held at `admitted` and a waiting root alike — by issue key, each
 // with the keys it waits on, among them keys the state's `issues` does not record. `blocked` is
 // required, so a daemon older than the plugin cannot leave it out, and `waiting` keeps its own
-// meaning beside it: the roots' waiting line.
+// meaning beside it: the admission line, which since contract 51 carries children as well as
+// roots.
 test("the state golden names what every blocked issue waits on", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -416,7 +1362,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211"]);
+  expect(state.admission.waiting).toEqual(["LEGION-212", "LEGION-211"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;
@@ -424,6 +1370,45 @@ test("the state golden names what every blocked issue waits on", () => {
 
   const malformed = fixture("state.json") as { admission: { blocked: unknown[] } };
   malformed.admission.blocked = [{ issue: "LEGION-209" }];
+  expect(LegionStateResponse.safeParse(malformed).success).toBeFalse();
+});
+
+// Contract 51: the cap counts the issues at work, so `active` and `waiting` name issues of any
+// depth and say nothing about which trees run. `trees` says it instead — the root of every live
+// tree — and each issue's `tree` names its own root, so a child is told from a root. The computed
+// golden carries a child: LEGION-209 stands in LEGION-208's tree, and all three live trees are
+// named while one issue alone holds a slot. Neither key is required: a daemon at this contract
+// strips both from the state it serves a caller whose pod's plugin is older than 51
+// (`api.stateFor`, `withoutTrees`). So a body without them parses, and a reader of it
+// learns nothing about which trees run rather than losing the whole state; what is refused is a
+// `tree` that is no issue key. A daemon older than this plugin is kept away by the boot gate and
+// `legion probe-image`, not by this schema.
+test("the state names the live trees and each issue's own tree", () => {
+  const state = LegionStateResponse.parse(fixture("state-controller-claim.json"));
+
+  expect(state.admission.active).toEqual(["LEGION-208"]);
+  expect(state.admission.trees).toEqual(["LEGION-208", "LEGION-210", "LEGION-211"]);
+  expect(state.issues["LEGION-209"]?.tree).toBe("LEGION-208");
+  expect(state.issues["LEGION-208"]?.tree).toBe("LEGION-208");
+
+  const stripped = fixture("state.json") as {
+    admission: Record<string, unknown>;
+    issues: Record<string, { tree?: unknown }>;
+  };
+  delete stripped.admission.trees;
+  for (const issue of Object.values(stripped.issues)) {
+    delete issue.tree;
+  }
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.admission.trees).toBeUndefined();
+
+  const malformed = fixture("state.json") as { issues: Record<string, { tree?: unknown }> };
+  const issue = malformed.issues["LEGION-208"];
+  if (issue === undefined) {
+    throw new Error("state fixture lacks LEGION-208");
+  }
+  issue.tree = "not an issue key";
   expect(LegionStateResponse.safeParse(malformed).success).toBeFalse();
 });
 
@@ -503,9 +1488,9 @@ test("the state golden carries each issue's repository and the project's mapping
     repo: "zeta/tools",
     sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e",
     state: "failing",
+    ready: false,
     reason:
       "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
-    ready: false,
   });
   expect(state.repositories.refused[0]?.reason).toBe(
     "the review App is not installed on acme/gadgets"
@@ -544,7 +1529,7 @@ test("the state golden carries each issue's repository and the project's mapping
 // discovery on; claude-code too, since one worker image carries the claude-envoy plugin and the
 // pin a pod installs Claude Code from for a role whose worker_backends names it) and withheld
 // rows, and the six live rows unchecked — no session has reported, so
-// the deployment renders each as `unchecked` with its ruling (contract 21) — and the report is
+// the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
 // (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
@@ -664,6 +1649,266 @@ test("the ready golden carries the session's capability report", () => {
   expect(LegionReadyRequest.safeParse(withoutReport).success).toBeTrue();
 });
 
+// The idle rule reads these three values of a session and nothing else, so each is held here: the
+// moment of the reading, whether work of the session's own was running and what kinds, and the
+// armed wake, which is null when no reminder is armed.
+test("a session's activity report carries its reading, its work and its wake", () => {
+  const report = {
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: "ses_implementer_208",
+    secret: "claim-secret",
+    activity: {
+      at: "2026-11-01T12:00:00.000Z",
+      backgroundWork: { running: true, kinds: ["async-job", "subagent"] },
+      phase: { nextReminderAt: "2026-11-01T12:05:00.000Z" },
+    },
+  };
+  expect(LegionActivityRequest.safeParse(report).success).toBeTrue();
+
+  const quiet = {
+    ...report,
+    activity: {
+      at: report.activity.at,
+      backgroundWork: { running: false, kinds: [] },
+      phase: { nextReminderAt: null },
+    },
+  };
+  expect(LegionActivityRequest.safeParse(quiet).success).toBeTrue();
+
+  // The wake may be absent only as null, never as a missing key or a bare date, and `at` is an
+  // instant: the daemon stores both as timestamps.
+  const noWakeKey = { ...quiet, activity: { ...quiet.activity, phase: {} } };
+  expect(LegionActivityRequest.safeParse(noWakeKey).success).toBeFalse();
+  const badWake = {
+    ...quiet,
+    activity: { ...quiet.activity, phase: { nextReminderAt: "2026-11-01" } },
+  };
+  expect(LegionActivityRequest.safeParse(badWake).success).toBeFalse();
+  const badAt = { ...quiet, activity: { ...quiet.activity, at: "now" } };
+  expect(LegionActivityRequest.safeParse(badAt).success).toBeFalse();
+  // No generation: the secret is the whole fence, and an added key is refused.
+  expect(LegionActivityRequest.safeParse({ ...report, generation: 3 }).success).toBeFalse();
+});
+
+// What a pod reads of its deployment's idle release: a release with the roles it suspended and
+// the bundle it saved, the wake that ended it with the stamps observed so far, and a pod the rule
+// kept with the reason it read. The three lists are always present, so a window with nothing in
+// it is readable without a missing-key check.
+test("the release records carry a release, a resume and a hold", () => {
+  const records = {
+    releases: [
+      {
+        id: 1,
+        issue: "LEGION-208",
+        generation: 3,
+        roles: ["implementer", "tester"],
+        at: "2026-11-01T12:00:00Z",
+        bundleBytes: 4096,
+      },
+    ],
+    resumes: [
+      {
+        id: 1,
+        release: 1,
+        issue: "LEGION-208",
+        role: "implementer",
+        kind: "delivery",
+        at: "2026-11-01T12:30:00Z",
+        podReadyAt: "2026-11-01T12:31:00Z",
+        stuck: false,
+      },
+    ],
+    holds: [
+      {
+        id: 1,
+        issue: "LEGION-209",
+        reason: "background_work",
+        detail: "subagent",
+        firstAt: "2026-11-01T12:50:00Z",
+        at: "2026-11-01T13:00:00Z",
+        passes: 11,
+      },
+    ],
+  };
+  expect(LegionReleaseRecordsResponse.safeParse(records).success).toBeTrue();
+
+  const empty = { releases: [], resumes: [], holds: [] };
+  expect(LegionReleaseRecordsResponse.safeParse(empty).success).toBeTrue();
+
+  // A release that saved nothing records a zero bundle, never a missing one, and a pod nothing
+  // has released yet carries no release row for its wake.
+  const nothingSaved = {
+    ...records,
+    releases: [{ ...records.releases[0], roles: [], bundleBytes: 0 }],
+    resumes: [{ ...records.resumes[0], release: 0 }],
+  };
+  expect(LegionReleaseRecordsResponse.safeParse(nothingSaved).success).toBeTrue();
+
+  // A list left out, a negative bundle and an unobserved stamp sent as null rather than left out
+  // are each refused. A key no schema names is not: this answer strips one, as every answer-side
+  // shape does, and the drift gate above is what sees a Go field with no line here.
+  const noHolds = { releases: records.releases, resumes: records.resumes };
+  expect(LegionReleaseRecordsResponse.safeParse(noHolds).success).toBeFalse();
+  const negative = { ...records, releases: [{ ...records.releases[0], bundleBytes: -1 }] };
+  expect(LegionReleaseRecordsResponse.safeParse(negative).success).toBeFalse();
+  const nulled = { ...records, resumes: [{ ...records.resumes[0], firstTurnAt: null }] };
+  expect(LegionReleaseRecordsResponse.safeParse(nulled).success).toBeFalse();
+});
+
+// The request a pod sends to read them: its claim, that claim's secret and the window's start,
+// in the body. The secret is a credential, so the route is a POST — a query string reaches every
+// proxy and access log between the pod and the daemon — and the window is required, since the
+// whole table is not an answer.
+test("the release records are read with the claim credential in the body", () => {
+  const request = {
+    claimToken: "legion-legion-legion-208-implementer",
+    secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+    since: "2026-11-01T12:00:00Z",
+  };
+  expect(LegionReleaseRecordsRequest.safeParse(request).error?.issues ?? []).toEqual([]);
+
+  for (const missing of ["claimToken", "secret", "since"]) {
+    const without: Record<string, unknown> = { ...request };
+    delete without[missing];
+    expect(LegionReleaseRecordsRequest.safeParse(without).success, missing).toBeFalse();
+  }
+  expect(
+    LegionReleaseRecordsRequest.safeParse({ ...request, since: "yesterday" }).success
+  ).toBeFalse();
+  // The session sends `since`, and the daemon decodes it with Go's `time.Parse(time.RFC3339, …)`,
+  // which refuses a time with no seconds. The field is a `LegionInstant`, which refuses every
+  // string that parse refuses and a few more besides, so the plugin never sends one the daemon
+  // would answer for after a round trip.
+  expect(
+    LegionReleaseRecordsRequest.safeParse({ ...request, since: "2026-11-01T12:00Z" }).success
+  ).toBeFalse();
+  expect(
+    LegionReleaseRecordsRequest.safeParse({ ...request, since: "2026-11-01T12:00:00.5+02:00" })
+      .success
+  ).toBeTrue();
+  expect(
+    LegionReleaseRecordsRequest.safeParse({ ...request, sessionId: "ses" }).success
+  ).toBeFalse();
+});
+
+// `legionStrandedClaim` exactly as contract 45 holds it (`legion-v19.0.0`, this branch's base on
+// main): three keys, strict. Every plugin parses the state with the schema of the contract it
+// was built at, and a Kubernetes deployment relaunches no stale session (INFRA-945 spec R10),
+// so this reader is live in every pod still on the previous image.
+const strandedClaimAt45 = z.strictObject({
+  issue: z.string().regex(DISPATCH_KEY_PATTERN),
+  role: z.enum(LEGION_ROLES),
+  state: z.enum(["suspended", "failed"]),
+});
+
+test("a reader at the previous contract parses the state body this daemon serves", () => {
+  const state = fixture("state.json") as { strandedClaims: { state: string }[] };
+  // The golden carries all three kinds: a failed claim, a released one whose wake never brought
+  // its pod back — the entry a `suspendedBy` would have ridden on — and the retired claim
+  // contract 56 added. Every entry but the retired one is read by the 45 reader as it stands.
+  const older = state.strandedClaims.filter((stranded) => stranded.state !== "retired");
+  expect(older.length).toBeGreaterThan(1);
+  for (const stranded of older) {
+    expect(strandedClaimAt45.safeParse(stranded).error?.issues ?? []).toEqual([]);
+  }
+
+  // A retired entry is the one this reader cannot take: its state enum names two values, so the
+  // entry — and with it the whole state body, since `strandedClaims` is an array this reader
+  // parses whole — is refused over the third. That is why the state route serves a pod below
+  // contract 56 the report without its retired entries (`api`'s `withoutRetiredStranded`, pinned
+  // on the Go side) rather than the body it would refuse: what such a pod is served is the list
+  // above, which parses.
+  const retired = state.strandedClaims.filter((stranded) => stranded.state === "retired");
+  expect(retired.length).toBeGreaterThan(0);
+  for (const stranded of retired) {
+    const refused = strandedClaimAt45.safeParse(stranded);
+    expect(refused.success).toBeFalse();
+    expect(refused.error?.issues[0]?.path).toEqual(["state"]);
+  }
+
+  // What serving it would do, and why it is not served: the 45 reader does not know the key, and
+  // a strict object refuses the entry — and so the whole state body — over it.
+  const widened = strandedClaimAt45.safeParse({
+    issue: "LEGION-208",
+    role: "implementer",
+    state: "suspended",
+    suspendedBy: "released",
+  });
+  expect(widened.success).toBeFalse();
+  expect(widened.error?.issues[0]?.code).toBe("unrecognized_keys");
+
+  // This contract's own reader strips the key rather than refusing it, as every answer-side
+  // shape does, so what stops either end serving it quietly is the drift gate above: the moment
+  // the Go side writes `suspendedBy` into a golden, the parse stops equalling the file and the
+  // gate names the key by its own path.
+  const served = fixture("state.json") as { strandedClaims: Record<string, unknown>[] };
+  const stranded = served.strandedClaims[0];
+  if (stranded === undefined) {
+    throw new Error("state fixture lacks a stranded claim");
+  }
+  stranded.suspendedBy = "released";
+  expect(droppedFromState(served)).toBe("strandedClaims[0].suspendedBy");
+});
+
+/** The responses an operator's bearer opens, the only ones that may name a suspension. */
+const operatorSchemas: Record<string, true> = {
+  LegionOperatorClaimResponse: true,
+  LegionOperatorClaimsResponse: true,
+};
+
+/** Every key `schema` can carry, at any depth, through objects, arrays, unions, records, optional
+ * and nullable wrappers, pipes and lazy references. Zod holds each of those on its definition
+ * under a member of its own, so the walk reads the definition as the open record it is. */
+function schemaKeys(
+  schema: unknown,
+  found: Set<string> = new Set(),
+  seen: Set<unknown> = new Set()
+): Set<string> {
+  if (!isSchema(schema) || seen.has(schema)) return found;
+  seen.add(schema);
+  const def: Record<string, unknown> = { ...schema.def };
+  const shape = def.shape;
+  if (typeof shape === "object" && shape !== null) {
+    for (const [name, member] of Object.entries(shape)) {
+      found.add(name);
+      schemaKeys(member, found, seen);
+    }
+    return found;
+  }
+  for (const key of ["element", "innerType", "valueType", "keyType", "in", "out"]) {
+    schemaKeys(def[key], found, seen);
+  }
+  const getter = def.getter;
+  if (typeof getter === "function") schemaKeys(getter(), found, seen);
+  for (const option of Array.isArray(def.options) ? def.options : [])
+    schemaKeys(option, found, seen);
+  return found;
+}
+
+// The guard the INFRA-945 plan's departure 1 chose in place of serving two shapes of one body: a
+// session reads whatever this daemon serves with the schema of its own contract, so a key no
+// older contract knows refuses the whole body at a plugin whose answer side predates INFRA-1048,
+// and is dropped at every plugin after it, which loses the field rather than the body.
+// `suspendedBy` is served to the operator's bearer and nowhere else, and this holds that for every
+// schema the module exports, present and future.
+test("no session-facing response carries suspendedBy", () => {
+  let walked = 0;
+  for (const [name, schema] of Object.entries(legionApi)) {
+    if (!isSchema(schema) || operatorSchemas[name] === true) continue;
+    walked += 1;
+    expect([...schemaKeys(schema)], `${name} carries suspendedBy`).not.toContain("suspendedBy");
+  }
+  expect(walked).toBeGreaterThan(20);
+  // The walk finds the key where it does live, so an empty walk cannot pass for a clean one.
+  expect([...schemaKeys(LegionOperatorClaimResponse)]).toContain("suspendedBy");
+
+  // And no body the daemon writes carries it outside the operator's own.
+  for (const name of readdirSync(fixtureDir).filter((entry) => entry.endsWith(".json"))) {
+    if (name.startsWith("operator-")) continue;
+    expect(readFileSync(path.join(fixtureDir, name), "utf8"), name).not.toContain("suspendedBy");
+  }
+});
+
 test("the state golden shows a claim's capability report beside its locator", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const implementer = state.issues["LEGION-208"]?.workers.implementer?.claim;
@@ -704,11 +1949,17 @@ test("the state golden shows a claim's capability report beside its locator", ()
 });
 
 // The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, and a state with none carries an empty list rather than none.
+// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
+// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
+// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
+// 56) — three keys each, neither the released nor the retired one wider than the failed one —
+// and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([
     { issue: "LEGION-210", role: "implementer", state: "failed" },
+    { issue: "LEGION-211", role: "implementer", state: "suspended" },
+    { issue: "LEGION-212", role: "tester", state: "retired" },
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).strandedClaims).toEqual([]);
 
@@ -749,19 +2000,100 @@ test("the state golden names the held lifecycle rows, and the list cannot be dro
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 });
 
-// The daemon's resolved legion.yaml (contract 35): the golden carries the file's `max_fix_attempts`
-// and `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
+// The wakes the pacing holds (contract 53): the golden names one of each kind the daemon paces,
+// in claim order, and a state outside a wave carries an empty list rather than none. The key is
+// not required: a daemon at this contract leaves it off the state it serves a caller whose pod's
+// plugin is older than 53, and the one it serves a caller whose pod's claims it cannot read at
+// all, which may be a pod at this contract (`api.stateFor`, `withoutWakesWaiting`). So a body
+// without the key parses, and a reader of it learns nothing about which wakes wait rather than
+// losing the whole state; what is refused is a wake with no kind at all.
+test("the state golden names the wakes the pacing holds, and the key may be absent", () => {
+  const state = LegionStateResponse.parse(fixture("state.json"));
+  expect(state.wakesWaiting).toEqual([
+    {
+      claim: "legion-legion-legion-207-implementer",
+      issue: "LEGION-207",
+      role: "implementer",
+      kind: "plugin-refresh",
+      dueAt: "2026-09-22T09:17:56Z",
+    },
+    {
+      claim: "legion-legion-legion-208-architect",
+      issue: "LEGION-208",
+      role: "architect",
+      kind: "catch-up",
+      dueAt: "2026-09-22T09:18:03Z",
+    },
+    {
+      claim: "legion-legion-legion-208-planner",
+      issue: "LEGION-208",
+      role: "planner",
+      kind: "launch",
+      dueAt: "2026-09-22T09:18:11Z",
+    },
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).wakesWaiting).toEqual([]);
+
+  const stripped = fixture("state.json") as Record<string, unknown>;
+  delete stripped.wakesWaiting;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.wakesWaiting).toBeUndefined();
+
+  const unnamed = fixture("state.json") as { wakesWaiting: unknown[] };
+  unnamed.wakesWaiting = [
+    {
+      claim: "legion-legion-legion-207-implementer",
+      issue: "LEGION-207",
+      role: "implementer",
+      kind: "",
+      dueAt: "2026-09-22T09:17:56Z",
+    },
+  ];
+  expect(LegionStateResponse.safeParse(unnamed).success).toBeFalse();
+});
+
+// The count of claims the stale-plugin lane has left (contract 73): the golden names everything
+// that lane has left to do, the claim whose wake it already holds among them, and a
+// state whose lane has nothing left carries 0 rather than no key. The key is not required for
+// the same reason `wakesWaiting` is not: a daemon at this contract leaves it off the state it
+// serves a caller whose pod's plugin is older than 73, and the one it serves a caller whose
+// pod's claims it cannot read at all (`api.stateFor`, `withoutClaimsToRefresh`). So a body
+// without the key parses and a reader of it learns nothing about what the lane has left, rather
+// than losing the whole state; what is refused is a count that is not a whole number of claims.
+test("the state golden counts the claims the stale-plugin lane has left, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).claimsToRefresh).toBe(4);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).claimsToRefresh).toBe(0);
+
+  const { claimsToRefresh: _withoutTheCount, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.claimsToRefresh).toBeUndefined();
+
+  for (const refused of [-1, 1.5, "4", null]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
+  }
+});
+
+// The daemon's resolved legion.yaml (contract 35): the golden carries the file's
+// `review_round_cap` and `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
 // Stage 3 state carries the defaults, the two typed keys are positive integers, the rest rides
 // loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
+// `max_fix_attempts` rode here until contract 59 removed the key.
 test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
-  expect(state.settings.max_fix_attempts).toBe(5);
+  expect(state.settings.review_round_cap).toBe(4);
+  expect(state.settings.max_fix_attempts).toBeUndefined();
   expect(state.settings.worker_boot_timeout_seconds).toBe(180);
   const apps = state.settings.github_apps as { implement: Record<string, unknown> };
   expect(Object.keys(apps.implement).sort()).toEqual(["app_id", "installations"]);
 
   const stage3 = LegionStateResponse.parse(fixture("state-stage3.json"));
-  expect(stage3.settings.max_fix_attempts).toBe(3);
+  expect(stage3.settings.review_round_cap).toBe(3);
+  expect(stage3.settings.max_fix_attempts).toBeUndefined();
   expect(stage3.settings.worker_boot_timeout_seconds).toBe(120);
 
   const dropped = fixture("state.json") as Record<string, unknown>;
@@ -769,11 +2101,11 @@ test("the state golden carries the daemon's settings with no credential, and the
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 
   const zero = fixture("state.json") as { settings: Record<string, unknown> };
-  zero.settings.max_fix_attempts = 0;
+  zero.settings.review_round_cap = 0;
   expect(LegionStateResponse.safeParse(zero).success).toBeFalse();
 
   const typed = fixture("state.json") as { settings: Record<string, unknown> };
-  typed.settings.max_fix_attempts = "5";
+  typed.settings.review_round_cap = "5";
   expect(LegionStateResponse.safeParse(typed).success).toBeFalse();
 
   const text = readFileSync(path.join(fixtureDir, "state.json"), "utf8");
@@ -784,9 +2116,9 @@ test("the state golden carries the daemon's settings with no credential, and the
 
 // The lag of the daemon's durable consumers (contract 43): the golden carries a caught-up consumer,
 // one whose info NATS did not answer and one stalled with messages waiting; a state with no
-// workflow carries an empty list; the oldest and the last handled are null rather than absent, an
-// unknown field and a negative count are refused, and the list cannot be dropped: a plugin from
-// before the field refuses the state, which is what the bump is for.
+// workflow carries an empty list; the oldest and the last handled are null rather than absent, a
+// negative count is refused, and the list cannot be dropped: a plugin from before the field
+// refuses the state, which is what the bump is for.
 test("the state golden carries each durable consumer's lag, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.consumers).toEqual([
@@ -799,15 +2131,6 @@ test("the state golden carries each durable consumer's lag, and the list cannot 
       stalled: false,
     },
     {
-      name: "legion-go-LEGION-dispatch-server",
-      waiting: 0,
-      oldestAt: null,
-      oldestAgeSeconds: null,
-      lastHandledAt: null,
-      stalled: false,
-      unavailable: "read the consumer's info: context deadline exceeded",
-    },
-    {
       name: "legion-go-LEGION-github",
       waiting: 412,
       oldestAt: "2026-09-22T09:05:34Z",
@@ -815,16 +2138,21 @@ test("the state golden carries each durable consumer's lag, and the list cannot 
       lastHandledAt: "2026-09-22T09:16:41Z",
       stalled: true,
     },
+    {
+      name: "legion-go-LEGION-wake",
+      waiting: 0,
+      oldestAt: null,
+      oldestAgeSeconds: null,
+      lastHandledAt: null,
+      stalled: false,
+      unavailable: "read the consumer's info: context deadline exceeded",
+    },
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).consumers).toEqual([]);
 
   const absent = fixture("state.json") as { consumers: Record<string, unknown>[] };
   delete absent.consumers[0]?.oldestAt;
   expect(LegionStateResponse.safeParse(absent).success).toBeFalse();
-
-  const unknown = fixture("state.json") as { consumers: Record<string, unknown>[] };
-  unknown.consumers = [{ ...unknown.consumers[0], pending: 3 }];
-  expect(LegionStateResponse.safeParse(unknown).success).toBeFalse();
 
   const negative = fixture("state.json") as { consumers: Record<string, unknown>[] };
   negative.consumers = [{ ...negative.consumers[0], waiting: -1 }];
@@ -845,7 +2173,7 @@ test("the state golden names each served repository without the webhook App, and
     {
       repo: "zeta/tools",
       reason:
-        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes",
+        "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
     },
   ]);
   expect(

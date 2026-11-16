@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The tests in this file run what gcp:ClusteredNatsHub deploys on this machine, so they carry the
@@ -410,9 +411,9 @@ type hubServer struct {
 }
 
 // commandArgs is the container's own arguments (--config /etc/nats-config/nats.conf, with the
-// ConfigMap's mount replaced by the server's directory, podArgs), then a command-line override for
-// each other value of nats.conf that a pod fixes, since three servers here share one host and
-// filesystem.
+// ConfigMap's mount replaced by the server's directory, podArgs), then -D, the one argument the
+// test adds for itself, then a command-line override for each other value of nats.conf that a pod
+// fixes, since three servers here share one host and filesystem.
 func (s *hubServer) commandArgs() []string {
 	var routes []string
 	for _, other := range s.peers {
@@ -421,6 +422,11 @@ func (s *hubServer) commandArgs() []string {
 		}
 	}
 	return append(slices.Clone(s.podArgs),
+		// -D, debug logging, which no pod runs with: nats-server v2.15.1 prints a Raft group's
+		// election and vote lines only at debug level (server/raft.go: initRaftNode sets the node's
+		// dflag from the server's debug flag, and debug prints nothing without it), and startLogged
+		// prints a server's output only when the test failed, so a failed election shows its votes.
+		"-D",
 		// port: 4222, the client port each pod has to itself.
 		"-p", strconv.Itoa(s.client),
 		// http_port: 8222, the monitoring port.
@@ -603,6 +609,41 @@ func (s *hubServer) streamLastSeq(stream string) (uint64, error) {
 	return 0, fmt.Errorf("%s holds no copy of %s", s.name, stream)
 }
 
+// metaCluster is the JetStream meta group's leader and size as the server's /jsz reports them.
+// The leader is the empty string while the group has none.
+func (s *hubServer) metaCluster() (leader string, size int, err error) {
+	var jsz struct {
+		Meta struct {
+			Leader string `json:"leader"`
+			Size   int    `json:"cluster_size"`
+		} `json:"meta_cluster"`
+	}
+	if err := s.monitorJSON("/jsz", &jsz); err != nil {
+		return "", 0, err
+	}
+	return jsz.Meta.Leader, jsz.Meta.Size, nil
+}
+
+// agreedMetaLeader is the JetStream meta leader every server of servers names, or why they name
+// none: a server whose /jsz did not answer, one that names no leader, or two that disagree.
+func agreedMetaLeader(servers []*hubServer) (string, error) {
+	agreed := ""
+	for _, s := range servers {
+		l, _, err := s.metaCluster()
+		if err != nil {
+			return "", err
+		}
+		if l == "" {
+			return "", fmt.Errorf("%s names no JetStream meta leader", s.name)
+		}
+		if agreed != "" && l != agreed {
+			return "", fmt.Errorf("the servers name the JetStream meta leaders %s and %s", agreed, l)
+		}
+		agreed = l
+	}
+	return agreed, nil
+}
+
 // authorizedUser is the user the server authorized conn's connection as: an nkey user's public
 // key, the session user's for a client presenting no credential.
 func (s *hubServer) authorizedUser(t *testing.T, conn *natsgo.Conn) string {
@@ -627,16 +668,35 @@ func (s *hubServer) count(text string) int { return strings.Count(s.proc.Output.
 func within(t *testing.T, timeout time.Duration, what string, check func() error) time.Duration {
 	t.Helper()
 	start := time.Now()
-	for {
-		err := check()
-		if err == nil {
-			return time.Since(start)
-		}
-		if time.Since(start) > timeout {
-			t.Fatalf("%s: not within %s: %v", what, timeout, err)
-		}
-		time.Sleep(100 * time.Millisecond)
+	var err error
+	if !testwait.Holds(timeout, 100*time.Millisecond, func() bool {
+		err = check()
+		return err == nil
+	}) {
+		t.Fatalf("%s: not within %s: %v", what, timeout, err)
 	}
+	return time.Since(start)
+}
+
+// stepDownStreamLeader asks the cluster to move stream's leadership to the server named preferred,
+// and returns the answer's body as text.
+//
+// Who answers $JS.API.STREAM.LEADER.STEPDOWN (nats-server v2.15.1, server/jetstream_api.go,
+// jsStreamLeaderStepDownRequest): a member that knows the JetStream meta group has no leader
+// refuses with 503/10008 before it looks at the stream at all (:2282-2286), a member that then
+// knows the stream's own group has no leader refuses the same way (:2315-2319), and otherwise
+// only the stream's current leader answers (:2322-2324). So a request sent while the stream is
+// between leaders is either refused or goes unanswered, and the caller issues it again.
+func stepDownStreamLeader(conn *natsgo.Conn, stream, preferred string) (string, error) {
+	body, err := json.Marshal(map[string]any{"placement": map[string]string{"preferred": preferred}})
+	if err != nil {
+		return "", err
+	}
+	msg, err := conn.Request("$JS.API.STREAM.LEADER.STEPDOWN."+stream, body, 2*time.Second)
+	if err != nil {
+		return "", err
+	}
+	return string(msg.Data), nil
 }
 
 // podArgs is a container's rendered arguments with each key of replace, a value fixed by the pod,
@@ -894,20 +954,15 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 			if len(remotes) != 2 || remotes[s.name] {
 				return fmt.Errorf("%s routes to %v", s.name, remotes)
 			}
-			var jsz struct {
-				Meta struct {
-					Leader string `json:"leader"`
-					Size   int    `json:"cluster_size"`
-				} `json:"meta_cluster"`
-			}
-			if err := s.monitorJSON("/jsz", &jsz); err != nil {
+			leader, size, err := s.metaCluster()
+			if err != nil {
 				return err
 			}
-			if jsz.Meta.Leader == "" || jsz.Meta.Size != 3 {
-				return fmt.Errorf("%s's meta cluster: leader %q, size %d", s.name, jsz.Meta.Leader, jsz.Meta.Size)
+			if leader == "" || size != 3 {
+				return fmt.Errorf("%s's meta cluster: leader %q, size %d", s.name, leader, size)
 			}
-			leaders[jsz.Meta.Leader] = true
-			metaLeader = jsz.Meta.Leader
+			leaders[leader] = true
+			metaLeader = leader
 		}
 		if len(leaders) != 1 {
 			return fmt.Errorf("the servers name meta leaders %v", leaders)
@@ -931,17 +986,26 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	for _, pattern := range session {
 		require.False(t, bus.SubjectContains(pattern, refused), "%s is outside core.SessionPermissions' publish grant", refused)
 	}
+	// A session receives on its own relay subject and on no notification topic of its own, so the
+	// hub refuses the credential-free user the plain notifications.> subscribe a session of an
+	// earlier release held.
+	relay := bus.DeliverSubject("live")
 	for _, s := range servers {
 		errs := make(chan error, 16)
 		conn, err := testnats.ConnectSeed(t, s.url(), "", natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { errs <- err }))
 		require.NoError(t, err)
 		require.Equal(t, r.keys.sessionKey, s.authorizedUser(t, conn), "a client with no credential is the session user")
+		_, err = conn.SubscribeSync(relay)
+		require.NoError(t, err)
 		require.NoError(t, conn.Publish(allowed, nil))
 		require.NoError(t, conn.Publish(refused, nil))
 		awaitViolation(t, conn, errs, fmt.Sprintf("Publish to %q", refused))
+		_, err = conn.SubscribeSync(bus.NotificationTopicPrefix + ">")
+		require.NoError(t, err)
+		awaitViolation(t, conn, errs, `Subscription to "`+bus.NotificationTopicPrefix+`>"`)
 		conn.Close()
-		t.Logf("(a) a client with no credential on %s became the session user %s, published to %s and was refused a publish to %s",
-			s.name, r.keys.sessionKey, allowed, refused)
+		t.Logf("(a) a client with no credential on %s became the session user %s, subscribed to %s, published to %s, and was refused a publish to %s and a subscribe to %s>",
+			s.name, r.keys.sessionKey, relay, allowed, refused, bus.NotificationTopicPrefix)
 	}
 
 	// (b) A stream at three copies across a SIGKILL of its leader.
@@ -994,6 +1058,61 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		})
 	}
 
+	// forceCoLocated moves the stream's leadership onto the server that leads the JetStream meta
+	// group, so that one SIGKILL takes both groups from the cluster at once.
+	forceCoLocated := func(bound time.Duration, what string) (meta string) {
+		var first, answer string
+		took := within(t, bound, what, func() error {
+			var err error
+			meta, err = agreedMetaLeader(servers)
+			if err != nil {
+				return err
+			}
+			stream, err := streamLeader()
+			if err != nil {
+				return err
+			}
+			if first == "" {
+				first = stream
+			}
+			if stream == meta {
+				return nil
+			}
+			// The request goes out on every pass: nothing guarantees the preferred peer wins the
+			// election its stepdown starts, and a 400 with err_code 10005 ("preferred server ...
+			// is already leader") is no failure of its own, so the next pass's comparison, not
+			// this answer, decides.
+			reply, err := stepDownStreamLeader(operator, r3, meta)
+			if err != nil {
+				return fmt.Errorf("%s leads %s and %s leads the JetStream meta group; the stepdown to %s got %v",
+					stream, r3, meta, meta, err)
+			}
+			answer = reply
+			return fmt.Errorf("%s leads %s and %s leads the JetStream meta group; the stepdown to %s answered %s",
+				stream, r3, meta, meta, reply)
+		})
+		stepdown := "no stepdown was needed"
+		if answer != "" {
+			stepdown = "the last stepdown answered " + answer
+		}
+		t.Logf("(b) %s: %s led %s at the first look; %s leads the JetStream meta group and now leads %s too; %s; the loop took %s",
+			what, first, r3, meta, r3, stepdown, took.Round(time.Millisecond))
+		return meta
+	}
+	// 30 s holds several stepdown attempts at the 56-109 ms leadership transfer measured on a
+	// scratch cluster of this server version, and it matches awaitCurrent's 30 s.
+	forceCoLocated(30*time.Second, "the JetStream meta leader leads "+r3+" before the publisher starts")
+
+	// The servers' debug output names the stream's Raft group in each of its election and vote
+	// lines (RAFT [<node> - <group>]), so the line logged at the kill gives the group with the
+	// kill's time, in the layout and local clock of those lines. The group is read here, where a
+	// read costs the kill nothing, and a group's name never changes.
+	r3Info, err := js.StreamInfo(r3)
+	require.NoError(t, err)
+	require.NotNil(t, r3Info.Cluster, "%s reports its cluster", r3)
+	require.NotEmpty(t, r3Info.Cluster.RaftGroup, "%s names its Raft group", r3)
+	group := r3Info.Cluster.RaftGroup
+
 	publisher := connectHub(t, urls, r.keys.operatorSeed)
 	pubJS, err := publisher.JetStream()
 	require.NoError(t, err)
@@ -1028,18 +1147,67 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		}
 		return nil
 	})
+	// One pass is the ordinary cost here, three /jsz reads and one StreamInfo, about 10 ms,
+	// because nothing between this call and the one above it stops a server; the call is here so
+	// the co-location holds at the instant of the kill rather than 1.5 s before it. About 5 s of
+	// publishing is left when the 200-acknowledgement wait returns (795 messages at about 6 ms
+	// each), so a longer bound would let the require.Less below fail for an unrelated reason.
+	meta := forceCoLocated(3*time.Second, "the JetStream meta leader still leads "+r3+" at the kill")
 	leader, err := streamLeader()
 	require.NoError(t, err)
+	require.Equal(t, meta, leader, "the server about to be killed leads both %s and the JetStream meta group", r3)
 	killed := byName[leader]
 	require.NotNil(t, killed, "the stream leader %s is one of the servers", leader)
+	// The control for the leaderless meta group this phase is about. The node that wins the meta
+	// election logs selfElected unconditionally (nats-server v2.15.1,
+	// server/jetstream_cluster.go:10080), but only once its first entry as leader is committed and
+	// applied (server/raft.go:6321 and 1603-1613), which is later than the moment /jsz names it
+	// (server/raft.go:6307 and 4839-4841, read at server/jetstream_cluster.go:14075): the line
+	// reached the test's buffer 2.8-13.7 ms after both survivors named the new leader in four of
+	// twelve measured runs. So the wait below requires the line as well as the agreement, rather
+	// than reading the log once after it. A raft group reaches a new leader only through a term
+	// that has none, so counting the line proves the leaderless state happened. Sampling /jsz for
+	// an empty leader would not: that state lasted 18-49 ms in five of six measured runs, and
+	// within polls every 100 ms.
+	const selfElected = "Self is new JetStream cluster metadata leader"
+	survivors := make([]*hubServer, 0, len(servers)-1)
+	elections := map[string]int{}
+	for _, s := range servers {
+		if s == killed {
+			continue
+		}
+		survivors = append(survivors, s)
+		elections[s.name] = s.count(selfElected)
+	}
 	killed.kill(t)
+	killedAt := time.Now()
+	t.Logf("(b) SIGKILL to %s, which led %s's Raft group %s, at %s",
+		killed.name, r3, group, killedAt.Format("2006/01/02 15:04:05.000000"))
 	atKill := acked.Load()
 	require.Less(t, atKill, int64(messages), "the leader dies mid-run")
+	for _, s := range survivors {
+		l, _, err := s.metaCluster()
+		since := time.Since(killedAt).Round(time.Millisecond)
+		if err != nil {
+			t.Logf("(b) %s's /jsz, read %s after the kill: %v", s.name, since, err)
+			continue
+		}
+		t.Logf("(b) %s names the JetStream meta leader %q, read %s after the kill", s.name, l, since)
+	}
 	var newLeader string
 	// nats-server v2.15.1's Raft waits a random 4-9 s without the leader's heartbeat before a
-	// follower campaigns (server/raft.go, minElectionTimeoutDefault and maxElectionTimeoutDefault),
-	// so 15 s holds the slowest draw and its vote with room for a loaded runner.
-	elected := within(t, 15*time.Second, "a new stream leader after the SIGKILL", func() error {
+	// follower campaigns (server/raft.go, minElectionTimeoutDefault and maxElectionTimeoutDefault).
+	// A candidate writes its term and its vote for itself to disk before it sends its vote request
+	// (requestVote, writeTermVote). When the other survivor's timer fires inside that window, both
+	// are candidates in one term, each refuses the other (processVoteRequest), and the group waits
+	// for a second draw: a split vote. Measured: 13 of 12,482 runs of this phase in a scratch
+	// harness took a second round, every one a split vote, one of them at 15.40 s; CI run
+	// 43462859890 failed this wait at 15 s with the same signature (dispatch://INFRA-3529). One
+	// round is at most 9 s plus 0.8 s (maxCampaignTimeoutDefault), the campaign of a survivor that
+	// refused a candidate with a shorter log. Three rounds and the read's 500 ms fit in 30 s, so
+	// the wait fails only when three draws in a row split. The publisher's 30 s per message is the
+	// cap: a longer outage fails the publisher instead.
+	within(t, 30*time.Second, "a new stream leader after the SIGKILL", func() error {
 		l, err := streamLeader()
 		if err != nil {
 			return err
@@ -1050,8 +1218,38 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 		newLeader = l
 		return nil
 	})
-	t.Logf("(b) SIGKILL of the stream leader %s (pid %d) after %d of %d messages acknowledged; %s leads %s %s later",
-		leader, killed.proc.Cmd.Process.Pid, atKill, messages, newLeader, r3, elected.Round(time.Millisecond))
+	elected := time.Since(killedAt)
+	var newMeta *hubServer
+	// The wait is on both survivors, not on the one that leads the stream, because either one can
+	// receive the read and refuse it: jsMsgGetRequest answers 503 with err_code 10008 while the
+	// server that receives the request knows no JetStream meta leader (nats-server v2.15.1,
+	// server/jetstream_api.go:3922-3926, with the predicate js.isLeaderless at
+	// server/jetstream_cluster.go:1481-1497), and it decides that before it decides which server
+	// leads the stream. The meta election is an independent random 4-9 s draw (server/raft.go,
+	// minElectionTimeoutDefault and maxElectionTimeoutDefault), so the stream election above is no
+	// sign that it finished. The meta group takes split votes as the stream's group does, so 30 s
+	// holds three rounds, as the stream wait's does.
+	within(t, 30*time.Second, "a new JetStream meta leader after the SIGKILL, with its own election in its log", func() error {
+		name, err := agreedMetaLeader(survivors)
+		if err != nil {
+			return err
+		}
+		if name == killed.name {
+			return fmt.Errorf("the survivors still name the killed %s the JetStream meta leader", name)
+		}
+		newMeta = byName[name]
+		if newMeta == nil {
+			return fmt.Errorf("the survivors name the JetStream meta leader %s, which is no server of the cluster", name)
+		}
+		if newMeta.count(selfElected) == elections[name] {
+			return fmt.Errorf("%s, which the survivors name the new JetStream meta leader, has not logged %q since the kill", name, selfElected)
+		}
+		return nil
+	})
+	metaElected := time.Since(killedAt)
+	t.Logf("(b) SIGKILL of %s (pid %d), which led both %s and the JetStream meta group, after %d of %d messages acknowledged; %s leads %s %s later, and %s leads the meta group %s after the kill",
+		leader, killed.proc.Cmd.Process.Pid, r3, atKill, messages, newLeader, r3, elected.Round(time.Millisecond),
+		newMeta.name, metaElected.Round(time.Millisecond))
 	select {
 	case err := <-published:
 		require.NoError(t, err)

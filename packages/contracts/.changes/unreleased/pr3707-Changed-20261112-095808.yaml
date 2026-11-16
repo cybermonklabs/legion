@@ -1,0 +1,5 @@
+kind: Changed
+body: The project create input and answer carry `default_assignee`, the project-default input takes a person and no null, and the ask tool descriptions state the three steps that decide who a question reaches.
+time: 2026-11-12T09:58:08.278221151Z
+custom:
+    Issue: pr3707

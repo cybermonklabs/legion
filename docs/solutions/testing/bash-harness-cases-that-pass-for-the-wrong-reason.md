@@ -148,8 +148,8 @@ approval. The harness now carries the reachable states — parked single-issue, 
 Two checks before a fixture is written: (a) walk the state machine the checkpoint tests and
 confirm the precondition and the assertion can hold at the same instant for a compliant agent;
 (b) ask where the fixture's state came from — a real run's `state.json`, or a hand-typed record
-shaped to make the assertion true? The second kind proves only that the script parses. A ruling
-can be wrong; the fixture is where a wrong ruling gets laundered into a green PASS line.
+shaped to make the assertion true? The second kind proves only that the script parses. A decision
+can be wrong; the fixture is where a wrong decision gets laundered into a green PASS line.
 
 ## Historical mutation evidence
 

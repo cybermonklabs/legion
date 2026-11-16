@@ -148,7 +148,7 @@ launched pane's system prompt. Two different failures want two different moments
   absent) and rejects an empty env value naming the env key. An env value is used as given — there is no
   config file to be relative to. `legion start --check-config` therefore validates the *key* without
   opening the file. Precedence is never special-cased per key: the spec's "env override" wording was
-  read as "wins over absent", the only reading consistent with every other key (architect ruling; the
+  read as "wins over absent", the only reading consistent with every other key (architect decision; the
   test `resolves instructions: … LEGION_INSTRUCTIONS as given when the file omits it` pins it).
 - **The file, at boot, before anything slow.** `startDaemonLocked` calls
   `materializeDeploymentInstructions` right after the Dispatch-token secret write and before the

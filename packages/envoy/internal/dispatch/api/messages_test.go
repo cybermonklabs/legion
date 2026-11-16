@@ -684,6 +684,8 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 		t.Fatalf("repeated reply appended an event: before=%s after=%s", before.Body.String(), after.Body.String())
 	}
 
+	// A closed issue still takes a delivery retry and the agent's reply to it.
+	roleLive = true
 	closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key,
 		map[string]string{"status": "done"}, "alice")
 	if closed.Code != http.StatusOK {
@@ -691,14 +693,18 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 	}
 	closedRetry := dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
 		map[string]any{"delivery": "steer"}, "alice")
-	if closedRetry.Code != http.StatusConflict || !strings.Contains(closedRetry.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if closedRetry.Code != http.StatusCreated {
 		t.Fatalf("delivery to closed issue: status=%d body=%s", closedRetry.Code, closedRetry.Body.String())
+	}
+	closedAttempt := decodeBody[model.MessageDelivery](t, closedRetry)
+	if closedAttempt.Attempt != 3 || closedAttempt.State != "sent" || closedAttempt.SessionID != "s1" {
+		t.Fatalf("delivery to closed issue = %#v, want attempt 3 sent to s1", closedAttempt)
 	}
 
 	closedReply := bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/reply", map[string]any{
-		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": 2, "body": "Too late.",
+		"actor": map[string]any{"kind": "session", "id": "s1"}, "attempt": closedAttempt.Attempt, "body": "Answered after the close.",
 	})
-	if closedReply.Code != http.StatusConflict || !strings.Contains(closedReply.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if closedReply.Code != http.StatusCreated {
 		t.Fatalf("reply to closed issue: status=%d body=%s", closedReply.Code, closedReply.Body.String())
 	}
 }
@@ -715,7 +721,7 @@ func TestCreateMessageAuthenticatesBeforeReadingTheBody(t *testing.T) {
 	}
 }
 
-func TestAgentTargetedMessagesRequireHumanAndKeepTheirOwnConversation(t *testing.T) {
+func TestAgentTargetedMessagesNeedThePersonScopeAndKeepTheirOwnConversation(t *testing.T) {
 	sendStatus := http.StatusOK
 	const sessions = `[{"session_id":"s1","title":"planner","capabilities":["aside","btw","steer"]}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -739,12 +745,14 @@ func TestAgentTargetedMessagesRequireHumanAndKeepTheirOwnConversation(t *testing
 	defer listener.Close()
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 
-	nonHuman := bearerRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages", map[string]any{
+	// The deployment's shared token holds no scope, so it cannot open a conversation with a
+	// session; the person's own browser does it below.
+	scopeless := bearerRequest(t, handler, http.MethodPost, "/api/v1/agents/s1/messages", map[string]any{
 		"body": "Can I send this?", "delivery": "btw",
 		"actor": map[string]any{"kind": "session", "id": "s2"},
 	})
-	if nonHuman.Code != http.StatusForbidden || !strings.Contains(nonHuman.Body.String(), `"code":"HUMAN_ONLY"`) {
-		t.Fatalf("agent-authenticated creation: status=%d body=%s", nonHuman.Code, nonHuman.Body.String())
+	if scopeless.Code != http.StatusForbidden || !strings.Contains(scopeless.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+		t.Fatalf("the shared token's creation: status=%d body=%s, want 403 %s", scopeless.Code, scopeless.Body.String(), codeScopeRequired)
 	}
 
 	first := postAgentMessage(t, handler, "s1", map[string]any{

@@ -1,14 +1,17 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+// biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { ApiError, api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
-const artifact: Artifact = {
+const artifact = {
   created_at: "2026-09-09T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-1",
@@ -17,6 +20,8 @@ const artifact: Artifact = {
   kind: "image",
   name: "diagram.png",
   primary: false,
+  ref_key: "CORE-1/diagram-png",
+  session_id: null,
   slug: "diagram-png",
   versions: [
     {
@@ -40,9 +45,15 @@ const artifact: Artifact = {
       summary: null,
     },
   ],
-};
+  // `satisfies`, not an annotation: the tests below slice `artifact.versions`, which the route
+  // table's `Version[] | null` would not let them.
+} satisfies Artifact;
 
 const noReferences: IssueReferences = { members: [], truncated: false };
+
+function Location() {
+  return <output data-testid="location">{useLocation().pathname}</output>;
+}
 
 function renderTab(
   artifacts: Artifact[],
@@ -58,6 +69,7 @@ function renderTab(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "artifacts" })]}>
       <QueryClientProvider client={queryClient}>
         <ArtifactsTab isClosed={isClosed} />
+        <Location />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -78,10 +90,10 @@ test("renders one row per artifact with no compare controls", async () => {
   try {
     await screen.findByTestId("artifact-diagram-png");
     expect(screen.getByTestId("artifact-notes-md")).not.toBeNull();
-    expect(screen.queryByLabelText(/Compare .* from/)).toBeNull();
-    expect(screen.queryByLabelText(/Compare .* to/)).toBeNull();
-    expect(screen.queryByText("Compare versions")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show all versions" })).toBeNull();
+    expect(screen.queryByLabelText(/Compare .* from/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Compare .* to/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Compare versions")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show all versions" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -89,25 +101,36 @@ test("renders one row per artifact with no compare controls", async () => {
   }
 });
 
-// W41. A closed issue takes no upload, and Dispatch would refuse one only after its whole body went
-// up: the tab refuses before a file is picked, with the reason on its Upload control - and on the
-// line beside it, for a reader with no pointer - and a file dropped on it is not staged. W46. The
-// hidden file input is disabled too, so no keyboard path opens a chooser whose file is ignored.
-test("a closed issue's Artifacts tab refuses an upload before a file is picked", async () => {
+// W41. A closed issue takes neither a new document nor an upload, and Dispatch would refuse an
+// upload only after its whole body went up: the tab refuses both before a file is picked, with
+// the reason on each control - and on the one line beside them, for a reader with no pointer -
+// and a file dropped on it is not staged. W46. The hidden file input is disabled too, so no
+// keyboard path opens a chooser whose file is ignored.
+test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
+  const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
   const pick = spyOn(HTMLInputElement.prototype, "click");
   try {
     await screen.findByTestId("artifact-diagram-png");
     const upload = screen.getByRole("button", { name: "Upload" });
-    expect(upload.getAttribute("aria-disabled")).toBe("true");
-    expect(upload.getAttribute("title")).toBe("This issue is closed. Reopen it to upload.");
-    expect(screen.getByText("This issue is closed. Reopen it to upload.")).toBeTruthy();
-    fireEvent.click(upload);
+    const create = screen.getByRole("button", { name: "New document" });
+    const refusal = "This issue is closed. Reopen it to add a document.";
+    expect(upload).toHaveAttribute("aria-disabled", "true");
+    expect(upload).toHaveAttribute("title", refusal);
+    expect(create).toHaveAttribute("aria-disabled", "true");
+    expect(create).toHaveAttribute("title", refusal);
+    const line = screen.getByText(refusal);
+    expect(upload.getAttribute("aria-describedby")).toBe(line.id);
+    expect(create.getAttribute("aria-describedby")).toBe(line.id);
+    await user.click(create);
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    await user.click(upload);
     expect(pick).not.toHaveBeenCalled();
     const file = new File(["png"], "late.png", { type: "image/png" });
+    // A drop of files, which user-event has no form for.
     fireEvent.drop(screen.getByTestId("artifact-diagram-png"), { dataTransfer: { files: [file] } });
-    expect(screen.queryByText("late.png")).toBeNull();
-    expect(screen.queryByLabelText("Summary (optional)")).toBeNull();
+    expect(screen.queryByText("late.png")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Summary (optional)")).not.toBeInTheDocument();
     const input = screen.getByLabelText("Upload artifact");
     expect(input instanceof HTMLInputElement && input.disabled).toBe(true);
   } finally {
@@ -115,6 +138,83 @@ test("a closed issue's Artifacts tab refuses an upload before a file is picked",
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
+  }
+});
+
+const madeDocument = {
+  ...artifact,
+  id: "artifact-design-notes",
+  kind: "doc",
+  name: "Design notes",
+  ref_key: "CORE-1/design-notes",
+  slug: "design-notes",
+  versions: artifact.versions.slice(0, 1),
+} satisfies Artifact;
+
+function madeResponse() {
+  const [version] = madeDocument.versions;
+  if (version === undefined) {
+    throw new Error("the made document fixture requires a version");
+  }
+  return { artifact: madeDocument, version };
+}
+
+// The control sends the title alone, so the new document holds nothing, and the person is taken
+// to it on the page they are already on: the issue's artifact route renders the editor.
+test("New document on an issue makes an empty document and opens it on the same page", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() =>
+      expect(uploadArtifact).toHaveBeenCalledWith(
+        { issue: "CORE-1" },
+        { name: "Design notes" },
+        keyedAttempt
+      )
+    );
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/issues/CORE-1/artifacts/design-notes"
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// The write compares the title with each of the owner's names and slugs (`$2 in (name, slug)`),
+// so the control refuses a slug it lists too, and names the artifact that holds the title for
+// what it is: the list holds the issue's images and files beside its documents.
+test("New document on an issue refuses a title the issue already holds", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(madeResponse());
+
+  try {
+    await screen.findByTestId("artifact-diagram-png");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("diagram-png");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "An artifact on this issue already holds that title: diagram.png."
+    );
+    expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
   }
 });
 
@@ -179,9 +279,9 @@ test("artifacts tab renders no make-primary control", async () => {
 
   try {
     await screen.findByTestId("artifact-spec");
-    expect(screen.getByTestId("artifact-spec").textContent).toContain("Primary");
-    expect(screen.queryByRole("button", { name: /make primary/i })).toBeNull();
-    expect(screen.queryByText(/Not\s+primary/)).toBeNull();
+    expect(screen.getByTestId("artifact-spec")).toHaveTextContent("Primary");
+    expect(screen.queryByRole("button", { name: /make primary/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Not\s+primary/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -247,6 +347,7 @@ test("artifacts saved in the same second list newest first by time, not by the t
 });
 
 test("the filter input narrows rows by name and kind", async () => {
+  const user = userEvent.setup();
   const notes: Artifact = {
     ...artifact,
     id: "artifact-notes",
@@ -258,13 +359,17 @@ test("the filter input narrows rows by name and kind", async () => {
 
   try {
     await screen.findByTestId("artifact-diagram-png");
-    fireEvent.change(screen.getByLabelText("Filter artifacts"), { target: { value: "notes" } });
-    expect(screen.queryByTestId("artifact-diagram-png")).toBeNull();
+    const filter = screen.getByLabelText("Filter artifacts");
+    await user.click(filter);
+    await user.paste("notes");
+    expect(screen.queryByTestId("artifact-diagram-png")).not.toBeInTheDocument();
     expect(screen.getByTestId("artifact-notes-md")).not.toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Filter artifacts"), { target: { value: "image" } });
+    await user.clear(filter);
+    await user.click(filter);
+    await user.paste("image");
     expect(screen.getByTestId("artifact-diagram-png")).not.toBeNull();
-    expect(screen.queryByTestId("artifact-notes-md")).toBeNull();
+    expect(screen.queryByTestId("artifact-notes-md")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -300,13 +405,14 @@ test("References lists closure members with chip, via, and depth, names truncati
     expect((details as HTMLDetailsElement).open).toBe(false);
 
     const references = within(view.container).getByRole("region", { name: "References" });
-    expect(
-      within(references).getByRole("link", { name: "Design notes" }).getAttribute("href")
-    ).toBe("/projects/CORE/documents/design-notes");
-    expect(references.textContent).toContain("CORE");
-    expect(references.textContent).toContain("via comment");
-    expect(references.textContent).toContain("depth 1");
-    expect(references.textContent).toContain("more references beyond 8 hops");
+    expect(within(references).getByRole("link", { name: "Design notes" })).toHaveAttribute(
+      "href",
+      "/projects/CORE/documents/design-notes"
+    );
+    expect(references).toHaveTextContent("CORE");
+    expect(references).toHaveTextContent("via comment");
+    expect(references).toHaveTextContent("depth 1");
+    expect(references).toHaveTextContent("more references beyond 8 hops");
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
@@ -328,6 +434,7 @@ test("References names the agent that owns a conversation's artifact", async () 
       open_asks: 0,
       roles: [],
       session_id: "planner-session",
+      state: "live",
       title: "Planner",
     },
   ]);
@@ -348,12 +455,96 @@ test("References names the agent that owns a conversation's artifact", async () 
   try {
     const references = await screen.findByRole("region", { name: "References", hidden: true });
     const owner = await within(references).findByRole("link", { hidden: true, name: "Planner" });
-    expect(owner.getAttribute("href")).toBe("/agents/planner-session/live");
-    expect(references.textContent).toContain("agent Planner · via comment · depth 1");
+    expect(owner).toHaveAttribute("href", "/agents/planner-session/live");
+    expect(references).toHaveTextContent("agent Planner · via comment · depth 1");
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
     getIssueReferences.mockRestore();
     listAgents.mockRestore();
+  }
+});
+
+// The removal asks for nothing first: Dispatch removes only a document that holds nothing, so
+// the press goes straight out and the row the person pressed on goes with it.
+test("Remove on a document's row sends the delete and the row goes", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = {
+    ...madeDocument,
+    versions: artifact.versions.slice(0, 1),
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    listArtifacts.mockResolvedValue([]);
+    return Promise.resolve();
+  });
+
+  try {
+    const row = await screen.findByTestId("artifact-design-notes");
+    await user.click(within(row).getByRole("button", { name: "Remove" }));
+
+    await waitFor(() =>
+      expect(deleteArtifact).toHaveBeenCalledWith("artifact-design-notes", keyedAttempt)
+    );
+    await waitFor(() => expect(screen.queryByTestId("artifact-design-notes")).toBeNull());
+    expect(screen.getByText("No artifacts yet.")).not.toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A refusal is the server's own sentence, shown on the row where the person pressed, and the
+// document stays.
+test("a refused removal shows the server's sentence on the row", async () => {
+  const user = userEvent.setup();
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const { getIssueReferences, listArtifacts, view } = renderTab([notes]);
+  const refusal =
+    "Design notes is not untouched: it holds writing; a document is removed only while it holds nothing";
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
+    new ApiError(409, { code: "ARTIFACT_NOT_UNTOUCHED", error: refusal })
+  );
+
+  try {
+    const row = await screen.findByTestId("artifact-design-notes");
+    await user.click(within(row).getByRole("button", { name: "Remove" }));
+
+    expect(await within(row).findByRole("alert")).toHaveTextContent(refusal);
+    expect(screen.getByTestId("artifact-design-notes")).not.toBeNull();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A file artifact is refused by the same test a document that holds writing is refused by, so
+// its row offers no press that is always refused; a closed issue says why before the press.
+test("a file's row offers no removal, and a closed issue refuses the document's", async () => {
+  const notes: Artifact = { ...madeDocument, versions: artifact.versions.slice(0, 1) };
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact, notes],
+    noReferences,
+    true
+  );
+
+  try {
+    const picture = await screen.findByTestId("artifact-diagram-png");
+    expect(within(picture).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+    const row = screen.getByTestId("artifact-design-notes");
+    const remove = within(row).getByRole("button", { name: "Remove" });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAttribute(
+      "title",
+      "This issue is closed. Reopen it to remove this document."
+    );
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
   }
 });

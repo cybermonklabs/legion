@@ -15,32 +15,75 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 const testTimeout = 30 * time.Second
 
-// TestMain isolates every real jj invocation this package's tests make from the operator's own
-// jj configuration — in particular fsmonitor.backend = "watchman" on this devbox: JJ_CONFIG
-// names a file that does not exist, so jj falls back to its built-in defaults instead of reading
-// ~/.jjconfig.toml, and no test-created repository ever registers a root with the operator's
-// long-running watchman. watchman drops a root once its directory is deleted, so without this,
-// the roots that pile up are the ones from a run this devbox's load killed before t.TempDir's
-// cleanup ran. A test that sets its own JJ_CONFIG afterward (newLocalRunner's isolated one)
-// still wins: os.Environ() is read fresh by every exec.Command.
+// TestMain takes out of the process every variable that could lead git or jj to a workspace,
+// remote or credential not the test's own (fixtureenv.MustGuard), and gives the process a home of the
+// package's own (fixtureenv.Home), so every real jj and
+// git these tests run — provisioning's, which reads the process's environment, and the fixtures',
+// which run under fixtureenv.Isolated of that same home (setupEnvironment) — reads none of the
+// operator's configuration: in particular fsmonitor.backend = "watchman" on this devbox, which
+// would have every test-created repository register a root with the operator's long-running
+// watchman. watchman drops a root once its directory is deleted, so without this, the roots that
+// pile up are the ones from a run this devbox's load killed before t.TempDir's cleanup ran. A test
+// that sets a home of its own afterward (newLocalRunner's) still wins: os.Environ() is read fresh
+// by every exec.Command.
 func TestMain(m *testing.M) {
-	configDir, err := os.MkdirTemp("", "legion-test-jj-config")
+	fixtureenv.MustGuard()
+	os.Exit(runUnderAHomeOfThePackagesOwn(m))
+}
+
+// runUnderAHomeOfThePackagesOwn does the setup the comment above describes and removes the home
+// afterwards. The removal is deferred, so it also runs when the setup below panics. A run killed
+// by a signal still keeps the home, which nothing here can help.
+func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
+	home, err := os.MkdirTemp("", "legion-test-home")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain:", err)
-		os.Exit(1)
+		return 1
 	}
-	if err := os.Setenv("JJ_CONFIG", filepath.Join(configDir, "no-user-config.toml")); err != nil {
+	defer os.RemoveAll(home)
+	for _, entry := range fixtureenv.Home(home) {
+		key, value, _ := strings.Cut(entry, "=")
+		if err := os.Setenv(key, value); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			return 1
+		}
+	}
+	check, err := leakguardtest.WriteFile(home, leakguardtest.Passes)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "TestMain:", err)
-		os.Exit(1)
+		return 1
 	}
-	code := m.Run()
-	os.RemoveAll(configDir)
-	os.Exit(code)
+	leakCheckStandIn = check
+	return m.Run()
+}
+
+// leakCheckStandIn is the stand-in shared public leak check every fixture command of this package
+// runs under, written once by TestMain into the package's own home. The fixtures push: the seed
+// push every local bare remote is made with (seedRemote), and the pushes the tests make into one.
+// Those run under whatever git is first on PATH, and in an issue pod that is Legion's wrapper
+// (/opt/legion/bin/git), which points a push at a hook running the leak guard; the guard refuses a
+// push it can resolve no shared check for (leakguard's Resolve), and fixtureenv.Isolated drops
+// PUBLIC_LEAK_CHECK along with everything else of the process that reaches past the test. So
+// without a check of this package's own every fixture that pushes stops with LEAK CHECK SETUP
+// ERROR in a pod, while passing on a runner that has no such git — the stand-in, which clears
+// every write, is what makes the two the same run.
+var leakCheckStandIn string
+
+// setupEnvironment is the environment of a fixture command: fixtureenv.Isolated under the home
+// the test's provisioning reads too (TestMain's, or newLocalRunner's), so a fixture and a
+// provision read the same jj repository configuration, and no fixture reads the workspace,
+// configuration, provisioning token or credential of the process that runs the tests. The
+// stand-in leak check is named for the pushes among those commands.
+func setupEnvironment() []string {
+	return append(fixtureenv.Isolated(os.Getenv("HOME")), "PUBLIC_LEAK_CHECK="+leakCheckStandIn)
 }
 
 // recordingRunner runs every command through the production runner, NewRunner, with the real jj
@@ -93,6 +136,15 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	// A clone from a pod's feed reaches it through the insteadOf its own environment names.
 	if isClone(actual.Argv) && !slices.Contains(command.Env, "GIT_ALLOW_PROTOCOL=file") {
 		actual.Argv[3] = r.remote
+	}
+	// The skills clone names GitHub in its argv too: `git clone --depth 1 --single-branch
+	// --quiet <url> <dir>` (CloneSkills).
+	if commandWith(actual.Argv, "git", "clone", "--depth", "1", "--single-branch") {
+		for i, arg := range actual.Argv {
+			if arg == "https://github.com/acme/widgets" {
+				actual.Argv[i] = r.remote
+			}
+		}
 	}
 	if commandWith(actual.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
 		for i, arg := range actual.Argv {
@@ -155,43 +207,17 @@ func localBareRemote(t *testing.T) string {
 func seedRemote(t *testing.T, root, defaultBranch string) string {
 	t.Helper()
 	remote := filepath.Join(root, "remote.git")
-	runSetup(t, root, "git", "init", "--bare", "--initial-branch="+defaultBranch, remote)
+	runSetup(t, root, fixturegit.InitBare(remote, defaultBranch)...)
 
 	seed := filepath.Join(root, "seed")
-	runSetup(t, root, "jj", "git", "init", "--colocate", seed)
+	runSetup(t, root, fixturegit.JJInit(seed, true)...)
 	runSetup(t, root, "jj", "bookmark", "set", jjString(defaultBranch), "-R", seed)
 	runSetup(t, root, "jj", "git", "remote", "add", "origin", remote, "-R", seed)
 	runSetup(t, root, "jj", "git", "push", "--remote", "origin", "--bookmark", "exact:"+jjString(defaultBranch), "--allow-empty-description", "-R", seed)
 	return remote
 }
 
-// fixtureEnvironment is os.Environ() without the git configuration and identity of whatever
-// process runs the tests: a Legion issue pod hands every one of them a GIT_CONFIG_* block, a
-// role's GitHub credential helper and core.hooksPath=/dev/null among it, and GIT_AUTHOR_*/
-// GIT_COMMITTER_* of its own, none of which a fixture may read — a fixture is the repository the
-// test wrote, not the pod's. GIT_DIR, GIT_WORK_TREE and GIT_ALTERNATE_OBJECT_DIRECTORIES go for
-// the same reason, and the three provisioning variables so that no fixture reaches the pod's
-// token or its repository cache (cmd/legion's runtimeOptionalEnv drops those three for
-// `provision`). The block itself goes through withoutGitConfigPairs, which owns which entries
-// make it up, so a pair a caller appends (fromOrigin's) is the whole block git then reads.
-// JJ_CONFIG stays: TestMain sets it deliberately, and newLocalRunnerOnBranch sets it again.
-func fixtureEnvironment() []string {
-	return slices.DeleteFunc(withoutGitConfigPairs(os.Environ()), func(entry string) bool {
-		key := environmentKey(entry)
-		for _, prefix := range []string{"GIT_AUTHOR_", "GIT_COMMITTER_"} {
-			if strings.HasPrefix(key, prefix) {
-				return true
-			}
-		}
-		return slices.Contains([]string{
-			"GIT_CONFIG_PARAMETERS", "GIT_DIR", "GIT_WORK_TREE",
-			"GIT_ALTERNATE_OBJECT_DIRECTORIES", "LEGION_PROVISION_TOKEN_FILE",
-			"LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE",
-		}, key)
-	})
-}
-
-// runSetup runs a fixture command under fixtureEnvironment, so it reads neither a
+// runSetup runs a fixture command under setupEnvironment, so it reads neither a
 // GIT_CONFIG_PARAMETERS a test planted for provisioning's processes alone nor the git
 // configuration of the process that runs the tests.
 func runSetup(t *testing.T, dir string, argv ...string) string {
@@ -202,15 +228,9 @@ func runSetup(t *testing.T, dir string, argv ...string) string {
 // runSetupWith is runSetup with env added to the command's environment.
 func runSetupWith(t *testing.T, dir string, env []string, argv ...string) string {
 	t.Helper()
-	command := exec.Command(argv[0], argv[1:]...)
-	command.Dir = dir
-	command.Env = append(fixtureEnvironment(), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid")
-	command.Env = append(command.Env, env...)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s: %v\n%s", strings.Join(argv, " "), err, output)
-	}
-	return string(output)
+	return fixturegit.Runner{TB: t, Env: setupEnvironment()}.
+		With(env...).
+		Raw(dir, argv...)
 }
 
 // fromOrigin runs a fixture command that reaches origin, https://github.com/acme/widgets in a
@@ -221,9 +241,9 @@ func fromOrigin(t *testing.T, run *recordingRunner, dir string, argv ...string) 
 }
 
 // newLocalRunner is a runner against a fresh local bare remote whose default branch is main. jj
-// reads no configuration of the user's who runs the tests: its user configuration is empty and its
-// config home, where jj keeps a repository's configuration, is the test's own, as in a pod's init
-// container.
+// reads no configuration of the user's who runs the tests: its home (fixtureenv.Home), whose
+// config home is where jj keeps a repository's configuration, is the test's own, as in a pod's
+// init container, and its fixtures read the same one.
 func newLocalRunner(t *testing.T) *recordingRunner {
 	t.Helper()
 	return newLocalRunnerOnBranch(t, "main")
@@ -233,8 +253,10 @@ func newLocalRunner(t *testing.T) *recordingRunner {
 func newLocalRunnerOnBranch(t *testing.T, defaultBranch string) *recordingRunner {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", home)
-	t.Setenv("JJ_CONFIG", filepath.Join(home, "no-user-config.toml"))
+	for _, entry := range fixtureenv.Home(home) {
+		key, value, _ := strings.Cut(entry, "=")
+		t.Setenv(key, value)
+	}
 	t.Setenv("JJ_USER", "Legion test")
 	t.Setenv("JJ_EMAIL", "legion-test@example.invalid")
 	return &recordingRunner{t: t, remote: seedRemote(t, t.TempDir(), defaultBranch), timeout: testTimeout, runner: NewRunner(testTimeout, testTools(t))}
@@ -527,6 +549,21 @@ func assertCredentialedEnvironmentBounded(t *testing.T, command Command, timeout
 	}
 }
 
+// requireCheckedOut fails unless the issue's workspace holds the default branch's whole tree, what
+// a checkout leaves: its sparse patterns are the whole tree (.), and the files it lists are the
+// files the shared clone lists at main@origin.
+func requireCheckedOut(t *testing.T, working Workspace) {
+	t.Helper()
+	if listed := strings.TrimSpace(runSetup(t, working.Dir, "jj", "sparse", "list", "-R", working.Dir)); listed != "." {
+		t.Errorf("the workspace's sparse patterns are %q, want the whole tree (.)", listed)
+	}
+	files := strings.Fields(runSetup(t, working.Dir, "jj", "file", "list", "-R", working.Dir))
+	want := strings.Fields(runSetup(t, working.Clone, "jj", "file", "list", "-r", "main@origin", "--ignore-working-copy", "-R", working.Clone))
+	if !slices.Equal(files, want) || len(want) == 0 {
+		t.Errorf("the workspace holds %q, want the default branch's files %q", files, want)
+	}
+}
+
 // tokenProbe runs every command through runner, first recording whether a one-shot token file
 // exists under dir while the command runs.
 type tokenProbe struct {
@@ -759,8 +796,8 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 			t.Errorf("the clone used a credentialed Jujutsu clone: %q", call.Argv)
 		}
 	}
-	if clone := findCall(t, calls, "git", "clone", "--quiet"); len(clone.Argv) != 5 || clone.Argv[3] != feed {
-		t.Errorf("the clone was made with %q, want a local clone of the feed %s", clone.Argv, feed)
+	if clone := findCall(t, calls, "git", "clone", "--quiet"); len(clone.Argv) != 6 || clone.Argv[3] != "--no-checkout" || clone.Argv[4] != feed {
+		t.Errorf("the clone was made with %q, want a local clone of the feed %s with no working tree", clone.Argv, feed)
 	}
 	cloneDir := filepath.Join(state, "repos", "github.com", "acme", "widgets")
 	if _, err := os.Stat(filepath.Join(cloneDir, ".git", "objects", "info", "alternates")); !errors.Is(err, os.ErrNotExist) {
@@ -786,10 +823,75 @@ func TestProvisionFromAFeedHoldsNoCredential(t *testing.T) {
 	}
 }
 
+// A pod writes the repository's working copy once: the shared clone a provision from a feed leaves
+// behind holds no working tree at all — its clone takes --no-checkout, and the clear and the
+// abandon that follow keep jj's first snapshot from recording that absent tree as deleted — while
+// the issue's own workspace holds the default branch's files. A clone whose working copy recorded
+// the tree as deleted would show here as a dirty status or a visible deletion commit.
+func TestProvisionFromAFeedLeavesTheSharedCloneWithNoWorkingTree(t *testing.T) {
+	run := newLocalRunner(t)
+	pushRemoteBranch(t, run.remote, "main", "history.txt")
+	req := feedRequest(t, run, provisionRequest(t))
+	before := len(run.Calls())
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	calls := run.Calls()[before:]
+	cloneDir := working.Clone
+
+	entries, err := os.ReadDir(cloneDir)
+	if err != nil {
+		t.Fatalf("read the shared clone: %v", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	if !slices.Equal(names, []string{".git", ".jj"}) {
+		t.Errorf("the shared clone holds %q, want git's and jj's directories and no file of the tree", names)
+	}
+	// Without --ignore-working-copy, so jj snapshots the clone's working copy as it reads it: a
+	// tree the clone's first snapshot had recorded as deleted would show as a change here.
+	if status := runSetup(t, cloneDir, "jj", "status", "-R", cloneDir); !strings.Contains(status, "The working copy has no changes") {
+		t.Errorf("jj status in the shared clone = %q, want no change", status)
+	}
+	if listed := strings.TrimSpace(runSetup(t, cloneDir, "jj", "sparse", "list", "-R", cloneDir)); listed != "" {
+		t.Errorf("the shared clone's sparse patterns are %q, want none: no file of the tree is in its working copy", listed)
+	}
+	if empty := strings.TrimSpace(runSetup(t, cloneDir, "jj", "log", "-r", "@", "--no-graph", "-T", "empty", "-R", cloneDir)); empty != "true" {
+		t.Errorf("the shared clone's working-copy commit is empty = %s, want true", empty)
+	}
+	if parent, main := commitOf(t, cloneDir, "@-"), commitOf(t, cloneDir, "main@origin"); parent != main {
+		t.Errorf("the shared clone's @- is %s, want the default branch's %s", parent, main)
+	}
+	at := commitOf(t, cloneDir, "@")
+	// The repository's visible heads are the clone's own empty working-copy commit and the one the
+	// issue's workspace works on, which `jj workspace add` created after the clone was made: the
+	// deletion commit a clone with no working tree would otherwise carry is one of neither.
+	heads := strings.Fields(runSetup(t, cloneDir, "jj", "log", "-r", "visible_heads()", "--no-graph", "-T", `commit_id ++ "\n"`, "--ignore-working-copy", "-R", cloneDir))
+	slices.Sort(heads)
+	wantHeads := []string{at, commitOf(t, working.Dir, "@")}
+	slices.Sort(wantHeads)
+	if !slices.Equal(heads, wantHeads) {
+		t.Errorf("the shared clone's visible heads are %q, want %q: its empty working-copy commit and the issue workspace's, and no commit deleting the tree", heads, wantHeads)
+	}
+	if clone := findCall(t, calls, "git", "clone", "--quiet"); !slices.Contains(clone.Argv, "--no-checkout") {
+		t.Errorf("the clone was made with %q, want --no-checkout: no working tree", clone.Argv)
+	}
+
+	requireCheckedOut(t, working)
+	if status := runSetup(t, working.Dir, "jj", "status", "-R", working.Dir); !strings.Contains(status, "The working copy has no changes") {
+		t.Errorf("jj status in the workspace = %q, want no change", status)
+	}
+}
+
 // The clone from a pod's feed runs each step whose duration follows the repository's size under
-// what remains of one shared CloneTimeout — the local `git clone`, which checks out the working
-// tree, then jj's import of every commit, with less — and every other provisioning command keeps
-// the runner's slow-command budget.
+// what remains of one shared CloneTimeout — the local `git clone`, then jj's import of every
+// commit, then the two steps that leave the clone with no working tree, each with what the ones
+// before it left — the issue's checkout runs under CheckoutTimeout, and every other provisioning
+// command keeps the runner's slow-command budget.
 func TestTheSharedClonesCloneIsBoundedByCloneTimeout(t *testing.T) {
 	run := newLocalRunner(t)
 	req := feedRequest(t, run, provisionRequest(t))
@@ -800,7 +902,7 @@ func TestTheSharedClonesCloneIsBoundedByCloneTimeout(t *testing.T) {
 	var steps []string
 	var given []time.Duration
 	for _, call := range run.Calls()[before:] {
-		if commandWith(call.Argv, "git", "clone") || commandWith(call.Argv, "jj", "git", "init", "--colocate") {
+		if isSharedCloneStep(call.Argv) {
 			steps = append(steps, strings.Join(call.Argv[:3], " "))
 			given = append(given, call.Timeout)
 			if call.Timeout > CloneTimeout || call.Timeout < CloneTimeout-time.Minute {
@@ -808,21 +910,33 @@ func TestTheSharedClonesCloneIsBoundedByCloneTimeout(t *testing.T) {
 			}
 			continue
 		}
+		// The checkout is the one provisioning command outside the clone's steps whose time
+		// follows the repository's size, so it holds CheckoutTimeout, its own
+		// (TestProvisionBoundsEachCommandByItsOwnBudget reads every command's).
+		if isCheckout(call.Argv) {
+			if call.Timeout != CheckoutTimeout {
+				t.Errorf("%q ran under %s, want CheckoutTimeout %s", call.Argv, call.Timeout, CheckoutTimeout)
+			}
+			continue
+		}
 		if call.Timeout != testTimeout {
 			t.Errorf("%q ran under %s, want %s", call.Argv, call.Timeout, testTimeout)
 		}
 	}
-	if len(given) == 2 && given[1] >= given[0] {
-		t.Errorf("jj's import was given %s, no less than the shared clone's %s: want what remained after it", given[1], given[0])
+	for i := 1; i < len(given); i++ {
+		if given[i] >= given[i-1] {
+			t.Errorf("%s was given %s, no less than %s's %s: want what remained after it", steps[i], given[i], steps[i-1], given[i-1])
+		}
 	}
-	if !slices.Equal(steps, []string{"git clone --quiet", "jj git init"}) {
-		t.Errorf("provisioning ran the clone's steps %q, want the local clone and jj's import once each", steps)
+	if !slices.Equal(steps, []string{"git clone --quiet", "jj git init", "jj sparse set", "jj abandon @"}) {
+		t.Errorf("provisioning ran the clone's steps %q, want the local clone, jj's import, and the two that leave no working tree, once each", steps)
 	}
 }
 
-// The clone's two size-following steps share one CloneTimeout, counted from the first's start, as
+// The clone's size-following steps share one CloneTimeout, counted from the first's start, as
 // ProvisionBound budgets one: the local `git clone` gets the whole bound and jj's import what
-// remains of it. Two steps that fit together clone; a clone that leaves the import too little fails
+// remains of it, and the two steps that leave the clone with no working tree follow with what
+// those left. Two steps that fit together clone; a clone that leaves the import too little fails
 // at the shared deadline, the import killed there, and no clone is left in place.
 func TestTheSharedClonesStepsShareOneCloneTimeout(t *testing.T) {
 	for _, tc := range []struct {
@@ -901,12 +1015,23 @@ func (r *slowSteps) Run(ctx context.Context, command Command) (Result, error) {
 	return r.recordingRunner.Run(ctx, command)
 }
 
-// sharedCloneStep names the clone's size-following steps, `git clone` and then `jj git init`.
+// sharedCloneStep names the two size-following steps this test gives clock time to, `git clone`
+// and then `jj git init`; the clear and the abandon that follow them take none of it.
 func sharedCloneStep(argv []string) string {
 	if commandWith(argv, "git", "clone") || commandWith(argv, "jj", "git", "init") {
 		return strings.Join(argv[:2], " ")
 	}
 	return ""
+}
+
+// isSharedCloneStep answers for every size-following step of the shared clone's clone from a feed:
+// the four commands feedClone runs under one CloneTimeout — the local `git clone`, jj's import of
+// every commit (`jj git init --colocate`), and the sparse clear and the abandon that leave the
+// clone with no working tree. It is not sharedCloneStep above, which is one case's clock-naming
+// function and deliberately names only the two of those steps that case gives clock time to.
+func isSharedCloneStep(argv []string) bool {
+	return commandWith(argv, "git", "clone") || commandWith(argv, "jj", "git", "init", "--colocate") ||
+		commandWith(argv, "jj", "sparse", "set") || commandWith(argv, "jj", "abandon")
 }
 
 // The feed is GitHub as it stood when the pod's workspace-fetch ran, and a tree agent can push to
@@ -937,7 +1062,7 @@ func TestProvisionFromAFeedKeepsABookmarkPushedAfterTheSnapshot(t *testing.T) {
 	}
 	push := exec.Command("jj", "git", "push", "--named", "legion/WIDGETS-99=@", "--allow-empty-description")
 	push.Dir = working.Dir
-	push.Env = append(fixtureEnvironment(), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url."+run.remote+".insteadOf", "GIT_CONFIG_VALUE_0=https://github.com/acme/widgets")
+	push.Env = append(setupEnvironment(), "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url."+run.remote+".insteadOf", "GIT_CONFIG_VALUE_0=https://github.com/acme/widgets")
 	if output, err := push.CombinedOutput(); err != nil {
 		t.Fatalf("a tree agent's push: %v\n%s", err, output)
 	}
@@ -1330,9 +1455,7 @@ func TestGitWorktreeEntriesThroughASymlinkedClone(t *testing.T) {
 func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T) {
 	root := t.TempDir()
 	realClone := filepath.Join(root, "real", "clone")
-	runSetup(t, root, "git", "init", "--initial-branch=main", realClone)
-	runSetup(t, realClone, "git", "config", "user.name", "Legion test")
-	runSetup(t, realClone, "git", "config", "user.email", "test@example.invalid")
+	runSetup(t, root, fixturegit.InitWorkTree(realClone, "main")...)
 	if err := os.WriteFile(filepath.Join(realClone, "README"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1372,9 +1495,9 @@ func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T)
 		t.Fatal(err)
 	}
 
-	got, err := gitWorktreeEntries(logicalClone, workspace)
-	if err != nil {
-		t.Fatalf("gitWorktreeEntries(%s, %s): %v", logicalClone, workspace, err)
+	got, unread, err := gitWorktreeEntries(logicalClone, workspace)
+	if err != nil || unread != nil {
+		t.Fatalf("gitWorktreeEntries(%s, %s): %v (unread: %v)", logicalClone, workspace, err, unread)
 	}
 	if !slices.Equal(got, []string{entry}) {
 		t.Errorf("gitWorktreeEntries(%s, %s) = %q, want %q", logicalClone, workspace, got, []string{entry})
@@ -1563,7 +1686,7 @@ func TestProvisionRestoresCleanlyAfterAKillBetweenTheWrites(t *testing.T) {
 // `git read-tree HEAD` ("failed to unpack tree object HEAD").
 func TestProvisionRestoresAWorkspaceWithNoRealParentCommit(t *testing.T) {
 	clone := t.TempDir()
-	runSetup(t, clone, "jj", "git", "init", "--colocate", ".")
+	runSetup(t, clone, fixturegit.JJInit(".", true)...)
 	other := filepath.Join(t.TempDir(), "other")
 	runSetup(t, clone, "jj", "workspace", "add", other, "-R", clone)
 	admin := gitWorktreeAdmin(t, other)

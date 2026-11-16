@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    A Dispatch boot recovers from a concurrent index build its own lock bound cancelled, or that
+    a killed process left half-built. The migration runner drops an INVALID index of the
+    migration's own name on the migration's own table with DROP INDEX CONCURRENTLY, builds the
+    index again and records the version, instead of refusing every later boot. A drop that waits
+    out the five-second bound is a retried attempt like any other. A relation of that name that
+    is not an index on the target table is refused, naming it, since CREATE INDEX CONCURRENTLY
+    IF NOT EXISTS would skip over it and the index would never be built; an INVALID index of
+    another name is left alone.
+time: 2026-11-08T17:25:00Z
+custom:
+    Issue: pr3080

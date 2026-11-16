@@ -75,7 +75,7 @@ rendered-hub run logged `listener API hosts: loopback, example-hub.example-tailn
 control with the list dropped logged `listener API hosts: loopback`.
 
 The trust-model rule is the reviewer's second hardening note, recorded here on the architect's
-ruling rather than spent on another review round, because a risk recorded only in a merged pull
+decision rather than spent on another review round, because a risk recorded only in a merged pull
 request body reaches nobody. For this listener the tailnet ACL on 9020 plus `ENVOY_ALLOWED_HOSTS`
 are the whole control on `/v1`: the guard exists so that a page which rebinds a name of its own to
 the listener's address is refused, and it keeps that property only while every entry is a name the

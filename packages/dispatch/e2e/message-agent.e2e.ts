@@ -1,8 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import { createIssue, createProject, patchIssue } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const planner: FakeSession = {
@@ -43,11 +41,8 @@ async function postPayload(page: Page): Promise<Record<string, unknown>> {
   return (await response).request().postDataJSON() as Record<string, unknown>;
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("the unified composer offers live roles and sessions and posts canonical mention targets", async ({
+// @pr: A write a person makes: the composer offers the live roles and sessions and posts the canonical mention target for the one picked.
+test("the unified composer offers live roles and sessions and posts canonical mention targets @pr", async ({
   browser,
 }) => {
   await setLiveSessions([planner, worker]);
@@ -109,9 +104,11 @@ test("an offline selected mention is posted and exposes its failed delivery", as
     expect(payload.mentions).toEqual([{ target: "session:B" }]);
     await expect(page.getByRole("list", { name: "Mention deliveries" })).toContainText("failed");
     // The sender retries a "no live session" answer under the one attempt and its key for the
-    // listener take-over window (listenerTakeoverWindow in
-    // packages/envoy/internal/dispatch/api/envoy_resolve.go), so the listener records several
-    // sends, all of one attempt: every one to B under the same idempotency key.
+    // listener take-over window - half a second under the harness's
+    // DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW (e2e/run-server.sh), of the twelve
+    // listenerTakeoverWindow gives a deployment (packages/envoy/internal/dispatch/api/
+    // envoy_resolve.go) - so the listener records more than one send, all of one attempt: every
+    // one to B under the same idempotency key.
     const sends = await getSentMessages();
     expect(sends.length).toBeGreaterThan(0);
     expect(sends.every((send) => send.target_session === "B")).toBe(true);

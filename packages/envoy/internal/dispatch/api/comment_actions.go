@@ -10,24 +10,46 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// lockedComment is the prologue of every comment mutation: read the comment, refuse a closed
-// owner, then re-read it `for update` so the mutation holds its row lock.
+// lockedComment is the prologue of every change to an existing comment - resolve, reopen,
+// edit, accept, reject: read the comment, lock its owner and refuse a closed one, then re-read
+// it `for update` so the mutation holds its row lock.
 func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	unlockedComment, err := s.loadComment(ctx, tx, id)
+	open, err := s.lockOwnerOfComment(ctx, tx, id)
 	if err != nil {
 		return model.Comment{}, err
 	}
-	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID)); err != nil {
+	if err := refuseClosed(open, refusedWhenClosed); err != nil {
 		return model.Comment{}, err
 	}
 	return s.loadCommentForUpdate(ctx, tx, id)
+}
+
+// lockedCommentForDelivery is the same prologue for a comment's mention delivery and the
+// mentioned agent's reply to it, which a closed issue still takes: it takes the owner's lock in
+// the same order without the closed refusal.
+func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
+	if _, err := s.lockOwnerOfComment(ctx, tx, id); err != nil {
+		return model.Comment{}, err
+	}
+	return s.loadCommentForUpdate(ctx, tx, id)
+}
+
+// lockOwnerOfComment reads the comment and locks its owner, answering whether that owner is
+// open.
+func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	unlockedComment, err := s.loadComment(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	_, open, err := ownerStatus(ctx, tx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), ownerRowLock)
+	return open, err
 }
 
 func (s *server) resolveComment(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +65,7 @@ func (s *server) rejectComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
@@ -120,33 +142,43 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
-	WriteJSON(w, http.StatusOK, comment)
+	s.publish(r.Context(), event)
+	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
+}
+
+// editCommentInput is the body of PATCH /api/v1/comments/{id}.
+//
+// blocks and base_revision are the ids the dashboard editor carried through the edit: each
+// block's id and where its span starts in body, in UTF-16 code units, against the comment's
+// revision the editor read them at (refs.IndexItem). Without them the ids follow the text.
+type editCommentInput struct {
+	Body         string               `json:"body" required:"true"`
+	BaseRevision *int                 `json:"base_revision"`
+	Blocks       []itemblocks.Carried `json:"blocks"`
 }
 
 func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.requireHuman(w, r)
+	actor, ok := s.actingPerson(w, r)
 	if !ok {
 		return
 	}
-	// blocks and base_revision are the ids the dashboard editor carried through the edit: each
-	// block's id and where its span starts in body, in UTF-16 code units, against the comment's
-	// revision the editor read them at (refs.IndexItem). Without them the ids follow the text.
-	var input struct {
-		Body         string               `json:"body"`
-		BaseRevision *int                 `json:"base_revision"`
-		Blocks       []itemblocks.Carried `json:"blocks"`
-	}
+	var input editCommentInput
 	if err := decodeJSON(r, &input); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit stores line feeds alone, as a comment's creation does (createCommentFor): the
+	// display read ends a line at a carriage return too, but a body that holds one draws
+	// differently in every other reader of the stored text. The carried offsets below are the
+	// dashboard editor's, and a ProseMirror document holds no carriage return, so no offset this
+	// normalisation shortens is one a caller sent.
+	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
 		return
 	}
-	if length := len16(input.Body); length > contracts.DispatchBodyMax {
-		capExceeded(w, "body", length, contracts.DispatchBodyMax)
+	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var carried *refs.CarriedEdit
@@ -170,7 +202,11 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if comment.Author != actor {
+	// The author is compared as a writer and not field by field: actingPerson hands back the
+	// person with the credential that acted beside them (model.ActorAct), so an agent editing
+	// its person's comment carries an Act the stored author has not, and the person is who the
+	// authorship is about.
+	if !comment.Author.SameAs(actor) {
 		writeError(w, "NOT_AUTHOR", http.StatusForbidden, "only the comment author may edit it")
 		return
 	}
@@ -239,14 +275,13 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
-	WriteJSON(w, http.StatusOK, comment)
+	s.publish(r.Context(), event)
+	s.storeDisplayTrees(r.Context(), comment.ID, input.Body)
+	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
 func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action string) {
-	var input struct {
-		Actor *model.Actor `json:"actor"`
-	}
+	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
@@ -255,7 +290,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	if action == "resolve" {
 		actor, ok = s.requireActor(w, r, input.Actor)
 	} else {
-		actor, ok = s.requireHuman(w, r)
+		actor, ok = s.actingPerson(w, r)
 	}
 	if !ok {
 		return
@@ -411,6 +446,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if summary == "" {
 			summary = fmt.Sprintf("Accepted suggestion: %q → %q", comment.Anchor.Quote, comment.Suggestion.ReplaceWith)
 		}
+		// The version's name rides the artifact.version event, so it takes the part an event
+		// carries: a comment body is bounded block by block and can be far longer than that.
+		summary, _ = model.EventBody(summary)
 		named, err := s.deps.Docs.NamedVersion(documentCtx, comment.Anchor.ArtifactID, summary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -447,13 +485,13 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	if action == "accept" {
 		// The accepted text may have gone the way an edit's can: removed by a concurrent browser
 		// change after this write's version was rendered and before it reached the room, which is
 		// past undoing (LEGION-269). The accept stands and says so.
 		lost, known := ledger.LostOps(comment.Anchor.ArtifactID)
-		accepted := acceptedComment{Comment: comment}
+		accepted := acceptedComment{shapedComment: newShapedComment(comment, wantsDisplayTrees(r))}
 		if known {
 			gone := len(lost) > 0
 			accepted.Lost = &gone
@@ -461,7 +499,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		WriteJSON(w, http.StatusOK, accepted)
 		return
 	}
-	WriteJSON(w, http.StatusOK, comment)
+	WriteJSON(w, http.StatusOK, newShapedComment(comment, wantsDisplayTrees(r)))
 }
 
 // acceptedComment is the accept route's response: the comment, plus whether the live document
@@ -469,6 +507,6 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 // publish failed and the room is reloading, or the room holds a tree too deep to read - which is
 // not the same statement as false, exactly as an edit's lost_ops distinguishes them.
 type acceptedComment struct {
-	model.Comment
+	shapedComment
 	Lost *bool `json:"lost"`
 }

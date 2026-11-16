@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 
 import { type FakeLiveSockets, installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
@@ -35,6 +35,7 @@ const agent: Agent = {
   open_asks: 0,
   roles: [],
   session_id: SESSION,
+  state: "live",
   title: "Planner",
 };
 // bun runs every test file in one process and a module spy is shared by all of them, so each of
@@ -61,6 +62,13 @@ afterEach(() => {
   sockets.restore();
 });
 
+/** The page as the shell mounts it: the session the address names, in front. The shell's own
+ *  host is `MountedLiveViews`, tested beside it. */
+function LiveView() {
+  const { sessionId = "" } = useParams<{ sessionId: string }>();
+  return <AgentConversationPage front sessionId={sessionId} />;
+}
+
 function renderPage() {
   queryClient = new QueryClient({
     defaultOptions: { queries: { gcTime: 0, retry: false, staleTime: 0 } },
@@ -69,7 +77,7 @@ function renderPage() {
     <MemoryRouter initialEntries={[`/agents/${SESSION}/live`]}>
       <QueryClientProvider client={queryClient}>
         <Routes>
-          <Route element={<AgentConversationPage />} path="/agents/:sessionId/live" />
+          <Route element={<LiveView />} path="/agents/:sessionId/live" />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>
@@ -96,5 +104,8 @@ test("a conversation the runtime cannot convert costs the thread, not the page a
   expect(screen.getByTestId("agent-conversation")).toBeTruthy();
   expect(screen.getByRole("link", { name: /Agents/ })).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Delivery mode" })).toBeTruthy();
-  expect(screen.getByText(/relayed while this page is open/)).toBeTruthy();
+  // The row under the box, with the one question mark that holds what this view keeps of the
+  // conversation (INFRA-812, R6), outlives the thread the same way.
+  expect(screen.getByTestId("agent-composer-footer")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "What the message box does" })).toBeTruthy();
 });

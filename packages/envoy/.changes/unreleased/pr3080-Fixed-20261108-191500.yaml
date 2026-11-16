@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    Two Dispatch processes that boot at once no longer deadlock on the migration advisory lock
+    while one of them builds or drops an index concurrently. A backend blocked on a lock keeps
+    its statement's snapshot, and a concurrent index build waits for every older snapshot, so a
+    blocking wait and the build that holds the key waited for each other and PostgreSQL ended one
+    of the boots with SQLSTATE 40P01. Every wait for that key now polls pg_try_advisory_lock in
+    statements of its own, with nothing open between two tries: the three places a boot waits for
+    it, and the auto-deployer's schema read, which no longer deadlocks with that build. That read
+    takes the key and reads the applied set in one psql session, the read in a statement of its
+    own that runs only once the key was granted, so the set it reads is the one the migration it
+    waited for left. It waits up to 60 seconds for the key, and refuses the deploy after that, to
+    be tried again: a build of a large index runs for longer than it waits.
+time: 2026-11-08T19:15:00Z
+custom:
+    Issue: pr3080

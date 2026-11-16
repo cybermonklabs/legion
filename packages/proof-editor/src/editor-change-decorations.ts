@@ -248,6 +248,9 @@ export const editorChangeDecorationsPlugin = $prose(
 /** Draws `decorations` over and beside the document, in place of whatever was drawn before. An
  *  empty set draws nothing. */
 export function setChangeDecorations(view: EditorView, decorations: ChangeDecorations): void {
+  // A host writes its change decorations from an effect, which can run after the effect that
+  // tore this editor down (INFRA-2409).
+  if (view.isDestroyed) return;
   view.dispatch(
     view.state.tr.setMeta(changeDecorationsKey, decorations).setMeta("addToHistory", false)
   );

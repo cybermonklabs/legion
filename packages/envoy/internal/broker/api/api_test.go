@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -124,15 +125,22 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 		t.Fatalf("oidc.New: %v", err)
 	}
 	serviceLogins := map[string]string{daemonAccount: "legion-daemon", otherDaemonAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins}
+	// BROKER_SERVICES: both accounts the pods these tests enrol run as, bound to the service both
+	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
+	// outside it is a pod no login here launches (POD_NOT_LAUNCHED).
+	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
+	// Wired as cmd/broker/main.go wires it, so a session name belongs to one principal on this
+	// server too: the enrollment route refuses a name another principal holds.
+	enr.Sessions = oauthstore.New(st.Pool)
 
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
-	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute)
+	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := brokertest.NewOAuthProvider(t, st, issuer)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
@@ -321,7 +329,6 @@ type wireRecord struct {
 	ExpiresAt       time.Time           `json:"expires_at"`
 	RequestedAt     time.Time           `json:"requested_at"`
 	Decided         *wireDecided        `json:"decided"`
-	ApproveURL      *string             `json:"approve_url"`
 }
 
 type wireCreateRequestResponse struct {
@@ -370,6 +377,7 @@ type wireApproverGrant struct {
 	Enrollment wireEnrollmentInfo `json:"enrollment"`
 	Names      []string           `json:"names"`
 	Approver   *string            `json:"approver"`
+	DecidedBy  *string            `json:"decided_by"`
 	ExpiresAt  *time.Time         `json:"expires_at"`
 	CreatedAt  time.Time          `json:"created_at"`
 }
@@ -808,8 +816,8 @@ func TestAgentSecretRequestLifecycle(t *testing.T) {
 	if readBack.Enrollment == nil || readBack.Enrollment.Kind != "session" || readBack.Enrollment.Operator != testApprover || readBack.Enrollment.Slot != "" {
 		t.Fatalf("record enrollment = %+v, want kind=session operator=%s and no slot", readBack.Enrollment, testApprover)
 	}
-	if readBack.LifetimeSeconds != nil {
-		t.Fatalf("record lifetime_seconds = %d, want null for a request naming no lifetime (until the session ends)", *readBack.LifetimeSeconds)
+	if readBack.LifetimeSeconds == nil || *readBack.LifetimeSeconds != 900 {
+		t.Fatalf("record lifetime_seconds = %v, want 900, the 15-minute default for a human-tier request naming no lifetime", readBack.LifetimeSeconds)
 	}
 	if readBack.Session.Request != sessionID || readBack.Session.Enrollment != "" {
 		t.Fatalf("record session = %+v, want request=%s and no enrollment session_id", readBack.Session, sessionID)
@@ -872,8 +880,14 @@ func TestAgentSecretRequestLifecycle(t *testing.T) {
 		listed.RecordID == nil || *listed.RecordID != recordID || listed.Enrollment.Slot != nil {
 		t.Fatalf("listed grant = %+v, want names [DEEL_API_KEY] granted on approval by %s, resting on record %s, on an enrollment with no slot", listed, testApprover, recordID)
 	}
-	if listed.ExpiresAt != nil {
-		t.Fatalf("listed grant expires_at = %s, want null for a grant that lasts until its session ends", listed.ExpiresAt)
+	// Who decided it travels beside whose grant it is. They are one person here and two for a
+	// grant the model judge approved, which records the record's own approver and names the
+	// judge as its decider; Dispatch's Live grants row reads this field to say who approved it.
+	if listed.DecidedBy == nil || *listed.DecidedBy != testApprover {
+		t.Fatalf("listed grant decided_by = %v, want %s, who approved it", listed.DecidedBy, testApprover)
+	}
+	if listed.ExpiresAt == nil || listed.ExpiresAt.Sub(time.Now()) > 15*time.Minute || listed.ExpiresAt.Sub(time.Now()) < 13*time.Minute {
+		t.Fatalf("listed grant expires_at = %v, want about 15 minutes from now, the default for a human-tier request naming no lifetime", listed.ExpiresAt)
 	}
 
 	// Revoking by approver takes the grant's approver or its enrollment's operator (both
@@ -976,8 +990,8 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (string, error) {
-				return "", fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)
+			policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				return secrets.Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)
 			},
 		}
 	})
@@ -1085,7 +1099,7 @@ func TestCreateRequestWithInvalidSessionIDIs400SessionIDInput(t *testing.T) {
 func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking who may decide this request", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -1165,7 +1179,7 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 	request := func(names ...string) wireCreateRequestResponse {
 		t.Helper()
 		status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-			map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "", names...), "session_id": nil})
+			map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking which answers link the record's page", names...), "session_id": nil})
 		if status != http.StatusOK {
 			t.Fatalf("POST /v1/requests %v = %d: %s", names, status, body)
 		}
@@ -1231,39 +1245,21 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 	}
 }
 
-// TestTheRecordReadRouteLinksASecretRequestsPage pins GET /v1/credential-requests/{record}: the
-// listed caller reads one record, and a pending secret request's carries the broker's own page
-// where a person signed in to the broker decides it, the same link GET /v1/pending's row carries.
-// A machine login's record carries none: it is decided with its typed code.
-func TestTheRecordReadRouteLinksASecretRequestsPage(t *testing.T) {
+// TestTheRecordReadRouteIsGone pins that the broker answers no GET /v1/credential-requests/{record}
+// at all: that route existed only so Dispatch's record page could read a record while the broker
+// had no approval page of its own, and the broker now decides a secret request on its own page.
+// The record this test reads back is one the store holds and the old route answered 200 for, so
+// what the 404 says is that the mux has no such route, not that the record is missing.
+func TestTheRecordReadRouteIsGone(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY"), "session_id": nil})
+		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking the record read route is gone", "DEEL_API_KEY"), "session_id": nil})
 	recordID := *decode[wireCreateRequestResponse](t, body).RecordID
 
 	status, body := ts.ui(t, http.MethodGet, "/v1/credential-requests/"+recordID, nil)
-	if status != http.StatusOK {
-		t.Fatalf("GET /v1/credential-requests/{record} = %d %s, want 200", status, body)
-	}
-	page := ts.URL + "/approve/" + recordID
-	got := decode[wireRecord](t, body)
-	if got.RecordID != recordID || got.Kind != "agent_secret" || got.State != "pending" {
-		t.Fatalf("the record = %+v, want the pending secret request %s", got, recordID)
-	}
-	if got.ApproveURL == nil || *got.ApproveURL != page {
-		t.Fatalf("the record's approve_url = %v, want %s", got.ApproveURL, page)
-	}
-
-	code := ts.openMachineLogin(t, newSigningKey(t), testApprover, "example-host-devbox")
-	_, body = ts.ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": code})
-	login := decode[wireRecord](t, body).RecordID
-	status, body = ts.ui(t, http.MethodGet, "/v1/credential-requests/"+login, nil)
-	if status != http.StatusOK {
-		t.Fatalf("GET /v1/credential-requests/{machine record} = %d %s, want 200", status, body)
-	}
-	if got := decode[wireRecord](t, body); got.Kind != "launcher_credential" || got.ApproveURL != nil {
-		t.Fatalf("a machine login's record = %+v, want launcher_credential with no approve_url", got)
+	if status != http.StatusNotFound {
+		t.Fatalf("GET /v1/credential-requests/{record} = %d %s, want 404: the route is gone", status, body)
 	}
 }
 
@@ -1334,7 +1330,7 @@ func TestRecordCancelledWithNoEventLeavesThePendingList(t *testing.T) {
 func TestCancelRequestThenCancelAgainIsTerminal(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking a session cancels its own request once", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -1363,7 +1359,7 @@ func TestCancelRequestThenCancelAgainIsTerminal(t *testing.T) {
 func TestRevokeGrantBySession(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking a session revokes its own grant", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)

@@ -25,7 +25,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: the
@@ -39,14 +41,24 @@ type capturedRequest struct {
 // CA, so a real gh or git told HTTPS_PROXY and that CA sends it every request it means for GitHub,
 // which it records and refuses (401 to an unauthenticated git request, so git asks its credential
 // helper, 403 or 404 otherwise). Nothing reaches GitHub.
+//
+// It answers one request of each command rather than refusing it: the leak guard `legion gh`
+// runs before gh reads the destination repository's visibility first, through a gh of its own,
+// and a visibility it cannot read refuses the call. That read is the first repository read a
+// command makes, so the first `GET /repos/<owner>/<name>` after each take is answered with a
+// visibility and every later one is refused as before — the command's own read of the same path
+// included, which is what keeps each case's exit status what it was.
 type captureProxy struct {
 	url, caFile string
 	mu          sync.Mutex
 	requests    []capturedRequest
+	// visibility is whether the next repository read is the guard's, to be answered.
+	visibility bool
 }
 
 var capturedRESTOwner = regexp.MustCompile(`^/repos/([^/]+)/`)
 var capturedGitOwner = regexp.MustCompile(`^/([^/]+)/[^/]+/info/refs$`)
+var capturedRepository = regexp.MustCompile(`^/repos/[^/]+/[^/]+$`)
 
 func startCaptureProxy(t *testing.T) *captureProxy {
 	t.Helper()
@@ -131,6 +143,7 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 		}
 	}()
 	p.url = "http://" + ln.Addr().String()
+	p.visibility = true
 	return p
 }
 
@@ -157,7 +170,17 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	p.mu.Lock()
 	p.requests = append(p.requests, request)
+	// The guard's visibility read, answered once per command (captureProxy's doc).
+	guardsRead := p.visibility && r.Method == http.MethodGet && r.Host == "api.github.com" && capturedRepository.MatchString(r.URL.Path)
+	if guardsRead {
+		p.visibility = false
+	}
 	p.mu.Unlock()
+	if guardsRead {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"visibility":"private"}`)
+		return
+	}
 	switch {
 	case r.Host == "github.com" && request.auth == "":
 		w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
@@ -171,12 +194,15 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// take is every request recorded since the last take.
+// take is every request recorded since the last take. It arms the answer to the next command's
+// visibility read, since a take is where one command's requests end and the next command's
+// begin.
 func (p *captureProxy) take() []capturedRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	requests := p.requests
 	p.requests = nil
+	p.visibility = true
 	return requests
 }
 
@@ -254,7 +280,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"}
-	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Owners: map[string]ghconfig.Rendered{
+	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
 		"acme":    ghconfig.Render(tokens["acme"], "implement", expires),
 		"sjawhar": ghconfig.Render(tokens["sjawhar"], "implement", expires),
 	}}); err != nil {
@@ -278,8 +304,12 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		"GH_NO_UPDATE_NOTIFIER=1", "GH_PROMPT_DISABLED=1", "GH_SPINNER_DISABLED=1", "NO_COLOR=1",
 		"GH_TELEMETRY=false", "DO_NOT_TRACK=1",
 		"GH_TOKEN=", "GITHUB_TOKEN=", "GH_HOST=",
-		"GH_CONFIG_DIR=" + ghconfig.OwnerDir(root, "acme"), "LEGION_GH_OWNERS_DIR=" + root, "LEGION_GH_PATH=" + gh,
+		"GH_CONFIG_DIR=" + ghconfig.Dir(root, "acme"), "LEGION_GH_OWNERS_DIR=" + root, "LEGION_GH_PATH=" + gh,
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
+		// `legion gh` passes every call through the leak guard, which refuses one it can run no
+		// shared check for; what this test reads is which token each call carries, so its check
+		// clears every call and the guard's own visibility read is answered by the proxy.
+		"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
 	}
 	runIn := func(dir string, env []string, name string, args ...string) (int, string) {
 		cmd := exec.Command(name, args...)
@@ -333,7 +363,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// Neither alias nor extension may run: each would touch its marker. A gh printing pr view's
 	// usage with <URL> for <url>, as no gh this was read from does, stands for a later gh's help.
 	ran := filepath.Join(home, "ran")
-	config := filepath.Join(ghconfig.OwnerDir(root, "acme"), ghconfig.ConfigFile)
+	config := filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.ConfigFile)
 	aliases := ghconfig.Config + "aliases:\n    co: pr checkout\n    pv: pr view -R sjawhar/legion\n    pr pv2: pr view -R sjawhar/legion\n    shx: '!touch " + ran + "-shx'\n"
 	if err := os.WriteFile(config, []byte(aliases), 0o600); err != nil {
 		t.Fatal(err)
@@ -457,7 +487,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// is refused; -R names the repository there.
 	workspace := func(remotes [][]string) string {
 		dir := t.TempDir()
-		for _, args := range append([][]string{{"init", "-q"}}, remotes...) {
+		for _, args := range append([][]string{fixturegit.InitWorkTree("", "")[1:]}, remotes...) {
 			if code, out := runIn(dir, nil, git, args...); code != 0 {
 				t.Fatalf("git %q: %s", args, out)
 			}

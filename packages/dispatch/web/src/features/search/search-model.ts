@@ -1,4 +1,21 @@
-import type { SearchOwner, SearchResult, SearchResultKind } from "../../api/types";
+import { SEARCH_OPERATORS, SEARCH_RESULT_KINDS } from "@legion/contracts";
+import type { SearchOperator, SearchOwner, SearchResult, SearchResultKind } from "../../api/types";
+
+/** `value` as a result kind, or `undefined` where this dashboard knows no such kind. Every
+ *  surface that needs the kind itself - the palette, the related-items list - narrows here. */
+export function searchResultKind(value: string): SearchResultKind | undefined {
+  return SEARCH_RESULT_KINDS.find((known) => known === value);
+}
+
+/** The operator forms `read` names, as the forms this dashboard knows. An answer's reading of
+ *  the query carries each form as the plain string the route table declares, and
+ *  `SEARCH_OPERATORS` is the closed list that string is one of; a form this build has no word
+ *  for is left out, as is every form when a Dispatch that predates the field answers none. The
+ *  one reader asks only whether a form was used, so the answer keeps `SEARCH_OPERATORS`' own
+ *  order rather than the reading's. */
+export function searchOperators(read: readonly string[] | null | undefined): SearchOperator[] {
+  return SEARCH_OPERATORS.filter((known) => read?.includes(known) === true);
+}
 
 export interface ResultGroup {
   readonly owner: SearchOwner;
@@ -11,8 +28,10 @@ export function groupResults(results: readonly SearchResult[]): ResultGroup[] {
 
   for (const result of results) {
     const { owner } = result;
+    // The owner is one flat record carrying the fields of whichever arm it is: an issue owner
+    // names `key`, a document owner `artifact_id`.
     const ownerKey =
-      owner.kind === "issue" ? `issue:${owner.key}` : `document:${owner.artifact_id}`;
+      owner.kind === "issue" ? `issue:${owner.key ?? ""}` : `document:${owner.artifact_id ?? ""}`;
     const group = groups.get(ownerKey);
     if (group === undefined) {
       groups.set(ownerKey, { owner, results: [result] });

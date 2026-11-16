@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
 // repositoryGitHub is GitHub's REST API answering GET /repos/acme/widgets with defaultBranch, or
@@ -31,10 +31,9 @@ type repositoryGitHub struct {
 func newRepositoryGitHub(t *testing.T, defaultBranch string) *repositoryGitHub {
 	t.Helper()
 	g := &repositoryGitHub{status: http.StatusOK, defaultBranch: defaultBranch}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/repos/acme/widgets" {
-			t.Errorf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
+			githubtest.Unexpected(t, w, r)
 			return
 		}
 		g.reads.Add(1)
@@ -54,9 +53,7 @@ func newRepositoryGitHub(t *testing.T, defaultBranch string) *repositoryGitHub {
 			fullName = "acme/widgets"
 		}
 		_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+branch+`"}`)
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
 }
 
@@ -72,7 +69,7 @@ func (g *repositoryGitHub) answer(status int) {
 func TestDefaultBranchesReadsGitHubOncePerTTL(t *testing.T) {
 	github := newRepositoryGitHub(t, "release/v7.1")
 	clock := time.Now()
-	branches := newDefaultBranches(roleTokens{}, github.url, 10*time.Minute, func() time.Time { return clock })
+	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, func() time.Time { return clock })
 	widgets := ghrepo.MustParse("acme/widgets")
 
 	for range 2 {
@@ -105,7 +102,7 @@ func TestDefaultBranchesReadsGitHubOncePerTTL(t *testing.T) {
 func TestDefaultBranchesKeepsNoRefusal(t *testing.T) {
 	github := newRepositoryGitHub(t, "main")
 	github.answer(http.StatusInternalServerError)
-	branches := newDefaultBranches(roleTokens{}, github.url, 10*time.Minute, time.Now)
+	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, time.Now)
 	widgets := ghrepo.MustParse("acme/widgets")
 
 	if _, err := branches.Named(context.Background(), widgets); err == nil || !strings.Contains(err.Error(), "read the default branch of acme/widgets") || !strings.Contains(err.Error(), "500") {
@@ -128,7 +125,7 @@ func TestDefaultBranchesNamesTheRepositoryAndKeepsTheLastRead(t *testing.T) {
 	github := newRepositoryGitHub(t, "release/v7.1")
 	github.fullName = "Acme/Widgets"
 	clock := time.Now()
-	branches := newDefaultBranches(roleTokens{}, github.url, 10*time.Minute, func() time.Time { return clock })
+	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, func() time.Time { return clock })
 
 	if _, ok := branches.Kept("acme/widgets"); ok {
 		t.Fatal("Kept answered before any read")
@@ -156,7 +153,7 @@ func TestDefaultBranchesNamesTheRepositoryAndKeepsTheLastRead(t *testing.T) {
 func TestDefaultBranchesSharesOneReadInFlight(t *testing.T) {
 	github := newRepositoryGitHub(t, "develop")
 	github.release = make(chan struct{})
-	branches := newDefaultBranches(roleTokens{}, github.url, 10*time.Minute, time.Now)
+	branches := newDefaultBranches(roleTokens{}, nil, github.url, 10*time.Minute, time.Now)
 	widgets := ghrepo.MustParse("acme/widgets")
 
 	const readers = 5

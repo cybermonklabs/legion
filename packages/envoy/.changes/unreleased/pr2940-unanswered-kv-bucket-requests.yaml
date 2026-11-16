@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  Opening a KV bucket now sends its stream lookup and its create again when the NATS server leaves
+  either unanswered, up to three sends, instead of ending the caller with `open <bucket> KV bucket:
+  context deadline exceeded`. nats.go sends each JetStream request once, and a member of a cluster
+  whose metadata group is younger than ten seconds, or that has not yet seen its leader go, answers
+  none of the requests a bucket open makes: the lookup's `STREAM.INFO`, the account `INFO` nats.go
+  sends before a create, and the `STREAM.CREATE` itself. A member that knows it has no leader
+  answers an error rather than nothing, and the caller still ends on that, as before.
+
+  The error of a bucket that could not be opened now names the step that drew no answer,
+  `KV_<bucket> STREAM.INFO` or `KV_<bucket> create`, so a log that held only the bucket's name says
+  which step it was, and the open of the bucket's jetstream handle, which is sent again too, logs
+  under `KV_<bucket> handle open` rather than under the lookup's own name.
+
+  A request the NATS server refuses under the program's grant, which it also answers with nothing,
+  is not sent again, since it would be refused again: the step ends at that one send with an error
+  naming the refusal and the subject it was refused to, `KV_<bucket> STREAM.INFO: bus: NATS denied
+  the publish to "$JS.API.STREAM.INFO.KV_<bucket>": ...`.

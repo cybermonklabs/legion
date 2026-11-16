@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveSocketRig is the API test server behind a real listener and run on a lifetime, so Register
@@ -438,7 +439,10 @@ func mintAgentToken(t *testing.T, handler http.Handler) agentTokenResponse {
 func hubConnCount(hub *deliveryHub) int {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
-	return len(hub.conns)
+	if hub.generation == nil {
+		return 0
+	}
+	return len(hub.generation.conns)
 }
 
 // smallSendBuffers shrinks the send buffer of every connection the server accepts, so a socket whose
@@ -588,12 +592,8 @@ func (c *heldConn) Write(p []byte) (int, error) {
 // never holds.
 func pollUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %s", what, within)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(within, 10*time.Millisecond, condition) {
+		t.Fatalf("%s: not within %s", what, within)
 	}
 }
 

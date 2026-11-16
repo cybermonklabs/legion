@@ -1,13 +1,7 @@
-import { type Browser, expect, test } from "@playwright/test";
-
 import { createIssue, createProject, patchIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { resetDatabase } from "./seed";
+import { type Browser, expect, test } from "./test";
 import { asUser } from "./users";
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // The repository is used by no other spec: the server remembers which installation covers a
 // repository it has read, so reusing one another spec expects to be unavailable would leak.
@@ -58,7 +52,8 @@ async function expectChecksPill(
 
 // GitHub's merge reads the newest run of each check, workflow and event: a PR Title run that a
 // newer PR Title run of the same event replaced no longer counts.
-test("the checks pill ignores a cancelled run its newer run of the same event passed", async ({
+// @pr: Live delivery: the checks pill has to read the newest run of each check, as GitHub's own merge does.
+test("the checks pill ignores a cancelled run its newer run of the same event passed @pr", async ({
   browser,
 }) => {
   await expectChecksPill(

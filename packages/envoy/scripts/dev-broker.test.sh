@@ -25,10 +25,15 @@
 # instance's broker actually answered; (e) the two concurrent instances bind two different
 # ports; (f) each instance's broker trusts the dev-oidc-issuer that instance started, lists
 # its dev caller and exchange account, exports the caller token that issuer wrote, and stops the
-# issuer on exit; and (g) that same issuer serves the code flow for the broker's own sign-in
+# issuer on exit; (g) that same issuer serves the code flow for the broker's own sign-in
 # client and signs the approver in, the broker's BROKER_SIGNIN_* naming that issuer, client,
 # domain and a 0600 secret file in the run's workdir, and the banner names the broker's own
-# approval page.
+# approval page; and (h) each instance registers its one service under both halves a service
+# needs - BROKER_SERVICE_LOGINS for the account that logs in as it and BROKER_SERVICES for the
+# account its pods run as - and its banner says how to take the secret that service owns, with
+# the pod uid its own issuer bound, exports that uid and that service name for a check script
+# to enrol the same session by, and runs its --github-token example's curl in a shell of its
+# own, so the child expands the name the grant gave it.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -144,8 +149,15 @@ client="" secret_file="" sign_in_as=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
+      audience_account_and_file="${2}"
       account_and_file="${2#*=}"
       printf 'fake-token-for-%s\n' "${account_and_file%%=*}" >"${account_and_file#*=}"
+      # The real issuer's own line for each file it wrote, which dev-broker.sh reads the
+      # pod uid of its pod token out of: `<file> holds <account>'s token for audience
+      # <audience> (pod <uid>)`. One uid per account, as the real issuer binds one pod
+      # per service account.
+      account="${account_and_file%%=*}"
+      echo "dev-oidc-issuer: ${account_and_file#*=} holds ${account}'s token for audience ${audience_account_and_file%%=*} (pod pod-uid-of-${account##*:})" >&2
       ;;
     --code-flow)
       client="${2%%=*}"
@@ -170,6 +182,45 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
+  */dev-airlock-stands)
+    cat >"$out" <<'STANDS'
+#!/usr/bin/env bash
+dir=""
+owners=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir) dir="$2" ;;
+    --github-owner) owners="${owners}${owners:+ }$2" ;;
+    *)
+      echo "fake dev-airlock-stands: unexpected argument $1" >&2
+      exit 2
+      ;;
+  esac
+  shift 2 || exit 2
+done
+mkdir -p "$dir"
+# The real command writes this run's GitHub App key and names it in its report, and
+# dev-broker.sh reads that file into its fake secret store, so a stub that wrote none would
+# fail that read rather than the behaviour under test.
+printf '%s\n' "-----BEGIN PRIVATE KEY-----" "the-stand-in-app-key" "-----END PRIVATE KEY-----" >"$dir/github-app.pem"
+# The report, with the fields dev-broker.sh reads; its own PID stands in for the ports the real
+# command binds, as the broker and issuer stubs' do.
+cat <<JSON
+{"dir": "$dir",
+ "ca_cert_file": "$dir/ca.crt",
+ "records_url": "http://127.0.0.1:$$",
+ "model_answer_url": "http://127.0.0.1:$$/answers/model",
+ "github_answer_url": "http://127.0.0.1:$$/answers/github",
+ "github_app_id": "123456",
+ "github_app_key_file": "$dir/github-app.pem",
+ "stands": {"github": {"address": "127.0.0.1:$$", "url": "http://127.0.0.1:$$",
+                       "records_url": "http://127.0.0.1:$$/records/github"}}}
+JSON
+echo "fake stands: dir=$dir owners=$owners" >&2
+echo "dev-airlock-stands: stands listening records=http://127.0.0.1:$$" >&2
+exec sleep 999999
+STANDS
+    ;;
   */broker)
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
@@ -177,7 +228,7 @@ if [[ $# -ne 0 ]]; then
   echo "fake broker: unexpected arguments: $*" >&2
   exit 2
 fi
-echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-}" >&2
+echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "broker listening addr=127.0.0.1:$$" >&2
 exec sleep 999999
@@ -384,6 +435,76 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s signs people in to its broker at that same issuer, with a 0600 secret it never prints, and names its broker'"'"'s approval page\n' "$label"
+
+  # The registered service's two halves. A stack that logs the daemon account in
+  # (BROKER_SERVICE_LOGINS) and binds no pod account to that service (BROKER_SERVICES) serves no
+  # secret the service owns - the policy refuses the owner tag as malformed on every reread -
+  # and enrols no pod of that account (403 POD_NOT_LAUNCHED), so the two are asserted together,
+  # with the pod account the issuer minted the pod token for. The banner's enrolment command
+  # names that pod by the uid the issuer bound it to, so a reader takes the service-owned secret
+  # by pasting it.
+  local service="legion-daemon"
+  local registrar="system:serviceaccount:example-ns:example-daemon"
+  local pod_account="system:serviceaccount:example-ns:example-worker"
+  if ! grep -qF "service-logins=${service}=${registrar} services=${service}=${pod_account}" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker does not register ${service} with both halves (the login's account and its pods')" >&2
+    exit 1
+  fi
+  # `--` before each pattern: these start with a dash, which grep would otherwise read as its
+  # own option.
+  if ! grep -qF -- "--pod-uid pod-uid-of-${pod_account##*:}" "$log_file" \
+    || ! grep -qF -- "--service ${service}" "$log_file" \
+    || ! grep -qF -- "DEMO_SERVICE_TOKEN" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_POD_UID=pod-uid-of-${pod_account##*:}" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_SERVICE=${service}" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not say how to take its service-owned secret as a pod of ${service}, or exports no pod uid and service name for it" >&2
+    exit 1
+  fi
+  printf 'PASS: %s registers %s under both halves, tells a reader how to take the secret it owns, and exports that pod uid and service name\n' "$label" "$service"
+  # The stand-in GitHub and the two github-app secrets it mints: the stands are started for the
+  # three installations the case pair needs, the broker is pointed at that stand's own address,
+  # and the fake store holds both secrets with the kind, the tier, the owner and the
+  # github-owners tag each one's release rests on. The App key is the file the stands reported,
+  # so a report that named another file would leave the store holding something else.
+  local stands_url stands_owners
+  stands_url="$(grep -o 'github stand: *http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | grep -o 'http://.*' || true)"
+  stands_owners="$(grep -o 'fake stands: dir=[^ ]* owners=.*' "$log_file" | head -n1 | sed -E 's/.*owners=//' || true)"
+  if [[ "$stands_owners" != "acme-org=7 ada=8 Ada=9" ]] || [[ -z "$stands_url" ]] \
+    || ! grep -qF "github=${stands_url}" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker does not mint github-app secrets at its own stand-in (owners '${stands_owners:-none}', stand ${stands_url:-none})" >&2
+    exit 1
+  fi
+  local tags
+  tags="$(jq -r --arg prefix "example/agent-secrets/" '
+    [.secrets[] | select(.name == ($prefix + "demo-github-app") or .name == ($prefix + "demo-github-app-case-pair"))
+     | "\(.name) \(.tags.kind) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
+    ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
+  if [[ "$tags" != "example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456" ]]; then
+    echo "FAIL: $label's fake store holds no pair of github-app secrets the service owns: ${tags:-none}" >&2
+    exit 1
+  fi
+  if ! grep -qF -- "-----BEGIN PRIVATE KEY-----" <(jq -r --arg prefix "example/agent-secrets/" '.secrets[] | select(.name == ($prefix + "demo-github-app")) | .value | fromjson | .private_key' "${workdir}/fake-secrets.json"); then
+    echo "FAIL: $label's github-app secret holds no App key from the stands' report" >&2
+    exit 1
+  fi
+  printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, and holds both github-app secrets its service owns\n' "$label"
+  # The example that takes a github-app secret runs its curl in a shell of its own, so that
+  # shell expands the name the grant put in the child's environment. An example that printed
+  # the name with a backslash before it, outside any shell, would have curl send those
+  # characters, and the stand would answer 401 to a token it never minted. grep -F reads a
+  # newline as another pattern, so the one line that carries the shell is the pattern here.
+  local github_example
+  github_example=$'sh -c \'curl -fsS -H "Authorization: Bearer $DEMO_GITHUB_APP" http://'
+  if ! grep -qF -- "$github_example" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not run its --github-token example's curl in a shell that expands DEMO_GITHUB_APP" >&2
+    exit 1
+  fi
+  printf 'PASS: %s prints a --github-token example whose child shell expands the name the grant gave it\n' "$label"
+
   port="$bound"
 
   local pid="${instance_pid[$n]}"

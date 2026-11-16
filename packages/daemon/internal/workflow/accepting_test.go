@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-const acceptingRequired = "ci"
+const acceptingCheck = "ci"
 
 // seedAccepting seeds LEGION-208 in accepting on an open pull request at head, its implementer's,
 // reviewer's and merger's phase rows as the review round left them: the reviewer's round completed
@@ -23,9 +23,9 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "U"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head",
-		CheckedHead: "head", Required: []string{acceptingRequired}, CheckRuns: []record.AttemptRun{{Name: acceptingRequired, ID: 1}}, Failing: []string{}})
+		CheckedHead: "head", CheckRuns: []record.AttemptRun{{Name: acceptingCheck, ID: 1}}, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", HandoffCommit: "implement-1"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1", Summary: "reviewed",
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "reviewed",
 		Decision: &record.ReviewDecision{State: "approved", Head: "head"}})
 }
 
@@ -36,11 +36,11 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 func TestAnApprovalMovesTheIssueToAcceptingAndStartsNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1", Summary: "looks right"})
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}, Required: []string{}})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: "review-1", HandoffVersion: 1, Summary: "looks right"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, CheckedHead: headOne, Failing: []string{}})
 
 	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: "head", HeadSHA: "head", Author: testReviewApp})
+		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 
 	assertPhase(t, pool, phase.Accepting)
 	var status string
@@ -60,10 +60,10 @@ func TestAnApprovalMovesTheIssueToAcceptingAndStartsNobody(t *testing.T) {
 // sign_off is the architect's acceptance, taken in accepting alone: elsewhere it changes nothing
 // and says so.
 func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
-	for _, at := range []phase.Phase{phase.Reviewing, phase.AwaitingMerge} {
+	for _, at := range []phase.Phase{phase.Reviewing, phase.Merging} {
 		t.Run(string(at), func(t *testing.T) {
 			pool := migratedPool(t)
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: fixtureStatus(at), Rank: "U"})
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: at, Generation: 1, Status: PhaseStatus(at), Rank: "U"})
 			result, err := intake.ApplyFact(context.Background(), pool, "api", "signoff", intake.SignOff{Issue: "LEGION-208"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
 			if err != nil || result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "SIGNOFF_OUTSIDE_ACCEPTING" {
 				t.Fatalf("sign-off in %s = %+v, %v; want 409 SIGNOFF_OUTSIDE_ACCEPTING", at, result.Refusal, err)
@@ -78,8 +78,9 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 }
 
 // The architect's sign_off in accepting moves the issue to retro with the status retro and starts
-// the implementer there, its task naming the phase, the review's handoff and the pull request; the
-// architect that just acted is told nothing.
+// the implementer there, its task naming the phase, the review's handoff record (the reviewer's
+// completion seeded here reported no commit) and the pull request; the architect that just acted is
+// told nothing.
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -95,18 +96,21 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 		t.Fatalf("status write = %q, %v; want retro", written, err)
 	}
 	task := startTask(t, pool, claim.RoleImplementer)
-	for _, want := range []string{"Phase: retro.", "Handoff commit: review-1.", "Pull request: #42."} {
+	for _, want := range []string{"Phase: retro.", "Handoff: review version 1 (dispatch handoff-read --issue LEGION-208 --phase review --version 1).", "Pull request: #42."} {
 		if !strings.Contains(task, want) {
 			t.Fatalf("the implementer's retro task %q does not carry %q", task, want)
 		}
 	}
-	if rounds := implementerRounds(t, pool); rounds != 0 {
-		t.Fatalf("acceptance counted the implementer %d rounds, want none", rounds)
+	if strings.Contains(task, "Handoff commit:") {
+		t.Fatalf("the implementer's retro task %q names a commit the seeded reviewer's completion never reported", task)
+	}
+	if pass := implementerPass(t, pool); pass != 0 {
+		t.Fatalf("acceptance counted the implementer %d passes, want none: nothing went back", pass)
 	}
 }
 
 // The architect accepts with sign_off: its handoff_complete in accepting is refused and records
-// nothing, before the phase gate that RoleFor(accepting) would let it through.
+// nothing, before the phase gate that phase.RoleFor(accepting) would let it through.
 func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -124,9 +128,10 @@ func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 }
 
 // The tree architect's send-back from accepting to implementing or testing is a backward move it
-// requests: that phase's role is started with the reason, and the implementer is counted a review
-// round, as a reviewer's request for changes counts one. The move writes no architect phase row.
-func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsARound(t *testing.T) {
+// requests: that phase's role is started with the reason, and the implementer is counted a pass,
+// as every move back into an earlier phase counts one. The review rounds are untouched, since no
+// review requested changes. The move writes no architect phase row.
+func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsAPass(t *testing.T) {
 	for _, tc := range []struct {
 		to     phase.Phase
 		role   claim.Role
@@ -154,8 +159,8 @@ func TestTheArchitectsBackwardMoveFromAcceptingStartsThePhaseAndCountsARound(t *
 			if started := superviseRequests(t, pool, "start"); len(started) != 1 || started["LEGION-208/"+string(tc.role)] != 1 {
 				t.Fatalf("starts = %v, want the %s once and nobody else", started, tc.role)
 			}
-			if rounds := implementerRounds(t, pool); rounds != 1 {
-				t.Fatalf("implementer rounds = %d, want the send-back counted as one", rounds)
+			if pass, rounds := implementerPass(t, pool), implementerRounds(t, pool); pass != 1 || rounds != 0 {
+				t.Fatalf("implementer pass = %d, rounds = %d; want the send-back counted as one pass and no review round", pass, rounds)
 			}
 			var rows int
 			if err := pool.QueryRow(context.Background(), "select count(*) from phases where issue = 'LEGION-208' and role = 'architect'").Scan(&rows); err != nil || rows != 0 {
@@ -176,30 +181,10 @@ func TestAPlannersBackwardMoveFromAcceptingIsRefused(t *testing.T) {
 		t.Fatalf("the planner's move = %+v, %v; want BACKWARD_REFUSED", result.Refusal, err)
 	}
 	assertPhase(t, pool, phase.Accepting)
-	if rounds := implementerRounds(t, pool); rounds != 0 {
-		t.Fatalf("implementer rounds = %d, want none", rounds)
+	if pass := implementerPass(t, pool); pass != 0 {
+		t.Fatalf("implementer pass = %d, want none", pass)
 	}
 	assertOutboxKinds(t, pool, []string{})
-}
-
-// CI red in accepting sends the work back to implementing as it does in review, and the
-// implementer's start runs at once, carrying no role to wait for (implementerStart).
-func TestChecksRedInAcceptingSendsTheWorkBackStartingAtOnce(t *testing.T) {
-	pool := migratedPool(t)
-	seedAccepting(t, pool)
-	applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
-		intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: "head", CheckRuns: []record.AttemptRun{{Name: acceptingRequired, ID: 2}}, Generation: 2, Snapshot: "red-2", Failing: []string{acceptingRequired}})
-	assertPhase(t, pool, phase.Implementing)
-	if task := implementerStart(t, pool); !strings.Contains(task, "Phase: implementing.") {
-		t.Fatalf("the implementer's start is %q, want the implementing task", task)
-	}
-	reason, from := checksRedNotice(t, pool)
-	if from != phase.Accepting || !strings.Contains(reason, "CI is red at head") {
-		t.Fatalf("checks-red notice %q in %s, want the red told in accepting", reason, from)
-	}
-	if rounds := implementerRounds(t, pool); rounds != 1 {
-		t.Fatalf("implementer rounds = %d, want the red counted as one", rounds)
-	}
 }
 
 // A backward move onto accepting from a later phase writes needs_review, the status the board shows
@@ -208,7 +193,7 @@ func TestABackwardMoveOntoAcceptingWritesNeedsReview(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(from), func(t *testing.T) {
 			pool := migratedPool(t)
-			role := RoleFor(from)
+			role := phase.RoleFor(from)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: from, Generation: 1, Status: "retro", Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
 			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),
@@ -228,28 +213,6 @@ func TestABackwardMoveOntoAcceptingWritesNeedsReview(t *testing.T) {
 	}
 }
 
-// No path reaches accepting with another board status than needs_review: every row onto it either
-// writes needs_review or writes nothing from a phase whose own board status is needs_review.
-func TestEveryRowOntoAcceptingLeavesTheBoardAtNeedsReview(t *testing.T) {
-	boardStatus := map[phase.Phase]string{phase.Reviewing: "needs_review"}
-	rows := 0
-	for _, row := range Table {
-		if row.To != phase.Accepting {
-			continue
-		}
-		rows++
-		switch {
-		case row.Status == "needs_review":
-		case row.Status == "" && boardStatus[row.From] == "needs_review":
-		default:
-			t.Errorf("row %s/%s -> accepting writes status %q from a phase whose board status is %q; want needs_review on the board", row.From, row.Trigger, row.Status, boardStatus[row.From])
-		}
-	}
-	if rows == 0 {
-		t.Fatal("no row of the table reaches accepting")
-	}
-}
-
 // seedAcceptingChild seeds an issue of LEGION-208's tree under parent, in the phase and status
 // given.
 func seedAcceptingChild(t *testing.T, pool *pgxpool.Pool, key, parent string, at phase.Phase, status string) {
@@ -257,22 +220,18 @@ func seedAcceptingChild(t *testing.T, pool *pgxpool.Pool, key, parent string, at
 	seedIssue(t, pool, record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: at, Generation: 1, Status: status, Rank: "U"})
 }
 
-// Nothing beneath an issue holds its acceptance: the architect accepts the issue's own reviewed
-// head, and the sign-off moves it to retro whether the issues under it, however deep, still run,
-// are done or are parked. The tree's order is kept at the close, where a root whose pull request
-// merged waits in awaiting_merge for the rest of its tree (closeMerged).
-func TestSignOffIsAcceptedWhateverIsBeneathIt(t *testing.T) {
+// A sign-off of an issue with nothing beneath it is taken whatever the rest of the tree does: a
+// child done, a child parked, a sibling elsewhere. The rule that nothing beneath an issue held
+// its acceptance is gone (dispatch://INFRA-980, "A parent is accepted after its children"): an
+// issue beneath that is still in the workflow now refuses the sign-off
+// (TestSignOffIsRefusedWhileAnIssueBeneathIsInTheWorkflow), because a parent's head proves its
+// children's merged work and must carry their merges.
+func TestSignOffIsAcceptedWhenNothingBeneathIsInTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		seed func(t *testing.T, pool *pgxpool.Pool)
 	}{
-		{"a child still running", func(t *testing.T, pool *pgxpool.Pool) {
-			seedAcceptingChild(t, pool, "LEGION-209", "LEGION-208", phase.Implementing, "in_progress")
-		}},
-		{"a grandchild still running under a closed child", func(t *testing.T, pool *pgxpool.Pool) {
-			seedAcceptingChild(t, pool, "LEGION-209", "LEGION-208", phase.Done, "done")
-			seedAcceptingChild(t, pool, "LEGION-210", "LEGION-209", phase.Testing, "testing")
-		}},
+		{"nothing beneath at all", func(*testing.T, *pgxpool.Pool) {}},
 		{"a child done", func(t *testing.T, pool *pgxpool.Pool) {
 			seedAcceptingChild(t, pool, "LEGION-209", "LEGION-208", phase.Done, "done")
 		}},

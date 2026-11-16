@@ -85,7 +85,7 @@ func BenchmarkTheAccessLogLineAlone(b *testing.B) {
 // benchmarkIssue creates one issue through the server under benchmark and answers its key.
 func benchmarkIssue(b *testing.B, handler http.Handler, database *store.Store) string {
 	b.Helper()
-	if _, err := database.Pool.Exec(b.Context(), `insert into projects (key, name) values ('BENCH', 'Bench')`); err != nil {
+	if _, err := database.Pool.Exec(b.Context(), `insert into projects (key, name, default_assignee) values ('BENCH', 'Bench', 'alice')`); err != nil {
 		b.Fatalf("seed project: %v", err)
 	}
 	payload, err := json.Marshal(map[string]any{"project": "BENCH", "title": "An issue a benchmark reads"})

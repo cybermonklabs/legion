@@ -2,20 +2,24 @@
 package appauth
 
 import (
-	"bytes"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -28,6 +32,19 @@ import (
 // keeps the old token valid until its own expiry, so a `gh` or `git` that started on the old one
 // finishes on it.
 const refreshWindow = 20 * time.Minute
+
+// narrowingRefusalWindow is how long a Manager serves a narrowing GitHub already refused
+// (ErrNarrowingRefused) from its own memory, asking GitHub nothing (lease). The refusal is
+// GitHub's definitive answer about what the account grants the App's installation, and nothing
+// the daemon does changes it: only an account approving the grant does, which the next ask past
+// this window finds. Without the memory every refresh of every role of every live pod asks the
+// refused scope again, and each of its repositories again under the probe a refusal starts
+// (dirEntry), each exchange preceded by an uncached grant read — for one refused scope of an
+// issue pod, six role bundles times two exchanges a minute — and a rate limit then fails every
+// bundle of the project, the write leases included. Five minutes keeps that at one exchange per
+// scope per five minutes, while leaving an account's fix to reach the daemon well inside the
+// hour an installation token lasts.
+const narrowingRefusalWindow = 5 * time.Minute
 
 // AppRole names the GitHub App a Legion role acts as.
 type AppRole string
@@ -81,52 +98,147 @@ func refusalBody(response *http.Response) []byte {
 	return body
 }
 
-// readBody reads a successful response's body whole: a read that fails is a transport failure,
-// and transient, where what the body then fails to parse as is GitHub's answer.
-func readBody(response *http.Response, what string) ([]byte, error) {
-	body, err := io.ReadAll(response.Body)
+// responseBound caps what the daemon reads of every GitHub answer but a token exchange's, which
+// is longer and has a bound of its own (exchangeAnswerBound): the installation discovery, the
+// grant read, the two identity lookups, token mode's viewer and App reads (viewerLogin,
+// checkAppID) and one page of an installation's repositories. GitHub has already acted by the
+// time the answer arrives, so the bound is above any answer it makes rather than a limit the
+// daemon expects to meet. The longest of them is a page of the listing (listInstallation, 100
+// repositories a page), which a read lease now fills since it names no repository: about 530 KB
+// at the size exchangeAnswerBound cites, half this bound.
+const responseBound = 1 << 20
+
+// exchangeAnswerBound caps what a token exchange reads of GitHub's answer, the longest answer
+// the daemon reads: GitHub lists one object for every repository the installation holds,
+// whatever the request named, and the request names none at all (accessTokensBody), so the list
+// is the installation's whole breadth. Those objects measure 4.9 to 5.3 KB each, which is what
+// the secrets broker bounds one of them at 64 KB on
+// (packages/envoy/internal/broker/secrets/githubapp.go, githubRepositoryAnswerBound), and this
+// deployment's theorem-labs installation held 216 repositories at 15:45Z on 2026-11-10, about
+// 1.1 MB of answer. 16 MiB holds about 3,000 repositories at the measured size, far above any
+// installation a Legion deployment mints on, and an answer past it is refused rather than read
+// into the daemon's memory.
+const exchangeAnswerBound = 16 << 20
+
+// readBody reads a successful response's body whole, up to limit: a read that fails is a
+// transport failure, and transient, where what the body then fails to parse as is GitHub's
+// answer. A body past limit is no answer GitHub makes, and is refused naming the bound rather
+// than parsed, so a body that never ends cannot take the daemon's memory with it; the refusal
+// names the bound and never what the body held, which for a token exchange is the token.
+func readBody(response *http.Response, what string, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	response.Body.Close()
 	if err != nil {
 		return nil, &TransientError{Err: fmt.Errorf("%s: read the response: %w", what, err)}
 	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("%s: the response is longer than the %d bytes an answer holds", what, limit)
+	}
 	return body, nil
 }
 
-// Tokens mints a GitHub installation token for an App and repository owner.
+// Tokens mints a GitHub installation token for an App on one owner account. Every token reaches
+// its owner's whole installation at the permissions asked for: the repositories a caller names
+// key its lease, its command run and its refusal memory, and reach GitHub not at all.
 type Tokens interface {
-	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
+	// Token is the write token for repo: the App role's installation token on repo's owner,
+	// holding the write permissions the App's roles use (writePermissions). It reaches every
+	// repository the account's installation holds, which the account chooses when it installs
+	// the App and the daemon narrows no further (INFRA-2543); repo keys the lease alone. A zero
+	// Repository names none and is refused before anything is minted: every caller names the
+	// repository its lease is cached under, and a call naming none is a caller's mistake.
+	Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests and metadata read. A pane holds one for every owner of the project but its issue's.
-	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
+	// requests, Actions and metadata read. It reaches every repository the owner's installation
+	// holds, as Token's does, and repos — repository names alone, as a caller names them inside
+	// one installation — key the lease alone. A pane holds one for every owner of the project but
+	// the one its issue's repository is under (a configured rename's two owners count as that
+	// one, GitHubCredential), one more for each other repository that owner serves, each cached
+	// under that repository alone, a controller holds one for every owner it has, and the
+	// Kubernetes runtime's provisioning token is one of the implement App for the issue's own
+	// owner cached under the one repository its pod clones, which every issue pod's
+	// workspace-fetch and every repository cache clones with (implementTokens, internal/daemon).
+	// An App on token_command gets what its command's read-only release
+	// holds instead, which the command decides: the secrets broker's is the same four (its
+	// readOnlyPermissions). With a key of its own the mint asks for what the installation is
+	// granted of those four and leaves the rest out (exchangeGranted), so an installation whose
+	// account has not granted the App Actions gets the other three rather than nothing. A call
+	// naming no repository is refused before anything is minted, as Token's is.
+	ReadToken(ctx context.Context, role AppRole, owner string, repos []string) (Lease, error)
 }
 
 // readPermissions narrows an installation token to reading a repository's contents, its pull
-// requests and its metadata: what a role needs of every repository of the project but its own
-// issue's. GitHub mints a token with the permissions a request names, each at most what the
-// installation holds.
-var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "metadata": "read"}
+// requests, its Actions runs and its metadata: what a role needs of every repository of the
+// project but its own issue's, what a controller needs of every one of them, and what the
+// provisioning token takes of the issue's own repository, which a clone, a fetch and a
+// repository cache only read (implementTokens, internal/daemon). A mint asks for what the
+// installation is granted of this set, at the access it is granted (exchangeGranted), and
+// GitHub mints a token with the permissions the request names.
+//
+// actions:read is here because reading a repository includes reading what its merges did: a
+// deployment check of a merge reads the push run that carries it, that run's jobs and a job's
+// log, and a role that cannot read them cannot tell a deploy that applied from one that was
+// skipped. Measured on 2026-11-04 against a private repository whose installation holds
+// actions:write: unnarrowed, actions/runs and actions/runs/{id}/jobs answered 200 and
+// actions/jobs/{id}/logs answered 302 to a signed URL that answered 200; narrowed to contents,
+// pull requests and metadata, all three answered 403 "Resource not accessible by integration".
+// The narrowing was the whole refusal, and no App
+// or installation setting was missing. It stays a read: actions:read cannot cancel, re-run or
+// dispatch a workflow, and reaches no Actions secret or variable, which are permissions of their
+// own.
+//
+// The set is the most a read lease holds, and the only thing that holds it: the lease reaches
+// every repository its installation holds, as every token this package mints does, so what
+// keeps a reading lease from writing is these four permissions and nothing beside them. A
+// permission the installation is granted none of is left out of the request rather than minted.
+var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
 
 // Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
-// and the wall clock.
+// the wall clock, and the daemon's own stderr for what a token_command writes there.
 type Options struct {
 	BaseURL    string
 	HTTPClient *http.Client
 	Now        func() time.Time
+	Stderr     io.Writer
 }
 
-// Manager caches installation tokens by App and owner, and bot identities by App id.
+// Manager caches installation tokens by App and owner, and bot identities by App id. An App
+// configured with a token_command is in token mode (tokencommand.go): the Manager holds no key and
+// signs no JWT for it, and every lease comes from the command's release.
 type Manager struct {
 	apps    config.GitHubApps
 	baseURL string
 	client  *http.Client
 	now     func() time.Time
+	stderr  io.Writer
 
 	mu                sync.Mutex
-	leases            map[string]Lease
-	pending           map[string]*pendingLease
+	leases            map[scope]Lease
+	pending           map[scope]*pendingLease
 	installations     map[AppRole]map[string]string
 	identities        map[string]GitIdentity
 	pendingIdentities map[string]*pendingIdentity
+	commands          map[scope]*commandRun
+	// keys holds each App private key parsed, by its PEM text (generateJWT).
+	keys map[string]*rsa.PrivateKey
+
+	// refusals holds, per scope, the narrowing GitHub refused and when it did (lease,
+	// narrowingRefusalWindow): while the window holds, that scope is answered from here and
+	// GitHub is asked nothing. A mint of the scope that succeeds drops its entry, as does a
+	// Forget of its owner.
+	refusals map[scope]refusedNarrowingAt
+
+	// saidShortfalls holds every shortfall already said on stderr, each by the App role, the
+	// owner whose installation is granted less than the role's set asks for, and the shortfall
+	// itself (shortfallMessage).
+	saidShortfalls map[saidShortfall]bool
+
+	// root ends every token_command run on Close (stop), runs counts the runs still going, and
+	// closed, set under mu, refuses a run after Close.
+	root   context.Context
+	stop   context.CancelFunc
+	runs   sync.WaitGroup
+	closed bool
 }
 
 type pendingLease struct {
@@ -135,13 +247,29 @@ type pendingLease struct {
 	err   error
 }
 
+// refusedNarrowingAt is one remembered narrowing refusal: GitHub's own refusal, served again to
+// every caller of the scope while the window holds, and the Manager's clock reading when it was
+// met.
+type refusedNarrowingAt struct {
+	err error
+	at  time.Time
+}
+
 type pendingIdentity struct {
 	done     chan struct{}
 	identity GitIdentity
 	err      error
 }
 
-var _ Tokens = (*Manager)(nil)
+// A Manager answers every interface a caller reaches it through, the optional ones included: a
+// bundle takes the two Forgetters by type assertion (dirEntry), so a method renamed without its
+// interface would leave the Manager silently un-forgotten rather than fail the build.
+var (
+	_ Tokens             = (*Manager)(nil)
+	_ Forgetter          = (*Manager)(nil)
+	_ RefusalForgetter   = (*Manager)(nil)
+	_ ReadScopeForgetter = (*Manager)(nil)
+)
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
 // constructing this manager; callers using LoadForValidation must resolve them themselves.
@@ -158,30 +286,61 @@ func New(apps config.GitHubApps, options Options) *Manager {
 	if now == nil {
 		now = time.Now
 	}
+	stderr := options.Stderr
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	root, stop := context.WithCancel(context.Background())
 	return &Manager{
+		root:              root,
+		stop:              stop,
 		apps:              apps,
 		baseURL:           baseURL,
 		client:            client,
 		now:               now,
-		leases:            map[string]Lease{},
-		pending:           map[string]*pendingLease{},
+		stderr:            stderr,
+		leases:            map[scope]Lease{},
+		pending:           map[scope]*pendingLease{},
 		installations:     map[AppRole]map[string]string{},
 		identities:        map[string]GitIdentity{},
 		pendingIdentities: map[string]*pendingIdentity{},
+		commands:          map[scope]*commandRun{},
+		keys:              map[string]*rsa.PrivateKey{},
+		refusals:          map[scope]refusedNarrowingAt{},
+		saidShortfalls:    map[saidShortfall]bool{},
 	}
 }
 
-// Token returns a cached lease until fewer than twenty minutes remain (refreshWindow), otherwise
-// minting a fresh installation token. Concurrent requests for the same App and owner share that
-// one exchange.
-func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease, error) {
-	return m.lease(ctx, role, owner, "", nil)
+// Token returns the cached write lease for repo until fewer than twenty minutes remain
+// (refreshWindow), otherwise minting a fresh installation token on repo's owner's installation
+// with the App role's write permissions (writePermissions). Concurrent requests for the same
+// App, owner and repository share that one exchange. The lease reaches every repository that
+// installation holds: the account chooses those when it installs the App, and the daemon asks
+// for no narrowing of them (INFRA-2543), so repo keys the lease and reaches GitHub not at all.
+// A zero Repository names none: every caller names the repository its lease is cached under, so
+// a call naming none is a caller's mistake, refused before anything is minted.
+func (m *Manager) Token(ctx context.Context, role AppRole, repo ghrepo.Repository) (Lease, error) {
+	if repo.IsZero() {
+		return Lease{}, fmt.Errorf("the %s App's token names no repository to act on", role)
+	}
+	return m.lease(ctx, mintRequest{role: role, owner: repo.Owner(), repos: []string{repo.Name()}, permissions: writePermissions[role]})
 }
 
-// ReadToken is Token for a token narrowed to readPermissions, cached under a key of its own, so an
-// owner's write and read tokens never stand in for each other.
-func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
-	return m.lease(ctx, role, owner, "read:", readPermissions)
+// ReadToken is Token for a token narrowed to readPermissions on owner, cached under repos in a
+// scope of its own, so an owner's write and read tokens never stand in for each other. Each of
+// those four permissions is asked for at what the installation is granted of it, and one it is
+// granted none of is left out (exchangeGranted). In token mode it is the command's read-only
+// release (TokenCommandReadOnly) instead, which the command decides; the secrets broker's is
+// readPermissions' own set. A write request of the same owner is a run of its own either way:
+// it asks for no read-only release, so the two never stand in for each other. The lease reaches
+// every repository the owner's installation holds, as Token's does, and repos reach GitHub not
+// at all. A call that names no repository is a caller's mistake: it is refused, and nothing is
+// minted.
+func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string, repos []string) (Lease, error) {
+	if len(repos) == 0 {
+		return Lease{}, fmt.Errorf("the %s App's read-only token for %s names no repository to read", role, owner)
+	}
+	return m.lease(ctx, mintRequest{role: role, owner: owner, repos: repos, read: true, permissions: readPermissions})
 }
 
 // Forgetter drops the leases a token source holds for an App role and owner, so the next one is
@@ -190,94 +349,310 @@ type Forgetter interface {
 	Forget(role AppRole, owner string)
 }
 
-// Forget drops every lease cached for role and owner, the write token's and the read token's.
+// Forget drops every lease cached for role and owner, the write tokens' and the read tokens',
+// whatever repositories each of them is cached under, and every narrowing refusal remembered for
+// them (refusals): the owner is what a refused token is known by, and a caller that met one holds
+// no list of the scopes its role has minted for that owner, so the next ask of any of them
+// reaches GitHub.
 func (m *Manager) Forget(role AppRole, owner string) {
+	forgotten := strings.ToLower(strings.TrimSpace(owner))
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.leases, leaseKey("", role, owner))
-	delete(m.leases, leaseKey("read:", role, owner))
+	maps.DeleteFunc(m.leases, func(key scope, _ Lease) bool {
+		return key.role == role && key.owner == forgotten
+	})
+	maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
+		return key.role == role && key.owner == forgotten
+	})
 }
 
-// leaseKey is the cache key of role's lease for owner under prefix: the write token's under "",
-// the read token's under "read:".
-func leaseKey(prefix string, role AppRole, owner string) string {
-	return prefix + string(role) + ":" + strings.ToLower(strings.TrimSpace(owner))
+// RefusalForgetter drops the narrowing refusal a token source remembers for one read scope, so
+// the next ask of that scope reaches GitHub rather than the memory
+// (Manager.ForgetNarrowingRefusal). It is optional, as Forgetter is: a caller reaches it through
+// a type assertion on its Tokens (dirEntry), so a test fake and a harness that implement Tokens
+// alone keep working — a source that remembers no refusal has none to drop.
+type RefusalForgetter interface {
+	ForgetNarrowingRefusal(role AppRole, owner string, repos []string)
 }
 
-// lease serves the cached lease under prefix+role+owner while more than refreshWindow remains, and
-// otherwise mints one with permissions (nil: the installation's own), sharing one exchange among
-// concurrent callers.
-func (m *Manager) lease(ctx context.Context, role AppRole, owner, prefix string, permissions map[string]string) (Lease, error) {
-	owner = strings.TrimSpace(owner)
-	if owner == "" {
+// ForgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease cached
+// under repos on owner (lease, narrowingRefusalWindow), and nothing else: no lease, and no other
+// scope's refusal. It is for the caller that knows that one memory is stale — a directory's lease
+// asked for again under the repositories that have just answered one at a time (dirEntry), the
+// mapping's own installation read (listInstallation) — where Forget, which drops every lease and
+// every refusal of the owner, would throw away tokens that are good and make every scope of that
+// owner mint again.
+//
+// The scope is the one the ask itself is cached under: the repositories as a lease is keyed by
+// them (askedRepositories), which a blank name makes no scope of, and nothing is remembered
+// under one.
+func (m *Manager) ForgetNarrowingRefusal(role AppRole, owner string, repos []string) {
+	asked, err := askedRepositories(role, owner, repos)
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.refusals, leaseScope(true, role, owner, asked))
+}
+
+// ReadScopeForgetter drops what a token source holds for one read scope — the lease it cached
+// and the narrowing refusal it remembers, both — so the next ask of that scope is GitHub's
+// answer of this moment and not an answer of the hour before it
+// (Manager.ForgetReadScope). It is optional, as Forgetter and RefusalForgetter are: a caller
+// reaches it through a type assertion on its Tokens (dirEntry), so a test fake and a harness
+// that implement Tokens alone keep working — a source that caches nothing has nothing to drop,
+// and every ask it is made is GitHub's answer already.
+type ReadScopeForgetter interface {
+	ForgetReadScope(role AppRole, owner string, repos []string)
+}
+
+// ForgetReadScope drops the lease cached for role's read lease under repos on owner and the
+// narrowing refusal remembered for it, and nothing else: no write lease, and no other read
+// scope. It is for the caller whose question is not what a token it holds may do but which
+// repositories the installation reaches now, which a cached lease cannot answer — the probes a
+// directory keeps its repositories by, read as the installation's membership, when the ask under
+// the repositories they said answered is refused all the same (dirEntry, INFRA-513). Forget
+// would throw away every good token of the owner and ForgetNarrowingRefusal alone would leave
+// the probe answered from the cache, which is the answer that misled it.
+//
+// The scope is the one the ask itself is cached under: the repositories as a lease is keyed by
+// them (askedRepositories), which a blank name makes no scope of, so nothing is held under one.
+func (m *Manager) ForgetReadScope(role AppRole, owner string, repos []string) {
+	asked, err := askedRepositories(role, owner, repos)
+	if err != nil {
+		return
+	}
+	key := leaseScope(true, role, owner, asked)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.leases, key)
+	delete(m.refusals, key)
+}
+
+// scope is one lease's identity, and the key every lease is cached, awaited and warned under:
+// which kind of token it is, the App role it is minted as, the owner whose installation mints it
+// and the repositories its caller names. The first three are the whole of what a lease may do,
+// since a token reaches every repository its own installation holds: a read lease must never be
+// served to a caller that asked for a write one, and no owner's token may stand in for another
+// owner's. The repositories reach GitHub not at all; they key the lease, its command run and its
+// refusal memory, since every caller names the ones its lease is cached under. They are held as
+// one string so a scope compares as a value: lowercased and sorted, and joined by a comma, which
+// no GitHub repository name holds (ghrepo.Parse).
+type scope struct {
+	read  bool
+	role  AppRole
+	owner string
+	repos string
+}
+
+// leaseScope is the scope of role's lease for repos on owner, read or write. Its repositories are
+// compared lowercased, as GitHub names a repository without regard to case, so two callers that
+// name one repository differently cased share the one lease rather than mint twice.
+func leaseScope(read bool, role AppRole, owner string, repos []string) scope {
+	lowered := make([]string, len(repos))
+	for i, repo := range repos {
+		lowered[i] = strings.ToLower(repo)
+	}
+	slices.Sort(lowered)
+	return scope{read: read, role: role, owner: strings.ToLower(strings.TrimSpace(owner)), repos: strings.Join(slices.Compact(lowered), ",")}
+}
+
+// askedRepositories is names as a lease is keyed by them: trimmed, sorted, and each one named
+// once, so two callers that name one set in another order share one key. The names keep the case
+// the caller wrote, and reach GitHub not at all. A blank name keys no repository and is refused:
+// every caller names the repositories its lease is cached under, and a name with nothing in it is
+// a caller's mistake, refused before anything is minted.
+func askedRepositories(role AppRole, owner string, names []string) ([]string, error) {
+	asked := make([]string, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return nil, fmt.Errorf("the %s App's token for %s names a repository with no name", role, owner)
+		}
+		asked = append(asked, trimmed)
+	}
+	slices.Sort(asked)
+	return slices.Compact(asked), nil
+}
+
+// mintRequest is one ask for a lease, built by Token and ReadToken and carried whole through the
+// mint: the App role the token is minted as, the owner whose installation mints it, the
+// repositories its caller names, whether it is the read token, and the permissions GitHub is
+// asked for. The repositories key the lease and its command run (scope) and reach GitHub not at
+// all. lease settles them as a lease is keyed by them (askedRepositories) before anything else
+// reads them, so the cache key and the token-command run key name the one set.
+type mintRequest struct {
+	role        AppRole
+	owner       string
+	repos       []string
+	read        bool
+	permissions map[string]string
+}
+
+// scope is the key the request's lease is cached and awaited under (leaseScope).
+func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner, r.repos) }
+
+// lease serves the cached lease of the request's scope while more than refreshWindow remains,
+// and otherwise mints one with the permissions the request names, sharing one exchange among
+// concurrent callers. A caller that waited on another's mint, which ended only because that
+// caller's own deadline did (a context error, or ErrCommandPending), asks again under its own
+// context rather than take that caller's failure as its own.
+//
+// A narrowing GitHub refused is remembered per scope for narrowingRefusalWindow and served from
+// that memory while it holds, GitHub asked nothing: it is GitHub's definitive answer about what
+// the account grants the App's installation, where every refresh of every role of every live pod
+// would otherwise ask it again. Only ErrNarrowingRefused is remembered — GitHub's trouble
+// (TransientError) and every other failure keep asking as they always did — and a mint of the
+// scope that succeeds drops what was remembered of it.
+//
+// The memory answers the ask that would repeat a refusal, never one that already knows better.
+// A caller holding what the window cannot know — the mapping's installation read, whose whole
+// business is to find the answer changed (listInstallation), and a directory's lease asked for
+// again under the repositories that answered alone (dirEntry) — drops that one scope's memory
+// before it asks (ForgetNarrowingRefusal), so what it is served is GitHub's answer now.
+//
+// What a cached answer is worth is worth saying, since a caller may read such an ask as what
+// its installation does: a lease served from here says a token of that scope was minted within
+// the hour, not that GitHub mints one now. An installation that drops a repository leaves every
+// lease cached under it good-looking until its expiry nears (refreshWindow), which is why a
+// caller that reads a cached answer as membership and is then refused the ask under what it
+// read drops those scopes whole — the lease with the refusal — and asks again (ForgetReadScope,
+// dirEntry, INFRA-513).
+//
+// A mint that succeeds also drops every lease the cache holds that has expired. The cache is
+// keyed by the repositories a caller names, so a mapping that changes over a long-lived
+// daemon's life leaves entries no caller asks for again, and an expired one can never be served:
+// a lease is served only while more than refreshWindow remains.
+func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error) {
+	request.owner = strings.TrimSpace(request.owner)
+	if request.owner == "" {
 		return Lease{}, fmt.Errorf("GitHub App owner must not be empty")
 	}
-	cacheKey := leaseKey(prefix, role, owner)
-	now := m.now()
-
-	m.mu.Lock()
-	if lease, ok := m.leases[cacheKey]; ok && lease.ExpiresAt.Sub(now) > refreshWindow {
-		m.mu.Unlock()
-		return lease, nil
+	asked, err := askedRepositories(request.role, request.owner, request.repos)
+	if err != nil {
+		return Lease{}, err
 	}
-	if waiting, ok := m.pending[cacheKey]; ok {
-		m.mu.Unlock()
-		select {
-		case <-waiting.done:
-			return waiting.lease, waiting.err
-		case <-ctx.Done():
-			return Lease{}, ctx.Err()
+	// Every door into a mint refuses a call that names no repository before it reaches here
+	// (Token, ReadToken), so nothing today makes this guard answer. It stays: it is the one
+	// place every mint passes through, and every caller names the repositories its lease is
+	// cached under, so a call naming none is a caller's mistake, refused before anything is
+	// minted.
+	if len(asked) == 0 {
+		return Lease{}, fmt.Errorf("the %s App's token for %s names no repository to reach", request.role, request.owner)
+	}
+	request.repos = asked
+	cacheKey := request.scope()
+	for {
+		now := m.now()
+		m.mu.Lock()
+		if lease, ok := m.leases[cacheKey]; ok && lease.ExpiresAt.Sub(now) > refreshWindow {
+			m.mu.Unlock()
+			return lease, nil
 		}
-	}
-	waiting := &pendingLease{done: make(chan struct{})}
-	m.pending[cacheKey] = waiting
-	m.mu.Unlock()
+		if refused, ok := m.refusals[cacheKey]; ok {
+			if now.Sub(refused.at) < narrowingRefusalWindow {
+				m.mu.Unlock()
+				return Lease{}, refused.err
+			}
+			delete(m.refusals, cacheKey)
+		}
+		if waiting, ok := m.pending[cacheKey]; ok {
+			m.mu.Unlock()
+			select {
+			case <-waiting.done:
+				if callerEnded(waiting.err) && ctx.Err() == nil {
+					continue
+				}
+				return waiting.lease, waiting.err
+			case <-ctx.Done():
+				return Lease{}, ctx.Err()
+			}
+		}
+		waiting := &pendingLease{done: make(chan struct{})}
+		m.pending[cacheKey] = waiting
+		m.mu.Unlock()
 
-	lease, err := m.mint(ctx, role, owner, permissions)
-	m.mu.Lock()
-	if err == nil {
-		m.leases[cacheKey] = lease
+		lease, err := m.mint(ctx, request)
+		minted := m.now()
+		m.mu.Lock()
+		switch {
+		case err == nil:
+			m.leases[cacheKey] = lease
+			delete(m.refusals, cacheKey)
+			maps.DeleteFunc(m.leases, func(_ scope, held Lease) bool { return !held.ExpiresAt.After(minted) })
+		case NarrowingRefused(err):
+			m.refusals[cacheKey] = refusedNarrowingAt{err: err, at: minted}
+		}
+		waiting.lease, waiting.err = lease, err
+		delete(m.pending, cacheKey)
+		close(waiting.done)
+		m.mu.Unlock()
+		return lease, err
 	}
-	waiting.lease, waiting.err = lease, err
-	delete(m.pending, cacheKey)
-	close(waiting.done)
-	m.mu.Unlock()
-	return lease, err
 }
 
-// mint mints role's installation token for owner. An installation the daemon found that answers
-// the exchange 404 was removed since (errInstallationGone): it is forgotten and looked for once
-// more, so a removed App answers ErrNotInstalled and an App installed there again mints on its new
-// installation. A configured installation answering 404 is not installed either.
-func (m *Manager) mint(ctx context.Context, role AppRole, owner string, permissions map[string]string) (Lease, error) {
-	app, err := m.app(role)
+// NarrowingRefused reports GitHub refusing the narrowing a request named, and not GitHub's own
+// trouble, which the same request may pass through a moment later (TransientError). An error
+// that carries both is the second. No mint builds one today: the exchange returns a rate-limited
+// 422 as a TransientError alone (exchange.go), and token mode returns its trouble before it
+// builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
+// is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
+// remember (refusals), a bundle deciding which repositories a directory holds (credential.go's
+// dirEntry), the leak check's token (internal/daemon's leakCheckToken) and the controller route's
+// answer (internal/api) — so that none of them reads a rate limit as an answer about what an
+// installation grants. The daemon's provisioning adapter reads it no longer: it returns every
+// error of its mint as it came (internal/daemon's implementTokens).
+func NarrowingRefused(err error) bool {
+	var trouble *TransientError
+	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)
+}
+
+// callerEnded reports a failure that says only that the calling context ended: the context's own
+// errors, or a token_command still running past it (ErrCommandPending).
+func callerEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrCommandPending)
+}
+
+// mint mints the request's installation token. An installation the daemon found that answers the
+// permissions read or the exchange 404 was removed since (errInstallationGone): it is forgotten
+// and looked for once more, so a removed App answers ErrNotInstalled and an App installed there
+// again mints on its new installation. A configured installation answering 404 is not installed
+// either.
+func (m *Manager) mint(ctx context.Context, request mintRequest) (Lease, error) {
+	app, err := m.app(request.role)
 	if err != nil {
 		return Lease{}, err
 	}
-	installation, err := m.installation(ctx, role, app, owner)
+	if app.TokenCommand != "" {
+		return m.mintFromCommand(ctx, app, request)
+	}
+	installation, err := m.installation(ctx, request.role, app, request.owner)
 	if err != nil {
 		return Lease{}, err
 	}
-	jwt, err := GenerateJWT(app.AppID, app.PrivateKey, m.now())
+	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())
 	if err != nil {
 		return Lease{}, err
 	}
-	lease, err := m.exchange(ctx, jwt, installation, permissions)
-	if errors.Is(err, errInstallationGone) && configuredInstallation(app, owner) == "" {
-		m.forgetInstallation(role, owner)
-		if installation, err = m.installation(ctx, role, app, owner); err != nil {
+	lease, err := m.exchangeGranted(ctx, jwt, installation, request)
+	if errors.Is(err, errInstallationGone) && configuredInstallation(app, request.owner) == "" {
+		m.forgetInstallation(request.role, request.owner)
+		if installation, err = m.installation(ctx, request.role, app, request.owner); err != nil {
 			return Lease{}, err
 		}
-		lease, err = m.exchange(ctx, jwt, installation, permissions)
+		lease, err = m.exchangeGranted(ctx, jwt, installation, request)
 	}
 	if errors.Is(err, errInstallationGone) {
-		m.forgetInstallation(role, owner)
-		return Lease{}, fmt.Errorf("%w: %s's installation %s on %s answers %w", ErrNotInstalled, role, installation, owner, err)
+		m.forgetInstallation(request.role, request.owner)
+		return Lease{}, fmt.Errorf("%w: %s's installation %s on %s answers %w", ErrNotInstalled, request.role, installation, request.owner, err)
 	}
 	if err != nil {
 		return Lease{}, err
 	}
-	identity, err := m.identity(ctx, app.AppID, jwt, lease.Token)
+	identity, err := m.identity(ctx, app.AppID, func(ctx context.Context) (GitIdentity, error) {
+		return m.fetchIdentity(ctx, jwt, lease.Token)
+	})
 	if err != nil {
 		return Lease{}, err
 	}
@@ -347,15 +722,35 @@ func (m *Manager) forgetInstallation(role AppRole, owner string) {
 	delete(m.installations[role], strings.ToLower(owner))
 }
 
-// errInstallationGone is a token exchange GitHub answers 404: the installation is no longer there.
+// errInstallationGone is a permissions read or a token exchange GitHub answers 404: the
+// installation is no longer there.
 var errInstallationGone = errors.New("the installation is gone")
+
+// ErrNarrowingRefused is a token exchange GitHub answers 422, every one of them that is not a
+// rate limit: a permission the installation is not granted at the access the request asked for,
+// which GitHub refuses whole rather than leaving that one permission out. A mint asks only for
+// what the installation was granted a moment before (exchangeGranted), so a refusal here is a
+// grant that changed between those two calls. A repository cannot cause it any longer: no
+// request names one (exchange), so there is none for GitHub to refuse. In token mode it is the
+// secrets broker refusing the narrowing its own release names (brokerNarrowingRefused).
+//
+// It is exported because its callers read it rather than fail on it: a role's gh bundle drops
+// the repositories a refused read lease is cached under and keeps the rest (mintBundle), and
+// refuses a bundle whose own default owner it leaves out (bundleDefault), which the API's
+// controller route answers as a refusal of its own (internal/api's controllerGitHubCredential).
+// The Manager remembers it per scope and serves it without asking GitHub again while the window
+// holds (lease, narrowingRefusalWindow), which it does for no other refusal. No other refusal is
+// read any of these ways. The daemon's provisioning adapter once fell back on it, serving the
+// owner's own write token where the reading lease was refused; it does so no longer, and returns
+// every error of its mint as it came (implementTokens in internal/daemon).
+var ErrNarrowingRefused = errors.New("the installation does not hold the permissions asked for")
 
 // ErrNotInstalled is a mint refused because the App has no installation on the owner: an answer
 // about the owner, not GitHub's trouble, which a retry would only repeat.
 var ErrNotInstalled = errors.New("github_app_not_installed")
 
 func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubApp) (map[string]string, error) {
-	jwt, err := GenerateJWT(app.AppID, app.PrivateKey, m.now())
+	jwt, err := m.generateJWT(app.AppID, app.PrivateKey, m.now())
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +776,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			return nil, transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
 		}
-		body, err := readBody(response, "GitHub App installation discovery")
+		body, err := readBody(response, "GitHub App installation discovery", responseBound)
 		if err != nil {
 			return nil, err
 		}
@@ -419,55 +814,9 @@ func installationID(raw json.RawMessage) (string, error) {
 	return "", fmt.Errorf("invalid installation id")
 }
 
-func (m *Manager) exchange(ctx context.Context, jwt, installation string, permissions map[string]string) (Lease, error) {
-	var requestBody io.Reader
-	if permissions != nil {
-		encoded, err := json.Marshal(map[string]map[string]string{"permissions": permissions})
-		if err != nil {
-			return Lease{}, err
-		}
-		requestBody = bytes.NewReader(encoded)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/app/installations/"+url.PathEscape(installation)+"/access_tokens", requestBody)
-	if err != nil {
-		return Lease{}, err
-	}
-	m.appHeaders(request, jwt)
-	request.Header.Set("Accept", "application/vnd.github+v3+json")
-	if requestBody != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	response, err := m.client.Do(request)
-	if err != nil {
-		return Lease{}, &TransientError{Err: fmt.Errorf("GitHub App token exchange: %w", err)}
-	}
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body := refusalBody(response)
-		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
-		if response.StatusCode == http.StatusNotFound {
-			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, failed)
-		}
-		return Lease{}, transient(response, body, failed)
-	}
-	body, err := readBody(response, "GitHub App token exchange")
-	if err != nil {
-		return Lease{}, err
-	}
-	var payload struct {
-		Token     string `json:"token"`
-		ExpiresAt string `json:"expires_at"`
-	}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return Lease{}, fmt.Errorf("GitHub App token exchange returned an invalid response")
-	}
-	expiresAt, err := time.Parse(time.RFC3339, payload.ExpiresAt)
-	if err != nil || payload.Token == "" {
-		return Lease{}, fmt.Errorf("GitHub App token exchange returned an invalid response")
-	}
-	return Lease{Token: payload.Token, ExpiresAt: expiresAt, Minted: m.now()}, nil
-}
-
-func (m *Manager) identity(ctx context.Context, appID, jwt, installationToken string) (GitIdentity, error) {
+// identity is the bot identity of the App appID, read once by fetch and cached; concurrent callers
+// share the one read.
+func (m *Manager) identity(ctx context.Context, appID string, fetch func(context.Context) (GitIdentity, error)) (GitIdentity, error) {
 	m.mu.Lock()
 	if identity, ok := m.identities[appID]; ok {
 		m.mu.Unlock()
@@ -486,7 +835,7 @@ func (m *Manager) identity(ctx context.Context, appID, jwt, installationToken st
 	m.pendingIdentities[appID] = waiting
 	m.mu.Unlock()
 
-	identity, err := m.fetchIdentity(ctx, jwt, installationToken)
+	identity, err := fetch(ctx)
 	m.mu.Lock()
 	if err == nil {
 		m.identities[appID] = identity
@@ -503,7 +852,12 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 	if err != nil {
 		return GitIdentity{}, err
 	}
-	login := slug + "[bot]"
+	return m.botIdentity(ctx, slug+"[bot]", installationToken)
+}
+
+// botIdentity is the git identity of the App bot login, its noreply email naming the bot user's
+// id, read from GET /users/<login> under installationToken.
+func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
 	if err != nil {
 		return GitIdentity{}, err
@@ -518,7 +872,7 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return GitIdentity{}, transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
-	body, err := readBody(response, "GitHub App bot identity lookup")
+	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {
 		return GitIdentity{}, err
 	}
@@ -553,7 +907,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
 	}
-	body, err := readBody(response, "GitHub App identity lookup")
+	body, err := readBody(response, "GitHub App identity lookup", responseBound)
 	if err != nil {
 		return "", err
 	}

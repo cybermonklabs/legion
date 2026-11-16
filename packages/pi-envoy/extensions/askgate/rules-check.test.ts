@@ -2,6 +2,7 @@
 // request renders, and `runRulesCheck` with the walk and the Dispatch the core lends it. The gate
 // tests of the same check — a refusal, the breaker, the notice — are in `askgate.test.ts`.
 import { describe, expect, test } from "bun:test";
+import { bearerCredential } from "@legion/envoy-client/bearer";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
 import {
   describeAsks,
@@ -246,8 +247,7 @@ describe("runRulesCheck: which asks a call opens", () => {
         });
       const read = /^\/api\/v1\/artifacts\/doc-brief\/(text|blocks)$/.exec(url.pathname);
       if (read === null) return body({ code: "NOT_FOUND", error: "not found" }, 404);
-      if (read[1] === "text") return body({ markdown: BRIEF, version: 1, token: "sha256:d" });
-      return body([
+      const blocks = [
         {
           id: "window",
           type: "ask",
@@ -256,10 +256,25 @@ describe("runRulesCheck: which asks a call opens", () => {
           token: "sha256:0",
           references: { comments: 0, asks: 0 },
         },
-      ]);
+      ];
+      // The text route carries the blocks whose ranges index its markdown when the caller asks
+      // for them, as Dispatch does.
+      if (read[1] === "text")
+        return body({
+          markdown: BRIEF,
+          version: 1,
+          token: "sha256:d",
+          ...(url.searchParams.get("blocks") === "true" ? { blocks } : {}),
+        });
+      return body(blocks);
     }) as typeof fetch;
     return (_directory: string, signal: AbortSignal) => ({
-      client: new DispatchClient("https://dispatch.example", "token", fetchImpl, signal),
+      client: new DispatchClient(
+        "https://dispatch.example",
+        bearerCredential("token"),
+        fetchImpl,
+        signal
+      ),
       serverUrls: ["https://dispatch.example"],
     });
   };
@@ -300,6 +315,33 @@ describe("runRulesCheck: which asks a call opens", () => {
       },
     });
     expect(check?.names).toEqual(["The ask block #region that starts 'Which region?'"]);
+  });
+  test("an upload named after the document's slug replaces it too, so its stored asks are not new", async () => {
+    const check = await checkRules({
+      toolName: "dispatch_artifact",
+      tool: "dispatch artifact",
+      input: {
+        issue: "X-1",
+        name: "brief",
+        content: `${BRIEF}\n:::ask{#region}\nWhich region?\n:::\n`,
+      },
+    });
+    expect(check?.names).toEqual(["The ask block #region that starts 'Which region?'"]);
+  });
+  test("an upload named after the document's id is another document, so every ask in it is judged", async () => {
+    const check = await checkRules({
+      toolName: "dispatch_artifact",
+      tool: "dispatch artifact",
+      input: {
+        issue: "X-1",
+        name: "doc-brief",
+        content: `${BRIEF}\n:::ask{#region}\nWhich region?\n:::\n`,
+      },
+    });
+    expect(check?.names).toEqual([
+      "The ask block #window that starts 'Which deployment window?'",
+      "The ask block #region that starts 'Which region?'",
+    ]);
   });
   test("only an upload leaves out the ids the document holds: a doc-edit insert of one is a new ask", async () => {
     const check = await checkRules({

@@ -73,7 +73,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		}
 		// Due a minute ago, so an outbox that claimed across projects would run it before any row
 		// this daemon's admission enqueues.
-		row, err := record.NewOutboxRow(running, record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, now.Add(-time.Minute))
+		row, err := record.NewOutboxRow(running, record.OrdinaryStatusWrite("in_progress", "todo", ""), now.Add(-time.Minute))
 		if err != nil {
 			return err
 		}
@@ -92,7 +92,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	ownRun := make(chan struct{})
 	var ownOnce sync.Once
 	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if servedMapping(t, w, r, own[:strings.Index(own, "-")]) {
+		if servedBootCall(t, w, r, own[:strings.Index(own, "-")]) {
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/v1/issues/"+own) {
@@ -117,7 +117,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		done <- run(runCtx, cfg, Build{}, quietLogger(), overrides{
+		done <- run(runCtx, cfg, quietLogger(), overrides{
 			listen:  heldListen,
 			runtime: fakeRuntime(fake.NewRuntime(), &built{}).runtime, clock: stillClock{}, workflowTokens: &workflowTokenRecorder{},
 			githubAPI: github.url,

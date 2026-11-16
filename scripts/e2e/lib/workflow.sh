@@ -31,13 +31,18 @@
 #   dispatch_token_file
 #                  the file holding the agents' Dispatch bearer, which write_dispatch_header reads
 #                  (Stage 4b's LEGION_E2E_DISPATCH_TOKEN_FILE); only its caller sets it
+#   dispatch_default_assignee
+#                  the email of the person a project ensure_project creates names as its default
+#                  assignee (Stage 4b's LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE), somebody who has
+#                  signed in to that Dispatch; only a caller of ensure_project sets it
 #   pg_container   the container holding the daemon's Postgres database
 #   pr_number      the issue's pull request, once it exists
 #   smoke_file     the one product file that pull request's first implementation changed: the
 #                  spec's one-file change, which every review round's correction appends to
 # and defines note, pass and fail (which exits), and, for a caller of ensure_project, scrub, the
-# filter that hides the run's private hosts in what it prints (ensure_project runs curl's error
-# through it), plus the runtime seam — the only reads that depend on where an agent runs:
+# filter that hides the run's private hosts and its default assignee in what it prints
+# (ensure_project runs curl's error and a refused create's body through it), plus the runtime
+# seam — the only reads that depend on where an agent runs:
 #   assert_claim_endpoints ISSUE ROLE   fails the check when the claim's process could reach a
 #                                       service outside the rig; runs before every instruction
 #   claim_session_text ISSUE ROLE       prints the claim's session file; fails when there is none
@@ -116,16 +121,26 @@ dispatch_agent() {
 }
 # ensure_project creates $project when Dispatch does not already hold it, as a proof-human write
 # like every other (`POST /api/v1/projects` takes any signed-in person or agent session), over the
-# bearer write_dispatch_header already wrote. 201 and 409 PROJECT_EXISTS both leave the project
-# ready for the run; anything else fails loudly, naming the status and the body. Unlike
-# dispatch_human, which only needs the body, this call needs the status to tell a created project
-# from a refusal, so it writes the body to a file and reads %{http_code} off curl's stdout, the
-# pattern every other status-checking call in this proof uses (e.g. stage4b-sandbox-tree.sh's
-# invalid-bearer control). curl's error goes to a file of its own: a failed connection still prints
-# its status, 000, on stdout, and the error is flattened into the one FAIL line.
+# bearer write_dispatch_header already wrote. Every project names the person its unowned work
+# lands on, and the agents' bearer acts for nobody, so the body names dispatch_default_assignee as
+# default_assignee: Dispatch answers a bearer's create naming none 400 INVALID_PROJECT and one
+# naming somebody who never signed in 400 ASSIGNEE_NOT_ALLOWED, both before it reads the key, so
+# an unset person is refused here before any call and a project that already exists is no
+# exception. 201 and 409 PROJECT_EXISTS both leave the project ready for the run; anything else
+# fails loudly, naming the status and the body through the caller's scrub, which replaces the
+# person with the variable's name: ASSIGNEE_NOT_ALLOWED's body names the email it refused, spelled
+# as the operator wrote it, and the repository carries no person's email in any log a run keeps.
+# Unlike dispatch_human, which only needs the body, this call needs the status to tell a created
+# project from a refusal, so it writes the body to a file and reads %{http_code} off curl's stdout,
+# the pattern every other status-checking call in this proof uses (e.g. stage4b-sandbox-tree.sh's
+# invalid-bearer control). curl's error goes to a file of its own: a failed connection still
+# prints its status, 000, on stdout, and the error is flattened into the one FAIL line.
 ensure_project() {
   local status body body_file=$work/create-project.json error_file=$work/create-project.err
-  body=$(proof_human_body "$(jq -cn --arg key "$project" --arg name "$project" '{key: $key, name: $name}')")
+  [ -n "${dispatch_default_assignee:-}" ] ||
+    fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset (dispatch_default_assignee): Dispatch refuses a project the agents' bearer creates naming no default assignee, so $project cannot be ensured"
+  body=$(proof_human_body "$(jq -cn --arg key "$project" --arg name "$project" --arg assignee "$dispatch_default_assignee" \
+    '{key: $key, name: $name, default_assignee: $assignee}')")
   status=$(curl -sS --max-time 20 -o "$body_file" -w '%{http_code}' -X POST \
     -H "@$work/dispatch-human-header" -H 'content-type: application/json' --data "$body" \
     "$(dispatch_url)/api/v1/projects" 2>"$error_file") ||
@@ -134,10 +149,10 @@ ensure_project() {
     201) note "[dispatch] created project $project" ;;
     409)
       jq -e '.code == "PROJECT_EXISTS"' "$body_file" >/dev/null 2>&1 ||
-        fail "Dispatch answered 409 creating $project, not PROJECT_EXISTS: $(cat "$body_file")"
+        fail "Dispatch answered 409 creating $project, not PROJECT_EXISTS: $(scrub <"$body_file")"
       note "[dispatch] project $project already exists"
       ;;
-    *) fail "Dispatch answered $status creating project $project: $(cat "$body_file")" ;;
+    *) fail "Dispatch answered $status creating project $project: $(scrub <"$body_file")" ;;
   esac
 }
 # new_issue TITLE [PARENT] [SPEC] creates an issue in the run's project and prints its key. A root
@@ -212,15 +227,17 @@ issue_claim_states() {
 claim_pending_phase() {
   claims_list | jq -r --arg issue "$1" --arg role "$2" '[.claims[] | select(.issue == $issue and .role == $role)] | last | .pending.phase // empty'
 }
-# claim_states_are ISSUE IMPLEMENTER OTHERS: ISSUE has its six claims, the architect's and the five
-# phase roles', the implementer's in one of the states IMPLEMENTER names (space-separated) and every
-# other in one of OTHERS: how a close leaves an issue, whose production check keeps the implementer
-# apart from the rest (live at a look, suspended between looks, retired once the check closed).
+# claim_states_are ISSUE ROLE STATES OTHERS: ISSUE has its six claims, the architect's and the five
+# phase roles', ROLE's in one of the states STATES names (space-separated) and every other in one of
+# OTHERS: how a close leaves an issue, whose production check keeps the role the project's
+# `production_check` names apart from the rest (live at a look, suspended between looks, retired
+# once the check closed). An empty ROLE spares none and holds all six to OTHERS, which is how the
+# close of an issue of a project whose `production_check` is off leaves them.
 claim_states_are() {
-  claims_list | jq -e --arg issue "$1" --arg implementer "$2" --arg others "$3" '
-    ($implementer | split(" ")) as $i | ($others | split(" ")) as $o
+  claims_list | jq -e --arg issue "$1" --arg role "$2" --arg states "$3" --arg others "$4" '
+    ($states | split(" ")) as $s | ($others | split(" ")) as $o
     | [.claims[] | select(.issue == $issue)]
-    | length == 6 and all(.[]; (if .role == "implementer" then $i else $o end) as $allowed | .state | IN($allowed[]))' >/dev/null
+    | length == 6 and all(.[]; (if .role == $role then $s else $o end) as $allowed | .state | IN($allowed[]))' >/dev/null
 }
 # phase_change_logged ISSUE FROM TO TRIGGER: the daemon log holds the workflow's `phase changed`
 # line moving ISSUE from FROM to TO on TRIGGER (sign_off, pull_request_merged, …). daemon.log
@@ -305,24 +322,37 @@ architect_registers_gate() {
 # ---- a root waiting on a person (gates.design armed) ----------------------------------------------
 # A root at admitted whose architect registers a closed gate, with no worker running in its tree,
 # enters awaiting_person: legion state shows waitingOn {kind: "gate", gateVersion} with no
-# answeredAt, the root holds no slot (no .slot, absent from .admission.active), and the architect
-# stays live. The person's review answers the wait (waitingOn.answeredAt), and the answered root
-# takes the next free slot ahead of roots that never ran: at planning when an approval opened the
-# gate, at admitted with the same architect session given its task when changes were requested. A
-# slot free at the answer is taken in the same transaction, so the answer reads as answeredAt or as
-# the root holding a slot again. Nothing of the root's tree advances until it holds a slot.
+# answeredAt, and the root keeps the admission slot it took when the daemon started it (.slot is
+# there and admission.active names it), while its architect stays live. The person's review
+# answers the wait (waitingOn.answeredAt), and the answered root
+# waits in the line among the issues whose work came back, oldest first: at planning when an
+# approval opened the gate, at admitted with the same architect session given its task when
+# changes were requested. The resume takes no slot, since the root holds one throughout, so it
+# comes on the pass that reads the answer however full the cap is, and the answer reads either as
+# answeredAt or as a root already out of awaiting_person. Nothing of the root's tree advances
+# until the root resumes, and each issue of it that then has work waits for a slot of its own.
 root_awaits_gate() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
     | $i.phase == "awaiting_person" and $i.waitingOn.kind == "gate" and ($i.waitingOn.gateVersion // 0) > 0
-      and $i.waitingOn.answeredAt == null and $i.slot == null and (.admission.active | index($issue)) == null'
+      and $i.waitingOn.answeredAt == null and $i.slot != null and (.admission.active | index($issue)) != null'
 }
+# The slot says nothing about either answer below: the root holds its row in awaiting_person and
+# after it alike, so each reads the phase and the wait instead.
+#
+# root_answered is true of any issue outside awaiting_person whatever it waits on, and it is
+# sound only because every caller reaches it through await_gate_wait, which has already asserted
+# that the root stands in that phase.
 root_answered() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
-    | ($i.phase == "awaiting_person" and $i.waitingOn.answeredAt != null) or ($i.phase != "awaiting_person" and $i.slot != null)'
+    | ($i.phase == "awaiting_person" and $i.waitingOn.answeredAt != null) or $i.phase != "awaiting_person"'
 }
-root_holds_slot() {
+# root_resumed ISSUE: the root resumed — out of awaiting_person with its wait cleared
+# (waitingOn gone, so no answeredAt is left to read) and its architect live in the same session.
+# It reads no slot: the root held one throughout the wait.
+root_resumed() {
   daemon_state | jq -e --arg issue "$1" '.issues[$issue] as $i
-    | $i.phase != "awaiting_person" and $i.slot != null and (.admission.active | index($issue)) != null'
+    | $i.phase != "awaiting_person" and $i.waitingOn == null
+      and ($i.architect.session // "") != "" and ($i.architect.state | IN("ready", "working", "idle"))'
 }
 # A timeout in the waits below prints the root and the admission state as legion state shows them.
 awaiting_issue=
@@ -331,40 +361,40 @@ report_awaiting() {
     slot: .issues[$issue].slot, waitingOn: .issues[$issue].waitingOn, architect: .issues[$issue].architect.state}')"
 }
 # await_gate_wait ISSUE LABEL: once ISSUE's architect registered its closed gate, the root waits on
-# a person at that gate with no slot while its architect remains live. The caller's timeout hook is
-# restored afterwards.
+# a person at that gate, keeping its slot, while its architect remains live. The caller's timeout
+# hook is restored afterwards.
 await_gate_wait() {
   local issue=$1 label=$2 hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true 120 "$label root $issue to wait on a person at its gate (awaiting_person, waitingOn.kind gate, no slot)" root_awaits_gate "$issue"
+  until_true 120 "$label root $issue to wait on a person at its gate (awaiting_person, waitingOn.kind gate, slot kept)" root_awaits_gate "$issue"
   until_true "$phase_seconds" "$label architect of $issue to stay live while its root waits on a person" issue_worker_live "$issue" architect
   timeout_hook=$hook
-  note "$issue waits on a person at gate version $(daemon_state | jq -r --arg issue "$issue" '.issues[$issue].waitingOn.gateVersion') with no admission slot; its architect stays live"
+  note "$issue waits on a person at gate version $(daemon_state | jq -r --arg issue "$issue" '.issues[$issue].waitingOn.gateVersion') holding its admission slot; its architect stays live"
 }
-# await_root_slot ISSUE LABEL [SECONDS] waits for ISSUE to hold an admission slot again, out of
-# awaiting_person: phase_seconds unless SECONDS says, for a run where the slot comes back only when
-# another root gives its own up.
-await_root_slot() {
+# await_root_resume ISSUE LABEL [SECONDS] waits for ISSUE to resume, out of awaiting_person with
+# its architect live: phase_seconds unless SECONDS says. The resume takes no slot — the root has
+# held one since the daemon started it — so what the wait covers is the pass that reads the answer.
+await_root_resume() {
   local issue=$1 label=$2 limit=${3:-$phase_seconds} hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true "$limit" "$label root $issue to hold an admission slot again" root_holds_slot "$issue"
+  until_true "$limit" "$label root $issue to resume out of awaiting_person" root_resumed "$issue"
   timeout_hook=$hook
 }
-# await_answered_slot ISSUE LABEL [SECONDS]: the person's review answered ISSUE's wait, and the root
-# then holds a slot again (await_root_slot's SECONDS).
-await_answered_slot() {
+# await_answered_resume ISSUE LABEL [SECONDS]: the person's review answered ISSUE's wait, and the
+# root then resumes (await_root_resume's SECONDS).
+await_answered_resume() {
   local issue=$1 label=$2 limit=${3:-} hook=$timeout_hook
   awaiting_issue=$issue
   timeout_hook=report_awaiting
-  until_true 120 "the person's review to answer $label root $issue (waitingOn.answeredAt, or a slot already back)" root_answered "$issue"
+  until_true 120 "the person's review to answer $label root $issue (waitingOn.answeredAt, or a root already resumed)" root_answered "$issue"
   timeout_hook=$hook
-  await_root_slot "$issue" "$label" "$limit"
+  await_root_resume "$issue" "$label" "$limit"
 }
 # drive_gate ISSUE LABEL [SECONDS]: the architect registers the gate on its own and its root waits on
-# a person without a slot; the proof's human approves the registered version, the root takes a slot
-# back (await_answered_slot's SECONDS), and the daemon moves it to planning.
+# a person, keeping its slot; the proof's human approves the registered version, the root resumes
+# on the pass that reads the answer (await_answered_resume's SECONDS), and the daemon moves it to planning.
 drive_gate() {
   local issue=$1 label=$2 limit=${3:-}
   architect_registers_gate "$issue" "$label"
@@ -372,7 +402,7 @@ drive_gate() {
   gate_artifact=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.artifactId')
   gate_version=$(daemon_state | jq -er --arg issue "$issue" '.issues[$issue].designGate.currentVersion')
   dispatch_human POST "artifacts/$gate_artifact/reviews" '{"state":"approved"}' >/dev/null
-  await_answered_slot "$issue" "$label" "$limit"
+  await_answered_resume "$issue" "$label" "$limit"
   wait_for_phase "$issue" planning
   wait_for_worker "$issue" planner
 }
@@ -384,19 +414,20 @@ workflow_lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 . "$workflow_lib/github-apps.sh"
 # read_app_logins proves the run's two role Apps against GitHub (check_github_apps,
 # lib/github-apps.sh) and sets implement_app_login and review_app_login to the bot login GitHub
-# gives each, `<slug>[bot]` as REST names it, read by lib/app-logins.ts from GET /app under the
-# App's own key, as the daemon reads its own at boot. A proof names no App: an App renamed on GitHub
-# changes what this reads and no script, and a name another App takes over later is never mistaken
-# for Legion's. A stage proof calls it once in its prerequisites, after require_app_inputs and
-# write_github_apps and before its first write anywhere, and the check fails, naming what
-# lib/app-logins.ts could not read or prove, rather than leave a login empty.
+# gives each, `<slug>[bot]` as REST names it, read by lib/app-logins.ts from GraphQL's viewer under
+# an installation token the App's token command releases, and checked against GET /apps/<slug>, as
+# the daemon reads its own at boot. A proof names no App: an App renamed on GitHub changes what
+# this reads and no script, and a name another App takes over later is never mistaken for Legion's.
+# A stage proof calls it once in its prerequisites, after require_app_inputs and write_github_apps
+# and before its first write anywhere, and the check fails, naming what lib/app-logins.ts could not
+# read or prove, rather than leave a login empty.
 implement_app_login=
 review_app_login=
 read_app_logins() {
   check_github_apps implement review
   implement_app_login=$(jq -er .implement <<<"$github_app_logins") || fail "lib/app-logins.ts printed no implement App login: $github_app_logins"
   review_app_login=$(jq -er .review <<<"$github_app_logins") || fail "lib/app-logins.ts printed no review App login: $github_app_logins"
-  note "the implement App acts on GitHub as $implement_app_login and the review App as $review_app_login (GET /app)"
+  note "the implement App acts on GitHub as $implement_app_login and the review App as $review_app_login (GET /apps/<slug>)"
 }
 # role_app ROLE prints the bot login of the App ROLE acts as, as REST names it: the implement App's
 # for the implementer and the merger, the review App's for every other role. role_app_slug ROLE
@@ -448,9 +479,26 @@ require_proof_human() {
   note "the proof human: the devbox gh acts as $login for $repo"
 }
 
-# pull_request_product_files prints each file the pull request changes outside .legion/.
+# pull_request_product_files prints each file the pull request changes. A handoff is a record on
+# the Dispatch issue, so no file the pull request changes is a handoff: one under .legion/ is listed
+# with the rest, and a check that counts the product files counts it too.
 pull_request_product_files() {
-  gh api --paginate "repos/$repo/pulls/$pr_number/files" --jq '.[] | select(.filename | startswith(".legion/") | not) | .filename'
+  gh api --paginate "repos/$repo/pulls/$pr_number/files" --jq '.[].filename'
+}
+# pull_request_legion_only_commits prints each commit of the proof's pull request whose every
+# changed file is under .legion/: a handoff-only push, which no phase makes now that a handoff is a
+# record on the Dispatch issue. An empty commit changes no file and is not one. Each commit's files
+# are read whole before they are judged (no grep -q downstream of a live gh: under pipefail its
+# early close would read as gh's failure).
+pull_request_legion_only_commits() {
+  local commits sha files
+  commits=$(gh api --paginate "repos/$repo/pulls/$pr_number/commits" --jq '.[].sha') || return 1
+  for sha in $commits; do
+    files=$(timeout 60 gh api "repos/$repo/commits/$sha" --jq '.files[].filename') || return 1
+    if [ -n "$files" ] && ! grep -qv '^\.legion/' <<<"$files"; then
+      printf '%s\n' "$sha"
+    fi
+  done
 }
 # request_changes_as_reviewer ISSUE ROUND BODY [NOTE] has the reviewer pane post a round's
 # changes-requested review and complete its phase. A review ends when its reviewer completes it —
@@ -498,8 +546,7 @@ reviewer_requested_changes_from() {
 # within the spec, whose architect was told a review may ask for one more line in the smoke file.
 round_line() { printf 'Legion proof review round %s (%s)' "$1" "$project"; }
 # round_correction_pushed ROUND: that round's line is added to the smoke file, the one the round's
-# review names; the line in any other file (a notes file, or a .legion/ handoff that quotes it) is
-# not the correction.
+# review names; the line in any other file (a notes file that quotes it) is not the correction.
 # Each gh read below is captured before it is matched: piped, grep's first match would close the
 # pipe while gh still writes, and under the caller's pipefail the SIGPIPE (141) would read as absent.
 round_correction_pushed() {
@@ -532,12 +579,13 @@ reviewer_commented() {
   commented=$(review_app_reviews '.state == "COMMENTED" and .body != ""' id) || return 1
   [ -n "$commented" ]
 }
-# reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round.
-reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffCommit // "") != ""' >/dev/null; }
+# reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round,
+# which names the reviewer's Dispatch handoff record (the reviewer pushes nothing).
+reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
 # approve_as_reviewer asks the reviewer for the round's last review and waits for it to approve the
-# head on its own: the Go reviewer prompt says to approve a clean head that carries .legion/<issue>/,
-# which retro's last commit then removes. The merge carries the run's retro learnings onto the
-# smoke main, and clean_smoke_main removes them.
+# head on its own: the reviewer approves the code head and pushes nothing above it, its handoff
+# being a record on the Dispatch issue. The merge carries the run's retro learnings onto the smoke
+# main, and clean_smoke_main removes them.
 approve_as_reviewer() {
   local issue=$1 app
   app=$(role_app reviewer) || return 1
@@ -589,19 +637,20 @@ release_smoke_main() {
   exec {smoke_main_fd}>&-
   note "released $repo main ($smoke_main_lock)"
 }
-# smoke_main_leftovers prints each path on the smoke repository's main under .legion/ or
-# docs/solutions/: the handoffs and retro learnings a merged proof pull request carries there.
+# smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
+# retro learnings a merged proof pull request carries there, or under .legion/, which only a merge
+# from before handoffs moved to Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
 }
-# merge_when_clean REPO PR MERGE_FLAG... is the proof human's merge of a pull request no accepted
-# READY covers — one merged before its READY, or one whose merger is held at its assignment, as the
-# 4b.13b acceptance holds its — and records who merged it: merge_when_clean_by is "the daemon's
-# submission" or "the proof human", and merge_when_clean_commit the merge commit GitHub records. A
-# pull request an accepted READY covers is await_ready_merge's: the daemon submits that merge
-# itself, and a hand merge would perform the product's own step. merge_when_clean reads the pull
-# request's state first, in one GraphQL query (gh 2.98's `pr view --json` has no merge-queue
+# merge_when_clean REPO PR MERGE_FLAG... is the proof human's merge of a pull request the merger
+# does not merge — one merged before the issue reaches merging, or one whose merger is held at its
+# assignment, as the 4b.13b acceptance holds its — and records who merged it: merge_when_clean_by
+# is "the merger's own merge" or "the proof human", and merge_when_clean_commit the merge commit
+# GitHub records. A pull request the merger reaches is await_merger_merge's: the merge is the
+# merger's own step, and a hand merge would perform it for the agent. merge_when_clean reads the
+# pull request's state first, in one GraphQL query (gh 2.98's `pr view --json` has no merge-queue
 # field): a merged pull request is asserted, MERGED with a merge commit, and merged no further
 # (`gh pr merge` on a merged pull request fails, and would fail the run); an enqueued or auto-merge
 # armed one is never merged by hand, since GitHub merges it the moment the repository's rules are
@@ -619,10 +668,10 @@ smoke_main_leftovers() {
 # request's head existing, and a timeout names the actual state, mergeStateStatus, what is armed
 # and every check that is not a completed success, not only that time ran out. --match-head-commit
 # holds the hand merge to the head this call last read, so a push between the poll and the merge
-# is refused by its own sha instead of silently merging a later one. A merge the daemon submitted
-# can land on the same CLEAN the hand merge acts on, and then refuses it ("Pull request #n is
+# is refused by its own sha instead of silently merging a later one. The merger's own merge can
+# land on the same CLEAN the hand merge acts on, and then refuses it ("Pull request #n is
 # already merged"), so a refused hand merge is followed by one re-read: MERGED with a merge commit
-# is the daemon's outcome, not a failure; a hand merge that succeeds is re-read too, so the record
+# is the merger's outcome, not a failure; a hand merge that succeeds is re-read too, so the record
 # is GitHub's state, not gh's exit status; the hand merge runs as an `if` test, where neither
 # `set -e` nor the ERR trap acts on its failure, so the re-read judges it. When --delete-branch is
 # among the flags and the merge was not the proof human's, the head branch is deleted here, as the
@@ -677,7 +726,7 @@ merge_when_clean() {
     [ "$pull_request_state" != CLOSED ] || fail "$repo_name#$pr was closed without a merge"
     if [ -n "$pull_request_armed" ] && [ "$armed" != "$pull_request_armed" ]; then
       armed=$pull_request_armed
-      note "$repo_name#$pr is armed by the daemon's submission ($armed; mergeStateStatus $pull_request_merge_state): no hand merge, waiting for it to land"
+      note "$repo_name#$pr is armed ($armed; mergeStateStatus $pull_request_merge_state): no hand merge, waiting for it to land"
     fi
     [ -n "$pull_request_armed" ] || [ "$pull_request_merge_state" != CLEAN ] || break
     if ((SECONDS - beat >= 60)); then
@@ -687,14 +736,14 @@ merge_when_clean() {
     sleep "$poll"
   done
   if [ "$pull_request_state" = MERGED ]; then
-    merge_when_clean_by="the daemon's submission"
+    merge_when_clean_by="the merger's own merge"
   elif [ -z "$pull_request_armed" ] && [ "$pull_request_merge_state" = CLEAN ]; then
     note "$repo_name#$pr reads CLEAN with nothing armed; the proof human merges it by hand at $pull_request_head"
     if gh -R "$repo_name" pr merge "$pr" --match-head-commit "$pull_request_head" "$@"; then
       merge_when_clean_by="the proof human"
     else
-      note "the hand merge of $repo_name#$pr was refused (gh's reason is above); re-reading it, since the daemon's submission may have landed first"
-      merge_when_clean_by="the daemon's submission"
+      note "the hand merge of $repo_name#$pr was refused (gh's reason is above); re-reading it, since the merger's own merge may have landed first"
+      merge_when_clean_by="the merger's own merge"
     fi
     merge_when_clean_read "$repo_name" "$pr"
   else
@@ -702,22 +751,21 @@ merge_when_clean() {
   fi
   merge_when_clean_record "$repo_name" "$pr" "$delete_branch"
 }
-# await_ready_merge REPO PR [--delete-branch] sees the merge the daemon submits for an accepted
-# READY land, and never merges by hand: the daemon submits READY's merge itself — a merge queue
-# enqueues it, a pull request GitHub reports mergeable merges at once, a repository that allows
-# auto-merge arms it, and in one that allows neither, as sjawhar/legion-smoke does, the daemon
-# merges it once GitHub reports it mergeable — so a hand merge here would perform the product's own
-# step and hide its failure. It polls merge_when_clean_read within merge_when_clean's bound and
-# poll, fails at once on a pull request closed without a merge, and on a timeout names the state,
-# what is armed and every unsettled check. merge_when_clean_by is "the daemon's submission", and
-# --delete-branch deletes the head branch once it has merged (merge_when_clean_record).
-await_ready_merge() {
+# await_merger_merge REPO PR [--delete-branch] sees the merger's own merge land, and never merges
+# by hand: the merge is the merger agent's step — `gh pr merge --squash --match-head-commit` at the
+# head it read, with the subject and the empty body it passes itself, or an enqueue on a
+# merge-queue base — so a hand merge here would perform the product's own step and hide its
+# failure. It polls merge_when_clean_read within merge_when_clean's bound and poll, fails at once
+# on a pull request closed without a merge, and on a timeout names the state, what is armed and
+# every unsettled check. merge_when_clean_by is "the merger's own merge", and --delete-branch
+# deletes the head branch once it has merged (merge_when_clean_record).
+await_merger_merge() {
   local repo_name=$1 pr=$2 delete_branch=
   [ "${3:-}" != --delete-branch ] || delete_branch=1
   local bound=${MERGE_WHEN_CLEAN_BOUND:-300} poll=${MERGE_WHEN_CLEAN_POLL:-0.5}
   local started=$SECONDS beat=$SECONDS polls=0
   merge_when_clean_by='' merge_when_clean_commit=''
-  note "waiting up to ${bound}s for the daemon's submission of $repo_name#$pr to merge it; nothing merges it by hand"
+  note "waiting up to ${bound}s for the merger of $repo_name#$pr to merge it; nothing merges it by hand"
   while ((SECONDS - started < bound)); do
     polls=$((polls + 1))
     merge_when_clean_read "$repo_name" "$pr"
@@ -725,12 +773,12 @@ await_ready_merge() {
     [ "$pull_request_state" != CLOSED ] || fail "$repo_name#$pr was closed without a merge"
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
-      note "still waiting for the daemon to merge $repo_name#$pr: poll $polls, $((SECONDS - started))s of ${bound}s, now ${pull_request_state:-unread}${pull_request_merge_state:+ $pull_request_merge_state}${pull_request_armed:+, $pull_request_armed}"
+      note "still waiting for the merger to merge $repo_name#$pr: poll $polls, $((SECONDS - started))s of ${bound}s, now ${pull_request_state:-unread}${pull_request_merge_state:+ $pull_request_merge_state}${pull_request_armed:+, $pull_request_armed}"
     fi
     sleep "$poll"
   done
   [ "$pull_request_state" = MERGED ] || merge_when_clean_timeout "$repo_name" "$pr" "$started" "$polls"
-  merge_when_clean_by="the daemon's submission"
+  merge_when_clean_by="the merger's own merge"
   merge_when_clean_record "$repo_name" "$pr" "$delete_branch"
 }
 # merge_when_clean_timeout REPO PR STARTED POLLS fails naming the pull request's last read and every
@@ -819,7 +867,7 @@ smoke_commit_files() {
   done
   if grep -qE 'HTTP (404|422)' "$err"; then
     rm -f "$err"
-    fail "the handoff commit $commit the implementer reported is not on $repo"
+    fail "the commit $commit the implementer reported is not on $repo"
   fi
   local said
   said=$(tr '\n' ' ' <"$err" | cut -c1-400)
@@ -965,19 +1013,24 @@ close_unpassed_run_pull_requests() {
 
 # ---- the handoffs the daemon accepted -------------------------------------------------------------
 
-# The record keeps each role's phase row: the commit the role's `handoff_complete` reported at the
-# completion the daemon accepted (for a file-backed phase the pushed commit carrying the handoff,
-# which the `legion` tool finds in the pane and refuses unpushed, so a push before the completion
-# is the role's rule; for retro and READY the commit the workspace stands on), emptied when the
-# role's next phase starts, and, on the implementer's row, the review round (its returns to
-# implementing). The issue moves out of implementing, retro, and merging only on that phase's
-# completion, so a checker reads the row right after the transition it follows, before the role's
-# next phase can empty it. A production check's look is no phase: its report moves no phase and
-# writes no handoff (a verdict and a summary, no commit), so it is read from the daemon's state's
-# `check`, below, never from this record.
+# The record keeps each role's phase row: what the role's `handoff_complete` reported at the
+# completion the daemon accepted — for a file-backed phase (planning, implementing, testing,
+# reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
+# session, its id and version, which the daemon read back from Dispatch and held to the claim's
+# session, and the head that record's body names, which the `legion` tool holds to be the commit
+# the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
+# round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
+# and the merger the commit the workspace stands on — emptied when the role's next phase starts,
+# and, on the implementer's row, the review round (its returns to implementing). The issue moves
+# out of every phase but merging on that phase's completion, and out of merging on the daemon's
+# read of the merged pull request, so a checker reads the row right after the transition it
+# follows, before the role's next phase can empty it. A production check's look is no phase: its
+# report moves no phase and writes no handoff (a verdict and a summary, no commit, no record), so
+# it is read from the daemon's state's `check`, below, never from this record.
 
-# role_handoff ISSUE ROLE [PHASE...] prints the pushed commit carrying the handoff that ROLE's
-# `handoff_complete` reported at the completion the daemon accepted, when the issue stands in one
+# role_handoff ISSUE ROLE [PHASE...] prints the commit ROLE's `handoff_complete` reported at the
+# completion the daemon accepted (the head a file-backed role's record names, the commit retro and
+# the merger stand on; nothing for a completion that reported none), when the issue stands in one
 # of the PHASEs (any phase when none is named).
 role_handoff() {
   local issue=$1 role=$2 phases='' p
@@ -990,28 +1043,53 @@ role_handoff() {
 review_round() {
   db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
 }
-# handoff_fact_commit ISSUE ROLE PHASE ROUND prints the pushed commit carrying the handoff that the
-# role's `handoff_complete` reported for its completion of that phase round. The check runs right
-# after the round's transition, before the role's next completion can move it.
-handoff_fact_commit() {
-  [ "$(review_round "$1")" = "$4" ] || return 0
-  role_handoff "$1" "$2"
+# handoff_word ROLE prints the word of the Dispatch handoff record ROLE's file-backed phase ends
+# with (the daemon's phase.HandoffFile): plan, implement, test or review.
+handoff_word() {
+  case "$1" in
+    planner) printf plan ;;
+    implementer) printf implement ;;
+    tester) printf test ;;
+    reviewer) printf review ;;
+    *) return 1 ;;
+  esac
 }
-# assert_handoff_committer ISSUE ROLE PHASE ROUND: the pushed commit carrying the handoff that the
-# role's `handoff_complete` reported is authored and committed by the role's own App, read from the
-# issue's workspace (the role pushed it from there, so its clone holds the commit), so no other
-# pane sealed another role's handoff.
-assert_handoff_committer() {
-  local commit identity want
-  commit=$(handoff_fact_commit "$1" "$2" "$3" "$4")
-  [ -n "$commit" ] || fail "$1 has no $2 $3 round $4 handoff fact"
-  # Only stdout is the identity: jj reports on stderr when it imports the workspace's git refs,
-  # which an agent's own git push leaves it to do.
-  identity=$(workspace_jj "$1" log -r "$commit" --no-graph -T 'author.name() ++ "|" ++ committer.name()' 2>"$work/handoff-committer.err") ||
-    fail "read $1's $2 $3 round $4 handoff commit $commit: $(cat "$work/handoff-committer.err")"
-  want="$(role_app "$2")|$(role_app "$2")"
-  [ "$identity" = "$want" ] || fail "$1's $2 $3 round $4 handoff commit $commit is authored|committed by $identity, want $want"
-  note "$2 $3 round $4 handoff $commit authored and committed by $identity"
+# role_handoff_record ISSUE ROLE prints `<id> <version>` of the Dispatch handoff record ROLE's
+# completion of its current file-backed phase named, as the daemon's state shows it
+# (.workers[ROLE].handoffRecord), and nothing before that completion.
+role_handoff_record() {
+  daemon_state | jq -r --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].handoffRecord // empty | "\(.id) \(.version)"'
+}
+# assert_handoff_record ISSUE ROLE PHASE ROUND: ROLE's completion of that phase round named a
+# Dispatch handoff record, and Dispatch holds that record (GET /api/v1/handoffs/<id>) as ISSUE's
+# handoff of the phase's word at the version the completion reported, written by the session ROLE's
+# claim registered — no other pane wrote another role's handoff, and none was committed. The
+# implementer's completion also reports its pushed tip, which is authored and committed by its own
+# App, read from the issue's workspace (the implementer pushed it from there).
+assert_handoff_record() {
+  local issue=$1 role=$2 phase=$3 round=$4 word handoff id version session record commit identity want
+  [ "$(review_round "$issue")" = "$round" ] || fail "$issue is at review round $(review_round "$issue"), not $round, at its $role $phase handoff"
+  word=$(handoff_word "$role") || fail "the $role's $phase ends with no handoff record"
+  handoff=$(role_handoff_record "$issue" "$role")
+  [ -n "$handoff" ] || fail "$issue has no $role $phase round $round handoff record in the daemon's state"
+  read -r id version <<<"$handoff"
+  session=$(issue_worker_session "$issue" "$role") && [ -n "$session" ] ||
+    fail "the daemon's state names no session for $issue's $role"
+  record=$(dispatch_get "handoffs/$id") || fail "Dispatch could not read $issue's $role $phase round $round handoff record $id: $record"
+  jq -e --arg issue "$issue" --arg word "$word" --argjson version "$version" --arg session "$session" \
+    '.issue_key == $issue and .phase == $word and .version == $version and .author.kind == "session" and .author.id == $session' <<<"$record" >/dev/null ||
+    fail "Dispatch holds $issue's $role $phase round $round handoff record $id as $(jq -c '{issue_key, phase, version, author}' <<<"$record"), want $issue's $word handoff version $version written by session $session, the $role's claim session"
+  if [ "$role" = implementer ]; then
+    commit=$(role_handoff "$issue" implementer)
+    [ -n "$commit" ] || fail "$issue's implementer $phase round $round completion reported no commit"
+    # Only stdout is the identity: jj reports on stderr when it imports the workspace's git refs,
+    # which an agent's own git push leaves it to do.
+    identity=$(workspace_jj "$issue" log -r "$commit" --no-graph -T 'author.name() ++ "|" ++ committer.name()' 2>"$work/handoff-committer.err") ||
+      fail "read $issue's implementer $phase round $round commit $commit: $(cat "$work/handoff-committer.err")"
+    want="$(role_app implementer)|$(role_app implementer)"
+    [ "$identity" = "$want" ] || fail "$issue's implementer $phase round $round commit $commit is authored|committed by $identity, want $want"
+  fi
+  note "$role $phase round $round handoff: Dispatch record $id, $word version $version, written by the $role's session $session${commit:+; pushed tip $commit authored and committed by $identity}"
 }
 # post_bot_thread opens one file-level review thread on the proof's pull request as the proof human,
 # a GitHub App and so a bot account, as a CI bot is, and none of Legion's role Apps; it prints the
@@ -1123,26 +1201,27 @@ thread_resolved_with_reply() {
 threads_all_resolved() {
   jq -e --arg id "$2" 'all(.[]; .isResolved) and any(.[]; .id == $id)' "$1" >/dev/null
 }
-# assert_review_of_own_handoff ISSUE ROUND STATE: the reviewer's newest STATE review
-# (CHANGES_REQUESTED or APPROVED) on the proof's pull request names the commit carrying its round
-# ROUND handoff, the head its own handoff push made. The Go reviewer prompt orders the round so: an
-# approval of a head the handoff push then replaces is of a head the pull request no longer has.
-assert_review_of_own_handoff() {
-  local handoff reviewed app
+# assert_review_of_head ISSUE ROUND STATE: the reviewer's newest STATE review (CHANGES_REQUESTED or
+# APPROVED) on the proof's pull request names the head the daemon records for the pull request at
+# the round's end: the reviewer pushes nothing (its handoff is a record on the Dispatch issue), so
+# the head it reviewed is the head its decision ends the round on. The check runs right after the
+# round's transition, before the implementer's next push can move the head.
+assert_review_of_head() {
+  local head reviewed app
   app=$(role_app reviewer) || return 1
-  handoff=$(handoff_fact_commit "$1" reviewer reviewing "$2")
-  [ -n "$handoff" ] || fail "$1 has no reviewer reviewing round $2 handoff fact"
+  head=$(daemon_state | jq -r --arg issue "$1" '.issues[$issue].pullRequest.head // empty')
+  [ -n "$head" ] || fail "the daemon's state records no pull request head for $1 at its review round $2"
   reviewed=$(gh api --paginate "repos/$repo/pulls/$pr_number/reviews" \
     --jq ".[] | select(.user.login == \"$app\" and .state == \"$3\") | .commit_id" | tail -1) ||
     fail "read the reviews on pull request #$pr_number"
-  [ "$reviewed" = "$handoff" ] || fail "the reviewer's round $2 $3 review names $reviewed, not $handoff, the head its handoff push made"
-  note "the reviewer's round $2 $3 review names $handoff, the head its own handoff push made"
+  [ "$reviewed" = "$head" ] || fail "the reviewer's round $2 $3 review names $reviewed, not $head, the pull request's head the daemon records"
+  note "the reviewer's round $2 $3 review names $head, the pull request's head, with nothing pushed above it"
 }
 # retro_reported ISSUE: the daemon applied the implementer's retro completion, the one way out of
 # retro.
-retro_reported() { [ -n "$(role_handoff "$1" implementer merging awaiting_merge)" ]; }
+retro_reported() { [ -n "$(role_handoff "$1" implementer merging done)" ]; }
 # assert_round_handoff ISSUE ROUND: the issue reached testing on the implementer's own completion
-# of that implementing round, never on a push alone carrying an earlier round's handoff.
+# of that implementing round (its pushed tip reported beside its record), never on a push alone.
 assert_round_handoff() {
   if [ "$(review_round "$1")" != "$2" ] || [ -z "$(role_handoff "$1" implementer testing reviewing)" ]; then
     fail "$1 reached testing without the implementer's implementing round $2 handoff"
@@ -1151,16 +1230,22 @@ assert_round_handoff() {
 
 # ---- the production check after the close ---------------------------------------------------------
 
-# The merge closes the issue (awaiting_merge and a merged pull request write done), and the
-# implementer's production check is work after the close: the daemon opens it on the merge commit,
-# hands the implementer its first look, and `legion state --json` shows it as `.issues[KEY].check`
-# (repo, pullRequest, mergeCommit, openedAt, looks, lookOpen, lastWake{kind, detail, at},
-# nextWakeAt, last) while it is open, and omits it once it has closed. A look's report is the
-# implementer's `handoff_complete` with a verdict and no commit: `pending` before the last look
-# ends the look and suspends the implementer's claim with the issue's Sandbox, so the check stays
-# open with `lookOpen` false; the bound (`production_check_hours`) wakes the last look, whose
-# `pending` closes the check as not_run and retires the implementer (`issue_close`). Every reader
-# below is a jq predicate over daemon_state, so a wait polls it as it polls issue_phase.
+# The merge closes the issue (the daemon's read of the merged pull request writes done), and the
+# production check is work after the close, opened only where the project's `production_check`
+# names the role that works it (`off` opens none; `tester` is the key's other word and its
+# default): the daemon opens the check on the merge commit, hands that role its first look, and
+# `legion state --json` shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
+# role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
+# it once it has closed. A look's report is that role's `handoff_complete` with a verdict and no
+# commit: `pending` before the last look ends the look and suspends the role's claim with the
+# issue's Sandbox, so the check stays open with `lookOpen` false. That report carries `wake_at`,
+# when the agent wants its next look, and the daemon starts the next look then (`nextWakeAt`): it
+# is the only thing that starts a look before the bound, since no deploy, no Dispatch notice and
+# no boot of the daemon's own wakes a check any more. A wake at or past the check's bound starts
+# no look of its own, and the bound (`production_check_hours`) starts the last look, whose
+# `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
+# reader over daemon_state is a jq predicate, so a wait polls it as it polls issue_phase; the
+# readers over daemon.log parse each line on its own, since the log carries the daemon's stderr too.
 # check_open ISSUE: the issue's production check is open.
 check_open() { daemon_state | jq -e --arg issue "$1" '.issues[$issue].check != null' >/dev/null; }
 # check_opened_on ISSUE MERGE: the check is open on the merge commit MERGE, at its first look, still
@@ -1169,14 +1254,15 @@ check_opened_on() {
   daemon_state | jq -e --arg issue "$1" --arg merge "$2" '.issues[$issue].check
     | . != null and .mergeCommit == $merge and .looks == 1 and .lookOpen == true and .lastWake.kind == "merge"' >/dev/null
 }
-# check_look_open ISSUE N [KIND]: look N of the issue's check is open, woken by KIND (merge, bound,
-# issue.deployed, …) when one is named; the bound's look also reads `last`.
+# check_look_open ISSUE ROLE N [KIND]: look N of the issue's check is open, worked by ROLE (the role
+# the check recorded when it opened), woken by KIND (merge, `check wake` for the wake a report
+# named, bound) when one is named; the bound's look also reads `last`.
 check_look_open() {
-  daemon_state | jq -e --arg issue "$1" --argjson n "$2" --arg kind "${3:-}" '.issues[$issue].check
-    | . != null and .looks == $n and .lookOpen == true and ($kind == "" or .lastWake.kind == $kind)
-      and ($kind != "bound" or .last == true)' >/dev/null
+  daemon_state | jq -e --arg issue "$1" --arg role "$2" --argjson n "$3" --arg kind "${4:-}" '.issues[$issue].check
+    | . != null and .role == $role and .looks == $n and .lookOpen == true
+      and ($kind == "" or .lastWake.kind == $kind) and ($kind != "bound" or .last == true)' >/dev/null
 }
-# check_look_reported ISSUE N: the daemon applied the implementer's report on look N and the check
+# check_look_reported ISSUE N: the daemon applied the checking role's report on look N and the check
 # stays open, which only a `pending` before the last look leaves (a pass or fail closes it, and
 # check_open then fails). The last look's report closes the check: check_closed reads that one.
 check_look_reported() {
@@ -1202,11 +1288,41 @@ check_look_logged() {
        .issue == $issue and .look == $n and .cause == $cause and ($cause != "bound" or .last == true))' \
     "$evidence/logs/daemon.log" >/dev/null
 }
-# last_look_started ISSUE: the bound has woken the check's last look (look 2, open, woken by the
+# check_wake_named ISSUE N: the daemon log records the wake the pending report on look N named
+# (`workflow: production check wake named`), the row that starts the look after it — the one thing
+# that starts a look before the bound.
+check_wake_named() {
+  jq -R -s -e --arg issue "$1" --argjson n "$2" \
+    'any(split("\n")[] | fromjson? | select(.msg == "workflow: production check wake named"); .issue == $issue and .look == $n)' \
+    "$evidence/logs/daemon.log" >/dev/null
+}
+# check_wake_past_bound ISSUE N: the daemon log records the pending report on look N naming a wake
+# at or past the check's bound, which names no row of its own (`workflow: production check names no
+# wake: it falls at or past the check's bound`), so the bound's last look is the next one.
+check_wake_past_bound() {
+  jq -R -s -e --arg issue "$1" --argjson n "$2" \
+    'any(split("\n")[] | fromjson? | select(.msg == "workflow: production check names no wake: it falls at or past the check'"'"'s bound");
+       .issue == $issue and .look == $n)' \
+    "$evidence/logs/daemon.log" >/dev/null
+}
+# last_look_started ISSUE: the check's bound has started its last look (a look open, woken by the
 # bound, `last`), or the check has closed since: a proof that reads the state after the fact is not
-# failed by an implementer that reported the last look before the read; check_look_logged then
-# holds the look to the daemon log.
-last_look_started() { check_look_open "$1" 2 bound || check_closed "$1"; }
+# failed by an agent that reported the last look before the read; last_look_logged then holds the
+# look to the daemon log. Which look it is the run decides: every wake a report named inside the
+# bound took one of its own.
+last_look_started() {
+  daemon_state | jq -e --arg issue "$1" '.issues[$issue].check
+    | . != null and .lookOpen == true and .lastWake.kind == "bound" and .last == true' >/dev/null || check_closed "$1"
+}
+# last_look_logged ISSUE: the daemon log records a look of the issue's check starting on the bound
+# as its last (`workflow: production check look started`, cause bound, `last`): the record of the
+# look the state no longer shows once the check has closed.
+last_look_logged() {
+  jq -R -s -e --arg issue "$1" \
+    'any(split("\n")[] | fromjson? | select(.msg == "workflow: production check look started");
+       .issue == $issue and .cause == "bound" and .last == true)' \
+    "$evidence/logs/daemon.log" >/dev/null
+}
 
 # ---- notices --------------------------------------------------------------------------------------
 
@@ -1223,8 +1339,10 @@ notice_deliveries() {
 # notice_line ISSUE ROLE NEEDLE prints each Envoy delivery in the claim's session holding NEEDLE.
 notice_line() { { claim_session_text "$1" "$2" || true; } | grep -F '"customType":"envoy-message"' | grep -F -- "$3" || true; }
 # architect_messages ISSUE ROLE counts the Envoy messages in the claim's session that ISSUE's
-# architect sent: the listener renders each with a reply_role naming its sender's role topic
-# (envoy-client's delivery.ts), which the proof's own steer and every other sender do not carry.
+# architect sent **and that want a reply**: the listener renders those with a reply_role naming its
+# sender's role topic (envoy-client's delivery.ts), which the proof's own steer and every other
+# sender do not carry. A message sent with expects_reply=false carries no reply_role and is not
+# counted, so a step that must see one of those matches on something else.
 architect_messages() { notice_deliveries "$1" "$2" "notifications.role.$(claim_token "$1" architect)"; }
 notice_delivered() { [ "$(notice_deliveries "$@")" -ge 1 ]; }
 # worker_sessions SESSIONS prints each phase-worker session file under SESSIONS and the role it
@@ -1246,7 +1364,7 @@ worker_notices() {
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|design-approved|design-changes-requested|carried-gate-opened|ready-refused|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-store-fault) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }

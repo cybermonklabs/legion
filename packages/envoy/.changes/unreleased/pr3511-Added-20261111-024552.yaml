@@ -1,0 +1,5 @@
+kind: Added
+body: 'A person can now decline to answer an ask: POST /api/v1/asks/{id}/decline (the person scope) closes the question with no answer, recording the resolution kind declined, the person''s optional note in reason, and in dispatch_words the sentences Dispatch writes for the asking agent, which tell it to decide the next step without an answer; an approval request is refused 409 ASK_NOT_DECLINABLE. Every session following the ask receives the whole resolution, GET /api/v1/agents/{session_id}/answers lists the decline under the relation declined_your_ask, and a write that opens another question on the issue is answered that issue''s declined asks.'
+time: 2026-11-11T02:45:52.598098464Z
+custom:
+    Issue: pr3511

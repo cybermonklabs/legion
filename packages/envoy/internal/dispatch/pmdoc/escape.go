@@ -346,140 +346,6 @@ func taskCheckboxText(value string, offset int) bool {
 		(len(rest) == 3 || strings.IndexByte(" \t\n", rest[3]) >= 0)
 }
 
-// htmlBlockStart reports whether the browser editor's engine (micromark's html-flow, CommonMark
-// 0.31) opens an HTML block at the `<` line begins with, line being the markdown written from that
-// `<` to its line's end, where the `<` is the first character after its line's container prefix.
-// goldmark reads one of those as a paragraph: a complete tag whose unquoted attribute value ends
-// at an `=`, after which the engine reads another value (`<span title=a=b;x>`). A declaration whose
-// letter is lowercase is not one of them: this package's reader opens an HTML block there too
-// (declarationBlockParser), by the rule this arm asks as well (opensDeclaration). interrupt
-// reports whether the line would go on a paragraph, which only a complete tag (kind 7) cannot
-// interrupt. Each byte is read at most once.
-func htmlBlockStart(line string, interrupt bool) bool {
-	if end := strings.IndexAny(line, "\r\n"); end >= 0 {
-		line = line[:end]
-	}
-	switch {
-	case strings.HasPrefix(line, "<!--"), strings.HasPrefix(line, "<?"), strings.HasPrefix(line, "<![CDATA["),
-		opensDeclaration(line):
-		return true
-	}
-	closing := len(line) > 1 && line[1] == '/'
-	nameStart := 1
-	if closing {
-		nameStart = 2
-	}
-	if nameStart >= len(line) || !isASCIILetter(line[nameStart]) {
-		return false
-	}
-	nameEnd := nameStart + 1
-	for nameEnd < len(line) && (isASCIIAlphaNumeric(line[nameEnd]) || line[nameEnd] == '-') {
-		nameEnd++
-	}
-	if nameEnd < len(line) && !strings.ContainsRune(" \t/>", rune(line[nameEnd])) {
-		return false
-	}
-	name := line[nameStart:nameEnd]
-	slash := nameEnd < len(line) && line[nameEnd] == '/'
-	switch {
-	case !slash && !closing && slices.ContainsFunc(htmlRawNames, nameIs(name)):
-		return true
-	case slices.ContainsFunc(htmlBlockNames, nameIs(name)):
-		return !slash || strings.HasPrefix(line[nameEnd:], "/>")
-	case interrupt:
-		return false
-	}
-	end := htmlCompleteTagEnd(line, nameEnd, closing)
-	return end >= 0 && strings.Trim(line[end:], " \t") == ""
-}
-
-// htmlCompleteTagEnd is where the complete tag the engine's html-flow reads on line ends, after its
-// `>`, from its name's end at at, or -1 where it reads none. An unquoted attribute value ends at
-// `=`, `/` or a quote as well as at whitespace, `<`, `>` or a backtick, and what ends it is read
-// as what may follow an attribute name, so `=` opens another value; a quoted value ends at its
-// quote, which a space, `/` or `>` must follow.
-func htmlCompleteTagEnd(line string, at int, closing bool) int {
-	isSpace := func() bool { return at < len(line) && (line[at] == ' ' || line[at] == '\t') }
-	for closing && isSpace() {
-		at++
-	}
-	for !closing && at < len(line) && line[at] != '>' {
-		// Before an attribute name.
-		switch char := line[at]; {
-		case char == '/':
-			at++
-			return htmlTagEnd(line, at)
-		case char == ' ' || char == '\t':
-			at++
-			continue
-		case char != ':' && char != '_' && !isASCIILetter(char):
-			return -1
-		}
-		at++
-		for at < len(line) && (isASCIIAlphaNumeric(line[at]) || strings.IndexByte("-.:_", line[at]) >= 0) {
-			at++
-		}
-		// After an attribute name or value: each `=` reads a value.
-		for {
-			for isSpace() {
-				at++
-			}
-			if at == len(line) || line[at] != '=' {
-				break
-			}
-			at++
-			for isSpace() {
-				at++
-			}
-			if at == len(line) || strings.IndexByte("<=>`", line[at]) >= 0 {
-				return -1
-			}
-			if quote := line[at]; quote == '"' || quote == '\'' {
-				closer := strings.IndexByte(line[at+1:], quote)
-				if closer < 0 {
-					return -1
-				}
-				at += closer + 2
-				if at < len(line) && line[at] != '/' && line[at] != '>' && !isSpace() || at == len(line) {
-					return -1
-				}
-				break
-			}
-			for at < len(line) && strings.IndexByte("\"'/<=>` \t", line[at]) < 0 {
-				at++
-			}
-		}
-	}
-	return htmlTagEnd(line, at)
-}
-
-// htmlTagEnd is after the `>` at at that ends a complete tag, or -1 where none stands there.
-func htmlTagEnd(line string, at int) int {
-	if at < len(line) && line[at] == '>' {
-		return at + 1
-	}
-	return -1
-}
-
-// nameIs matches a tag name in any case.
-func nameIs(name string) func(string) bool {
-	return func(known string) bool { return strings.EqualFold(known, name) }
-}
-
-// htmlRawNames and htmlBlockNames are the tag names that open an HTML block of kind 1 and of kind
-// 6 to the engine (micromark-util-html-tag-name), which reads them in any case (nameIs).
-var (
-	htmlRawNames   = []string{"pre", "script", "style", "textarea"}
-	htmlBlockNames = []string{
-		"address", "article", "aside", "base", "basefont", "blockquote", "body", "caption", "center",
-		"col", "colgroup", "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
-		"figcaption", "figure", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4", "h5",
-		"h6", "head", "header", "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
-		"menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param", "search", "section",
-		"summary", "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track", "ul",
-	}
-)
-
 // closesTypedBlock reports whether line, written at prefix within the reach of the typed block
 // around it (typedFenceReach), is the lone `:::` that closes the block, which the line read on its
 // own cannot show.
@@ -969,14 +835,22 @@ func orderedListMarkerPunctuation(value string, offset int, lineStart int) bool 
 // character. That is kept only if it reads back, so an alt that fails for another
 // reason keeps the bytes it had, as inlineWithEscapes does.
 //
-// An alt's depth is 0 where Parse does not read it back, 1 where Parse alone does, and 2 where
-// storedMarkdown does too (altReadsBack); the escaped alt is written only where its depth is greater
-// than the written alt's, so the earlier of the two at the greater depth is kept. Each depth asks
-// more than the writer before the tilde pairing (sjawhar/legion#2360) asked at that step, so
-// wherever its choice reads back under Parse this writer makes it too.
+// An alt holding no ASCII punctuation, no line feed and no carriage return is written as it
+// stands, without reading it back at all: it holds no `]` and no `|`, so the written form is the
+// alt itself, and the escaped form below is the alt itself as well, since that loop writes a
+// character reference only for a line feed and an escape only for ASCII punctuation. The two
+// forms being the same string, they read back to the same depth, and the writer keeps the written
+// form whatever that depth is - so the two reads back it costs to find that out are two parses of
+// a document whose answer is known, about 30 microseconds of the writer's work per alt. A
+// carriage return is held out of the fast path with the line feed: a lone one is a line ending to
+// the parser as well, and an alt holding one is left to the reads back rather than reasoned about
+// here (plainAlt).
 func imageAlt(alt string, context inlineContext) string {
+	if plainAlt(alt) {
+		return alt
+	}
 	written := escapeTablePipes(strings.ReplaceAll(alt, "]", "\\]"), context.tableCell)
-	writtenDepth := altReadsBack(written, alt, context)
+	writtenDepth := altReadsBackFn(written, alt, context)
 	if writtenDepth == 2 {
 		return written
 	}
@@ -993,11 +867,28 @@ func imageAlt(alt string, context inlineContext) string {
 		}
 	}
 	fallback := escapeTablePipes(out.String(), context.tableCell)
-	if altReadsBack(fallback, alt, context) > writtenDepth {
+	if altReadsBackFn(fallback, alt, context) > writtenDepth {
 		return fallback
 	}
 	return written
 }
+
+// plainAlt reports whether alt is written as it stands, which imageAlt's doc comment reasons out:
+// it holds no ASCII punctuation, so neither the `]` the written form escapes nor the `|` a table
+// cell's escape looks for, and no line ending. Every byte above ASCII passes, as the escaping
+// loop passes it.
+func plainAlt(alt string) bool {
+	for index := range len(alt) {
+		if isASCIIPunctuation(alt[index]) || alt[index] == '\n' || alt[index] == '\r' {
+			return false
+		}
+	}
+	return true
+}
+
+// altReadsBackFn is the test seam imageAlt reads an alt back through: a test swaps it for a
+// counting wrapper to hold the writer to how many times it reads one back.
+var altReadsBackFn = altReadsBack
 
 // altReadsBack is how far an image label written as written reads back as the alt text alt: 0
 // where Parse does not read it so, 1 where Parse does, and 2 where storedMarkdown does as well.

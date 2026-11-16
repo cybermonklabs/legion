@@ -1,0 +1,492 @@
+name: Browser Image
+
+on:
+  # ci.yaml's browser-image job calls this file on every pull request and every merge group
+  # whose diff its `browser_image` filter matches, and on a workflow_dispatch run of ci.yaml,
+  # which forces that filter's output; ci.yaml runs on no other event, and in particular on no
+  # push to main. This is the one path that pushes this image. The build decides for itself
+  # whether to push (the decide step below), and that decision now gates the build itself, so a
+  # run whose change leaves the image's bytes as they were builds nothing and pushes nothing.
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: ci.yaml's toJSON(needs.changes), which the build's ci-ok report reads on a pull request (.github/actions/ci-ok-report); empty for every other caller
+        type: string
+        required: false
+        default: ""
+    outputs:
+      digest:
+        description: The digest of the image this run leaves in the package (sha256:…), which is what this run's build pushed, or the digest .github/ci-images.yaml's row names when this run pushed nothing
+        value: ${{ jobs.build.outputs.digest }}
+      ref:
+        description: That same image pinned by digest (the registry of .github/ci-images.yaml, then @sha256:…)
+        value: ${{ jobs.build.outputs.ref }}
+  # Post-merge only: GitHub dispatches a workflow only once it exists on the default branch.
+  workflow_dispatch:
+
+# This workflow has no pull_request trigger of its own: a pull request's run is ci.yaml's call on
+# pull_request, which gets this same token (a fork pull request would get a read-only one, and
+# this repo takes no fork pull requests), so it carries only what the push path needs. The
+# attestation's `id-token` and `attestations: write` belong to the `attest` job below alone,
+# which runs on the run that pushed, whatever its event — a pull request's run included, since
+# the two-push order AGENTS.md describes has the push that changes any part of the build recipe
+# build and push the image, and a later push move the row's `digest:` onto it. A pull request
+# runs its own head's copy of this file, so a head that widens that `if:` attests what its own
+# run pushed and nothing else; the attestation names that run, its workflow, its ref and the
+# commit it ran at; nothing in this tree reads that commit against the bytes.
+#
+# `actions: read` and `checks: write` are the scopes of the build's ci-ok report, which runs on
+# every call; GitHub refuses a caller that grants less than this block declares.
+permissions:
+  contents: read
+  packages: write # ghcr.io push
+  actions: read
+  checks: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # The budget is the rule's arithmetic over the one measurement there is: job 128574128282
+    # of run 42429205771, 77 s whole, cold — no cache entry to read, the full apt and the
+    # Playwright base fetched. Its steps, as that job ran them: 1 s set-up, 7 s checkout, 1 s
+    # crane, 0 s row, 0 s decide, 9 s buildx, 0 s login, 47 s build and push, 0 s tag and 1 s
+    # record (one step here now), 2 s the second checkout, 0 s the ci-ok report, 6 s the post
+    # steps — 74 s of steps inside the 77 s the job took whole. One step carries a budget of
+    # its own, the build, at 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor; the job's is
+    # that budget plus the measured maximum of every step without one, the other 74 - 47 = 27 s,
+    # rounded up: 2 min + 27 s -> 3 min. A run whose row already names a served digest skips
+    # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
+    # with about 13 s of work.
+    timeout-minutes: 3
+    # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
+    # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
+    # A pull request's runs share one group per PR number. A new head's run cancels the build of
+    # the head it replaced, whether that build is waiting for the group, waiting for a runner or
+    # running. The call comes from ci.yaml, whose own concurrency group (one per pull request
+    # number, cancel-in-progress on pull_request) already cancels an older head's whole run, this
+    # call included, and which tests-closed.yaml joins when the pull request closes, cancelling a
+    # build still waiting or running then; this group also cancels a build that a re-run of an
+    # older head's run starts. Only a head that starts a run of its own can do this. Another pull
+    # request's build is in another group. Other events key on github.sha, not github.ref, so a
+    # pending run of one main commit never drops another commit's, and no main commit is left
+    # without the image its `container:` jobs pin.
+    # On a pull request, the run that reaches the group last wins, and GitHub does not guarantee
+    # arrival order: two pushes seconds apart, or a re-run of an older head's run, can cancel the
+    # newest head's build, and ci.yaml's ci-ok then fails, or is never posted, for that run.
+    # `gh run rerun` of the newest head's run restores it, so re-run an older head's run only
+    # after the newest head's build has completed. The job has no draft or closed `if:`: ci.yaml's
+    # `changes` skips a draft, and ci.yaml has no `closed` trigger.
+    concurrency:
+      group: browser-image-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    env:
+      # The commit that is built: the PR head on a pull request (ci.yaml's call; github.sha would
+      # be the ephemeral merge commit there), the triggering commit on every other event.
+      BUILT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    outputs:
+      digest: ${{ steps.record.outputs.digest }}
+      ref: ${{ steps.record.outputs.ref }}
+      # Whether this run pushed a manifest, which is the decision below: the attest job attests
+      # what a run pushed and nothing else, and a run that pushed nothing has an attestation of
+      # that digest already, from the run that did push it.
+      published: ${{ steps.decide.outputs.publish }}
+      # The attest job below holds `id-token` and `attestations: write`, so it runs no script and
+      # reads no file (.github/scripts/check-release-credentials.sh): it takes the image's
+      # repository from this output, which this job read out of .github/ci-images.yaml.
+      registry: ${{ steps.row.outputs.registry }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BUILT_SHA }}
+          # This job never pushes with git.
+          persist-credentials: false
+
+      # crane reads the published image's label for the publish decision below and writes the
+      # pushed image's tag.
+      - uses: ./.github/actions/install-crane
+
+      # Where this image lives and what the package already holds for it, read from
+      # .github/ci-images.yaml at run time rather than written here: that file is where this
+      # repository says what each of its CI images is, and a literal here would be a second place
+      # to edit. (.github/scripts/repo-paths.sh derives a different repository, so it is not the
+      # thing to ask.) The row is the one whose `built:` names this Dockerfile; until the push
+      # that adds it lands, this file holds no such row and the digest below is empty, which the
+      # decision step reads as "the package holds nothing this row names".
+      - name: Read this image's row of .github/ci-images.yaml
+        id: row
+        run: |
+          # Assigned first, never `echo "…=$(…)"`: a command substitution inside echo's arguments
+          # cannot fail the step, since echo exits 0 whatever the substitution did, so a refusal
+          # from the reader below would write an empty registry and the build would go on until
+          # some later step failed on an empty image name, far from the cause.
+          # PYTHONDONTWRITEBYTECODE keeps the import from leaving a __pycache__ in the tree, and
+          # PYTHONPATH is where .github/scripts/ci_images.py is, the one reader of a row of
+          # .github/ci-images.yaml this repository has: its row_kind is what says which rows are
+          # built from a Dockerfile, so this step and .github/scripts/check-ci-images.sh cannot
+          # disagree about which row this image's is.
+          output=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 - <<'PY'
+          import yaml
+          from pathlib import Path
+
+          from ci_images import BUILT, recipe_sha256, row_kind
+
+          IMAGES = ".github/ci-images.yaml"
+          DOCKERFILE = ".github/docker/browser.Dockerfile"
+          WORKFLOW = ".github/workflows/browser-image.yaml"
+
+          document = yaml.safe_load(open(IMAGES))
+          # The row's source is matched as a path and not as a string, because
+          # .github/scripts/check-ci-images.sh reads the same key as one (Path(source).is_file(),
+          # and the stem its tag rule takes). A row written
+          # `./.github/docker/browser.Dockerfile` passes that gate -- the file is there and the
+          # stem is still `browser`, so its tag rule holds -- and a string match would find no
+          # row here, force publish=true on every run, and push an image no row names.
+          built = []
+          for row in document["images"]:
+              read = row_kind(row)
+              if read and read[0] == BUILT and Path(read[1]) == Path(DOCKERFILE):
+                  built.append(row)
+          if len(built) > 1:
+              raise SystemExit(
+                  f"::error file={IMAGES}::{len(built)} rows of this file are built from "
+                  f"{DOCKERFILE}, and this workflow builds and pushes one image, so which digest "
+                  f"the publish decision reads would be a guess. Leave one row built from that "
+                  f"Dockerfile."
+              )
+          print(f"registry={document['registry']}")
+          # Empty where no row is built from that Dockerfile yet: the build that pushes the first
+          # image runs in the push that adds the Dockerfile, and the row carrying the digest it
+          # pushed lands in a later push (.github/ci-images.yaml says why the two are two).
+          print(f"digest={built[0]['digest'] if built else ''}")
+          # The build recipe's own bytes, which the build below writes into the image as a label
+          # and the decision below compares against the label the package carries. The recipe is
+          # the whole of what decides those bytes: the Dockerfile's own path, every file of the
+          # build context directory and this workflow file, whose `labels:`, `outputs:`,
+          # `platforms:`, `provenance:` and action pin are as much of the build as the
+          # Dockerfile is. The rule is .github/scripts/ci_images.py's recipe_sha256, which rule
+          # 10 of .github/scripts/check-ci-images.sh reads the published image's label with, so
+          # the hash this run stamps and the hash that gate demands cannot drift apart. A second
+          # hashing rule here -- `sha256sum` over the Dockerfile alone, which is what stood here
+          # -- left every other part of the recipe out: a change to this file's build step
+          # selected the job through ci.yaml's `browser_image` filter and then built nothing,
+          # because the published label still matched the one file the hash covered. It is
+          # printed from this one run of Python and not a second one beside it, which is a
+          # second import of the same module to say one more line about the same Dockerfile.
+          print(f"source={recipe_sha256(DOCKERFILE, WORKFLOW)}")
+          PY
+          )
+          printf '%s\n' "$output" | tee -a "$GITHUB_OUTPUT"
+
+      # Both halves of this decide it, and neither alone would. The row's digest alone would leave
+      # an edited recipe unbuilt, because the row still names a digest the package serves, so
+      # a change to what the image holds would publish nothing and every job pinning that row
+      # would keep running the old image. The label alone would republish an image the row does
+      # not yet name, because the package can hold a digest no row points at — the one an earlier
+      # push's build pushed, whose row lands in a later push — and this build would push a NEW
+      # digest on every run until the row caught up, since a rebuild of one recipe does not
+      # reproduce the bytes it built before — the manifest reading in
+      # .github/workflows/dispatch-browser.yaml, where three builds of one Dockerfile share layers
+      # 1 to 7 and differ in 8 to 10 — so the row would chase a digest that moved. So this
+      # publishes unless the row names a digest AND the image at that digest carries this build
+      # recipe's own sha256 in its legion.browser-image.source-sha256 label. This answer decides
+      # the build and not only the push: the three steps below it run on `publish=true` and on
+      # nothing else.
+      # crane reads that label anonymously, before the login step below: the package is public
+      # (.github/ci-images.yaml says why). Any failure of that read — a digest the package does
+      # not hold, an image with no such label, a registry that answered with an error — leaves
+      # publish=true, so a read that did not happen builds and pushes rather than deciding.
+      - name: Decide whether to publish
+        id: decide
+        env:
+          REGISTRY: ${{ steps.row.outputs.registry }}
+          ROW_DIGEST: ${{ steps.row.outputs.digest }}
+          SOURCE: ${{ steps.row.outputs.source }}
+        run: |
+          publish=true
+          why="no row of .github/ci-images.yaml is built from this Dockerfile yet, so the package holds no image this build can leave alone"
+          if [ -n "$ROW_DIGEST" ]; then
+            # crane's own stderr goes to the log, not into jq, so a failed read says why it
+            # failed; the pipeline's failure then leaves `carried` empty and publish true.
+            # --platform is named for the reason rule 10 of .github/scripts/check-ci-images.sh
+            # names it on this same read: a config belongs to one platform, this build pushes
+            # linux/amd64 alone, and the three readers of this label must read the same image.
+            carried=$(crane config --platform linux/amd64 "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
+            if [ "$carried" = "$SOURCE" ]; then
+              publish=false
+              why="$REGISTRY@$ROW_DIGEST, the digest this row names, was built from this recipe ($SOURCE), so there is nothing to push"
+            elif [ -n "$carried" ]; then
+              why="$REGISTRY@$ROW_DIGEST was built from recipe $carried, and this head's is $SOURCE"
+            else
+              why="$REGISTRY@$ROW_DIGEST carries no legion.browser-image.source-sha256 label this read could get at"
+            fi
+          fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish: $why"
+
+      # The builder and the registry login are the build's, so they are skipped where it is
+      # (the comment on the build step below): 9 s of the measured sample, and 5 s more in the
+      # post step that stops the builder.
+      - if: steps.decide.outputs.publish == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          # provenance-add-gha (true by default on the docker-container driver) stages
+          # $GITHUB_EVENT_PATH's full JSON into any provenance predicate a build below computes —
+          # the mechanism behind the job-log leak the env block below already guards against.
+          # provenance: false keeps this build's own attestation empty, but not that; false here
+          # too is what actually stops the event payload reaching a predicate at all. image= is the
+          # driver's own default BuildKit image: ghcr.io/cybermonklabs/legion/ci, the copy of
+          # moby/buildkit:buildx-stable-1 (.github/ci-images.yaml).
+          driver-opts: |
+            provenance-add-gha=false
+            image=ghcr.io/cybermonklabs/legion/ci@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
+
+      - if: steps.decide.outputs.publish == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # This step runs only on a run that is going to push, which is the whole of what the
+      # decision above computes: where the row names a digest and the image at that digest
+      # carries this build recipe's own sha256, the package already serves the bytes this build
+      # would make, so building them again fetches Playwright's base and 52 MB from Ubuntu's
+      # apt mirror to produce an image nothing would push (measured: job 128574128282 of run
+      # 42429205771, `publish=false … so there is nothing to push` and `apt-get update` in the
+      # same log). That put the mirror back in front of the required ci-ok check, which is the
+      # failure this image exists to remove, so the gate is on the build itself and not on the
+      # push alone. The steady state of this job is therefore no build at all: a run builds when
+      # the recipe's bytes are not the bytes the pinned image was built from, and does nothing
+      # otherwise.
+      #
+      # .github/scripts/check-image-trigger-paths.sh refuses a build gated by anything it cannot
+      # evaluate against a path filter, because a build a trigger does not cover is a commit no
+      # pin can name. This term is the one exception that check holds as data, keyed to this
+      # workflow, this job and this exact text, in its PINNED_IMAGE_GATES list; the argument for
+      # it is written there, and the short of it is that the term reads the hash of the recipe
+      # itself — the build context directory and this workflow — so every path the trigger
+      # selects is a path the term reads, and rule 10 of .github/scripts/check-ci-images.sh
+      # refuses a row whose published image was built from other bytes. The filter that decides
+      # whether this job runs at all is ci.yaml's `browser_image`, which that check still reads
+      # and still holds to every file this build receives.
+      - name: Build and push
+        id: build
+        if: steps.decide.outputs.publish == 'true'
+        # 47 s measured on that same job, cold: no cache entry to read, the whole apt set and
+        # the Playwright base fetched. 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor.
+        timeout-minutes: 2
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          # provenance: false below only stops the attestation attaching to the pushed image: the
+          # action unconditionally logs buildx's own --metadata-file content (`##[group]Metadata`),
+          # whose buildx.build.provenance key still carries this job's full GitHub Actions event
+          # context (the triggering pull_request's title and body included) at its "min" default,
+          # confirmed live in run 37187574912 even with provenance: false and DOCKER_BUILD_SUMMARY
+          # unset. BUILDX_METADATA_PROVENANCE=disabled drops that key from the metadata file
+          # entirely; DOCKER_BUILD_SUMMARY=false additionally drops the separate build-summary
+          # artifact and page.
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          # The Dockerfile copies nothing out of the build context, so the context is the
+          # directory the Dockerfile is in: a whole-repository context would be packed up and sent
+          # to the builder for nothing.
+          context: .github/docker
+          file: .github/docker/browser.Dockerfile
+          # Every runner that pulls this image is linux/amd64, and so is its base.
+          platforms: linux/amd64
+          provenance: false
+          # This one label and no other, in particular no org.opencontainers.image.revision and no
+          # version: a label that moves with the commit would give an unchanged recipe a new
+          # image digest on every run, so every run would push an image no row names, and the
+          # decision above — which reads this very label back out of the package — could never
+          # answer that there is nothing to do. The value is the recipe hash the row step
+          # computed, which covers this step's own inputs, so a change to any of them moves the
+          # label and this run pushes.
+          labels: legion.browser-image.source-sha256=${{ steps.row.outputs.source }}
+          # A build cannot know its digest before it pushes, so it pushes untagged, by digest,
+          # and the step below gives the pushed digest the tag .github/ci-images.yaml's rule
+          # gives a built row. name-canonical=true writes that same digest reference into the
+          # image's own name. push=true and no expression: this step runs only where the
+          # decision above said to push, so the two cannot disagree.
+          outputs: type=image,name=${{ steps.row.outputs.registry }},push-by-digest=true,name-canonical=true,push=true
+          # No cache-from and no cache-to, deliberately. The pair that stood here read and wrote
+          # the GitHub Actions cache under a `browser-image` scope, but `cache-to` was set only
+          # on `github.ref == 'refs/heads/main'` and ci.yaml runs on no push to main, so no run
+          # ever wrote that scope and every read of it missed: measured on job 128574128282,
+          # zero CACHED markers and 52 MB fetched. Writing it on the runs that do build would
+          # not do either: with the gate above, a build happens only where the image's bytes are
+          # not the published ones, so the entry a run could read is an entry for a Dockerfile
+          # that is no longer this one, and the only writers would be pull-request builds whose
+          # entries another pull request's build would read — a layer from an untrusted build in
+          # the image main's jobs pin, which is what BuildKit advisory GHSA-f2v9-hprr-32q3 is
+          # about. A build here is rare and is meant to be a real one.
+
+      # What this run leaves in the package, and the tag that image carries: the digest this run
+      # pushed, or, where it pushed nothing, the digest the row already names, which is the
+      # image every consumer pins either way. The author of the push that writes the row reads
+      # this digest out of this job's log, so it is printed on a line of its own, and the size
+      # and layer count are printed beside it so that a build whose image grew says so where it
+      # happened.
+      #
+      # One step, and one derivation of the tag. The tag a `built:` row carries is
+      # .github/scripts/ci_images.py's row_tag — the Dockerfile's name without its suffix, then
+      # the first eight hex characters of the digest — which is the same function
+      # .github/scripts/check-ci-images.sh holds the row to, so the tag this pushes and the tag
+      # that check demands cannot drift apart. The tagging stood in a step of its own and the
+      # rule was written out twice, here and there, because a run that published nothing still
+      # has to name the tag the row carries; deriving it once, after the digest is settled, is
+      # what removes the second copy. A tag keeps the manifest from being a package version
+      # nothing names, which a retention policy may remove, so it is pushed before anything
+      # else reads the image. The docker/login-action step above wrote the docker config crane
+      # reads, so this push needs no login of its own, and it runs only where this run pushed:
+      # the image the row names already carries its tag.
+      - name: Tag and record the image this run leaves
+        id: record
+        env:
+          REGISTRY: ${{ steps.row.outputs.registry }}
+          ROW_DIGEST: ${{ steps.row.outputs.digest }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          PUBLISH: ${{ steps.decide.outputs.publish }}
+        run: |
+          digest=$BUILT_DIGEST
+          if [ "$PUBLISH" != "true" ]; then
+            digest=$ROW_DIGEST
+          fi
+          if [ -z "$digest" ]; then
+            echo "::error file=.github/workflows/browser-image.yaml::this run neither pushed an image nor found one in .github/ci-images.yaml's row, so it has no digest to report" >&2
+            exit 1
+          fi
+          ref="$REGISTRY@$digest"
+          # Assigned first, never `echo "…=$(…)"`, for the reason the row step above gives.
+          tag=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts DIGEST="$digest" python3 -c '
+          import os
+
+          from ci_images import BUILT, row_tag
+
+          print(row_tag(BUILT, ".github/docker/browser.Dockerfile", os.environ["DIGEST"]))
+          ')
+          if [ "$PUBLISH" = "true" ]; then
+            crane tag "$ref" "$tag"
+            echo "tagged $ref as $REGISTRY:$tag"
+          fi
+          manifest=$(crane manifest "$ref")
+          # An index names one manifest per platform and holds no layers of its own, so where the
+          # push left one, the amd64 child is the manifest whose layers this image is.
+          child=$(jq -r 'first(.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest) // ""' <<<"$manifest")
+          if [ -n "$child" ]; then
+            manifest=$(crane manifest "$REGISTRY@$child")
+          fi
+          layers=$(jq '.layers | length' <<<"$manifest")
+          size=$(jq '[.layers[].size] | add' <<<"$manifest")
+          {
+            echo "digest=$digest"
+            echo "ref=$ref"
+          } >> "$GITHUB_OUTPUT"
+          echo "$digest"
+          echo "ref: $ref"
+          echo "tag: $REGISTRY:$tag"
+          echo "compressed size: $size bytes in $layers layers"
+          {
+            echo "### Browser image"
+            echo
+            echo "\`$ref\`"
+            echo
+            echo "Tag: \`$tag\`"
+            echo
+            echo "$size bytes compressed in $layers layers."
+            echo
+            echo "Pin a \`container:\` to the digest reference above through a row of .github/ci-images.yaml; .github/scripts/check-ci-images.sh refuses anything else."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # This job's result, and ci-ok itself when this job is that run's last, from the step every
+      # ci.yaml job ends with. ci.yaml calls this workflow on a pull request, on a merge group
+      # and on a workflow_dispatch run, and ci-ok is required on the first two, so this reports
+      # on every call rather than on pull requests alone. This step and the checkout below run
+      # on every call, whether or not this run built anything: a call that reported nothing
+      # would leave ci-ok waiting on a job of its `needs:` that never answered. The build
+      # checked out the pull request's head, which may predate that step, so the workspace is
+      # first checked out again, .github only, at the commit the run itself checked out
+      # (github.sha), whose ci.yaml and report step the rest of the run reads. The image is
+      # pushed by now, so nothing reads the build's tree.
+      - if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Report ci-ok when this is the run's last job
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: browser-image
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # A GitHub artifact attestation of the digest this run pushed, stored with GitHub. A pull
+  # request can edit this workflow, so a tag alone cannot say which run published an image.
+  # The attestation's Sigstore certificate carries this workflow file's identity, ref and commit
+  # and the calling run's repository, ref and commit from the run's OIDC token, which no workflow
+  # edit can change. This statement is GitHub's, separate from the BuildKit provenance the build
+  # job keeps off (provenance: false and the comments above).
+  #
+  # THIS JOB RUNS WHENEVER THE BUILD PUSHED, WHATEVER THE EVENT, and on no other run: with the
+  # gate on the build step above, a run builds only when it is pushing, and a run that pushed
+  # nothing has nothing of its own to attest — the digest it reports is the one the row already
+  # names, which the run that pushed it attested then. The event is not what decides this, and
+  # it cannot be: under the two-push order AGENTS.md describes — the push that changes any part
+  # of the build recipe builds and pushes the image, and a later push moves the row's `digest:`
+  # onto what that build pushed — the image every row pins is pushed by a PULL REQUEST's run,
+  # so a job that skipped on `pull_request` would leave the pinned image with no attestation at
+  # all, which is what the event test that stood here did.
+  #
+  # SO THE ATTESTATION OF A CI IMAGE NAMES THE BRANCH WHOSE RUN BUILT IT, NOT main. The
+  # certificate names this workflow and the ref the run carried — `refs/pull/<n>/merge` for the
+  # pull-request run that pushes, `refs/heads/gh-readonly-queue/…` for a merge group, the
+  # dispatched ref for a workflow_dispatch — so a `gh attestation verify` of the image a row pins
+  # is the one naming that run's ref; the `…@refs/heads/main` pair that stood here names an
+  # attestation this repository never makes, so it refused every one of them. That a CI image's
+  # attestation names a branch is acceptable HERE and nowhere else: this image is a CI input,
+  # pinned by digest in a row of .github/ci-images.yaml that main must contain before any job
+  # runs it.
+  #
+  # WHAT THE GATES ON THAT ROW PROVE IS NARROWER THAN IT LOOKS, AND THE REST IS AN ACCEPTED
+  # LIMIT. Rule 9 of .github/scripts/check-ci-images.sh reads only that the package holds the
+  # row's digest and rule 10 only the image's label, which the run that publishes the image
+  # writes, so together they pass any image at the row's digest whose label carries this tree's
+  # recipe hash, whatever built its bytes: on a pull request that run executes the pull request's
+  # own copy of this workflow, and of the install-crane action and .github/scripts/ci_images.py it
+  # runs before the build, none of which is checked against the bytes it pushed. What they do
+  # catch is the mistake they exist for, a row left behind at the digest an older recipe was built
+  # into, which every consumer would keep running while this tree describes another image. A gate
+  # on the bytes would read the attestation's source commit; none exists, by the controller's
+  # decision, no such attack having been seen, and no by-hand reading stands in for it (one was
+  # written and withdrawn, dispatch://INFRA-1443). So this is a known limit of the row's gates,
+  # written down rather than papered over with prose.
+  #
+  # AGENTS.md's rule that an image is accepted only at a revision main contains is about
+  # the worker and Envoy images a deployment runs, which no pull request's run may publish.
+  #
+  # Any repository can call this public reusable workflow, but such an attestation names the
+  # caller's repository as its source and is stored there, so `--repo cybermonklabs/legion`
+  # refuses it.
+  #
+  # The subject's repository is the build job's `registry` output, which that job read out of
+  # .github/ci-images.yaml; this job holds `id-token` and `attestations: write`, so it runs no
+  # script and reads no file of its own (.github/scripts/check-release-credentials.sh).
+  # `!cancelled()` is worker-image.yaml's, and the build's result is tested beside it.
+  attest:
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.build.outputs.published == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # id-token: write is the OIDC token Sigstore issues the signing certificate for; attestations:
+    # write stores the attestation with GitHub.
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ needs.build.outputs.registry }}
+          subject-digest: ${{ needs.build.outputs.digest }}

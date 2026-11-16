@@ -55,7 +55,8 @@ type controllerKeeper struct {
 	// project is the project token the claim is filed under.
 	project string
 	// ctx bounds each decision the keeper hands a machine: supervision's lifetime, as a machine's
-	// own work is bounded.
+	// own work is bounded. It carries no hold mark: the keeper is reached from its own loop (keep)
+	// and from the ready route (ready), so each call that reaches the pool takes a fresh one.
 	ctx context.Context
 	log *slog.Logger
 	now func() time.Time
@@ -91,10 +92,13 @@ func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
 
 // keep is one look at the controller's claim, and the one request its state calls for.
 func (k *controllerKeeper) keep() error {
+	// Each look is a fresh call on k.ctx, beside the ready route, so it takes a hold mark of its
+	// own, which its create and its request share as they run one after another.
+	ctx := store.ForConcurrentWorker(k.ctx)
 	token := k.token()
 	m, ok := k.supervisor.Machine(token)
 	if !ok {
-		created, _, err := k.supervisor.Create(k.ctx, supervise.Claim{
+		created, _, err := k.supervisor.Create(ctx, supervise.Claim{
 			Token: token, Project: k.project, Role: claim.RoleController, State: supervise.StateQueued,
 		}, "")
 		if err != nil {
@@ -106,6 +110,12 @@ func (k *controllerKeeper) keep() error {
 	var request supervise.Event
 	switch state := m.Claim().State; state {
 	case supervise.StateQueued:
+		// No request of this keeper marks itself exempt from the wake pacing, this spawn
+		// included: the machine exempts the controller's claim by identity, which covers the
+		// launches no request raises as well (supervise's reserveWake, claim.IsController). The
+		// controller is the one session the operator's own read of a running wave relies on, so
+		// it comes up ahead of the queue it is reading: holding it behind a wave of workers
+		// would leave nobody able to say what that wave is doing.
 		request = supervise.RequestSpawn{Claim: token}
 	case supervise.StateSuspended:
 		// The daemon keeps its controller running by rule, which holds an operator's suspension:
@@ -135,7 +145,7 @@ func (k *controllerKeeper) keep() error {
 		// machine and boot's reconciliation own those.
 		return nil
 	}
-	if err := m.Handle(k.ctx, request); err != nil {
+	if err := m.Handle(ctx, request); err != nil {
 		return fmt.Errorf("%T for the controller's claim: %w", request, err)
 	}
 	return nil
@@ -150,7 +160,9 @@ func (k *controllerKeeper) ready(c supervise.Claim) {
 	if !ok {
 		return
 	}
-	err := m.Handle(k.ctx, supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
+	// The ready route calls this on its own goroutine, beside the keeper's loop, so the decision
+	// takes a fresh hold mark at the call.
+	err := m.Handle(store.ForConcurrentWorker(k.ctx), supervise.RequestDeliver{Claim: c.Token, Task: ControllerStartMessage})
 	switch {
 	case err == nil:
 	case errors.Is(err, supervise.ErrDeliveryPending):
@@ -240,7 +252,7 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 	launched := cfg.ControllerLaunch == config.ControllerLaunchDaemon
 	log = log.With("mode", string(cfg.ControllerLaunch))
 	prober := controller.NewProber(controller.ProberOptions{
-		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.secrets["ENVOY_TOKEN"], Project: p.project, BootTimeout: cfg.WorkerBootTimeout, Log: log,
+		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.secrets["ENVOY_TOKEN"], Project: p.project, Log: log,
 	})
 	ticker := time.NewTicker(p.orphanSweep)
 	defer ticker.Stop()
@@ -258,7 +270,7 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 			liveness = prober.Probe(ctx, record.Session)
 		}
 		switch liveness {
-		case controller.Alive:
+		case controller.Live:
 			logged = time.Time{}
 		case controller.Gone:
 			if logged.IsZero() || time.Since(logged) >= cfg.WorkerBootTimeout {

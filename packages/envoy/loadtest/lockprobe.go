@@ -48,8 +48,14 @@ left join (
   where l.granted
   limit 1) h on true`
 
-// lockProbeInterval is how often the lock probe reads.
-const lockProbeInterval = 20 * time.Millisecond
+// lockProbeInterval is how often the lock probe reads. One second, because this read is not free
+// on the instance it measures: lockProbeQuery joins pg_locks to pg_stat_activity, and at 300
+// connections one call costs about 43 ms of database time. Measured over INFRA-988's 1x hour at
+// the 20 ms this was before, the probe alone ran 68,062 times for 2,938 s of database time - 7.3%
+// of every statement the window ran, about 0.82 of one of the instance's 8 cores, spent measuring
+// rather than serving. A second still gives 3,600 samples an hour, which is what the waiter curve
+// and the holder report need, at a fiftieth of that cost.
+const lockProbeInterval = time.Second
 
 // loop samples every lockProbeInterval from from to to over a direct Postgres connection.
 func (p *lockProbe) loop(ctx context.Context, url string, from, to time.Time, lg *log.Logger) {

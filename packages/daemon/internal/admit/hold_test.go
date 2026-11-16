@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -331,7 +332,7 @@ func TestReleaseLeavesTheHoldIntactWhenItsOwnTransactionFails(t *testing.T) {
 	pool := migratedPool(t)
 	real := record.NewStore()
 	failing := &failingSlotsStore{Store: real}
-	engine := workflow.New(real, workflow.Config{Project: testProject, Repositories: testRepositories, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(real, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Clock: func() time.Time { return fixedNow }}, nil)
 	admission := New(failing, engine, 1, testProject, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	admission.now = func() time.Time { return fixedNow }
 	putIssue(t, pool, record.Issue{Key: "LEGION-EDGE", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-EDGE", Tree: "LEGION-EDGE", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
@@ -430,4 +431,85 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 		t.Fatalf("released LEGION-G = %#v, want it left unrecorded: the newer unlabeling event, not the stale labeled listing, is what release must apply", got)
 	}
 	assertSlots(t, pool, nil)
+}
+
+// A root held back from a boot's admission pass keeps the place the line's own order gives it —
+// among the issues whose work came back, oldest first, where its work came back, and by its
+// tree's root's Dispatch rank where it never ran, as this one never did —
+// and nothing ranked behind it takes the slot it is waiting for: a hold says the daemon does not
+// yet know enough to decide that root, not that the root has lost its turn. Letting the next root
+// through would hand the cap's only slot to the lower-ranked one and leave the held root waiting
+// behind it for a slot that is no longer free, inverting the order Dispatch's own ranking sets —
+// and nothing later puts it back, since the root that took the slot keeps it until its work is
+// past its review or its tree ends, unless it gives it back for a wait on another issue
+// (record.KeepsSlot, blockers.waitsOf).
+// Each hold a boot can place is exercised on its own — the one Reconcile places for the Dispatch
+// consumer to reach the stream position it measured, and the one the boot's catch-up places before
+// the pass — and then the two together, where release's own promote bypasses the consumer hold but
+// not the catch-up hold, so the slot stays free until both are gone.
+func TestAHeldRootKeepsItsPlaceAndNothingBehindItTakesTheSlot(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// heldLastSeq is LEGION-HELD's own sequence in the boot listing: ahead of the record (2)
+		// leaves it held for the Dispatch consumer, level with it (1) leaves it held by nothing.
+		heldLastSeq int64
+		// catchUp is whether the boot's catch-up holds LEGION-HELD as well.
+		catchUp bool
+	}{
+		{name: "the Dispatch consumer hold", heldLastSeq: 2},
+		{name: "the boot catch-up hold alone", heldLastSeq: 1, catchUp: true},
+		{name: "both holds", heldLastSeq: 2, catchUp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			// Both roots are recorded: Reconcile defers an unrecorded key too, but an unrecorded
+			// key never reaches record.Waiting, so a line seeded that way would read the same
+			// before and after the fix and would lock nothing.
+			putIssue(t, pool, record.Issue{Key: "LEGION-HELD", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-HELD", Tree: "LEGION-HELD", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
+			putIssue(t, pool, record.Issue{Key: "LEGION-NEXT", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-NEXT", Tree: "LEGION-NEXT", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+			if tc.catchUp {
+				// The hold is placed before the boot's own admission pass, as the daemon's boot
+				// places it. The daemon's catch-up holds only a root in awaiting_person or a
+				// slotted admitted one, never a todo root like this one, but the loop's check
+				// reads the hold alone and not why the root is held.
+				admission.HoldForCatchUp("LEGION-HELD")
+			}
+
+			reconcileWithPosition(t, pool, admission, []dispatch.IssueSummary{
+				{Key: "LEGION-HELD", ResolvedRepo: "acme/widgets", Title: "LEGION-HELD", Status: "todo", Rank: "A", HandedOver: handed, LastSeq: tc.heldLastSeq},
+				{Key: "LEGION-NEXT", ResolvedRepo: "acme/widgets", Title: "LEGION-NEXT", Status: "todo", Rank: "B", HandedOver: handed, LastSeq: 1},
+			}, 3, 1, false)
+			assertSlots(t, pool, nil)
+			assertWaiting(t, pool, []string{"LEGION-HELD", "LEGION-NEXT"})
+
+			// The first hold goes: the Dispatch consumer reaches the position Reconcile measured,
+			// where that is what holds the root, and an unrelated fact drives the next promote
+			// where the catch-up is the only hold.
+			if tc.heldLastSeq > 1 {
+				if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "position-reached", intake.DispatchConsumerPosition{AckFloorStream: 3}, engineStub{}, admission); err != nil {
+					t.Fatalf("ApplyFact position-reached: %v", err)
+				}
+			} else {
+				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated", intake.LingerExpired{Issue: "LEGION-UNRELATED", Generation: 1}, engineStub{}, admission); err != nil {
+					t.Fatalf("ApplyFact unrelated: %v", err)
+				}
+			}
+
+			if tc.catchUp {
+				// release promotes with holds bypassed, which passes the consumer hold and not
+				// the catch-up one, so the slot is still nobody's.
+				assertSlots(t, pool, nil)
+				assertWaiting(t, pool, []string{"LEGION-HELD", "LEGION-NEXT"})
+
+				admission.ReleaseCatchUp("LEGION-HELD")
+				if _, err := intake.ApplyFact(context.Background(), pool, "timer", "unrelated-after-catch-up", intake.LingerExpired{Issue: "LEGION-UNRELATED-2", Generation: 1}, engineStub{}, admission); err != nil {
+					t.Fatalf("ApplyFact unrelated-after-catch-up: %v", err)
+				}
+			}
+
+			assertSlots(t, pool, []record.Slot{{Issue: "LEGION-HELD", Index: 0, AdmittedAt: fixedNow}})
+			assertWaiting(t, pool, []string{"LEGION-NEXT"})
+		})
+	}
 }

@@ -7,18 +7,18 @@ sidebar:
 
 Dispatch is one Go program. It serves the web app, the HTTP API, live documents, and Google
 sign-in. Its source is `packages/envoy/cmd/dispatch`, and the web app it serves is built from
-`packages/dispatch`. The container image `ghcr.io/sjawhar/legion/envoy` carries it as
+`packages/dispatch`. The container image `ghcr.io/cybermonklabs/legion/envoy` carries it as
 `/usr/local/bin/envoy-dispatch`.
 
-Pin the image by digest. Each `ghcr.io/sjawhar/legion/envoy:<commit>` image that
+Pin the image by digest. Each `ghcr.io/cybermonklabs/legion/envoy:<commit>` image that
 `.github/workflows/release-envoy-listener.yaml` publishes carries a GitHub artifact attestation
 from that workflow (images published before attestation began carry none), and a tag does not say
 which run pushed it (a run dispatched by hand from any branch pushes one too), so accept a digest
 only when a run on `main` built it:
 
 ```bash
-gh attestation verify oci://ghcr.io/sjawhar/legion/envoy@sha256:… --repo sjawhar/legion \
-  --cert-identity https://github.com/sjawhar/legion/.github/workflows/release-envoy-listener.yaml@refs/heads/main \
+gh attestation verify oci://ghcr.io/cybermonklabs/legion/envoy@sha256:… --repo cybermonklabs/legion \
+  --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/release-envoy-listener.yaml@refs/heads/main \
   --source-ref refs/heads/main --deny-self-hosted-runners
 ```
 
@@ -26,9 +26,9 @@ gh attestation verify oci://ghcr.io/sjawhar/legion/envoy@sha256:… --repo sjawh
 the commit it names and pin that commit's image instead:
 
 ```bash
-docker buildx imagetools inspect --raw ghcr.io/sjawhar/legion/envoy:latest \
+docker buildx imagetools inspect --raw ghcr.io/cybermonklabs/legion/envoy:latest \
   | jq -r '.annotations["org.opencontainers.image.revision"]'
-docker buildx imagetools inspect ghcr.io/sjawhar/legion/envoy:<that commit>   # its Digest is the one to pin
+docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit>   # its Digest is the one to pin
 ```
 
 ## What it needs
@@ -264,9 +264,10 @@ Sign in, then open **Settings**:
   `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
-  and under no parent that names one, goes to that person; a project with no default leaves such
-  an issue unassigned. Only a person sets it, here — no agent command or flag does — and the
-  picker's **Unassigned** clears it.
+  and under no parent that names one, goes to that person, and so does every question on an issue
+  nobody holds. Every project names one, so the page moves a default from one person to another
+  and clears none. A person moves it here, and an agent names a project's first one in the call
+  that creates the project.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.
@@ -292,7 +293,7 @@ Sign in, then open **Settings**:
 while Postgres answers:
 
 ```json
-{"ok":true,"db":true,"nats":null,"files":null,"signin":null,"service_tokens":null,"commit":null,"fleet_commit":null,"schema_version":121}
+{"ok":true,"db":true,"nats":null,"files":null,"signin":null,"service_tokens":null,"commit":null,"fleet_commit":null,"schema_version":121,"outbox_publisher":false}
 ```
 
 It is a readiness check, not a liveness check: it fails while the database cannot be reached, so a
@@ -317,6 +318,9 @@ balancer's or Kubernetes' readiness probe at it.
   build, or `null` before any was found. It is read from the database, so it is reported while NATS
   is down too. It can trail by a few seconds.
 - `schema_version` is the newest database migration applied.
+- `outbox_publisher` is whether this server is the one publishing notifications to NATS now. One
+  server publishes at a time, so a healthy server can say `false`, and it always does when NATS is
+  turned off. It never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.
@@ -324,11 +328,22 @@ itself.
 ## Metrics
 
 `GET /metrics` needs no credential either, so whoever reaches the server's HTTP port can read it.
-It answers in the Prometheus text format with one counter,
-`envoy_dispatch_outbox_publish_failures_total`: one count for each destination of an event
-publish that did not reach NATS, labelled `reason`. `denied` is a publish NATS refused under the
-server's own grant, `refused` one NATS refuses however often it is retried, and `failed` any other
-failure. A denied publish also logs `dispatch outbox: publish event` at ERROR, naming the subject.
+It answers in the Prometheus text format with two counters.
+`envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
+was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
+grant, `refused` one NATS refuses however often it is retried, `unanswered` a forward NATS took
+whose stored copy the stream did not acknowledge - which is the whole of a forward's answer, for
+every holder alike - and `failed` any other failure. A denied publish
+also logs `dispatch outbox: publish event` at ERROR, naming the subject.
+
+`envoy_dispatch_outbox_role_forwards_held_total` counts a role-routed event the outbox held
+rather than sent, labelled `holder_state` with the state its holder was in: `unresponsive` for a
+holder that stopped answering, `undated` for one nothing dates, `unresolved` for a claim or
+session read that did not answer. A hold is a wait and not a failure - nothing was sent, the
+holder keeps its claim, and the event is retried until the session answers - so it is counted
+here rather than with the failures above, and its event's back-off is logged at INFO
+(`dispatch outbox: event waits for its role's holder`). An event that reaches the dead-letter
+threshold logs at ERROR however it was held.
 
 ## Behind a proxy
 
@@ -379,38 +394,66 @@ one. Three things have to be true first; Dispatch checks the first for you.
 - **Every migration leaves the version before it able to read and write the database**
   ([Migrations](#migrations)), because a rolling update runs both versions against the one
   database while it lasts.
-- **Expect an issue's notifications out of order while two servers publish.** Each server's
-  events outbox claims a batch of events at a time, and nothing yet keeps two servers from
-  publishing adjacent batches at once, so a later event of an issue can reach NATS before an
-  earlier one, and the Legion daemon drops the earlier one as stale. Run one server, and replace it
-  rather than rolling it (Kubernetes `strategy: Recreate`), until a single-publisher lock lands.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 13 for the periodic work it runs once across the servers, up
-to 4 for loading documents, one for the health check, one for the events outbox, and up to 2 for
-reading where the event log is safe to stream from (the event horizon), and it holds
-five more open for as long as it runs: one each for the four things that wait on Postgres
-notifications, which are delivery, the live socket's event-feed relay, closing a document session
-another server has written to, and waking its background work when the rows that work reads
-change, and one for its entry in the list of running servers, which it renews every five seconds.
-That is 90 connections for one server at its ceiling, and twice that for two, past a default
-Postgres's limit of 100. Check the database's connection limit before you start the second server:
-a limit sized for one server, with whatever else uses that database counted in, is the thing that
-runs out.
+to 64 connections for requests, up to 15 for the periodic work it runs once across the servers,
+up to 8 for saving what people type in documents, up to 4 for loading documents, up to 2 for
+compacting documents, one for the health check, two for publishing notifications, up to 2 for
+reading where the event log is safe to stream from (the event horizon), and one for its entry in
+the list of running servers, which it renews every five seconds. It also holds up to five more
+open for as long as it runs. Four of them wait on Postgres notifications: one for delivery, one
+for the live socket's event-feed relay, one for publishing notifications, and one that the server
+shares for everything else, its document sessions and the waking of its background work when the
+rows that work reads change included. The other servers on the same database find each server by
+the name of that shared connection. The fifth sends the cursors of the server's document sessions
+and its questions and answers to the other servers about a document. It opens the first time the
+server has one to send. A document edit's own notification goes out in the transaction that
+writes the edit, and needs no connection of its own. That is 104 connections for one server at
+its ceiling, and twice that for two, past a default Postgres's limit of 100. Check the database's
+connection limit before you start the second server: a limit sized for one server, with whatever
+else uses that database counted in, is the thing that runs out.
 
 What a reader sees while two servers are serving:
 
 - Nothing they write is lost, whichever server takes it. Every edit of a document is appended
   under that document's lock, edits made at the same time merge rather than overwrite, and the
-  stored history holds all of them. A server whose copy of a document is not the current one
-  writes no version from it and settles nothing on it; it reloads the document instead.
-- A document's live session belongs to one server. While someone has a document open on one
-  server, that session does not carry the other server's edits, so the people shown as present,
-  and their cursors, are the ones editing on that server. A write that lands on the other server
-  closes the session within a moment; their browser reconnects, re-syncs and shows the current
-  text. They see a brief reconnect, never stale text they can act on.
-- Live co-editing of one document across two servers — two live sessions with the typing flowing
-  between them — is not there yet; it is a separate piece of work.
+  stored history holds all of them.
+- Notifications are published by one server at a time, so a second server does not reorder an
+  issue's notifications. When the publishing server stops, is killed or loses its connection to
+  NATS, the other takes over within ten seconds; the health check's `outbox_publisher` says which
+  server publishes. A publishing server whose NATS goes silent without the connection dropping,
+  while it has nothing to send, is found out only by its next send, which waits five seconds for
+  NATS to answer and then two for a probe of the connection: the other server then takes over
+  within ten seconds of the next notification, not of the moment NATS went silent.
+- Two people on one document see each other's typing, cursors and presence, whichever server each
+  one is on. Each server tells the others through Postgres, so this works while the message bus
+  is down. A read never returns text older than what is stored. An agent's edit sees what a
+  person on another server just typed, when that server answers within half a second.
+- A document session stays open while the other servers write. The server closes it, and its
+  browsers reconnect, in these cases only:
+  - The document's stored history is replaced, for example by a rebuild.
+  - Its issue closes or reopens. The editors on every server reconnect read-only or editable to
+    match.
+  - The session fails on its server, which then reloads it.
+  - Its server shuts down while an editor is connected.
+- A server keeps an edit that it took before an issue's close was saved, or up to 2 seconds after
+  that, even when the edit reaches the database after the close. An edit typed while the close is
+  still being saved is kept too, however long the close takes. The server refuses an edit that it
+  took later than that, and the session reconnects read-only.
+- When a server's listener connection to the database drops, the server reconnects. Its first
+  wait is 1 second, plus up to half again. Each next wait doubles, up to 30 seconds plus up to half
+  again, so one wait can last 45 seconds. Until it reconnects, the editors open on that server do
+  not receive the other servers' edits and cursors. They catch up when the connection is back. In
+  that time a read through the API still returns the stored text. Nothing anyone writes is lost,
+  except an edit to a document whose issue closed more than 2 seconds before (above).
+- During the rollout that brings this version, a server of the earlier version behaves as before.
+  It still closes a session that falls behind, and its browsers reconnect. It sends no cursors to
+  the other servers and shows none of theirs. It does not act when an issue is closed or reopened
+  through a server of this version, so its open sessions of that issue keep the access they had.
+  A document that the close or reopen writes is the exception. A close writes the issue's open
+  asks into their documents as resolved, and a reopen writes them open again. The earlier server's
+  session of such a document falls behind, so it closes, and its browsers reconnect with the
+  access the issue now allows.
 - A page of either version keeps loading. Each server stores its version of the dashboard's files
   in the database when it starts, before it takes traffic, and serves the other version's files
   from there, so a page one server sent finds its files whichever server answers next. A server

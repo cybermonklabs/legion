@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
+import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
@@ -28,6 +29,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listIssuePage: (client) => client.listIssuePage({}, { limit: 1, offset: 0 }),
   listAllIssues: (client) => client.listAllIssues({}),
   listProjectArtifacts: (client) => client.listProjectArtifacts("DSP"),
+  listIssueArtifacts: (client) => client.listIssueArtifacts("DSP-1"),
+  markdownRoundTrip: (client) => client.markdownRoundTrip("# Notes\n"),
   projectArtifact: (client) => client.projectArtifact("DSP", inline),
   getProjectArtifact: (client) => client.getProjectArtifact("DSP", "notes"),
   agentArtifact: (client) => client.agentArtifact("session-1", file),
@@ -44,9 +47,14 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   ask: (client) => client.ask("DSP-1", { question: "Which?", actor } as never),
   openAsks: (client) => client.openAsks("session-1"),
   openAsksForProject: (client) => client.openAsksForProject("DSP"),
+  priorities: (client) => client.priorities(["DSP"]),
   sessionAnswers: (client) => client.sessionAnswers("session-1"),
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
+  limits: (client) => client.limits(),
+  inbox: (client) => client.inbox("me"),
+  myReplies: (client) => client.myReplies(),
+  credentialPending: (client) => client.credentialPending(),
   createProject: (client) => client.createProject({ key: "DSP", name: "Dispatch" } as never),
   listProjects: (client) => client.listProjects(),
   listArchitectureSources: (client) => client.listArchitectureSources("DSP"),
@@ -54,6 +62,19 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   syncArchitectureSource: (client) => client.syncArchitectureSource("DSP", "acme/infra"),
   resolveAsk: (client) => client.resolveAsk("ask-1", { answer: "This one.", actor } as never),
   requestApproval: (client) => client.requestApproval("artifact-1", { actor, summary: "Spec" }),
+  planApprove: (client) => client.planApprove("artifact-1", { actor, version: 2 }),
+  recordResult: (client) =>
+    client.recordResult("DSP-1", {
+      actor,
+      check: "k1",
+      role: "implementer",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
+  issueResults: (client) => client.issueResults("DSP-1"),
+  retractResult: (client) =>
+    client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
+  issueCoverage: (client) => client.issueCoverage("DSP-1"),
   editAsk: (client) => client.editAsk("ask-1", { question: "Which one?", actor } as never),
   comment: (client) => client.comment("DSP-1", { body: "Shipped.", actor }),
   listIssueAsks: (client) => client.listIssueAsks("DSP-1"),
@@ -65,6 +86,8 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   artifactSuggest: (client) =>
     client.artifactSuggest("artifact-1", { replace_with: "better", actor } as never),
   message: (client) => client.message("DSP-1", { body: "Shipped.", actor }),
+  agentMessage: (client) =>
+    client.agentMessage("session-1", { body: "DSP-1: please take this.", delivery: "aside" }),
   messageReply: (client) => client.messageReply("message-1", { body: "Done.", actor } as never),
   deliveryReply: (client) => client.deliveryReply("message", "message-1", { body: "Done." }),
   getMessage: (client) => client.getMessage("DSP-1", "message-1"),
@@ -74,8 +97,11 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   artifact: (client) => client.artifact("DSP-1", file),
   getArtifact: (client) => client.getArtifact("artifact-1"),
   docRead: (client) => client.docRead("artifact-1"),
+  docReadWithBlocks: (client) => client.docReadWithBlocks("artifact-1"),
   fileVersion: (client) => client.fileVersion("artifact-1", 1),
   artifactBlocks: (client) => client.artifactBlocks("artifact-1"),
+  issueArtifactBlocks: (client) => client.issueArtifactBlocks("DSP-1", "spec"),
+  projectArtifactBlocks: (client) => client.projectArtifactBlocks("DSP", "notes-md"),
   docEdit: (client) =>
     client.docEdit("artifact-1", { ops: [{ op: "delete", find: "old" }], actor } as never),
   nameArtifactVersion: (client) =>
@@ -91,16 +117,22 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   getComments: (client) => client.getComments("DSP-1"),
   getIssueReferences: (client) => client.getIssueReferences("DSP-1"),
   getReferences: (client) => client.getReferences({ to: "DSP-1" }),
+  writeHandoff: (client) => client.writeHandoff("DSP-1", "implement", { body: "{}", actor }),
+  listHandoffs: (client) => client.listHandoffs("DSP-1"),
+  latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
+  handoff: (client) => client.handoff("handoff-1"),
 };
 
 afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
-  expect(
-    Object.getOwnPropertyNames(DispatchClient.prototype)
-      .filter((name) => name !== "constructor")
-      .sort()
-  ).toEqual(Object.keys(CALLS).sort());
+  // Every method, which is every own property of the prototype that is one: `token` is an
+  // accessor (the secret the client presents, which a broker credential renews), not a call.
+  const methods = Object.getOwnPropertyNames(DispatchClient.prototype).filter((name) => {
+    const property = Object.getOwnPropertyDescriptor(DispatchClient.prototype, name);
+    return name !== "constructor" && typeof property?.value === "function";
+  });
+  expect(methods.sort()).toEqual(Object.keys(CALLS).sort());
   const global = spyOn(globalThis, "fetch");
   const keys: string[] = [];
   try {
@@ -115,7 +147,7 @@ test("every DispatchClient method reaches Dispatch through its one request funct
       }) as typeof fetch;
       const client = new DispatchClient(
         "http://dispatch.test",
-        "secret",
+        bearerCredential("secret"),
         recording,
         undefined,
         DISPATCH_WRITE_RETRY

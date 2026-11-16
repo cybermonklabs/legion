@@ -107,156 +107,16 @@ every exit path, so a failed run leaves nothing behind either. Both smokes run
 their tmux on a private socket in their temp dir, so the kill can end only the
 session the smoke started; on the shared default server it could end anyone's.
 
-## smoke-replay.sh
-
-Live proof that a session shows once each Envoy message it missed while its NATS subscription was
-down. It runs one real `omp --mode rpc` session with this checkout's plugin
-(`extensions/envoy.ts`, loaded with `--no-extensions -e`), against a real Envoy listener and a
-real JetStream NATS, and the session reaches NATS only through a `socat` proxy the script owns:
-
-- **Leg 1:** once the session is registered, the proxy is killed, and natsd's monitoring endpoint
-  (`/connz?subs=1`) shows the session's connection and its `notifications.agent.<id>` subscription
-  gone. A Dispatch-shaped envelope (`event_id` = `dedupe_key` = `dispatch-<n>`, source `dispatch`)
-  is published through JetStream to that subject with the outbox's `Nats-Msg-Id`
-  (`<dedupe_key>:<topic>`), and `STREAM.MSG.GET` reads it back from `ENVOY_NOTIFICATIONS`. The
-  proxy comes back; within two heartbeats the session file holds exactly one `envoy-message` entry
-  carrying the event id, and still one three heartbeats later: the replay's card, whose last line
-  says the message was published while the session's connection was down.
-- **Leg 2:** omp stops, another envelope is published, and omp resumes the same session file: that
-  event shows once within two heartbeats of the session's return, still once three heartbeats
-  later, and leg 1's is still once.
-- **Leg 3, cards held by a streaming turn:** a fresh session starts a long turn (writing 1 to 1200
-  in words), and omp's RPC `get_state` reports `isStreaming: true` before anything is published.
-  Two envelopes are published live; the proxy is then killed, two more are published and the
-  proxy comes back. `get_state` shows omp holding all four cards in memory for the still-streaming
-  turn (`queuedMessageCount` 4), the session file holds no `envoy-message` entry for any of them
-  (`card=0` each), and omp is SIGKILLed. omp resumes the same session file; once the resumed
-  session has gone idle (`isStreaming: false`, nothing queued), each of the four events has exactly
-  one entry (`card=1` each), still one three heartbeats later. A card counts as shown only once
-  omp writes it, so the cards the kill dropped come back from the stream.
-- **Leg 4, cards an interrupt withdrew:** in a fresh session (legs 5 and 6 reuse it), three
-  envelopes are published live while a long turn streams, and omp holds their cards
-  (`queuedMessageCount` 3, `card=0` each). RPC `abort_and_restore_queue` (what Escape does at the
-  terminal) withdraws them: omp is idle with nothing queued and has written none of them. The same
-  process shows each once within two heartbeats (the plugin hands a card again once omp is idle,
-  holds no message and the card is still unwritten), still once when the session is idle and three
-  heartbeats later: no restart is needed to get them back.
-- **Leg 5, a plain abort:** the same hold, then RPC `abort`: omp keeps the cards and writes them
-  in the run it starts at once. Each shows once within two heartbeats and still once three
-  heartbeats on, so the plugin hands none of them a second time.
-- **Leg 6, a switch away and back (local mode only):** the same hold, then RPC `new_session`. The
-  new session answers a first prompt (so its file exists) and three heartbeats later holds none of
-  the three cards. The listener is stopped, RPC `switch_session` goes back to the first session
-  (`get_state` confirms it), a long turn starts, and the listener comes back: a heartbeat's sweep
-  hands the cards again, and omp holds all three for the streaming turn, unwritten. omp is
-  SIGKILLed and resumes the same file; once idle each shows once, still once three heartbeats
-  later, and legs 4 and 5's events are still once each. The switch dropped the cards unwritten, so
-  the plugin released them rather than recording them shown. The listener is down across the
-  switch so that the switch's own sweep cannot hand the cards to the idle session before the turn
-  streams; remote mode cannot stop the listener, so it skips this leg and says so.
-- **Leg 7, a BTW replayed while a turn streams:** in a fresh session the proxy is killed and a
-  Dispatch BTW (a person's message to the session, `message.created` with `delivery.mode: btw`) is
-  published to it. A long turn starts and the proxy comes back, so the replay sweep finds the BTW
-  mid-turn. omp steers any card handed to a streaming turn into that turn, whatever `triggerTurn`
-  says, and runs another model turn for it, so the plugin holds the inert card until omp is idle
-  with nothing queued. For three heartbeats of the turn `get_state` shows nothing queued and the
-  session file holds no card for the BTW. The turn ends on its own; within two heartbeats exactly
-  one entry carries the BTW's body and the inert note ("runs no side turn and needs no answer"),
-  still one three heartbeats later. omp's RPC output holds one `agent_start` and one `turn_start`
-  since the long turn's prompt, and no assistant message follows the card: no turn ran for it.
-  Remote mode sends the BTW through `/v1/messages/send`, which the listener takes only for a
-  session that advertises `btw`. The mid-turn claim (the card not handed while the turn streams)
-  is checked in local mode only: there natsd's monitoring shows the session resubscribed inside
-  the check window, so the replay sweep ran mid-turn. Remote mode cannot see that, so a remote
-  pass of leg 7 shows only that one inert card appeared after idle with no turn run for it.
-- **Negative control, same run:** leg 1 again with a session running the released plugin
-  (`SMOKE_REPLAY_CONTROL_PLUGIN`) ends with no entry for its publish, and a frame published live
-  afterwards shows once, so that session was connected and writing cards the whole time.
-- **Negative control for leg 3, same run:** the released plugin through leg 3's live half: two
-  envelopes published live while a turn streams, held by omp (`queuedMessageCount` 2), SIGKILLed
-  unwritten. Five heartbeats after the resume, once the session is idle, at least one of them has
-  no entry: that plugin keeps no record of a card omp holds in memory, so the kill loses it.
-- **Negative control for leg 4, same run:** the released plugin through leg 4: three envelopes
-  published live while a turn streams, held by omp (`queuedMessageCount` 3), then RPC
-  `abort_and_restore_queue`. Five heartbeats on, once the session is idle, none of them has an
-  entry: omp withdrew them unwritten and that plugin never hands them again in the same process.
-
-Each step prints what it observed, and every matched transcript entry is printed as a
-`transcript:` line.
-
-### Usage
-
-```bash
-bash packages/pi-envoy/scripts/smoke-replay.sh
-```
-
-Local mode (the default) builds natsd (`packages/envoy/internal/testnats/cmd/natsd`, started with
-`-js -store_dir <scratch> -m <port>`) and the listener (`packages/envoy/cmd/listener`) from the
-checkout and runs them on loopback ports of its own. The session gets `ENVOY_HEARTBEAT_MS=5000`.
-
-Env overrides:
-
-- `SMOKE_REPLAY_ENVOY_URL` and `SMOKE_REPLAY_NATS_URL` (both, `nats://host:port`) — remote mode:
-  run against an existing listener and NATS, building nothing. Each envelope goes through the
-  listener's `/v1/messages/send`, and the listener's `/v1/replay` shows the stream stored it, so
-  the run also proves the route and its grant there. The script cannot stop a remote NATS or read
-  its monitoring endpoint: it breaks the session's connection by killing the local proxy that
-  fronts the remote NATS (leg 3 included), and leg 2 SIGKILLs omp, since `/v1/messages/send`
-  needs the registration a clean exit drops. Legs 4, 5 and 7 and the leg 4 control run as in
-  local mode; leg 6 needs the listener stopped and does not run. This is the production check
-  after a rollout.
-- `SMOKE_REPLAY_ENVOY_TOKEN_FILE` — remote mode only: a file holding the listener's bearer, sent
-  from a 0600 header file and handed to the session as `ENVOY_TOKEN_FILE`.
-- `SMOKE_REPLAY_CONTROL_PLUGIN` — the released plugin the control runs (default
-  `/opt/legion/pi-envoy/dist/envoy.js`).
-- `SMOKE_REPLAY_MODEL` — the session's model (default `anthropic/claude-haiku-4-5`).
-- `SMOKE_REPLAY_PROVIDER_ENV` — the space-separated variables holding that model's credentials,
-  the only ones of the caller's shell the session gets (default `ANTHROPIC_API_KEY`).
-- `SMOKE_REPLAY_OMP` — the `omp` binary (default `omp` on `PATH`).
-
-Prerequisites, each checked before anything starts: `go` (local mode), `bun` with the checkout's
-dependencies installed, `socat`, `setsid`, `pgrep`, `omp`, `curl`, `jq`, and every variable
-`SMOKE_REPLAY_PROVIDER_ENV` names. Every model call is real and costs tokens: one prompt per
-session start and one turn per card, and legs 3 to 7 and the controls of legs 3 and 4 each start
-a long answer (about a thousand lines, cut short by the kill, interrupt, abort or switch, and
-left to finish in leg 7), which a resumed session may write again.
-
-No process it starts inherits the caller's environment: each gets `PATH`, the provider variables
-(omp only) and what the script sets — a scratch `HOME` holding the session's `envoy.json` (the
-listener, the proxy as its only NATS server, Dispatch off), `TMPDIR`, `OMP_SESSION_STORAGE=file`
-— so an operator's `ENVOY_*`, `NATS_*`, `DISPATCH_*`, `LEGION_*`, `OMP_*` or `PI_*` variables
-never reach it, and the credentials never appear on a command line. Everything lives in one
-scratch directory under `$TMPDIR`; an exit trap stops every process the script started (by pid;
-the proxy by the process group it alone runs in) and removes that directory after a pass, keeping
-it, with each session's RPC log and session file, after anything else.
-
-### Timing
-
-A local run takes about seven minutes (measured on omp 18.12.2 with the default model, Go modules
-cached): about 10 s to build and start the services, 25 s for leg 1, 20 s for leg 2, 35 s for
-leg 3, 30 s for leg 4, 20 s for leg 5, 45 s for leg 6, 95 s for leg 7 (most of it the long turn
-running to its end), 45 s for each control. Each wait is bounded: registration 90 s, a replayed
-card two heartbeats (10 s), the long turn's start 30 s, omp holding the live cards two heartbeats
-and the replayed ones (leg 3, and leg 6 once the listener is back) four, a card after leg 4's
-interrupt or leg 5's abort two heartbeats, a session going idle after them, and leg 7's long turn
-ending, 300 s, and the resumed session of legs 3 and 6 300 s to show every card and 300 s more to
-go idle.
-
-### Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | `SMOKE REPLAY PASS:` legs 1 to 6 showed each event exactly once (leg 6 in local mode only), leg 7 showed its BTW once as an inert card after the turn and ran no turn for it, the control showed none of its missed publish, the leg 3 control lost at least one of its live cards, and the leg 4 control showed none of the cards its interrupt withdrew. |
-| 1 | `SMOKE REPLAY FAIL (<step>):` an observation failed; the line names the step and what was seen. |
-| 2 | Refused: a prerequisite is missing, the configuration is invalid, or the model provider did not answer the session's first prompt (its error is printed). |
-| 129, 130, 143 | Interrupted by SIGHUP, SIGINT or SIGTERM; cleanup still ran. |
-
 ## smoke-role-takeover.sh
 
-Live proof that a soft role claim naming a predecessor takes the role only from a predecessor
-that is gone or is the claimant's own client instance (dispatch://INFRA-404, R8 and A5 of its
-spec). It is the only smoke here that needs neither a model provider nor a deployment: `go` and
-`bun` alone, so CI runs it as a step of the `envoy-session-stall` job.
+Live proof that a role claim is weighed on the process that holds it: a second process that
+resumed a live session's id can neither take, release nor outlast that session's role
+(dispatch://INFRA-783), and a soft claim naming a predecessor takes the role only from a
+predecessor that is gone or is the claimant's own client instance (dispatch://INFRA-404, R8 and
+A5 of its spec); and once a session that holds a role restarts, the role lookup and the session
+listing name the same holder (dispatch://INFRA-2747). It is the only smoke here that needs
+neither a model provider nor a deployment: `go` and `bun` alone, so CI runs it as a step of the
+`envoy-session-stall` job.
 
 It builds natsd (`packages/envoy/internal/testnats/cmd/natsd`) and the listener
 (`packages/envoy/cmd/listener`) from the checkout and runs both on loopback ports of its own, as
@@ -273,45 +133,122 @@ drives them with real client processes:
 
 Every client reaches the listener through a recording proxy of its own
 (`role-takeover/listener-proxy.ts`), so each request and the listener's answer to it is read from
-a log rather than inferred, and a request can be held: the first scenario below holds a fork's
-role claim back until another process has resumed and registered its predecessor.
+a log rather than inferred.
 
-One line per row of R8's table is printed with its outcome:
+The listener runs with windows of its own, because every row turns on whether a claim's holder is
+still answering for it: `ENVOY_SESSION_LIVE_WINDOW=10s`, which is how long a claim stands renewed
+after its holder's last registration, and `ENVOY_ROLE_CLAIM_REAP_INTERVAL=2s`, so every row is
+swept several times. The one claim the reaper frees in the run is the one a hand-back marked:
+no registration renews a marked claim, so it goes within one more reap interval of its renewal
+lapsing, though the client that handed it back goes on registering that session id.
+`ENVOY_SESSION_GONE_HORIZON` keeps its hour-long default all the same, since every unmarked
+claim is kept while its holder's session reads short of `gone`, which is what leaves every
+other row's holder in its role. The rows still read the listener's own word for each outcome — a claim
+granted, a `409`, or the lookup's `404` — which reads the same whether a standing claim lapsed
+where it stood or a pass had already removed it, and a row whose claimant must be refused is
+decided inside the window, its holder having answered for the claim immediately before. A row
+that waits the window out waits for the listener to say so, never for a sleep.
 
-- **row 1** — a claim under the id that holds the role keeps it: an Oh My Pi plugin reload, and a
-  Claude Code channel server restart, each under the session id that holds the role.
+Eighteen rows are printed, each with its outcome:
+
+- **row 1**, twice — a claim under the id that holds the role is granted because nobody renewed
+  the standing claim inside the live window: an Oh My Pi plugin reload, and a Claude Code channel
+  server restart, each under the session id that holds the role.
+
 - **row 2** — an Oh My Pi fork gets its parent's role, because the parent's live entry carries the
   claimant's own client instance id.
+
 - **row 3** — an Oh My Pi move, in one process, to a session whose records name the held role gets
   it, by the same case.
+
 - **row 4** — a Claude Code `/clear` handoff gets the role: the deregistration removes the
   process's own entry, and the claim then finds no live predecessor.
-- **row 5** — each of those after another process resumed the predecessor id and registered it
-  last is refused `409` naming the predecessor, and that process keeps the role. The fork case is
-  the spec's A5 scenario 1 and the `/clear` case its A5 scenario 2.
-- **A5** — a refused process stays registered, and after the holder exits the refused Oh My Pi
-  process takes the role on its next session event.
+
+- **INFRA-783**, four rows — a second process that resumed a live session's id is refused the role
+  that session holds (`409` naming it, in Oh My Pi and in Claude Code); the Oh My Pi one is then
+  granted the role once the holder stops renewing the claim and the window passes; and the
+  process that no longer holds the claim hands the role topic back, which frees nothing.
+
+- **row 5**, three rows — a claim naming a predecessor that is live inside another client
+  instance is refused `409` naming it, in Oh My Pi (A5 scenario 1), in a move made by that same
+  refused process, and in the Claude Code `/clear` handoff (A5 scenario 2). The live predecessor
+  is built from two session ids, since a second process claiming under one id is now decided on
+  the standing claim rather than on the predecessor it names.
+
+- **A5**, two rows — a refused process stays registered, and after the holder exits the refused
+  Oh My Pi process takes the role on its next session event.
+
+- **INFRA-783**, three further rows — an older client's hand-back, which is a release of a
+  role's own lane topic under the holder's session id stating no `client_instance_id`, frees
+  nothing and marks the claim: the lookup answers `handed_back`, the real Oh My Pi holder reads
+  that as a role it does not hold, claims it back at its next heartbeat and takes the lane's
+  next message. The same hand-back against an old-build holder, driven by `curl` because a
+  current client would take the role straight back, frees the role a live window and up to one
+  reap interval later while
+  that client is still registering. And a client that states no process at all — the shape every
+  claim standing at a deploy is in — keeps its role across three live windows of registrations
+  that carry no `client_instance_id`.
+
+- **INFRA-2747**, one row — a session that holds a role restarts: its Oh My Pi process is
+  killed, a new one starts under the same session id and is granted the role once the live
+  window passes, and within 90 seconds of that process's first registration
+  `GET /v1/roles/<role>` and `GET /v1/sessions?include=unresponsive` name the same holder, or
+  both name none. The lookup reads the claim record and the listing the listener's copy of the
+  role claims, so a copy that lost the claim shows as the holder listed with no role. The
+  lookup's holder is read off its `200` and off its `404` (`holder_lapsed`) alike, since a
+  holder nothing renews is lapsed ten seconds on and still holds the role, and a reading counts
+  only where the lookup answered one of those and the listing `200`. The row prints how long
+  after the first registration the two agreed.
 
 ### Usage
 
 ```bash
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh
-bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev main@origin   # must fail
+bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev main@origin   # every row passes at b601d25b
+bash packages/pi-envoy/scripts/smoke-role-takeover.sh --listener-bin <built listener>
+SMOKE_DROP_ROLE_FROM_COPY=1 bash packages/pi-envoy/scripts/smoke-role-takeover.sh \
+  --listener-bin <scratch build that serves the drop route>   # the INFRA-2747 row's control
 ```
 
 `--base-rev <rev>` builds only the listener from that revision, leaving every client as it is in
-the working copy, which is the negative control: against `main@origin` row 5's three cases fail,
-because that listener takes a role from any predecessor a claim names, live or not. It reads the
-revision without touching the working copy (`jj --ignore-working-copy log` resolves it, `git
-archive` extracts `packages/envoy`), moves no bookmark and writes nothing outside its scratch.
+the working copy. Against `main@origin` at `b601d25b` (2026-11-13) none of the eighteen rows
+fail. The eleven of seventeen that once failed there were counted in cybermonklabs/legion#2875
+(`277768d83e`, 2026-11-07) against the main of that day, which did not yet have the listener rule
+those rows drive; main has carried that change since, so `--base-rev main@origin` is no longer a
+negative control for them. The INFRA-2747 row passes there too: with nothing taken out of its
+copy, that listener's copy names the restarted holder's role as the claim record does, and that
+row's negative control is `SMOKE_DROP_ROLE_FROM_COPY=1` against a scratch build, below. It reads
+the revision without touching the working copy (`jj --ignore-working-copy log` resolves it,
+`git archive` extracts `packages/envoy`), moves no bookmark and writes nothing outside its
+scratch.
 
-Prerequisites, each checked before anything starts: `go`, `bun` with the checkout's dependencies
-installed, `curl`, `jq`, and `jj`, `git` and `tar` for `--base-rev`. Everything the run writes —
-the two binaries, the JetStream store, each client's home and state directory, every proxy's
-request log — lives in one `mktemp -d` under `$TMPDIR`, which an exit trap removes after a pass
-and keeps after anything else. Nothing it starts inherits this shell's environment (`env -i` plus
-`PATH` and what the script sets), so an operator's `ENVOY_*`, `NATS_*` or `DISPATCH_*` variables
-never reach a client. A local run takes about a minute.
+`--listener-bin <path>` runs that built listener in place of building one, so a control can run a
+scratch build; natsd is still built from the checkout. A path that is not an executable file is
+refused with exit 2, and so is `--listener-bin` beside `--base-rev`, since each chooses the
+listener.
+
+`SMOKE_DROP_ROLE_FROM_COPY=1` turns the INFRA-2747 row into its own control
+(c-live-restart of dispatch://INFRA-2747). Once the restarted process's claim is granted, the row
+asks the listener to take the role out of its copy of the role claims
+(`POST /debug/role-copy/drop?role=<role>`) and fails, saying so, on any answer that is not a
+`2xx`, so a listener without that route never passes the control by doing nothing. It then reads
+the listing once and requires that the drop took the role out of it, sends the process no
+heartbeat, and requires at the end that the process sent no registration and no claim, so
+nothing but the listener's own repair can put the role back in the copy. The comparison starts
+once the drop has answered and keeps the same window. Only a scratch build serves the route: a
+patch that adds it is applied to a `git archive` of the revision under `$TMPDIR`, built there with
+`go build ./cmd/listener`, and passed with `--listener-bin`. The patch is never committed. A
+listener that repairs its copy within the window passes the row; one that does not lists the
+holder with no role until the window ends, and the row fails naming the two answers it last read.
+
+Prerequisites, each checked before anything starts: `bash` 5 or later, `go`, `bun` with the
+checkout's dependencies installed, `curl`, `jq`, and `jj`, `git` and `tar` for `--base-rev`.
+Everything the run writes — the binaries it builds, the JetStream store, each client's home and
+state directory, every proxy's request log — lives in one `mktemp -d` under `$TMPDIR`, which an
+exit trap removes after a pass and keeps after anything else. Nothing it starts inherits this
+shell's environment (`env -i` plus `PATH` and what the script sets), so an operator's `ENVOY_*`,
+`NATS_*` or `DISPATCH_*` variables never reach a client. A local run takes about two minutes, and
+about four with `--base-rev`.
 
 ### Exit codes
 
@@ -340,7 +277,7 @@ bash packages/pi-envoy/scripts/smoke-registration-stall.sh --arm recover --local
 ```
 
 `--local-stack` builds natsd and the listener from the checkout and runs both on loopback ports of
-its own, as `smoke-replay.sh` does, so the run needs no deployment and no bearer: it ignores
+its own, as `smoke-role-takeover.sh` does, so the run needs no deployment and no bearer: it ignores
 `ENVOY_URL` and `ENVOY_TOKEN_FILE`, says so, and keeps both out of the pane it spawns. Its one
 remaining live dependency is the model provider the pane's turn needs, which the pane inherits
 from the caller's environment. `--heartbeat-ms <n>` shortens the pane's refresh interval, which
@@ -350,7 +287,7 @@ that failed, and 2 is a refusal.
 
 ## local-stack.sh
 
-The loopback Envoy stack the three smokes above bring up, in one sourced file: a free loopback
+The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
 port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
@@ -358,8 +295,35 @@ revision), the argv and assignments each service is run with (`set_natsd_argv`, 
 and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
 never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
 messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
-exhausted port range is reported through (`refuse`, or `smoke-replay.sh`'s `fail`).
+exhausted port range is reported through, `refuse` in both smokes here.
 `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
+
+## listener-api.sh
+
+The listener's own HTTP surface, in the second sourced file `smoke-role-takeover.sh` brings in
+beside `local-stack.sh`: one raw call either way (`listener_get`, `listener_post`), the three
+requests a client built before dispatch://INFRA-783 sends, which that smoke drives by `curl`
+because no client in the checkout can be made to send them (`old_register`, `old_claim`,
+`old_handback`), and the readers every row states its outcome in — one field of
+`GET /v1/roles/<role>` (`role_field`, and `role_holder`, `role_instance`, `role_handed_back`,
+`role_reason`, `role_unrenewed` over it) and the registry's answer for a session (`registered`,
+`unregistered`). It is sourced, never run, and reads three variables the caller sets:
+`envoy_url`, `work` and `curl_max_time`.
+
+## role-takeover/clients.sh
+
+The clients themselves, in the third sourced file `smoke-role-takeover.sh` brings in, beside the
+Bun drivers it starts: a recording proxy and a process per client (`start_proxy`, `start_omp`,
+`start_claude`), the stdin and stdout one command is sent and answered over (`client_fifo`,
+`client_ready`, `send`), the readers of each client's proxy log — the claims it made
+(`claim_status`, `claim_holder`, `first_claim_status`, `first_claim_holder`, `made_claim`,
+`claim_count`), the registrations it sent (`instance_id`, `registered_at`,
+`first_registered_at`), the requests of either kind (`claim_writes`), its deregistration
+(`delete_answer`) and its hand-backs (`release_status`, `release_instance`, `released`) — and the
+two ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`). It is sourced,
+never run: it starts no process of its own, and it reads the scratch directory, the driver
+directory, the checkout, the listener and natsd URLs, the Oh My Pi client's windows, the two
+client timeouts and the run id that the smoke sets.
 
 ## skill-scenarios/rig.sh
 

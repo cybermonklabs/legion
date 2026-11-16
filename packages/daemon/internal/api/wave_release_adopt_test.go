@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -47,17 +48,20 @@ func newAdoptionHarness(t *testing.T, cap int) *adoptionHarness {
 	h := newHarness(t)
 	records := record.NewStore()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, DesignGate: config.DesignGateRootIssues, Linger: time.Hour}, log)
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, log)
 	admission := admit.New(records, engine, cap, testProject, log)
 	statuses := &statusRecorder{issues: map[string]dispatch.Issue{
 		adoptionTree: {Key: adoptionTree, ResolvedRepo: "acme/widgets", Status: "in_progress"},
 	}}
 	// The engine and admission file this harness's issues, and so their mirror rows, under
-	// testProject; the release reads what its children wait on from the same rows.
+	// testProject; the release reads what its children wait on from the same rows. The handlers
+	// are the daemon's own, in its order (daemon/workflow.go): the mirror writes what each
+	// observation says an issue waits on before the engine behind it judges that issue.
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine, admission}, Dispatch: statuses,
+		Handlers: []intake.Handler{blockers.NewMirror(records, testProject), engine, admission}, Dispatch: statuses,
 	}).Handler
 	approved := 1
 	h.recordIssue(record.Issue{Key: adoptionTree, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: adoptionTree, Project: testProject, Title: adoptionTree, Phase: phase.Planning, Generation: 1, Status: "in_progress", HandedOver: true, Rank: "A"})
@@ -69,6 +73,7 @@ func newAdoptionHarness(t *testing.T, cap int) *adoptionHarness {
 	}); err != nil {
 		t.Fatalf("seed the live tree: %v", err)
 	}
+	h.openTree(t, testProject, adoptionTree)
 	return &adoptionHarness{harness: h, records: records, engine: engine, admission: admission, statuses: statuses,
 		architect: newLiveClaim(t, h, adoptionTree, claim.RoleArchitect)}
 }
@@ -76,7 +81,8 @@ func newAdoptionHarness(t *testing.T, cap int) *adoptionHarness {
 // apply applies fact through both handlers, as the daemon's intake does.
 func (a *adoptionHarness) apply(id string, fact intake.Fact) {
 	a.t.Helper()
-	if _, err := intake.ApplyFact(context.Background(), a.store.Pool(), "test", id, fact, a.engine, a.admission); err != nil {
+	if _, err := intake.ApplyFact(context.Background(), a.store.Pool(), "test", id, fact,
+		blockers.NewMirror(a.records, testProject), a.engine, a.admission); err != nil {
 		a.t.Fatalf("apply %s: %v", id, err)
 	}
 }
@@ -129,11 +135,14 @@ func (a *adoptionHarness) count(query string, args ...any) int {
 	return n
 }
 
-// plannerStarts is the number of planner starts queued for key in tree at generation.
+// plannerStarts is the number of planner starts queued for key in tree at generation that carry
+// a task. A phase worker's start is one such row (workflow.StartOrOwe); a start with no task is
+// a role admission brings back beside it, which asks that role nothing.
 func (a *adoptionHarness) plannerStarts(key, tree string, generation uint64) int {
 	a.t.Helper()
 	return a.count(`select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-		and payload->>'role' = $2 and payload->>'tree' = $3 and (payload->>'generation')::bigint = $4`, key, string(claim.RolePlanner), tree, int64(generation))
+		and payload->>'role' = $2 and payload->>'tree' = $3 and (payload->>'generation')::bigint = $4
+		and coalesce(payload->>'task', '') <> ''`, key, string(claim.RolePlanner), tree, int64(generation))
 }
 
 func (a *adoptionHarness) slotted(key string) bool {
@@ -141,7 +150,10 @@ func (a *adoptionHarness) slotted(key string) bool {
 	return a.count(`select count(*) from slots where issue = $1`, key) > 0
 }
 
-// waiting is the keys of admission's waiting line.
+// waiting is the keys of admission's waiting line, judged by blockers.JudgeLine from the stored
+// state: the held set (record.LineFacts.Held), the children-first waits
+// (record.LineFacts.ChildWaits) and the waits of started issues (record.LineFacts.Waits). It
+// runs none of the releases a pass runs before it judges the line.
 func (a *adoptionHarness) waiting() []string {
 	a.t.Helper()
 	var keys []string
@@ -154,14 +166,41 @@ func (a *adoptionHarness) waiting() []string {
 		if err != nil {
 			return err
 		}
-		for _, issue := range record.Waiting(issues, slots) {
-			keys = append(keys, issue.Key)
+		facts, err := record.ReadLineFacts(context.Background(), tx, a.records, testProject, issues, nil)
+		if err != nil {
+			return err
+		}
+		_, _, line, _, err := blockers.JudgeLine(context.Background(), tx, a.records, testProject, issues, slots, facts, nil, time.Now())
+		if err != nil {
+			return err
+		}
+		for _, entry := range line {
+			keys = append(keys, entry.Issue.Key)
 		}
 		return nil
 	}); err != nil {
 		a.t.Fatalf("read the waiting line: %v", err)
 	}
 	return keys
+}
+
+// assertJoinedAndWaiting asserts key has joined adoptionTree at generation and stands where the
+// adoption left it: at admitted, with no planner start, waiting in the line for a slot of its
+// own. A child is an issue the admission cap counts now, so a tree whose one slot its root holds
+// starts nothing more until a slot frees; the adoption's job is to put the issue in the tree,
+// and the line's is to start it.
+func (a *adoptionHarness) assertJoinedAndWaiting(key string, generation uint64) {
+	a.t.Helper()
+	got := a.record(key)
+	if got.Tree != adoptionTree || got.Phase != phase.Admitted || got.Generation != generation {
+		a.t.Fatalf("%s = %#v, want it admitted in the tree of %s at generation %d", key, got, adoptionTree, generation)
+	}
+	if starts := a.plannerStarts(key, adoptionTree, generation); starts != 0 {
+		a.t.Fatalf("%s has %d planner starts queued in %s at generation %d, want none until it holds a slot", key, starts, adoptionTree, generation)
+	}
+	if a.slotted(key) || !slices.Contains(a.waiting(), key) {
+		a.t.Fatalf("%s holds a slot or is not in the line (waiting %q), want it waiting for one in the tree of %s", key, a.waiting(), adoptionTree)
+	}
 }
 
 // assertJoinedAndPlanning asserts key runs in adoptionTree, planning at generation under its open
@@ -175,8 +214,10 @@ func (a *adoptionHarness) assertJoinedAndPlanning(key string, generation uint64)
 	if starts := a.plannerStarts(key, adoptionTree, generation); starts != 1 {
 		a.t.Fatalf("%s has %d planner starts queued in %s at generation %d, want one", key, starts, adoptionTree, generation)
 	}
-	if a.slotted(key) || slices.Contains(a.waiting(), key) {
-		a.t.Fatalf("%s holds or waits for a slot (waiting %q), want neither: it runs in the tree of %s", key, a.waiting(), adoptionTree)
+	// A child at work holds a slot of its own now, since the cap counts the issues at work
+	// rather than the trees, and an issue that holds one is never in the line.
+	if !a.slotted(key) || slices.Contains(a.waiting(), key) {
+		a.t.Fatalf("%s holds no slot or is in the line (waiting %q), want it holding one and out of the line: it runs in the tree of %s", key, a.waiting(), adoptionTree)
 	}
 }
 
@@ -196,7 +237,7 @@ func TestReleaseAdoptsAQueuedRootDispatchShowsTodo(t *testing.T) {
 	if status, failure := a.release(adoptionChild); status != http.StatusOK {
 		t.Fatalf("release of %s = %d %#v, want released", adoptionChild, status, failure)
 	}
-	a.assertJoinedAndPlanning(adoptionChild, 2)
+	a.assertJoinedAndWaiting(adoptionChild, 2)
 	if got := a.record(adoptionChild); got.Parent == nil || *got.Parent != adoptionTree {
 		t.Fatalf("%s's parent = %v, want %s, the parent the release read", adoptionChild, got.Parent, adoptionTree)
 	}
@@ -252,26 +293,6 @@ func TestReleaseAdoptsAQueuedRootThatWaitsOnAnUnfinishedIssueAndAnswersItHeld(t 
 	}
 }
 
-// A queued root the release adopts and starts, waiting on nothing, is named started: the records
-// the answer compares are read before the adoption writes anything.
-func TestReleaseAnswersAnAdoptedQueuedRootItStartedAsStarted(t *testing.T) {
-	a := newAdoptionHarness(t, 1)
-	a.observe(adoptionChild, 1, "todo", "", true)
-	a.shows(adoptionChild, "todo", adoptionTree, 2, true)
-
-	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{adoptionChild}}, nil)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("release of %s = %d: %s", adoptionChild, recorder.Code, recorder.Body)
-	}
-	var response WaveReleaseResponse
-	decodeInto(t, recorder, &response)
-	want := WaveReleaseResponse{Released: []string{adoptionChild}, Started: []string{adoptionChild}, Held: []HeldChild{}}
-	if !reflect.DeepEqual(response, want) {
-		t.Fatalf("release answer = %#v, want %#v", response, want)
-	}
-	a.assertJoinedAndPlanning(adoptionChild, 2)
-}
-
 // A queued root that left the line for backlog, lingering as a root of its own, and was then made
 // a child of a live tree is in the tree when its release answers, parked at done until the todo the
 // release writes reaches the daemon; that todo runs it in the tree as any parked child's does.
@@ -298,7 +319,7 @@ func TestReleaseAdoptsAQueuedRootFromBacklog(t *testing.T) {
 	a.apply("todo-echo", intake.DispatchIssue{Key: adoptionChild, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated",
 		Status: "todo", Title: adoptionChild, Parent: adoptionTree, Rank: "B", HandedOver: true, DaemonActor: true})
 	got := a.record(adoptionChild)
-	a.assertJoinedAndPlanning(adoptionChild, got.Generation)
+	a.assertJoinedAndWaiting(adoptionChild, got.Generation)
 	a.assertParked(adoptionChild)
 }
 
@@ -328,7 +349,7 @@ func TestReleaseAdoptsTheStateInfra214Reached(t *testing.T) {
 	if status, failure := a.release(adoptionChild); status != http.StatusOK {
 		t.Fatalf("release of %s = %d %#v, want released", adoptionChild, status, failure)
 	}
-	a.assertJoinedAndPlanning(adoptionChild, g+1)
+	a.assertJoinedAndWaiting(adoptionChild, g+1)
 	if len(a.statuses.writes) != 0 {
 		t.Fatalf("Dispatch writes = %#v, want none: the child is already todo", a.statuses.writes)
 	}
@@ -506,3 +527,201 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 		}
 	})
 }
+
+// One release_children wave that names a member of a closed tree is accepted whole: the member's
+// record stands in the closed tree when the request starts, so the wave's own read of it after
+// the adoption fact (enterTodoChild) would answer CHILD_IN_OTHER_TREE had the adoption not
+// already moved it. That is what this proves — the adoption's write lands before that read — and
+// with it the rest of C4 of dispatch://INFRA-3107 end to end: the member joins the live tree at
+// the generation it had raised by one, on the repository it was recorded with, a root of none,
+// and the open gate starts it planning at the slot that stands free.
+func TestReleaseOfAClosedTreesMemberIsAcceptedWhole(t *testing.T) {
+	const closed, member = "LEGION-500", "LEGION-501"
+	a := newAdoptionHarness(t, 2)
+	// A tree whose root is finished with no linger left to run, holding one member that never
+	// started a phase, recorded on a repository of its own.
+	a.recordIssue(record.Issue{Key: closed, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: closed, Phase: phase.Done, Generation: 3,
+		Status: record.DoneStatus, DispatchStatus: record.DoneStatus, Rank: "C", HandedOver: true, LastDispatchSeq: 1})
+	a.recordIssue(record.Issue{Key: member, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: member, Parent: record.ParentOf(closed), Phase: phase.Admitted,
+		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+	a.shows(member, "todo", adoptionTree, 2, true)
+
+	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{member}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d: %s", member, recorder.Code, recorder.Body)
+	}
+	var response WaveReleaseResponse
+	decodeInto(t, recorder, &response)
+	want := WaveReleaseResponse{Released: []string{member}, Started: []string{member}, Held: []HeldChild{}}
+	if !reflect.DeepEqual(response, want) {
+		t.Fatalf("release answer = %#v, want %#v: the whole wave is accepted", response, want)
+	}
+	a.assertJoinedAndPlanning(member, 4)
+	got := a.record(member)
+	if got.Repo != "sjawhar/legion" || got.DefaultBranch != "main" || got.GitHubRepo != "sjawhar/legion" {
+		t.Fatalf("%s = %#v, want it on the repository it was recorded with", member, got)
+	}
+	if got.Parent == nil || *got.Parent != adoptionTree {
+		t.Fatalf("%s's parent = %v, want %s, the parent the release read", member, got.Parent, adoptionTree)
+	}
+	if lifecycles := a.count(`select count(*) from tree_lifecycles where tree = $1`, member); lifecycles != 0 {
+		t.Fatalf("%s has %d tree lifecycles, want none: the release made a root of it", member, lifecycles)
+	}
+	if len(a.statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes = %#v, want none: the member is already todo", a.statuses.writes)
+	}
+	// The member is the taking tree's now: its architect parks it as it parks any child of it.
+	a.assertParked(member)
+}
+
+// A closed tree's member whose only blocker is the one the release's own Dispatch read showed —
+// the mirror's row of it names none, because the edit that linked it has not reached the daemon —
+// is held on that blocker once it joins the live tree, as a released root is: the read travels
+// with the adoption (intake.AdoptedChild.BlockedBy), the mirror takes it before the adoption
+// judges the member, and the member waits at admitted out of the line, with no planner started,
+// until the blocker closes. This is where #2539's union of the release's read and the mirror meets
+// C4's adoption of a member (workflow's AdoptMember), so a member no read held would start.
+func TestReleaseHoldsAClosedTreesMemberOnTheBlockersItsOwnReadShowed(t *testing.T) {
+	const closed, member, blocker = "LEGION-500", "LEGION-501", "LEGION-402"
+	a := newAdoptionHarness(t, 2)
+	a.recordIssue(record.Issue{Key: closed, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: closed, Phase: phase.Done, Generation: 3,
+		Status: record.DoneStatus, DispatchStatus: record.DoneStatus, Rank: "C", HandedOver: true, LastDispatchSeq: 1})
+	a.recordIssue(record.Issue{Key: member, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: member, Parent: record.ParentOf(closed), Phase: phase.Admitted,
+		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+	// The mirror knows the blocker is unfinished and nothing of the link to it.
+	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return a.records.PutDispatchIssue(context.Background(), tx,
+			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+	}); err != nil {
+		t.Fatalf("seed the blocker's mirror row: %v", err)
+	}
+	if waits := a.mirroredBlockers(member); len(waits) != 0 {
+		t.Fatalf("the mirror of %s waits on %q, want nothing: the link's event has not reached the daemon", member, waits)
+	}
+	a.shows(member, "todo", adoptionTree, 2, true)
+	shown := a.statuses.issues[member]
+	shown.BlockedBy = []string{blocker}
+	a.statuses.issues[member] = shown
+
+	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{member}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d: %s", member, recorder.Code, recorder.Body)
+	}
+	var response WaveReleaseResponse
+	decodeInto(t, recorder, &response)
+	want := WaveReleaseResponse{Released: []string{member}, Started: []string{}, Held: []HeldChild{{Issue: member, BlockedBy: []string{blocker}}}}
+	if !reflect.DeepEqual(response, want) {
+		t.Fatalf("release answer = %#v, want %#v", response, want)
+	}
+	if got := a.record(member); got.Tree != adoptionTree || got.Phase != phase.Admitted || got.Generation != 4 {
+		t.Fatalf("%s = %#v, want it held admitted in the tree of %s at generation 4", member, got, adoptionTree)
+	}
+	if starts := a.plannerStarts(member, adoptionTree, 4); starts != 0 {
+		t.Fatalf("%s has %d planner starts queued, want none while %s is unfinished", member, starts, blocker)
+	}
+	if waits := a.mirroredBlockers(member); !reflect.DeepEqual(waits, []string{blocker}) {
+		t.Fatalf("the mirror of %s waits on %q after the release, want %s: the release's own read is mirrored", member, waits, blocker)
+	}
+	if slices.Contains(a.waiting(), member) {
+		t.Fatalf("%s is in the waiting line (%q) while %s is unfinished, want it held out of it", member, a.waiting(), blocker)
+	}
+
+	a.apply("blocker-done", intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed",
+		Status: "done", Title: blocker, Rank: "C"})
+
+	// The close lets it into the line or onto its slot.
+	if got := a.record(member); got.Tree != adoptionTree || got.Generation != 4 {
+		t.Fatalf("%s = %#v after %s closed, want it still in the tree of %s at generation 4", member, got, blocker, adoptionTree)
+	}
+	if !slices.Contains(a.waiting(), member) && a.plannerStarts(member, adoptionTree, 4) == 0 {
+		t.Fatalf("%s is neither in the waiting line (%q) nor started after %s closed", member, a.waiting(), blocker)
+	}
+}
+
+// The three roots dispatch://INFRA-714 found started with their work blocked: a person re-parented
+// each under a running tree and linked it to an open issue in one edit of Dispatch, and the
+// daemon, judging by its own mirror of those links, which that edit's event had not reached,
+// answered them released and ran them. The release carries the blockers its own Dispatch read
+// showed into the adoption, so the root is held at admitted on them whatever the mirror holds; the
+// read is mirrored in the same request, so the passes that follow hold it too, and its blocker's
+// close starts it (dispatch://INFRA-714/spec R3).
+func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
+	a := newAdoptionHarness(t, 1)
+	const blocker = "LEGION-401"
+	a.observe(adoptionChild, 1, "todo", "", true)
+	// The mirror knows the blocker is unfinished and nothing of the link to it: the child's own
+	// row is the one its event wrote, under no parent and waiting on nothing.
+	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return a.records.PutDispatchIssue(context.Background(), tx,
+			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+	}); err != nil {
+		t.Fatalf("seed the blocker's mirror row: %v", err)
+	}
+	if waits := a.mirroredBlockers(adoptionChild); len(waits) != 0 {
+		t.Fatalf("the mirror of %s waits on %q, want nothing: the re-parent's event has not reached the daemon", adoptionChild, waits)
+	}
+	a.shows(adoptionChild, "todo", adoptionTree, 2, true)
+	shown := a.statuses.issues[adoptionChild]
+	shown.BlockedBy = []string{blocker}
+	a.statuses.issues[adoptionChild] = shown
+
+	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{adoptionChild}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d: %s", adoptionChild, recorder.Code, recorder.Body)
+	}
+	var response WaveReleaseResponse
+	decodeInto(t, recorder, &response)
+	want := WaveReleaseResponse{Released: []string{adoptionChild}, Started: []string{}, Held: []HeldChild{{Issue: adoptionChild, BlockedBy: []string{blocker}}}}
+	if !reflect.DeepEqual(response, want) {
+		t.Fatalf("release answer = %#v, want %#v", response, want)
+	}
+	if got := a.record(adoptionChild); got.Tree != adoptionTree || got.Phase != phase.Admitted || got.Generation != 2 {
+		t.Fatalf("%s = %#v, want it held admitted in the tree of %s at generation 2", adoptionChild, got, adoptionTree)
+	}
+	if starts := a.plannerStarts(adoptionChild, adoptionTree, 2); starts != 0 {
+		t.Fatalf("%s has %d planner starts queued, want none while %s is unfinished", adoptionChild, starts, blocker)
+	}
+	if waits := a.mirroredBlockers(adoptionChild); !reflect.DeepEqual(waits, []string{blocker}) {
+		t.Fatalf("the mirror of %s waits on %q after the release, want %s: the release's own read is mirrored", adoptionChild, waits, blocker)
+	}
+
+	// Out of the line altogether, not merely behind the cap: the line is what starts a child's
+	// first phase now (record.Waiting), so a blocker that left it there would start it.
+	if slices.Contains(a.waiting(), adoptionChild) {
+		t.Fatalf("%s is in the waiting line (%q) while %s is unfinished, want it held out of it", adoptionChild, a.waiting(), blocker)
+	}
+
+	a.apply("blocker-done", intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed",
+		Status: "done", Title: blocker, Rank: "C"})
+
+	// The close puts it in the line, where its own slot starts its first phase.
+	a.assertJoinedAndWaiting(adoptionChild, 2)
+}
+
+// mirroredBlockers is what the daemon's mirror says key waits on.
+func (a *adoptionHarness) mirroredBlockers(key string) []string {
+	a.t.Helper()
+	var waits []string
+	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		rows, err := a.records.DispatchIssuesOf(context.Background(), tx, []string{key})
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Key == key {
+				waits = row.Blockers
+			}
+		}
+		return nil
+	}); err != nil {
+		a.t.Fatalf("read the mirror of %s: %v", key, err)
+	}
+	return waits
+}
+
+// A queued root the release adopts and starts, waiting on nothing, is named started: the records
+// the answer compares are read before the adoption writes anything.

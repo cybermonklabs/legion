@@ -32,6 +32,9 @@ type Call struct {
 	Previous *runtime.Locator
 	// Released is Release's claim; its Locator is nil for a claim released with no process.
 	Released runtime.Known
+	// Pod is the claim PodDrift and ReplacePod were called about; its Locator is nil for a claim
+	// with no process.
+	Pod      runtime.Known
 	Known    []runtime.Known
 	Grace    time.Duration
 	Identity runtime.GitIdentity
@@ -47,10 +50,13 @@ type SpawnResult struct {
 
 // ProbeResult is one scripted answer to Probe: a verdict about the locator probed, or the
 // runtime failing to answer at all. The fake fills the observation's locator and time in.
+// OutOfMemory is the verdict's own (runtime.Observation.OutOfMemory), for a Gone whose pod ran
+// out of memory.
 type ProbeResult struct {
-	Kind   runtime.ObservationKind
-	Detail string
-	Err    error
+	Kind        runtime.ObservationKind
+	Detail      string
+	OutOfMemory bool
+	Err         error
 }
 
 // Runtime is the fake. The zero value is not usable; call NewRuntime.
@@ -66,16 +72,26 @@ type Runtime struct {
 	// Now stamps the observations the fake mints. NewRuntime sets it to time.Now; a test with a
 	// clock of its own replaces it before use.
 	Now func() time.Time
+	// OnResume, when set, runs at the start of every Resume, after the call is recorded, with that
+	// call's own context: a test that must act while a launch is still in the runtime blocks here
+	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
+	// and nothing is started.
+	OnResume func(ctx context.Context) error
 
-	mu       sync.Mutex
-	pending  *sync.Cond
-	calls    []Call
-	spawns   []SpawnResult
-	resumes  []SpawnResult
-	probes   []ProbeResult
-	failures map[string]error
-	queue    []runtime.Observation
-	minted   int
+	mu           sync.Mutex
+	pending      *sync.Cond
+	calls        []Call
+	spawns       []SpawnResult
+	resumes      []SpawnResult
+	probes       []ProbeResult
+	failures     map[string]error
+	drift        map[claim.Token][]string
+	gone         map[claim.Token]bool
+	holdReplace  func()
+	replaceNoPod bool
+	holdResume   func()
+	queue        []runtime.Observation
+	minted       int
 }
 
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
@@ -83,6 +99,8 @@ func NewRuntime() *Runtime {
 	fake := &Runtime{
 		Now:      time.Now,
 		failures: map[string]error{},
+		drift:    map[claim.Token][]string{},
+		gone:     map[claim.Token]bool{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -147,6 +165,75 @@ func (r *Runtime) FailAdoptWorkingCopy(err error) { r.fail("AdoptWorkingCopy", e
 // FailCleanupTree makes every later CleanupTree return err; nil clears it.
 func (r *Runtime) FailCleanupTree(err error) { r.fail("CleanupTree", err) }
 
+// ScriptPodDrift makes every later PodDrift of token's claim answer reasons, as the Sandbox
+// runtime answers a pod built from a configuration the runtime has since moved on from. A claim no
+// call named has drifted from nothing, which is the uninteresting case; nil clears this claim's
+// answer.
+func (r *Runtime) ScriptPodDrift(token claim.Token, reasons ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reasons == nil {
+		delete(r.drift, token)
+		return
+	}
+	r.drift[token] = reasons
+}
+
+// ScriptPodGone makes every later PodDrift of token's claim answer runtime.ErrPodGone, as a
+// runtime answers a claim whose recorded pod is not there at all: the pod was replaced where it
+// stood for a failure of its own and its disk went with it, or the round's own replacement has
+// already ended it. gone false puts the claim back to the drift it was scripted, which is what a
+// claim running in a pod the runtime can read again answers.
+func (r *Runtime) ScriptPodGone(token claim.Token, gone bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !gone {
+		delete(r.gone, token)
+		return
+	}
+	r.gone[token] = true
+}
+
+// FailPodDrift makes every later PodDrift return err; nil clears it.
+func (r *Runtime) FailPodDrift(err error) { r.fail("PodDrift", err) }
+
+// FailReplacePod makes every later ReplacePod return err; nil clears it.
+func (r *Runtime) FailReplacePod(err error) { r.fail("ReplacePod", err) }
+
+// HoldReplacePod makes every later ReplacePod run hold before it asks whether the replacement is
+// still due, which is where the Sandbox runtime waits out the pod's launch turn. A test holds
+// there to do what that wait lets happen — a worker of the round starting a turn, a claim of the
+// issue being launched into the kept pod — and then lets the call go on. nil clears it; the hook
+// runs with none of the fake's own locks held, so it may drive the fake again.
+func (r *Runtime) HoldReplacePod(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdReplace = hold
+}
+
+// FindNoPodToReplace makes every later ReplacePod answer nil without asking due and without
+// replacing anything, as the Sandbox runtime answers a Sandbox that is absent or suspended, or
+// whose pod is no longer the one the locator records: there is no pod of the round to end. The
+// call is recorded as ReplacePodNoPod, so no ReplacePod call stands for a replacement. false
+// clears it.
+func (r *Runtime) FindNoPodToReplace(none bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.replaceNoPod = none
+}
+
+// HoldResume makes every later Resume run hold before it answers, which is where the Sandbox
+// runtime waits out a pod it is building: the claim's machine holds its own lock for the whole
+// call, so a reader that waits on Machine.Claim waits with it. A test holds there to read what
+// another part of the daemon sees of a claim mid-relaunch, and then lets the call go on. nil
+// clears it; the hook runs with none of the fake's own locks held, so it may drive the fake
+// again.
+func (r *Runtime) HoldResume(hold func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.holdResume = hold
+}
+
 func (r *Runtime) fail(method string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -196,17 +283,31 @@ func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Loca
 	return r.mint(spec.Claim), nil
 }
 
-// Resume records its call, then refuses a previous incarnation of another claim, as every runtime
-// does.
-func (r *Runtime) Resume(_ context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
+// Resume records its call, then runs OnResume when a test set one, then refuses a previous
+// incarnation of another claim, as every runtime does.
+func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	hold := r.holdResume
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
+	r.mu.Lock()
 	call := Call{Method: "Resume", Spec: spec}
 	if prev != nil {
 		recorded := *prev
 		call.Previous = &recorded
 	}
 	r.calls = append(r.calls, call)
+	hook := r.OnResume
+	r.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return runtime.Locator{}, err
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := (runtime.Known{Claim: spec.Claim, Locator: prev}).Validate(); err != nil {
 		return runtime.Locator{}, err
 	}
@@ -244,16 +345,16 @@ func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observa
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
-	kind, detail := runtime.Alive, ""
+	kind, detail, outOfMemory := runtime.Alive, "", false
 	if len(r.probes) > 0 {
 		next := r.probes[0]
 		r.probes = r.probes[1:]
 		if next.Err != nil {
 			return runtime.Observation{}, next.Err
 		}
-		kind, detail = next.Kind, next.Detail
+		kind, detail, outOfMemory = next.Kind, next.Detail, next.OutOfMemory
 	}
-	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail}, nil
+	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail, OutOfMemory: outOfMemory}, nil
 }
 
 // Observe is the sweep. Every observation emitted, before or after this call, reaches the
@@ -352,6 +453,64 @@ func (r *Runtime) LaunchBound() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.TryBound
+}
+
+// PodDrift records its call and answers what ScriptPodDrift set for the claim, nil for a claim no
+// call named and for one with no process, as a runtime answers a claim that runs nowhere, and
+// runtime.ErrPodGone for a claim ScriptPodGone named, as a runtime answers a claim whose
+// recorded pod is not there.
+func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "PodDrift", Pod: copyKnown(k)})
+	if err := r.failures["PodDrift"]; err != nil {
+		return nil, err
+	}
+	if k.Locator == nil {
+		return nil, nil
+	}
+	if r.gone[k.Claim] {
+		return nil, runtime.ErrPodGone
+	}
+	return append([]string(nil), r.drift[k.Claim]...), nil
+}
+
+// ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the
+// pod's launch turn (HoldReplacePod), answers nil there for a pod it finds no longer there
+// (FindNoPodToReplace), asks due whether the replacement is still due, and only then replaces
+// anything. A due that refuses records a ReplacePodNotDue call and changes nothing — no
+// replacement was made, so no ReplacePod call stands for one — and its error is returned as the
+// runtime hands it back. Otherwise the call is recorded, the claim's drift forgotten — the place
+// it named is gone, and the one built in its stead is built from the configuration the runtime
+// has now — and what FailReplacePod set is answered, nil by default.
+func (r *Runtime) ReplacePod(ctx context.Context, k runtime.Known, due func(context.Context) error) error {
+	r.mu.Lock()
+	hold := r.holdReplace
+	r.mu.Unlock()
+	if hold != nil {
+		hold()
+	}
+	r.mu.Lock()
+	if r.replaceNoPod {
+		r.calls = append(r.calls, Call{Method: "ReplacePodNoPod", Pod: copyKnown(k)})
+		r.mu.Unlock()
+		return nil
+	}
+	r.mu.Unlock()
+	if err := due(ctx); err != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.calls = append(r.calls, Call{Method: "ReplacePodNotDue", Pod: copyKnown(k)})
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, Call{Method: "ReplacePod", Pod: copyKnown(k)})
+	if err := r.failures["ReplacePod"]; err != nil {
+		return err
+	}
+	delete(r.drift, k.Claim)
+	return nil
 }
 
 // CleanupTree records its call and answers what FailCleanupTree set, nil by default.

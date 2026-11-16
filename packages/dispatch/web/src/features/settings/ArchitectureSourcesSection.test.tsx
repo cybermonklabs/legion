@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
@@ -60,11 +61,18 @@ function sourceServer(initial: ArchitectureSource[]) {
 }
 
 test("a human adds an architecture source and the verified row appears", async () => {
+  const user = userEvent.setup();
   const listArchitectureSources = spyOn(api, "listArchitectureSources")
     .mockResolvedValueOnce([])
     .mockResolvedValue([architectureSource]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockResolvedValue(
     architectureSource
@@ -81,11 +89,10 @@ test("a human adds an architecture source and the verified row appears", async (
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
     expect(await section.findByText("No architecture sources yet.")).toBeDefined();
 
-    fireEvent.change(section.getByLabelText("Source project"), { target: { value: "CORE" } });
-    fireEvent.change(section.getByLabelText("Source repository"), {
-      target: { value: "legion/arch" },
-    });
-    fireEvent.click(section.getByRole("button", { name: "Add source" }));
+    await user.selectOptions(section.getByLabelText("Source project"), "CORE");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(section.getByRole("button", { name: "Add source" }));
     await waitFor(() =>
       expect(putArchitectureSource).toHaveBeenLastCalledWith(
         "CORE",
@@ -106,9 +113,16 @@ test("a human adds an architecture source and the verified row appears", async (
 });
 
 test("a failed architecture source access check shows the server's reason inline", async () => {
+  const user = userEvent.setup();
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockRejectedValue(
     new ApiError(409, {
@@ -126,16 +140,13 @@ test("a failed architecture source access check shows the server's reason inline
     );
 
     const section = within(await screen.findByRole("region", { name: "Architecture sources" }));
-    fireEvent.change(await section.findByLabelText("Source project"), {
-      target: { value: "CORE" },
-    });
-    fireEvent.change(section.getByLabelText("Source repository"), {
-      target: { value: "legion/arch" },
-    });
-    fireEvent.click(section.getByRole("button", { name: "Add source" }));
+    await user.selectOptions(await section.findByLabelText("Source project"), "CORE");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("legion/arch");
+    await user.click(section.getByRole("button", { name: "Add source" }));
 
     await waitFor(() =>
-      expect(section.getByRole("alert").textContent).toContain(
+      expect(section.getByRole("alert")).toHaveTextContent(
         "the GitHub App is not installed on legion/arch"
       )
     );
@@ -149,6 +160,7 @@ test("a failed architecture source access check shows the server's reason inline
 });
 
 test("each architecture source of a project is its own row, refreshed and deleted on its own", async () => {
+  const user = userEvent.setup();
   const server = sourceServer([
     {
       ...architectureSource,
@@ -169,7 +181,13 @@ test("each architecture source of a project is its own row, refreshed and delete
     server.list
   );
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const putArchitectureSource = spyOn(api, "putArchitectureSource").mockImplementation(server.put);
   const syncArchitectureSource = spyOn(api, "syncArchitectureSource").mockImplementation(
@@ -198,7 +216,7 @@ test("each architecture source of a project is its own row, refreshed and delete
     expect(failed).toContain("Previous model stays up at 9f1e2d3c4b5a · 1 component");
     expect(failed).not.toContain("1 components");
 
-    fireEvent.click(
+    await user.click(
       section.getByRole("button", { name: "Refresh architecture source acme/infra for CORE" })
     );
     await waitFor(() =>
@@ -207,27 +225,28 @@ test("each architecture source of a project is its own row, refreshed and delete
     expect(syncArchitectureSource).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(
-        section
-          .getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
-          .hasAttribute("disabled")
-      ).toBe(false)
+        section.getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
+      ).not.toHaveAttribute("disabled")
     );
 
-    fireEvent.click(
+    await user.click(
       section.getByRole("button", { name: "Delete architecture source legion/arch for CORE" })
     );
-    await waitFor(() => expect(section.queryByRole("cell", { name: "legion/arch" })).toBeNull());
+    await waitFor(() =>
+      expect(section.queryByRole("cell", { name: "legion/arch" })).not.toBeInTheDocument()
+    );
     expect(deleteArchitectureSource).toHaveBeenCalledTimes(1);
     expect(deleteArchitectureSource).toHaveBeenCalledWith("CORE", "legion/arch", keyedAttempt);
     expect(section.getByRole("cell", { name: "acme/infra" })).toBeDefined();
 
     // Saving a repository the project already has changes that source's branch: still one row.
-    fireEvent.change(section.getByLabelText("Source project"), { target: { value: "CORE" } });
-    fireEvent.change(section.getByLabelText("Source repository"), {
-      target: { value: "acme/infra" },
-    });
-    fireEvent.change(section.getByLabelText("Branch"), { target: { value: "release" } });
-    fireEvent.click(section.getByRole("button", { name: "Add source" }));
+    await user.selectOptions(section.getByLabelText("Source project"), "CORE");
+    await user.click(section.getByLabelText("Source repository"));
+    await user.paste("acme/infra");
+    await user.clear(section.getByLabelText("Branch"));
+    await user.click(section.getByLabelText("Branch"));
+    await user.paste("release");
+    await user.click(section.getByRole("button", { name: "Add source" }));
     await waitFor(() => expect(section.getByRole("cell", { name: "release" })).toBeDefined());
     expect(putArchitectureSource).toHaveBeenCalledWith(
       "CORE",
@@ -236,7 +255,7 @@ test("each architecture source of a project is its own row, refreshed and delete
       keyedAttempt
     );
     expect(section.getAllByRole("cell", { name: "acme/infra" })).toHaveLength(1);
-    expect(section.queryByRole("cell", { name: "main" })).toBeNull();
+    expect(section.queryByRole("cell", { name: "main" })).not.toBeInTheDocument();
   } finally {
     cleanup();
     queryClient.clear();

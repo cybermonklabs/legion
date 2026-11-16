@@ -7,6 +7,7 @@ import {
   zodSchemaApi,
 } from "@legion/contracts";
 import { z } from "zod";
+import { bearerCredential } from "../bearer";
 import { renderInbound } from "../delivery";
 import { executeDispatchTool } from "../dispatch-execute";
 import { followedAsk, followNoticeText } from "../dispatch-subscribe";
@@ -16,7 +17,12 @@ import { followedAsk, followNoticeText } from "../dispatch-subscribe";
 const toolNames = new RegExp(`\\b(${dispatchToolSpecs.map((spec) => spec.name).join("|")})\\b`);
 
 const reader = "01a01111-2222-7333-4444-555555555555";
-const config = { enabled: true, url: "http://dispatch.test", token: "secret", error: null };
+const config = {
+  enabled: true,
+  url: "http://dispatch.test",
+  credential: bearerCredential("secret"),
+  error: null,
+};
 const noNetwork = (async () => {
   throw new Error("the refusal must come before any request");
 }) as unknown as typeof fetch;
@@ -74,6 +80,11 @@ describe("no text an agent reads names a native Dispatch tool", () => {
     }
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row refuses every required field of every
+  // tool spec in turn, and bun's unwritten 5,000 ms per-test default is a limit on that work
+  // rather than on a hang. Measured in a 2-CPU pod: 0.14 s idle; under 16 busy loops (8 x nproc),
+  // 3.71 s at most in a whole-suite run and 2.88 s with this file alone. It fires only if a
+  // refusal never settles.
   test("every refusal of a spec's example with one required field removed", async () => {
     let refusals = 0;
     for (const spec of dispatchToolSpecs) {
@@ -98,7 +109,7 @@ describe("no text an agent reads names a native Dispatch tool", () => {
       }
     }
     expect(refusals).toBeGreaterThan(20);
-  });
+  }, 30_000);
 
   test("the follow notice, for an issue and for a project document", () => {
     for (const details of [

@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { runJq } from "./run-jq";
 import { scriptFunctions } from "./script-functions";
 
 // tool_ran, tool_result_said and tool_result_answered, taken from stage4b-sandbox-tree.sh by name
-// and run over a session a real implementer pod wrote (testdata/stage4b-tools-session.jsonl): the
+// and run over a session a real implementer pod wrote (testdata/stage4b-tools-session.jsonl; one
+// word in one hover response was reworded after recording, and no test reads it): the
 // proof a tool ran and answered, where assistant_said only proves the model said so. Each test pins
 // one rule of lib/stage4b-tools.jq: a result is the tool's by the call it answers (a write to
 // xd://lsp records toolName write), an error result never counts, a tool that never ran has no
@@ -17,6 +19,8 @@ const lib = import.meta.dir;
 const fn = scriptFunctions(join(root, "scripts", "e2e", "stage4b-sandbox-tree.sh"));
 const fixture = join(lib, "testdata", "stage4b-tools-session.jsonl");
 const session = readFileSync(fixture, "utf8");
+// The home every bash this file starts runs under, so none of them reads the caller's.
+const home = temporaryDirectory("stage4b-tools-home");
 
 interface Block {
   type: string;
@@ -74,7 +78,7 @@ ${fn(name)}
       ...(byClaim ? ["LEGSMOKE-1", "planner"] : [fixture]),
       ...args,
     ],
-    { env: { ...process.env, SESSION: fixture } }
+    { env: { PATH: process.env.PATH ?? "", HOME: home, SESSION: fixture } }
   );
   if (ran.exitCode !== 0 && ran.exitCode !== 1)
     throw new Error(`${name} exited ${ran.exitCode}: ${ran.stderr}`);

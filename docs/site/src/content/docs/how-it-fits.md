@@ -74,8 +74,8 @@ problem that needs a decision goes to a person in a Dispatch ask.
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
 large work into child issues, and runs each change through phase workers in turn: a **planner**, an
 **implementer**, a **tester** and a **reviewer**, then a **merger**. Every agent works in a
-workspace of its own, and every phase commits a structured handoff under `.legion/` on the issue
-branch, which is what a restarted agent recovers from. The coordinator writes the issue's status
+workspace of its own, and every phase records a structured handoff on the issue in Dispatch, which
+the next role reads and a restarted agent recovers from. The coordinator writes the issue's status
 back to Dispatch as the work moves (In Progress, Testing, Needs Review, Retro).
 
 Two decisions stay with people:
@@ -85,10 +85,10 @@ Two decisions stay with people:
   approves it, unless that version is the person's own answer to a decision block and the answer is
   the whole change since the version they approved: then Dispatch records their approval at the new
   version and the gate reopens. The gate is on by default; a deployment can turn it off.
-- **The merge.** The merger sends `READY`. The daemon accepts it on the approved head, posts it on
-  the Dispatch issue, and submits the pull request for merge. The repository's own rules decide
-  whether and when it lands, so a check it requires, a review a person must give, or a by-hand
-  merge, stays theirs.
+- **The merge.** The merger reads the pull request and merges it itself, at the head it read and
+  under a message it writes. The repository's own rules decide
+  whether and when it lands, so a check it requires, or a review a person must give, stays
+  theirs; the coordinator submits no merge and turns auto-merge on nowhere.
 
 The coordinator runs its agents as Oh My Pi sessions, either in tmux panes on one host or as Agent
 Sandbox pods in a Kubernetes cluster.
@@ -109,12 +109,14 @@ the reason the agent gave included, and approves or denies it on that page, whic
 accepts only from its own origin. No route Dispatch or any other service calls decides a secret
 request. A machine login, labelled as one, is approved in Dispatch by typing the code the machine
 shows, and Dispatch relays that decision, and a person's revoke of a grant or a machine login, under
-the signed-in person's identity. The broker holds no Dispatch credential: Dispatch reads the pending
-requests from the broker. A grant lasts until its session ends, or for the shorter lifetime its request named,
+the signed-in person's identity. The broker opens no ask and writes nothing in Dispatch: Dispatch
+reads the pending requests from the broker, and the broker reads one thing back, whether an issue
+its model judge was given is open. A grant lasts the lifetime its request named, else 15 minutes for a request that names a human-tier secret and 12 hours for any other (until its session ends for secrets tagged `default-grant=session`),
 and `agent-secrets NAME -- <command>` runs a command with the granted value in that command's
-environment rather than printing it. People create and change the secrets themselves, in the
-broker's own store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in, with
-`agent-secrets secret`, which has the broker serve each change at once.
+environment rather than printing it. The secrets themselves are created and changed in the
+broker's own store (AWS Secrets Manager or GCP Secret Manager), under whatever cloud credential
+the store's IAM lets write them, with `agent-secrets secret`, which has the broker serve each change
+at once.
 
 ## Envoy: the events between them
 
@@ -142,15 +144,14 @@ business.
 5. The planner, implementer, tester and reviewer take the change in turn. A review that requests
    changes sends it back to the implementer, and through the tester again.
 6. Once the reviewer approves, the architect reads the evidence and accepts the change (or sends
-   it back), and the retrospective runs. The merger then sends `READY`, which the daemon accepts
-   on the approved head plus retro's notes, and posts on the issue.
-7. The daemon submits the pull request for merge, and it lands under the repository's own rules.
-   The merge closes the issue: it is Done.
-8. After the close, once the deploy carries the merge, the implementer drives the change in
-   production and records what it observed on the pull request. Dispatch's `issue.deployed` event
-   wakes it for that look, as does each run of the repository's deploy workflow on its default
-   branch whose deploy step succeeded after the merge, when the project's `legion.yaml` names that
-   workflow.
+   it back), and the retrospective runs. The merger then reads the pull request and merges it
+   itself, at the head it read, under a message it writes rather than GitHub's default; it lands
+   under the repository's own rules, and the coordinator closes the issue when it reads that
+   merge: it is Done.
+7. After the close, the role `projects.<KEY>.production_check` names — the tester, by default —
+   drives the change in production and records what it observed on the pull request. The merge
+   itself starts the first look; after that the agent names its own next look on each `pending`
+   report, and nothing a deployment publishes wakes it. A project that sets `off` opens no check.
 
 Read on in [Legion](/legion/legion/), [Dispatch](/legion/dispatch/) and the
 [Secrets Broker](/legion/broker/).

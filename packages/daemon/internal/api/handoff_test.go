@@ -3,13 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -22,6 +22,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -37,92 +40,52 @@ const headSHA = "c0de0000000000000000000000000000000000ff"
 // token, minted for which owner, reached GitHub.
 type handoffTokens struct{}
 
-func (handoffTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return appauth.Lease{Token: string(role) + "-token-for-" + owner, ExpiresAt: time.Now().Add(time.Hour)}, nil
+func (handoffTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
+	return appauth.Lease{Token: string(role) + "-token-for-" + repo.Owner(), ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t handoffTokens) ReadToken(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, owner)
-	lease.Token += "-read"
-	return lease, err
-}
-
-// handoffFile is a handoff of phase word as a worker stamps it for issue: READY reads only whether
-// the head still carries the directory, never what a file holds.
-func handoffFile(word, issue string) string {
-	return fmt.Sprintf(`{"schemaVersion":1,"phase":%q,"issue":%q}`, word, issue)
+func (t handoffTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+	lease := appauth.Lease{Token: string(role) + "-token-for-" + owner + "-read", ExpiresAt: time.Now().Add(time.Hour)}
+	return lease, nil
 }
 
 // handoffGitHub is GitHub's REST API for one repository, acme/widgets unless a test names another
-// (repo), as a completion reads it: READY's reads of the files at each commit (whether a head
-// still carries .legion/<issue>/) and of pull request #42 on main, and the implementer's
-// completion's list of the open pull requests on its branch, which lists #42 while it is open,
-// whatever head the list asks for. A test changes what it serves between calls; every call's
-// bearer, every path it is asked for (served) and every contents read are recorded.
+// (repo), as a completion reads it: pull request #42 on main, and the implementer's completion's
+// list of the open pull requests on its branch, which lists #42 while it is open, whatever head
+// the list asks for. A test changes what it serves between calls; every call's bearer and every
+// path it is asked for (served) are recorded.
 type handoffGitHub struct {
 	url  string
 	mu   sync.Mutex
 	repo string
-	// files is the content of each path at each commit, by sha then path; a directory is listed
-	// when a path is under it.
-	files map[string]map[string]string
 	// fail is the status GitHub answers every route under the given path prefix with instead of
 	// its answer: GitHub's trouble.
 	fail map[string]int
 	// pull request #42, on legion/LEGION-208: its head, its mergeable_state, its state, whether it
-	// is merged, and its updated_at. merge is the project's merge policy, and pullFiles the JSON
-	// array GitHub answers for the pull request's changed files.
+	// is merged, and its updated_at. pullFiles is the JSON array GitHub answers for the pull
+	// request's changed files.
 	pullHead       string
 	mergeableState string
 	pullState      string
 	merged         bool
 	pullUpdatedAt  time.Time
-	merge          config.MergeRules
 	pullFiles      string
-	// What GitHub would answer for main and for the head, none of which READY reads: the rulesets'
-	// rules (with the status the read answers when not 200), the branch's protection, and the
-	// head's check runs and commit statuses. A READY that judged the head's checks itself would
-	// read the last two, and served is what proves it does not.
-	rules       string
-	rulesStatus int
-	mainBranch  string
-	checkRuns   string
-	statuses    string
-	bearers     []string
-	// served is each path the stand-in was asked for, relative to the repository, and contentsRead
-	// each path read through the contents API, as path@ref.
-	served       []string
-	contentsRead []string
-	// compare is GitHub's answer to the compare of approvedSHA with pullHead, the pull request's
-	// head; compareAnswers holds the answer to any other basehead (<base>...<head>), and one in
-	// neither is GitHub's 404 (fail makes the compare fail outright); compareRead is each basehead
-	// READY asked it for.
-	compare        string
-	compareAnswers map[string]string
-	compareRead    []string
+	bearers        []string
+	// served is each path the stand-in was asked for, relative to the repository.
+	served []string
 }
 
 func newHandoffGitHub(t *testing.T) *handoffGitHub {
 	t.Helper()
 	g := &handoffGitHub{
-		files: map[string]map[string]string{}, fail: map[string]int{}, repo: "acme/widgets",
+		fail: map[string]int{}, repo: "acme/widgets",
 		pullFiles: `[{"filename":"src/main.go"}]`,
 		pullHead:  headSHA, mergeableState: "clean", pullState: "open", pullUpdatedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC),
-		rules:      `[{"type":"pull_request"},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]`,
-		mainBranch: `{"name":"main","protection":{"required_status_checks":{"contexts":["legacy"],"checks":[{"context":"legacy"}]}}}`,
-		checkRuns:  `[{"id":1,"name":"ci","status":"completed","conclusion":"success"}]`,
-		statuses:   `[{"context":"legacy","state":"success"}]`,
-		compare:    retroCompare,
 	}
-	notFound := func(w http.ResponseWriter, message string) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = fmt.Fprintf(w, `{"message":%q,"status":"404"}`, message)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		g.bearers = append(g.bearers, r.Header.Get("Authorization"))
-		w.Header().Set("Content-Type", "application/json")
 		path, ok := strings.CutPrefix(r.URL.Path, "/repos/"+g.repo+"/")
 		if !ok {
 			http.NotFound(w, r)
@@ -136,10 +99,7 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 				return
 			}
 		}
-		ref := r.URL.Query().Get("ref")
 		switch {
-		case path == "branches/main":
-			_, _ = io.WriteString(w, g.mainBranch)
 		case path == "pulls/42":
 			_, _ = fmt.Fprintf(w, `{"head":{"sha":%q},"base":{"ref":"main"},"mergeable_state":%q,"state":%q,"merged":%t,"updated_at":%q}`,
 				g.pullHead, g.mergeableState, g.pullState, g.merged, g.pullUpdatedAt.Format(time.RFC3339))
@@ -150,60 +110,13 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 			}
 			_, _ = fmt.Fprintf(w, `[{"number":42,"state":"open","html_url":"https://github.com/%s/pull/42","body":"Dispatch: LEGION-208","head":{"ref":"legion/LEGION-208","sha":%q},"base":{"ref":"main"},"updated_at":%q}]`,
 				g.repo, g.pullHead, g.pullUpdatedAt.Format(time.RFC3339))
-		case path == "rules/branches/main":
-			if g.rulesStatus != 0 {
-				w.WriteHeader(g.rulesStatus)
-			}
-			_, _ = io.WriteString(w, g.rules)
-		case strings.HasSuffix(path, "/check-runs"):
-			_, _ = fmt.Fprintf(w, `{"total_count":%d,"check_runs":%s}`, strings.Count(g.checkRuns, `"name"`), g.checkRuns)
-		case strings.HasSuffix(path, "/status"):
-			_, _ = fmt.Fprintf(w, `{"statuses":%s}`, g.statuses)
 		case path == "pulls/42/files":
 			_, _ = io.WriteString(w, g.pullFiles)
-		case strings.HasPrefix(path, "contents/"):
-			file := strings.TrimPrefix(path, "contents/")
-			g.contentsRead = append(g.contentsRead, file+"@"+ref)
-			var listing []string
-			for name := range g.files[ref] {
-				if strings.HasPrefix(name, file+"/") {
-					listing = append(listing, fmt.Sprintf(`{"name":%q,"path":%q,"type":"file"}`, strings.TrimPrefix(name, file+"/"), name))
-				}
-			}
-			if len(listing) == 0 {
-				notFound(w, "Not Found")
-				return
-			}
-			_, _ = io.WriteString(w, "["+strings.Join(listing, ",")+"]")
-		case strings.HasPrefix(path, "compare/"):
-			basehead := strings.TrimPrefix(path, "compare/")
-			g.compareRead = append(g.compareRead, basehead)
-			answer, known := g.compareAnswers[basehead]
-			if basehead == approvedSHA+"..."+g.pullHead {
-				answer, known = g.compare, true
-			}
-			if !known {
-				notFound(w, "Not Found")
-				return
-			}
-			_, _ = io.WriteString(w, answer)
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
-}
-
-// put is content at path of commit sha.
-func (g *handoffGitHub) put(sha, path, content string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.files[sha] == nil {
-		g.files[sha] = map[string]string{}
-	}
-	g.files[sha][path] = content
 }
 
 // set changes what the fake serves, under its lock.
@@ -213,13 +126,6 @@ func (g *handoffGitHub) set(change func(g *handoffGitHub)) {
 	change(g)
 }
 
-// reads is each contents read made so far, as path@ref.
-func (g *handoffGitHub) reads() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return append([]string(nil), g.contentsRead...)
-}
-
 // serves is each path the stand-in was asked for so far, relative to the repository.
 func (g *handoffGitHub) serves() []string {
 	g.mu.Lock()
@@ -227,23 +133,8 @@ func (g *handoffGitHub) serves() []string {
 	return append([]string(nil), g.served...)
 }
 
-// compares is each basehead READY's compare was asked for so far.
-func (g *handoffGitHub) compares() []string {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return append([]string(nil), g.compareRead...)
-}
-
-// approvedSHA is the head LEGION-208's review round approved, below headSHA: what READY compares
-// retro's last push with unless a test names another.
-const approvedSHA = "a99e0000000000000000000000000000000000ff"
-
-// retroCompare is GitHub's compare of approvedSHA with headSHA as READY reads it: retro's learning
-// added, and its last commit's removal of the issue's handoffs.
-const retroCompare = `{"status":"ahead","files":[{"filename":".legion/LEGION-208/review.json","status":"removed"},{"filename":"docs/solutions/legion/retro-LEGION-208.md","status":"added"}]}`
-
 // newHandoffHarness serves the daemon's routes over a real Postgres, reading GitHub at github as
-// the implement App for READY and for the implementer's completion, with facts recording every
+// the implement App for the implementer's completion, with facts recording every
 // fact the routes apply, refused as refusal says. The issue's repository is acme/widgets, so a
 // read minted for anyone but acme shows.
 func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.Grants, refusal *intake.Refusal) (*harness, *factRecorder) {
@@ -253,19 +144,32 @@ func newHandoffHarness(t *testing.T, github *handoffGitHub, grants *credential.G
 		grants = credential.New(nil)
 	}
 	facts := &factRecorder{refusal: refusal}
+	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: grants, Pool: h.store.Pool(), Record: record.NewStore(),
-		Handlers: []intake.Handler{facts}, Dispatch: &statusRecorder{}, PluginRelaunchable: true,
+		Handlers: []intake.Handler{facts}, Dispatch: h.handoffs, PluginRelaunchable: true,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
-		MergeRules: func(project string) config.MergeRules {
-			if project != testProject {
-				return config.MergeRules{}
-			}
-			return github.merge
-		},
 	}).Handler
 	return h, facts
+}
+
+// writeHandoffAs records version of issue's handoff of phase word in the harness's Dispatch, its
+// author the session named, as `dispatch handoff-write` run there would, and returns its id.
+func (h *harness) writeHandoffAs(issue, word string, version int, session string) string {
+	h.t.Helper()
+	if h.handoffs.handoffs == nil {
+		h.handoffs.handoffs = map[string]dispatch.Handoff{}
+	}
+	id := fmt.Sprintf("handoff-%s-%s-v%d-%s", issue, word, version, session)
+	h.handoffs.handoffs[id] = dispatch.Handoff{ID: id, IssueKey: issue, Phase: word, Version: version, Author: dispatch.HandoffAuthor{Kind: "session", ID: session}}
+	return id
+}
+
+// writeHandoff is c writing version of its issue's handoff of phase word under its own session.
+func (c liveClaim) writeHandoff(word string, version int) string {
+	return c.h.writeHandoffAs(c.issue, word, version, c.session)
 }
 
 // newWorkflowHandoffHarness is newHandoffHarness with the workflow deciding every fact the routes
@@ -275,11 +179,13 @@ func newWorkflowHandoffHarness(t *testing.T, github *handoffGitHub, logs io.Writ
 	t.Helper()
 	h := newHarness(t)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, ReviewRoundCap: 3, MaxFixAttempts: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine}, Dispatch: &statusRecorder{}, Log: slog.New(slog.NewTextHandler(logs, nil)),
+		Handlers: []intake.Handler{engine}, Dispatch: h.handoffs, Log: slog.New(slog.NewTextHandler(logs, nil)),
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	return h
@@ -326,8 +232,7 @@ func seedPullRequestAt(t *testing.T, h *harness, key, head string, at time.Time)
 }
 
 // seedReviewDecision records decision as key's review round's decision, on its reviewer's row: an
-// approval names the head READY compares the pull request's head with, and nil is a round that
-// recorded none.
+// approval names the head the round approved, and nil is a round that recorded none.
 func seedReviewDecision(t *testing.T, h *harness, key string, decision *record.ReviewDecision) {
 	t.Helper()
 	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -394,7 +299,6 @@ func lastCompletion(t *testing.T, facts *factRecorder) intake.HandoffComplete {
 func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.PhaseRow, *record.PullRequest) {
 	t.Helper()
 	var at phase.Phase
-	var implementer *record.PhaseRow
 	var pr *record.PullRequest
 	records := record.NewStore()
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
@@ -403,53 +307,65 @@ func handoffRecord(t *testing.T, h *harness, key string) (phase.Phase, *record.P
 			return err
 		}
 		at = issue.Phase
-		rows, err := records.Phases(context.Background(), tx, key)
-		if err != nil {
-			return err
-		}
-		for _, row := range rows {
-			if row.Role == claim.RoleImplementer {
-				implementer = &row
-			}
-		}
 		pr, err = records.PullRequest(context.Background(), tx, key)
 		return err
 	}); err != nil {
 		t.Fatalf("read the records of %s: %v", key, err)
 	}
-	return at, implementer, pr
+	return at, phaseRowOf(t, h, key, claim.RoleImplementer), pr
 }
 
-// The commit a completion records is the one the worker reports: for a file-backed phase the pushed
-// commit carrying its handoff, which the `legion` tool's handoff_complete finds in the pane, and a
-// request without a commit is refused before anything is recorded or read. The implementer's
-// completion of implementing reads its branch's open pull request on GitHub, as the implement App
-// minted for the repository's owner: one the daemon has not recorded - its opened webhook lost, or
-// still waiting behind the GitHub consumer's backlog - is recorded, and the completion moves the
-// issue to testing, where without the read it would wait in implementing for that webhook.
-func TestHandoffCompleteRecordsTheCommitTheWorkerReportsAndTheOpenPullRequestGitHubShows(t *testing.T) {
+// phaseRowOf is role's phases row on key, nil while none is recorded.
+func phaseRowOf(t *testing.T, h *harness, key string, role claim.Role) *record.PhaseRow {
+	t.Helper()
+	var found *record.PhaseRow
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		rows, err := record.NewStore().Phases(context.Background(), tx, key)
+		for _, row := range rows {
+			if row.Role == role {
+				found = &row
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("read the phases of %s: %v", key, err)
+	}
+	return found
+}
+
+// The implementer's completion of an implementing round names the handoff record it wrote on the
+// Dispatch issue and the commit it pushed, which the route records as reported: it reads the
+// record back from Dispatch, and no branch head and no handoff file on GitHub. A request without a
+// commit, or without a record, is refused before anything is recorded or read. The completion also
+// reads its branch's open pull request on GitHub, as the implement App minted for the repository's
+// owner: one the daemon has not recorded - its opened webhook lost, or still waiting behind the
+// GitHub consumer's backlog - is recorded, and the completion moves the issue to testing, where
+// without the read it would wait in implementing for that webhook.
+func TestHandoffCompleteRecordsTheImplementersRecordAndTheOpenPullRequestGitHubShows(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 2)
 
-	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented"}), http.StatusBadRequest, "MISSING_FIELD"); message != "commit is required" {
+	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", HandoffID: written, HandoffVersion: 2}), http.StatusBadRequest, "MISSING_FIELD"); message != "commit is required" {
 		t.Fatalf("a completion naming no commit was refused with %q; want the field named", message)
+	}
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA}), http.StatusBadRequest, "HANDOFF_RECORD_REQUIRED")
+	if !strings.Contains(message, "dispatch handoff-write --issue LEGION-208 --phase implement") {
+		t.Fatalf("a completion naming no record was refused with %q; want the command that writes it", message)
 	}
 	if served := github.serves(); len(served) != 0 {
 		t.Fatalf("GitHub was asked for %v for a completion refused for its fields, want nothing", served)
 	}
 
-	answer := completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA}))
-	if answer.Note != "" {
-		t.Fatalf("answer = %+v, want no note outside READY", answer)
-	}
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 2}))
 	at, row, pr := handoffRecord(t, h, "LEGION-208")
 	if at != phase.Testing {
 		t.Fatalf("after the completion LEGION-208 is in %s, want testing", at)
 	}
-	if row == nil || row.HandoffCommit != headSHA || row.Summary != "implemented" {
-		t.Fatalf("implementer row = %+v, want the completion at the commit it reported, %s", row, headSHA)
+	if row == nil || row.HandoffCommit != headSHA || row.HandoffRecord != written || row.HandoffVersion != 2 || row.Summary != "implemented" {
+		t.Fatalf("implementer row = %+v, want the completion naming %s version 2 at the commit it reported, %s", row, written, headSHA)
 	}
 	if pr == nil || pr.State != record.PullRequestOpen || pr.Number != 42 || pr.Repo != "acme/widgets" || pr.Branch != "legion/LEGION-208" || pr.HeadSHA != headSHA {
 		t.Fatalf("pull request record = %+v, want acme/widgets#42 open on legion/LEGION-208 at %s", pr, headSHA)
@@ -458,6 +374,26 @@ func TestHandoffCompleteRecordsTheCommitTheWorkerReportsAndTheOpenPullRequestGit
 	defer github.mu.Unlock()
 	if !slices.Equal(github.served, []string{"pulls"}) || !slices.Equal(github.bearers, []string{"Bearer implement-token-for-acme"}) {
 		t.Fatalf("GitHub served %v with bearers %v, want one list of the open pull requests as the implement App for acme", github.served, github.bearers)
+	}
+}
+
+// A retried completion naming the same handoff record is the same fact whatever commit it
+// reports: the record is the phase's handoff, and the key the route builds names it in place of
+// the commit.
+func TestHandoffCompleteRetriedNamingTheSameRecordIsTheSameFact(t *testing.T) {
+	github := newHandoffGitHub(t)
+	h, facts := newHandoffHarness(t, github, nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 2)
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 2}))
+	if fact := lastCompletion(t, facts); fact.Commit != headSHA || fact.HandoffRecord != written || fact.HandoffVersion != 2 || fact.Role != claim.RoleImplementer || fact.Summary != "implemented" {
+		t.Fatalf("completion = %+v, want the implementer's naming %s version 2 at the commit it reported, %s", fact, written, headSHA)
+	}
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: "a-later-push", HandoffID: written, HandoffVersion: 2}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+	if !strings.Contains(message, "naming handoff record "+written+" (implement version 2)") {
+		t.Fatalf("the retried completion at another commit was refused with %q; want the record named", message)
 	}
 }
 
@@ -470,9 +406,10 @@ func TestHandoffCompleteWithNoOpenPullRequestRecordsNothing(t *testing.T) {
 	h := newWorkflowHandoffHarness(t, github, io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 1)
 	complete := func() *httptest.ResponseRecorder {
 		t.Helper()
-		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA})
+		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 1})
 	}
 
 	message := refused(t, complete(), http.StatusConflict, "HANDOFF_NO_PULL_REQUEST")
@@ -500,8 +437,9 @@ func TestHandoffCompleteAppliesTheCompletionWhenGitHubFailsTheRead(t *testing.T)
 	h := newWorkflowHandoffHarness(t, github, &logs)
 	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 1)
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
 	if at, row, pr := handoffRecord(t, h, "LEGION-208"); at != phase.Implementing || row == nil || row.HandoffCommit != headSHA || pr != nil {
 		t.Fatalf("after the completion LEGION-208 is in %s with implementer row %+v and pull request %+v, want implementing with the completion at %s recorded and no pull request", at, row, pr, headSHA)
 	}
@@ -538,8 +476,9 @@ func TestHandoffCompleteNamesTheClosedPullRequestTheRecordHolds(t *testing.T) {
 	recordPullRequest(t, h, record.PullRequestClosed)
 	_, _, before := handoffRecord(t, h, "LEGION-208")
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 1)
 
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA}), http.StatusConflict, "HANDOFF_NO_PULL_REQUEST")
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NO_PULL_REQUEST")
 	want := "no open pull request on acme/widgets legion/LEGION-208; nothing was recorded. Open the pull request and complete again. pull request #42 is closed; your architect was told and decides this issue's phase."
 	if message != want {
 		t.Fatalf("refusal = %q, want %q", message, want)
@@ -561,52 +500,361 @@ func TestHandoffCompleteOnAMergedPullRequestMovesTheIssueToTesting(t *testing.T)
 	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
 	recordPullRequest(t, h, record.PullRequestMerged)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 1)
 
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA}))
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: headSHA, HandoffID: written, HandoffVersion: 1}))
 	at, row, pr := handoffRecord(t, h, "LEGION-208")
 	if at != phase.Testing || row == nil || row.HandoffCommit != headSHA || pr == nil || pr.State != record.PullRequestMerged || pr.Number != 42 {
 		t.Fatalf("after the completion LEGION-208 is in %s with implementer row %+v and pull request %+v, want testing at %s on #42 still merged", at, row, pr, headSHA)
 	}
 }
 
-func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheCommit(t *testing.T) {
+// A file-backed phase's completion is held to the handoff record it names, read back from
+// Dispatch: the record must be the issue's, of the phase's word, at the version reported, and
+// written by the claim's own session. Every refusal is made before the fact is applied, so nothing
+// is recorded, and the corrected completion - a planner's here, which names no commit - is then
+// applied under the same key.
+func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		code   string
+		// request builds the refused completion from the planner's own record, plan version 1.
+		request func(h *harness, own string) HandoffCompleteRequest
+		// dispatchErr is Dispatch's answer to the read instead of the record.
+		dispatchErr error
+		// says is a part of the refusal's sentence.
+		says []string
+	}{
+		{
+			name: "no record", status: http.StatusBadRequest, code: "HANDOFF_RECORD_REQUIRED",
+			request: func(*harness, string) HandoffCompleteRequest { return HandoffCompleteRequest{} },
+			says:    []string{"dispatch handoff-write --issue LEGION-208 --phase plan"},
+		},
+		{
+			name: "no version", status: http.StatusBadRequest, code: "HANDOFF_RECORD_REQUIRED",
+			request: func(_ *harness, own string) HandoffCompleteRequest { return HandoffCompleteRequest{HandoffID: own} },
+		},
+		{
+			name: "a record Dispatch does not have", status: http.StatusNotFound, code: "HANDOFF_RECORD_NOT_FOUND",
+			request: func(*harness, string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: "00000000-0000-0000-0000-000000000001", HandoffVersion: 1}
+			},
+			says: []string{"Dispatch has no handoff record 00000000-0000-0000-0000-000000000001", "dispatch handoff-read --issue LEGION-208 --phase plan"},
+		},
+		{
+			name: "another issue's record", status: http.StatusConflict, code: "HANDOFF_RECORD_MISMATCH",
+			request: func(h *harness, _ string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: h.writeHandoffAs("LEGION-209", "plan", 1, "ses_planner_LEGION-208"), HandoffVersion: 1}
+			},
+			says: []string{"version 1 of LEGION-209's plan handoff"},
+		},
+		{
+			name: "another phase's record", status: http.StatusConflict, code: "HANDOFF_RECORD_MISMATCH",
+			request: func(h *harness, _ string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: h.writeHandoffAs("LEGION-208", "implement", 1, "ses_planner_LEGION-208"), HandoffVersion: 1}
+			},
+			says: []string{"LEGION-208's implement handoff", "LEGION-208's plan handoff at version 1"},
+		},
+		{
+			name: "another version than the record's", status: http.StatusConflict, code: "HANDOFF_RECORD_MISMATCH",
+			request: func(_ *harness, own string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: own, HandoffVersion: 2}
+			},
+			says: []string{"is version 1 of LEGION-208's plan handoff", "at version 2"},
+		},
+		{
+			name: "a record another session wrote", status: http.StatusForbidden, code: "HANDOFF_SESSION_MISMATCH",
+			request: func(h *harness, _ string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: h.writeHandoffAs("LEGION-208", "plan", 1, "ses_someone_else"), HandoffVersion: 1}
+			},
+			says: []string{"written by session ses_someone_else, not by this claim's session ses_planner_LEGION-208", "dispatch handoff-write --issue LEGION-208 --phase plan"},
+		},
+		{
+			name: "a record carried from before handoffs moved to Dispatch, under the daemon's session", status: http.StatusForbidden, code: "HANDOFF_SESSION_MISMATCH",
+			request: func(h *harness, _ string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: h.writeHandoffAs("LEGION-208", "plan", 1, "legion-daemon:LEGION"), HandoffVersion: 1}
+			},
+			says: []string{"the daemon's own session legion-daemon:LEGION", "this claim's session ses_planner_LEGION-208", "read it with `dispatch handoff-read --issue LEGION-208 --phase plan`", "write it again with `dispatch handoff-write --issue LEGION-208 --phase plan"},
+		},
+		{
+			// A person's record whose actor id happens to be the claim's session is still no
+			// session's: the kind is held as well as the id.
+			name: "a record no session wrote", status: http.StatusForbidden, code: "HANDOFF_SESSION_MISMATCH",
+			request: func(h *harness, _ string) HandoffCompleteRequest {
+				const id = "handoff-by-a-person"
+				h.handoffs.handoffs[id] = dispatch.Handoff{ID: id, IssueKey: "LEGION-208", Phase: "plan", Version: 1, Author: dispatch.HandoffAuthor{Kind: "user", ID: "ses_planner_LEGION-208"}}
+				return HandoffCompleteRequest{HandoffID: id, HandoffVersion: 1}
+			},
+			says: []string{"written by user ses_planner_LEGION-208"},
+		},
+		{
+			name: "Dispatch answering 503", status: http.StatusBadGateway, code: "DISPATCH_READ_FAILED",
+			request: func(_ *harness, own string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: own, HandoffVersion: 1}
+			},
+			dispatchErr: &dispatch.Error{Status: http.StatusServiceUnavailable, Message: "database unavailable"},
+			says:        []string{"database unavailable", "complete again once Dispatch answers"},
+		},
+		{
+			name: "Dispatch not answering", status: http.StatusBadGateway, code: "DISPATCH_READ_FAILED",
+			request: func(_ *harness, own string) HandoffCompleteRequest {
+				return HandoffCompleteRequest{HandoffID: own, HandoffVersion: 1}
+			},
+			dispatchErr: &dispatch.TransientError{Err: errors.New("dial tcp: connection refused")},
+			says:        []string{"connection refused", "complete again once Dispatch answers"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Planning)
+			planner := newLiveClaim(t, h, "LEGION-208", claim.RolePlanner)
+			own := planner.writeHandoff("plan", 1)
+			request := tc.request(h, own)
+			request.GrantID, request.Summary = planner.grant(t), "planned"
+			h.handoffs.handoffErr = tc.dispatchErr
+			message := refused(t, h.complete(request), tc.status, tc.code)
+			for _, want := range tc.says {
+				if !strings.Contains(message, want) {
+					t.Fatalf("refusal %q does not say %q", message, want)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("handoff facts = %#v, want none for a refused record", got)
+			}
+
+			h.handoffs.handoffErr = nil
+			completion(t, h.complete(HandoffCompleteRequest{GrantID: planner.grant(t), Summary: "planned", HandoffID: own, HandoffVersion: 1}))
+			if fact := lastCompletion(t, facts); fact.Role != claim.RolePlanner || fact.HandoffRecord != own || fact.HandoffVersion != 1 || fact.Commit != "" {
+				t.Fatalf("the corrected completion = %+v, want the planner's naming %s version 1 with no commit", fact, own)
+			}
+		})
+	}
+}
+
+// A completion that arrives after the issue has left its role's phase - the reviewer's, once its
+// own request for changes moved the issue to implementing - is of the phase the role left, and the
+// engine records it there for the next phase to read (workflow's leftItsPhase). So the route reads
+// its record back against that phase's word and the claim's session, as it reads a current
+// completion's: a record of another issue or of another phase is refused before the fact and
+// nothing is recorded, and the reviewer's own new review record is recorded on its row.
+func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// record is the record the late completion names, written under the reviewer's session.
+		record func(h *harness, reviewer liveClaim) string
+		// code is the refusal, "" for a completion recorded; says is a part of its sentence.
+		code, says string
+	}{
+		{
+			name: "another issue's review record", code: "HANDOFF_RECORD_MISMATCH", says: "version 1 of LEGION-209's review handoff",
+			record: func(h *harness, reviewer liveClaim) string {
+				return h.writeHandoffAs("LEGION-209", "review", 1, reviewer.session)
+			},
+		},
+		{
+			name: "a record of another phase", code: "HANDOFF_RECORD_MISMATCH", says: "LEGION-208's implement handoff",
+			record: func(_ *harness, reviewer liveClaim) string { return reviewer.writeHandoff("implement", 1) },
+		},
+		{
+			name:   "its own new review record",
+			record: func(_ *harness, reviewer liveClaim) string { return reviewer.writeHandoff("review", 1) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+			named := tc.record(h, reviewer)
+			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
+			if tc.code == "" {
+				completion(t, recorder)
+				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != named || row.HandoffVersion != 1 {
+					t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, named)
+				}
+			} else {
+				if message := refused(t, recorder, http.StatusConflict, tc.code); !strings.Contains(message, tc.says) {
+					t.Fatalf("refusal %q does not say %q", message, tc.says)
+				}
+				if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row != nil && row.Completed() {
+					t.Fatalf("the reviewer's row after the refusal = %+v, want nothing recorded", row)
+				}
+			}
+			assertIssuePhase(t, h, phase.Implementing)
+		})
+	}
+}
+
+// The reviewer's own approval moves the issue on as well: the review event takes reviewing to
+// accepting, the architect's sign-off and a phase that ends with no handoff record, before the
+// reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
+// so the route reads its own new review record back against reviewing's word rather than refusing
+// a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
+// accepting for the architect.
+func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
+	seedApproval(t, h, "LEGION-208", "ccddee")
+	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	own := reviewer.writeHandoff("review", 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "approved", HandoffID: own, HandoffVersion: 1}))
+	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleReviewer); row == nil || row.HandoffRecord != own || row.HandoffVersion != 1 {
+		t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, own)
+	}
+	assertIssuePhase(t, h, phase.Accepting)
+}
+
+// A completion of a phase its role has left that names no record — its commit alone, as the
+// `legion` tool sent one before it read the record of the phase the role left — is not asked for
+// a record: the engine decides it as every completion of a phase the role no longer works
+// (workflow's leftItsPhase). A tester whose completion of testing was taken, and moved the issue
+// to reviewing, and a tester of an issue held from testing are each answered
+// HANDOFF_NOT_CURRENT_PHASE, and the tester's row and the issue's phase stay as they stood.
+func TestHandoffCompleteAnswersALeftCompletionNamingNoRecordAsNoLongerTheRolesPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stand moves LEGION-208 from testing, its tester working, to where the late completion
+		// finds it, and answers that phase.
+		stand func(t *testing.T, h *harness, tester liveClaim) phase.Phase
+	}{
+		{
+			name: "its completion of testing taken, the issue in reviewing",
+			stand: func(t *testing.T, h *harness, tester liveClaim) phase.Phase {
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+					Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+				return phase.Reviewing
+			},
+		},
+		{
+			name: "the issue held from testing",
+			stand: func(t *testing.T, h *harness, _ liveClaim) phase.Phase {
+				holdFrom(t, h, "LEGION-208", phase.Testing)
+				return phase.Held
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			at := tc.stand(t, h, tester)
+			assertIssuePhase(t, h, at)
+			before := phaseRowOf(t, h, "LEGION-208", claim.RoleTester)
+
+			refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}),
+				http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the tester's row after the refusal = %+v, want it as it stood, %+v", after, before)
+			}
+			assertIssuePhase(t, h, at)
+		})
+	}
+}
+
+// An implementer whose issue has left implementing completes it in the shape the `legion` tool
+// sends for an implement record that names no head, or for none at all: the commit its shared
+// workspace stands on, a sibling role's, and no record (pi-shared's handoff-record.ts, its module
+// doc's left-phase rule). The engine decides it as every completion of a left phase that names no
+// record (workflow's leftItsPhase): an implementer that left implementing before it completed - it
+// moved the issue back to planning - would have its completion recorded, so one naming no record
+// is answered HANDOFF_RECORD_REQUIRED, and one whose completion of implementing was taken is
+// answered HANDOFF_NOT_CURRENT_PHASE. The implementer's row stays as it stood either way, so the
+// sibling's commit is never recorded as the implementer's handoff commit.
+func TestHandoffCompleteRefusesAnImplementersLeftCompletionNamingNoRecord(t *testing.T) {
+	sibling := strings.Repeat("c0de", 10)
+	for _, tc := range []struct {
+		name string
+		// stand moves LEGION-208 from implementing, its implementer working, to where the late
+		// completion finds it, and answers that phase.
+		stand func(t *testing.T, h *harness, implementer liveClaim) phase.Phase
+		code  string
+	}{
+		{
+			name: "it left implementing before it completed, moving the issue back to planning",
+			stand: func(t *testing.T, h *harness, implementer liveClaim) phase.Phase {
+				if moved := h.request(http.MethodPost, "/legion/v1/phase/backward", PhaseBackwardRequest{
+					GrantID: implementer.grant(t), To: phase.Planning, Reason: "the plan misses a case",
+				}, nil); moved.Code != http.StatusOK {
+					t.Fatalf("the implementer's backward move to planning = %d: %s", moved.Code, moved.Body)
+				}
+				return phase.Planning
+			},
+			code: "HANDOFF_RECORD_REQUIRED",
+		},
+		{
+			name: "its completion of implementing taken, the issue in testing",
+			stand: func(t *testing.T, h *harness, implementer liveClaim) phase.Phase {
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented",
+					Commit: headSHA, HandoffID: implementer.writeHandoff("implement", 1), HandoffVersion: 1}))
+				return phase.Testing
+			},
+			code: "HANDOFF_NOT_CURRENT_PHASE",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			seedPullRequest(t, h, "LEGION-208", headSHA)
+			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+			at := tc.stand(t, h, implementer)
+			assertIssuePhase(t, h, at)
+			before := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer)
+
+			// The row is read before the answer, so a completion that was recorded shows what it
+			// recorded.
+			recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: sibling})
+			if after := phaseRowOf(t, h, "LEGION-208", claim.RoleImplementer); !reflect.DeepEqual(after, before) {
+				t.Fatalf("the implementer's row after its completion at %s (answered %d) = %+v, want it as it stood, %+v", sibling, recorder.Code, after, before)
+			}
+			refused(t, recorder, http.StatusConflict, tc.code)
+			assertIssuePhase(t, h, at)
+		})
+	}
+}
+
+func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", Commit: "aabbcc"}), http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
+	written := tester.writeHandoff("test", 1)
+	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}), http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
 
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Verdict: "pass", Commit: "bbccdd"}), http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN")
 
-	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "reviewed", Ready: true, Commit: "ccddee"}), http.StatusBadRequest, "READY_ROLE_FORBIDDEN")
-
-	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: "ddeeff"}
+	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1}
 	completion(t, h.complete(request))
-	// A retried completion of the same phase at the same commit changes nothing, and says so.
+	// A retried completion of the same phase naming the same record changes nothing, and says so.
 	request.GrantID = tester.grant(t)
-	if message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_ALREADY_RECORDED"); !strings.Contains(message, "at commit ddeeff") {
-		t.Fatalf("refusal = %q, want it to name the commit", message)
+	if message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_ALREADY_RECORDED"); !strings.Contains(message, "naming handoff record "+written+" (test version 1)") {
+		t.Fatalf("refusal = %q, want it to name the record", message)
 	}
 	got := facts.recorded()
 	if len(got) != 1 {
 		t.Fatalf("handoff facts = %#v, want one deduplicated fact", got)
 	}
 	fact, ok := got[0].(intake.HandoffComplete)
-	if !ok || fact.Role != claim.RoleTester || fact.Verdict != "pass" || fact.Commit != "ddeeff" {
+	if !ok || fact.Role != claim.RoleTester || fact.Verdict != "pass" || fact.HandoffRecord != written || fact.Commit != "" {
 		t.Fatalf("handoff fact = %#v", got[0])
 	}
 }
 
 // The implementer's retro writes no handoff, so it reports the commit the workspace stands on, the
-// one its implementing round already reported: the completion is retro's own, not a repeat.
+// one its implementing round already reported: the completion is retro's own, not a repeat. Retro
+// ends with no handoff record, and a completion naming one is refused.
 func TestHandoffCompleteRecordsRetroAtTheCommitItStandsOn(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	named := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee", HandoffID: implementer.writeHandoff("implement", 3), HandoffVersion: 3}),
+		http.StatusConflict, "HANDOFF_RECORD_MISMATCH")
+	if !strings.Contains(named, "phase retro of LEGION-208 ends with no handoff record") {
+		t.Fatalf("retro naming a record was refused with %q; want the phase named", named)
+	}
 	recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee"})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("retro handoff = %d: %s", recorder.Code, recorder.Body)
@@ -615,24 +863,30 @@ func TestHandoffCompleteRecordsRetroAtTheCommitItStandsOn(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("handoff facts = %#v, want the retro completion", got)
 	}
-	if fact, ok := got[0].(intake.HandoffComplete); !ok || fact.Summary != "retro done" || fact.Commit != "c0ffee" {
-		t.Fatalf("handoff fact = %#v, want summary %q at c0ffee", got[0], "retro done")
+	if fact, ok := got[0].(intake.HandoffComplete); !ok || fact.Summary != "retro done" || fact.Commit != "c0ffee" || fact.HandoffRecord != "" {
+		t.Fatalf("handoff fact = %#v, want summary %q at c0ffee naming no record", got[0], "retro done")
 	}
-	if reads := github.reads(); len(reads) != 0 {
-		t.Fatalf("contents reads = %v, want none for phases that write no file", reads)
+	if served := github.serves(); len(served) != 0 {
+		t.Fatalf("GitHub was asked for %v, want nothing for a phase whose completion reads no pull request", served)
 	}
 }
 
+// checkOpenedAt is when seedCheck's production check opened: its identity
+// (record.ProductionCheck.ID), which the look's own task carries and the route holds a report to.
+var checkOpenedAt = time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)
+
 // seedCheck records key's production check on acme/widgets#42 at look 2 — open, with its look
-// open, unless closed — as the close and a pending first look leave it.
-func seedCheck(t *testing.T, h *harness, key string, closed bool) {
+// open, unless closed — as the close and a pending first look leave it. role is the role the
+// check records as its own (record.ProductionCheck.Role), the one whose reports it takes, and
+// last marks the check's last look, after which no look follows.
+func seedCheck(t *testing.T, h *harness, key string, role claim.Role, closed, last bool) {
 	t.Helper()
-	opened := time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)
+	opened := checkOpenedAt
 	woke := opened.Add(time.Hour)
 	check := record.ProductionCheck{
 		Issue: key, Project: testProject, Tree: key, Repo: "acme/widgets", Number: 42, MergeSHA: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0",
-		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 2, LookOpen: true, LookWakeAt: &woke,
-		LastWakeKind: "issue.deployed", LastWakeDetail: "run 7 completed 2026-10-19T07:00:00Z", LastWakeAt: &woke,
+		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Role: role, Looks: 2, LookOpen: true, LookWakeAt: &woke,
+		LastWakeKind: "check wake", LastWakeDetail: "the deploy of the merge commit", LastWakeAt: &woke, Last: last,
 	}
 	if closed {
 		check.LookOpen, check.ClosedAt, check.Outcome = false, &woke, record.CheckRecorded
@@ -643,6 +897,20 @@ func seedCheck(t *testing.T, h *harness, key string, closed bool) {
 	if err != nil {
 		t.Fatalf("seed the production check of %s: %v", key, err)
 	}
+}
+
+// checkWakeAt is the time a pending report of these tests names for its next look; the route
+// reads that a pending names one, and the engine, which clamps it, is not in this harness.
+var checkWakeAt = time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+
+// sameCheckReport says whether got is want, comparing the reports' wake times as instants: the
+// report travels as JSON, so the fact the route applies carries a pointer of its own.
+func sameCheckReport(got, want intake.CheckReport) bool {
+	if (got.WakeAt == nil) != (want.WakeAt == nil) || (got.WakeAt != nil && !got.WakeAt.Equal(*want.WakeAt)) {
+		return false
+	}
+	got.WakeAt, want.WakeAt = nil, nil
+	return got == want
 }
 
 // lastCheckReport is the newest check report facts recorded.
@@ -659,28 +927,27 @@ func lastCheckReport(t *testing.T, facts *factRecorder) intake.CheckReport {
 	return fact
 }
 
-// The implementer's call on its closed issue, whose production check is open, is a report on the
-// check's current look: it carries no commit (the look pushed nothing) and one of the three
-// verdicts, and the fact is the check report of that look, not a phase completion. A claim that
-// took no task reports all the same — the check fences itself on the look, not on a run — and
-// nothing reads GitHub. A repeated report of the same look and verdict is answered as already
-// received.
+// The checking role's call inside the turn of a look's task is a report on that look: it carries
+// no commit (the look pushed nothing) and one of the three verdicts, and the fact is the check
+// report of that look, not a phase completion. No run is read — the check fences itself on the
+// look, not on a run — and nothing reads GitHub. A repeated report of the same look and verdict
+// is answered as already received.
 func TestHandoffCompleteRecordsACheckReportOfTheOpenLookWithoutACommit(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
-	seedCheck(t, h, "LEGION-208", false)
-	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
-	registration := h.registered(boot, "ses_implementer_untasked")
-	implementer := liveClaim{h: h, token: token, session: "ses_implementer_untasked", secret: registration.Secret, tree: "LEGION-208", issue: "LEGION-208"}
+	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
+	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 2)
+	token := implementer.token
 
 	for _, verdict := range []string{"pending", "fail", "pass"} {
-		answer := completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked: " + verdict, Verdict: verdict}))
-		if answer.Note != "" {
-			t.Fatalf("answer = %+v, want no note on a check report", answer)
-		}
+		report := HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked: " + verdict, Verdict: verdict}
 		want := intake.CheckReport{Issue: "LEGION-208", Claim: token, Look: 2, Verdict: verdict, Summary: "looked: " + verdict}
-		if got := lastCheckReport(t, facts); got != want {
+		if verdict == "pending" {
+			report.WakeAt, want.WakeAt = &checkWakeAt, &checkWakeAt
+		}
+		completion(t, h.complete(report))
+		if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
 			t.Fatalf("check report = %+v, want %+v", got, want)
 		}
 	}
@@ -701,36 +968,36 @@ func TestHandoffCompleteRecordsACheckReportOfTheOpenLookWithoutACommit(t *testin
 }
 
 // A check report names its verdict: one of pass, pending or fail, and nothing else, with nothing
-// recorded otherwise. Ready stays the merger's alone, as on every other call.
+// recorded otherwise.
 func TestHandoffCompleteRefusesACheckReportWithoutOneOfTheThreeVerdicts(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
-	seedCheck(t, h, "LEGION-208", false)
-	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
+	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 2)
 
 	for _, verdict := range []string{"", "maybe"} {
 		if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: verdict}), http.StatusBadRequest, "CHECK_VERDICT_REQUIRED"); message != "a production check report names a verdict of pass, pending or fail" {
 			t.Fatalf("refusal of verdict %q = %q, want the three named", verdict, message)
 		}
 	}
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass", Ready: true}), http.StatusBadRequest, "READY_ROLE_FORBIDDEN")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
 	}
 }
 
-// The implementer on a done issue with no open production check — none ever opened, or the check
-// closed on an earlier look — reports on nothing: the call is refused by name, with nothing
-// recorded, rather than read as a completion of a phase no role works.
-func TestHandoffCompleteRefusesTheImplementerOnADoneIssueWithNoOpenCheck(t *testing.T) {
+// A caller whose live assignment is a look of its issue's production check, on an issue with no
+// open check — none ever opened, or the check closed on an earlier look — reports on nothing: the
+// call is refused by name, with nothing recorded, rather than falling into the phase path.
+func TestHandoffCompleteRefusesALooksCallWhereNoCheckIsOpen(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	implementer.worksLook(t, 2, checkOpenedAt)
 
 	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}), http.StatusConflict, "CHECK_NOT_OPEN"); message != "LEGION-208 has no open production check; this completion changed nothing" {
 		t.Fatalf("refusal with no check = %q", message)
 	}
-	seedCheck(t, h, "LEGION-208", true)
+	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, true, false)
 	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}), http.StatusConflict, "CHECK_NOT_OPEN")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none", got)
@@ -742,10 +1009,10 @@ func TestHandoffCompleteRefusesTheImplementerOnADoneIssueWithNoOpenCheck(t *test
 func TestHandoffCompleteAnswersTheEnginesRefusalOfACheckReport(t *testing.T) {
 	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, &intake.Refusal{Status: http.StatusConflict, Code: "CHECK_LOOK_NOT_OPEN", Message: "look 2 of LEGION-208's production check is not open"})
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
-	seedCheck(t, h, "LEGION-208", false)
-	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
+	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 2)
 
-	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pending"}), http.StatusConflict, "CHECK_LOOK_NOT_OPEN"); message != "look 2 of LEGION-208's production check is not open" {
+	if message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pending", WakeAt: &checkWakeAt}), http.StatusConflict, "CHECK_LOOK_NOT_OPEN"); message != "look 2 of LEGION-208's production check is not open" {
 		t.Fatalf("refusal = %q, want the engine's sentence", message)
 	}
 }
@@ -772,11 +1039,12 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 	opened := time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)
 	first := record.ProductionCheck{
 		Issue: "LEGION-208", Project: testProject, Tree: "LEGION-208", Repo: "acme/widgets", Number: 42, MergeSHA: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0",
-		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Looks: 1, LookOpen: true, LookWakeAt: &opened,
+		OpenedAt: opened, BoundAt: opened.Add(336 * time.Hour), Role: claim.RoleImplementer, Looks: 1, LookOpen: true, LookWakeAt: &opened,
 		LastWakeKind: "merge", LastWakeDetail: "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0", LastWakeAt: &opened,
 	}
 	put(first)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no production carries the merge yet", Verdict: "pending"}))
+	implementer.worksLook(t, 1, opened)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no production carries the merge yet", Verdict: "pending", WakeAt: &checkWakeAt}))
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("facts after the first check's report = %#v, want one", got)
 	}
@@ -793,14 +1061,148 @@ func TestHandoffCompleteTakesAReportOnALaterChecksLookAsANewFact(t *testing.T) {
 	second.LastWakeDetail, second.LastWakeAt = second.MergeSHA, &reopened
 	second.ClosedAt, second.Outcome = nil, ""
 	put(second)
+	implementer.worksLook(t, 1, reopened)
 
-	answer := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no production carries the rerun's merge yet", Verdict: "pending"})
+	answer := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no production carries the rerun's merge yet", Verdict: "pending", WakeAt: &checkWakeAt})
 	if answer.Code != http.StatusOK {
 		t.Fatalf("the rerun's first look reported pending = %d: %s; want it taken as the second check's own report, not the first check's", answer.Code, answer.Body)
 	}
-	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pending", Summary: "no production carries the rerun's merge yet"}
-	if got := facts.recorded(); len(got) != 2 || got[1] != want {
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 1, Verdict: "pending", Summary: "no production carries the rerun's merge yet", WakeAt: &checkWakeAt}
+	if got := facts.recorded(); len(got) != 2 || !sameCheckReport(lastCheckReport(t, facts), want) {
 		t.Fatalf("facts after the second check's report = %#v, want the first check's report and then %+v", got, want)
+	}
+}
+
+// recordedCheck is key's production check as the record holds it now.
+func recordedCheck(t *testing.T, h *harness, key string) record.ProductionCheck {
+	t.Helper()
+	var check *record.ProductionCheck
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		var err error
+		check, err = record.NewStore().ProductionCheck(context.Background(), tx, key)
+		return err
+	}); err != nil || check == nil {
+		t.Fatalf("read the production check of %s = %v, %v", key, check, err)
+	}
+	return *check
+}
+
+// checkEvents is how many check reports of key the intake has marked processed.
+func checkEvents(t *testing.T, h *harness, key string) int {
+	t.Helper()
+	var count int
+	if err := h.store.Pool().QueryRow(context.Background(),
+		"select count(*) from processed_events where source = 'api' and event_id like $1", "check:"+key+":%").Scan(&count); err != nil {
+		t.Fatalf("count the check reports of %s the intake processed: %v", key, err)
+	}
+	return count
+}
+
+// A pending report names when the check is next looked at: the checking agent names its own next
+// look, and nothing else would start one. Without it the report is refused CHECK_WAKE_REQUIRED
+// before the fact is applied, so no event is marked processed, the look stays open, and the same
+// report sent again with a time is recorded under the event the refused one would have taken.
+func TestACheckReportOfAPendingWithoutAWakeIsRefusedAndTheSameReportWithOneIsRecorded(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Done)
+	seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, false)
+	implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 2)
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no deploy carries the merge", Verdict: "pending"}),
+		http.StatusBadRequest, "CHECK_WAKE_REQUIRED")
+	if !strings.Contains(message, "wakeAt") || !strings.Contains(message, "look 2 stays open") {
+		t.Fatalf("refusal = %q, want it to name wakeAt and say the look stays open", message)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts = %#v, want none", got)
+	}
+	if got := checkEvents(t, h, "LEGION-208"); got != 0 {
+		t.Fatalf("processed check events = %d, want none: the refusal is written before the fact is applied", got)
+	}
+	if check := recordedCheck(t, h, "LEGION-208"); !check.Open() || !check.LookOpen || check.Looks != 2 {
+		t.Fatalf("the check after the refusal = %+v, want it open at look 2 with the look open", check)
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "no deploy carries the merge", Verdict: "pending", WakeAt: &checkWakeAt}))
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: implementer.token, Look: 2, Verdict: "pending", Summary: "no deploy carries the merge", WakeAt: &checkWakeAt}
+	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
+		t.Fatalf("the report sent again = %+v, want %+v", got, want)
+	}
+	if got := checkEvents(t, h, "LEGION-208"); got != 1 {
+		t.Fatalf("processed check events = %d, want the recorded report's one", got)
+	}
+}
+
+// A wake has no place on a report no look follows: a pass and a fail each close the check, and a
+// pending on the check's last look closes it as not run. Each is refused CHECK_WAKE_UNEXPECTED
+// with nothing recorded.
+func TestACheckReportNamingAWakeWhereNoLookFollowsIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		verdict string
+		last    bool
+	}{
+		{name: "a pass", verdict: "pass"},
+		{name: "a fail", verdict: "fail"},
+		{name: "a pending on the last look", verdict: "pending", last: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Done)
+			seedCheck(t, h, "LEGION-208", claim.RoleImplementer, false, tc.last)
+			implementer := newCheckLookClaim(t, h, "LEGION-208", claim.RoleImplementer, 2)
+
+			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: tc.verdict, WakeAt: &checkWakeAt}),
+				http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED")
+			if !strings.Contains(message, "wakeAt") {
+				t.Fatalf("refusal of %s = %q, want it to name the field", tc.name, message)
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts = %#v, want none", got)
+			}
+			if got := checkEvents(t, h, "LEGION-208"); got != 0 {
+				t.Fatalf("processed check events = %d, want none", got)
+			}
+		})
+	}
+}
+
+// A report is the check's own role's: the role the check records when it opened
+// (record.ProductionCheck.Role), which the project's setting decides, and no other role of the
+// issue. Another role's report is refused CHECK_ROLE_MISMATCH, naming both roles, with nothing
+// recorded and the record unchanged, and the same look's report from the check's own role is
+// taken.
+//
+// The implementer holds its look by the one path that reaches this refusal: a start row queued
+// before start rows carried the check instance, whose zero instance names no check
+// (record.ProductionCheck.NamedBy), so the look is not refused as a replaced check's and the
+// role is what catches it. Every look this daemon starts is the check's own role's and names
+// its instance (workflow's startLook).
+func TestACheckReportFromAnotherRoleIsRefusedAndTheChecksOwnRolesIsRecorded(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Done)
+	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	implementer.worksLook(t, 2, time.Time{})
+	tester := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
+	before := recordedCheck(t, h, "LEGION-208")
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "looked", Verdict: "pass"}),
+		http.StatusConflict, "CHECK_ROLE_MISMATCH")
+	if !strings.Contains(message, "tester") || !strings.Contains(message, "implementer") {
+		t.Fatalf("refusal = %q, want both roles named", message)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts = %#v, want none", got)
+	}
+	if got := recordedCheck(t, h, "LEGION-208"); !reflect.DeepEqual(got, before) {
+		t.Fatalf("the check after another role's report = %+v, want it unchanged: %+v", got, before)
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "driven in production", Verdict: "pass"}))
+	want := intake.CheckReport{Issue: "LEGION-208", Claim: tester.token, Look: 2, Verdict: "pass", Summary: "driven in production"}
+	if got := lastCheckReport(t, facts); !sameCheckReport(got, want) {
+		t.Fatalf("the check's own role's report = %+v, want %+v", got, want)
 	}
 }
 
@@ -827,73 +1229,6 @@ func TestHandoffCompleteReadsTheCommitOnlyForAPhaseCompletionAfterTheGrant(t *te
 	}
 }
 
-// READY is read against the issue's pull request in the repository the issue's record names, as
-// the implement App minted for that repository's owner: an issue on a second owner's repository
-// is read there, with that owner's token alone.
-func TestHandoffCompleteReadyReadsTheIssuesRecordedRepositoryAsItsOwner(t *testing.T) {
-	github := newHandoffGitHub(t)
-	github.set(func(g *handoffGitHub) { g.repo = "zeta/tools" })
-	h, facts := newHandoffHarness(t, github, nil, nil)
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: "LEGION-208", Repo: "zeta/tools", DefaultBranch: "main", GitHubRepo: "zeta/tools", Tree: "LEGION-208",
-			Project: testProject, Title: "LEGION-208", Phase: phase.Merging, Generation: 1, Status: "in_progress"}); err != nil {
-			return err
-		}
-		return records.PutPullRequest(context.Background(), tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "zeta/tools", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headSHA,
-		})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	seedApproval(t, h, "LEGION-208", approvedSHA)
-	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "READY on zeta/tools", Ready: true, Commit: headSHA}))
-	if got := facts.recorded(); len(got) != 1 {
-		t.Fatalf("handoff facts = %#v, want the READY", got)
-	}
-	github.mu.Lock()
-	defer github.mu.Unlock()
-	if len(github.bearers) == 0 {
-		t.Fatal("READY read nothing of GitHub")
-	}
-	for _, bearer := range github.bearers {
-		if bearer != "Bearer implement-token-for-zeta" {
-			t.Fatalf("GitHub was read with %q, want the implement App's token for zeta, the recorded repository's owner, alone", bearer)
-		}
-	}
-}
-
-// GitHub failing to answer a READY read is GitHub's failure, not the head's: the completion is
-// refused to complete again, nothing is recorded, and the same READY once GitHub answers is applied
-// rather than answered already received. The reads are made as the implement App, minted for the
-// repository's owner, whose token never leaves the daemon.
-func TestHandoffCompleteReadyRefusesWhenGitHubFailsToAnswerAndAppliesTheRetry(t *testing.T) {
-	github := newHandoffGitHub(t)
-	h, facts, merger := newReadyHarness(t, github)
-	github.set(func(g *handoffGitHub) { g.fail = map[string]int{"pulls/": http.StatusInternalServerError} })
-	if code, body := ready(t, h, merger); code != http.StatusBadGateway || !strings.HasPrefix(body, "GITHUB_READ_FAILED: ") || !strings.Contains(body, "with 500") || !strings.HasSuffix(body, "GitHub's failure, not the head's: complete again") {
-		t.Fatalf("READY while the pull request read fails = %d %q", code, body)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts after GitHub's failure = %#v, want none", got)
-	}
-	github.set(func(g *handoffGitHub) { g.fail = map[string]int{} })
-	if code, body := ready(t, h, merger); code != http.StatusOK || body != "" {
-		t.Fatalf("READY once GitHub answers = %d %q; want it published", code, body)
-	}
-	if fact := lastCompletion(t, facts); !fact.Ready || fact.Commit != headSHA {
-		t.Fatalf("completion = %+v, want READY at %s", fact, headSHA)
-	}
-	github.mu.Lock()
-	defer github.mu.Unlock()
-	for _, bearer := range github.bearers {
-		if bearer != "Bearer implement-token-for-acme" {
-			t.Fatalf("GitHub was read with %q, want the implement App's token for acme, the repository's owner, alone", bearer)
-		}
-	}
-}
-
 func TestHandoffCompleteRefusesAnUnrecordedIssue(t *testing.T) {
 	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
@@ -916,81 +1251,15 @@ func TestHandoffCompleteRefusesExpiredAndRevokedGrants(t *testing.T) {
 
 	now = now.Add(-time.Minute)
 	grant := implementer.grant(t)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd"}))
+	written := implementer.writeHandoff("implement", 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd", HandoffID: written, HandoffVersion: 1}))
 	// The same command's grant still authenticates a second call; the phase's dedupe answers it.
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd"}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented", Commit: "bbccdd", HandoffID: written, HandoffVersion: 1}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
 
 	implementer.replaceRegistration(t)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented again", Commit: "ccddee"}), http.StatusForbidden, "GRANT_REVOKED")
+	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "implemented again", Commit: "ccddee", HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}), http.StatusForbidden, "GRANT_REVOKED")
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("handoff facts = %#v, want only the completion made before the claim was replaced", got)
-	}
-}
-
-// A merger whose completion was refused READY_REQUIRED corrects it with ready: true at the same
-// commit. The refusal is recorded as processed, so the corrected call must be a different fact: it
-// reaches the workflow, and only a true retry of it is answered "already received". Otherwise the
-// issue stays in merging with no way out but a new commit nothing asks for.
-func TestHandoffCompleteAppliesTheMergersCorrectedReadyAtTheSameCommit(t *testing.T) {
-	github := newHandoffGitHub(t)
-	h, facts := newHandoffHarness(t, github, nil, &intake.Refusal{Status: http.StatusConflict, Code: "READY_REQUIRED", Message: "call the legion tool's handoff_complete with ready: true"})
-	seedIssueAt(t, h, "LEGION-208", phase.Merging)
-	seedPullRequest(t, h, "LEGION-208", headSHA)
-	seedApproval(t, h, "LEGION-208", approvedSHA)
-	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "merge-ready", Commit: headSHA}), http.StatusConflict, "READY_REQUIRED")
-
-	facts.mu.Lock()
-	facts.refusal = nil
-	facts.mu.Unlock()
-	corrected := HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "merge-ready", Ready: true, Commit: headSHA}
-	completion(t, h.complete(corrected))
-	corrected.GrantID = merger.grant(t)
-	assertFailure(t, h.complete(corrected), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
-	got := facts.recorded()
-	if len(got) != 2 {
-		t.Fatalf("handoff facts = %#v, want the refused completion and the corrected READY", got)
-	}
-	if fact, ok := got[1].(intake.HandoffComplete); !ok || !fact.Ready || fact.Commit != headSHA {
-		t.Fatalf("corrected fact = %#v, want READY at %s", got[1], headSHA)
-	}
-}
-
-// The daemon posts the READY packet as one Dispatch message with the outbox's marker, so a packet
-// over record.MessagePostLimit would be refused by Dispatch on every attempt. The route refuses it
-// before the fact is applied, naming how far over it is, and records nothing: the merger's
-// shortened packet at the same commit, the call the refusal asks for, is applied. The limit counts
-// UTF-16 units, as Dispatch does, so a character outside the Basic Multilingual Plane counts twice.
-func TestHandoffCompleteRefusesAREADYPacketTheDaemonCannotPostAndAppliesTheShortenedRetry(t *testing.T) {
-	github := newHandoffGitHub(t)
-	h, facts := newHandoffHarness(t, github, nil, nil)
-	seedIssueAt(t, h, "LEGION-208", phase.Merging)
-	seedPullRequest(t, h, "LEGION-208", headSHA)
-	seedApproval(t, h, "LEGION-208", approvedSHA)
-	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	const emoji = "\U0001F600"
-	over := emoji + strings.Repeat("x", record.MessagePostLimit-1)
-	recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: over, Ready: true, Commit: headSHA})
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("READY one unit over the limit = %d, want 400; body %s", recorder.Code, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if want := fmt.Sprintf("1 characters over the %d the daemon can post as one Dispatch message (%d/%d)", record.MessagePostLimit, record.MessagePostLimit+1, record.MessagePostLimit); failure.Code != "READY_PACKET_TOO_LONG" || !strings.Contains(failure.Error, want) {
-		t.Fatalf("refusal = %+v, want READY_PACKET_TOO_LONG naming %q", failure, want)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts after the refusal = %#v, want none recorded", got)
-	}
-
-	shortened := emoji + strings.Repeat("x", record.MessagePostLimit-2)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: shortened, Ready: true, Commit: headSHA}))
-	got := facts.recorded()
-	if len(got) != 1 {
-		t.Fatalf("handoff facts = %#v, want the shortened READY", got)
-	}
-	if fact, ok := got[0].(intake.HandoffComplete); !ok || !fact.Ready || fact.Commit != headSHA || fact.Summary != shortened {
-		t.Fatalf("applied fact = %#v, want the shortened READY at %s", got[0], headSHA)
 	}
 }
 
@@ -1009,7 +1278,7 @@ func TestHandoffCompleteAppliesAfterReadmissionTheCompletionALingeringTreeRefuse
 		setIssue(t, h, key, func(issue *record.Issue) { issue.Generation = 1 })
 	}
 	planner := newLiveClaim(t, h, "LEGION-209", claim.RolePlanner)
-	request := HandoffCompleteRequest{GrantID: planner.grant(t), Summary: "planned", Commit: "facade"}
+	request := HandoffCompleteRequest{GrantID: planner.grant(t), Summary: "planned", HandoffID: planner.writeHandoff("plan", 1), HandoffVersion: 1}
 	assertFailure(t, h.complete(request), http.StatusConflict, "TREE_LINGERING")
 
 	facts.mu.Lock()
@@ -1045,7 +1314,7 @@ func TestHandoffCompleteAcceptsACompletionFromATurnNoDeliveryBacks(t *testing.T)
 		t.Fatalf("pending after the turn = %+v, want it retired", pending)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from a notice-started turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 }
@@ -1058,12 +1327,14 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 	h := newHarness(t)
 	github := newHandoffGitHub(t)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, ReviewRoundCap: 3, MaxFixAttempts: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	facts := &factRecorder{}
+	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine, facts}, Dispatch: &statusRecorder{},
+		Handlers: []intake.Handler{engine, facts}, Dispatch: h.handoffs,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	// The tester takes run 1's task, and the child is then re-entered at run 2 while it works.
@@ -1079,7 +1350,7 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 	ctx := context.Background()
 	complete := func() *httptest.ResponseRecorder {
 		t.Helper()
-		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA})
+		return h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 	}
 
 	// The worker is still on generation 1's task while the issue has moved to 2: refused, and the
@@ -1103,8 +1374,8 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 		t.Fatalf("deliver generation 2's task: %v", err)
 	}
 	// Queued but not yet started, generation 2's task is the one the refusal points the worker to.
-	if message := refused(t, complete(), http.StatusConflict, "HANDOFF_STALE_GENERATION"); !strings.Contains(message, id) || !strings.Contains(message, "same commit") {
-		t.Fatalf("the refusal with generation 2's task queued = %q, want it to name %s and the retry at the same commit", message, id)
+	if message := refused(t, complete(), http.StatusConflict, "HANDOFF_STALE_GENERATION"); !strings.Contains(message, id) || !strings.Contains(message, "the same handoff_complete in its turn") {
+		t.Fatalf("the refusal with generation 2's task queued = %q, want it to name %s and the same completion in that task's turn", message, id)
 	}
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token, DeliveryID: id}); err != nil {
 		t.Fatalf("start generation 2's turn: %v", err)
@@ -1126,21 +1397,25 @@ func TestAStaleCompletionDoesNotTakeTheNewRunsKey(t *testing.T) {
 
 // A pull request waiting to be merged that starts conflicting with its base is sent back to the
 // implementer, which merges the base forward in the same run, with the same claim. The key the
-// route builds tells one implementing pass from the last by the round, so that conflict round has
-// to open a round of its own: otherwise a completion that pushed no new handoff reports the branch
-// head of the round before at the same round, takes that completion's key and is answered
-// HANDOFF_ALREADY_RECORDED, which tells the worker it was received when nothing moved. The workflow
-// sees it instead and refuses it naming the handoff the round must write, and the completion that
-// carries one moves the issue on to testing.
-func TestAConflictRoundsCompletionIsTheNewRoundsAndNotTheLastOnes(t *testing.T) {
+// route builds tells one implementing pass from the last by the pass count, so that conflict pass
+// has to open a pass of its own: otherwise a completion that wrote no new handoff names the record
+// of the pass before at the same count, takes that completion's key and is answered
+// HANDOFF_ALREADY_RECORDED, which tells the worker it was received when nothing moved. The
+// workflow sees it instead and refuses it HANDOFF_NOT_NEW, naming the record and the command that
+// writes the pass's own, whatever commit the merge pushed; the completion naming a new record
+// moves the issue on to testing. The conflict is no review, so it counts no review round; the pass
+// it counts is the one the key is built on.
+func TestAConflictPassesCompletionIsTheNewPassesAndNotTheLastOnes(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h := newHarness(t)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, ReviewRoundCap: 3, MaxFixAttempts: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine := workflow.New(records, workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 3}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.handoffs = &statusRecorder{}
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
-		Handlers: []intake.Handler{engine}, Dispatch: &statusRecorder{},
+		Handlers: []intake.Handler{engine}, Dispatch: h.handoffs,
 		Tokens: handoffTokens{}, GitHubAPI: github.url,
 	}).Handler
 	ctx := context.Background()
@@ -1154,9 +1429,9 @@ func TestAConflictRoundsCompletionIsTheNewRoundsAndNotTheLastOnes(t *testing.T) 
 		t.Fatalf("record the pull request: %v", err)
 	}
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	complete := func(commit string) *httptest.ResponseRecorder {
+	complete := func(commit, handoff string, version int) *httptest.ResponseRecorder {
 		t.Helper()
-		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: commit})
+		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "implemented", Commit: commit, HandoffID: handoff, HandoffVersion: version})
 	}
 	phaseNow := func() phase.Phase {
 		t.Helper()
@@ -1167,50 +1442,52 @@ func TestAConflictRoundsCompletionIsTheNewRoundsAndNotTheLastOnes(t *testing.T) 
 		return got
 	}
 
-	// The first round's handoff is the pushed commit carrying it, which the tool found in the pane.
-	if recorder := complete("handoff-1"); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
-		t.Fatalf("the first round's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
+	// The first pass's handoff is the record it wrote on the Dispatch issue, at its pushed head.
+	first := implementer.writeHandoff("implement", 1)
+	if recorder := complete("head", first, 1); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
+		t.Fatalf("the first pass's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
 	}
-	// Testing, review, retro and the merger's READY pass; the issue waits on a human's merge.
-	issue.Phase, issue.Status = phase.AwaitingMerge, "retro"
+	// Testing, review and retro pass; the issue stands in merging.
+	issue.Phase, issue.Status = phase.Merging, "retro"
 	h.recordIssue(issue)
 	if result, err := intake.ApplyFact(ctx, h.store.Pool(), "github", "mergeability-conflicting", intake.PullRequestMergeability{
-		Repo: "acme/widgets", Number: 42, Base: "main", Mergeable: record.MergeabilityConflicting,
+		Repo: "acme/widgets", Number: 42, Base: "main", HeadSHA: "head", Mergeable: record.MergeabilityConflicting,
 	}, engine); err != nil || result.Refusal != nil {
 		t.Fatalf("apply the conflicting read = %+v, %v", result.Refusal, err)
 	}
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
 	}
-	// The implementer takes the conflict round's task, a task of the run it already serves.
+	// The implementer takes the conflict pass's task, a task of the run it already serves.
 	machine, ok := h.supervisor.Machine(implementer.token)
 	if !ok {
 		t.Fatal("no machine for the implementer")
 	}
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: implementer.token}); err != nil {
-		t.Fatalf("end the first round's turn: %v", err)
+		t.Fatalf("end the first pass's turn: %v", err)
 	}
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: implementer.token, Task: "merge main forward", ID: "outbox:conflict", Generation: 1}); err != nil {
-		t.Fatalf("deliver the conflict round's task: %v", err)
+		t.Fatalf("deliver the conflict pass's task: %v", err)
 	}
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: implementer.token, DeliveryID: "outbox:conflict"}); err != nil {
-		t.Fatalf("start the conflict round's turn: %v", err)
+		t.Fatalf("start the conflict pass's turn: %v", err)
 	}
 
-	// It merges main forward and completes without writing a new handoff: the carrying commit the
-	// tool finds is still the first round's.
-	stale := complete("handoff-1")
+	// It merges main forward, pushes, and completes without writing a new handoff: the newest
+	// record of the phase is still the first pass's.
+	stale := complete("merged", first, 1)
 	var failure Failure
 	decodeInto(t, stale, &failure)
-	if stale.Code != http.StatusConflict || failure.Code != "HANDOFF_NOT_NEW" || !strings.Contains(failure.Error, "reported commit handoff-1 for its previous phase of LEGION-208; write and commit this phase's handoff before completing") {
-		t.Fatalf("the completion with no new handoff = %d %+v, want 409 HANDOFF_NOT_NEW naming the handoff to write", stale.Code, failure)
+	if stale.Code != http.StatusConflict || failure.Code != "HANDOFF_NOT_NEW" ||
+		!strings.Contains(failure.Error, "named handoff record "+first+" for its previous phase of LEGION-208; write this phase's handoff with `dispatch handoff-write --issue LEGION-208 --phase implement") {
+		t.Fatalf("the completion with no new handoff = %d %+v, want 409 HANDOFF_NOT_NEW naming the record and the handoff to write", stale.Code, failure)
 	}
 	if got := phaseNow(); got != phase.Implementing {
 		t.Fatalf("after the refused completion the issue is in %s, want implementing", got)
 	}
-	// With the conflict round's handoff written and committed, its completion moves the issue on.
-	if recorder := complete("handoff-2"); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
-		t.Fatalf("the conflict round's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
+	// With the conflict pass's handoff written, its completion moves the issue on.
+	if recorder := complete("merged", implementer.writeHandoff("implement", 2), 2); recorder.Code != http.StatusOK || phaseNow() != phase.Testing {
+		t.Fatalf("the conflict pass's completion = %d (%s), phase %s; want 200 and testing", recorder.Code, recorder.Body, phaseNow())
 	}
 }
 
@@ -1234,7 +1511,7 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	if restarted := h.supervisor.restart(t, tester.token); restarted.Claim().ServingGeneration != 1 {
 		t.Fatalf("the rebuilt claim serves generation %d, want 1", restarted.Claim().ServingGeneration)
 	}
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion after the restart = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1281,7 +1558,7 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 		t.Fatalf("pending after the acknowledgement = %+v, want it delivered and unconfirmed", p)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1292,13 +1569,21 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 // A task the agent refused is not a task it read, whichever way it refused. In a turn of its own
 // ("Agent is already processing", the d9194522 sequence) it never saw this prompt; with no turn
 // running (a provider answering "No API key found" before any turn began) the prompt did not run
-// at all. Either way a completion arriving in whatever turn follows is not that task's run, and a
-// claim that has confirmed nothing has no run to attribute it to.
+// at all. Either way the refusal leaves the claim serving no run, and what becomes of a
+// completion arriving in whatever turn follows is decided by the task the claim still holds
+// rather than by the refusal: a task the route can place in the issue's current work — its own
+// generation and its own phase — carries the run and the entry that completion is recorded
+// against, and a claim holding anything else is refused HANDOFF_NO_RUN. The two refused cases
+// here hold a task that names no phase, which places it in no phase's work; the third holds a
+// task of the issue's own generation and phase, and the worker that went on and did that phase's
+// work in the turn after the refusal is not made to lose it.
 func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		refusal   string
 		turnFirst bool
+		taskPhase phase.Phase
+		accepted  bool
 	}{
 		{
 			name:      "refused in a turn of the agent's own",
@@ -1306,9 +1591,16 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 			turnFirst: true,
 		},
 		{name: "refused with no turn running", refusal: "No API key found for provider anthropic"},
+		{
+			name:      "refused in a turn of the agent's own, holding the issue's own phase's task",
+			refusal:   "Agent is already processing. Use steer() or followUp() to queue messages",
+			turnFirst: true,
+			taskPhase: phase.Testing,
+			accepted:  true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject, Title: "LEGION-208",
 				Phase: phase.Testing, Generation: 2, Status: "in_progress"})
 			token, boot := h.launch("LEGION-208", claim.RoleTester)
@@ -1325,8 +1617,9 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 			}
 			// The claim has confirmed no task: run 1's prompt was acknowledged and its turn was
 			// never seen. The child re-entered at run 2, whose task is delivered and acknowledged.
+			// The phase the task names is the case's own: none, or the one the issue is in.
 			second := "outbox:42"
-			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: "run 2's task", ID: second, Generation: 2}); err != nil {
+			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: "run 2's task", ID: second, Generation: 2, Phase: tc.taskPhase}); err != nil {
 				t.Fatalf("deliver run 2's task: %v", err)
 			}
 			if err := machine.Handle(ctx, supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: second}); err != nil {
@@ -1351,7 +1644,17 @@ func TestACompletionInAForeignTurnIsNotTheRefusedTasksRun(t *testing.T) {
 				notice()
 			}
 
-			assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}), http.StatusConflict, "HANDOFF_NO_RUN")
+			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+			if !tc.accepted {
+				assertFailure(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
+				return
+			}
+			if recorder := h.complete(request); recorder.Code != http.StatusOK {
+				t.Fatalf("the completion of the refused task's own run and phase = %d, want 200; body %s", recorder.Code, recorder.Body)
+			}
+			if completion := lastCompletion(t, facts); completion.Generation != 2 {
+				t.Fatalf("the completion names generation %d, want the held task's 2", completion.Generation)
+			}
 		})
 	}
 }
@@ -1386,7 +1689,7 @@ func TestAnOperatorsTaskLeavesTheRunTheClaimIsServing(t *testing.T) {
 		t.Fatalf("end the operator's turn: %v", err)
 	}
 
-	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}); recorder.Code != http.StatusOK {
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
 		t.Fatalf("completion after the operator's task = %d, want 200; body %s", recorder.Code, recorder.Body)
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
@@ -1435,7 +1738,7 @@ func TestATakenBackConfirmationDoesNotMoveTheRunTheClaimIsServing(t *testing.T) 
 	// The completion is the old run's, so it is refused as stale before any fact is applied:
 	// crediting the new run would accept a completion of a task the worker has not read. The
 	// refusal points the worker to the new run's task, which it has not read yet.
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}), http.StatusConflict, "HANDOFF_STALE_GENERATION")
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_GENERATION")
 	if waiting := machine.Claim().Pending; !strings.Contains(message, "generation 1's") || !strings.Contains(message, waiting.ID) {
 		t.Fatalf("the refusal = %q, want it to attribute the completion to run 1 and name the waiting task %s", message, waiting.ID)
 	}
@@ -1454,7 +1757,176 @@ func TestHandoffCompleteRefusesACompletionFromAClaimThatTookNoTask(t *testing.T)
 	registration := h.registered(boot, session)
 	untasked := liveClaim{h: h, token: token, session: session, secret: registration.Secret, tree: "LEGION-208", issue: "LEGION-208"}
 
-	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: untasked.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}), http.StatusConflict, "HANDOFF_NO_RUN")
+	assertFailure(t, h.complete(HandoffCompleteRequest{GrantID: untasked.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: untasked.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_NO_RUN")
+}
+
+// untaskedClaim launches role's claim on issue and registers its session, with no task delivered
+// and no turn started: a worker that has served no run (Claim.ServingRun answers 0, and
+// ServingEntry 0).
+func untaskedClaim(t *testing.T, h *harness, issue string, role claim.Role) liveClaim {
+	t.Helper()
+	token, boot := h.launch(issue, role)
+	session := "ses_" + string(role) + "_" + issue
+	registration := h.registered(boot, session)
+	machine, ok := h.supervisor.Machine(token)
+	if !ok {
+		t.Fatalf("no machine for %s", token)
+	}
+	if err := machine.Handle(context.Background(), supervise.RequestReady{Claim: token, Generation: machine.Claim().Generation, Session: session}); err != nil {
+		t.Fatalf("ready %s: %v", token, err)
+	}
+	return liveClaim{h: h, token: token, session: session, secret: registration.Secret, tree: issue, issue: issue}
+}
+
+// holdingTask hands c the task and leaves it holding it: the prompt is never acknowledged and no
+// turn confirms it. That is the state a lost prompt, a busy refusal, a late refusal or a failed
+// adoption leaves behind, and the one the completion route takes the run and the entry from
+// — a claim that has served no older work answers for the task it holds (supervise's serving,
+// rule 3), which is what these tests are about, so the held task's own run and entry are
+// what the claim serves here.
+func holdingTask(t *testing.T, h *harness, c liveClaim, task supervise.RequestDeliver) {
+	t.Helper()
+	machine, ok := h.supervisor.Machine(c.token)
+	if !ok {
+		t.Fatalf("no machine for %s", c.token)
+	}
+	task.Claim = c.token
+	if err := machine.Handle(context.Background(), task); err != nil {
+		t.Fatalf("deliver %s to %s: %v", task.ID, c.token, err)
+	}
+	held := machine.Claim()
+	if held.Pending == nil || !held.Pending.DeliveredAt.IsZero() || !held.Pending.ConfirmedAt.IsZero() {
+		t.Fatalf("the pending task = %+v, want it held unacknowledged and unconfirmed", held.Pending)
+	}
+	if run, entry := held.ServingRun(), held.ServingEntry(); run != task.Generation || entry != task.Entry {
+		t.Fatalf("the claim serves run %d and entry %d, want the held task's %d and %d", run, entry, task.Generation, task.Entry)
+	}
+}
+
+// A worker whose task was sent and never acknowledged — a lost prompt, a refusal the agent made
+// in a turn of its own, an adoption that failed — does the phase's work anyway, in whatever turn
+// follows, and its claim serves no run to attribute the completion to. Refusing it costs the
+// issue a phase for nothing, so the route takes the run and the entry from the task the
+// claim is holding when that task is the issue's own current generation and phase: the completion
+// is recorded against that task's run, not refused and not credited to some other one. The
+// entry it adopts with the run is what
+// TestHandoffCompleteHoldsAnAdoptedRunToTheHeldTasksOwnEntry pins.
+func TestHandoffCompleteAdoptsTheRunOfTheTaskTheClaimIsHolding(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 1)
+	tester := untaskedClaim(t, h, "LEGION-208", claim.RoleTester)
+	holdingTask(t, h, tester, supervise.RequestDeliver{
+		Task: "test LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Testing, Entry: 1})
+
+	if recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}); recorder.Code != http.StatusOK {
+		t.Fatalf("the completion of the held task = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	if completion := lastCompletion(t, facts); completion.Generation != 1 {
+		t.Fatalf("the completion names generation %d, want the held task's 1", completion.Generation)
+	}
+}
+
+// The fallback is only as wide as the state it was written for: the task the claim holds has to
+// be the issue's own current generation and its own current phase. A claim holding no task, one
+// of a run the issue has left, or one of another phase is still refused HANDOFF_NO_RUN with
+// nothing recorded, and the refusal says what the claim holds — naming the run or the phase of
+// the task when it holds one — that nothing was recorded, and what the worker does next, which is
+// what skills/legion-worker/SKILL.md tells it for this code: never the work again, never a second
+// handoff.
+func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		at         phase.Phase
+		role       claim.Role
+		generation uint64
+		pending    *supervise.RequestDeliver
+		says       []string
+	}{
+		{
+			name: "no task at all", at: phase.Testing, role: claim.RoleTester, generation: 1,
+			says: []string{"this claim holds no task at all, and LEGION-208 is on generation 1 in testing"},
+		},
+		{
+			// The tester's task of run 1 was never read; the child was re-admitted and the issue
+			// is on run 2, whose testing task has not reached this claim.
+			name: "a task of the run the issue has left", at: phase.Testing, role: claim.RoleTester, generation: 2,
+			pending: &supervise.RequestDeliver{Task: "test run 1", ID: "outbox:77", Generation: 1, Phase: phase.Testing},
+			says:    []string{"the task this claim holds (outbox:77) is generation 1's, and LEGION-208 is on generation 2"},
+		},
+		{
+			// The implementer's implementing task was never read, the issue went on without it
+			// and came back to the same role in retro: the task it holds is the other phase's.
+			name: "a task of another phase", at: phase.Retro, role: claim.RoleImplementer, generation: 1,
+			pending: &supervise.RequestDeliver{Task: "implement LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Implementing},
+			says:    []string{"the task this claim holds (outbox:77) is the implementing phase's, and LEGION-208 is in retro"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", tc.at)
+			if tc.generation != 1 {
+				setIssue(t, h, "LEGION-208", func(issue *record.Issue) { issue.Generation = tc.generation })
+			}
+			worker := untaskedClaim(t, h, "LEGION-208", tc.role)
+			if tc.pending != nil {
+				holdingTask(t, h, worker, *tc.pending)
+			}
+			request := HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "the work is done", Commit: headSHA}
+			if tc.role == claim.RoleTester {
+				request = HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "tests pass", Verdict: "pass",
+					HandoffID: worker.writeHandoff("test", 1), HandoffVersion: 1}
+			}
+
+			message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_NO_RUN")
+			for _, want := range append(tc.says,
+				"nothing was recorded",
+				"Push nothing further, end this turn without completing and tell the architect",
+				fmt.Sprintf("if the daemon queues this claim a generation-%d %s task", tc.generation, tc.at),
+				"call the same handoff_complete in that task's turn, and never redo the work or write a second handoff") {
+				if !strings.Contains(message, want) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, want)
+				}
+			}
+			if recorded := facts.recorded(); len(recorded) != 0 {
+				t.Fatalf("the refused completion reached the workflow as %+v, want no fact", recorded)
+			}
+		})
+	}
+}
+
+// The run adopted from the held task never buys that task's completion past the entry fence: the
+// tester's first testing task was lost, CI went red while it worked, and the issue came back to
+// testing on a second entry its row already names — which the claim cannot be given, since a
+// second delivery is refused while the first is pending. So the completion is the earlier
+// entry's, and the route reads the entry from the very task it took the run from. Without that,
+// the fence would compare the row against the 0 a claim serving no run answers, stop comparing
+// for every completion this fallback admits, and take the next testing phase's completion from
+// the turn before it.
+func TestHandoffCompleteHoldsAnAdoptedRunToTheHeldTasksOwnEntry(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := untaskedClaim(t, h, "LEGION-208", claim.RoleTester)
+	holdingTask(t, h, tester, supervise.RequestDeliver{
+		Task: "test LEGION-208", ID: "outbox:77", Generation: 1, Phase: phase.Testing, Entry: 1})
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
+	for _, want := range []string{
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"nothing was recorded",
+		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
+		"complete it with a handoff of its own, never this completion's record, commit or verdict",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("the refusal = %q, want it to say %q", message, want)
+		}
+	}
+	if recorded := facts.recorded(); len(recorded) != 0 {
+		t.Fatalf("the refused completion reached the workflow as %+v, want no fact", recorded)
+	}
 }
 
 // The run a completion belongs to is the run of the task the worker is working, and the daemon
@@ -1513,7 +1985,7 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 				tester.replaceRegistration(t)
 			}
 
-			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}
+			request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
 			if delivered != 2 {
 				// A completion attributed to the run that is over is refused before the workflow.
 				if message := refused(t, h.complete(request), http.StatusConflict, "HANDOFF_STALE_GENERATION"); !strings.Contains(message, fmt.Sprintf("generation %d's", delivered)) {
@@ -1528,449 +2000,5 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 				t.Fatalf("the completion names generation %d, want the delivery's %d", completion.Generation, delivered)
 			}
 		})
-	}
-}
-
-// newReadyHarness is the merger of LEGION-208 at merging, with its pull request acme/widgets#42
-// recorded at headSHA, retro's last push, and its review round's approval of approvedSHA: what a
-// READY is read against.
-func newReadyHarness(t *testing.T, github *handoffGitHub) (*harness, *factRecorder, liveClaim) {
-	t.Helper()
-	h, facts := newHandoffHarness(t, github, nil, nil)
-	seedIssueAt(t, h, "LEGION-208", phase.Merging)
-	seedPullRequest(t, h, "LEGION-208", headSHA)
-	seedApproval(t, h, "LEGION-208", approvedSHA)
-	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	return h, facts, merger
-}
-
-func TestHandoffCompleteReadyRefusesAHeadThatMovedBeforeTheMergerCanArmIt(t *testing.T) {
-	const movedHead = "f00d00000000000000000000000000000000ff"
-	github := newHandoffGitHub(t)
-	github.set(func(g *handoffGitHub) { g.pullHead = movedHead })
-	h, facts, merger := newReadyHarness(t, github)
-
-	recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "READY at the old head", Ready: true, Commit: headSHA})
-	if message := refused(t, recorder, http.StatusConflict, "READY_HEAD_MOVED"); !strings.Contains(message, movedHead) {
-		t.Fatalf("READY head-moved refusal = %q, want it to name %s", message, movedHead)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts after stale READY = %#v, want none", got)
-	}
-
-	recorder = h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "READY at the moved head", Ready: true, Commit: movedHead})
-	completion(t, recorder)
-	if got := facts.recorded(); len(got) != 1 {
-		t.Fatalf("handoff facts after the re-posted READY = %#v, want one at %s", got, movedHead)
-	}
-	if got := lastCompletion(t, facts).Commit; got != movedHead {
-		t.Fatalf("re-posted READY commit = %s, want %s", got, movedHead)
-	}
-}
-
-// The route holds READY's commit to GitHub's head and passes the workflow the record as it read it,
-// head and clock, which follows GitHub by webhook and a periodic read and can lag, and GitHub's clock in that read.
-// Here the record still holds an earlier push, at an earlier clock, while GitHub and the commit are
-// at retro's last: the READY passes, and its fact carries the lagging record and GitHub's clock, so
-// the workflow takes the record as lagging, not moved, and stamps the READY's head with that clock.
-func TestHandoffCompleteReadyPassesTheRecordedHeadItRead(t *testing.T) {
-	recordedAt, githubAt := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC), time.Date(2026, 10, 12, 10, 5, 0, 0, time.UTC)
-	github := newHandoffGitHub(t)
-	github.set(func(g *handoffGitHub) { g.pullUpdatedAt = githubAt })
-	h, facts, merger := newReadyHarness(t, github)
-	seedPullRequestAt(t, h, "LEGION-208", "stale", recordedAt)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "READY at retro's last push", Ready: true, Commit: headSHA}))
-	got := lastCompletion(t, facts)
-	if got.Commit != headSHA || got.RecordedHead != "stale" || !got.RecordedHeadAt.Equal(recordedAt) || !got.HeadAt.Equal(githubAt) {
-		t.Fatalf("the READY fact = commit %q, recorded %q at %s, GitHub's clock %s; want %q, the record's %q at %s, and %s",
-			got.Commit, got.RecordedHead, got.RecordedHeadAt, got.HeadAt, headSHA, "stale", recordedAt, githubAt)
-	}
-}
-
-// GitHub can answer a read from a replica that has not seen the newest push, while the daemon's
-// record already holds it from that push's webhook: the record is then ahead of GitHub's answer,
-// and a READY at the head GitHub showed names a head the pull request has left. Both clocks are the
-// pull request's updated_at, to the second, so a record at another head whose clock is not before
-// GitHub's answer, a same-second tie included, may be ahead of it, and READY is refused, naming the
-// recorded head, with nothing recorded. A tie costs one retry, until the head's own webhook lands.
-func TestHandoffCompleteReadyRefusesWhenTheRecordIsAheadOfGitHubsAnswer(t *testing.T) {
-	const newer = "beef00000000000000000000000000000000ff"
-	githubAt := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		name       string
-		recordedAt time.Time
-	}{
-		{"a record later than GitHub's answer", githubAt.Add(5 * time.Minute)},
-		{"a record in the same second as GitHub's answer", githubAt},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			github := newHandoffGitHub(t)
-			github.set(func(g *handoffGitHub) { g.pullUpdatedAt = githubAt })
-			h, facts, merger := newReadyHarness(t, github)
-			seedPullRequestAt(t, h, "LEGION-208", newer, tc.recordedAt)
-			recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "READY at the head GitHub showed", Ready: true, Commit: headSHA})
-			if message := refused(t, recorder, http.StatusConflict, "READY_HEAD_MOVED"); !strings.Contains(message, newer) {
-				t.Fatalf("READY with the record ahead of GitHub = %q, want it to name the recorded head %s", message, newer)
-			}
-			if got := facts.recorded(); len(got) != 0 {
-				t.Fatalf("handoff facts = %#v, want none for a refused READY", got)
-			}
-		})
-	}
-}
-
-// A pull request closed without merging has no merge left to arm, so READY is refused there by
-// GitHub's own state, rather than accepted and left waiting on whether the close's webhook arrives
-// in time to tell the architect: the READY's advance of the record can make that webhook look
-// older than the record, and drop it.
-func TestHandoffCompleteReadyRefusesAPullRequestClosedWithoutMerging(t *testing.T) {
-	github := newHandoffGitHub(t)
-	github.set(func(g *handoffGitHub) { g.pullState = "closed" })
-	h, facts, merger := newReadyHarness(t, github)
-	recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "READY on a closed pull request", Ready: true, Commit: headSHA})
-	if message := refused(t, recorder, http.StatusConflict, "READY_PULL_REQUEST_CLOSED"); !strings.Contains(message, "#42") {
-		t.Fatalf("READY on a closed pull request = %q, want it to name pull request #42", message)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts = %#v, want none for a refused READY", got)
-	}
-}
-
-// A pull request whose change touches a by_hand path is READY for a person to merge, never armed:
-// the answer carries MANUAL_MERGE_REQUIRED, and a rename counts both of its paths, so moving a
-// protected file out of a by_hand path is by hand too.
-// The completion the workflow records carries the note too, so the packet the daemon tells carries
-// it and nobody it reaches arms the pull request.
-func TestHandoffCompleteReadyMarksAByHandPullRequestWithoutAutoArmingIt(t *testing.T) {
-	for _, tc := range []struct {
-		name, files string
-	}{
-		{"a by_hand path", `[{"filename":"migrations/versions/0001_init.py"}]`},
-		{"a rename out of a by_hand path", `[{"filename":"src/legacy.py","previous_filename":"migrations/versions/0001_init.py","status":"renamed"}]`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			github := byHandGitHub(t, tc.files)
-			h, facts, merger := newReadyHarness(t, github)
-			code, body := ready(t, h, merger)
-			if code != http.StatusOK || !strings.HasPrefix(body, "MANUAL_MERGE_REQUIRED:") {
-				t.Fatalf("READY for a by-hand pull request = %d %q", code, body)
-			}
-			if got := lastCompletion(t, facts).MergeNote; got != body {
-				t.Fatalf("the recorded READY's by-hand note = %q, want the answer's %q", got, body)
-			}
-		})
-	}
-}
-
-// A by-hand READY the design gate refuses keeps its note in the refusal, so the merger, which
-// submits the merge on the architect's word once the gate opens, already knows a person merges it.
-func TestHandoffCompleteReadyKeepsTheByHandNoteInADesignGateRefusal(t *testing.T) {
-	github := byHandGitHub(t, `[{"filename":"migrations/versions/0001_init.py"}]`)
-	h, facts := newHandoffHarness(t, github, nil, &intake.Refusal{Status: http.StatusConflict, Code: "DESIGN_GATE_CLOSED", Message: "READY refused: approve design version 4 before requesting READY."})
-	seedIssueAt(t, h, "LEGION-208", phase.Merging)
-	seedPullRequest(t, h, "LEGION-208", headSHA)
-	seedApproval(t, h, "LEGION-208", approvedSHA)
-	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "gate facts hold", Ready: true, Commit: headSHA})
-	if message := refused(t, recorder, http.StatusConflict, "DESIGN_GATE_CLOSED"); !strings.Contains(message, "MANUAL_MERGE_REQUIRED: pull request #42") {
-		t.Fatalf("the design gate's refusal of a by-hand READY = %q, want it to carry the by-hand note", message)
-	}
-	if got := lastCompletion(t, facts).MergeNote; !strings.HasPrefix(got, "MANUAL_MERGE_REQUIRED:") {
-		t.Fatalf("the refused READY's by-hand note = %q, want it recorded for the approval to tell", got)
-	}
-}
-
-// The packet the daemon tells for a by-hand READY carries its note above the merger's packet, so it
-// is the told packet that must fit one Dispatch message. A packet that fits alone but not with the
-// note is refused, naming the note's share, and records nothing.
-func TestHandoffCompleteReadyRefusesAByHandPacketTooLongWithItsNote(t *testing.T) {
-	h, facts, merger := newReadyHarness(t, byHandGitHub(t, `[{"filename":"migrations/versions/0001_init.py"}]`))
-	recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: strings.Repeat("x", record.MessagePostLimit), Ready: true, Commit: headSHA})
-	if message := refused(t, recorder, http.StatusBadRequest, "READY_PACKET_TOO_LONG"); !strings.Contains(message, "by-hand note") {
-		t.Fatalf("a by-hand READY whose packet fits only alone = %q, want it refused naming the by-hand note", message)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts = %#v, want none for a refused READY", got)
-	}
-}
-
-// byHandGitHub is a GitHub whose pull request #42 changes files, under a by_hand rule for
-// migrations/versions/.
-func byHandGitHub(t *testing.T, files string) *handoffGitHub {
-	t.Helper()
-	github := newHandoffGitHub(t)
-	github.set(func(g *handoffGitHub) {
-		g.merge.ByHand = []config.PathPattern{{Expression: "^migrations/versions/", Regexp: regexp.MustCompile("^migrations/versions/")}}
-		g.pullFiles = files
-	})
-	return github
-}
-
-// GitHub lists at most 3,000 of a pull request's changed files, so a by_hand path past that limit
-// is never read. With by_hand rules configured, READY refuses a pull request at the limit, naming
-// why, rather than calling an unread path safe to arm.
-func TestHandoffCompleteReadyRefusesAFileListGitHubTruncated(t *testing.T) {
-	files := make([]string, 3000)
-	for i := range files {
-		files[i] = fmt.Sprintf(`{"filename":"src/file%04d.go"}`, i)
-	}
-	github := newHandoffGitHub(t)
-	github.set(func(g *handoffGitHub) {
-		g.merge.ByHand = []config.PathPattern{{Expression: "^migrations/versions/", Regexp: regexp.MustCompile("^migrations/versions/")}}
-		g.pullFiles = "[" + strings.Join(files, ",") + "]"
-	})
-	h, facts, merger := newReadyHarness(t, github)
-	if code, body := ready(t, h, merger); code != http.StatusConflict || !strings.HasPrefix(body, "READY_FILES_TRUNCATED:") {
-		t.Fatalf("READY of a pull request with 3,000 changed files = %d %q", code, body)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts = %#v, want none for a refused READY", got)
-	}
-}
-
-// A disarm row and the READY merge row a new READY queues each decide by GitHub and then the record
-// when they run, in whichever order the outbox runs them: a disarm still unfinished when a new READY
-// is accepted keeps any arm at the new READY head, and the READY merge submits nothing while an arm
-// stands. READY therefore does not wait for it.
-func TestHandoffCompleteReadyDoesNotWaitForAnUnfinishedDisarm(t *testing.T) {
-	github := newHandoffGitHub(t)
-	h, facts, merger := newReadyHarness(t, github)
-	row, err := record.NewOutboxRow("LEGION-208", record.AutoMergeDisable{Number: 42}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error { return record.NewStore().Enqueue(context.Background(), tx, row) }); err != nil {
-		t.Fatalf("queue the disarm: %v", err)
-	}
-	if code, body := ready(t, h, merger); code != http.StatusOK || body != "" {
-		t.Fatalf("READY with the issue's disarm unfinished = %d %q, want it published", code, body)
-	}
-	if got := facts.recorded(); len(got) != 1 {
-		t.Fatalf("handoff facts = %#v, want the one READY", got)
-	}
-}
-
-// A by-hand READY never leaves an arm from an earlier ordinary READY standing. A push that starts
-// touching a by_hand path queues its disarm before the merger reaches READY again; while that
-// durable disarm has not finished, the by-hand READY waits rather than accepting a head GitHub
-// could still merge automatically.
-func TestHandoffCompleteReadyByHandWaitsForAnUnfinishedDisarm(t *testing.T) {
-	github := byHandGitHub(t, `[{"filename":"migrations/versions/0002_by_hand.py"}]`)
-	h, facts, merger := newReadyHarness(t, github)
-	row, err := record.NewOutboxRow("LEGION-208", record.AutoMergeDisable{Number: 42}, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error { return record.NewStore().Enqueue(context.Background(), tx, row) }); err != nil {
-		t.Fatalf("queue the disarm: %v", err)
-	}
-	if code, body := ready(t, h, merger); code != http.StatusConflict || !strings.HasPrefix(body, "READY_DISARM_PENDING:") {
-		t.Fatalf("by-hand READY with the issue's disarm unfinished = %d %q, want it held", code, body)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts = %#v, want none until the disarm finishes", got)
-	}
-}
-
-// ready posts the merger's READY and returns its answer: the note when it was published, or the
-// refusal's code and sentence.
-func ready(t *testing.T, h *harness, merger liveClaim) (code int, body string) {
-	t.Helper()
-	recorder := h.complete(HandoffCompleteRequest{GrantID: merger.grant(t), Summary: "gate facts hold", Ready: true, Commit: headSHA})
-	if recorder.Code == http.StatusOK {
-		var response HandoffCompleteResponse
-		decodeInto(t, recorder, &response)
-		return recorder.Code, response.Note
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	return recorder.Code, failure.Code + ": " + failure.Error
-}
-
-// A merger's READY names the head the daemon will submit, and GitHub, under the base branch's own
-// rules, decides whether that head merges: the daemon neither judges the head's checks nor reads
-// them. READY is published at a head whose required check failed, at one whose required status
-// failed, at one that reports no result at all (a push that skipped CI when it should not have),
-// and at one still running; the submission of the merge waits on GitHub for whatever the base
-// requires of the head, and the workflow withdraws the READY if the head's CI turns red. The
-// proof is the two routes a judgment of READY's own would read and this one asks for neither of:
-// the head's check runs, and its commit statuses.
-func TestHandoffCompleteReadyAcceptsAHeadWithoutReadingItsChecks(t *testing.T) {
-	const (
-		ciGreen      = `{"id":1,"name":"ci","status":"completed","conclusion":"success"}`
-		ciFailed     = `{"id":1,"name":"ci","status":"completed","conclusion":"failure"}`
-		ciRunning    = `{"id":1,"name":"ci","status":"in_progress","conclusion":null}`
-		legacyGreen  = `{"context":"legacy","state":"success"}`
-		legacyFailed = `{"context":"legacy","state":"failure"}`
-	)
-	for _, tc := range []struct {
-		name, checkRun, status string
-	}{
-		{"a required check that failed", ciFailed, legacyGreen},
-		{"a required status that failed", ciGreen, legacyFailed},
-		{"a head whose push skipped CI, with no result for either", "", ""},
-		{"a required check still running", ciRunning, legacyGreen},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			github := newHandoffGitHub(t)
-			github.set(func(g *handoffGitHub) {
-				g.checkRuns, g.statuses = "["+tc.checkRun+"]", "["+tc.status+"]"
-			})
-			h, facts, merger := newReadyHarness(t, github)
-			if code, body := ready(t, h, merger); code != http.StatusOK || body != "" {
-				t.Fatalf("READY = %d %q; want it published with no note", code, body)
-			}
-			if fact := lastCompletion(t, facts); !fact.Ready || fact.Commit != headSHA {
-				t.Fatalf("completion = %+v, want READY at %s", fact, headSHA)
-			}
-			for _, path := range github.serves() {
-				if strings.HasSuffix(path, "/check-runs") || strings.HasSuffix(path, "/status") {
-					t.Fatalf("READY read %q while it judged the packet, want no read of the head's checks", path)
-				}
-			}
-		})
-	}
-}
-
-// A merger's READY names the head a human merges, and a squash merge commits that head merged into
-// the default branch: the issue's own handoffs, .legion/<issue>/, must be gone from it (retro's last
-// commit removes them; dispatch://LEGION-605). READY reads the head's tree on GitHub and is refused,
-// naming the head and the directory, while it still holds .legion/<issue>/, and published once
-// GitHub answers that the head has none. A read GitHub fails leaves the head unknown, and READY is
-// refused as GitHub's failure to retry, never sending the issue back to retro. A pull request a
-// person already merged is published unread, its answer saying so: its head can no longer change,
-// and the workflow takes it on to the production check only on that READY.
-func TestHandoffCompleteReadyRefusesAHeadThatStillCarriesTheIssuesHandoffs(t *testing.T) {
-	const (
-		stillCarries  = `READY_HEAD_CARRIES_HANDOFFS: head c0de00000000 of pull request #42 still carries .legion/LEGION-208/`
-		readRefused   = `GITHUB_READ_FAILED: GitHub's read of .legion/LEGION-208/ at head c0de00000000 of pull request #42 failed, so whether the head still carries it is unknown: complete again`
-		alreadyMerged = `pull request #42 is already merged, so READY was published without reading its head's handoffs`
-	)
-	for _, tc := range []struct {
-		name      string
-		merged    bool
-		carries   bool
-		readFails bool
-		want      string
-	}{
-		{"a head that still carries them", false, true, false, stillCarries},
-		{"a head retro removed them from", false, false, false, ""},
-		{"a head whose tree GitHub fails to read", false, false, true, readRefused},
-		{"a pull request a person merged while its head still carried them", true, true, false, alreadyMerged},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			github := newHandoffGitHub(t)
-			github.set(func(g *handoffGitHub) {
-				g.merged = tc.merged
-				if tc.readFails {
-					g.fail["contents/"] = http.StatusInternalServerError
-				}
-			})
-			h, facts, merger := newReadyHarness(t, github)
-			if tc.carries {
-				github.put(headSHA, ".legion/LEGION-208/implement.json", handoffFile("implement", "LEGION-208"))
-			}
-			code, body := ready(t, h, merger)
-			switch {
-			case tc.merged:
-				if code != http.StatusOK || body != alreadyMerged {
-					t.Fatalf("READY of a merged pull request = %d %q; want it published saying %q", code, body, alreadyMerged)
-				}
-				if reads := github.reads(); len(reads) != 0 {
-					t.Fatalf("READY read %v of a merged pull request's head, want nothing", reads)
-				}
-			case tc.want == "":
-				if code != http.StatusOK || body != "" {
-					t.Fatalf("READY = %d %q; want it published", code, body)
-				}
-				if reads := github.reads(); len(reads) != 1 || reads[0] != ".legion/LEGION-208@"+headSHA {
-					t.Fatalf("READY read %v, want the handoffs directory at the pull request's head", reads)
-				}
-			case tc.readFails:
-				if code != http.StatusBadGateway || !strings.HasPrefix(body, tc.want) {
-					t.Fatalf("READY = %d %q; want %q", code, body, tc.want)
-				}
-			default:
-				if code != http.StatusConflict || !strings.HasPrefix(body, tc.want) {
-					t.Fatalf("READY = %d %q; want %q", code, body, tc.want)
-				}
-			}
-			if recorded := len(facts.recorded()); (recorded == 1) != (code == http.StatusOK) {
-				t.Fatalf("READY = %d with %d facts recorded; want one exactly when it was published", code, recorded)
-			}
-		})
-	}
-}
-
-// What the base branch requires of a head is GitHub's business, and READY reads none of it: its
-// refusals hold the same on a base that requires a check of every head and on one that requires
-// nothing, and a rulesets read that would fail - a private repository on a plan without rulesets
-// answers it 403, "make this repository public to enable this feature"
-// (docs/solutions/legion/controller-gate-2-required-checks-live-reads.md) - refuses no READY,
-// since READY makes no such read.
-func TestHandoffCompleteReadyRefusesTheSameWhateverTheBaseRequires(t *testing.T) {
-	const (
-		unprotected  = `{"name":"main","protected":false}`
-		protected    = `{"name":"main","protected":true,"protection":{"required_status_checks":{"contexts":["legacy"]}}}`
-		requiresCI   = `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]`
-		stillCarries = `READY_HEAD_CARRIES_HANDOFFS: head c0de00000000 of pull request #42 still carries .legion/LEGION-208/`
-		conflicts    = `READY_HEAD_CONFLICTS: head c0de00000000 of pull request #42 conflicts with its base main`
-	)
-	for _, base := range []struct {
-		name, rules, branch string
-		rulesStatus         int
-	}{
-		{"a base requiring a check of every head", requiresCI, protected, 0},
-		{"a base requiring none", `[]`, unprotected, 0},
-		{"a repository whose rulesets read fails", `{"message":"Server Error"}`, unprotected, http.StatusInternalServerError},
-	} {
-		t.Run(base.name, func(t *testing.T) {
-			for _, tc := range []struct {
-				name, mergeableState, want string
-				carries                    bool
-			}{
-				{"a head retro removed the handoffs from", "clean", "", false},
-				{"a head that still carries them", "clean", stillCarries, true},
-				{"a head that conflicts with its base", "dirty", conflicts, false},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					github := newHandoffGitHub(t)
-					github.set(func(g *handoffGitHub) {
-						g.rules, g.rulesStatus, g.mainBranch, g.mergeableState = base.rules, base.rulesStatus, base.branch, tc.mergeableState
-					})
-					h, facts, merger := newReadyHarness(t, github)
-					if tc.carries {
-						github.put(headSHA, ".legion/LEGION-208/implement.json", handoffFile("implement", "LEGION-208"))
-					}
-					code, body := ready(t, h, merger)
-					switch {
-					case tc.want == "":
-						if code != http.StatusOK || body != "" {
-							t.Fatalf("READY = %d %q; want it published", code, body)
-						}
-					case code != http.StatusConflict || !strings.HasPrefix(body, tc.want):
-						t.Fatalf("READY = %d %q; want %q", code, body, tc.want)
-					}
-					if recorded := len(facts.recorded()); (recorded == 1) != (code == http.StatusOK) {
-						t.Fatalf("READY = %d with %d facts recorded; want one exactly when it was published", code, recorded)
-					}
-				})
-			}
-		})
-	}
-}
-
-// READY is read against the issue's recorded pull request: a merger whose issue has none recorded
-// is refused before GitHub is asked about any pull request.
-func TestHandoffCompleteReadyNeedsTheIssuesRecordedPullRequest(t *testing.T) {
-	github := newHandoffGitHub(t)
-	h, facts := newHandoffHarness(t, github, nil, nil)
-	seedIssueAt(t, h, "LEGION-208", phase.Merging)
-	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
-	if code, body := ready(t, h, merger); code != http.StatusConflict || body != "NO_PULL_REQUEST: LEGION-208 has no pull request recorded" {
-		t.Fatalf("READY without a pull request = %d %q", code, body)
-	}
-	if got := facts.recorded(); len(got) != 0 {
-		t.Fatalf("handoff facts = %#v, want none", got)
 	}
 }

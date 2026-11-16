@@ -21,6 +21,7 @@ const (
 	kubeSecretType         = "kubernetes:core/v1:Secret"
 	configMapType          = "kubernetes:core/v1:ConfigMap"
 	serviceAccountType     = "kubernetes:core/v1:ServiceAccount"
+	serviceType            = "kubernetes:core/v1:Service"
 	deploymentType         = "kubernetes:apps/v1:Deployment"
 
 	clusteredHubURN = "urn:pulumi:s::p::" + clusteredHubType + "::example-clustered-hub"
@@ -36,9 +37,13 @@ var (
 	// clusteredHubTailnetTypes are what tailnet adds: the tailnet hosts' auth key Secret, serve
 	// ConfigMap, ServiceAccount, Deployment and budget.
 	clusteredHubTailnetTypes = []string{kubeSecretType, configMapType, serviceAccountType, deploymentType, podDisruptionBudgetType}
+	// clusteredHubListenerTypes are what the session listener's own workload adds: its
+	// ServiceAccount, Deployment, the Service the tailnet hosts forward to, its NetworkPolicy and
+	// its budget.
+	clusteredHubListenerTypes = []string{serviceAccountType, deploymentType, serviceType, networkPolicyType, podDisruptionBudgetType}
 	// clusteredHubTypes are what clusteredArgs' hub registers: with tailnet, without a priority
-	// class.
-	clusteredHubTypes = slices.Concat(clusteredHubBaseTypes, clusteredHubTailnetTypes)
+	// class. Mocks.Types() holds one entry per registration, so these lists are multisets.
+	clusteredHubTypes = slices.Concat(clusteredHubBaseTypes, clusteredHubTailnetTypes, clusteredHubListenerTypes)
 )
 
 // runClusteredHub constructs a clustered hub named example-clustered-hub from args under the
@@ -352,7 +357,7 @@ func TestClusteredNatsHubProtectsTheStatefulSetAlone(t *testing.T) {
 	require.Equal(t, []string{"example"}, got.Opts.IgnoreChanges, "the chart's own options stay")
 
 	for _, typ := range []string{
-		configMapType, "kubernetes:core/v1:Service", podDisruptionBudgetType, deploymentType,
+		configMapType, serviceType, podDisruptionBudgetType, deploymentType,
 	} {
 		require.Nil(t, gcp.ProtectClusteredHubStatefulSet(context.Background(), &pulumi.ResourceTransformArgs{
 			Custom: true, Type: typ, Name: "envoy-nats:envoy/envoy-nats", Props: props,
@@ -396,16 +401,18 @@ var (
 	tailnetPodLabels = map[string]any{"app.kubernetes.io/name": "nats-tailnet", "app.kubernetes.io/instance": "envoy-nats", "app.kubernetes.io/component": "tailnet"}
 )
 
-// The hub pods admit NATS's client port from each client namespace and from the hub's own
-// tailnet hosts, which forward the tailnet's port to it; the route port from the hub pods alone,
-// since routes carry no credential; the monitoring port from the monitor namespaces; and the
-// exporter's port from the metrics namespaces, GMP's by default. Nothing else reaches them.
+// The hub pods admit NATS's client port from each client namespace, from the hub's own tailnet
+// hosts, which forward the tailnet's port to it, and from the session listener's own pod, which
+// dials the hub as a client of its own; the route port from the hub pods alone, since routes
+// carry no credential; the monitoring port from the monitor namespaces; and the exporter's port
+// from the metrics namespaces, GMP's by default. Nothing else reaches them.
 func TestClusteredNatsHubNetworkPolicy(t *testing.T) {
 	args := clusteredArgs()
 	args.MonitorNamespaces = []string{"monitoring"}
 	require.Equal(t, []any{
 		namespaceRule(4222, "envoy", "dispatch"),
 		podRule(4222, tailnetPodLabels),
+		podRule(4222, listenerPodLabels),
 		podRule(6222, hubPodLabels),
 		namespaceRule(8222, "monitoring"),
 		namespaceRule(7777, "gmp-system", "gke-gmp-system"),
@@ -418,6 +425,7 @@ func TestClusteredNatsHubNetworkPolicyWithoutMonitorsOrTailnet(t *testing.T) {
 	require.Equal(t, []any{
 		namespaceRule(4222, "envoy", "dispatch"),
 		podRule(4222, tailnetPodLabels),
+		podRule(4222, listenerPodLabels),
 		podRule(6222, hubPodLabels),
 		namespaceRule(7777, "gmp-system", "gke-gmp-system"),
 	}, clusteredPolicyRules(t, runClusteredHub(t, clusteredArgs())))

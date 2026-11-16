@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    A migration admits the role `other_project` in `write_suggestions.role`, and each cross-project
+    offer of an ask create is recorded as one row of that role, beside the check's `related` rows. The
+    outcome sweep resolves such a row like any other. `GET /api/v1/related-checks` answers
+    `other_project_offers`, how many ask creates of the window made such an offer, under the same
+    project, source-kind and time filters as its other counts.
+time: 2026-11-11T23:40:37.45731513Z
+custom:
+    Issue: pr3661

@@ -1,7 +1,8 @@
-import { DELIVERY_CAPABILITIES } from "@legion/contracts";
+import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { BroadcastCreated, CreateBroadcastInput } from "../web/src/api/types";
+import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
+import type { AgentGroup } from "../web/src/features/agents/agent-groups";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
@@ -15,6 +16,9 @@ export interface FakeSession {
   // The session's real machine; the real listener falls back to machine_id when the session's
   // plugin predates this field, which the fake Envoy's asSeen mirrors (fake-envoy.ts).
   host?: string;
+  /** Where this session sits in tmux, which `GET /api/v1/agents` answers unchanged and the
+   *  machine pages draw. Absent is a session in no pane, as it is on the wire. */
+  tmux_place?: TmuxPlace;
   roles?: string[];
   capabilities?: string[];
   last_seen?: number;
@@ -22,15 +26,17 @@ export interface FakeSession {
   topics?: string[];
 }
 
-/** A request to the harness's fake Envoy. The harness (e2e/harness-start.ts) starts this listener
- *  for local and deployed runs, so fixture state reaches whichever Dispatch server the suite
- *  targets. */
+/** A request to a fake Envoy, by default this process's own stack's. The harness
+ *  (e2e/harness-start.ts) starts that listener for local and deployed runs, so fixture state
+ *  reaches whichever Dispatch server the suite targets; `port` is for the one process that
+ *  addresses every stack's rather than its own (e2e/global-setup.ts). */
 async function fixtureRequest(
   path: string,
   method: "GET" | "PATCH" | "PUT",
-  body?: object
+  body?: object,
+  port: number = harnessPorts().fakeEnvoy.port
 ): Promise<Response> {
-  const response = await fetch(`http://127.0.0.1:${harnessPorts().fakeEnvoy.port}${path}`, {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     method,
@@ -42,12 +48,12 @@ async function fixtureRequest(
 }
 
 /** Clears all mutable fake Envoy state between e2e rows. */
-export async function resetFakeEnvoy(): Promise<void> {
-  await fixtureRequest("/__fixture/reset", "PUT");
+export async function resetFakeEnvoy(port?: number): Promise<void> {
+  await fixtureRequest("/__fixture/reset", "PUT", undefined, port);
 }
 
-export async function setLiveSessions(rows: FakeSession[]): Promise<void> {
-  await fixtureRequest("/__fixture/sessions", "PUT", rows);
+export async function setLiveSessions(rows: FakeSession[], port?: number): Promise<void> {
+  await fixtureRequest("/__fixture/sessions", "PUT", rows, port);
 }
 
 export async function setSessionSendStatus(sessionID: string, status: 200 | 404): Promise<void> {
@@ -87,6 +93,107 @@ export async function setSessionLive(sessionID: string, live: boolean): Promise<
  *  caller must retry rather than read as an ended session. */
 export async function setSessionRecord(sessionID: string, record: SessionRecord): Promise<void> {
   await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", { record });
+}
+
+/** The state the fake listener's record puts a seeded session in. `gone` is not one of them: a
+ *  session the listener holds no record of at all is `setSessionRecord(id, "absent")`. */
+export type SessionState = "live" | "unresponsive";
+
+/** Puts a seeded session past the listener's live window, or back inside it, without reseeding.
+ *  An `unresponsive` session is still listed, still holds its roles and claims and is still
+ *  delivered to; every answer about it carries that state, and `GET /v1/sessions` and the
+ *  per-session route answer for it only when the caller asks with `include=unresponsive`, as
+ *  Dispatch's own listener client always does (dispatch://INFRA-392). Pair it with
+ *  `setSessionLastSeen` wherever the row's age matters: Dispatch dates the silence by that
+ *  heartbeat and adds its claim grace to it. */
+export async function setSessionState(sessionID: string, state: SessionState): Promise<void> {
+  await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", { state });
+}
+
+/** The heartbeat every answer reports for a seeded session, in epoch milliseconds, in place of
+ *  the read's own time: what an unresponsive session's silence is dated from, and what Dispatch
+ *  adds `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` to for the moment its claim comes free. */
+export async function setSessionLastSeen(sessionID: string, lastSeen: number): Promise<void> {
+  await fixtureRequest(`/__fixture/sessions/${encodeURIComponent(sessionID)}`, "PATCH", {
+    last_seen: lastSeen,
+  });
+}
+
+/** How the fake listener answers its two list reads (`GET /v1/sessions`, `GET /v1/interests/`):
+ *  `ok` from the fixture; `refilling` with the real listener's refilling answer (503,
+ *  `Retry-After: 5`, code `refilling`), which Dispatch reports as `ENVOY_REFILLING`; `down` with a
+ *  503 that carries no code, which Dispatch reports as `ENVOY_UNAVAILABLE`. Every other route
+ *  answers as before, and a session reseed keeps the state; `resetFakeEnvoy` puts it back to
+ *  `ok`. */
+export type ListsState = "ok" | "refilling" | "down";
+
+export async function setListsState(state: ListsState): Promise<void> {
+  await fixtureRequest("/__fixture/lists", "PUT", { state });
+}
+
+/** One Legion agent registry entry as the daemon writes it to the listener
+ *  (`packages/envoy/internal/legionagents` `Entry`); `role_token` is
+ *  `roleToken(legion_project, issue, role)` from `@legion/contracts`. */
+export interface FakeLegionAgent {
+  session_id: string;
+  legion_project: string;
+  issue: string;
+  role: LegionRole;
+  role_token: string;
+  title: string;
+  harness: "omp" | "claude";
+  started_at: string;
+  recorded_at?: string;
+}
+
+/** One registry entry as the daemon writes it: `omp` harness, the role's own token under the
+ *  Legion project, and the title the daemon stamps. A spec that seeds the registry builds its
+ *  rows here so the `role_token` a read is checked against is always the one the daemon would
+ *  have written for that project, issue and role. */
+export function legionAgentEntry({
+  issue,
+  legionProject,
+  role,
+  sessionId,
+  startedAt,
+}: {
+  issue: string;
+  legionProject: string;
+  role: LegionRole;
+  sessionId: string;
+  startedAt: string;
+}): FakeLegionAgent {
+  return {
+    harness: "omp",
+    issue,
+    legion_project: legionProject,
+    role,
+    role_token: roleToken(legionProject, issue, role),
+    session_id: sessionId,
+    started_at: startedAt,
+    title: `Legion ${role} · ${issue}`,
+  };
+}
+
+/** Replaces the fake listener's Legion agent registry, which the three registry reads answer from
+ *  with `live`, `replaced_by` and `replaced_at` derived at the read. A session reseed keeps it. */
+export async function setLegionAgents(rows: FakeLegionAgent[]): Promise<void> {
+  await fixtureRequest("/__fixture/legion-agents", "PUT", rows);
+}
+
+/** How the fake listener answers the three Legion agent registry reads, which is its own
+ *  question rather than part of `ListsState`: the real listener serves every other route while
+ *  the registry's bucket alone is unavailable (`packages/envoy/cmd/listener/legion_agents.go`),
+ *  so a row that refused the list reads instead would take the sessions down with the entries.
+ *  `ok` answers from the seeded entries; `unopened` is the bucket that never opened (503, no
+ *  `Retry-After`) and `unreadable` a read the open bucket did not answer (503, `Retry-After: 1`).
+ *  Dispatch answers either with `legion_registry: "unavailable"`, keeping the issue's people and
+ *  the sessions its events name. A session reseed keeps the state; `resetFakeEnvoy` puts it back
+ *  to `ok`. */
+export type RegistryState = "ok" | "unopened" | "unreadable";
+
+export async function setLegionRegistryState(state: RegistryState): Promise<void> {
+  await fixtureRequest("/__fixture/legion-registry", "PUT", { state });
 }
 
 export async function getSentMessages(): Promise<Record<string, unknown>[]> {
@@ -135,8 +242,9 @@ export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastInput>[] {
   page.on("response", async (response) => {
     if (!isBroadcastPost(response.request()) || !response.ok()) return;
     const created = (await response.json()) as BroadcastCreated;
-    const pending = created.recipients.some(
-      ({ message: { deliveries } }) => deliveries.length === 1 && deliveries[0]?.state === "pending"
+    const pending = (created.recipients ?? []).some(
+      ({ message: { deliveries } }) =>
+        deliveries?.length === 1 && deliveries[0]?.state === "pending"
     );
     if (pending) owed.add(response.request().headers()["idempotency-key"]);
   });
@@ -191,13 +299,14 @@ export async function getUnsubscribeCalls(): Promise<{ session_id: string; topic
 
 // The Agents page's keyboard rows, in `keyboard-agents.e2e.ts`, `keyboard-palette.e2e.ts` and the
 // picker spec the WebKit and Firefox projects also run, share one page: two live sessions, each
-// with Dispatch activity of its own, so both are listed rows rather than folded into `Inactive` or
-// `No Dispatch activity`.
-// The Planner's open ask waits on the viewer, which puts it above the Reviewer. Neither carries a
-// `last_seen`: the fake Envoy answers every read of a session seeded without one with the current
-// time, so a shared seed never ages into Inactive. A time computed here would: this module is
-// evaluated once per Playwright worker, at the first spec that imports it, and the time would age
-// with every spec the worker runs after that, until the sessions fold under `Inactive`.
+// with Dispatch activity of its own, so both sit under `Active` rather than under `Idle` or
+// `Quiet`.
+// The Planner's open ask waits on the viewer, which puts it under `Needs you`, above the
+// Reviewer. Neither carries a `last_seen`: the fake Envoy answers every read of a session seeded
+// without one with the current time, so a shared seed never ages into `Quiet`. A time computed
+// here would: this module is evaluated once per Playwright worker, at the first spec that
+// imports it, and the time would age with every spec the worker runs after that, until the
+// sessions fell under `Quiet`.
 export const plannerSession: FakeSession = {
   capabilities: ["aside", "btw"],
   dir: "/srv/planner",
@@ -243,15 +352,53 @@ export async function openAgents(page: Page): Promise<void> {
   await page.locator("body").focus();
 }
 
-/** The rows a reader sees. A closed fold's rows, and the rows the filters exclude, stay mounted
- *  and hidden in the page's one keyed list, so a bare `[data-agent-row]` counts them too;
- *  counting, indexing or ordering the page's rows goes through this. */
+/** The rows a reader sees: the ones the window drew, less any it keeps mounted and hidden. The
+ *  list is windowed, so this counts what is on the page and never what the filters match - that
+ *  is each group heading's own count - and a long list draws only part of itself. Counting,
+ *  indexing or ordering the page's rows goes through this. */
 export function shownAgentRows(page: Page): Locator {
   return page.locator("[data-agent-row]:not([hidden])");
 }
 
-/** One session's row, shown or hidden - a folded or filtered row is in the page either way - so a
- *  row that asserts where the row is says which it expects (`toBeVisible`, `toBeHidden`). */
+/** One session's row, wherever the window has it: drawn, or mounted and hidden because the
+ *  reader opened it and a fold or a filter now hides it. A row nobody has opened that the window
+ *  has not drawn is in no part of the page, so an assertion says which it expects
+ *  (`toBeVisible`, `toBeHidden` with `toHaveCount(1)`, or `toHaveCount(0)`). */
 export function agentRow(page: Page, sessionID: string): Locator {
   return page.locator(`[data-agent-row="${sessionID}"]`);
+}
+
+/** One of the page's four group headings (INFRA-812, R7), whose accessible name is the group's
+ *  name and its count: `Idle (3)`, or `Idle (3, 1 selected)` once a row of it is selected. */
+export function agentGroupToggle(page: Page, group: AgentGroup): Locator {
+  return page.getByTestId(`agents-group-toggle-${group}`);
+}
+
+/** Collapses `group` if it is open, or opens it if it is closed: every group is open when the
+ *  page loads, so a row that needs one shut says so. */
+export async function toggleAgentGroup(page: Page, group: AgentGroup): Promise<void> {
+  const toggle = agentGroupToggle(page, group);
+  const expanded = await toggle.getAttribute("aria-expanded");
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", expanded === "true" ? "false" : "true");
+}
+
+/** The group, machine or role filter's trigger. Each of the three is a `MultiSelect` (R7), named
+ *  by what it filters rather than by what is ticked in it. */
+export function agentFilter(page: Page, filter: "group" | "machine" | "role"): Locator {
+  return page.getByRole("button", { name: `Filter by ${filter}` });
+}
+
+/** Ticks or unticks one option of a filter and closes its popover, so the portalled panel never
+ *  covers the control the row drives next. */
+export async function pickAgentFilter(
+  page: Page,
+  filter: "group" | "machine" | "role",
+  option: string
+): Promise<void> {
+  const trigger = agentFilter(page, filter);
+  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  await page.getByRole("option", { exact: true, name: option }).click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
 }

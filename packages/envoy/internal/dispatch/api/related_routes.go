@@ -10,15 +10,24 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// relatedExcludeLimit is the most issues one no-write related read may leave out. A read that
+// leaves out an issue's whole subtree sends one key per issue, and a project's deepest tree is
+// far short of this; a longer list is a caller sending the project rather than a neighbourhood.
+const relatedExcludeLimit = 50
+
 // relatedRequest is the no-write related route's question, from GET's query or POST's body.
+// ExcludeIssue is the single issue released clients send, which is also left out of the word
+// statistics; ExcludeIssues is the list, which leaves its issues out of the results alone.
 type relatedRequest struct {
-	Title        string `json:"title"`
-	Text         string `json:"text"`
-	ExcludeIssue string `json:"exclude_issue"`
-	KeywordsOnly bool   `json:"keywords_only"`
+	Title         string   `json:"title"`
+	Text          string   `json:"text"`
+	ExcludeIssue  string   `json:"exclude_issue"`
+	ExcludeIssues []string `json:"exclude_issues"`
+	KeywordsOnly  bool     `json:"keywords_only"`
 }
 
 // checkText is what the check reads: the title and the text, each alone when the other is blank,
@@ -39,21 +48,30 @@ func (s *server) getRelated(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := r.URL.Query()
-	request := relatedRequest{Title: query.Get("title"), Text: query.Get("text"), ExcludeIssue: query.Get("exclude_issue")}
-	switch query.Get("keywords_only") {
-	case "", "false":
-	case "true":
-		request.KeywordsOnly = true
-	default:
+	// keywords_only is read as search's own ?keywords_only= is (parseQueryBool), in the reading
+	// this route has always given it: the first value as it stands, untrimmed, and no value or a
+	// blank one asks for the check both legs make.
+	keywordsOnly, present, valid := parseQueryBool(query, "keywords_only", false, true)
+	if present && !valid {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "keywords_only must be true or false")
 		return
 	}
-	if length := len16(request.checkText()); length > contracts.SearchQueryMax {
+	request := relatedRequest{
+		Title:         query.Get("title"),
+		Text:          query.Get("text"),
+		ExcludeIssue:  query.Get("exclude_issue"),
+		ExcludeIssues: query["exclude_issues"],
+		KeywordsOnly:  keywordsOnly,
+	}
+	if length := itemblocks.Units16(request.checkText()); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("title and text", length, contracts.SearchQueryMax)
 		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; send a longer text with POST")
 		return
 	}
-	s.answerRelated(w, r, request)
+	// The GET form offers no answered question of another project: its one caller is the
+	// new-issue dialog of the web application, which runs the check for each burst of a person's
+	// typing and draws the items of the asking project alone.
+	s.answerRelated(w, r, request, false)
 }
 
 // postRelated answers POST /api/v1/projects/{key}/related: the check over the body's title and
@@ -68,16 +86,20 @@ func (s *server) postRelated(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if length := len16(request.Title); length > contracts.IssueTitleMax {
+	if length := itemblocks.Units16(request.Title); length > contracts.IssueTitleMax {
 		capExceeded(w, "title", length, contracts.IssueTitleMax)
 		return
 	}
-	s.answerRelated(w, r, request)
+	// The POST form is what `dispatch related` calls, which an agent runs on purpose to ask a
+	// question, so it offers the answered questions of the other projects too.
+	s.answerRelated(w, r, request, true)
 }
 
 // answerRelated runs the check both forms share against the path's project, recording nothing:
 // it has no source to record, and a reader trying words out must not count as a write's check.
-func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest) {
+// question says the form asks a person a question, which the two forms do not do alike
+// (postRelated and getRelated say why).
+func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request relatedRequest, question bool) {
 	project := r.PathValue("key")
 	if !projectKeyPattern.MatchString(project) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
@@ -94,13 +116,33 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 			return
 		}
 	}
-	WriteJSON(w, http.StatusOK, s.relatedCheck(r.Context(), relatedInput{
-		project:      project,
-		text:         request.checkText(),
-		title:        request.Title,
-		excludeIssue: request.ExcludeIssue,
-		keywordsOnly: request.KeywordsOnly,
-	}))
+	excluded := make([]string, 0, len(request.ExcludeIssues))
+	for _, key := range request.ExcludeIssues {
+		if key = strings.TrimSpace(key); key != "" {
+			excluded = append(excluded, key)
+		}
+	}
+	if err := s.requireProjectIssues(r, project, excluded); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The answered asks this check offers carry the display tree of their answer for a caller
+	// that asked for the trees, as the same answer does in a search hit: the dashboard's related
+	// panel reads that tree rather than parsing the markdown itself. The reader is resolved
+	// before the response is written, which is where every tree field is filled.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		project:       project,
+		text:          request.checkText(),
+		title:         request.Title,
+		excludeIssue:  request.ExcludeIssue,
+		excludeIssues: excluded,
+		keywordsOnly:  request.KeywordsOnly,
+		question:      question,
+		trees:         reader,
+	})
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, suggestions)
 }
 
 // requireProjectIssue refuses an exclude_issue that is not an issue of project, as a create
@@ -119,6 +161,38 @@ func (s *server) requireProjectIssue(r *http.Request, project, key string) error
 	}
 	if issueProject != project {
 		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issue %s is not an issue of project %s", key, project)
+	}
+	return nil
+}
+
+// requireProjectIssues refuses an exclusion list longer than relatedExcludeLimit, and one
+// holding anything that is not an issue of project. Every key is read in one statement, so a
+// list of fifty costs one round trip, and the refusal names the first key the project does not
+// hold rather than the whole list, as the single exclude_issue's does.
+func (s *server) requireProjectIssues(r *http.Request, project string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if len(keys) > relatedExcludeLimit {
+		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT",
+			"exclude_issues takes at most %d issues; %d were sent", relatedExcludeLimit, len(keys))
+	}
+	for _, key := range keys {
+		if !issueKeyPattern.MatchString(key) {
+			return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT", "exclude_issues %q is not an issue key", key)
+		}
+	}
+	var missing []string
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+		select coalesce(array_agg(k.key order by k.ordinality), '{}')
+		  from unnest($1::text[]) with ordinality k(key, ordinality)
+		 where not exists (select 1 from issues i where i.key = k.key and i.project_key = $2)
+	`, keys, project).Scan(&missing); err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return errorf(http.StatusBadRequest, "EXCLUDE_ISSUE_INPUT",
+			"exclude_issues %s is not an issue of project %s", missing[0], project)
 	}
 	return nil
 }
@@ -150,12 +224,38 @@ select
   percentile_disc(0.95) within group (order by total_ms), max(total_ms), count(*) filter (where total_ms > 300)
 from checks`
 
+// relatedChecksOffersQuery counts the writes whose check offered an answered question of another
+// project, under the filters relatedChecksReportQuery applies to related_checks ($1 project, $2
+// from, $3 to, $4 source kind; each null for no filter).
+//
+// It counts the writes, not the items: a check that offered two questions wrote two rows of the
+// role and is one write, so the count is over the distinct ask each row names. Every row of the
+// role holds that ask, because only an ask create records one (persistSuggestions), and
+// count(distinct) passes over a null, so a source kind no row of the role carries counts zero.
+//
+// A row names its source by the issue or the project document it sits on, never by a project, so
+// the project filter reads the project of that owner: issues.project_key for a row with a
+// source_issue_key, artifacts.project_key for one with a source_artifact_id. The row's own
+// created_at is when it was recorded, which is the window the report's other counts read too.
+const relatedChecksOffersQuery = `
+select count(distinct ws.source_ask_id)
+  from write_suggestions ws
+  left join issues i on i.key = ws.source_issue_key
+  left join artifacts a on a.id = ws.source_artifact_id
+ where ws.role = 'other_project'
+   and ($1::text is null or coalesce(i.project_key, a.project_key) = $1)
+   and ($2::timestamptz is null or ws.created_at >= $2)
+   and ($3::timestamptz is null or ws.created_at < $3)
+   and ($4::text is null or ws.source_kind = $4)`
+
 // relatedSourceKinds are related_checks.source_kind's values, the records route's source_kind
 // filter.
 var relatedSourceKinds = map[string]bool{"issue": true, "ask": true, "decision_block": true}
 
 // getRelatedChecks answers GET /api/v1/related-checks: model.RelatedChecksReport over the checks
-// recorded within [from, to), of one project and one source kind when given.
+// recorded within [from, to), of one project and one source kind when given. The counts of
+// related_checks come in one statement and OtherProjectOffers, which write_suggestions holds, in
+// a second one over the same window and filters (relatedChecksOffersQuery).
 func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -204,6 +304,12 @@ func (s *server) getRelatedChecks(w http.ResponseWriter, r *http.Request) {
 		&keyword.Count, &keyword.P50, &keyword.P95, &keyword.Max, &keyword.Over300MS,
 		&total.Count, &total.P50, &total.P95, &total.Max, &total.Over300MS,
 	); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), relatedChecksOffersQuery,
+		report.Project, report.From, report.To, report.SourceKind,
+	).Scan(&report.OtherProjectOffers); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

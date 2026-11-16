@@ -15,27 +15,34 @@ package api
 //   - Nothing moves an object between projects. An issue's, an artifact's, an ask's, a comment's
 //     and a message's project is written when the row is inserted and updated by no route: no
 //     `update ... set project_key` and no `update ... set issue_key` exists outside the
-//     migrations and the tests, and the two writes that take another issue's project into
-//     account (a parent, a rank neighbour) refuse one outside the issue's own project rather
-//     than move anything. So the project this check reads before the handler runs is the project
+//     migrations and the tests, and the three writes that take another issue's project into
+//     account move nothing: a parent and a rank neighbour outside the issue's own project are
+//     refused, while a `blocked_by` target may be an issue of any project, which the write
+//     refuses only to a caller whose credential names one project (`PROJECT_SCOPE`, written
+//     inside the write because this check reads the project of the object the path names and no
+//     key in the body). So the project this check reads before the handler runs is the project
 //     the handler will write, and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
-//     agent token, a Kubernetes service-account token and the shared token name none, and so does
-//     an access token the broker scoped to a person rather than to one project — a dev box
-//     session, whose `project_scope` is `person`, reaches brokerTokenActor with no Project and is
-//     unscoped here, with no second mechanism of its own. That is the rule and not a transitional
-//     measure: every caller that exists today writes exactly what it wrote before, which is what
-//     lets this deploy before anything presents a broker token.
+//     agent token, a Kubernetes service-account token and the shared token name none, and so do
+//     the two access tokens the broker scopes to a person rather than to one project, each of
+//     which reaches brokerTokenActor with no Project. One is a dev box session's, unscoped here
+//     with no second mechanism of its own; the other is a machine's that names a service and no
+//     person, whose every write writeNeedsASignedInPerson refuses below. Both carry
+//     `project_scope` `person`. That is the rule and not a transitional measure: every caller
+//     that exists today writes exactly what it wrote before, which is what lets this deploy
+//     before anything presents a broker token.
 //
 // For a credential that does name a project, the check fails closed: only a target that
 // resolves to that credential's own project reaches the handler. A target that resolves to
 // another project, to no project at all, or to nothing at all — no such row, or an id Postgres
-// will not read as a uuid — is refused. Each resolver sends the raw path value to Postgres, as
-// the handler behind it does, so the parser that decides what this check resolved is the parser
-// the handler then addresses its row by, and the two cannot disagree about which object a path
-// names: Go's uuid.Parse refuses spellings Postgres accepts (a hyphen after any group of four
-// digits), and a check that resolved nothing where the handler resolves a row would be a write
-// nothing judged.
+// will not read as a uuid — is refused. Each resolver sends Postgres the value the prefix layer
+// resolved, the one the handler behind it sends too: an id written as a unique prefix is the
+// whole id by the time either reads it, and anything else is the path value as written
+// (resolveIDPrefixes, which register wraps outside this check for exactly that reason). So the
+// parser that decides what this check resolved is the parser the handler then addresses its row
+// by, and the two cannot disagree about which object a path names: Go's uuid.Parse refuses
+// spellings Postgres accepts (a hyphen after any group of four digits), and a check that
+// resolved nothing where the handler resolves a row would be a write nothing judged.
 //
 // Failing closed does not close the existence oracle, and does not claim to. The two refusals
 // still read differently — a target of another project is told which project that is, and one
@@ -56,6 +63,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -136,6 +144,8 @@ func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 		return s.projectOfComment, true
 	case addresses(pattern, "/api/v1/messages/{id}"):
 		return s.projectOfMessage, true
+	case addresses(pattern, "/api/v1/results/{id}"):
+		return s.projectOfCheckResult, true
 	}
 	return nil, false
 }
@@ -204,6 +214,20 @@ func (s *server) projectOfMessage(ctx context.Context, q queryer, r *http.Reques
 		from messages m
 		left join issues i on i.key = m.issue_key
 		where m.id = $1
+	`, r.PathValue("id")))
+}
+
+// projectOfCheckResult is one hop to the project of the issue the result was recorded on,
+// since the check_results table holds no project of its own
+// (store/migrations/20261102122200_check_results.up.sql). It reads issue_key and not
+// check_issue_key: a result recorded on a child against a parent's check belongs to the child,
+// and both issues are of one project anyway, since an issue's parent is of its own project.
+func (s *server) projectOfCheckResult(ctx context.Context, q queryer, r *http.Request) (string, error) {
+	return scanProjectKey(q.QueryRow(ctx, `
+		select coalesce(i.project_key, '')
+		from check_results c
+		left join issues i on i.key = c.issue_key
+		where c.id = $1
 	`, r.PathValue("id")))
 }
 
@@ -294,8 +318,8 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		}
 	default:
 		// A write that belongs to the calling session (scopeSession, held to its own session by
-		// withinSessionScope), and the issue create, whose project its handler reads from the
-		// body (scopeProjectInBody).
+		// withinSessionScope), the issue create, whose project its handler reads from the body
+		// (scopeProjectInBody), and a row that writes nothing at all (scopeNoWrite).
 		return handler
 	}
 }
@@ -322,18 +346,30 @@ func refuseWriteOutsideProjectScope(w http.ResponseWriter, covers, belongsTo str
 // names one in the body where a route needs it, so the check leaves it to the handler, which is
 // the rule those routes have always kept.
 //
+// A row that declares OAuth scopes passes whatever session the credential proved, because those
+// rows are the person's own writes into someone else's conversation:
+// `POST /api/v1/agents/{session_id}/messages` and `PUT /api/v1/me/agents/{session_id}/state`
+// need the `person` scope (routeScopes), and a person writing to a session is by design writing
+// into a session that is not theirs. Without this a person's own broker-issued credential could
+// only ever address the session it was issued for, which is nobody's conversation but its own.
+// The row decides it, not the request: gateRouteScopes stands ahead of this wrapper and has
+// already refused every credential that does not hold the row's whole set, so on a row that
+// declares any, the caller holds them. A row that declares none is open to every authenticated
+// caller, and this check refuses a session other than the one it proved as it always did.
+//
 // Every other row returns the handler unchanged, so no route it does not cover pays for it.
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	if !addressesOneSession(route) {
 		return handler
 	}
+	personsOwnWrite := len(route.OAuthScopes) > 0
 	return func(w http.ResponseWriter, r *http.Request) {
 		proved, provedOne := s.callerSession(r)
 		if !provedOne {
 			handler(w, r)
 			return
 		}
-		if addressed := r.PathValue("session_id"); addressed != proved {
+		if addressed := r.PathValue("session_id"); addressed != proved && !personsOwnWrite {
 			writeError(w, codeSessionScope, http.StatusForbidden, fmt.Sprintf(
 				"this request's credential acts for session %s; %s %s writes into session %s",
 				proved, route.Method, route.Pattern, addressed))
@@ -351,10 +387,40 @@ func addressesOneSession(route apiRoute) bool {
 	return route.Scope == scopeSession && strings.Contains(route.Pattern, "{session_id}")
 }
 
+// writeNeedsASignedInPerson refuses every write by a caller whose credential names a service and
+// no person: an access token the secrets broker issued to a machine nobody has signed in on. The
+// refusal is here, in front of every mutating row whatever its class, rather than in each route,
+// for the reason the two checks above are: a route added later is covered by the table it joins
+// and not by a line someone remembered to write.
+//
+// Such a caller may read everything its session may read. What it may not do is write, because
+// Dispatch records a write under the person who made it and this credential names none; a
+// session that accepted a delivery or answered an ask under it would write as nobody. The
+// refusal's message names `agent-secrets login`, the command that signs a person in on that
+// machine, since running it is the whole remedy.
+//
+// Every other credential is unaffected: a cookie, a personal token, a service-account token, the
+// shared token and a broker token that does name a person each reach the handler as before, at
+// the cost of the one header read brokerCredentialActor makes.
+func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actor, resolved := s.brokerCredentialActor(r)
+		if !resolved || actor.Owner != nil || actor.Service == nil {
+			handler(w, r)
+			return
+		}
+		writeError(w, contracts.DispatchSignInRequired, http.StatusForbidden, fmt.Sprintf(
+			"this request's credential acts for service %s and no person, so there is nobody to "+
+				"record this write under; run `agent-secrets login` on this machine and try again",
+			*actor.Service))
+	}
+}
+
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses
 // gives no class, and one classed scopeProject whose address names no object to resolve. Every
-// other class is decided: scopeDeployment and scopeProjectInBody by the class itself, and
-// scopeSession by withinSessionScope and the handlers behind it.
+// other class is decided: scopeDeployment and scopeProjectInBody by the class itself,
+// scopeSession by withinSessionScope and the handlers behind it, and scopeNoWrite by writing
+// nothing at all.
 // TestEveryMutatingRouteIsClassed walks the table through it, and register refuses to mount a
 // table it names anything in, so a row added later cannot be left undecided. The other direction,
 // a writeClasses name that is no row of the table, is the same test's (nothing is served by it,
@@ -367,7 +433,7 @@ func (s *server) undecidableWrites(routes []apiRoute) []string {
 		}
 		name := route.Method + " " + route.Pattern
 		switch route.Scope {
-		case scopeSession, scopeDeployment, scopeProjectInBody:
+		case scopeSession, scopeDeployment, scopeProjectInBody, scopeNoWrite:
 		case scopeProject:
 			if _, addressed := s.projectResolverFor(route.Pattern); !addressed {
 				undecidable = append(undecidable, name+": classed as a project's write, but its address names no object whose project can be resolved")

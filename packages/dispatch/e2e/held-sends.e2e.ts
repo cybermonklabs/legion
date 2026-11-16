@@ -1,9 +1,6 @@
-import { expect, test } from "@playwright/test";
-
 import { agentRow, openAgents, plannerSession, seedAgents } from "./agents";
 import { createComment, createIssue, createProject } from "./api";
-import { conversationThreadScope } from "./editor";
-import { resetDatabase } from "./seed";
+import { openFromSidebar } from "./editor";
 import {
   answeredPost,
   MESSAGE_REFUSED,
@@ -12,6 +9,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A composer holds its draft and its refusal while its send is out, whatever unmounts it. These
@@ -20,11 +18,8 @@ import { asUser } from "./users";
 // reader returns to the composer.
 const refusedText = WRITE_REFUSED_TEXT;
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("a docked Conversation send refused while the reader is on the Inbox is there on the return", async ({
+// @pr: A write the server refused: the refusal and its draft belong to the target, and are there when the reader comes back to it.
+test("a docked Conversation send refused while the reader is on the Inbox is there on the return @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -85,9 +80,8 @@ test("an Agents row send refused while the reader is on the Inbox is there on th
     await page.keyboard.press("Control+Enter");
     await expect(field).toBeDisabled();
 
-    await page.locator("body").focus();
-    await page.keyboard.press("g");
-    await page.keyboard.press("i");
+    // Away to the Inbox and back by the sidebar's own links, which openFromSidebar explains.
+    await openFromSidebar(page, "Inbox");
     await expect(row).toHaveCount(0);
     const refused = page.waitForResponse(
       (response) =>
@@ -97,8 +91,7 @@ test("an Agents row send refused while the reader is on the Inbox is there on th
     );
     refuse();
     await refused;
-    await page.keyboard.press("g");
-    await page.keyboard.press("a");
+    await openFromSidebar(page, "Agents");
     const planner = row.getByRole("button", { exact: true, name: "Planner" });
     if ((await planner.getAttribute("aria-expanded")) !== "true") await planner.click();
     await expect(row.getByText(`Couldn't send — ${MESSAGE_REFUSED.error}`)).toBeVisible();
@@ -157,13 +150,12 @@ test("a docked Reply on a different comment redirects onto the one whose refusal
   }
 });
 
-// Past the send's deadline Collapse thread, and on a phone the thread's Back, let the reader leave
-// a thread whose own reply is still out. The reply's composer goes with the thread it is in; the
-// send does not, and the thread opened again has its draft and refusal.
-test("a thread's own reply refused after the reader left it past the deadline is there when the thread opens again @phone", async ({
+// Past the send's deadline Collapse thread lets the reader leave a thread whose own reply is
+// still out. The reply's composer goes with the thread it is in; the send does not, and the
+// thread opened again has its draft and refusal.
+test("a thread's own reply refused after the reader left it past the deadline is there when the thread opens again", async ({
   browser,
-}, testInfo) => {
-  const phone = testInfo.project.name === "iphone";
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Left a thread past the deadline" });
   const earlier = await createComment(issue.key, { body: "Earlier comment" });
@@ -173,15 +165,12 @@ test("a thread's own reply refused after the reader left it past the deadline is
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
     const turn = page.locator(`[data-turn="comment:${earlier.id}"]`);
-    const thread = conversationThreadScope(page, testInfo.project.name, turn);
     const openThread = async () => {
       await turn.getByRole("button", { name: "Expand thread" }).click();
-      await expect(
-        phone ? thread : turn.getByRole("button", { name: "Collapse thread" })
-      ).toBeVisible();
+      await expect(turn.getByRole("button", { name: "Collapse thread" })).toBeVisible();
     };
     await openThread();
-    const form = thread.getByRole("form", { name: "Comment composer" });
+    const form = turn.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
     const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
     await field.fill("Reply past the deadline");
@@ -190,13 +179,8 @@ test("a thread's own reply refused after the reader left it past the deadline is
 
     await page.clock.fastForward(30_500);
     await expect(form.getByText(/^Still sending/)).toBeVisible();
-    if (phone) {
-      await thread.getByRole("button", { name: "Back" }).click();
-      await expect(thread).toHaveCount(0);
-    } else {
-      await turn.getByRole("button", { name: "Collapse thread" }).click();
-      await expect(turn.getByRole("button", { name: "Expand thread" })).toBeVisible();
-    }
+    await turn.getByRole("button", { name: "Collapse thread" }).click();
+    await expect(turn.getByRole("button", { name: "Expand thread" })).toBeVisible();
     await expect(field).toHaveCount(0);
     const refused = answeredPost(
       page,

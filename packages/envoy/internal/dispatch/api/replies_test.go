@@ -87,8 +87,8 @@ func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
 	})
 
 	page := getMyReplies(t, handler, "alice", "")
-	if page.Total != 1 || len(page.Rows) != 1 || page.Limit != 50 || page.Offset != 0 {
-		t.Fatalf("page = %#v, want one row of the default page", page)
+	if page.Total != 1 || len(page.Rows) != 1 || page.Limit != 0 || page.Offset != 0 {
+		t.Fatalf("page = %#v, want one row of an unpaged read", page)
 	}
 	row := page.Rows[0]
 	if row.ThreadID != root.ID || row.Kind != "comment" || row.Ref != "/issues/"+issue.Key+"/comments/"+root.ID {
@@ -108,14 +108,20 @@ func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
 	}
 }
 
-// What the page leaves out and what it keeps: an open ask the Inbox lists is left out, since its row
-// in Waiting on you already shows the reply; an open ask on a closed issue, which the Inbox hides,
-// stays; so do an answered ask's later reply and a resolved comment thread, until read.
+// What the page leaves out and what it keeps: an open ask the Inbox lists in Waiting on you is
+// left out, since its row there already shows the reply, and that is an open ask on an open issue
+// assigned to the caller; an open ask on a closed issue, which the Inbox hides, stays; so do an
+// answered ask's later reply and a resolved comment thread, until read. The four sides of the
+// assignee rule are TestInboxRowsKeepAnOpenAskNobodyElsesInboxRowCovers.
 func TestMyRepliesKeepsWhatTheInboxDoesNotShow(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Open ask", "A spec")
 	closing := createAnswerListIssue(t, handler, "Closing")
 	answered := createAnswerListIssue(t, handler, "Answered")
+	// Alice filed each of them, so each is assigned to her; the open asks below are hers to
+	// answer, which is what keeps them off this page.
+	assignIssue(t, handler, issue.Key, "alice")
+	assignIssue(t, handler, closing.Key, "alice")
 
 	open := createAnswerListAsk(t, handler, issue.Key, "Which way?")
 	createThreadComment(t, handler, issue.Key, map[string]any{"body": "Why ask?", "ask_id": open.ID}, "alice")
@@ -212,7 +218,7 @@ func TestMyRepliesListsAnAnswerSomeoneElseGave(t *testing.T) {
 // message thread each reach the page, each linking to its root; ?issue= and ?artifact= narrow the
 // rows to one owner.
 func TestMyRepliesListsDocumentAndMessageThreads(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Documents", "The quick brown fox.")
 	other := createAnswerListIssue(t, handler, "Other")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n\nStep one.\n")
@@ -269,8 +275,19 @@ func TestMyRepliesListsDocumentAndMessageThreads(t *testing.T) {
 			t.Fatalf("%s: status=%d body=%s", query, response.Code, response.Body.String())
 		}
 	}
-	if bearer := sessionRequest(t, handler, http.MethodGet, "/api/v1/me/replies", nil); bearer.Code != http.StatusForbidden || !strings.Contains(bearer.Body.String(), `"code":"HUMAN_ONLY"`) {
-		t.Fatalf("bearer: status=%d body=%s", bearer.Code, bearer.Body.String())
+	// The page is the calling person's own, so the deployment's shared token, which holds no
+	// scope, is turned away, and Alice's own token reads the three threads her browser reads.
+	if bearer := sessionRequest(t, handler, http.MethodGet, "/api/v1/me/replies", nil); bearer.Code != http.StatusForbidden ||
+		!strings.Contains(bearer.Body.String(), `"code":"`+codeScopeRequired+`"`) {
+		t.Fatalf("the shared token's reply page: status=%d body=%s, want 403 %s", bearer.Code, bearer.Body.String(), codeScopeRequired)
+	}
+	own := agentRequest(t, handler, http.MethodGet, "/api/v1/me/replies", nil,
+		personalTokenHolding(t, database, model.ScopePerson))
+	if own.Code != http.StatusOK {
+		t.Fatalf("Alice's own token reading her reply page: status=%d body=%s", own.Code, own.Body.String())
+	}
+	if read := decodeBody[model.MyRepliesResponse](t, own); read.Total != 3 {
+		t.Fatalf("Alice's own token read %d threads, want her three", read.Total)
 	}
 }
 
@@ -487,7 +504,7 @@ func TestMarkThreadReadRacingASessionReply(t *testing.T) {
 }
 
 // A mark racing an answer to a block ask, whose attribute write refreshes a comment's anchor and so
-// appends that event before the answer's update moves Alice's row (docs/marks.go's refreshAnchors,
+// appends that event before the answer moves Alice's row (docs/anchor_refresh.go's refreshAnchors,
 // then ask_transitions.go's update asks): the mark takes the issue before Alice's row, so it never
 // holds the row the answer's trigger waits on while waiting for the event lock the answer holds.
 func TestMarkThreadReadRacingABlockAskAnswerThatRefreshesAnAnchor(t *testing.T) {
@@ -621,21 +638,30 @@ func TestReplyEventsNameTheThreadsParticipants(t *testing.T) {
 	requireThreadLogins(t, database, "ask.resolved", bobsAsk.ID, "bob")
 }
 
-// A direct conversation has no Replies thread, so its messages carry no thread_logins; a
-// session's reply to an issue message through the same reply route names the issue thread's
-// writers.
-func TestSessionRepliesNameThreadLoginsOnlyOnAnIssue(t *testing.T) {
-	handler, database, root, reply, _ := directConversationFrom(t, "alice")
-	if logins, carried := threadLoginsOf(t, database, "message.created", root.ID); carried {
-		t.Fatalf("a direct message's message.created carries thread_logins %#v, want none", logins)
-	}
+// A direct conversation keeps no Replies row, so its messages name the Inbox the Agent row of
+// that conversation sits in: the canonical login of the person who opened the thread, and nobody
+// when no person opened it. A session's reply to an issue message through the same reply route
+// still names the issue thread's writers.
+func TestDirectMessagesNameTheThreadRootsAuthor(t *testing.T) {
+	handler, database, root, reply, _ := directConversationFrom(t, "Alice")
+	requireThreadLogins(t, database, "message.created", root.ID, "alice")
 	direct := reply("On it.")
 	if direct.Code != http.StatusCreated {
 		t.Fatalf("direct reply: status=%d body=%s", direct.Code, direct.Body.String())
 	}
-	if logins, carried := threadLoginsOf(t, database, "message.answered", decodeBody[model.Message](t, direct).ID); carried {
-		t.Fatalf("a direct reply's message.answered carries thread_logins %#v, want none", logins)
+	requireThreadLogins(t, database, "message.answered", decodeBody[model.Message](t, direct).ID, "alice")
+
+	// No Agent row holds a thread no person opened, so a reply in one names nobody, as [].
+	if _, err := database.Pool.Exec(context.Background(), `
+		update messages set author = jsonb_build_object('kind', 'session', 'id', 's0') where id = $1
+	`, root.ID); err != nil {
+		t.Fatalf("rewrite the thread root's author: %v", err)
 	}
+	followUp := reply("And the logs are clean.")
+	if followUp.Code != http.StatusCreated {
+		t.Fatalf("follow-up reply: status=%d body=%s", followUp.Code, followUp.Body.String())
+	}
+	requireThreadLogins(t, database, "message.answered", decodeBody[model.Message](t, followUp).ID)
 
 	issue := createInteractionIssue(t, handler, "TEST", "Targeted", "A spec")
 	targeted := createIssueMessage(t, handler, issue.Key, map[string]any{

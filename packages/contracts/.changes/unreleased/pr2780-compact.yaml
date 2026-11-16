@@ -1,0 +1,29 @@
+kind: Added
+body: |-
+  `LegionCompactResponse`, the answer of the daemon's new `POST /legion/v1/claims/compact`:
+  `compacted`, and a `reason` the daemon cuts to 200 bytes when it is false. That route and
+  `POST /legion/v1/claims/fresh-session` share one body, `LegionClaimRequest`: a controller
+  grant, an issue and a role.
+  The claim on that role of that issue has its Oh My Pi
+  session compacted and is then sent whatever task it owes, which is the effect
+  `legion claims compact` runs for an operator. It is what a claim whose provider keeps refusing
+  its session reaches for before a fresh one: the session, its workspace and everything the
+  worker knows of its issue stay, and only the transcript gets shorter. A compaction Oh My Pi
+  refused or skipped is the answer rather than a failure, since the claim came back all the
+  same; a compaction the daemon could not ask for, could not end, or whose claim lost its
+  process under it is `COMPACTION_FAILED`, since none of those gave the claim back.
+  It reaches a claim whose agent is ready or idle. The daemon refuses a suspended, failed or
+  retired claim naming what starts it again, `fresh_session` for a workflow role and the
+  daemon's controller keeper for the project's own controller claim
+  (`CLAIM_NOT_RUNNING`); a claim the daemon records as working, which may be in a turn, and one
+  left working over a process the daemon's last report of it found gone, whose relaunch has not
+  run and which is in no turn
+  (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, one
+  whose agent has registered and is not ready yet, which `fresh_session` reaches, and one
+  left working under a relaunch the wake pacing parked
+  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which takes the first of those two
+  codes where the daemon records it working and the second where it
+  does not; a claim whose role runs on Claude Code, which has no Oh My Pi
+  session at all (`CLAIM_NOT_ON_OMP`); and the role `controller` (`INVALID_ROLE`).
+  Each refusal says what the claim is doing when it is given and which operation reaches each
+  state `legion claims list` shows, and names no turn, hold, report or relaunch to come.

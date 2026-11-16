@@ -1,17 +1,26 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { connect, Events, StringCodec } from "nats";
-import { type EnvoyStack, envoyStackEnabled, startEnvoyStack } from "../../test/envoy-stack";
+import {
+  type EnvoyStack,
+  envoyStackEnabled,
+  startEnvoyStack,
+  useEnvoyStackDirectory,
+} from "../../test/envoy-stack";
 import { startStallProxy } from "../../test/stall-proxy";
 import { RECOVERY_BOUND_MS } from "../../test/stall-scenario";
 import { natsConnectionOptions } from "../nats-connection";
 
 const codec = StringCodec();
 
+// Reserved here, at the file's module scope: the file's own `afterAll` removes it once the
+// `describe` below has stopped the stack writing into it.
+const stackDirectory = useEnvoyStackDirectory();
+
 describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () => {
   let stack: EnvoyStack | undefined;
 
   beforeAll(async () => {
-    stack = await startEnvoyStack();
+    stack = await startEnvoyStack({ work: stackDirectory });
   }, 120_000);
   afterAll(async () => {
     await stack?.stop();
@@ -71,6 +80,10 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
           }
         })();
         proxy.stallNext(stalledRedials);
+        // The redials are the connections the proxy appended after this point. Taking them by an
+        // ordinal rather than by acceptedAt >= frozenAt keeps a redial the proxy accepted inside
+        // the freeze's own millisecond, which that comparison bins with the connections before it.
+        const beforeFreeze = proxy.connections.length;
         const frozenAt = proxy.freeze();
         // The client's own writes after the freeze, in chunks below natsd's max_payload: more than
         // the frozen path's kernel buffers take, so they stay queued in its socket. Nothing awaits
@@ -102,7 +115,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         expect(reconnectMs ?? Number.POSITIVE_INFINITY).toBeLessThan(RECOVERY_BOUND_MS);
         expect(receiveMs).toBeDefined();
         expect(receiveMs ?? Number.POSITIVE_INFINITY).toBeLessThan(RECOVERY_BOUND_MS);
-        const redials = proxy.connections.filter((opened) => opened.acceptedAt >= frozenAt);
+        const redials = proxy.connections.slice(beforeFreeze);
         // The stalled redials never subscribed; the one after them did.
         expect(redials.length).toBeGreaterThan(stalledRedials);
         expect(

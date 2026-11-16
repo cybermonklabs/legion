@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -187,7 +188,7 @@ func TestSpawnOverAnExistingSandbox(t *testing.T) {
 			sandboxObject(t, name, "uid-sandbox-kept", modeRunning, labels),
 			podObject(name, "uid-pod-old", "uid-sandbox-kept", labels, runningStatus()),
 		})
-		g.suspendDelay = 50 * time.Millisecond
+		g.suspendDelay.Store(int64(50 * time.Millisecond))
 		loc := g.spawn(workerSpec(t))
 		expectSteps(t, steps(t, g.writes(), name), "suspend", "create secret", "run", "record addresses")
 		if loc.Sandbox.PodUID == "uid-pod-old" || loc.Sandbox.PodUID != string(g.pod(name).UID) {
@@ -388,7 +389,7 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 		withSupersededDisk(t, sandboxObject(t, name, "uid-sandbox-superseded", modeRunning, labels)),
 		podObject(name, "uid-pod-old", "uid-sandbox-superseded", labels, runningStatus()),
 	}, options...)
-	g.suspendDelay = 50 * time.Millisecond
+	g.suspendDelay.Store(int64(50 * time.Millisecond))
 	return g
 }
 
@@ -669,7 +670,7 @@ func TestResumeAfterAFailedPod(t *testing.T) {
 		}),
 		oldSecret,
 	})
-	g.suspendDelay = 50 * time.Millisecond
+	g.suspendDelay.Store(int64(50 * time.Millisecond))
 	g.launcher(workerToken)
 	spec := workerSpec(t)
 	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-g2", resumeSession
@@ -696,15 +697,20 @@ func TestResumeAfterAFailedPod(t *testing.T) {
 
 // nextImage is another release's pinned image: what a daemon restarted onto a new release is
 // configured with over pods the previous release launched.
-const nextImage = "ghcr.io/sjawhar/legion-worker@sha256:2e2e2e2e0000000000000000000000000000000000000000000000000000cafe"
+const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000000000000000000000000000000000000000000000cafe"
 
 // A pod launched from another release's image — every container of it, or an init container alone,
 // since a pod is built whole from one image — runs agents that call this daemon as that release,
-// for a route it no longer serves or a variable it no longer sets. A relaunch of any of its roles
-// replaces it, as one dialing a moved stream is replaced (imageDrift beside movedInPod), the
-// daemon-launched controller's pod included, and every container of the new pod runs the configured
-// image. A pod on the configured image is kept, the role's new generation started in it.
-func TestARelaunchReplacesAPodRunningAnotherImage(t *testing.T) {
+// for a route it no longer serves or a variable it no longer sets. It has drifted, and a live
+// drifted pod a round covers is kept by every launch into it (INFRA-484, roundCovers): replacing
+// it there would end every role's turn in it and delete the issue's disk with everything unpushed
+// on it, so the pod is left to its update round, which first has every worker in it push its work.
+// The controller's pod is covered by no round — nobody in it holds an issue workspace, so there is
+// nobody to task — and is replaced by its next launch as it always was
+// (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted holds that for every key of a pod's
+// shape). A Sandbox that is not live — here one suspended under the running pod — is replaced by
+// its next start as it always was, and every container of the new pod runs the configured image.
+func TestRelaunchKeepsADriftedPodAndReplacesASuspendedSandboxs(t *testing.T) {
 	olderInit := func(pod *corev1.Pod) {
 		for i := range pod.Spec.InitContainers {
 			if pod.Spec.InitContainers[i].Name == initContainer {
@@ -714,18 +720,23 @@ func TestARelaunchReplacesAPodRunningAnotherImage(t *testing.T) {
 	}
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
-		spec     func(*testing.T) runtime.SpawnSpec
-		session  string
-		pinned   string            // the image the restarted daemon is configured with
-		stored   func(*corev1.Pod) // what the stored pod is edited to carry before the restart
-		plugins  *runtime.PluginInstall
-		replaced bool
+		spec      func(*testing.T) runtime.SpawnSpec
+		session   string
+		pinned    string            // the image the restarted daemon is configured with
+		stored    func(*corev1.Pod) // what the stored pod is edited to carry before the restart
+		plugins   *runtime.PluginInstall
+		suspended bool // the Sandbox is suspended before the start, as a stopped issue's is
+		replaced  bool
+		// drifted is whether the pod the role runs in after the start runs an image other than the
+		// configured one: a kept pod keeps the image it was built with, a replacement never does.
+		drifted bool
 	}{
-		"an issue pod on the configured image":                       {workerSpec, resumeSession, testImage, nil, nil, false},
-		"an issue pod under a release pinning another image":         {workerSpec, resumeSession, nextImage, nil, nil, true},
-		"an issue pod whose init container alone runs another image": {workerSpec, resumeSession, testImage, olderInit, nil, true},
-		"the controller's pod under a release pinning another image": {controllerSpec, controllerSession, nextImage, nil, nil, true},
-		"an installing Resume keeps a drifted pod":                   {workerSpec, resumeSession, nextImage, nil, plugins, false},
+		"an issue pod on the configured image":                       {workerSpec, resumeSession, testImage, nil, nil, false, false, false},
+		"an issue pod under a release pinning another image":         {workerSpec, resumeSession, nextImage, nil, nil, false, false, true},
+		"an issue pod whose init container alone runs another image": {workerSpec, resumeSession, testImage, olderInit, nil, false, false, true},
+		"the controller's pod under a release pinning another image": {controllerSpec, controllerSession, nextImage, nil, nil, false, true, false},
+		"an installing Resume keeps a drifted pod":                   {workerSpec, resumeSession, nextImage, nil, plugins, false, false, true},
+		"a suspended sandbox under a release pinning another image":  {workerSpec, resumeSession, nextImage, nil, nil, true, true, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
@@ -740,6 +751,9 @@ func TestARelaunchReplacesAPodRunningAnotherImage(t *testing.T) {
 				state, connected := r2.launchers.state(spec.Claim, loc.Sandbox.PodUID)
 				return connected && state.Child != nil
 			})
+			if tc.suspended {
+				suspendSandbox(t, g, r2, loc.Sandbox.Name)
+			}
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile, spec.Plugins = 2, "boot-g2", tc.session, tc.plugins
 			newLoc, err := r2.Resume(g.ctx, &loc, spec)
 			if err != nil {
@@ -751,10 +765,9 @@ func TestARelaunchReplacesAPodRunningAnotherImage(t *testing.T) {
 			if newLoc.Sandbox.Generation != 2 {
 				t.Fatalf("resumed at %+v, want generation 2", newLoc.Sandbox)
 			}
-			if tc.replaced {
-				if other, drifted := imageDrift(g.pod(loc.Sandbox.Name), tc.pinned); drifted {
-					t.Fatalf("the pod the role runs in has a container on image %s, want every container on the configured %s", other, tc.pinned)
-				}
+			if other, drifted := imageDrift(g.pod(loc.Sandbox.Name), tc.pinned); drifted != tc.drifted {
+				t.Fatalf("the pod the role runs in has a container on image %s (drifted %t), want drifted %t against the configured %s",
+					other, drifted, tc.drifted, tc.pinned)
 			}
 			if tc.plugins != nil && !tc.replaced {
 				var start shimwire.LauncherStart
@@ -770,6 +783,23 @@ func TestARelaunchReplacesAPodRunningAnotherImage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// suspendSandbox suspends the Sandbox named name, as a stopped issue's is, and waits for the
+// store the runtime reads to hold it.
+func suspendSandbox(t *testing.T, g *rig, r *Runtime, name string) {
+	t.Helper()
+	s, err := r.storedSandbox(name)
+	if err != nil || s == nil {
+		t.Fatalf("read sandbox %s: %+v, %v", name, s, err)
+	}
+	if err := r.setMode(g.ctx, s, modeSuspended); err != nil {
+		t.Fatalf("suspend sandbox %s: %v", name, err)
+	}
+	g.eventually("the sandbox store to see "+name+" suspended", func() bool {
+		s, err := r.storedSandbox(name)
+		return err == nil && s != nil && s.mode() == modeSuspended
+	})
 }
 
 // A suspended Sandbox's Resume with Plugins set replaces the pod — it has none to keep — and
@@ -960,17 +990,19 @@ func TestAPodOfATreeLaunchesWhileAnotherIsStillInitializing(t *testing.T) {
 	}
 }
 
-// ProvisionBound is the two provisioning phases' bounds together, workspace.FetchBudget (190m: the
-// wait for the repository cache, which covers the cache's own first clone, then one bound for the
-// cache's stream and its verification, then one of its own for the delta from GitHub) for
-// workspace-fetch and workspace.CloneTimeout (30m) for workspace-init's shared clone,
-// and nothing more: provisioning from the feed onto the pod's own disk waits on no other pod,
-// so no lock wait is added to it. Pinned to a literal, 220 minutes, since no test can wait the real
-// bound out.
-func TestProvisionBoundIsTheFetchsWholeBudgetAndTheClonesBound(t *testing.T) {
+// ProvisionBound is the three provisioning phases' bounds together, workspace.FetchBudget (190m:
+// the wait for the repository cache, which covers the cache's own first clone, then one bound for
+// the verification of what the cache streamed, then one of its own for the delta from GitHub) for
+// workspace-fetch, workspace.CloneTimeout (30m) for workspace-init's shared clone, and
+// workspace.CheckoutTimeout (60m) for the issue's own checkout of that clone, and nothing more:
+// provisioning from the feed onto the pod's own disk waits on no other pod, so no lock wait is
+// added to it. The cache's stream holds the low-speed bound and no clock, so a stream that keeps
+// receiving runs on into the slack this bound holds over what its fetch actually waited and
+// checked. Pinned to a literal, 280 minutes, since no test can wait the real bound out.
+func TestProvisionBoundIsTheFetchsWholeBudgetTheClonesBoundAndTheCheckouts(t *testing.T) {
 	g := newRig(t, nil)
-	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout; got != 220*time.Minute || got != want {
-		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the stream's bound, the delta's own, and the shared clone's", got, want)
+	if got, want := g.r.ProvisionBound(), workspace.CacheWaitTimeout+2*workspace.FetchTimeout+workspace.CloneTimeout+workspace.CheckoutTimeout; got != 280*time.Minute || got != want {
+		t.Fatalf("ProvisionBound = %s, want %s: the cache wait, the verification's bound, the delta's own, the shared clone's, and the checkout's", got, want)
 	}
 }
 
@@ -1135,10 +1167,10 @@ func TestBootRefusesWhenTheAPIServerRefusesTheConnection(t *testing.T) {
 // deadlineTokens records whether each mint's context carries a deadline.
 type deadlineTokens struct{ bounded []bool }
 
-func (d *deadlineTokens) Token(ctx context.Context, owner string) (string, error) {
+func (d *deadlineTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
 	_, ok := ctx.Deadline()
 	d.bounded = append(d.bounded, ok)
-	return "ghs_provision_" + owner, nil
+	return "ghs_provision_" + repo.Owner(), nil
 }
 
 // The provisioning token is minted under the pod's launch turn, so its mint is bounded like any
@@ -1189,11 +1221,11 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 		},
 		"a role's github credential mint": {
 			fail: func(t *testing.T, failed *atomic.Bool) (rigOption, func(g *rig) runtime.SpawnSpec) {
-				credential := func(ctx context.Context, role claim.Role, owner string) (ghconfig.Bundle, error) {
+				credential := func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 					if failed.CompareAndSwap(false, true) {
 						return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 					}
-					return staticCredential(ctx, role, owner)
+					return staticCredential(ctx, role, repo)
 				}
 				return withOptions(func(o *Options) { o.GitHubCredential = credential }), func(*rig) runtime.SpawnSpec { return rootSpec(t) }
 			},
@@ -1225,13 +1257,23 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 // test's failure, so a launch that panics fails its own subtest by name rather than the binary.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
+	launching, cancel := context.WithTimeout(g.ctx, time.Second)
+	defer cancel()
+	return failedLaunchOn(t, g, launching, spec)
+}
+
+// failedLaunchOn is failedLaunch for a row whose launch no wall clock bounds: it runs on
+// launching, the context the row cancels once what it waits on has happened, and turns a panic
+// into the test's failure the same way. A launch whose failure lies past the waits of a replacing
+// try — a suspend, a wait for the previous pod, provision, the wait for the new pod — takes a
+// loaded machine longer than failedLaunch's second, and is this helper's rather than its.
+func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
+	t.Helper()
 	defer func() {
 		if p := recover(); p != nil {
 			t.Fatalf("Spawn panicked: %v", p)
 		}
 	}()
-	launching, cancel := context.WithTimeout(g.ctx, time.Second)
-	defer cancel()
 	_, err := g.r.Spawn(launching, spec)
 	return err
 }
@@ -1239,11 +1281,11 @@ func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 // outageTokens refuses its next installation token, once, as a GitHub outage would.
 type outageTokens struct{ failed *atomic.Bool }
 
-func (o *outageTokens) Token(ctx context.Context, owner string) (string, error) {
+func (o *outageTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
 	if o.failed.CompareAndSwap(false, true) {
 		return "", errors.New("no installation token: GitHub is down")
 	}
-	return staticTokens{}.Token(ctx, owner)
+	return staticTokens{}.Token(ctx, repo)
 }
 
 // A role starting into a running issue pod reads every launcher Secret of the pod to check the pod
@@ -1747,7 +1789,7 @@ func (g *rig) scriptedStartLauncher(
 	}
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, shimwire.LauncherHello{LauncherID: "scripted-" + string(token), PodUID: string(pod.UID)})
+	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "scripted-" + string(token), PodUID: string(pod.UID)})
 	g.t.Cleanup(func() { _ = client.Close() })
 	scripted := &scriptedStartLauncher{
 		starts: make(chan shimwire.LauncherStart, 2),
@@ -1854,6 +1896,7 @@ func loggedSandboxMachine(
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)
@@ -1917,6 +1960,16 @@ func (s *supervisedSandboxStore) PutClaimAndDelivery(_ context.Context, c superv
 func (s *supervisedSandboxStore) RetireDelivery(_ context.Context, c supervise.Claim, _ string) error {
 	s.claim = c
 	return nil
+}
+
+// PutClaimStep records the step columns alone, as the store's own narrow write does; these
+// tests read none of them.
+func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	if s.claim.Token != token {
+		return false, nil
+	}
+	s.claim.Step = step
+	return true, nil
 }
 
 // A Running patch the server applied but whose answer never arrived (a client timeout) is as

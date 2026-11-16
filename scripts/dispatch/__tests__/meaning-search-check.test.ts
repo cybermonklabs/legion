@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
 import {
   DispatchGatewayError,
   DispatchServiceError,
@@ -6,14 +7,13 @@ import {
 import {
   type Clock,
   type DispatchReads,
-  HttpStatusError,
   type Lexer,
   liveDispatch,
   parseArguments,
   queryTreeLexemes,
   runChecks,
-  UsageError,
 } from "../meaning-search-check.ts";
+import { HttpStatusError, UsageError } from "../production-check-runtime.ts";
 
 const TITLE = "Quarterly vendor ledger reconciliation";
 const QUERY = "money owed to suppliers stopped adding up";
@@ -542,7 +542,10 @@ describe("A3", () => {
       const code = await runChecks(
         parseArguments(["--coverage", "--expect-model", "X", "--coverage-wait", "0"]),
         {
-          dispatch: liveDispatch({ url: `http://127.0.0.1:${server.port}`, token: "t" }),
+          dispatch: liveDispatch({
+            url: `http://127.0.0.1:${server.port}`,
+            credential: bearerCredential("t"),
+          }),
           out: (line) => out.push(line),
         }
       );

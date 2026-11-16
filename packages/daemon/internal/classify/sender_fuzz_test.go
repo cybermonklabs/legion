@@ -32,19 +32,16 @@ type sentStep struct {
 // people's.
 var pushSenders = []string{"app", "alice", "bob"}
 
-// sentHistory is one random history with moves made again - fresh commits, forced returns that
-// undo the move before them, the same two heads pushed again - each push a random sender's, each
-// pair of heads changing the same paths and forced or not whenever it is pushed, as those are facts
-// of the two commits. Each synchronize but the last is delivered on time or late; with lose, one of
-// them is never delivered.
+// sentHistory is one random history with moves made again - fresh commits, returns that undo the
+// move before them, the same two heads pushed again - each push a random sender's. Each
+// synchronize but the last is delivered on time or late; with lose, one of them is never
+// delivered.
 func sentHistory(rng *rand.Rand, lose bool) []sentStep {
 	var steps []sentStep
 	cur := "h0"
-	flags := map[[2]string][2]bool{}
 	n := 3 + rng.IntN(6)
 	for k := 1; k <= n; k++ {
 		var to string
-		forced := false
 		var again []string
 		for _, s := range steps {
 			if s.push.Before == cur {
@@ -55,25 +52,19 @@ func sentHistory(rng *rand.Rand, lose bool) []sentStep {
 		case r == 0 && len(again) > 0:
 			to = again[rng.IntN(len(again))]
 		case r == 1 && len(steps) > 0:
-			to, forced = steps[len(steps)-1].push.Before, true
+			to = steps[len(steps)-1].push.Before
 		default:
-			to, forced = fmt.Sprintf("c%d", k), rng.IntN(4) == 0
+			to = fmt.Sprintf("c%d", k)
 		}
 		if to == cur {
-			to, forced = fmt.Sprintf("c%d", k), false
-		}
-		key := [2]string{cur, to}
-		f, ok := flags[key]
-		if !ok {
-			f = [2]bool{forced, rng.IntN(3) == 0}
-			flags[key] = f
+			to = fmt.Sprintf("c%d", k)
 		}
 		sender := pushSenders[rng.IntN(len(pushSenders))]
 		kind := onTime
 		if k < n && rng.IntN(2) == 0 {
 			kind = lateSync
 		}
-		steps = append(steps, sentStep{push: record.ClassifiedPush{Before: cur, SHA: to, Forced: f[0], HandoffOnly: f[1], ByReviewApp: sender == "app", Sender: sender}, sync: kind})
+		steps = append(steps, sentStep{push: record.ClassifiedPush{Before: cur, SHA: to, ByReviewApp: sender == "app", Sender: sender}, sync: kind})
 		cur = to
 	}
 	if lose {
@@ -298,15 +289,25 @@ func onTimeIndex(onTimeAt []int, steps []sentStep, j int) int {
 // by their senders. A history one of whose synchronizes is never delivered is the floor of this
 // rule: no fact says which push a move the daemon never saw synchronize took; those are judged and
 // counted apart, and logged. LEGION_RUN_FUZZ_ITERS sets the number of histories of each order (the
-// long mode), LEGION_RUN_FUZZ_SEED the seed, as for the run's own fuzz.
+// long mode), LEGION_RUN_FUZZ_SEED the seed, as for the run's own fuzz: a value neither empty nor a
+// positive number fails the test rather than running none of it.
 func TestEveryOrderOfASendersMovesIsJudgedAsTheOracleJudgesThem(t *testing.T) {
 	iters, seed := 2000, uint64(11)
 	if s := os.Getenv("LEGION_RUN_FUZZ_ITERS"); s != "" {
-		iters, _ = strconv.Atoi(s)
+		value, err := strconv.Atoi(s)
+		if err != nil || value <= 0 {
+			t.Fatalf("LEGION_RUN_FUZZ_ITERS=%q is no count: %v", s, err)
+		}
+		iters = value
 	}
 	if s := os.Getenv("LEGION_RUN_FUZZ_SEED"); s != "" {
-		seed, _ = strconv.ParseUint(s, 10, 64)
+		parsed, err := strconv.ParseUint(s, 10, 64)
+		if err != nil {
+			t.Fatalf("LEGION_RUN_FUZZ_SEED=%q is no seed: %v", s, err)
+		}
+		seed = parsed
 	}
+	t.Logf("%d histories of each order from seed %d", iters, seed)
 	for _, bounded := range []bool{false, true} {
 		for _, lose := range []bool{false, true} {
 			rng := rand.New(rand.NewPCG(seed, 5))
@@ -323,13 +324,12 @@ func TestEveryOrderOfASendersMovesIsJudgedAsTheOracleJudgesThem(t *testing.T) {
 					loops++
 				}
 				start := redAtH0()
-				start.PlannedRed = rng.IntN(2) == 0
 				want := delivered(t, start, history.reference...)
 				got := delivered(t, start, history.order...)
 				truth := delivered(t, start, history.oracle...)
 				orderWrong := JudgementChanged(want, got)
-				oracleWrong := want.FixAttempts != truth.FixAttempts || want.PlannedRed != truth.PlannedRed ||
-					HeadVerdict(want) != HeadVerdict(truth) || want.HeadCounted != history.named[truth.HeadCounted]
+				oracleWrong := want.HeadSHA != history.named[truth.HeadSHA] || want.CheckedHead != history.named[truth.CheckedHead] ||
+					!sameItems(want.Failing, truth.Failing)
 				stuck := got.Run != nil || want.Run != nil || truth.Run != nil
 				if orderWrong {
 					unlike++

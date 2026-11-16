@@ -13,21 +13,29 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
-// narrowBroker is a fake broker for the exec form's --github-* flags: every request is granted at
-// once as grant-<name>, and each release records the body it was sent. A grant of OLD_APP answers
-// as a broker from before narrowing (no github_app in the answer, the value owner-wide); any other
-// grant echoes the github_app it was sent and answers "narrowed" for one, "owner-wide" for none.
+// narrowBroker is a fake broker for the exec form's --github-* flags: every request is granted
+// at once, under a grant that holds every name the request asked for, and each release records
+// the body it was sent.
+//
+// values is what each name is released as. With none, each release answers the one name its
+// grant holds: a grant of OLD_APP answers as a broker from before narrowing (no github_app in
+// the answer, the value owner-wide), and any other grant echoes the github_app it was sent and
+// answers "narrowed" for one, "owner-wide" for none. With values, each name is answered its own
+// entry and the github_app the release was sent is answered back, as a broker that applied it
+// does, so narrowedAsAsked passes and the flag under test is what decides the run.
 type narrowBroker struct {
-	srv *httptest.Server
+	srv    *httptest.Server
+	values map[string]string
 
 	mu       sync.Mutex
-	requests int      // each POST /v1/requests
-	bodies   []string // each release's body, "" for none
+	requests int                 // each POST /v1/requests
+	bodies   []string            // each release's body, "" for none
+	grants   map[string][]string // grant id -> the names that grant holds
 }
 
-func newNarrowBroker(t *testing.T) *narrowBroker {
+func newNarrowBroker(t *testing.T, values map[string]string) *narrowBroker {
 	t.Helper()
-	b := &narrowBroker{}
+	b := &narrowBroker{values: values, grants: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
@@ -45,19 +53,29 @@ func newNarrowBroker(t *testing.T) *narrowBroker {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		name := obj.Details[0].Identifier
+		names := make([]string, 0, len(obj.Details))
+		granted := make([]map[string]string, 0, len(obj.Details))
+		for _, detail := range obj.Details {
+			names = append(names, detail.Identifier)
+			granted = append(granted, map[string]string{"name": detail.Identifier, "decision": "automatic"})
+		}
+		// One grant id for the whole request, so a release reads back every name it holds.
+		held := strings.ToLower(strings.Join(names, "-"))
+		b.mu.Lock()
+		b.grants["grant-"+held] = names
+		b.mu.Unlock()
 		writeJSON(w, map[string]any{
-			"request_id": "req-" + strings.ToLower(name), "state": "granted",
-			"secrets":  []map[string]string{{"name": name, "decision": "automatic"}},
-			"grant_id": "grant-" + strings.ToLower(name), "record_id": nil, "approver": nil, "lifetime_seconds": nil,
+			"request_id": "req-" + held, "state": "granted",
+			"secrets":  granted,
+			"grant_id": "grant-" + held, "record_id": nil, "approver": nil, "lifetime_seconds": nil,
 		})
 	})
 	mux.HandleFunc("POST /v1/grants/{id}/values", func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		b.mu.Lock()
 		b.bodies = append(b.bodies, string(raw))
+		held := b.grants[r.PathValue("id")]
 		b.mu.Unlock()
-		name := strings.ToUpper(strings.TrimPrefix(r.PathValue("id"), "grant-"))
 		var sent struct {
 			GitHubApp json.RawMessage `json:"github_app"`
 		}
@@ -67,6 +85,21 @@ func newNarrowBroker(t *testing.T) *narrowBroker {
 				return
 			}
 		}
+		if b.values != nil {
+			values := make(map[string]string, len(held))
+			for _, name := range held {
+				values[name] = b.values[name]
+			}
+			answer := map[string]any{"values": values, "expires_at": nil}
+			if sent.GitHubApp != nil {
+				answer["github_app"] = sent.GitHubApp
+			}
+			writeJSON(w, answer)
+			return
+		}
+		// The one name this half answers for, as the grant holds it: a fake that read the name
+		// out of its own grant id would make that id's shape a contract of the fake's.
+		name := held[0]
 		answer := map[string]any{"values": map[string]string{name: "owner-wide"}, "expires_at": nil}
 		switch {
 		case sent.GitHubApp == nil || name == "OLD_APP":
@@ -112,7 +145,7 @@ func (b *narrowBroker) takeRequests() int {
 // narrowing. Without them the release carries no body at all, as before.
 func TestTheGitHubFlagsNarrowTheRelease(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newNarrowBroker(t)
+	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
 	for _, tc := range []struct {
 		name string
@@ -148,7 +181,7 @@ func TestTheGitHubFlagsNarrowTheRelease(t *testing.T) {
 // saying so and runs nothing, rather than handing the command a token wider than it asked for.
 func TestANarrowingTheBrokerDidNotApplyRunsNothing(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newNarrowBroker(t)
+	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil,
 		"OLD_APP", "--github-owner", "ada", "--github-read-only", "--", "sh", "-c", "echo ran-the-child")
@@ -165,7 +198,7 @@ func TestANarrowingTheBrokerDidNotApplyRunsNothing(t *testing.T) {
 // asked for, so the exec form exits 1 and runs nothing.
 func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newNarrowBroker(t)
+	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
 	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil,
 		"OTHER_APP", "--github-owner", "ada", "--github-read-only", "--", "sh", "-c", "echo ran-the-child")
@@ -174,14 +207,17 @@ func TestANarrowingTheBrokerAppliedOtherwiseRunsNothing(t *testing.T) {
 	}
 }
 
-// TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo: --github-repo or --github-read-only narrows one
-// account's token, so without --github-owner it is a usage error, and so is a --github-owner that
-// names no account (an unset variable a helper passed), which would otherwise send no narrowing at
-// all, and any narrowing the broker's parser refuses (policy.ParseGitHubNarrowing): the CLI runs
-// that parser itself, so nothing reaches the broker, not even the request a person would approve.
+// TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo: --github-repo, --github-read-only and
+// --github-token each name one account's token, so without --github-owner each is a usage error,
+// and the refusal names the flag the caller gave: --github-token beside --github-repo names
+// --github-token, since a caller who asked for a token and named no account is told about the
+// flag they asked with. So is a --github-owner that names no account (an unset variable a helper
+// passed), which would otherwise send no narrowing at all, and any narrowing the broker's parser
+// refuses (policy.ParseGitHubNarrowing): the CLI runs that parser itself, so nothing reaches the
+// broker, not even the request a person would approve.
 func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	b := newNarrowBroker(t)
+	b := newNarrowBroker(t, nil)
 	keyDir := newKeyDir(t)
 	for _, tc := range []struct {
 		flags []string
@@ -189,6 +225,8 @@ func TestAGitHubNarrowingTheBrokerWouldRefuseExitsTwo(t *testing.T) {
 	}{
 		{[]string{"--github-repo", "widgets"}, "--github-owner"},
 		{[]string{"--github-read-only"}, "--github-owner"},
+		{[]string{"--github-token"}, "--github-token"},
+		{[]string{"--github-token", "--github-repo", "widgets"}, "--github-token"},
 		{[]string{"--github-owner", ""}, "--github-owner"},
 		{[]string{"--github-owner="}, "--github-owner"},
 		{[]string{"--github-owner", "  ", "--github-read-only"}, "--github-owner"},

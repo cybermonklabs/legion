@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The Envoy image no longer fetches the proof editor''s upstream sources from api.github.com: its web stage installs them from the tarball committed in packages/proof-editor, read out of the build context.'
+time: 2026-11-08T05:37:22.966783426Z
+custom:
+    Issue: pr2975

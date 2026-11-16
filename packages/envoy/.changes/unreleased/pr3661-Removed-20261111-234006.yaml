@@ -1,0 +1,11 @@
+kind: Removed
+body: |-
+    The related-item check of a write no longer offers an item under `decision`.
+    `advice.suggestions` holds no `decision` field, a `WriteSuggestion` no `answered_by` and no
+    `answered_at`, and the check writes no new `write_suggestions` row of the role `decision`. The
+    route descriptions of an issue create, an ask create, a document ask and the related route say so
+    too. Rows of that role written before this release stay, and the outcome sweep and the counts
+    read them as they did.
+time: 2026-11-11T23:40:06.201281468Z
+custom:
+    Issue: pr3661

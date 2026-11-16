@@ -5,17 +5,22 @@ import {
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the hover sites below arm the reference card's hover-intent timer under a held clock and name the pointer type, which user-event's `hover` cannot send.
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { api } from "../../api/client";
+import { displayTree } from "../../__tests__/display-trees";
+import { fixture } from "../../__tests__/pmdoc-fixtures";
+import { ApiError, api } from "../../api/client";
 import type {
   BroadcastSummary,
   Comment,
   CommentRead,
+  DisplayTree,
   IssueReferenceSummary,
   SearchResult,
 } from "../../api/types";
@@ -27,24 +32,65 @@ import { NO_SESSION_SENDS } from "../conversation/useSessionSends";
 import { ThreadCard } from "../margin/ThreadCard";
 import type { Thread } from "../margin/useMarginItems";
 import { SearchPalette } from "../search/SearchPalette";
+import { searchAnswer } from "../search/search-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import fixtures from "./__fixtures__/display-trees.json";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { Unfurl } from "./Unfurl";
 
+/** One marked snippet of the display-tree fixture, by name: the reading the server made of
+ *  that text as a search hit, with the words it matched marked. */
+function storedSnippet(name: string): { markdown: string; snippet: DisplayTree } {
+  const found = (fixtures as { name: string; markdown: string; snippet?: DisplayTree }[]).find(
+    (fixture) => fixture.name === name
+  );
+  if (found?.snippet === undefined) {
+    throw new Error(`no marked snippet named ${name} in the display-tree fixture`);
+  }
+  return { markdown: found.markdown, snippet: found.snippet };
+}
+
 /**
  * Every surface that shows text a person or an agent wrote, with one Markdown fixture, and
- * what each must never show: a literal markdown character. The fixture holds a heading, bold,
- * a list, a link, a `dispatch://` reference and a code span; a surface that passed the source
- * through as text would print `#`, `**`, `-`, `[`, `](`, a bare `dispatch://…` or a backtick,
- * and the assertion below reads the rendered text for each of those.
+ * what each must never show: a literal markdown character. The fixture is the table's
+ * `markdown-surfaces-fixture`, the corpus document written for these rows
+ * (`__tests__/pmdoc-fixtures.ts`): a paragraph of prose, a heading, bold, a list, a link, a
+ * `dispatch://` reference and a code span. A surface that passed the source through as text
+ * would print `#`, `**`, `-`, `[`, `](`, a bare `dispatch://…` or a backtick, and the assertion
+ * below reads the rendered text for each of those.
  */
-const FIXTURE =
-  "## Heading\n\n**Bold** then `code` and a [link](https://example.com/docs) to dispatch://CORE-1.\n\n- first\n- second";
+const surfacesFixture = fixture("markdown-surfaces-fixture");
+const FIXTURE = surfacesFixture.markdown;
+
+/** The document's paragraphs as the table says they read: its opening prose, its body line and
+ *  its two items. The heading's words are no paragraph, so they are named below where the
+ *  rendered line is built; the body line holds the reference unresolved, since the engine that
+ *  read it resolves none. */
+const [OPENING, BODY, FIRST, SECOND] = surfacesFixture.reading.paragraphs.map(
+  (paragraph) => paragraph.text
+);
+
+/** `part` as a pattern that matches it literally. */
+function quoted(part: string): string {
+  return part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /** What the fixture's text reads as once formatted on one line: no syntax, the words in order,
- *  the reference replaced by its resolved title (`Design decision`). */
-const RENDERED = /Heading\s+Bold then code and a link to Design decision\.?\s+first second/;
+ *  the heading's own words between the opening paragraph and the body, and the reference
+ *  replaced by its resolved title, which for an issue is its key then its title
+ *  (`CORE-1 Design decision`). */
+const RENDERED = new RegExp(
+  [
+    OPENING,
+    "Heading",
+    BODY.replace("dispatch://CORE-1", "CORE-1 Design decision"),
+    `${FIRST} ${SECOND}`,
+  ]
+    .map(quoted)
+    .join("\\s+")
+);
 
 /** The characters a raw-text surface leaks. The bare reference is listed by its scheme, so a
  *  surface that showed `dispatch://CORE-1` unresolved fails too. */
@@ -106,13 +152,15 @@ function Transcript({ messages }: { messages: KeyedMessage[] }): ReactNode {
         commands={undefined}
         contentIds={messages.map((message) => turnKey(message.metadata?.custom ?? {}, message.id))}
         empty="Nothing yet."
+        front
         held={false}
+        initialPlace={null}
+        onPlace={() => {}}
         ownSendCount={0}
         placeholder="Message the session…"
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
-        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );
@@ -146,7 +194,7 @@ function expectFormatted(element: HTMLElement): void {
   }));
   expect(links).toEqual([
     { reference: null, text: "link" },
-    { reference: "dispatch://CORE-1", text: "Design decision" },
+    { reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
   ]);
 }
 
@@ -164,7 +212,7 @@ function expectFormattedWithLiveLinks(element: HTMLElement): void {
   }));
   expect(links).toEqual([
     { href: "https://example.com/docs", reference: null, text: "link" },
-    { href: "/issues/CORE-1", reference: "dispatch://CORE-1", text: "Design decision" },
+    { href: "/issues/CORE-1", reference: "dispatch://CORE-1", text: "CORE-1 Design decision" },
   ]);
 }
 
@@ -207,7 +255,7 @@ test("the agent transcript renders assistant and reasoning text as Markdown", as
     expectBody(reasoning);
     expect(turn.querySelectorAll("h2")).toHaveLength(2);
     expect(turn.querySelectorAll("ul")).toHaveLength(2);
-    expect(turn.textContent).toContain("Bold then code and a link to Design decision.");
+    expect(turn.textContent).toContain("Bold then code and a link to CORE-1 Design decision.");
     for (const syntax of LITERAL_SYNTAX) {
       expect(turn.textContent).not.toContain(syntax);
     }
@@ -342,6 +390,8 @@ test("the reference hover card renders a comment's body and an ask's question fo
     </Providers>
   );
   try {
+    // A hover-intent press under a held clock, with the pointer type the card reads: user-event
+    // has no form for either.
     fireEvent.pointerOver(screen.getByRole("link", { name: "the comment" }), {
       pointerType: "mouse",
     });
@@ -365,37 +415,66 @@ test("the reference hover card renders a comment's body and an ask's question fo
 });
 
 test("the unfurl card under a bare reference renders the target's text formatted and its title without syntax", async () => {
+  await warmMarkdownRenderer();
   // Long enough that the title has to cut it, so the card shows the whole text under the title.
   const long = `${FIXTURE}\n- and a third item, which runs the title past its cut`;
   const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: { ...comment, body: long },
+    comment: { ...comment, body: long, body_tree: displayTree(long) },
     replies: [],
   });
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
-  const view = render(
-    <Providers>
-      <Unfurl body="dispatch://CORE-1/comment/comment-1" />
-    </Providers>
-  );
+  // Both spies are restored however the rows below end: the second render would otherwise leave
+  // `api.getComment` and `api.getIssueSummary` stubbed for every later test in this file.
   try {
-    // The card is the one link; the body's own links and references inside it are inert text.
-    const card = await within(view.container).findByRole("link", { name: /^Heading Bold/ });
-    await waitFor(() => expect(card.textContent).toContain("Design decision"));
-    const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
-    if (body === null) throw new Error("the unfurl body is not a MarkdownPreview");
-    expectFormatted(body);
-    expectOneLine(body);
-    // The card's title is the comment's words as plain text, cut to a title's length: a link's
-    // text can hold no formatting or nested link, so the markup is dropped and the reference
-    // reads as its short form, as a body's reference link does before its title resolves.
-    const title = card.firstElementChild?.textContent ?? "";
-    expect(title).toStartWith("Heading Bold then code and a link to CORE-1. first second");
-    expect(title).toEndWith("…");
-    for (const syntax of LITERAL_SYNTAX) {
-      expect(title).not.toContain(syntax);
+    const view = render(
+      <Providers>
+        <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+      </Providers>
+    );
+    try {
+      // The card is the one link; the body's own links and references inside it are inert text.
+      // The card's accessible name opens with its title, which is cut well inside the fixture's
+      // opening paragraph, so the card is found by that paragraph's first words.
+      const card = await within(view.container).findByRole("link", {
+        name: new RegExp(`^${quoted(OPENING.slice(0, 40))}`),
+      });
+      await waitFor(() => expect(card.textContent).toContain("Design decision"));
+      const body = card.querySelector<HTMLElement>("[data-markdown-preview]");
+      if (body === null) throw new Error("the unfurl body is not a MarkdownPreview");
+      expectFormatted(body);
+      expectOneLine(body);
+    } finally {
+      view.unmount();
+    }
+
+    // The same card over the fixture from its heading on. A title is cut at 60 characters
+    // (`reference-target.ts`'s `TITLE_HEADLINE_MAX`), which the fixture's opening paragraph fills
+    // by itself, so this is the body whose title reaches the markup: a link's text can hold no
+    // formatting or nested link, so the markup is dropped and the reference reads as its short
+    // form, as a body's reference link does before its title resolves.
+    getComment.mockResolvedValue({
+      comment: { ...comment, body: long.slice(long.indexOf("## ")) },
+      replies: [],
+    });
+    const titled = render(
+      <Providers>
+        <Unfurl body="dispatch://CORE-1/comment/comment-1" />
+      </Providers>
+    );
+    try {
+      const card = await within(titled.container).findByRole("link", { name: /^Heading Bold/ });
+      const title = card.firstElementChild?.textContent ?? "";
+      expect(title).toStartWith(
+        `Heading ${BODY.replace("dispatch://CORE-1", "CORE-1")} ${FIRST} ${SECOND}`
+      );
+      expect(title).toEndWith("…");
+      for (const syntax of LITERAL_SYNTAX) {
+        expect(title).not.toContain(syntax);
+      }
+    } finally {
+      titled.unmount();
     }
   } finally {
-    view.unmount();
     getComment.mockRestore();
     getIssueSummary.mockRestore();
   }
@@ -471,30 +550,31 @@ test("the margin's collapsed thread preview renders the root formatted on one li
 });
 
 test("a search hit's snippet renders formatted with the matched words still highlighted", async () => {
+  const user = userEvent.setup();
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+  // The server reads the hit's snippet and marks what it matched; this is its reading of this
+  // very body, from the fixture `pmdoc`'s `TestWebDisplayFixture` writes.
+  const marked = storedSnippet("surfaces-fixture-marked");
   const hit: SearchResult = {
     href: "/issues/CORE-1/comments/comment-1",
     id: "comment-1",
     kind: "comment",
     owner: { key: "CORE-1", kind: "issue", status: "in_progress", title: "Design decision" },
     rank: 1,
-    snippet: FIXTURE.replace("**Bold**", "**<mark>Bold</mark>**").replace(
-      "second",
-      "<mark>second</mark>"
-    ),
+    snippet: marked.markdown,
+    snippet_tree: marked.snippet,
   };
-  const search = spyOn(api, "search").mockResolvedValue({ results: [hit], took_ms: 1 });
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
   const view = render(
     <Providers>
       <KeymapProvider>
-        <SearchPalette mode="search" onClose={() => {}} />
+        <SearchPalette onClose={() => {}} open />
       </KeymapProvider>
     </Providers>
   );
   try {
-    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), {
-      target: { value: "bold second" },
-    });
+    await user.click(screen.getByRole("combobox", { name: "Search" }));
+    await user.paste("bold second");
     const option = await screen.findByRole("option");
     await waitFor(() => expect(option.textContent).toContain("Design decision"));
     const body = option.querySelector<HTMLElement>("[data-markdown-preview]");
@@ -568,13 +648,14 @@ function words(element: HTMLElement): string {
   return (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
-/** A full body's picture: an `<img>` named by its caption, at the column's width and capped in
- *  height (`DispatchPicture`'s `block`), never the preview's thumbnail. */
+/** A full body's picture: an `<img>` named by its caption, at its own size scaled down to the
+ *  column with no cap on its height (`DispatchPicture`'s `block`), never the preview's thumbnail. */
 async function expectBlockPicture(element: HTMLElement): Promise<void> {
   const picture = await within(element).findByRole("img", { name: "shot.png" });
   expect(picture.getAttribute("src")).toBe(PICTURE_SRC);
   const classes = picture.className.split(" ");
-  expect(classes).toEqual(expect.arrayContaining(["max-h-96", "max-w-full", "object-contain"]));
+  expect(classes).toEqual(expect.arrayContaining(["max-w-full", "object-contain"]));
+  expect(classes.some((name) => name.startsWith("max-h-"))).toBe(false);
   expect(classes).not.toContain("h-10");
   for (const syntax of PICTURE_SYNTAX) {
     expect(element.textContent).not.toContain(syntax);
@@ -620,6 +701,7 @@ describe("a Dispatch picture on every surface", () => {
   const testWindow = window as unknown as HappyDOMWindow;
   let pageBefore = "about:blank";
   let getIssueSummary: Mock<typeof api.getIssueSummary>;
+  let whoAmI: Mock<typeof api.whoAmI>;
 
   beforeEach(() => {
     pageBefore = window.location.href;
@@ -627,10 +709,17 @@ describe("a Dispatch picture on every surface", () => {
     // A picture that fell back to its reference resolves it against this issue's summary, which
     // lists no document, rather than reaching the network.
     getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
+    // This page's origin is not the suite's, so the shell's own `/auth/whoami` answer does not
+    // resolve against it: the viewer read is answered here at the api client, as it answers
+    // signed out - no identity - everywhere else in this suite.
+    whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
+      new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
+    );
   });
 
   afterEach(() => {
     getIssueSummary.mockRestore();
+    whoAmI.mockRestore();
     testWindow.happyDOM.setURL(pageBefore);
   });
 
@@ -727,6 +816,8 @@ describe("a Dispatch picture on every surface", () => {
       </Providers>
     );
     try {
+      // A hover-intent press under a held clock, with the pointer type the card reads: user-event
+      // has no form for either.
       fireEvent.pointerOver(screen.getByRole("link", { name: "the comment" }), {
         pointerType: "mouse",
       });
@@ -749,11 +840,12 @@ describe("a Dispatch picture on every surface", () => {
   });
 
   test("the unfurl card shows it in the target's text as a thumbnail beside its caption", async () => {
+    await warmMarkdownRenderer();
     // Long enough that the title has to cut it, so the card shows the whole text under the title.
     const prose = "After the deploy every column on the board was drawn twice.";
     const long = `${prose} ${PICTURE}`;
     const getComment = spyOn(api, "getComment").mockResolvedValue({
-      comment: { ...comment, body: long },
+      comment: { ...comment, body: long, body_tree: displayTree(long) },
       replies: [],
     });
     const view = render(
@@ -835,26 +927,34 @@ describe("a Dispatch picture on every surface", () => {
   });
 
   test("a search hit's snippet shows it as a thumbnail beside its caption, the matched word still highlighted", async () => {
+    const marked = storedSnippet("surfaces-picture-marked");
+    const user = userEvent.setup();
     const hit: SearchResult = {
       href: "/issues/CORE-1/comments/comment-1",
       id: "comment-1",
       kind: "comment",
       owner: { key: "CORE-1", kind: "issue", status: "in_progress", title: "Design decision" },
       rank: 1,
-      snippet: PICTURE.replace("layout", "<mark>layout</mark>"),
+      snippet: marked.markdown,
+      snippet_tree: marked.snippet,
     };
-    const search = spyOn(api, "search").mockResolvedValue({ results: [hit], took_ms: 1 });
+    const search = spyOn(api, "search").mockResolvedValue(searchAnswer([hit]));
+    // The bar lists a project row for every project whose key or name holds the words
+    // (`SearchPalette.tsx`), so it reads the project list. This page's origin is not the
+    // suite's, so the shell's own `/api/v1/projects` answer does not resolve against it: the
+    // read is answered here at the api client, with the empty list that answer carries, which
+    // leaves the one hit as the only option in the list this row reads.
+    const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
     const view = render(
       <Providers>
         <KeymapProvider>
-          <SearchPalette mode="search" onClose={() => {}} />
+          <SearchPalette onClose={() => {}} open />
         </KeymapProvider>
       </Providers>
     );
     try {
-      fireEvent.change(screen.getByRole("combobox", { name: "Search" }), {
-        target: { value: "layout" },
-      });
+      await user.click(screen.getByRole("combobox", { name: "Search" }));
+      await user.paste("layout");
       const option = await screen.findByRole("option");
       const body = option.querySelector<HTMLElement>("[data-markdown-preview]");
       if (body === null) throw new Error("the search snippet is not a MarkdownPreview");
@@ -866,6 +966,7 @@ describe("a Dispatch picture on every surface", () => {
     } finally {
       view.unmount();
       search.mockRestore();
+      listProjects.mockRestore();
     }
   });
 

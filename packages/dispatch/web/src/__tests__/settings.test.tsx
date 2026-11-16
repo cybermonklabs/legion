@@ -1,12 +1,17 @@
 import { expect, spyOn, test } from "bun:test";
 import { PROJECT_NAME_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the focus sites below reach the picker's people list without a press, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
-import type { Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
+import type { CreatedProject, Project, ProjectDefaultAssignee, RepoProject } from "../api/types";
 import { App } from "../app";
+// The Settings page is a lazy route of the app. Its module's first compile is not what a wait is
+// for, so the module is loaded here, with the test file, and no wait measures that load.
+import "../features/settings/SettingsPage";
 import { keyedAttempt } from "./keyed-attempt";
 
 /** The mapping routes' server state as the Settings page reaches it: a read answers what the writes
@@ -14,13 +19,16 @@ import { keyedAttempt } from "./keyed-attempt";
  *  mapping's own while its project is unchanged; at most one default per project). */
 function mappingServer(initial: RepoProject[]) {
   let rows = initial.map((row) => ({ ...row }));
-  const put = (repo: string, input: { project: string; default?: boolean }): RepoProject => {
+  // `default` as the route table carries it: absent, or null for "leave it as it is".
+  const put = (repo: string, input: { project: string; default?: boolean | null }): RepoProject => {
     const existing = rows.find((row) => row.repo === repo);
     const mapping: RepoProject = {
       created_at: "2026-09-10T00:00:00Z",
       created_by: { id: "alice", kind: "user" },
       default: input.default ?? (existing?.project === input.project ? existing.default : false),
       project: input.project,
+      // The write names no rename, as the page's never does, so the stored one stands.
+      renamed_to: existing?.renamed_to ?? null,
       repo,
     };
     rows = [
@@ -61,12 +69,14 @@ function stubMatchMedia(): () => void {
 }
 
 test("human users manage repository project mappings from the settings route", async () => {
+  const user = userEvent.setup();
   const restoreMatchMedia = stubMatchMedia();
   const mapping: RepoProject = {
     created_at: "2026-09-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     default: false,
     project: "CORE",
+    renamed_to: null,
     repo: "owner/repo",
   };
   const other: RepoProject = { ...mapping, default: true, repo: "owner/other" };
@@ -86,7 +96,13 @@ test("human users manage repository project mappings from the settings route", a
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const putRepoProject = spyOn(api, "putRepoProject").mockImplementation(async (repo, input) =>
     server.put(repo, input)
@@ -104,8 +120,11 @@ test("human users manage repository project mappings from the settings route", a
     );
 
     expect(await screen.findByRole("heading", { name: "Repositories → Projects" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings");
-    expect(screen.getByRole("cell", { name: "owner/repo" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Settings" })).toHaveAttribute("href", "/settings");
+    // The heading above is the section's, which renders before its mapping list: the rows arrive
+    // with a read of their own, and reading them synchronously finds the table still saying
+    // "Loading…" on a pod whose cores are busy.
+    expect(await screen.findByRole("cell", { name: "owner/repo" })).toBeDefined();
     expect(screen.getByRole("columnheader", { name: "Default" })).toBeDefined();
     const radio = (repo: string) =>
       screen.getByRole("radio", {
@@ -113,7 +132,7 @@ test("human users manage repository project mappings from the settings route", a
       }) as HTMLInputElement;
     expect(radio("owner/other").checked).toBe(true);
     expect(radio("owner/repo").checked).toBe(false);
-    fireEvent.click(radio("owner/repo"));
+    await user.click(radio("owner/repo"));
     await waitFor(() =>
       expect(putRepoProject).toHaveBeenLastCalledWith(
         "owner/repo",
@@ -128,9 +147,10 @@ test("human users manage repository project mappings from the settings route", a
     expect(radio("owner/repo").checked).toBe(true);
     expect(radio("owner/other").checked).toBe(false);
 
-    fireEvent.change(screen.getByLabelText("Repository"), { target: { value: "Owner/Repo.git" } });
-    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "CORE" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add mapping" }));
+    await user.click(screen.getByLabelText("Repository"));
+    await user.paste("Owner/Repo.git");
+    await user.selectOptions(screen.getByLabelText("Project"), "CORE");
+    await user.click(screen.getByRole("button", { name: "Add mapping" }));
     await waitFor(() =>
       expect(putRepoProject).toHaveBeenLastCalledWith(
         "owner/repo",
@@ -139,7 +159,7 @@ test("human users manage repository project mappings from the settings route", a
       )
     );
     expect(screen.getAllByRole("cell", { name: "owner/repo" })).toHaveLength(1);
-    expect(screen.queryByRole("cell", { name: "Owner/Repo.git" })).toBeNull();
+    expect(screen.queryByRole("cell", { name: "Owner/Repo.git" })).not.toBeInTheDocument();
 
     // A mapping issues name is refused by the server, which says how many: the row comes back
     // and the refusal shows.
@@ -149,7 +169,7 @@ test("human users manage repository project mappings from the settings route", a
         error: "1 issue(s) of CORE name owner/repo as their repository; change their repo first",
       })
     );
-    fireEvent.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
+    await user.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
     expect(
       await screen.findByText(
         "1 issue(s) of CORE name owner/repo as their repository; change their repo first"
@@ -157,11 +177,13 @@ test("human users manage repository project mappings from the settings route", a
     ).toBeDefined();
     expect(screen.getByRole("cell", { name: "owner/repo" })).toBeDefined();
 
-    fireEvent.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
+    await user.click(screen.getByRole("button", { name: "Delete mapping for owner/repo" }));
     await waitFor(() =>
       expect(deleteRepoProject).toHaveBeenLastCalledWith("owner/repo", keyedAttempt)
     );
-    await waitFor(() => expect(screen.queryByRole("cell", { name: "owner/repo" })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("cell", { name: "owner/repo" })).not.toBeInTheDocument()
+    );
   } finally {
     cleanup();
     queryClient.clear();
@@ -186,12 +208,14 @@ test("human users manage repository project mappings from the settings route", a
 // arrives: the page reads them again once the write settles, so a response that arrives after the
 // page already read a newer default does not put the older one back.
 test("a delayed mapping response does not undo a newer default the page has read", async () => {
+  const user = userEvent.setup();
   const restoreMatchMedia = stubMatchMedia();
   const row = (repo: string, isDefault: boolean): RepoProject => ({
     created_at: "2026-09-10T00:00:00Z",
     created_by: { id: "alice", kind: "user" },
     default: isDefault,
     project: "CORE",
+    renamed_to: null,
     repo,
   });
   const server = mappingServer([row("owner/repo", false), row("owner/other", true)]);
@@ -210,7 +234,13 @@ test("a delayed mapping response does not undo a newer default the page has read
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   // The server saves the pick at once; its answer reaches the page only when the test says.
   let answer: (() => void) | undefined;
@@ -233,7 +263,7 @@ test("a delayed mapping response does not undo a newer default the page has read
       </MemoryRouter>
     );
     await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
-    fireEvent.click(radio("owner/repo"));
+    await user.click(radio("owner/repo"));
     await waitFor(() => expect(putRepoProject).toHaveBeenCalledTimes(1));
     // Another browser makes owner/other the default again, and this page reads it (as a mapping
     // event would have it do) while its own write's answer is still on the way.
@@ -265,6 +295,7 @@ test("a delayed mapping response does not undo a newer default the page has read
 });
 
 test("repository settings retries a failed mapping query", async () => {
+  const user = userEvent.setup();
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -282,7 +313,13 @@ test("repository settings retries a failed mapping query", async () => {
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" },
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -295,10 +332,10 @@ test("repository settings retries a failed mapping query", async () => {
       </MemoryRouter>
     );
 
-    expect((await screen.findByRole("alert")).textContent).toContain(
+    expect(await screen.findByRole("alert")).toHaveTextContent(
       "Couldn't load repository mappings."
     );
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
   } finally {
     cleanup();
@@ -318,8 +355,23 @@ test("repository settings retries a failed mapping query", async () => {
 });
 
 test("a human creates a project from Settings and it appears in the mappings selector", async () => {
-  const core: Project = { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" };
-  const created: Project = { created_at: "2026-09-10T00:00:00Z", key: "QA", name: "Quality" };
+  const user = userEvent.setup();
+  const core: Project = {
+    created_at: "2026-09-01T00:00:00Z",
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    gated_steps: [],
+  };
+  const listed: Project = {
+    created_at: "2026-09-10T00:00:00Z",
+    key: "QA",
+    name: "Quality",
+    open_asks: 0,
+    gated_steps: [],
+  };
+  // The create answers the project with its default; the project list carries none.
+  const created: CreatedProject = { ...listed, default_assignee: "alice" };
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -332,11 +384,18 @@ test("a human creates a project from Settings and it appears in the mappings sel
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
   const listArchitectureSources = spyOn(api, "listArchitectureSources").mockResolvedValue([]);
-  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // The defaults read is the one place a project's default comes from: the page's first read
+  // knows CORE alone, and the one after the create knows QA too.
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees")
+    .mockResolvedValueOnce([{ assignee: "alice", project: "CORE" }])
+    .mockResolvedValue([
+      { assignee: "alice", project: "CORE" },
+      { assignee: "alice", project: "QA" },
+    ]);
   const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
   const listProjects = spyOn(api, "listProjects")
     .mockResolvedValueOnce([core])
-    .mockResolvedValueOnce([core, created]);
+    .mockResolvedValueOnce([core, listed]);
   const createProject = spyOn(api, "createProject").mockResolvedValue(created);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
@@ -350,16 +409,27 @@ test("a human creates a project from Settings and it appears in the mappings sel
     );
 
     expect(await screen.findByRole("cell", { name: "CORE" })).toBeDefined();
-    fireEvent.change(screen.getByLabelText("Key"), { target: { value: "qa" } });
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Quality" } });
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("qa");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Quality");
     expect(screen.getByLabelText("Name")).toHaveProperty("maxLength", PROJECT_NAME_MAX);
-    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    // The form starts on the person the server would take anyway - the one creating it - and
+    // sends them, so the new project names somebody from the moment it exists.
+    expect(screen.getByLabelText<HTMLSelectElement>("Default assignee").value).toBe("alice");
+    await user.click(screen.getByRole("button", { name: "New project" }));
 
     await waitFor(() =>
-      expect(createProject).toHaveBeenLastCalledWith({ key: "QA", name: "Quality" }, keyedAttempt)
+      expect(createProject).toHaveBeenLastCalledWith(
+        { default_assignee: "alice", key: "QA", name: "Quality" },
+        keyedAttempt
+      )
     );
     await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(2));
     expect(await screen.findByRole("cell", { name: "QA" })).toBeDefined();
+    const qa = await screen.findByRole("combobox", { name: "Default assignee of QA" });
+    await waitFor(() => expect(qa).toHaveProperty("value", "alice"));
+    expect(listDefaults).toHaveBeenCalledTimes(2);
     expect(
       within(screen.getByRole("combobox", { name: "Project" })).getByRole("option", {
         name: "QA · Quality",
@@ -385,7 +455,14 @@ test("a human creates a project from Settings and it appears in the mappings sel
 });
 
 test("creating a project with a taken key shows the server's error inline", async () => {
-  const core: Project = { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core" };
+  const user = userEvent.setup();
+  const core: Project = {
+    created_at: "2026-09-01T00:00:00Z",
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    gated_steps: [],
+  };
   const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
     event_head: "0",
     kind: "user",
@@ -416,11 +493,13 @@ test("creating a project with a taken key shows the server's error inline", asyn
     );
 
     expect(await screen.findByRole("cell", { name: "CORE" })).toBeDefined();
-    fireEvent.change(screen.getByLabelText("Key"), { target: { value: "CORE" } });
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Core Again" } });
-    fireEvent.click(screen.getByRole("button", { name: "New project" }));
+    await user.click(screen.getByLabelText("Key"));
+    await user.paste("CORE");
+    await user.click(screen.getByLabelText("Name"));
+    await user.paste("Core Again");
+    await user.click(screen.getByRole("button", { name: "New project" }));
 
-    expect((await screen.findByRole("alert")).textContent).toContain(
+    expect(await screen.findByRole("alert")).toHaveTextContent(
       "a project with this key already exists"
     );
   } finally {
@@ -442,11 +521,12 @@ test("creating a project with a taken key shows the server's error inline", asyn
 });
 
 /** The default-assignee routes' server state as the Settings page reaches it: a read answers
- *  what the writes have left, and `sent` records each write's assignee as it arrives. While
+ *  what the writes have left, and `sent` records each write's assignee as it arrives. Every
+ *  project names a person and no write clears one, so an assignee is always a login. While
  *  `hold()`'s release has not been called, a write that arrives waits before it lands. */
 function defaultAssigneeServer(initial: ProjectDefaultAssignee[]) {
   let rows = initial.map((row) => ({ ...row }));
-  const sent: (string | null)[] = [];
+  const sent: string[] = [];
   let gate: Promise<void> | undefined;
   return {
     hold: (): (() => void) => {
@@ -460,14 +540,12 @@ function defaultAssigneeServer(initial: ProjectDefaultAssignee[]) {
     list: async (): Promise<ProjectDefaultAssignee[]> => rows.map((row) => ({ ...row })),
     put: async (
       project: string,
-      { assignee }: { assignee: string | null }
+      { assignee }: { assignee: string }
     ): Promise<ProjectDefaultAssignee> => {
       sent.push(assignee);
       await gate;
       rows = rows.filter((row) => row.project !== project);
-      if (assignee !== null) {
-        rows.push({ assignee, project });
-      }
+      rows.push({ assignee, project });
       return { assignee, project };
     },
     rows: () => rows,
@@ -495,7 +573,13 @@ function renderSettings(projects: string[]): {
     spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getDeliverySettings").mockResolvedValue(null),
     spyOn(api, "listProjects").mockResolvedValue(
-      projects.map((key) => ({ created_at: "2026-09-01T00:00:00Z", key, name: key }))
+      projects.map((key) => ({
+        created_at: "2026-09-01T00:00:00Z",
+        key,
+        name: key,
+        open_asks: 0,
+        gated_steps: [],
+      }))
     ),
   ];
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -528,6 +612,7 @@ const defaultAssigneeControl = async (project: string): Promise<HTMLSelectElemen
   })) as HTMLSelectElement;
 
 test("default assignee picks made while one is saving show, and only the newest follows the held save", async () => {
+  const user = userEvent.setup();
   const server = defaultAssigneeServer([{ assignee: "alice@example.com", project: "CORE" }]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
   const putDefault = spyOn(api, "putProjectDefaultAssignee").mockImplementation(server.put);
@@ -542,7 +627,7 @@ test("default assignee picks made while one is saving show, and only the newest 
     const section = within(await screen.findByRole("region", { name: "Projects" }));
     // A default set on the project an unmapped repository falls back to is what a reader has to
     // weigh while setting one, so the consequence sits beside the control.
-    expect(section.getByText(/no project mapping/).textContent).toContain("default project");
+    expect(section.getByText(/no project mapping/)).toHaveTextContent("default project");
 
     const control = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(control.value).toBe("alice@example.com"));
@@ -550,6 +635,7 @@ test("default assignee picks made while one is saving show, and only the newest 
     // Nobody is listed until a reader reaches for the picker.
     expect(listUsers).not.toHaveBeenCalled();
 
+    // Reaching the control without pressing it: user-event has no form for focus alone.
     fireEvent.focus(control);
     await waitFor(() =>
       expect(within(control).getByRole("option", { name: "carol@example.com" })).toBeDefined()
@@ -558,23 +644,23 @@ test("default assignee picks made while one is saving show, and only the newest 
       within(control)
         .getAllByRole("option")
         .map((option) => option.textContent)
-    ).toEqual(["Unassigned", "alice@example.com", "bob@example.com", "carol@example.com"]);
+    ).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
 
     const release = server.hold();
-    fireEvent.change(control, { target: { value: "bob@example.com" } });
+    await user.selectOptions(control, "bob@example.com");
     await waitFor(() => expect(control.value).toBe("bob@example.com"));
     await waitFor(() => expect(server.sent).toEqual(["bob@example.com"]));
 
     // Two more picks while bob's save is held: each shows, neither is sent yet.
-    fireEvent.change(control, { target: { value: "" } });
-    await waitFor(() => expect(control.value).toBe(""));
-    fireEvent.change(control, { target: { value: "carol@example.com" } });
+    await user.selectOptions(control, "alice@example.com");
+    await waitFor(() => expect(control.value).toBe("alice@example.com"));
+    await user.selectOptions(control, "carol@example.com");
     await waitFor(() => expect(control.value).toBe("carol@example.com"));
     await act(async () => {});
     expect(putDefault).toHaveBeenCalledTimes(1);
 
     await act(async () => release());
-    // Only the newest pick follows the held save: Unassigned was superseded before it was sent.
+    // Only the newest pick follows the held save: alice's was superseded before it was sent.
     await waitFor(() => expect(server.sent).toEqual(["bob@example.com", "carol@example.com"]));
     await waitFor(() =>
       expect(server.rows()).toEqual([{ assignee: "carol@example.com", project: "CORE" }])
@@ -582,13 +668,17 @@ test("default assignee picks made while one is saving show, and only the newest 
     expect(putDefault).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(control.value).toBe("carol@example.com"));
 
-    // Clearing it leaves the project with no default, and the control at Unassigned.
-    fireEvent.change(control, { target: { value: "" } });
-    await waitFor(() => expect(server.rows()).toEqual([]));
-    await waitFor(() =>
-      expect(putDefault).toHaveBeenLastCalledWith("CORE", { assignee: null }, keyedAttempt)
-    );
-    expect(control.value).toBe("");
+    // Nothing clears a default, so the picker holds no option that names nobody: every pick it
+    // can make sends a person, and CORE is left naming one.
+    expect(
+      within(control)
+        .getAllByRole("option")
+        .map((option) => option.getAttribute("value"))
+    ).toEqual(["alice@example.com", "bob@example.com", "carol@example.com"]);
+    expect(putDefault.mock.calls.map(([, input]) => input)).toEqual([
+      { assignee: "bob@example.com" },
+      { assignee: "carol@example.com" },
+    ]);
   } finally {
     done();
     listDefaults.mockRestore();
@@ -601,7 +691,8 @@ test("default assignee picks made while one is saving show, and only the newest 
 // the remounted row waits behind the held save and supersedes the pick queued before leaving, so
 // only the newest pick follows the held save.
 test("a default assignee picked after Settings is remounted supersedes the pick queued before, and follows the held save", async () => {
-  const server = defaultAssigneeServer([]);
+  const user = userEvent.setup();
+  const server = defaultAssigneeServer([{ assignee: "alice@example.com", project: "CORE" }]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
   const putDefault = spyOn(api, "putProjectDefaultAssignee").mockImplementation(server.put);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([
@@ -614,15 +705,16 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
   try {
     let control = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(control.disabled).toBe(false));
+    // Reaching the control without pressing it: user-event has no form for focus alone.
     fireEvent.focus(control);
     await waitFor(() =>
       expect(within(control).getByRole("option", { name: "dave@example.com" })).toBeDefined()
     );
 
     const release = server.hold();
-    fireEvent.change(control, { target: { value: "bob@example.com" } });
+    await user.selectOptions(control, "bob@example.com");
     await waitFor(() => expect(server.sent).toEqual(["bob@example.com"]));
-    fireEvent.change(control, { target: { value: "carol@example.com" } });
+    await user.selectOptions(control, "carol@example.com");
     await waitFor(() => expect(control.value).toBe("carol@example.com"));
 
     leave();
@@ -630,12 +722,13 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
     control = await defaultAssigneeControl("CORE");
     // The pick still waiting behind bob's held save is what the returning row shows.
     await waitFor(() => expect(control.value).toBe("carol@example.com"));
+    // Reaching the control without pressing it: user-event has no form for focus alone.
     fireEvent.focus(control);
     await waitFor(() =>
       expect(within(control).getByRole("option", { name: "dave@example.com" })).toBeDefined()
     );
 
-    fireEvent.change(control, { target: { value: "dave@example.com" } });
+    await user.selectOptions(control, "dave@example.com");
     await waitFor(() => expect(control.value).toBe("dave@example.com"));
     await act(async () => {});
     // Still one at a time: nothing follows bob's save onto the wire while it is held.
@@ -659,6 +752,7 @@ test("a default assignee picked after Settings is remounted supersedes the pick 
 // A save refused while Settings is unmounted is still the reader's to hear about: the reopened
 // row says so, beside the stored value it fell back to, and Retry resends it.
 test("a default assignee save refused while Settings is unmounted shows its reason when Settings is reopened", async () => {
+  const user = userEvent.setup();
   const server = defaultAssigneeServer([{ assignee: "alice@example.com", project: "CORE" }]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
   const refusal = Promise.withResolvers<ProjectDefaultAssignee>();
@@ -674,11 +768,12 @@ test("a default assignee save refused while Settings is unmounted shows its reas
   try {
     let core = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(core.value).toBe("alice@example.com"));
+    // Reaching the control without pressing it: user-event has no form for focus alone.
     fireEvent.focus(core);
     await waitFor(() =>
       expect(within(core).getByRole("option", { name: "bob@example.com" })).toBeDefined()
     );
-    fireEvent.change(core, { target: { value: "bob@example.com" } });
+    await user.selectOptions(core, "bob@example.com");
     await waitFor(() => expect(putDefault).toHaveBeenCalledTimes(1));
 
     leave();
@@ -696,14 +791,12 @@ test("a default assignee save refused while Settings is unmounted shows its reas
     core = await defaultAssigneeControl("CORE");
     const coreCell = within(core.closest("td") as HTMLElement);
     await waitFor(() =>
-      expect(coreCell.getByRole("alert").textContent).toContain(
-        "the default assignee save was refused"
-      )
+      expect(coreCell.getByRole("alert")).toHaveTextContent("the default assignee save was refused")
     );
     expect(core.value).toBe("alice@example.com");
 
-    fireEvent.click(coreCell.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(coreCell.queryByRole("alert")).toBeNull());
+    await user.click(coreCell.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(coreCell.queryByRole("alert")).not.toBeInTheDocument());
     await waitFor(() =>
       expect(server.rows()).toEqual([{ assignee: "bob@example.com", project: "CORE" }])
     );
@@ -721,7 +814,11 @@ test("a default assignee save refused while Settings is unmounted shows its reas
 });
 
 test("a refused default assignee puts the row back, shows the server's reason in that row, and Retry resends it", async () => {
-  const server = defaultAssigneeServer([]);
+  const user = userEvent.setup();
+  const server = defaultAssigneeServer([
+    { assignee: "alice@example.com", project: "CORE" },
+    { assignee: "alice@example.com", project: "OPS" },
+  ]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockImplementation(server.list);
   const putDefault = spyOn(api, "putProjectDefaultAssignee")
     .mockRejectedValueOnce(
@@ -731,7 +828,10 @@ test("a refused default assignee puts the row back, shows the server's reason in
       })
     )
     .mockImplementation(server.put);
-  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "bob@example.com" }]);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice@example.com" },
+    { login: "bob@example.com" },
+  ]);
   const { done } = renderSettings(["CORE", "OPS"]);
 
   try {
@@ -740,33 +840,33 @@ test("a refused default assignee puts the row back, shows the server's reason in
     const coreCell = within(core.closest("td") as HTMLElement);
     const opsCell = within(ops.closest("td") as HTMLElement);
     await waitFor(() => expect(core.disabled).toBe(false));
+    // Reaching the control without pressing it: user-event has no form for focus alone.
     fireEvent.focus(core);
     await waitFor(() =>
       expect(within(core).getByRole("option", { name: "bob@example.com" })).toBeDefined()
     );
 
-    fireEvent.change(core, { target: { value: "bob@example.com" } });
+    await user.selectOptions(core, "bob@example.com");
     await waitFor(() =>
-      expect(coreCell.getByRole("alert").textContent).toContain(
-        "bob@example.com has never signed in"
-      )
+      expect(coreCell.getByRole("alert")).toHaveTextContent("bob@example.com has never signed in")
     );
-    // The refused pick is not left on screen: the row reads what the server holds.
-    expect(core.value).toBe("");
+    // The refused pick is not left on screen: the row reads the person the server holds.
+    expect(core.value).toBe("alice@example.com");
 
     // A save on another row neither clears nor takes over this row's error.
-    fireEvent.change(ops, { target: { value: "bob@example.com" } });
+    await user.selectOptions(ops, "bob@example.com");
     await waitFor(() =>
-      expect(server.rows()).toEqual([{ assignee: "bob@example.com", project: "OPS" }])
+      expect(server.rows()).toEqual([
+        { assignee: "alice@example.com", project: "CORE" },
+        { assignee: "bob@example.com", project: "OPS" },
+      ])
     );
     expect(ops.value).toBe("bob@example.com");
-    expect(opsCell.queryByRole("alert")).toBeNull();
-    expect(coreCell.getByRole("alert").textContent).toContain(
-      "bob@example.com has never signed in"
-    );
+    expect(opsCell.queryByRole("alert")).not.toBeInTheDocument();
+    expect(coreCell.getByRole("alert")).toHaveTextContent("bob@example.com has never signed in");
 
-    fireEvent.click(coreCell.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(coreCell.queryByRole("alert")).toBeNull());
+    await user.click(coreCell.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(coreCell.queryByRole("alert")).not.toBeInTheDocument());
     expect(putDefault.mock.calls).toEqual([
       ["CORE", { assignee: "bob@example.com" }, keyedAttempt],
       ["OPS", { assignee: "bob@example.com" }, keyedAttempt],
@@ -782,7 +882,8 @@ test("a refused default assignee puts the row back, shows the server's reason in
   }
 });
 
-test("a default assignee the page has not read is disabled and never reads Unassigned", async () => {
+test("a default assignee the page has not read is disabled and names nobody", async () => {
+  const user = userEvent.setup();
   const read = Promise.withResolvers<ProjectDefaultAssignee[]>();
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockReturnValueOnce(read.promise);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
@@ -795,26 +896,24 @@ test("a default assignee the page has not read is disabled and never reads Unass
   try {
     const section = within(await screen.findByRole("region", { name: "Projects" }));
     const control = await defaultAssigneeControl("CORE");
-    // Still reading: nobody knows yet whether CORE names a default.
+    // Still reading: nobody knows yet which person CORE names.
     expect(control.disabled).toBe(true);
     expect(control.value).not.toBe("");
     expect(optionNames(control)).toEqual(["Loading…"]);
 
     await act(async () => read.reject(new ApiError(500, { code: "INTERNAL", error: "boom" })));
     await waitFor(() =>
-      expect(section.getByRole("alert").textContent).toContain(
-        "Couldn't load the default assignees."
-      )
+      expect(section.getByRole("alert")).toHaveTextContent("Couldn't load the default assignees.")
     );
     expect(control.disabled).toBe(true);
     expect(control.value).not.toBe("");
     expect(optionNames(control)).toEqual(["Unavailable"]);
 
     listDefaults.mockResolvedValue([{ assignee: "alice@example.com", project: "CORE" }]);
-    fireEvent.click(section.getByRole("button", { name: "Retry" }));
+    await user.click(section.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(control.disabled).toBe(false));
     expect(control.value).toBe("alice@example.com");
-    expect(section.queryByRole("alert")).toBeNull();
+    expect(section.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     done();
     listDefaults.mockRestore();

@@ -1,0 +1,198 @@
+Experiment 10, Restate: a handler whose process is killed inside it.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+restate-server-version: 1.8.1
+restate-server-started-by-this-experiment: true
+restate-ingress-address: 127.0.0.1:22200
+restate-admin-address: 127.0.0.1:31260
+restate-data-directory: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e10/exp10-restate
+invocation-status-read-from: POST /query against the server's sys_invocation and sys_journal views: restate-server 1.8.1's admin API has no GET /invocations, only the per-invocation pause, resume, kill, cancel and purge operations
+side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e10/exp10-side-effects.log
+[service1] restateservice: pid=28622
+[service1] time=2026-11-07T22:37:19.970Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service1] restateservice: goroutines=5
+[service1] restateservice: handlers-in-flight=0
+service1-pid: 28622
+service1-endpoint: http://127.0.0.1:60200
+deployment-id: dp_13twvF17lF73s6zRlcDKOsN
+deployment-services: [{Exp10Prompt 1}]
+invocation-id: inv_1hTb5NRKDdXy4HizU6NNTHSJ9K4UCPAvOK
+[service1] restateservice: goroutines=12
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=12
+[service1] restateservice: handlers-in-flight=0
+[service1] restateservice: goroutines=12
+[service1] restateservice: handlers-in-flight=0
+side-effect-1: attempt=1 pid=28622 invocation=inv_1hTb5NRKDdXy4HizU6NNTHSJ9K4UCPAvOK at=2026-11-07T22:37:21.078124144Z
+invocation-before-kill: status=running in_flight=true pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=1 journal_size=2
+journal-before-kill: 0:Command: Input(-), 1:Command: Run(prompt-the-session)
+handlers-in-flight-in-service1-before-kill: 0
+in-flight-step-marker-in-the-journal: a Run command entry with no result notification beside it: the server can see that the step was begun and has not returned
+kill-sent: true
+killed-pid: 28622
+kill-signal: SIGKILL
+killed-process-still-alive: false
+dead-endpoint-observed-for: 8s
+invocation-with-its-endpoint-dead-sample-1: status=ready in_flight=false pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=0 journal_size=2
+invocation-with-its-endpoint-dead-sample-2: status=ready in_flight=false pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=0 journal_size=2
+invocation-with-its-endpoint-dead-sample-3: status=ready in_flight=false pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=0 journal_size=2
+invocation-with-its-endpoint-dead-sample-4: status=ready in_flight=false pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=0 journal_size=2
+side-effects-while-the-pinned-endpoint-was-dead: 1
+events-while-the-pinned-endpoint-was-dead: after 1: TransientError [500] unexpected error while reading the response body: stream closed because of a broken pipe; after 1: TransientError [500] error when calling 'http://127.0.0.1:60200/': h2 pool connection error: Connection refused (os error 111); after 1: TransientError [500] error when calling 'http://127.0.0.1:60200/': h2 pool connection error: Connection refused (os error 111)
+status-while-the-pinned-endpoint-was-dead: ready, not backing-off: in restate-server 1.8.1 an invocation whose endpoint will not answer sits in ready with no row in sys_invocation_state, so sys_invocation.retry_count reads 0 and the only record of the failed attempts is in sys_journal_events
+[service-other-endpoint] restateservice: pid=28647
+[service-other-endpoint] time=2026-11-07T22:37:29.243Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service-other-endpoint] restateservice: goroutines=5
+[service-other-endpoint] restateservice: handlers-in-flight=0
+second-deployment-id: dp_13fzjUM6BU3J4FB23zKGRdn
+second-deployment-endpoint: http://127.0.0.1:63079
+service-revision-after-the-second-deployment: 2
+deployment-new-invocations-would-go-to: dp_13fzjUM6BU3J4FB23zKGRdn
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+invocation-while-a-live-deployment-of-the-same-service-existed: status=ready in_flight=false pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=0 journal_size=2
+invocation-moved-to-the-live-deployment: false
+side-effects-while-only-the-other-deployment-was-alive: 1
+[service2] restateservice: pid=28654
+[service2] time=2026-11-07T22:37:37.406Z level=WARN msg="Accepting requests without validating request signatures; handler access must be restricted"
+[service2] restateservice: goroutines=5
+[service2] restateservice: handlers-in-flight=0
+replacement-pid: 28654
+replacement-endpoint: http://127.0.0.1:60200
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=7
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=10
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=10
+[service2] restateservice: handlers-in-flight=0
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+[service2] restateservice: goroutines=12
+[service2] restateservice: handlers-in-flight=1
+handler-redispatched-to-the-replacement: true
+redispatch-latency-seconds: 20.799
+side-effect-2: attempt=2 pid=28654 invocation=inv_1hTb5NRKDdXy4HizU6NNTHSJ9K4UCPAvOK at=2026-11-07T22:37:41.865970712Z
+invocation-during-the-re-dispatched-attempt: status=running in_flight=true pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=1 journal_size=2
+[service-other-endpoint] restateservice: goroutines=9
+[service-other-endpoint] restateservice: handlers-in-flight=0
+invocation-final: status=completed in_flight=false pinned_deployment_id=dp_13twvF17lF73s6zRlcDKOsN retry_count=0 journal_size=4 completion_result=success
+journal-final: 0:Command: Input(-), 1:Command: Run(prompt-the-session), 2:Notification: Run(-), 3:Command: Output(-)
+events-recorded-against-the-invocation: after 1: TransientError [500] unexpected error while reading the response body: stream closed because of a broken pipe; after 1: TransientError [500] error when calling 'http://127.0.0.1:60200/': h2 pool connection error: Connection refused (os error 111); after 1: TransientError [500] error when calling 'http://127.0.0.1:60200/': h2 pool connection error: Connection refused (os error 111); after 1: TransientError [500] error when calling 'http://127.0.0.1:60200/': h2 pool connection error: Connection refused (os error 111)
+journal-survived-the-kill: true
+invocation-output-http-status: 200 OK
+invocation-output: {"line":"attempt=2 pid=28654 invocation=inv_1hTb5NRKDdXy4HizU6NNTHSJ9K4UCPAvOK at=2026-11-07T22:37:41.865970712Z","pid":28654}
+side-effect-line-1: attempt=1 pid=28622 invocation=inv_1hTb5NRKDdXy4HizU6NNTHSJ9K4UCPAvOK at=2026-11-07T22:37:21.078124144Z
+side-effect-line-2: attempt=2 pid=28654 invocation=inv_1hTb5NRKDdXy4HizU6NNTHSJ9K4UCPAvOK at=2026-11-07T22:37:41.865970712Z
+side-effect-performed-times: 2
+what-that-means: a durable step whose result never reached the journal is run again by the replacement process: Restate's guarantee for a Run block is at-least-once, and exactly-once only for a Run whose result the server recorded
+state-for-a-handler-that-ran-with-its-outcome-unknown: no: the journal does hold a Run command with no result notification, so the server can see the step was begun and did not return -- but that state is not do-not-re-run, it is re-run. The next attempt executed the body again, and the side effect happened twice. Restate has no third state between 'not done' and 'done'
+work-bound-to: a deployment, which is an endpoint URL: sys_invocation.pinned_deployment_id, set on the first attempt and kept
+work-bound-to-a-process: no: Restate has no notion of the process behind the URL, so any process listening on that URL may be handed the work, and a process is replaceable without the server noticing
+if-the-pinned-endpoint-never-comes-back: the invocation retries against that URL with an exponential backoff -- initial-interval 500ms, factor 2.0, max-interval 1m -- for max-attempts 70, and then does what on-max-attempts says, which in this server's own effective configuration is "pause"
+limit: one invocation, one durable step, one kill, on a single-node server with one partition: it shows what Restate records and re-runs when the process behind a deployment dies inside a step, not how a cluster behaves, nor what happens when the server rather than the service process is the thing that fails
+experiment 10: PASS

@@ -54,43 +54,82 @@ func TestATaskQueuedBeforeReadyIsDeliveredOnceAtReady(t *testing.T) {
 	h.wantBudgets(Budgets{})
 }
 
-// The assignment a confirmed task's retire leaves on the claim, durably, beside the run: the
-// worker goes on working that assignment in whatever turn comes next — one an Envoy notice starts,
-// with no delivery behind it — and the completion it reports there is still that assignment's. A
-// later task that carries no assignment, a resume or a production check's look, moves the run on
-// and leaves the assignment alone, so a resumed worker's in-flight completion is never refused.
-func TestARetiredTasksAssignmentStaysOnTheClaimAndAResumeLeavesIt(t *testing.T) {
+// The phase entry a confirmed task's retire leaves on the claim, durably, beside the run: the
+// worker goes on working that entry in whatever turn comes next — one an Envoy notice starts,
+// with no delivery behind it — and the completion it reports there is still that entry's. A
+// later task that carries no entry, a resume or a production check's look, moves the run on
+// and leaves the entry alone, so a resumed worker's in-flight completion is never refused.
+func TestARetiredTasksEntryStaysOnTheClaimAndAResumeLeavesIt(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "test it", Generation: 7, Assignment: "A1"})
-	if p := h.pending(); p.Assignment != "A1" {
-		t.Fatalf("the queued delivery carries assignment %q, want the start's A1", p.Assignment)
+	h.must(RequestDeliver{Claim: testToken, Task: "test it", Generation: 7, Entry: 1})
+	if p := h.pending(); p.Entry != 1 {
+		t.Fatalf("the queued delivery carries entry %d, want the start's 1", p.Entry)
 	}
-	if stored, ok := h.store.delivery(testToken); !ok || stored.Assignment != "A1" {
-		t.Fatalf("the stored delivery is %+v, want it to carry A1: a restart reads the assignment back", stored)
+	if stored, ok := h.store.delivery(testToken); !ok || stored.Entry != 1 {
+		t.Fatalf("the stored delivery is %+v, want it to carry entry 1: a restart reads the entry back", stored)
 	}
 	h.must(StreamTurnStart{Claim: testToken})
-	if got := h.claim().ServingAssignment(); got != "A1" {
-		t.Fatalf("during the task's turn the claim serves assignment %q, want A1", got)
+	if got := h.claim().ServingEntry(); got != 1 {
+		t.Fatalf("during the task's turn the claim serves entry %d, want 1", got)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
-	if stored := h.store.load(testToken); stored.ServingAssignmentID != "A1" || stored.ServingGeneration != 7 {
-		t.Fatalf("after the turn the stored claim serves assignment %q of run %d, want A1 of 7",
-			stored.ServingAssignmentID, stored.ServingGeneration)
+	if stored := h.store.load(testToken); stored.ServedEntry != 1 || stored.ServingGeneration != 7 {
+		t.Fatalf("after the turn the stored claim serves entry %d of run %d, want 1 of 7",
+			stored.ServedEntry, stored.ServingGeneration)
 	}
-	if got := h.claim().ServingAssignment(); got != "A1" {
-		t.Fatalf("after the turn the claim serves assignment %q, want A1: its next turn's completion is still this assignment's", got)
+	if got := h.claim().ServingEntry(); got != 1 {
+		t.Fatalf("after the turn the claim serves entry %d, want 1: its next turn's completion is still this entry's", got)
 	}
 
 	h.must(RequestDeliver{Claim: testToken, Task: "resume the phase", Generation: 8})
 	h.must(StreamTurnStart{Claim: testToken})
-	if got := h.claim().ServingAssignment(); got != "A1" {
-		t.Fatalf("during the resume's turn the claim serves assignment %q, want the A1 it was given: a resume hands out none", got)
+	if got := h.claim().ServingEntry(); got != 1 {
+		t.Fatalf("during the resume's turn the claim serves entry %d, want the 1 it was given: a resume hands out none", got)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
-	if stored := h.store.load(testToken); stored.ServingAssignmentID != "A1" || stored.ServingGeneration != 8 {
-		t.Fatalf("after the resume the stored claim serves assignment %q of run %d, want A1 of 8",
-			stored.ServingAssignmentID, stored.ServingGeneration)
+	if stored := h.store.load(testToken); stored.ServedEntry != 1 || stored.ServingGeneration != 8 {
+		t.Fatalf("after the resume the stored claim serves entry %d of run %d, want 1 of 8",
+			stored.ServedEntry, stored.ServingGeneration)
+	}
+}
+
+// The production check look a confirmed task's retire leaves on the claim, durably, beside the
+// run and the entry: the checking agent goes on working that look in whatever turn comes
+// next, and the completion it reports there is still a report on that look (api/handoff.go). A
+// task of a phase takes it back, since a worker in the workflow again reports its phase.
+func TestARetiredLooksTaskLeavesItsLookOnTheClaimAndAPhaseTaskTakesItBack(t *testing.T) {
+	opened := time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)
+	look := CheckLook{Look: 2, OpenedAt: opened}
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "Production check of LEGION-209.", Generation: 7, CheckLook: look})
+	if p := h.pending(); p.CheckLook != look {
+		t.Fatalf("the queued delivery carries look %+v, want the start's %+v", p.CheckLook, look)
+	}
+	if stored, ok := h.store.delivery(testToken); !ok || stored.CheckLook != look {
+		t.Fatalf("the stored delivery is %+v, want it to carry %+v: a restart reads the look back", stored, look)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	if got := h.claim().ServingCheck(); got != look {
+		t.Fatalf("during the look's turn the claim serves %+v, want %+v", got, look)
+	}
+	h.must(StreamTurnEnd{Claim: testToken})
+	if stored := h.store.load(testToken); stored.ServingCheckLook != look {
+		t.Fatalf("after the turn the stored claim serves look %+v, want %+v", stored.ServingCheckLook, look)
+	}
+	if got := h.claim().ServingCheck(); got != look {
+		t.Fatalf("after the turn the claim serves look %+v, want %+v: its next turn's report is still this look's", got, look)
+	}
+
+	h.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: testing.", Generation: 8, Phase: phase.Testing, Entry: 2})
+	h.must(StreamTurnStart{Claim: testToken})
+	if got := h.claim().ServingCheck(); got != (CheckLook{}) {
+		t.Fatalf("during the phase task's turn the claim serves look %+v, want none: its completion is the phase's", got)
+	}
+	h.must(StreamTurnEnd{Claim: testToken})
+	if stored := h.store.load(testToken); stored.ServingCheckLook != (CheckLook{}) {
+		t.Fatalf("after the phase task's turn the stored claim serves look %+v, want none", stored.ServingCheckLook)
 	}
 }
 
@@ -126,13 +165,23 @@ func TestATaskGivenBeforeReadyWaitsForReady(t *testing.T) {
 	}
 }
 
-// A second delivery is refused for the delivery the claim already holds, whatever its state: the
-// refusal is ErrDeliveryPending, and it says so rather than naming the state.
+// A second delivery is refused for an untaken delivery the claim already holds, whatever its
+// state: that task has reached nobody, so accepting over it would lose a task. The refusal is
+// ErrDeliveryPending, and it says so rather than naming the state.
+//
+// This test read StateWorking until dispatch://INFRA-714 — the state where the claim's own task
+// has been taken by a turn — and so pinned the refusal this change ends
+// (TestANewerTaskTakesThePlaceOfOneATurnHasTaken, below). It reaches ready with a task queued and
+// unsent instead, which is the untaken state itself.
 func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 	h := newHarness(t)
-	h.reach(StateWorking)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "row-1"})
+	if !h.pending().ConfirmedAt.IsZero() {
+		t.Fatalf("the pending delivery at ready is confirmed %+v, want the untaken task this test is about", h.pending())
+	}
 
-	err := h.handle(RequestDeliver{Claim: testToken, Task: "another"})
+	err := h.handle(RequestDeliver{Claim: testToken, Task: "another", ID: "row-2"})
 
 	var refused *RefusedError
 	if !errors.As(err, &refused) || !errors.Is(err, ErrDeliveryPending) || err.Error() != "deliver refused: a delivery is already pending" {
@@ -140,6 +189,38 @@ func TestASecondDeliveryWhileOneIsPendingIsRefused(t *testing.T) {
 	}
 	if h.pending().Task != "implement the plan" {
 		t.Errorf("pending %+v, want the first task kept", h.pending())
+	}
+}
+
+// A delivery whose task a turn has taken holds nothing back: the worker read it, and what the
+// delivery records is the turn in flight. A newer task takes its place — the phase's own next
+// start, which the daemon queues while that turn runs — and it is sent at the next point a turn
+// may take it, not into the running one. Refusing it instead left three supervise rows of the
+// live daemon answered "a delivery is already pending" with nothing ever sent and the phase
+// waiting on a worker that had finished (dispatch://INFRA-1352, INFRA-1443, INFRA-1519).
+func TestANewerTaskTakesThePlaceOfOneATurnHasTaken(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateWorking)
+	if h.pending().ConfirmedAt.IsZero() {
+		t.Fatalf("the pending delivery at working is %+v, want the task this turn took", h.pending())
+	}
+	sentBefore := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the newer phase start", ID: "row-2", Generation: 8})
+
+	if got := h.pending(); got.Task != "the newer phase start" || got.Generation != 8 {
+		t.Fatalf("pending %+v, want the newer task in the taken one's place", got)
+	}
+	if sent := len(h.prompts()); sent != sentBefore {
+		t.Fatalf("%d prompts while the turn runs, want the %d sent before it: the newer task waits for a turn that can take it",
+			sent, sentBefore)
+	}
+
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	sent := h.prompts()
+	if len(sent) != sentBefore+1 || sent[len(sent)-1].Message != "the newer phase start" {
+		t.Fatalf("prompts %+v, want the newer task sent once at the turn's end", sent)
 	}
 }
 
@@ -306,6 +387,48 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 	h.wantBudgets(Budgets{})
 	h.wantCalls("Suspend", 0)
 	h.wantState(StateIdle)
+}
+
+// A claim registered while the agent's own turn was already running never sees that turn start:
+// the daemon's only stream event of it is its end, and until this release a turn end in ready
+// matched no row at all (table.go's onTurnEnd), so the task the busy refusal left unread waited
+// for a turn start that had already happened. Three workers sat idle holding their phase task for
+// 35 to 75 minutes that way, and each completion from the blind turn was refused HANDOFF_NO_RUN
+// (dispatch://INFRA-1691, INFRA-1545, INFRA-722, A9). The end sends it now, and nothing goes into
+// the turn itself.
+//
+// The busy-refusal test above drives the same refusal with a turn start before each end, which is
+// why this never showed: that is the agent whose turn the daemon watched begin.
+func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
+	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+	h := newHarness(t)
+	h.reach(StateReady)
+	base := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
+	sent := h.pending().ID
+	h.wantPrompts(base + 1)
+
+	// The prompt is acknowledged and then refused: a turn of the agent's own is running, one that
+	// began before this claim was registered. The refusal takes the task back under a new id.
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busy})
+	if p := h.pending(); p.Task != "the phase task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+		t.Fatalf("after the busy refusal the task is %+v, want it waiting unread", p)
+	}
+	h.wantPrompts(base + 1)
+	h.wantState(StateReady)
+
+	// The blind turn ends. This is the only stream event of it the daemon ever gets.
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	if prompt := h.wantPrompts(base + 2)[base+1]; prompt.DeliveryID != h.pending().ID {
+		t.Fatalf("the send after the blind turn went under %s, want the task's %s", prompt.DeliveryID, h.pending().ID)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	if run := h.claim().ServingRun(); run != 7 {
+		t.Fatalf("during the task's own turn the claim serves run %d, want the task's 7: a completion from it would be refused HANDOFF_NO_RUN", run)
+	}
+	h.wantBudgets(Budgets{})
 }
 
 // The notice's turn usually starts while the task's send is still in flight, so its agent_start
@@ -1093,5 +1216,72 @@ func TestAConfirmationDoesNotSurviveHalfWritten(t *testing.T) {
 	if stored.State == StateWorking && (stored.Pending == nil || stored.Pending.ConfirmedAt.IsZero()) {
 		t.Fatalf("the store holds a working claim whose delivery is unconfirmed: %+v, pending %+v",
 			stored.State, stored.Pending)
+	}
+}
+
+// A root architect's task of a run is held, never dropped, while its root has nobody to hear it
+// (Deps.RootHears): such a task names no phase, so nothing else would keep it from being prompted
+// to an architect whose tree is parked, lingering or waiting for its slot, and the decisions it
+// names are told when the turn that takes it starts. It stays pending, uncharged, and the next deliver
+// request — the start of the root's next run, which the pending task refuses — is what sends it.
+// A task of no run is nobody's to hold: an operator's own is prompted whatever the root is doing.
+func TestARootArchitectsTaskIsHeldUntilItsRootHasAnArchitectToHearIt(t *testing.T) {
+	h := newBareHarness(t)
+	h.token = rootToken
+	hears := false
+	asked := 0
+	h.deps.RootHears = func(_ context.Context, c Claim, d Delivery) (bool, error) {
+		asked++
+		if c.Token != rootToken || d.Generation == 0 || d.Phase != "" {
+			t.Errorf("RootHears asked about claim %s and delivery %+v, want only the root architect's task of a run", c.Token, d)
+		}
+		return hears, nil
+	}
+	c := rootClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	h.reach(StateReady)
+
+	h.must(RequestDeliver{Claim: rootToken, Task: "a person decided on the tree", Generation: 2, Row: 7})
+	h.wantPrompts(0)
+	if p := h.pending(); p.Task != "a person decided on the tree" || !p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending delivery = %+v, want the held task, unsent and unconfirmed", p)
+	}
+	h.wantBudgets(Budgets{})
+	if asked == 0 {
+		t.Fatal("the held task was never put to RootHears")
+	}
+
+	// The root runs again: its start row is refused by the held task, and that refusal is what
+	// sends the held task on.
+	hears = true
+	err := h.handle(RequestDeliver{Claim: rootToken, Task: "the next run's task", Generation: 3, Row: 11})
+	if !errors.Is(err, ErrDeliveryPending) {
+		t.Fatalf("the next run's deliver = %v, want it refused by the pending task", err)
+	}
+	sent := h.wantPrompts(1)[0]
+	if sent.Message != "a person decided on the tree" {
+		t.Fatalf("prompt = %q, want the task held through the park", sent.Message)
+	}
+}
+
+// An operator's own task names no run, so the hold never applies to it: it is prompted while the
+// root has no architect to hear a task of a run.
+func TestAnOperatorsTaskIsPromptedWhileTheRootHasNoArchitectToHearOne(t *testing.T) {
+	h := newBareHarness(t)
+	h.token = rootToken
+	h.deps.RootHears = func(context.Context, Claim, Delivery) (bool, error) { return false, nil }
+	c := rootClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	h.reach(StateReady)
+
+	h.must(RequestDeliver{Claim: rootToken, Task: "the operator's own task"})
+	if sent := h.wantPrompts(1)[0]; sent.Message != "the operator's own task" {
+		t.Fatalf("prompt = %q, want the operator's task sent", sent.Message)
 	}
 }

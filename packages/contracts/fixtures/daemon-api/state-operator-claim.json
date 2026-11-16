@@ -10,7 +10,9 @@
     "cap": 2,
     "active": [],
     "waiting": [],
-    "blocked": []
+    "trees": [],
+    "blocked": [],
+    "held": []
   },
   "issues": {
     "AC91849371-900": {
@@ -38,6 +40,8 @@
   "pendingStatusWrites": [],
   "heldOutboxRows": [],
   "strandedClaims": [],
+  "wakesWaiting": [],
+  "claimsToRefresh": 0,
   "capabilities": [],
   "repositories": {
     "owners": [],
@@ -70,22 +74,47 @@
     "launch_failure_limit": 3,
     "prompt_failure_limit": 3,
     "prompt_retire_limit": 2,
+    "worker_wakes_per_minute": 8,
+    "worker_wake_burst": 1,
     "envoy_url": "http://127.0.0.1:9020",
     "nats_urls": [],
     "projects": {},
     "gates": {
-      "design": "root-issues"
+      "design": [
+        "spec"
+      ]
     },
     "linger_hours": 72,
     "production_check_hours": 336,
+    "pod_update_grace_minutes": 30,
+    "stalled_tree_notice_hours": 6,
+    "worker_silence_minutes": 30,
+    "worker_background_hours": 4,
+    "pod_update_max_open_rounds": null,
+    "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
-    "max_fix_attempts": 3,
     "controller": "operator",
     "capabilities": {
       "decided": {}
     },
     "worker_backends": {},
-    "role_config_files": {}
+    "role_config_files": {},
+    "repository_renames": [],
+    "hooks": [
+      {
+        "name": "work-back",
+        "on": "work_back",
+        "moves": [
+          "any"
+        ],
+        "every": 5,
+        "roles": [
+          "implementer",
+          "tester",
+          "reviewer"
+        ]
+      }
+    ]
   },
   "consumers": []
 }

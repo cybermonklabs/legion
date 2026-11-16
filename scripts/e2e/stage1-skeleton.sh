@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Stage 1's gate for the Go coordinator: it boots against a real Postgres, answers /healthz and
-# GET /legion/v1/state, registers itself, survives a restart against the same store with its
-# first boot time intact, and refuses an unreachable Postgres by the host it could not reach and
-# never by the password. Every step is fatal — no `|| true` outside the cleanup a trap must never
-# fail on — and the run leaves no container, no daemon, and nothing in the real state home.
+# Stage 1's gate for the Go coordinator: it boots against a real Postgres, answers /healthz,
+# /readyz and GET /legion/v1/state, registers itself, survives a restart against the same store
+# with its first boot time intact, and refuses an unreachable Postgres by the host it could not
+# reach and never by the password. Every step is fatal — no `|| true` outside the cleanup a trap
+# must never fail on — and the run leaves no container, no daemon, and nothing in the real state
+# home.
 #
 # Everything it takes is this run's own: its work directory, its container name, its project key
 # and its port. Two runs on one box (a CI job and a devbox session, or two sessions) do not
@@ -108,6 +109,32 @@ held_by_daemon_and_keeper() {
   held_only_by "$port" "$pid" "$daemon_keeper_pid" ||
     fail "the socket the daemon serves on port $port is not held by exactly the daemon ($pid) and its keeper ($daemon_keeper_pid)${1:-}"
 }
+# readyz_200 [SUFFIX] reads GET /readyz on the daemon ($pid) on $port and requires 200, the answer
+# the daemon's one-way serving latch gives from the moment it serves: the boot built its runtime,
+# installed its launcher acceptor and began serving (the daemon's servingLatch). While the boot
+# runs the daemon answers nothing, because the API is served only once the boot is done; from the
+# stop on, a connection the server still holds through its drain gets 503 `stopping`; and nothing
+# is read out of the database on the way.
+# It polls for 5 s rather than reading once, because the daemon sets the latch on a goroutine of
+# its own that starts when the serving goroutine does: /healthz can be answered in the instant
+# before that goroutine runs, when /readyz still answers 503 `starting`, and a single read would
+# fail a daemon that is about to say so. A daemon that answers /healthz and never latches still
+# fails here, which is what this proves.
+# The status is read off curl's stdout rather than asserted by curl's -f, so the failure names what
+# it got, and the body with it, which says whether the daemon called itself starting or stopping; a
+# connection curl never made writes no body and exits non-zero, which the run names 000 and fails
+# on the same way.
+readyz_200() {
+  local i status
+  for i in $(seq 1 25); do
+    : >"$work/readyz.json" # curl writes nothing here when it never connected, and this is read below
+    status=$(curl -sS -o "$work/readyz.json" -w '%{http_code}' --max-time 2 \
+      "http://127.0.0.1:$port/readyz") || status=000
+    [ "$status" = 200 ] && return 0
+    sleep 0.2
+  done
+  fail "GET /readyz${1:-} answered $status $(cat "$work/readyz.json"), want 200"
+}
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 # A devbox's first tmux can be a wrapper script or a mise shim. mise runs it from the daemon's
@@ -147,11 +174,11 @@ bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   
 # CI passes its service's DSN; the devbox brings its own container on an ephemeral port.
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
-  # ghcr.io/sjawhar/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
+  # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
   docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
-    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/sjawhar/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
+    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
   # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
   for i in $(seq 1 40); do
@@ -204,7 +231,7 @@ jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/
 pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not
-# (LEGION-791): a max_fix_attempts the default would not answer, a github_apps block whose
+# (LEGION-791): a review_round_cap the default would not answer, a github_apps block whose
 # inline PEM fixture is the App key the state must never print, and an envoy_url carrying userinfo
 # at the default host and port, the credential the settings must mask. The loader takes github_apps
 # as the workflow configured and then wants projects too (resolveStage3: `projects must declare at
@@ -219,7 +246,10 @@ port: $port
 postgres_dsn: $LEGION_E2E_PG_DSN
 state_dir: $work/state
 operator_token_file: $work/operator-token
-max_fix_attempts: 5
+review_round_cap: 5
+# The wake pacing off (INFRA-976): this proof's waits are bounded, and at the default of 8 wakes a
+# minute every wake after the first would spend those waits queueing for its turn.
+worker_wakes_per_minute: 0
 envoy_url: http://legion:fixture-envoy-password@127.0.0.1:9020
 projects:
   FIXTURE: {}
@@ -261,6 +291,14 @@ grep -q 'hunter2' "$work/refusal.log" && {
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz
+# The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
+# It is read here and after the restart both, never at one boot alone: the latch is one-way and
+# the booting process's own, so each start begins unlatched and this read says nothing about the
+# next process; /healthz is answered whether or not the latch was set, so a daemon that answers it
+# while /readyz never latches is exactly the state this proof exists to catch, and the
+# restart reaches serving down the other path — an existing store, a second boot — where it could
+# part from this one.
+readyz_200
 held_by_daemon_and_keeper
 "$work/legion" state --json --port "$port" >"$work/state1.json"
 jq -e --arg p "$project" \
@@ -296,7 +334,7 @@ jq -e '(.capabilities | length) == 21
 # its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
 # App key — the App rides as its id and installations alone, and nothing anywhere in the document
 # reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
-jq -e '.settings.max_fix_attempts == 5
+jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
   and .settings.envoy_url == "http://xxxxx@127.0.0.1:9020"
@@ -304,7 +342,7 @@ jq -e '.settings.max_fix_attempts == 5
   and ([.. | strings | select(test("BEGIN|PRIVATE KEY|postgres://|fixture-envoy-password|://[^/@ ]+:[^/@ ]+@"))] | length) == 0
   and (.settings.github_apps.implement | keys) == ["app_id", "installations"]' \
   "$work/state1.json" || {
-  echo "the state does not carry the resolved settings with the fixture's max_fix_attempts, the masked envoy_url and no credential, credential file or App key"
+  echo "the state does not carry the resolved settings with the fixture's review_round_cap, the masked envoy_url and no credential, credential file or App key"
   exit 1
 }
 "$work/legion" legions --json |
@@ -318,6 +356,10 @@ stop_daemon SIGTERM
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz " after restart"
+# The restart's own latch, which the first boot's proves nothing about: a second boot, over a store
+# that already holds this project, must reach serving and say so, and its 503 would be as invisible
+# to the /healthz above as the first boot's would have been.
+readyz_200 " after restart"
 held_by_daemon_and_keeper " after restart"
 "$work/legion" state --json --port "$port" >"$work/state2.json"
 jq -e '.daemon.boots == 2' "$work/state2.json" || {

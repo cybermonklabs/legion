@@ -24,35 +24,41 @@ import (
 )
 
 // The role lane's forwarder publishes each holder's forwards in the order the handler handed them
-// over and never waits for one forward's outcome before publishing the next: while every wait of a
-// holder that does not answer is held, that holder's later forwards are still published, in order,
-// and another holder's forwards are published and settled.
+// over and never waits for one forward's outcome before publishing the next: while every wait for
+// one holder's forwards is held, that holder's later forwards are still published, in order, and
+// another holder's forwards are published and settled.
+//
+// A forward counts as outstanding until its outcome is reported (roleForwarder.finish), so that
+// gauge is what the test waits on. The live holder's wait counts itself settled and is then held
+// too, which puts the settle counter at its number while all 100 forwards are still outstanding -
+// the window a read of the settle counter took for the gauge - and the test alone ends it.
 func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes(t *testing.T) {
 	const perHolder = 50
-	harness := newListenerDeliveryHarness(t, nil)
+	harness := newListenerDeliveryHarness(t)
 	silent, live := contracts.AgentSubject("ses_forwarder_silent"), contracts.AgentSubject("ses_forwarder_live")
-	release := make(chan struct{})
+	release, settling := make(chan struct{}), make(chan struct{})
 	var mu sync.Mutex
 	published := map[string][]string{}
 	var settled atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(subject string, item contracts.Envelope, _ time.Duration, _ bool) (func() error, error) {
+	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() error, error) {
 		mu.Lock()
 		published[subject] = append(published[subject], item.EventID)
 		mu.Unlock()
 		if subject == silent {
-			return func() error { <-release; return bus.ErrReceiptTimeout }, nil
+			return func() error { <-release; return bus.ErrForwardNotStored }, nil
 		}
-		return func() error { settled.Add(1); return nil }, nil
+		return func() error { settled.Add(1); <-settling; return nil }, nil
 	}
 	forwarder := newRoleForwarder(cfg)
-	t.Cleanup(func() {
+	closeOnce := func(held chan struct{}) {
 		select {
-		case <-release:
+		case <-held:
 		default:
-			close(release)
+			close(held)
 		}
-	})
+	}
+	t.Cleanup(func() { closeOnce(settling); closeOnce(release) })
 
 	handed := map[string][]string{}
 	for i := range perHolder {
@@ -62,7 +68,7 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 			forwarder.enqueue(roleForward{item: item, sessionID: sessionID})
 		}
 	}
-	waitFor(t, 10*time.Second, "every forward published and the live holder's settled", func() bool {
+	waitFor(t, 10*time.Second, "every forward published and the live holder's waits counted", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(published[silent]) == perHolder && len(published[live]) == perHolder && settled.Load() == perHolder
@@ -75,19 +81,26 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 		}
 	}
 	mu.Unlock()
-	if outstanding := forwarder.outstanding(); outstanding != perHolder {
-		t.Fatalf("%d forwards outstanding while the silent holder's waits are held, want its %d", outstanding, perHolder)
+	if outstanding := forwarder.outstanding(); outstanding != 2*perHolder {
+		t.Fatalf("%d forwards outstanding while every holder's wait is held, want the %d handed over", outstanding, 2*perHolder)
 	}
+
+	// The live holder's waits are let go: each is reported as it ends, and the gauge - the one
+	// number that says so - comes down to the silent holder's forwards, which the lane still holds.
+	close(settling)
+	waitFor(t, 10*time.Second, fmt.Sprintf("the live holder's %d forwards reported", perHolder), func() bool {
+		return forwarder.outstanding() == perHolder
+	})
 
 	close(release)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if !forwarder.wait(ctx) {
-		t.Fatalf("%d forwards still outstanding after the silent holder's waits ended", forwarder.outstanding())
+		t.Fatalf("%d forwards still outstanding after the held waits ended", forwarder.outstanding())
 	}
-	if logs := harness.logs.String(); strings.Count(logs, `"msg":"listener role receipt timed out"`) != perHolder || strings.Count(logs, `"msg":"listener role forwarded"`) != perHolder {
-		t.Fatalf("the forwarder reported %d receipt timeouts and %d forwards, want %d of each:\n%s",
-			strings.Count(logs, `"msg":"listener role receipt timed out"`), strings.Count(logs, `"msg":"listener role forwarded"`), perHolder, logs)
+	if logs := harness.logs.String(); strings.Count(logs, `"msg":"listener role forward failed"`) != perHolder || strings.Count(logs, `"msg":"listener role forwarded"`) != perHolder {
+		t.Fatalf("the forwarder reported %d failed forwards and %d delivered, want %d of each:\n%s",
+			strings.Count(logs, `"msg":"listener role forward failed"`), strings.Count(logs, `"msg":"listener role forwarded"`), perHolder, logs)
 	}
 }
 
@@ -114,12 +127,12 @@ func startRoleLaneListeners(t *testing.T, uri string, env []string, machineIDs .
 	return listeners
 }
 
-// claimRoleThrough registers a session that takes its own messages off the bus, as Oh My Pi does,
-// through listener, has it claim role, and returns its id.
+// claimRoleThrough registers a session as Oh My Pi does, asking for the consumer its messages are
+// relayed from, through listener, has it claim role, and returns its id.
 func claimRoleThrough(t *testing.T, listener *listenerProcess, role string) string {
 	t.Helper()
 	sessionID := "ses_role_lane_" + id.New()
-	postListener(t, listener.port, "/v1/interests/subscribe", `{"session_id":"`+sessionID+`","topics":[],"self_subscribed":true}`)
+	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))
 	postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)
 	return sessionID
 }
@@ -131,9 +144,9 @@ type roleLaneFrame struct {
 }
 
 // receiveRoleForwards stands in for sessionID's agent pump on conn: it hands every forward it
-// receives to the returned channel, with its arrival time, and answers each with the empty receipt
-// unless silent.
-func receiveRoleForwards(t *testing.T, conn *natsgo.Conn, sessionID string, silent bool) <-chan roleLaneFrame {
+// receives to the returned channel, with its arrival time, and answers nothing, as a session
+// answers no forward (startRoleForward).
+func receiveRoleForwards(t *testing.T, conn *natsgo.Conn, sessionID string) <-chan roleLaneFrame {
 	t.Helper()
 	frames := make(chan roleLaneFrame, 1024)
 	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(msg *natsgo.Msg) {
@@ -142,9 +155,6 @@ func receiveRoleForwards(t *testing.T, conn *natsgo.Conn, sessionID string, sile
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
 			t.Errorf("decode a forward to %s: %v", sessionID, err)
 			return
-		}
-		if !silent {
-			_ = msg.Respond(nil)
 		}
 		frames <- roleLaneFrame{item: item, arrived: arrived}
 	})
@@ -286,7 +296,7 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 	role := "role-lane-once-" + id.New()
 	holderID := claimRoleThrough(t, listeners[0], role)
 	client := connectPublisher(t, uri)
-	holderFrames := receiveRoleForwards(t, client.Conn, holderID, false)
+	holderFrames := receiveRoleForwards(t, client.Conn, holderID)
 
 	published := make([]contracts.Envelope, 0, messages)
 	for i := range messages {
@@ -305,26 +315,26 @@ func TestRoleLaneForwardsAndStoresEachRoleMessageOnceAcrossTwoListeners(t *testi
 	requireOncePerMessage(t, frames, published)
 }
 
-// A holder that never answers its receipts holds up no other role: while one listener's forwards
-// to it each wait out the receipt window, another role takes 40 messages a second for 10 s across
-// two listeners, and each reaches its holder within 1 s of its publish at the 99th percentile. The
-// role lane queues what it has not handled rather than dropping it, so every message arrives and
-// neither listener reports a slow consumer. A handler that waits for each receipt before reading
-// the next message stalls behind every message to the silent holder.
-func TestRoleLaneSilentHolderDoesNotDelayAnotherRole(t *testing.T) {
+// The role lane forwards off its handler, so one role's messages do not wait behind another's:
+// across two listeners, two roles take 40 messages a second between them for 10 s, and each of
+// the busier role's messages reaches its holder within 1 s of its publish at the 99th percentile.
+// The role lane queues what it has not handled rather than dropping it, so every message arrives
+// and neither listener reports a slow consumer. A handler that forwarded inline, waiting for the
+// stream's acknowledgement of each message before reading the next, stalls behind every one.
+func TestRoleLaneForwardsOneRoleWithoutDelayingAnother(t *testing.T) {
 	const (
 		rate     = 40
 		duration = 10 * time.Second
 		messages = rate * int(duration/time.Second)
 	)
 	uri := testnats.URL(t)
-	listeners := startRoleLaneListeners(t, uri, nil, "role-lane-silent-a", "role-lane-silent-b")
-	silentRole, liveRole := "role-lane-silent-"+id.New(), "role-lane-live-"+id.New()
-	silentID := claimRoleThrough(t, listeners[0], silentRole)
+	listeners := startRoleLaneListeners(t, uri, nil, "role-lane-busy-a", "role-lane-busy-b")
+	otherRole, liveRole := "role-lane-other-"+id.New(), "role-lane-live-"+id.New()
+	otherID := claimRoleThrough(t, listeners[0], otherRole)
 	liveID := claimRoleThrough(t, listeners[1], liveRole)
 	holders := connectPublisher(t, uri)
-	silentFrames := receiveRoleForwards(t, holders.Conn, silentID, true)
-	liveFrames := receiveRoleForwards(t, holders.Conn, liveID, false)
+	otherFrames := receiveRoleForwards(t, holders.Conn, otherID)
+	liveFrames := receiveRoleForwards(t, holders.Conn, liveID)
 	publisher := testnats.Connect(t, uri)
 	t.Cleanup(publisher.Close)
 
@@ -334,7 +344,7 @@ func TestRoleLaneSilentHolderDoesNotDelayAnotherRole(t *testing.T) {
 	for i := range messages {
 		<-ticker.C
 		if i%4 == 0 {
-			publishRoleMessage(t, publisher, silentRole, "for the silent holder "+strconv.Itoa(i))
+			publishRoleMessage(t, publisher, otherRole, "for the other holder "+strconv.Itoa(i))
 		}
 		item := newEnvelope("agent", contracts.RoleTopicPrefix+liveRole, "for the live holder "+strconv.Itoa(i))
 		data, err := json.Marshal(item)
@@ -372,13 +382,13 @@ func TestRoleLaneSilentHolderDoesNotDelayAnotherRole(t *testing.T) {
 	if received := min(len(frames), messages); received > 0 {
 		slowest = latencies[received-1]
 	}
-	t.Logf("%d messages, %d received: receipt latency p50 %s, p99 %s, slowest received %s", messages, len(frames), describe(p50), describe(p99), slowest)
+	t.Logf("%d messages, %d received: forward latency p50 %s, p99 %s, slowest received %s", messages, len(frames), describe(p50), describe(p99), slowest)
 	if p99 >= time.Second {
-		t.Fatalf("receipt p99 %s (%d of %d received) while a holder stayed silent, want under 1 s", describe(p99), len(frames), messages)
+		t.Fatalf("forward p99 %s (%d of %d received) while another role took its own messages, want under 1 s", describe(p99), len(frames), messages)
 	}
 	requireOncePerMessage(t, frames, published)
-	if len(silentFrames) == 0 {
-		t.Fatal("the silent holder received no forward; the test proves nothing about a holder that does not answer")
+	if len(otherFrames) == 0 {
+		t.Fatal("the other role's holder received no forward; the test proves nothing about two roles at once")
 	}
 	for i, listener := range listeners {
 		if slow := metricValue(t, listener, "envoy_role_lane_slow_consumers"); slow != 0 {
@@ -393,7 +403,8 @@ func TestRoleLaneSilentHolderDoesNotDelayAnotherRole(t *testing.T) {
 // On a hub whose grant predates the shared queue group, each listener subscribes the role lane in
 // its machine's group, so each of two listeners on two machine ids forwards every role message:
 // the holder receives each live twice, and the stream still stores one forward per message, since
-// each forward carries the message's dedupe key and the holder's subject as its Nats-Msg-Id.
+// each forward carries the message's event id and the holder's subject as its Nats-Msg-Id (its
+// dedupe key is the sender's choice, so roleForward.msgID names it by its event id).
 func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *testing.T) {
 	const messages = 20
 	machines := []string{"role-lane-grant-a", "role-lane-grant-b"}
@@ -414,7 +425,7 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 	role := "role-lane-grant-" + id.New()
 	holderID := claimRoleThrough(t, listeners[0], role)
 	client := connectPublisher(t, uri)
-	frames := receiveRoleForwards(t, client.Conn, holderID, false)
+	frames := receiveRoleForwards(t, client.Conn, holderID)
 
 	published := make([]contracts.Envelope, 0, messages)
 	for i := range messages {
@@ -442,15 +453,15 @@ func TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy(t *t
 }
 
 // A forward the stream does not store is not delivered, though its holder received it live: with
-// the agent subjects taken out of the stream, the holder's receipt arrives and the stream's
-// acknowledgement never does, and the listener reports the role message delivery_failed.
+// the agent subjects taken out of the stream, no acknowledgement comes back, and the listener
+// reports the role message delivery_failed.
 func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 	uri := testnats.URL(t)
 	listener := startRoleLaneListeners(t, uri, nil, "role-lane-unstored")[0]
 	role := "role-lane-unstored-" + id.New()
 	holderID := claimRoleThrough(t, listener, role)
 	client := connectPublisher(t, uri)
-	frames := receiveRoleForwards(t, client.Conn, holderID, false)
+	frames := receiveRoleForwards(t, client.Conn, holderID)
 
 	info, err := client.JS().StreamInfo(bus.Stream)
 	if err != nil {
@@ -473,7 +484,7 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 
 	item := publishRoleMessage(t, client.Conn, role, "a forward nothing stores")
 	if live := gatherForwards(frames, 1, 5*time.Second, 0); len(live) != 1 {
-		t.Fatalf("the holder received %d forwards live, want the one; the test proves nothing about a receipt without the stream's acknowledgement", len(live))
+		t.Fatalf("the holder received %d forwards live, want the one; the test proves nothing about a forward the stream did not acknowledge", len(live))
 	}
 	assertDeliveryException(t, exceptions, item, "delivery_failed")
 	waitFor(t, 5*time.Second, "the listener to log the failed forward", func() bool {
@@ -483,46 +494,5 @@ func TestRoleLaneForwardTheStreamDoesNotStoreIsDeliveryFailed(t *testing.T) {
 	})
 	if roleForwardsLogged(role, listener) != 0 {
 		t.Fatalf("the listener logged the unstored forward as delivered:\n%s", listener.Output.String())
-	}
-}
-
-// A serving-port session holding a role answers no receipt, since it has no NATS subscriber: when
-// its entry records consumer delivery, the stored forward is its delivery, pushed to the port from
-// its consumer, so the role message is delivered on the stream's acknowledgement, raises no
-// receipt_timeout, and reaches the port once.
-func TestRoleLaneServingPortHolderWithConsumerDeliveryNeedsNoReceipt(t *testing.T) {
-	uri := testnats.URL(t)
-	listener := startRoleLaneListeners(t, uri, nil, "role-lane-serving")[0]
-	sessionID := "ses_role_lane_serving_" + id.New()
-	role := "role-lane-serving-" + id.New()
-	port := startScriptedPort(t, sessionID)
-	registerScriptedSession(t, listener, port)
-	postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+sessionID+`","role":"`+role+`"}`)
-	client := connectPublisher(t, uri)
-	exceptions, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + role)
-	if err != nil {
-		t.Fatalf("subscribe to the role's exceptions: %v", err)
-	}
-	if err := client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the exception subscription: %v", err)
-	}
-
-	item := publishRoleMessage(t, client.Conn, role, "a role message for a serving port")
-	push := port.next(t, 10*time.Second)
-	if push.status != http.StatusNoContent {
-		t.Fatalf("the push answered %d, want 204", push.status)
-	}
-	requirePromptCarries(t, push.text, item)
-	waitFor(t, 5*time.Second, "the listener to log the forward delivered", func() bool {
-		return countRecords(listener, "listener role forwarded", func(record map[string]any) bool { return record["event_id"] == item.EventID }) == 1
-	})
-	// The receipt window is 2 s: past it, a forward that waited for a receipt would have raised its
-	// exception.
-	port.noPush(t, roleReceiptTimeout+time.Second)
-	if message, err := exceptions.NextMsg(100 * time.Millisecond); err == nil {
-		t.Fatalf("the role message raised an exception: %s", message.Data)
-	}
-	if count := countRecords(listener, "listener role receipt timed out", func(map[string]any) bool { return true }); count != 0 {
-		t.Fatalf("the listener logged %d receipt timeouts for a holder that answers none", count)
 	}
 }

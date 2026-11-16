@@ -1,16 +1,24 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { SQL } from "bun";
+import { SQL, type TransactionSQL } from "bun";
 
 /**
  * Measures how long every Envoy message waited, in the role session it
  * reached, for that session's next assistant message, and which tool call was open when it
- * arrived. The source is the project's Oh My Pi session store, whose connection URL the file
- * `OMP_SESSION_SQL_DSN_FILE` names; each session is its `omp_session_files.content` row followed
+ * arrived. The source is the project's Oh My Pi session store, a shared database, so it is read
+ * through the deployment's read-only login: the connection URL comes from the file
+ * `SESSION_READER_DSN_FILE` names, or from `--dsn-file`. The session URL the file
+ * `OMP_SESSION_SQL_DSN_FILE` names is never a route for a read: it is what the role's own agent
+ * writes its transcript with. Each session is its `omp_session_files.content` row followed
  * by its `omp_session_files_parts` rows in `start_offset` order, which is the shape
  * `packages/daemon/internal/ompsessions/ompsessions.go` defines and reads back, and every read is
  * scoped by `path`, the primary key of both tables, since a scan of the parts table takes
  * minutes.
+ *
+ * Every read runs in one transaction begun read-only, which this script confirms from the server
+ * before it reads and which ends with that transaction. A store behind a pool in transaction mode
+ * keeps a read-only setting made for a whole session or a whole connection on the backend the
+ * connection goes back to, and the pool's next client's writes then fail.
  *
  * Nothing it prints carries the connection URL, a credential or an exception's text: its lines
  * hold a role name, a session id, a tool name, an instant and a count, and a failure is a fixed
@@ -46,6 +54,18 @@ const DURATION_MS: Readonly<Record<string, number>> = {
 };
 /** A driver's error code is printed only in this shape, so no message text ever is. */
 const SAFE_CODE = /^[A-Z][A-Z0-9_]*$/;
+/**
+ * The host state pi-envoy stamps on a card it hands the host, as the `handOver` field of the
+ * `details` the host persists with the message. It is printed only in this shape, a lower-case
+ * word of letters and hyphens, starting with a letter and at most 20 long, so no message text
+ * ever is, and a state the plugin adds later prints as it stands.
+ */
+const SAFE_STATE = /^[a-z][a-z-]{0,19}$/;
+/**
+ * What a line prints in place of that state: for a card that carries none in that shape, and for
+ * a card written before the plugin stamped the state.
+ */
+const UNSTAMPED = "unstamped";
 const SUFFIX = ".jsonl";
 
 const USAGE = `usage: bun scripts/sessions/message-wait.ts --since <duration> [options]
@@ -62,15 +82,20 @@ Options:
                           default only the role sessions themselves are measured: the session
                           file the daemon launches, named for its launch.
   --path-contains <text>  Measure only the sessions whose path holds this text, e.g. infra-338.
-  --dsn-file <path>       The file holding the store's connection URL. Defaults to the file
-                          OMP_SESSION_SQL_DSN_FILE names, which every Legion pod has.
+  --dsn-file <path>       The explicit route: the file holding the store's connection URL.
+                          Without it the URL comes from the file SESSION_READER_DSN_FILE names,
+                          the deployment's read-only login, and there is no other route.
   --help                  Print this.
 
 Prints one line per wait of at least the threshold, longest first, in two groups: the waits a
 bash or task call was open for, which the verdict fails on, and every other wait. Each line carries the
 wait, the message's arrival, the calls open at the arrival, the call that took the longest part
-of the wait, and the session. Then the arrivals no assistant message ever answered, which are no
-measured wait, and a verdict line.
+of the wait, the host state when the plugin handed the card over, and the session. Then the
+arrivals no assistant message ever answered, which are no measured wait, and a verdict line.
+
+The plugin's own notices, and the wake it sends itself, are no Envoy message from another
+session: they are in no count and on no line, and no wait is measured for them. A card the
+plugin wrote before it stamped the host state prints that state as unstamped.
 
 A wait runs from the message's own arrival, which its record's timestamp gives, to the first
 assistant message written after that record. Oh My Pi writes the record when the session folds
@@ -106,6 +131,8 @@ interface Arrival {
    * much of the wait it took. None when no call ran at all: the session sat idle.
    */
   readonly longest?: { readonly toolName: string; readonly ms: number };
+  /** The host state when the plugin handed the card over, printed in the shape above. */
+  readonly handOver: string;
 }
 
 interface Measurement {
@@ -124,6 +151,12 @@ interface SessionRecord {
   readonly type?: unknown;
   readonly customType?: unknown;
   readonly timestamp?: unknown;
+  /** The card's own fields, which pi-envoy writes and the host persists: `localNotice` marks a
+   *  notice of the plugin's own (`LOCAL_ENVOY_NOTICE`, `packages/pi-shared/src/envoy-notice.ts`,
+   *  written by `packages/pi-envoy/extensions/envoy.ts` and `src/card-wake.ts`), and `handOver`
+   *  the host state at the hand-over. The shapes are read here, never imported: this script
+   *  imports nothing of the packages. */
+  readonly details?: { readonly localNotice?: unknown; readonly handOver?: unknown };
   readonly message?: { readonly role?: unknown; readonly toolCallId?: unknown };
   readonly data?: {
     readonly toolName?: unknown;
@@ -232,10 +265,20 @@ interface ToolCall {
   to: number;
 }
 
-/** An arrival as the walk holds it: its instant, and the wait once an assistant message lands. */
+/**
+ * An arrival as the walk holds it: its instant, the host state the card was handed over in, and
+ * the wait once an assistant message lands.
+ */
 interface PendingArrival {
   readonly at: number;
+  readonly handOver: string;
   waitMs: number | null;
+}
+
+/** The host state the card carries, in the shape above, or `UNSTAMPED` when it carries none. */
+function handOverState(details: SessionRecord["details"]): string {
+  const state = details?.handOver;
+  return typeof state === "string" && SAFE_STATE.test(state) ? state : UNSTAMPED;
 }
 
 /**
@@ -285,8 +328,18 @@ function measureSession(path: string, text: string): SessionMeasurement {
       continue;
     }
     if (record.type === ARRIVAL_TYPE) {
-      if (record.customType === ARRIVAL_CUSTOM_TYPE && !Number.isNaN(at)) {
-        const arrival: PendingArrival = { at, waitMs: null };
+      // A record the plugin marked as a notice of its own is no arrival at all: it is left out of
+      // every count and every line, and it ends nobody's wait.
+      if (
+        record.customType === ARRIVAL_CUSTOM_TYPE &&
+        !Number.isNaN(at) &&
+        record.details?.localNotice !== true
+      ) {
+        const arrival: PendingArrival = {
+          at,
+          handOver: handOverState(record.details),
+          waitMs: null,
+        };
         measured.push(arrival);
         waiting.push(arrival);
       }
@@ -308,7 +361,7 @@ function measureSession(path: string, text: string): SessionMeasurement {
     waiting.length = 0;
   }
   const session = sessionLabel(path, role);
-  const arrivals = measured.map(({ at, waitMs }) => {
+  const arrivals = measured.map(({ at, handOver, waitMs }) => {
     const openMs = waitMs ?? Math.max(0, last - at);
     const open: string[] = [];
     let longest: { toolName: string; ms: number } | undefined;
@@ -319,7 +372,15 @@ function measureSession(path: string, text: string): SessionMeasurement {
         longest = { toolName: call.toolName, ms };
       }
     }
-    return { session, at, waitMs, openMs, open, ...(longest === undefined ? {} : { longest }) };
+    return {
+      session,
+      at,
+      waitMs,
+      openMs,
+      open,
+      handOver,
+      ...(longest === undefined ? {} : { longest }),
+    };
   });
   return { arrivals, unparsed };
 }
@@ -359,7 +420,7 @@ function describe(arrival: Arrival): string {
     arrival.longest === undefined
       ? "no call ran during the wait"
       : `longest call in the wait ${arrival.longest.toolName} ${formatDuration(arrival.longest.ms)}`;
-  return `open: ${open}  ${longest}`;
+  return `open: ${open}  ${longest}  hand-over: ${arrival.handOver}`;
 }
 
 /** The report, line by line, so a reader and a test see the same run. */
@@ -381,7 +442,10 @@ function report(measurement: Measurement, options: Options): string[] {
   const lines = [
     scope,
     "each line below: the wait, the arrival, the calls open at the arrival (the calls the " +
-      "verdict turns on), the call that took the longest part of the wait, and the session",
+      "verdict turns on), the call that took the longest part of the wait, the host state when " +
+      "the plugin handed the card over, and the session; the plugin's own notices and its own " +
+      "wake are in no count and on no line, and a card written before the plugin stamped the " +
+      "state prints unstamped",
   ];
   const groups = [
     [
@@ -426,22 +490,50 @@ interface LiveStore extends SessionStore {
   close(): Promise<void>;
 }
 
-/** The live store. Both statements are scoped by `path`, and neither scans the parts table. */
+/** A read the store refused to run, because the transaction it was to run in was not read-only. */
+class NotReadOnlyError extends Error {}
+
+/** The transaction options every read is begun with, so the server holds it read-only. */
+const READ_ONLY = "read only";
+
+/**
+ * Runs `read` in one transaction begun read-only, after confirming from the server, inside that
+ * transaction and before anything is read in it, that the begin took. A deployment can point this
+ * script at a server or a route that dropped it, and reading on a write-capable connection is what
+ * the shared store's pool cannot take. Every read of the store goes through here, so a read added
+ * later cannot be the one that skips the confirmation.
+ */
+async function readOnly<T>(sql: SQL, read: (tx: TransactionSQL) => Promise<T>): Promise<T> {
+  return await sql.begin(READ_ONLY, async (tx) => {
+    const rows: { transaction_read_only: string }[] = await tx`show transaction_read_only`;
+    if (rows[0]?.transaction_read_only !== "on") throw new NotReadOnlyError();
+    return await read(tx);
+  });
+}
+
+/**
+ * The live store. Each read is one read-only transaction, which drops that state when it commits;
+ * both statements are scoped by `path`, and neither scans the parts table.
+ */
 function liveStore(dsn: string): LiveStore {
   const sql = new SQL(dsn);
   return {
     async paths() {
-      const rows: { path: string }[] = await sql`select path from omp_session_files order by path`;
-      return rows.map((row) => row.path);
+      return await readOnly(sql, async (tx) => {
+        const rows: { path: string }[] = await tx`select path from omp_session_files order by path`;
+        return rows.map((row) => row.path);
+      });
     },
     async text(path) {
-      const rows: { text: string | null }[] = await sql`
-        select f.content || coalesce(
-          (select string_agg(p.content, '' order by p.start_offset)
-             from omp_session_files_parts p where p.path = f.path), '') as text
-        from omp_session_files f where f.path = ${path}
-      `;
-      return rows[0]?.text ?? "";
+      return await readOnly(sql, async (tx) => {
+        const rows: { text: string | null }[] = await tx`
+          select f.content || coalesce(
+            (select string_agg(p.content, '' order by p.start_offset)
+               from omp_session_files_parts p where p.path = f.path), '') as text
+          from omp_session_files f where f.path = ${path}
+        `;
+        return rows[0]?.text ?? "";
+      });
     },
     async close() {
       await sql.close().catch(() => undefined);
@@ -469,9 +561,13 @@ async function main(argv: readonly string[]): Promise<number> {
     console.log(USAGE);
     return 0;
   }
-  const dsnFile = options.dsnFile ?? process.env.OMP_SESSION_SQL_DSN_FILE;
+  const dsnFile = options.dsnFile ?? process.env.SESSION_READER_DSN_FILE;
   if (dsnFile === undefined || dsnFile === "") {
-    console.error("unavailable: no session store; OMP_SESSION_SQL_DSN_FILE names no file");
+    console.error(
+      "unavailable: SESSION_READER_DSN_FILE names no file, so this deployment gives no read " +
+        "route to the session store, which is a fault of the deployment to report; --dsn-file " +
+        "names the file holding the URL of a read-only login where you have one"
+    );
     return 2;
   }
   let dsn: string;
@@ -492,6 +588,12 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     return 0;
   } catch (error) {
+    if (error instanceof NotReadOnlyError) {
+      console.error(
+        "unavailable: that transaction is not read-only, so the run stopped and reported nothing"
+      );
+      return 2;
+    }
     console.error(`unavailable: the session store could not be read${errorCode(error)}`);
     return 2;
   } finally {

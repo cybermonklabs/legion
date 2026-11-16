@@ -326,6 +326,64 @@ func TestClosedIssueRejectsLiveEditsAndNamedVersions(t *testing.T) {
 	waitForDocumentText(t, service, artifactID, "before\n")
 }
 
+// A closed issue still takes a comment, so its document still takes the comment's anchor under
+// WithCommentMarks - the comment mark, its margin record and the version the anchor is pinned
+// to - and nothing else under it: a suggestion's mark and a content edit are refused as they are
+// without it, and so is a comment mark made without it.
+func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
+	service, artifactID := newTestService(t)
+	seedServiceText(t, service, artifactID, "before")
+	if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
+		t.Fatalf("close document issue: %v", err)
+	}
+	actor := model.Actor{Kind: "user", ID: "alice"}
+	comment := MarkSpec{Kind: MarkComment, ID: "c1", By: actor}
+	if _, err := joinedMarkQuote(service, artifactID, comment, "before", nil); !errors.Is(err, ErrIssueClosed) {
+		t.Fatalf("comment mark without WithCommentMarks on a closed issue = %v, want ErrIssueClosed", err)
+	}
+
+	var anchored Anchored
+	if err := joinedWrite(service, func(ctx context.Context) (err error) {
+		ctx = WithCommentMarks(ctx)
+		if anchored, err = service.MarkQuote(ctx, artifactID, comment, "before", nil); err != nil {
+			return err
+		}
+		record := MarkRecord{Kind: "comment", By: ActorRef(actor), CreatedAt: time.Now().UTC().Format(time.RFC3339), Text: "About this."}
+		if err := service.ProjectMark(ctx, artifactID, comment.ID, record, actor); err != nil {
+			return err
+		}
+		_, err = service.SnapshotVersion(ctx, artifactID, actor)
+		return err
+	}); err != nil {
+		t.Fatalf("comment anchor under WithCommentMarks on a closed issue: %v", err)
+	}
+	if anchored.Quote != "before" {
+		t.Fatalf("comment mark anchored = %#v, want the quote it marked", anchored)
+	}
+
+	for name, write := range map[string]func(ctx context.Context) error{
+		"a suggestion mark": func(ctx context.Context) error {
+			_, err := service.MarkQuote(ctx, artifactID, MarkSpec{Kind: MarkSuggestion, ID: "s1", By: actor}, "before", nil)
+			return err
+		},
+		"a content edit": func(ctx context.Context) error {
+			_, err := service.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "before", With: "after"}}, actor, nil)
+			return err
+		},
+		"a text replacement": func(ctx context.Context) error {
+			_, err := service.ReplaceText(ctx, artifactID, "after", actor)
+			return err
+		},
+	} {
+		if err := joinedWrite(service, func(ctx context.Context) error {
+			return write(WithCommentMarks(ctx))
+		}); !errors.Is(err, ErrIssueClosed) {
+			t.Fatalf("%s under WithCommentMarks on a closed issue = %v, want ErrIssueClosed", name, err)
+		}
+	}
+	waitForDocumentText(t, service, artifactID, "before\n")
+}
+
 func TestNamedVersionIncludesTrackedActorsAndResetsRoom(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -702,8 +760,8 @@ func TestReplaceTextAcceptsUnchangedEmptyDocument(t *testing.T) {
 	}
 }
 
-// A joined write whose transaction changes nothing writes nothing, though ygo hands the fork's
-// observers an update for that transaction too: it appends no update, writes no version, leaves
+// A joined write whose transaction changes nothing writes nothing, and ygo hands the fork's
+// observers no update for that transaction: it appends no update, writes no version, leaves
 // the document's owed settlement marked when it was and naming whom it named, and keeps the
 // transaction's fork for the transaction's next write. That holds for an ask-state write naming
 // the state the block already holds and for any rewrite whose edit changes nothing. The write
@@ -735,7 +793,7 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 		}},
 		{name: "a rewrite whose edit changes nothing", answers: ygws.ErrNoChanges, write: func(ctx context.Context) error {
 			return service.applyLive(ctx, artifactID, closer, func(doc *crdt.Doc, _ pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
-				_, _, err := rewriteLive(doc, nil, func(*pmdoc.Node) bool { return false })
+				_, err := rewriteLive(doc, nil, func(*pmdoc.Node) bool { return false })
 				return err
 			})
 		}},

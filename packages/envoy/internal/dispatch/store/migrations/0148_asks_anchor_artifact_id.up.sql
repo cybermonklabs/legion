@@ -26,6 +26,6 @@
 --
 -- Building the index takes SHARE on asks, so ask writes wait for the build; it rewrites no row and
 -- refuses none, so its census answers 0. The release before this one never reads the index, so
--- that release serves beside it unchanged. Migrations run in one transaction, so the build is a
--- plain create index, not concurrently.
+-- that release serves beside it unchanged. This unmarked migration runs in one transaction,
+-- so the build is a plain create index, not concurrently.
 create index asks_anchor_artifact_id on asks ((case when anchor->>'artifact_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then (anchor->>'artifact_id')::uuid end)) where anchor is not null;

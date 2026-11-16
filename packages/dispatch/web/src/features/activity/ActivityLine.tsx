@@ -3,17 +3,18 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { issueQuery } from "../../api/queries";
-import type { Artifact, Event } from "../../api/types";
+import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 
-type ArtifactVersionEvent = Extract<Event, { type: "artifact.version" }>;
+type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 
 /** The activity text with the artifact's name turned into a link, so the reader opens the
  *  upload from the Conversation instead of hunting for it on the Artifacts tab. The text itself
- *  comes from `activityDescription`, which names the artifact once, in a text part; an agent
- *  part is never searched for it. */
+ *  comes from `activityDescription`, in a text part; an agent part is never searched for it. The
+ *  link goes on the last reading of the name, because a correction's line names the document
+ *  twice - `renamed <old> to <new>` - and it is the new title that has the page. */
 function LinkedName({
   description,
   name,
@@ -32,7 +33,7 @@ function LinkedName({
           if (index !== linked) {
             return part;
           }
-          const at = part.indexOf(name);
+          const at = part.lastIndexOf(name);
           return (
             <>
               {part.slice(0, at)}
@@ -60,7 +61,7 @@ function SavedVersionLine({
   issueKey: string;
 }): ReactNode {
   const issue = useQuery(issueQuery(issueKey));
-  const artifact: Artifact | undefined = issue.data?.artifacts.find(
+  const artifact: Artifact | undefined = issue.data?.artifacts?.find(
     ({ id }) => id === event.payload.artifact_id
   );
   if (artifact === undefined) {
@@ -85,11 +86,16 @@ export function ActivityLine({
   issueKey,
 }: {
   description: readonly AgentPart[];
-  event: Event;
+  event: DispatchEvent;
   issueKey: string;
 }): ReactNode {
   switch (event.type) {
+    // The slug does not move with a correction, so the new title links to the page the old one
+    // did, which is the page a creation links to. A removed document has no page at all, so
+    // `artifact.removed` takes the plain line the default below renders: a link to a gone
+    // document would answer "No artifact … on …".
     case "artifact.created":
+    case "artifact.renamed":
       return (
         <LinkedName
           description={description}

@@ -2,7 +2,13 @@ import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
 
-import { ApiError, api, type WriteBounds, type WriteRequest } from "../../api/client";
+import {
+  ApiError,
+  api,
+  type WriteBounds,
+  type WriteMethod,
+  type WriteRequest,
+} from "../../api/client";
 import type { AuthenticatedUser } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { indexedDbFiles, type KeptFiles } from "./kept-files";
@@ -10,7 +16,6 @@ import {
   KEYED_SEND_ATTEMPT_MS,
   retriesUnderItsKey,
   SEND_DEADLINE_MS,
-  SendInterruptedError,
   SendStoppedError,
   WriteDiscardedError,
   writeUnderKey,
@@ -238,6 +243,20 @@ interface Settlement {
   readonly reject: (reason: unknown) => void;
 }
 
+/** How a write's turn starts, and what settles once it has. */
+interface Turn {
+  readonly from: From;
+  readonly settled: Settlement;
+}
+
+/** A keep of an upload's file still in flight: the key it is being kept under, and what answers
+ *  once it is there or the browser has said it kept nothing. Nothing may name that key - no
+ *  record of it, no attempt under it - until this answers. */
+interface Keeping {
+  readonly key: string;
+  readonly settled: Promise<void>;
+}
+
 /** What the store holds of a write beside it: how to make it, the request its press named or it
  *  last went out as, what stops its trying, its file, the press that awaits it, and how its turn
  *  starts. */
@@ -249,13 +268,23 @@ interface Entry {
   readonly file: File | undefined;
   /** The press waiting for it, until it settles; none for a Retry or a reload. */
   press: Settlement | undefined;
-  /** How it starts once its turn comes, and what settles once it has; none while it is out. */
-  turn: { readonly from: From; readonly settled: Settlement } | undefined;
+  /** How it starts once its turn comes; none while it is out. */
+  turn: Turn | undefined;
   /** Ends a quiet write left unconfirmed five minutes after its press. */
   expiry: ReturnType<typeof setTimeout> | undefined;
   /** Whether its trying stopped for a lapsed session (`signedIn(undefined)`), so the attempt loop
    *  ending puts it back in its line to wait for the sign-in rather than refusing it. */
   held: boolean;
+  /** A keep of its file still in flight, which its record under that key and its attempt wait
+   *  for; none for a write with no file, and none once the keep has answered. While one is in
+   *  flight the write is not the reader's to retry again, and letting the write go deletes the
+   *  key being kept too. */
+  keeping: Keeping | undefined;
+  /** Whether this browser kept nothing of its file (`KeptFiles.put` answered `false`), so no
+   *  record of it is ever written: a record naming a file that is not there is one a reload
+   *  drops with nothing shown and nothing sent, where no record at all leaves the upload to
+   *  land on this page, as it does in a browser with no IndexedDB. */
+  unkept: boolean;
   readonly endsWithSession: boolean;
 }
 
@@ -291,6 +320,17 @@ let watcher: ((store: Writes) => void) | undefined;
  * `409 LOGIN_CHANGED`).
  */
 export class Writes {
+  /** The method of the request each of this page's send keys has already carried. A write's key
+   *  is spent only where something has gone out under it (`keySpent`), and no entry can answer
+   *  that for its key: a composer's Retry is a press of its own, under the refused send's key,
+   *  in an entry that has sent nothing yet, and the entry it replaces is gone. So the store
+   *  keeps the fact under the key it belongs to - set as each attempt goes out, written into
+   *  every record it keeps (`KeptWrite.carried`) and read back from the records a reload takes
+   *  up (`resume`), so a reload decides as this page does - and tells the retry loop
+   *  (`writeUnderKey`'s `carried`) and every refusal a reload rebuilds (`refusalFrom`). A key is
+   *  kept for as long as the page lives, since what went out under it never stops having gone
+   *  out. */
+  readonly #carried = new Map<string, WriteMethod>();
   readonly #client: QueryClient;
   readonly #kept: WriteStorage;
   readonly #files: KeptFiles;
@@ -369,7 +409,6 @@ export class Writes {
     const press = Promise.withResolvers<unknown>();
     const login = signedInLogin(this.#client);
     const key = spec.key ?? newSendKey();
-    if (spec.file !== undefined && login !== undefined) void this.#files.put(key, login, spec.file);
     if (spec.endsWithSession === true && login !== undefined) {
       this.#signingOut.add(login);
       this.#holdWritesOf(login);
@@ -380,10 +419,12 @@ export class Writes {
       expiry: undefined,
       file: spec.file,
       held: false,
+      keeping: undefined,
       press,
       request: request ?? null,
       stop: new AbortController(),
       turn: undefined,
+      unkept: false,
       write: {
         detail: spec.detail,
         id: this.#nextId(),
@@ -403,6 +444,14 @@ export class Writes {
         uploaded: undefined,
       },
     };
+    // The entry joins at once, whatever its file is doing: every lifecycle method works over
+    // `#entries`, so a write that joined late would outlive a sign-out, a lapse or another
+    // tab's sign-in and then go out under a login nobody is signed in as. What waits for the
+    // file is the record of the write and its first attempt (`#keep`, `#start`), so nothing
+    // ever names a key IndexedDB holds no file under.
+    if (spec.file !== undefined && login !== undefined) {
+      this.#keepFile(entry, key, login, spec.file, () => this.#keep(entry));
+    }
     this.#join(entry, "sending");
     return press.promise as Promise<T | null>;
   }
@@ -420,12 +469,43 @@ export class Writes {
 
   /** Makes the refused write `id` again, at the back of its target's line: under its own key when
    *  it ended without Dispatch's verdict, under a new one when Dispatch refused it
-   *  (`retriesUnderItsKey`). */
+   *  (`retriesUnderItsKey`), an upload's kept file moving to that new key with it. A Retry that
+   *  moves a file waits for it: the file is kept under the new key first, and the key, the
+   *  record and the attempt move together in the tick that answers, so nothing names the new
+   *  key before the file is under it. Until then the write stands refused under its old key
+   *  with its old file, and a reload brings it back for the reader to retry again; a second
+   *  press inside that window does nothing, since the first one is still moving the file. */
   retry(id: number): void {
     const entry = this.#entries.get(id);
-    if (entry?.write.status !== "refused") return;
-    const key = retriesUnderItsKey(entry.write.refusal) ? entry.write.key : newSendKey();
-    if (key !== entry.write.key) this.#kept.forget(entry.write.key);
+    if (entry?.write.status !== "refused" || entry.keeping !== undefined) return;
+    const old = entry.write.key;
+    if (retriesUnderItsKey(entry.write.refusal)) {
+      this.#retryUnder(entry, old, entry.write.sent);
+      return;
+    }
+    const key = newSendKey();
+    const { file } = entry;
+    const { login } = entry.write;
+    if (file !== undefined && login !== undefined) {
+      // The put stamps the new row with the time it was made, which is the age `keepOnly`
+      // measures, so the file's day and its key's run together. The old row goes once the new
+      // one is there, and goes too where the browser kept nothing: the write's key is the new
+      // one by then, so no reload would read the old row, and the upload is let go as one a
+      // page with no IndexedDB at all is.
+      this.#keepFile(entry, key, login, file, () => {
+        this.#kept.forget(old);
+        void this.#files.delete(old);
+        this.#retryUnder(entry, key, false);
+      });
+      return;
+    }
+    this.#kept.forget(old);
+    this.#retryUnder(entry, key, false);
+  }
+
+  /** Puts the refused `entry` back in its target's line under `key`, at the back, to be made
+   *  again: `sent` says whether something has already gone out under that key. */
+  #retryUnder(entry: Entry, key: string, sent: boolean): void {
     entry.stop = new AbortController();
     entry.write = {
       ...baseOf(entry.write),
@@ -433,11 +513,38 @@ export class Writes {
       key,
       pressedAt: Date.now(),
       retried: false,
-      sent: key === entry.write.key && entry.write.sent,
+      sent,
       status: "queued",
       uploaded: undefined,
     };
     this.#join(entry, "sending");
+  }
+
+  /** Keeps `file` under `key` for `entry`, records whether the browser kept it (`Entry.unkept`)
+   *  and tells `landed`, in the tick that answers. While it is in flight nothing may name
+   *  `key`: `#keep` writes no record of a write already under it and `#start` sends no attempt,
+   *  and letting the write go deletes `key` too (`#forget`). A keep whose write has gone
+   *  meanwhile tells nothing. A `put` that rejects rather than answering is read as a browser
+   *  that kept nothing, so a rejection leaves no write stuck. A `put` that never settles does,
+   *  differently at each caller: at the press the write stays `sending` with no attempt, so no
+   *  deadline starts and neither Stop trying nor Discard takes it; at a Retry it stays
+   *  `refused` under its old key, where another Retry does nothing while the keep stands but
+   *  Discard still drops it and deletes both keys (`#forget`). Nothing in the page can do that
+   *  - `indexedDbFiles` answers every path, and its open is never blocked, the version being
+   *  fixed at 1 - and an implementation of `KeptFiles` that may hang is a page bug this does
+   *  not cover. */
+  #keepFile(entry: Entry, key: string, login: string, file: File, landed: () => void): void {
+    const answered = (kept: boolean) => {
+      if (entry.keeping !== keeping) return;
+      entry.keeping = undefined;
+      entry.unkept = !kept;
+      if (this.#entries.get(entry.write.id) === entry) landed();
+    };
+    const keeping: Keeping = {
+      key,
+      settled: this.#files.put(key, login, file).then(answered, () => answered(false)),
+    };
+    entry.keeping = keeping;
   }
 
   /** Drops the write `id` the reader discards, and says whether there was one: a refused one, or
@@ -649,6 +756,14 @@ export class Writes {
     this.#resumed = true;
     const now = Date.now();
     for (const kept of this.#kept.load(login)) {
+      // What the key has carried is the entry's own record of it (`KeptWrite.carried`): the
+      // store wrote it from this map as the write was kept, so a write re-pressed under the key
+      // of the one it replaced - kept with nothing sent and no request of its own - still says
+      // what its key carried before, and `null` is the answer that nothing went out under it.
+      // An entry of the shape the release before this one wrote holds no such record, and
+      // `WriteStorage.load` has already read it as that release read it, so nothing here asks
+      // the question a second way.
+      if (kept.carried !== null) this.#carried.set(kept.key, kept.carried);
       const kind = kinds.get(kept.kind);
       if (kind === undefined || !kind.kept(kept.detail)) {
         this.#kept.forget(kept.key);
@@ -682,10 +797,12 @@ export class Writes {
       expiry: undefined,
       file,
       held: false,
+      keeping: undefined,
       press: undefined,
       request,
       stop: new AbortController(),
       turn: undefined,
+      unkept: false,
       write: {
         detail,
         id: this.#nextId(),
@@ -709,10 +826,16 @@ export class Writes {
       this.#join(entry, resumedFrom(kept.state));
       return;
     }
-    const refusal =
-      kept.state.status === "refused"
-        ? refusalFrom(kept.state.refusal)
-        : new SendInterruptedError();
+    const refusal = refusalFrom(
+      kept.state.status === "refused" ? kept.state.refusal : { kind: "interrupted" },
+      kept.key,
+      // What the key has carried, read where the retry loop reads it (`#start`) rather than
+      // worked out a second time here: `resume` put the entry's own record of it in this map.
+      // Not what the file the write needs made of it either: a missing file leaves the write
+      // nothing to make again, and its key has carried what it carried all the same.
+      this.#carried.get(kept.key) ?? null,
+      now
+    );
     this.#entries.set(entry.write.id, entry);
     this.#update(entry, { ...entry.write, refusal, status: "refused" });
   }
@@ -748,13 +871,9 @@ export class Writes {
       .filter((entry) => entry.write.target === target)
       .sort((a, b) => a.write.joined - b.write.joined);
     for (const entry of line) {
-      const { login, status } = entry.write;
+      const { status } = entry.write;
       if (status === "queued") {
-        const waits =
-          !entry.endsWithSession &&
-          login !== undefined &&
-          (this.#signingOut.has(login) || this.#signingOutElsewhere.has(login));
-        if (!waits) this.#start(entry);
+        if (this.#starts(entry)) this.#start(entry);
         if (target !== undefined) return;
       } else if (target !== undefined && (status === "sending" || status === "late")) {
         return;
@@ -762,7 +881,23 @@ export class Writes {
     }
   }
 
-  /** Makes the write `entry` under its key until Dispatch decides it. */
+  /** Whether `entry` may go out now: no lapsed session, and no sign-out of its person's out -
+   *  this page's (`#signingOut`) or another tab's (`#signingOutElsewhere`) - but its own. */
+  #starts(entry: Entry): boolean {
+    if (this.#lapsed) return false;
+    const { login } = entry.write;
+    return (
+      entry.endsWithSession ||
+      login === undefined ||
+      !(this.#signingOut.has(login) || this.#signingOutElsewhere.has(login))
+    );
+  }
+
+  /** Makes the write `entry` under its key until Dispatch decides it. An upload waits here for
+   *  its file: the write reads `sending` from the press, so the indicator says so at once, and
+   *  its attempt and its deadline start once the file is kept. A write whose session lapsed, or
+   *  whose person's sign-out went out, while its file was being kept waits in its line instead,
+   *  as a queued one does. */
   #start(entry: Entry): void {
     const { turn } = entry;
     if (turn === undefined) return;
@@ -776,6 +911,28 @@ export class Writes {
         : { ...baseOf(entry.write), status: "late", stopping: turn.from === "stopping" }
     );
     const current = () => this.#entries.get(entry.write.id) === entry && entry.stop === stop;
+    const { keeping } = entry;
+    if (keeping === undefined) {
+      this.#send(entry, turn, stop, current);
+      return;
+    }
+    void keeping.settled.then(() => {
+      if (!current()) {
+        turn.settled.reject(new SendStoppedError());
+        return;
+      }
+      if (!this.#starts(entry)) {
+        entry.held = false;
+        turn.settled.reject(new SendStoppedError());
+        this.#rejoin(entry);
+        return;
+      }
+      this.#send(entry, turn, stop, current);
+    });
+  }
+
+  /** Tries `entry` under its key until Dispatch decides it, within the deadline this starts. */
+  #send(entry: Entry, turn: Turn, stop: AbortController, current: () => boolean): void {
     const deadline =
       turn.from === "sending"
         ? setTimeout(() => {
@@ -785,9 +942,12 @@ export class Writes {
           }, SEND_DEADLINE_MS)
         : undefined;
     writeUnderKey(entry.attempt, entry.write.key, {
+      carried: this.#carried.get(entry.write.key) ?? null,
       login: entry.write.login,
       planned: entry.request ?? undefined,
       sent: (request) => {
+        // The request is going out under this key now, whatever becomes of this entry.
+        this.#carried.set(entry.write.key, request.method);
         if (!current()) return;
         entry.request = request;
         if (entry.write.sent) this.#keep(entry);
@@ -827,7 +987,10 @@ export class Writes {
           const held = entry.held;
           entry.held = false;
           if (current()) {
-            if (held && refusal instanceof SendStoppedError) this.#rejoin(entry);
+            // A write a lapse held goes back in its line, to be made again under its key once
+            // its person signs in; one whose key Dispatch has forgotten meanwhile has no key to
+            // go under, so it is refused for the reader to Retry as a new write.
+            if (held && retriesUnderItsKey(refusal)) this.#rejoin(entry);
             else this.#refused(entry, refusal);
           }
           turn.settled.reject(refusal);
@@ -958,10 +1121,16 @@ export class Writes {
     this.#publish();
   }
 
-  /** Lets go of what is kept of `entry`: its entry, and an upload's file. */
+  /** Lets go of what is kept of `entry`: its entry, an upload's file, and the file of a keep
+   *  still in flight under another key, whose row `kept-files` drops rather than leaving it for
+   *  `keepOnly` to reap a day later. */
   #forget(entry: Entry): void {
     this.#kept.forget(entry.write.key);
     if (entry.file !== undefined) void this.#files.delete(entry.write.key);
+    const { keeping } = entry;
+    if (keeping !== undefined && keeping.key !== entry.write.key) {
+      void this.#files.delete(keeping.key);
+    }
   }
 
   /** Puts `write` in the place of `entry`'s, keeps what a reload must take up, and tells every
@@ -973,13 +1142,24 @@ export class Writes {
     this.#publish();
   }
 
-  /** Keeps the write `entry` as it stands, for the person who pressed it. */
+  /** Keeps the write `entry` as it stands, for the person who pressed it, with what its key has
+   *  carried - `null` where nothing has gone out under it, written like any other answer: the
+   *  page after a reload reads that fact back rather than working it out from the entry, which
+   *  a write re-pressed under another's key cannot answer for (`#carried`). An upload whose
+   *  file is not under its key - the keep is still in flight, or the browser kept nothing - is
+   *  kept nowhere, since a record naming a file that is not there is one a reload drops with
+   *  nothing shown and nothing sent; leaving the page is still confirmed while it is out. */
   #keep(entry: Entry): void {
     const { write } = entry;
     const state = keptState(write);
     if (write.login === undefined || state === undefined) return;
+    if (entry.unkept || entry.keeping?.key === write.key) {
+      this.#kept.keepNothing({ key: write.key, presentation: write.presentation, state });
+      return;
+    }
     const kind = kinds.get(write.kind);
     this.#kept.keep({
+      carried: this.#carried.get(write.key) ?? null,
       detail: kind?.keep === undefined ? write.detail : kind.keep(write.detail),
       key: write.key,
       kind: write.kind,

@@ -1,11 +1,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BODY_MAX, PROJECT_KEY_RULE } from "@legion/contracts";
+import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
+import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
 import { forgetShownPictures } from "../dispatch-picture-tools";
 
 interface Recorded {
@@ -14,6 +15,8 @@ interface Recorded {
   readonly body: unknown;
 }
 
+const makeDirectory = temporaryDirectories("dispatch-cli");
+
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
 let triage = false;
@@ -21,6 +24,68 @@ let triage = false;
 let replyLength = 1;
 const LONG_THREAD = "11111111-1111-4111-8111-111111111111";
 const human = { kind: "human", id: "h" };
+
+/** How the Dispatch server refuses a body whose block `block`, a paragraph, is `units` UTF-16
+ *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
+ *  it. The fake server below answers it, and the command prints it as it came. */
+function blockCapRefusal(block: number, units: number): string {
+  return (
+    `body block ${block} (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
+    `${DISPATCH_BLOCK_UNITS}-character block limit (${units}/${DISPATCH_BLOCK_UNITS})`
+  );
+}
+
+/** The same refusal as the command prints it: a refusal Dispatch gives a code is printed with
+ *  that code ahead of its words, so the person reads which refusal it is. */
+const printedBlockCapRefusal = (block: number, units: number) =>
+  `CAP_EXCEEDED: ${blockCapRefusal(block, units)}`;
+
+/** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
+ *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
+ *  where it stands, so the body is refused however short it is (INFRA-1201). */
+function decisionBlockRefusal(block: number): string {
+  return (
+    `body block ${block} (ask) holds a decision block, which nobody can answer where it stands: ` +
+    "ask the question in the issue's own document, as a decision block there, or open an ask " +
+    "with `dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+  );
+}
+
+/** The server's refusal of `body`: a decision block in it (400 DECISION_BLOCK_IN_BODY), else a
+ *  paragraph over the bound Dispatch holds each block to (400 CAP_EXCEEDED), else undefined.
+ *  Dispatch bounds a body block by block and never as a whole, so a body of any length in
+ *  paragraphs posts and one long paragraph does not. */
+function bodyRefusal(body: string): { code: string; error: string } | undefined {
+  for (const [index, block] of body.split(/\n[ \t]*\n/).entries()) {
+    if (block.startsWith(":::ask")) {
+      return { code: "DECISION_BLOCK_IN_BODY", error: decisionBlockRefusal(index + 1) };
+    }
+    if (block.length > DISPATCH_BLOCK_UNITS) {
+      return { code: "CAP_EXCEEDED", error: blockCapRefusal(index + 1, block.length) };
+    }
+  }
+  return undefined;
+}
+
+/** A body of exactly `length` UTF-16 units made of paragraphs, each short enough for the bound
+ *  Dispatch holds one block to, so the body passes that bound however long the whole text is.
+ *  The line number opens every line, so the text changes along its whole span and a body cut
+ *  anywhere fails the equality, not only one of another length. */
+function paragraphsOf(length: number): string {
+  let text = "";
+  for (let line = 0; text.length < length; line += 1) {
+    text += `${line}: the quick brown fox jumps over the lazy dog.\n\n`;
+  }
+  return text.slice(0, length);
+}
+
+/** Fifteen JSON records, one per line, as a records upload holds them: the text `dispatch
+ *  artifact --path` must send unchanged, and the text `--content-file` refuses to store as a
+ *  Markdown document, which would join the lines into one paragraph. */
+const rows = `${Array.from(
+  { length: 15 },
+  (_, index) => `{"row_id": ${index}, "file_name": "wave_${index}.json", "note": "*kept*"}`
+).join("\n")}\n`;
 
 /** The Envoy listener's answer for session ses-1's subscriptions. */
 let interests: () => Response = () => Response.json({ error: "unset" }, { status: 500 });
@@ -34,6 +99,8 @@ const issue = {
   parent: null,
   external_links: [],
   artifacts: [],
+  advances: [],
+  advances_revision: 0,
 };
 
 /** DSP-2's spec, whose blocks `dispatch doc-read --blocks` lists. "é" is two bytes in UTF-8, so
@@ -154,8 +221,26 @@ const blocksIssue = {
   ],
 };
 
-/** DSP-3 as a Dispatch server from before the repository fields answers it: no repo or
- *  resolved_repo at all. */
+/** DSP-5's spec as Dispatch stores it: every code block fenced, holding the whitespace-only
+ *  lines its engine keeps in it, so the text `dispatch doc-read` prints is text whose line ends
+ *  matter. `packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` holds the writer to
+ *  this spelling; here it is the bytes the command must print as they came. */
+const storedCode =
+  "> - ```\n>   code\n>   \n>   note\n>   ```\n\nBetween.\n\n- a\n\n  ```\n      x\n    \n  ```\n- b\n\nAfter.\n\n```\n      y\n    \n   \n```\n\nEnd.\n";
+
+const codeIssue = {
+  ...issue,
+  key: "DSP-5",
+  title: "Indented code whitespace lines",
+  primary_artifact_id: "doc-5",
+  open_asks: [],
+  artifacts: [
+    { id: "doc-5", slug: "spec", name: "spec.md", kind: "doc", primary: true, versions: [] },
+  ],
+};
+
+/** DSP-3 as a Dispatch server from before the repository fields and before priorities answers
+ *  it: no repo, resolved_repo, advances or advances_revision at all. */
 const olderServerIssue = {
   key: "DSP-3",
   title: "Read from an older server",
@@ -171,20 +256,59 @@ const olderServerIssue = {
   labels: [],
 };
 
-/** How the DSP-2 routes answer: a Dispatch older than the table listing omits `table`, and a
- *  document a browser edits between the CLI's two reads of its text answers the second with other
- *  text and another token. */
-let blocksServer = { tableRows: true, editedBetweenReads: false };
-let textReads = 0;
+/** How the DSP-2 routes answer: a Dispatch older than the table listing omits `table`. */
+let blocksServer = { tableRows: true };
 /** DSP-4's event log: the issue reads `last_seq` `last`, and the events route serves seq 1 to
  *  `served` (past `last` once events were written after the issue was read), each a message, by
  *  `after` and `limit` as Dispatch pages them. `queries` records each events request's query. */
 let eventLog = { last: 40, served: 40, queries: [] as string[] };
+/** DSP-1's handoffs as the handoff routes store them, oldest first: each write the next version
+ *  of its phase, written by the actor it names, its body kept as the text sent. */
+const handoffs: {
+  id: string;
+  issue_key: string;
+  phase: string;
+  version: number;
+  author: unknown;
+  created_at: string;
+  body: string;
+}[] = [];
 
 const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname, search, searchParams } = new URL(request.url);
+    // An upload is multipart where it carries a file and JSON where it carries inline content,
+    // as the route takes both: a file's part is recorded as the text it carried, since the
+    // recorder below parses every body as JSON and would throw on those bytes
+    // (`dispatch-askgate.test.ts` reads an upload the same way).
+    if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "POST") {
+      const sent = request.headers.get("content-type")?.startsWith("multipart/")
+        ? (await request.formData()).get("file")
+        : await request.json();
+      requests.push({
+        method: request.method,
+        path: pathname,
+        body: sent instanceof Blob ? await sent.text() : sent,
+      });
+      return Response.json({
+        artifact: {
+          id: "artifact-1",
+          issue_key: "DSP-1",
+          name: "rows.jsonl",
+          slug: "rows-jsonl",
+          kind: "file",
+          primary: false,
+        },
+        version: { number: 1 },
+      });
+    }
+    // What the issue holds, which an upload reads to refuse a name that exists: DSP-1 holds no
+    // document here, so every upload below writes a first version. It is recorded with the rest.
+    if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "GET") {
+      requests.push({ method: request.method, path: pathname, body: undefined });
+      return Response.json([]);
+    }
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
@@ -192,18 +316,26 @@ const server = Bun.serve({
       return Response.json(blocksIssue);
     }
     if (pathname === "/api/v1/artifacts/doc-2/text") {
-      textReads++;
-      const edited = blocksServer.editedBetweenReads && textReads > 1;
+      const listed = blocksServer.tableRows
+        ? specBlocks
+        : specBlocks.map(({ table: _, ...block }) => block);
       return Response.json({
-        markdown: edited ? `${spec}\nTyped in the browser.\n` : spec,
+        markdown: spec,
         version: 3,
-        token: edited ? "sha256:edited" : "sha256:doc",
+        token: "sha256:doc",
+        // The blocks come from the same answer as the markdown they index, as Dispatch serves
+        // them: `?blocks=true` is the one read `doc-read --blocks` makes.
+        ...(searchParams.get("blocks") === "true" ? { blocks: listed } : {}),
       });
     }
-    if (pathname === "/api/v1/artifacts/doc-2/blocks") {
-      return Response.json(
-        blocksServer.tableRows ? specBlocks : specBlocks.map(({ table: _, ...block }) => block)
-      );
+    if (pathname === "/api/v1/issues/DSP-5" && request.method === "GET") {
+      return Response.json(codeIssue);
+    }
+    if (pathname === "/api/v1/artifacts/doc-5/text") {
+      return Response.json({ markdown: storedCode, version: 1, token: "sha256:code" });
+    }
+    if (pathname === "/api/v1/issues/DSP-5/comments") {
+      return Response.json([]);
     }
     if (pathname === "/api/v1/issues/DSP-1/asks" && request.method === "POST") {
       return Response.json({
@@ -215,6 +347,8 @@ const server = Bun.serve({
       });
     }
     if (pathname === "/api/v1/issues/DSP-1/messages" && request.method === "POST") {
+      const refusal = bodyRefusal(body.body as string);
+      if (refusal !== undefined) return Response.json(refusal, { status: 400 });
       return Response.json({
         id: "message-1",
         issue_key: "DSP-1",
@@ -223,6 +357,15 @@ const server = Bun.serve({
           session_writes_since_human: 0,
           your_open_asks: [],
         },
+      });
+    }
+    if (pathname === "/api/v1/issues/DSP-1/comments" && request.method === "POST") {
+      const refusal = bodyRefusal(body.body as string);
+      if (refusal !== undefined) return Response.json(refusal, { status: 400 });
+      return Response.json({
+        id: "comment-1",
+        issue_key: "DSP-1",
+        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
     }
     if (pathname === "/api/v1/issues/DSP-3" && request.method === "GET") {
@@ -330,6 +473,37 @@ const server = Bun.serve({
         ],
       });
     }
+    const handoffWrite = pathname.match(/^\/api\/v1\/issues\/DSP-1\/handoffs\/([a-z-]+)$/);
+    if (handoffWrite !== null && request.method === "POST") {
+      const phase = handoffWrite[1] ?? "";
+      const record = {
+        id: `00000000-0000-4000-8000-00000000000${handoffs.length + 1}`,
+        issue_key: "DSP-1",
+        phase,
+        version: handoffs.filter((handoff) => handoff.phase === phase).length + 1,
+        author: body.actor,
+        created_at: `2026-10-26T00:00:0${handoffs.length + 1}Z`,
+        body: body.body,
+      };
+      handoffs.push(record);
+      const { body: _, ...summary } = record;
+      return Response.json(summary, { status: 201 });
+    }
+    const handoffLatest = pathname.match(/^\/api\/v1\/issues\/DSP-1\/handoffs\/([a-z-]+)\/latest$/);
+    if (handoffLatest !== null) {
+      const latest = handoffs.filter((handoff) => handoff.phase === handoffLatest[1]).at(-1);
+      return latest === undefined
+        ? Response.json(
+            { code: "HANDOFF_NOT_FOUND", error: `issue DSP-1 has no ${handoffLatest[1]} handoff` },
+            { status: 404 }
+          )
+        : Response.json(latest);
+    }
+    if (pathname === "/api/v1/issues/DSP-1/handoffs") {
+      return Response.json(handoffs.map(({ body: _, ...summary }) => summary).reverse());
+    }
+    const byId = handoffs.find((handoff) => pathname === `/api/v1/handoffs/${handoff.id}`);
+    if (byId !== undefined) return Response.json(byId);
     if (pathname === "/v1/interests/ses-1") return interests();
     // A Dispatch build older than the answers route, which it therefore lacks.
     if (pathname.endsWith("/answers")) {
@@ -348,13 +522,14 @@ let stateDir = "";
 beforeEach(() => {
   requests.length = 0;
   triage = false;
-  blocksServer = { tableRows: true, editedBetweenReads: false };
-  textReads = 0;
+  blocksServer = { tableRows: true };
   eventLog = { last: 40, served: 40, queries: [] };
+  handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
-  stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+  stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
+  forgetKeyedLayerMemory();
 });
 
 function environment(
@@ -372,7 +547,8 @@ function environment(
 async function run(
   argv: readonly string[],
   extra: Record<string, string | undefined>,
-  stdin = ""
+  stdin = "",
+  fetchImpl?: typeof fetch
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -385,6 +561,7 @@ async function run(
     },
     readText: (path) => (path === "-" ? stdin : readFileSync(path, "utf-8")),
     cwd: stateDir,
+    ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
   return { code, stdout, stderr };
 }
@@ -393,6 +570,41 @@ async function run(
 function nextProcess(sessionId: string): void {
   resetAdviceMemory();
   forgetShownPictures(sessionId);
+  forgetKeyedLayerMemory();
+}
+
+/**
+ * The test server behind Dispatch's keyed layer: every answer to a write carries its
+ * `Idempotency-Key` back, the first `failing` message posts fail in transport before they reach it,
+ * and `/healthz` never answers within its bound, as under the load that stalls a write.
+ */
+function keyedDispatch(failing: number): {
+  readonly fetchImpl: typeof fetch;
+  readonly keys: string[];
+  readonly probes: string[];
+} {
+  const keys: string[] = [];
+  const probes: string[] = [];
+  let left = failing;
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const { pathname } = new URL(request.url);
+    if (pathname === "/healthz") {
+      probes.push(pathname);
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    }
+    const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
+    if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
+      keys.push(key ?? "");
+      if (left-- > 0) throw new TypeError("fetch failed");
+    }
+    const answer = await fetch(request);
+    if (key === null) return answer;
+    const headers = new Headers(answer.headers);
+    headers.set(IDEMPOTENCY_KEY_HEADER, key);
+    return new Response(answer.body, { status: answer.status, headers });
+  }) as typeof fetch;
+  return { fetchImpl, keys, probes };
 }
 
 function ledger(sessionId: string): { tool: string; error?: string }[] {
@@ -426,6 +638,88 @@ describe("the dispatch CLI", () => {
     expect(posted?.body).toMatchObject({ actor: { id: "b" } });
   });
 
+  test("under Claude Code, claude-envoy's ENVOY_SESSION_ID override is the session, as on its claim", async () => {
+    const { code } = await run(["message", "--issue", "DSP-1", "--body", "hello"], {
+      DISPATCH_HOST: "claude",
+      ENVOY_SESSION_ID: "qa-ses",
+      CLAUDE_CODE_SESSION_ID: "native-ses",
+    });
+    expect(code).toBe(0);
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/messages");
+    expect(posted?.body).toMatchObject({ actor: { id: "qa-ses" } });
+    expect(ledger("qa-ses").map((line) => line.tool)).toEqual(["dispatch_message"]);
+    expect(existsSync(join(stateDir, "sessions", "native-ses"))).toBe(false);
+
+    requests.length = 0;
+    const unset = await run(["message", "--issue", "DSP-1", "--body", "x"], {
+      DISPATCH_HOST: "claude",
+    });
+    expect(unset.code).toBe(2);
+    expect(unset.stdout).toContain("ENVOY_SESSION_ID or CLAUDE_CODE_SESSION_ID is not set");
+    expect(requests).toEqual([]);
+  });
+
+  test("handoff-write records the body file's text as written, and handoff-read prints it back exactly", async () => {
+    // Spacing, key order and a trailing newline a re-serialization would lose.
+    const text = `{ "schemaVersion": 1,\n  "b": [2, 1], "a": "é\\u0041" }\n`;
+    const file = join(stateDir, "DSP-1-implement.json");
+    writeFileSync(file, text);
+    const first = await run(
+      ["handoff-write", "DSP-1", "--phase", "implement", "--body-file", file],
+      omp
+    );
+    expect(first).toMatchObject({ code: 0, stderr: "" });
+    expect(first.stdout).toBe(
+      "Recorded the implement handoff of DSP-1, version 1 (id 00000000-0000-4000-8000-000000000001)\n"
+    );
+    const second = await run(
+      ["handoff-write", "DSP-1", "--phase", "implement", "--body-file", "-"],
+      omp,
+      '{"round":2}'
+    );
+    expect(second.stdout).toContain("version 2 (id 00000000-0000-4000-8000-000000000002)");
+    const posted = requests.find((request) => request.method === "POST");
+    expect(posted?.body).toMatchObject({ actor: { kind: "session", id: "ses-1" }, body: text });
+
+    const latest = await run(["handoff-read", "DSP-1", "--phase", "implement"], omp);
+    expect(latest.code).toBe(0);
+    expect(latest.stdout).toBe(
+      'DSP-1 implement handoff, version 2 (id 00000000-0000-4000-8000-000000000002), written by session ses-1 at 2026-10-26T00:00:02Z\n{"round":2}\n'
+    );
+    const versionOne = await run(
+      ["handoff-read", "DSP-1", "--phase", "implement", "--version", "1"],
+      omp
+    );
+    expect(versionOne.code).toBe(0);
+    const [line, ...rest] = versionOne.stdout.split("\n");
+    expect(line).toBe(
+      "DSP-1 implement handoff, version 1 (id 00000000-0000-4000-8000-000000000001), written by session ses-1 at 2026-10-26T00:00:01Z"
+    );
+    expect(rest.join("\n")).toBe(text);
+
+    const missing = await run(
+      ["handoff-read", "DSP-1", "--phase", "implement", "--version", "3"],
+      omp
+    );
+    expect(missing.code).toBe(1);
+    expect(missing.stdout).toContain(
+      "HANDOFF_NOT_FOUND: issue DSP-1 has no implement handoff version 3; its newest implement handoff is version 2"
+    );
+  });
+
+  test("handoff-write refuses a body that is not one JSON object, dry run included, sending nothing", async () => {
+    for (const argv of [
+      ["handoff-write", "DSP-1", "--phase", "plan", "--body-file", "-"],
+      ["handoff-write", "DSP-1", "--phase", "plan", "--body-file", "-", "--dry-run"],
+    ]) {
+      const { code, stdout } = await run(argv, omp, "[1, 2]\n");
+      expect(code).toBe(2);
+      expect(stdout.split("\n")[0]).toBe("dispatch handoff-write was not called: 1 problem");
+      expect(stdout).toContain("body is not one JSON object");
+    }
+    expect(requests).toEqual([]);
+  });
+
   test("an empty session id counts as unset", async () => {
     const { code, stdout } = await run(["message", "--issue", "DSP-1", "--body", "x"], {
       DISPATCH_HOST: "omp",
@@ -447,9 +741,90 @@ describe("the dispatch CLI", () => {
 
   test("an unknown flag is refused in command syntax, with an example", async () => {
     const { code, stdout } = await run(["message", "--issue", "X", "--isue", "Y"], omp);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(stdout.split("\n")[0]).toBe("dispatch message was not called: 1 problem");
     expect(stdout).toContain("- Example: dispatch message");
+    expect(requests).toEqual([]);
+  });
+
+  // `--run -` would send the one character "-" where the caller meant stdin, so a text flag's bare
+  // `-` is a usage error before any request, dry run included. When nothing else is wrong, the
+  // refusal names the `-file` twin of each such flag and lists no flags.
+  test("a bare - given to text flags is refused, one line per flag, listing no flags", async () => {
+    const argv = [
+      "result",
+      "--issue",
+      "DSP-1",
+      "--check",
+      "k1",
+      "--role",
+      "implementer",
+      "--verdict",
+      "pass",
+      "--commit",
+      "1111111111111111111111111111111111111111",
+      "--run",
+      "-",
+      "--observed",
+      "-",
+      "--negative-control",
+      "-",
+    ];
+    const refusal = [
+      "dispatch result was not called: 3 problems",
+      '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
+      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
+      "",
+    ].join("\n");
+    for (const call of [argv, [...argv, "--dry-run"]]) {
+      expect(await run(call, omp), call.join(" ")).toEqual({
+        code: 2,
+        stdout: refusal,
+        stderr: "",
+      });
+    }
+    expect(requests).toEqual([]);
+
+    expect(await run(["issue", "--project", "DSP", "--title", "-"], omp)).toEqual({
+      code: 2,
+      stdout: [
+        "dispatch issue was not called: 1 problem",
+        '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+        "- Example: dispatch issue --project DSP --title 'Native workspace'",
+        "",
+      ].join("\n"),
+      stderr: "",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  test("a bare - beside an unknown flag is refused with both, listing the flags", async () => {
+    const { code, stdout } = await run(
+      ["issue", "--project", "DSP", "--title", "-", "--titel", "x"],
+      omp
+    );
+    expect(code).toBe(2);
+    const lines = stdout.split("\n");
+    expect(lines.slice(0, 3)).toEqual([
+      "dispatch issue was not called: 2 problems",
+      '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+      "- unknown flag --titel",
+    ]);
+    expect(lines[3]).toStartWith("- Allowed flags: --project, ");
+    expect(lines[4]).toStartWith("- Example: dispatch issue ");
+    expect(requests).toEqual([]);
+  });
+
+  // `skill://dispatch` says "Exit 1 is a refusal, 2 a usage error", so a call Dispatch never saw
+  // because an argument is missing exits 2: a script reading the code alone tells it from a write
+  // Dispatch refused (a near copy, an AskGate block), which exits 1.
+  test("a command missing a required argument is a usage error, exit 2", async () => {
+    const { code, stdout } = await run(["issue", "--project", "DSP"], omp);
+    expect(code).toBe(2);
+    expect(stdout.split("\n")[0]).toBe("dispatch issue was not called: 1 problem");
+    expect(stdout).toContain("title");
     expect(requests).toEqual([]);
   });
 
@@ -466,14 +841,14 @@ describe("the dispatch CLI", () => {
 
   // --reason is the close's note: a reopen (or any update but a close) that carries one is
   // refused by the argument check, in a dry run as in the call, naming that rule, before any
-  // request; never by a closed issue's refusal of the note it would have posted.
+  // request, so no stray note is ever posted.
   test("--reason without --status done is refused by the argument check, dry run included", async () => {
     const argv = ["issue-update", "--issue", "DSP-1", "--status", "in_progress", "--reason", "x"];
     const rule =
       "- reason goes only with status done: it is the note posted on the issue as it closes, and status in_progress closes nothing. Drop reason, or set status done to close the issue.";
     for (const call of [[...argv, "--dry-run"], argv]) {
       const { code, stdout } = await run(call, omp);
-      expect(code, call.join(" ")).toBe(1);
+      expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch issue-update was not called: 1 problem",
         rule,
@@ -482,17 +857,91 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  test("--dry-run refuses a body over the cap the call would refuse", async () => {
+  // No length check stands between the body and Dispatch: the whole text is posted, and what the
+  // person reads is the server's refusal, printed as it came.
+  test("a body with a block over the server's bound is posted and refused in the server's words", async () => {
+    const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
+
+    const { code, stdout } = await run(
+      ["comment", "--issue", "DSP-1", "--body-file", "-"],
+      omp,
+      body
+    );
+
+    expect(code).toBe(1);
+    expect(stdout.trim()).toBe(printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1));
+    const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
+    expect(posted?.body).toMatchObject({ body });
+  });
+
+  test("a dry run of the same body prints the arguments and posts nothing", async () => {
+    const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
+
     const { code, stdout } = await run(
       ["comment", "--dry-run", "--issue", "DSP-1", "--body-file", "-"],
       omp,
-      "x".repeat(DISPATCH_BODY_MAX + 1)
+      body
     );
-    expect(code).toBe(1);
-    expect(stdout).toContain(
-      `- --body is 1 characters over the ${DISPATCH_BODY_MAX}-character limit (${DISPATCH_BODY_MAX + 1}/${DISPATCH_BODY_MAX})`
-    );
+
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toEqual({ issue: "DSP-1", body });
     expect(requests).toEqual([]);
+  });
+
+  // --content and --content-file store their text as a Markdown document, and a create with
+  // neither makes an empty one, so under a .jsonl name the call is refused before any request,
+  // dry run included, naming --path.
+  test("artifact refuses --content-file under a name that is not Markdown, naming --path", async () => {
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--content-file", "-"];
+    for (const call of [[...argv, "--dry-run"], argv]) {
+      const { code, stdout } = await run(call, omp, '{"row_id": 1}\n{"row_id": 2}\n');
+      expect(code, call.join(" ")).toBe(2);
+      expect(stdout.split("\n").slice(0, 2)).toEqual([
+        "dispatch artifact was not called: 1 problem",
+        `- a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`,
+      ]);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  // --path is what the refusal above names, so it must do what the refusal promises: the file's
+  // bytes go to Dispatch as they are, the fifteen lines of a JSONL file among them.
+  test("artifact --path sends the file's bytes unchanged", async () => {
+    writeFileSync(join(stateDir, "rows.jsonl"), rows);
+
+    const { code, stdout } = await run(
+      ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--path", "rows.jsonl"],
+      omp
+    );
+
+    expect(code, stdout).toBe(0);
+    expect(stdout).toContain("Uploaded rows.jsonl as version 1");
+    // The upload itself, past the read of what the issue holds that runs before it.
+    const uploaded = requests.filter(
+      (request) => request.path.endsWith("/artifacts") && request.method === "POST"
+    );
+    expect(uploaded.map((request) => request.body)).toEqual([rows]);
+  });
+
+  // INFRA-370: `dispatch comment` and `dispatch message` carry no length of their own. A body of
+  // 40,000 characters in paragraphs posts whole, because Dispatch bounds a body block by block,
+  // and the command sends the text it was handed, not a cut of it.
+  test("a comment and a message of 40,000 characters in paragraphs are posted whole", async () => {
+    const whole = paragraphsOf(40_000);
+
+    for (const command of ["comment", "message"] as const) {
+      const { code, stdout } = await run([command, "--issue", "DSP-1", "--body", whole], omp);
+      expect(code, stdout).toBe(0);
+    }
+
+    const posted = requests.filter((request) => request.method === "POST");
+    expect(posted.map((request) => request.path)).toEqual([
+      "/api/v1/issues/DSP-1/comments",
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    for (const request of posted) {
+      expect(request.body, request.path).toMatchObject({ body: whole });
+    }
   });
 
   // A dry run runs the call's own pre-send check, so a call it refuses is refused alike, before
@@ -508,7 +957,7 @@ describe("the dispatch CLI", () => {
     for (const { argv, env } of cases) {
       const call = await run(argv, { ...omp, ...env });
       const dry = await run([...argv, "--dry-run"], { ...omp, ...env });
-      expect(call.code, argv.join(" ")).toBe(1);
+      expect(call.code, argv.join(" ")).toBe(2);
       expect(call.stdout, argv.join(" ")).toStartWith("dispatch ");
       expect(dry, argv.join(" ")).toEqual(call);
     }
@@ -546,7 +995,7 @@ describe("the dispatch CLI", () => {
       ["issue-update", "--issue", "DSP-1", "--status", "in_progress", "--reason", "x", "--dry-run"],
       off
     );
-    expect(refused.code).toBe(1);
+    expect(refused.code).toBe(2);
     expect(refused.stdout).toStartWith(
       "dispatch issue-update was not called: 1 problem\n- reason goes only with status done"
     );
@@ -574,15 +1023,156 @@ describe("the dispatch CLI", () => {
     expect(second.stdout).not.toContain("is still in triage");
   });
 
+  // Every `dispatch` command is a process of its own, so what one call saw of Dispatch's keyed
+  // layer reaches the next only through the session's state. A later call's write whose attempt
+  // fails is asked again under its key on that alone, without /healthz, which the load that
+  // stalled the write can keep from answering in time.
+  test("a failed write is asked again under its key when an earlier call of the session saw the keyed layer", async () => {
+    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
+    const first = keyedDispatch(0);
+    expect((await run(message, omp, "", first.fetchImpl)).code).toBe(0);
+    const state = JSON.parse(
+      readFileSync(join(stateDir, "sessions", "ses-1", "state.json"), "utf-8")
+    );
+    expect(Object.keys(state.keyedLayer)).toEqual([`http://127.0.0.1:${server.port}`]);
+    nextProcess("ses-1");
+    const stalled = keyedDispatch(1);
+    const second = await run(message, omp, "", stalled.fetchImpl);
+    expect(second.code).toBe(0);
+    expect(stalled.keys).toHaveLength(2);
+    expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
+    expect(stalled.probes).toEqual([]);
+  });
+
+  // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as
+  // within one. One older than that, one dated ahead of the clock, and anything that is not a
+  // sighting say nothing, so the write asks /healthz and, with no yes from it, is reported rather
+  // than sent twice.
+  test("a carried sighting of the keyed layer is trusted only while it is under five minutes old", async () => {
+    const origin = `http://127.0.0.1:${server.port}`;
+    const message = ["message", "--issue", "DSP-1", "--body", "Deliverable landed."];
+    const dir = join(stateDir, "sessions", "ses-1");
+    mkdirSync(dir, { recursive: true });
+    const sighting = (ago: number) => ({ [origin]: new Date(Date.now() - ago).toISOString() });
+    const call = async (keyedLayer: unknown) => {
+      writeFileSync(
+        join(dir, "state.json"),
+        JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer })
+      );
+      nextProcess("ses-1");
+      const stalled = keyedDispatch(1);
+      const { code } = await run(message, omp, "", stalled.fetchImpl);
+      return { code, posts: stalled.keys.length, probes: stalled.probes.length };
+    };
+    expect(await call(sighting(60_000))).toEqual({ code: 0, posts: 2, probes: 0 });
+    for (const keyedLayer of [
+      sighting(KEYED_LAYER_MEMORY_MS + 1_000),
+      sighting(-60_000),
+      { [origin]: "yesterday" },
+      { [origin]: Date.now() },
+      "garbage",
+    ]) {
+      expect(await call(keyedLayer), JSON.stringify(keyedLayer)).toEqual({
+        code: 1,
+        posts: 1,
+        probes: 1,
+      });
+    }
+  });
+
+  // Dispatch's own refusal that carries no key back says its keyed layer did not judge the
+  // request, so the carried sighting is set aside: the write asks /healthz instead of being sent
+  // again, and the call's save leaves the sighting out of state.json, so the next call trusts
+  // nothing it carried. A client that kept the sighting would resend through its 15 s of pauses;
+  // the test's 30 s bound lets that show as five posts rather than as a timeout.
+  test("a Dispatch refusal that echoes no key drops the carried sighting from state.json", async () => {
+    const origin = `http://127.0.0.1:${server.port}`;
+    const file = join(stateDir, "sessions", "ses-1", "state.json");
+    mkdirSync(join(stateDir, "sessions", "ses-1"), { recursive: true });
+    const keyedLayer = { [origin]: new Date(Date.now() - 60_000).toISOString() };
+    writeFileSync(file, JSON.stringify({ advice: [], pictures: [], follows: [], keyedLayer }));
+    nextProcess("ses-1");
+    let posts = 0;
+    let probes = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (pathname === "/healthz") {
+        probes++;
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }
+      if (request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
+        posts++;
+        return Response.json({ code: "INTERNAL", error: "database is down" }, { status: 503 });
+      }
+      return fetch(request);
+    }) as typeof fetch;
+    const { code } = await run(
+      ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
+      omp,
+      "",
+      fetchImpl
+    );
+    expect({ code, posts, probes }).toEqual({ code: 1, posts: 1, probes: 1 });
+    expect(JSON.parse(readFileSync(file, "utf-8")).keyedLayer).toEqual({});
+  }, 30_000);
+
   test("a read from a Dispatch server older than the repository fields answers, warning on stderr", async () => {
     const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
     expect(code).toBe(0);
     expect(stdout).toContain(
       "Repository: unknown (this Dispatch server predates repository fields; upgrade it)\n"
     );
-    expect(stderr).toBe(
+    expect(stderr).toContain(
       "dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so DSP-3's repository is unknown; upgrade the server\n"
     );
+  });
+
+  // The plugin and the server ship separately, so a plugin that reads priorities meets a server
+  // that answers none: its issue read prints the issue with its priorities unknown, never none,
+  // and warns, as it does for the repository fields.
+  test("a read from a Dispatch server older than priorities answers, warning on stderr", async () => {
+    const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
+    expect(code, stderr).toBe(0);
+    expect(stdout).toContain("Title: Read from an older server\nKey: DSP-3\n");
+    expect(stdout).toContain(
+      "Advances: unknown (this Dispatch server predates priorities; upgrade it)\n"
+    );
+    expect(stderr).toBe(
+      [
+        "dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so DSP-3's repository is unknown; upgrade the server",
+        "dispatch: warning: Dispatch issue is missing advances: this Dispatch server predates priorities, so the priorities DSP-3 advances are unknown; upgrade the server",
+        "",
+      ].join("\n")
+    );
+  });
+
+  // A server from before priorities refuses a write naming `advances`, so the update says so from
+  // its read and sends nothing: not the set, not the rest of the update, not the closing reason.
+  test("an advances write to a Dispatch server older than priorities sends nothing", async () => {
+    for (const named of [[], ["--advances-revision", "7"]]) {
+      requests.length = 0;
+      const argv = [
+        "issue-update",
+        "--issue",
+        "DSP-3",
+        "--advance",
+        "ship-the-daemon",
+        "--status",
+        "done",
+        "--reason",
+        "Shipped.",
+        ...named,
+      ];
+      const { code, stdout } = await run(argv, omp);
+      expect(code, stdout).toBe(1);
+      expect(stdout).toContain(
+        "Dispatch read DSP-3 without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server"
+      );
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /api/v1/issues/DSP-3",
+      ]);
+    }
   });
 
   // An issue read lists the issue's last 10 events unless it is asked for more: --events N lists
@@ -753,7 +1343,7 @@ describe("the dispatch CLI", () => {
       ];
       for (const [flags, problem] of cases) {
         const { code, stdout } = await run(["read", ...flags], omp);
-        expect(code, flags.join(" ")).toBe(1);
+        expect(code, flags.join(" ")).toBe(2);
         expect(stdout, flags.join(" ")).toContain(`\n- ${problem}\n`);
       }
       expect(requests).toEqual([]);
@@ -766,7 +1356,7 @@ describe("the dispatch CLI", () => {
         ["read", "--ref", "dispatch://DSP-4/log", "--artifact", "spec", "--events", "5"],
         omp
       );
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout).toContain("drop --artifact to read the ref");
       expect(stdout).not.toContain("drop --events");
       expect(requests).toEqual([]);
@@ -877,9 +1467,24 @@ describe("the dispatch CLI", () => {
     expect(stdout).toContain("dispatch: Dispatch took the call, but this session's state");
   });
 
+  // What an agent reads of a document is the markdown Dispatch stored, byte for byte, with the
+  // trailer after a blank line and nothing of the command's own between them: a document whose
+  // code blocks hold whitespace-only lines is text whose line ends matter, and a trailer run
+  // onto its last line would read as part of it.
+  test("doc-read prints the stored markdown, a blank line, then the document's token", async () => {
+    const { code, stdout } = await run(["doc-read", "--issue", "DSP-5", "--artifact", "spec"], omp);
+
+    expect(code, stdout).toBe(0);
+    const trailer = stdout.indexOf("Document token:");
+    expect(trailer, stdout).toBeGreaterThan(-1);
+    // The stored markdown, its own line ending, then the blank line before the trailer.
+    expect(stdout.slice(0, trailer)).toBe(`${storedCode}\n\n`);
+    expect(stdout.slice(trailer)).toBe("Document token: sha256:code\n");
+  });
+
   describe("doc-read --blocks", () => {
     const listing = [
-      "Blocks of spec.md, in document order, each indented under the block holding it: id, type, (token; anchored comments and asks), opening words. A table lists its rows by the index delete_row takes and its cells by the row and the column delete_column takes.",
+      "Blocks of spec.md, in document order, each indented under the block holding it: id, type, (token; anchored comments and asks), opening words, then a typed block's serves and needs. A table lists its rows by the index delete_row takes and its cells by the row and the column delete_column takes.",
       "h-1 heading (sha256:h; 0 comments, 0 asks): # Café plan",
       // The 60th character is an emoji, two UTF-16 units: a cut by code unit would split it.
       `p-1 paragraph (sha256:p; 1 comment, 0 asks): ${"x".repeat(59)}😀…`,
@@ -889,12 +1494,9 @@ describe("the dispatch CLI", () => {
       "  i-2 list_item (sha256:i2; 0 comments, 0 asks): - Second item",
       "t-1 table (sha256:t; 0 comments, 1 ask): | # | Line | | | --- | --- | --- | | 1 | Backfill | extra |",
     ];
-    const reads = [
-      "/api/v1/issues/DSP-2",
-      "/api/v1/artifacts/doc-2/text",
-      "/api/v1/artifacts/doc-2/blocks",
-      "/api/v1/artifacts/doc-2/text",
-    ];
+    // One read: the text route carries the blocks, so no write between two reads can split the
+    // listing. The recorder keeps each request's path without its query.
+    const reads = ["/api/v1/issues/DSP-2", "/api/v1/artifacts/doc-2/text"];
 
     test("lists every block's id, type, token, anchors and opening words, and each table's rows and cells", async () => {
       const { code, stdout } = await run(["doc-read", "--issue", "DSP-2", "--blocks"], omp);
@@ -912,6 +1514,7 @@ describe("the dispatch CLI", () => {
           "    row 1 column 2, id c-1-2: extra",
           "",
           "Document token: sha256:doc",
+          "Document version: 3",
           "",
         ].join("\n")
       );
@@ -928,6 +1531,7 @@ describe("the dispatch CLI", () => {
           "  This Dispatch does not report table rows yet, so no row or column index is listed.",
           "",
           "Document token: sha256:doc",
+          "Document version: 3",
           "",
         ].join("\n")
       );
@@ -965,20 +1569,11 @@ describe("the dispatch CLI", () => {
         ["doc-read", "--issue", "DSP-2", "--blocks", "--version", "2"],
         omp
       );
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(stdout).toContain(
         "- blocks lists the live document, the one dispatch doc-edit changes; name no version"
       );
       expect(requests).toEqual([]);
-    });
-
-    test("refuses a document that changed between its reads, listing nothing", async () => {
-      blocksServer.editedBetweenReads = true;
-      const { code, stdout } = await run(["doc-read", "--issue", "DSP-2", "--blocks"], omp);
-      expect(code).toBe(1);
-      expect(stdout).toBe(
-        "spec.md changed while dispatch doc-read --blocks read it, so the opening words could name the wrong text; nothing is listed. Run it again.\n"
-      );
     });
   });
 
@@ -1005,7 +1600,7 @@ describe("the dispatch CLI", () => {
 
   test("dispatch search refuses a project that is not a key in the server's wording, sending nothing", async () => {
     const { code, stdout } = await run(["search", "--query", "ok", "--project", "lower"], omp);
-    expect(code).toBe(1);
+    expect(code).toBe(2);
     expect(stdout).toContain(`project is not a project key: ${PROJECT_KEY_RULE}`);
     expect(requests).toEqual([]);
   });
@@ -1016,6 +1611,119 @@ describe("the dispatch CLI", () => {
     expect(stdout).toBe("CORE Core\nSMOKE684 Smoke\n");
     expect(requests).toEqual([{ method: "GET", path: "/api/v1/projects", body: undefined }]);
   });
+});
+
+// Two refusals an agent meets as the exit status of a command and the words on its own stdout,
+// which a call inside this process cannot make: the command is its own process in production,
+// and `packages/dispatch/e2e/dispatch-cli.ts:6-8` spawns this same entry for that reason. The
+// child's environment is written rather than inherited, as that module writes it:
+// `DISPATCH_TOKEN_FILE` wins over `DISPATCH_TOKEN` in this command, and a Legion pane exports
+// one, so an inherited environment would send another Dispatch's token - or point the command at
+// another Dispatch entirely. `HOME` and `DISPATCH_STATE_DIR` are the row's own temporary
+// directory, so the command reads no developer's `envoy.json`.
+describe("the dispatch entry as its own process", () => {
+  const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+
+  /** The entry run as the shell runs it, under the same Bun as this test. */
+  async function spawnDispatch(
+    argv: readonly string[]
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const child = Bun.spawn([process.execPath, entry, ...argv], {
+      cwd: stateDir,
+      env: {
+        PATH: process.env.PATH,
+        HOME: stateDir,
+        DISPATCH_STATE_DIR: stateDir,
+        DISPATCH_HOST: "omp",
+        DISPATCH_SESSION_ID: "ses-1",
+        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        DISPATCH_TOKEN: "test-token",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { code, stdout, stderr };
+  }
+
+  // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
+  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
+  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  //
+  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
+  // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
+  // Measured in a 2-CPU pod: 0.37 s idle; under 16 busy loops (8 x nproc), 3.98 s at most over 23
+  // whole-suite runs and 2.98 s with this file alone, past half that default. It fires only if the
+  // child never exits.
+  test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
+    writeFileSync(join(stateDir, "rows.jsonl"), rows);
+
+    const { code, stdout, stderr } = await spawnDispatch([
+      "artifact",
+      "--issue",
+      "DSP-1",
+      "--name",
+      "rows.jsonl",
+      "--content-file",
+      "rows.jsonl",
+    ]);
+
+    expect({ code, stderr }, stdout).toEqual({ code: 2, stderr: "" });
+    expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
+    expect(stdout).toContain("--path <file>");
+    expect(requests).toEqual([]);
+  }, 30_000);
+
+  // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process twice
+  // over, once per command, and bun's unwritten 5,000 ms per-test default is a limit on that work
+  // rather than on a hang. Under 16 busy loops (8 x nproc) in a 2-CPU pod it timed out at
+  // 5,261.76 ms, 1 run of 3 with this file alone, where it costs 0.70 s idle and 6.81 s at most
+  // over 23 whole-suite runs under those loops. It fires only if a child never exits.
+  test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
+    const refusal = printedBlockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
+    const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
+
+    for (const command of ["comment", "message"] as const) {
+      const { code, stdout, stderr } = await spawnDispatch([
+        command,
+        "--issue",
+        "DSP-1",
+        "--body",
+        body,
+      ]);
+      expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
+      expect(stdout.trim(), command).toBe(refusal);
+    }
+  }, 30_000);
+
+  // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
+  // INFRA-1201), and what the writer reads is the whole of the server's message, which says
+  // where the question belongs. The refusal now opens with the server's code, because
+  // `skill://dispatch` has every agent branch on the code and the command printed none
+  // (dispatch://INFRA-1523); the message that INFRA-1201's row was written for follows it
+  // unchanged. The 30 s limit is the hang guard the row above carries, for the reason written
+  // there.
+  test("exits nonzero on the server's decision-block refusal, printing its code and its whole message", async () => {
+    const refusal = `DECISION_BLOCK_IN_BODY: ${decisionBlockRefusal(2)}`;
+    const body = 'The mirror is behind.\n\n:::ask{urgency="med"}\nWhich region first?\n:::';
+
+    for (const command of ["comment", "message"] as const) {
+      const { code, stdout, stderr } = await spawnDispatch([
+        command,
+        "--issue",
+        "DSP-1",
+        "--body",
+        body,
+      ]);
+      expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
+      expect(stdout.trim(), command).toBe(refusal);
+      expect(stdout, command).toContain(decisionBlockRefusal(2));
+    }
+  }, 30_000);
 });
 
 describe("the dispatch CLI's envoy.json", () => {
@@ -1041,7 +1749,7 @@ describe("the dispatch CLI's envoy.json", () => {
 
   /** A directory whose envoy.json is not JSON, so a command that reads it exits 2. */
   function brokenConfigDirectory(): string {
-    const dir = mkdtempSync(join(tmpdir(), "dispatch-cli-broken-"));
+    const dir = makeDirectory("broken");
     writeFileSync(join(dir, "envoy.json"), "{not json");
     return dir;
   }
@@ -1377,7 +2085,7 @@ describe("the dispatch CLI's subscription note", () => {
     ] as const) {
       interests = answer;
       requests.length = 0;
-      stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+      stateDir = makeDirectory();
       nextProcess("ses-1");
       const { code, stdout } = await run(ask, withListener);
       expect(code).toBe(0);
@@ -1450,6 +2158,57 @@ describe("the dispatch CLI's subscription note", () => {
     ]);
   });
 
+  // `skill://dispatch` promises exit 1 for a refusal, and a create the near-copy gate stops made
+  // nothing: a caller that reads the status must not be told an issue was filed.
+  test("a create the near-copy gate refuses exits 1, and a create it lets through exits 0", async () => {
+    const candidates = [
+      {
+        key: "DSP-9",
+        title: "Nightly export retries for ever",
+        status: "in_progress",
+        snippet: "<mark>Nightly</mark> export",
+        shared_terms: 4,
+        href: "/issues/DSP-9",
+      },
+    ];
+    const creating = (refuse: boolean) =>
+      (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const { pathname } = new URL(String(input));
+        if (pathname === "/api/v1/projects/DSP/architecture-sources") {
+          return Response.json({ sources: [] });
+        }
+        if (pathname === "/api/v1/issues" && init?.method === "POST") {
+          return refuse
+            ? Response.json(
+                { code: "POSSIBLE_DUPLICATE", error: "possible duplicate of DSP-9", candidates },
+                { status: 409 }
+              )
+            : Response.json(
+                {
+                  key: "DSP-10",
+                  title: "Nightly export retries for ever",
+                  project: "DSP",
+                  components: { mode: "inherit", ids: [], unknown: [], reason: null },
+                },
+                { status: 201 }
+              );
+        }
+        return fetch(input, init);
+      }) as typeof fetch;
+    const create = ["issue", "--project", "DSP", "--title", "Nightly export retries for ever"];
+
+    const refused = await run(create, omp, "", creating(true));
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toContain(
+      'Not created: "Nightly export retries for ever" is a near copy of an open issue.'
+    );
+    expect(refused.stdout).toContain("DSP-9 [in_progress] Nightly export retries for ever");
+
+    const made = await run(create, omp, "", creating(false));
+    expect(made.code).toBe(0);
+    expect(made.stdout).toContain("Created DSP-10");
+  });
+
   test("a read asks no listener", async () => {
     interests = listed([]);
     const { code } = await run(["projects"], withListener);
@@ -1468,14 +2227,14 @@ describe("cliRefusals", () => {
     { line: stdout.split("\n")[0], command },
   ];
 
-  test("an argument check's refusal names its command, in the call and in its dry run (exit 1)", async () => {
+  test("an argument check's refusal names its command, in the call and in its dry run (exit 2)", async () => {
     for (const argv of [
       ["message", "--issue", "DSP-1", "--isue", "X"],
       ["issue-update", "--status", "done"],
       ["issue-update", "--status", "done", "--dry-run"],
     ]) {
       const { code, stdout } = await run(argv, omp);
-      expect(code, argv.join(" ")).toBe(1);
+      expect(code, argv.join(" ")).toBe(2);
       expect(cliRefusals(stdout), argv.join(" ")).toEqual(refusal(stdout, argv[0] ?? ""));
     }
     expect(requests).toEqual([]);
@@ -1528,7 +2287,7 @@ describe("cliRefusals", () => {
     expect(unreadable.code).toBe(2);
     expect(cliRefusals(unreadable.stdout)).toEqual(refusal(unreadable.stdout, null));
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = makeDirectory();
     writeFileSync(join(stateDir, "sessions"), "a file where the directory goes");
     const unlisted = await run(["projects"], omp);
     expect(unlisted.code).toBe(2);
@@ -1543,14 +2302,14 @@ describe("cliRefusals", () => {
     expect(warned.stderr).toStartWith("dispatch: warning: ");
     expect(cliRefusals(`${warned.stderr}${warned.stdout}`)).toEqual([]);
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = makeDirectory();
     mkdirSync(join(stateDir, "sessions", "ses-1", "results.jsonl"), { recursive: true });
     const unrecorded = await run(["message", "--issue", "DSP-1", "--body", "x"], omp);
     expect(unrecorded.code).toBe(0);
     expect(unrecorded.stdout).toContain("\ndispatch: Dispatch took the call, but this session's");
     expect(cliRefusals(unrecorded.stdout)).toEqual([]);
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = makeDirectory();
     mkdirSync(join(stateDir, ".config", "legion"), { recursive: true });
     writeFileSync(
       join(stateDir, ".config", "legion", "envoy.json"),
@@ -1600,7 +2359,7 @@ describe("cliRefusals", () => {
       ],
     ];
     for (const [name, argv, env, tool] of cases) {
-      stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+      stateDir = makeDirectory();
       const { code, stdout } = await run(argv, env);
       expect(code, name).toBeGreaterThan(0);
       const logged = ledger("ses-1");
@@ -1621,7 +2380,7 @@ describe("cliRefusals", () => {
     expect(code).toBe(2);
     expect(existsSync(join(stateDir, "sessions"))).toBe(false);
 
-    stateDir = mkdtempSync(join(tmpdir(), "dispatch-cli-"));
+    stateDir = makeDirectory();
     await run(["doc-edit", "--help"], omp);
     await run(["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"], omp);
     expect(existsSync(join(stateDir, "sessions", "ses-1", "results.jsonl"))).toBe(false);

@@ -23,20 +23,39 @@ import (
 
 // CommandTimeout is the slow-command budget both runtimes' provisioning gives every command it
 // runs — a fetch, a jj operation, or a git configuration edit — each bounded independently. The
-// exceptions are the fetch's transfers and the checks of what the repository cache streamed, under
-// FetchTimeout (the repository cache's own first clone under CacheFetchTimeout instead), the
-// shared clone's own clone, under CloneTimeout (both below), and the cache's repack
-// (repocache.repackTimeout, through FeedGitWithin).
+// exceptions are the fetch's checks of what the repository cache streamed and its transfers from
+// GitHub, under FetchTimeout (the repository cache's own first clone under CacheFetchTimeout
+// instead), the stream from the repository cache, under the low-speed bound and no clock at all
+// (CacheStreamLowSpeedBytes), the shared clone's own clone, under CloneTimeout, the issue's
+// checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through FeedGitWithin).
 const CommandTimeout = 5 * time.Minute
 
-// FetchTimeout is the bound of each stage of a fetch whose duration follows the repository's size
-// and the network's speed, once it may start (Fetch): a feed filled from the repository cache gets
-// one for the cache's stream and its verification together and another for the delta from GitHub,
-// every attempt of it included; a clone or a fetch from GitHub alone gets one. It is long enough
-// for a large repository's slow but steadily progressing transfer to finish. A request may set its
-// own (FetchRequest.Bound), which the repository cache does for its first clone alone
-// (CacheFetchTimeout).
+// FetchTimeout is the bound of each clocked stage of a fetch whose duration follows the
+// repository's size and the network's speed, once it may start (Fetch): a feed filled from the
+// repository cache gets one for the verification of what was streamed, counted from the stream's
+// end, and another for the delta from GitHub, every attempt of it included; a clone or a fetch
+// from GitHub alone gets one. It is long enough for a large repository's slow but steadily
+// progressing transfer to finish. A request may set its own (FetchRequest.Bound), which the
+// repository cache does for its first clone alone (CacheFetchTimeout). The stream from the
+// repository cache is no stage of this kind: it is held to its own speed instead
+// (CacheStreamLowSpeedBytes).
 const FetchTimeout = 30 * time.Minute
+
+// CacheStreamLowSpeedBytes and CacheStreamLowSpeedTime bound the stream a feed is filled from the
+// repository cache with, in place of a clock: the stream ends once a whole CacheStreamLowSpeedTime
+// has passed in which fewer than CacheStreamLowSpeedBytes arrived, and one that keeps receiving
+// more than that runs for as long as the repository needs (countingReader.watchStall). The rule
+// is git's own for the transfers it makes, http.lowSpeedLimit over http.lowSpeedTime, here 1 MiB
+// in 5 minutes: about 3.5 KiB/s, far under the share of a cache's sending rate a pod gets even
+// when every stream the cache allows at once is running (repocache.maxStreams), so only a
+// transfer that has stopped falls below it. A clock in its place threw away a download that was
+// still arriving, killed at 30 minutes with the feed it had written, and launched the issue again
+// into the same wait (INFRA-495): what tells a dead transfer from a long one is its speed, not
+// how long it has run.
+const (
+	CacheStreamLowSpeedBytes = 1 << 20
+	CacheStreamLowSpeedTime  = 5 * time.Minute
+)
 
 // CloneTimeout is the one bound ensureRepoClone gives its size-following steps, together, as the
 // fetch's share FetchTimeout: from GitHub, a `jj git clone` that copies and imports every object;
@@ -47,11 +66,21 @@ const FetchTimeout = 30 * time.Minute
 // it at all.
 const CloneTimeout = 30 * time.Minute
 
+// CheckoutTimeout is the bound of a command that writes a whole working copy — every file of the
+// repository's tree into a workspace that holds none — which is the issue's checkout alone today
+// (`jj sparse reset`, Provision), so the next such command takes this constant rather than a third
+// one. One write of the largest repository mapped, theorem-labs/oss-verify-proofs-internal, 282,134
+// files and 11.56 GiB, took 548.8 s and 554.9 s in an issue pod: this is 6.5 times that measured
+// run, and three times it at the worst rate measured over a 60-second window of it (10.0 MiB/s,
+// which writes the 11.56 GiB in 19.7 minutes).
+const CheckoutTimeout = time.Hour
+
 // Command is one process the provisioner runs, each bounded independently of every other: most
 // hold the runner's own slow-command budget (RunChecked), each of the fetch's transfers and checks
 // holds what remains of its request's bound instead (Fetch, FetchRequest.Bound), a command run with
-// FeedGitWithin holds the timeout it is given, and each size-following step of the shared
-// clone's clone holds what remains of CloneTimeout (ensureRepoClone) — never a budget shared
+// FeedGitWithin holds the timeout it is given, each size-following step of the shared
+// clone's clone holds what remains of CloneTimeout (ensureRepoClone), and the issue's checkout
+// holds CheckoutTimeout (Provision, Request.CheckoutBound) — never a budget shared
 // across the whole provisioning sequence.
 type Command struct {
 	Argv    []string
@@ -102,7 +131,7 @@ type Request struct {
 	// shared clone — its clone, fetch, bookmark reads and writes, the workspace's registration,
 	// git worktree bookkeeping and configuration — and let go before the checkout writes the
 	// issue's own working copy (`jj sparse reset` in the workspace the registration made with no
-	// files), the one step whose time follows the repository's size and which writes nothing of
+	// files): of the steps whose time follows the repository's size, the one that writes nothing of
 	// the clone's. A daemon that provisions several issues of one repository at once hands each the
 	// clone's one lock, so their checkouts run side by side and nothing else of the clone ever does.
 	// Nil holds nothing: a pod provisions its one issue alone.
@@ -115,6 +144,12 @@ type Request struct {
 	// place, and nothing that holds a place waits on a store lock. Nil bounds nothing: a pod checks
 	// out its one issue alone.
 	CheckoutSlot func(ctx context.Context) (release func(), err error)
+	// CheckoutBound is the time the checkout gets, in place of CheckoutTimeout when set: the bound
+	// of the one provisioning command that writes the issue's whole working copy (`jj sparse
+	// reset`), whose time follows the repository's size. Production leaves it unset and takes
+	// CheckoutTimeout; a test sets a short one to prove the checkout is bounded by this and not by
+	// the runner's slow-command budget.
+	CheckoutBound time.Duration
 }
 
 // checkoutPlace waits for one of request's checkout places (CheckoutSlot) and returns its release;
@@ -124,6 +159,14 @@ func (r Request) checkoutPlace(ctx context.Context) (func(), error) {
 		return func() {}, nil
 	}
 	return r.CheckoutSlot(ctx)
+}
+
+// checkoutBound is the time the checkout gets: CheckoutBound, or CheckoutTimeout.
+func (r Request) checkoutBound() time.Duration {
+	if r.CheckoutBound > 0 {
+		return r.CheckoutBound
+	}
+	return CheckoutTimeout
 }
 
 // storeLock is a Request's StoreLock, or nothing when it names none, and whether this provision
@@ -262,23 +305,27 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// A command that reaches a remote over https can have git spawn git-remote-https, a helper
 	// holding the same stdout/stderr pipes: exec.CommandContext alone only kills the direct child
 	// when bounded expires, and that helper, now reparented, can keep the pipe open forever,
-	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel signals
-	// the whole process group instead, killing the helper too; after that, Wait normally returns
-	// an ordinary *exec.ExitError for the signaled process.
-	procgroup.Configure(child)
+	// leaving Wait (and so Run) never returning. procgroup.Configure's Setpgid plus Cancel stops
+	// the whole process group instead, helper and all: SIGTERM to the group, a grace in which a
+	// git that handles it removes the lock files it holds, then SIGKILL to whatever of the group
+	// outlived the grace. After that, Wait normally returns an ordinary *exec.ExitError for the
+	// signaled process.
+	killed := procgroup.Configure(child)
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
 	err = child.Run()
 	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
-	if runErr := procgroup.Err(err); runErr != nil {
+	// TimedOut is read before the run's own error is propagated, not after: exec reports a command
+	// whose Cancel succeeded and which then exited cleanly as the context's error (watchCtx), and
+	// procgroup.Err passes context.DeadlineExceeded through, so a git that handles its SIGTERM,
+	// removes its lock and exits 0 inside the grace would otherwise be reported as a command that
+	// could not be run rather than as the timeout it is.
+	result.TimedOut = killed() && errors.Is(bounded.Err(), context.DeadlineExceeded)
+	if runErr := procgroup.Err(err); runErr != nil && !result.TimedOut {
 		return result, runErr
 	}
 	result.ExitCode = child.ProcessState.ExitCode()
-	var exited *exec.ExitError
-	if errors.As(err, &exited) {
-		result.TimedOut = errors.Is(bounded.Err(), context.DeadlineExceeded)
-	}
 	return result, nil
 }
 
@@ -398,7 +445,7 @@ func refuseSymlinkedLayout(root, dir string) error {
 //
 // jj has no ceiling option: it searches upward from the directory it runs in for the closest
 // `.jj` and opens that repository, which is how a test in a Legion issue pod came to write the
-// pod's shared clone at /legion/repos/github.com/sjawhar/legion. The walk counts only a `.jj`
+// pod's shared clone at /legion/repos/github.com/cybermonklabs/legion. The walk counts only a `.jj`
 // that is a directory, because that is all jj counts: a regular file named `.jj` is not jj's
 // workspace pointer — that is the file `.jj/repo` inside a `.jj` directory — and jj 0.45.1 run
 // below a directory holding a regular file named `.jj` answers `Error: There is no jj repo in
@@ -489,9 +536,16 @@ func sharedRepository(jjDir, clone string) (string, error) {
 // itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
 // is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
 // `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens. A `.jj/repo` that is neither a directory nor a
-// regular file (a FIFO, a socket, a device) is refused before anything reads it: reading a FIFO
-// blocks, and nothing here runs under the command's deadline.
+// a different directory than the one jj opens.
+//
+// The pointer file is read through readGitdir, the bounded read of a pointer file a role can
+// write, with no link followed and no wait: a tree agent can write it, and this read runs under
+// whatever the runner's caller holds — the tmux daemon's outbox provisions with the repository's
+// store lock held, which every later provision of the repository waits on. A `.jj/repo` that is
+// neither a directory nor a regular file (a FIFO, a socket, a device), even one swapped in after
+// the stat that tells a directory from a file, is refused rather than waited on, one larger than
+// any path jj writes (4096 bytes) is refused rather than read whole into memory, and a symlink to
+// a regular file, which jj never writes there, is refused rather than followed.
 func workspaceRepository(jjDir string) (string, error) {
 	repo := filepath.Join(jjDir, "repo")
 	info, err := os.Stat(repo)
@@ -501,17 +555,14 @@ func workspaceRepository(jjDir string) (string, error) {
 	if info.IsDir() {
 		return repo, nil
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is neither a directory nor a regular file (mode %s)", repo, info.Mode().Type())
-	}
-	pointer, err := os.ReadFile(repo)
+	pointer, err := readGitdir(repo)
 	if err != nil {
 		return "", err
 	}
-	if target := string(pointer); filepath.IsAbs(target) {
-		return target, nil
+	if filepath.IsAbs(pointer) {
+		return pointer, nil
 	}
-	return jjDir + string(filepath.Separator) + string(pointer), nil
+	return jjDir + string(filepath.Separator) + pointer, nil
 }
 
 // describeEntry says what a path that should be a directory is instead.
@@ -657,13 +708,25 @@ func RunChecked(ctx context.Context, run Runner, argv []string, env []string, di
 	return checkedResult(argv, result, err)
 }
 
-// RunCheckedIn is RunChecked for a jj command run in ws's own workspace. It names the workspace
+// RunCheckedIn is RunChecked for a jj command run in ws's own workspace, under the runner's own
+// slow-command budget: run is nil-checked before run.Timeout() is ever read, so a nil Runner
+// always returns the error below rather than a panic.
+func RunCheckedIn(ctx context.Context, run Runner, ws Workspace, argv []string) (Result, error) {
+	if run == nil {
+		return Result{}, errors.New("workspace runner is required")
+	}
+	return runCheckedInWithin(ctx, run, ws, run.Timeout(), argv)
+}
+
+// runCheckedInWithin is RunCheckedIn, but for timeout instead of the runner's own slow-command
+// budget: RunCheckedIn itself calls it with run.Timeout(), and Provision calls it with the
+// checkout's own bound (Request.CheckoutBound, CheckoutTimeout by default). It names the workspace
 // with -R and runs the command in ws.Dir itself, which is what makes that -R safe
 // (runCheckedOnClone states the invariant), and names ws's shared clone so the runner can hold
 // the workspace's `.jj` and `.jj/repo` to it (Command.Clone, guardWorkspace). Both Location paths
 // must be non-empty: otherwise -R "" is exactly the rootless command an empty guard cannot bind
 // to a workspace.
-func RunCheckedIn(ctx context.Context, run Runner, ws Workspace, argv []string) (Result, error) {
+func runCheckedInWithin(ctx context.Context, run Runner, ws Workspace, timeout time.Duration, argv []string) (Result, error) {
 	if run == nil {
 		return Result{}, errors.New("workspace runner is required")
 	}
@@ -674,7 +737,7 @@ func RunCheckedIn(ctx context.Context, run Runner, ws Workspace, argv []string) 
 		return Result{}, errors.New("workspace clone directory is required")
 	}
 	argv = append(slices.Clip(argv), "-R", ws.Dir)
-	result, err := run.Run(ctx, Command{Argv: argv, Dir: ws.Dir, Clone: ws.Clone, Timeout: run.Timeout()})
+	result, err := run.Run(ctx, Command{Argv: argv, Dir: ws.Dir, Clone: ws.Clone, Timeout: timeout})
 	return checkedResult(argv, result, err)
 }
 
@@ -824,6 +887,19 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 		}
 	}
 	return nil
+}
+
+// configureCloneReads sets core.warnAmbiguousRefs to false in the shared clone's own
+// configuration, which every workspace of the clone reads too (a git worktree reads its clone's
+// config). With the warning on, git looks up each revision argument as a ref name, to warn when
+// a ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>`
+// arguments spent 13 s of a measured 78 s on those lookups. The setting turns only the warning
+// off: git resolves every revision the same way. The feed does not take it: Fetch checks the
+// feed's configuration key by key (feedConfigKeys), so an extra key there would be refused.
+func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
+	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
+	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
+	return err
 }
 
 // removeRepositoryIdentity ports workspace.ts's removeRepoScopedIdentity. A per-repository

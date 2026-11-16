@@ -39,8 +39,8 @@ allowlist=(
   docs/superpowers/
   # The Envoy plugin's changelog: its history under the old name, and the entry that renames it.
   packages/pi-envoy/CHANGELOG.md
-  # Its changelog fragments: a fragment is that changelog's entry before the fold writes it in, so
-  # any line the CHANGELOG.md above may hold must be writable as its fragment.
+  # Its changelog fragments: a fragment holds an entry of the same kind as the lines above, so any
+  # line the CHANGELOG.md above may hold must be writable as its fragment.
   packages/pi-envoy/.changes/
   # The Legion plugin's changelog: its first entry says which package it was split from.
   packages/pi-legion/CHANGELOG.md
@@ -56,7 +56,7 @@ allowlist=(
   packages/envoy/.changes/
   # The legacy Dispatch client comment: `SearchResult.issue` stays until no installed client built
   # before the owner-only shape remains, and the old package is one of those clients.
-  packages/contracts/src/dispatch-api.ts
+  packages/contracts/src/dispatch-api-search.ts
   packages/contracts/AGENTS.md
   packages/envoy/internal/dispatch/model/model.go
   # The live-view message names the plugin releases that do not stream ("before 5.8.0").
@@ -81,8 +81,6 @@ allowlist=(
   # The release workflow's first-release seed reads the old name's npm version, so the two new
   # packages continue its version line instead of restarting at 0.x.
   .github/workflows/release.yaml
-  # Committed handoffs quote the plan that names the split.
-  .legion/
   # This check and its test spell the name they hunt.
   .github/scripts/check-plugin-names.sh
   .github/scripts/check-plugin-names.test.sh

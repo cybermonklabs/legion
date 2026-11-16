@@ -22,7 +22,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 func createReferenceProject(t *testing.T, tx pgx.Tx, key string) {
 	t.Helper()
-	if _, err := tx.Exec(context.Background(), `insert into projects (key, name) values ($1, $2)`, key, key+" project"); err != nil {
+	if _, err := tx.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ($1, $2, 'alice')`, key, key+" project"); err != nil {
 		t.Fatalf("create project %q: %v", key, err)
 	}
 }
@@ -529,6 +529,32 @@ func TestReferencedByIncludesArtifactSources(t *testing.T) {
 		{Kind: "artifact", ID: d1ID, Project: "CORE", Excerpt: "d1", RefKey: d1RefKey},
 		{Kind: "comment", ID: commentID, IssueKey: &issueKey, Project: "CORE", Excerpt: "reference"},
 	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("referenced by = %#v; want %#v", got, want)
+	}
+}
+
+// A document an ask cites from an option, or from the answer it was given, is listed in that
+// document's own Referenced by as the ask: an ask's own refs row holds the links of its question
+// alone, so the part's edge is the only one that reaches the document, and the whole-document
+// read lists it by its item as it lists a comment citing from a block. Two parts citing the
+// document list the ask once.
+func TestReferencedByListsAnAskCitingFromItsParts(t *testing.T) {
+	tx := askPartFixture(t)
+	ctx := context.Background()
+	_, refKey := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
+	ask := insertAsk(t, tx, "CORE-1", "Which transport?",
+		model.AskOption{Label: "REST", Description: "as dispatch://" + refKey + " reads it"},
+		model.AskOption{Label: "gRPC"})
+	writeAskAnswer(t, tx, &ask, "bob", []string{"gRPC"}, "Ship it, as dispatch://"+refKey+" says.")
+	indexAskPartsAt(t, tx, ask, 1)
+
+	got, err := ReferencedBy(ctx, tx, refKey)
+	if err != nil {
+		t.Fatalf("read the citers of %s: %v", refKey, err)
+	}
+	issueKey := "CORE-1"
+	want := []model.ReferencedBy{{Kind: "ask", ID: ask.ID, IssueKey: &issueKey, Project: "CORE", Excerpt: "Which transport?"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("referenced by = %#v; want %#v", got, want)
 	}

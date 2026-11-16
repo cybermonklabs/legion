@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime/debug"
 	"strconv"
 	"sync"
@@ -27,35 +28,52 @@ import (
 // next append takes the number the first of them had (appendUpdateTxClass), with other content.
 // The row's transaction does: every writer of doc_updates either adds a row above the head (an
 // append, a rebuild's seed), deletes every row (a rebuild, Delete), deletes rows above a target and
-// leaves the target's row as it was (a prune), or rewrites the row at the head with the state the
-// rows it deletes made (a compaction keeping one row), which gives it a new transaction id over the
-// same state. So two reads of one stamp read one state, on any task sharing the database. xmin is
-// 32 bits and wraps: a false match needs a row re-appended at the same version exactly 2^32
-// transactions after the one it replaced, while a reading of the old row is still held.
+// leaves the target's row as it was (a prune), or rewrites one row with the state the rows it
+// deletes below it made, which gives it a new transaction id over the same state (a compaction,
+// compactRoom). The row a compaction rewrites is its fold point, which is the head row only when
+// every row at or below the head is older than compactTail; a young head row keeps its xmin, and
+// the stamp does not move. So two reads of one stamp read one state, on any task sharing the
+// database. xmin is 32 bits and wraps: a false match needs a row re-appended at the same version
+// exactly 2^32 transactions after the one it replaced, while a reading of the old row is still
+// held.
 type DocumentStamp struct {
 	Version int64
 	Row     string
 }
 
-// readDocumentStamp is the room's DocumentStamp, read through q in one statement, so the version
-// and the xmin of the row standing there are of one snapshot: the head as head reads it
-// (headVersion), then the row at it by its primary key.
+// documentStampSQL selects the room $1's DocumentStamp, its version and then its row, in one
+// statement, so the version and the xmin of the row standing there are of one snapshot: the head as
+// head reads it (headVersion), then the row at it by its primary key. A load reads it as a subquery
+// of its own statement (readStoredLog), so its stamp is this one.
+const documentStampSQL = `
+		select h.version, coalesce(u.xmin::text, '') as row_xmin
+		from (select ` + headVersion + ` as version) h
+		left join doc_updates u on u.artifact_id = $1 and u.version = h.version`
+
+// readDocumentStamp is the room's DocumentStamp, read through q (documentStampSQL).
 func readDocumentStamp(ctx context.Context, q Queryer, room string) (DocumentStamp, error) {
 	var stamp DocumentStamp
-	if err := q.QueryRow(ctx, `
-		select h.version, coalesce(u.xmin::text, '')
-		from (select `+headVersion+` as version) h
-		left join doc_updates u on u.artifact_id = $1 and u.version = h.version
-	`, room).Scan(&stamp.Version, &stamp.Row); err != nil {
+	if err := q.QueryRow(ctx, documentStampSQL, room).Scan(&stamp.Version, &stamp.Row); err != nil {
 		return DocumentStamp{}, fmt.Errorf("read document stamp: %w", err)
 	}
 	return stamp, nil
 }
 
-// documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds:
-// production's task has 4,096 MiB, and one request may raise it by at most 256 MiB
-// (cmd/dispatch/memory_test.go). An entry heavier than an eighth of it is never stored.
+// documentReadBudget is the most weight (documentRead.weight) the cold reads' cache holds in a
+// process that runs with no Go memory limit, where nothing says how much memory it has: 256 MiB.
+// An entry heavier than an eighth of the budget is never stored.
 const documentReadBudget = 256 << 20
+
+// readBudgetFor is the cold reads' cache budget for a process whose Go memory limit is memoryLimit
+// (debug.SetMemoryLimit(-1), math.MaxInt64 when none is set): a sixteenth of the limit, so the
+// cache follows the memory the process is given, at least 64 MiB, so the cache still stores a
+// document of 8 MiB, and at most 1 GiB; documentReadBudget with no limit.
+func readBudgetFor(memoryLimit int64) int64 {
+	if memoryLimit == math.MaxInt64 {
+		return documentReadBudget
+	}
+	return min(max(memoryLimit/16, 64<<20), 1<<30)
+}
 
 // coldReadTimeout bounds a cold read's fold of the stored history (LoadDocument), which belongs to
 // the document rather than to the request that started it, so no request's end cancels it.
@@ -95,6 +113,13 @@ type documentReads struct {
 
 func newDocumentReads(budget int64) *documentReads {
 	return &documentReads{entries: make(map[string]*list.Element), order: list.New(), budget: budget}
+}
+
+// figures is the cache's weight, its entry count and its budget, for the room figures.
+func (r *documentReads) figures() ReadCacheFigures {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return ReadCacheFigures{Bytes: r.bytes, Entries: len(r.entries), Budget: r.budget}
 }
 
 // get is artifactID's rendering when it was rendered from the state stamp names, which it marks the
@@ -325,9 +350,10 @@ func (s *Service) coldRead(ctx context.Context, artifactID string) (*documentRea
 // foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and
 // renders it (foldLoaded), storing the rendering under the stamp the load read in its own
 // transaction, never the one read before the miss, so a write between the two cannot store old
-// content under a new stamp. Its error is the load's, or a panic recovered from any of it:
-// singleflight re-panics an unrecovered panic of a call it has waiters for in a goroutine nothing
-// can recover, where a read panicking on the request's own goroutine would fail that one request.
+// content under a new stamp.
+// Its error is the load's, or a panic recovered from any of it: singleflight re-panics an
+// unrecovered panic of a call it has waiters for in a goroutine nothing can recover, where a read
+// panicking on the request's own goroutine would fail that one request.
 func (s *Service) foldDocument(ctx context.Context, artifactID string) (fold coldFold, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {

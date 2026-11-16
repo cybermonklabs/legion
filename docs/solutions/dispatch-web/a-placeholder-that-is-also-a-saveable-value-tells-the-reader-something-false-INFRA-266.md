@@ -38,3 +38,7 @@ page told the reader their configuration was something it was not, and invited e
 false baseline (review round 1, thread `PRRT_kwDORFy7ds6v_sz2`). Fixed in bf2e0861. The browser
 row `settings.e2e.ts:673` (`a default assignee the page has not read yet is never shown as
 Unassigned`) failed before the fix: `toBeDisabled()` received enabled.
+
+Since INFRA-3090 the worked example's route takes no null.
+Every project names a default assignee, the picker clears none, and **Unassigned** is no longer a value it can save.
+The rule above still holds wherever an empty value is also a saveable one.

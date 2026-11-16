@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -176,8 +177,25 @@ func TestACommentsEditKeepsItsBlockIDs(t *testing.T) {
 	requireCommentBlocks(t, database, comment.ID, "same body", "b1@1 b2@4 b3@1", 4)
 }
 
+// oweBlockGrammar enqueues one source in the block grammar's queue, as the trigger of a write an
+// older build made does, and answers the row a drain lists it as. A test that re-indexes a source
+// must owe it first: refs.ReindexOwed settles the listed row before it writes, so a source the
+// queue holds no row for is indexed by nothing.
+func oweBlockGrammar(t *testing.T, database *store.Store, kind, id string) refs.Owed {
+	t.Helper()
+	owed := refs.Owed{Queue: refs.BlockGrammarOwed, Kind: kind, ID: id}
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into block_grammar_owed (kind, id) values ($1, $2::uuid)
+		on conflict (kind, id) do update set enqueued_at = now()
+		returning enqueued_at
+	`, kind, id).Scan(&owed.EnqueuedAt); err != nil {
+		t.Fatalf("owe %s %s an index with the block grammar: %v", kind, id, err)
+	}
+	return owed
+}
+
 // A comment edited before blocks existed has its blocks indexed for the first time by the
-// reconciliation (refs.ReindexOwedItem): nothing recorded when those blocks were made, so each
+// reconciliation (refs.ReindexOwed): nothing recorded when those blocks were made, so each
 // has no making time, while a block a later edit adds is made at that edit.
 func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
@@ -194,8 +212,9 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 			t.Fatalf("%s: %v", statement, err)
 		}
 	}
-	if err := refs.ReindexOwedItem(context.Background(), database.Pool, refs.OwedItem{Kind: "comment", ID: comment.ID, EnqueuedAt: time.Now()}, "https://dispatch.example"); err != nil {
-		t.Fatalf("reindex the comment: %v", err)
+	owed := oweBlockGrammar(t, database, "comment", comment.ID)
+	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+		t.Fatalf("reindex the comment = %v (%v), want it indexed", indexed, err)
 	}
 	requireCommentBlocks(t, database, comment.ID, "first indexing", "b1@1 b2@1", 1)
 	var unmade int
@@ -258,16 +277,22 @@ func TestTheEditorsCarriedIDsSurviveMoveRewordAndSplit(t *testing.T) {
 	requireCommentBlocks(t, database, comment.ID, "stale", "b1@1 b3@1 b2@6 b4@7", 7)
 }
 
-// A body the document parser refuses, one holding block HTML, is stored exactly as sent and
-// splits at blank lines into blocks of type text; adding block HTML elsewhere in a comment keeps
-// an unchanged paragraph's id and changed revision.
-func TestABodyWithBlockHTMLReadsBackByteForByte(t *testing.T) {
+// A body the document parser refuses, one holding block HTML, is stored as sent apart from its
+// line endings, which a write stores as line feeds
+// (TestAMessageAndACommentBodyAreStoredWithLineFeeds), and splits at blank lines into blocks of
+// type text; adding block HTML elsewhere in a comment keeps an unchanged paragraph's id and
+// changed revision.
+func TestABodyWithBlockHTMLReadsBackAsItIsStored(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Block HTML", "before")
-	body := "Intro paragraph.\r\n\r\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
-	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+	sent := "Intro paragraph.\r\n\r\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
+	// The expectation is the literal rather than pmdoc.LineFeeds(sent): this row is what pins
+	// the premise that a stored body holds line feeds, so writing it with the helper the write
+	// path uses would pin the two to each other and nothing to the premise.
+	body := "Intro paragraph.\n\n<div align=\"center\">\n  raw <b>html</b>\n</div>\n\n\tClosing."
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": sent}, "alice")
 	if read := readThreadComment(t, handler, comment.ID); read.Body != body {
-		t.Fatalf("read body = %q, want %q byte for byte", read.Body, body)
+		t.Fatalf("read body = %q, want %q: the body as sent, with its line endings made line feeds", read.Body, body)
 	}
 	requireCommentBlocks(t, database, comment.ID, "create", "b1@1 b2@1 b3@1", 1)
 	var types string
@@ -721,7 +746,10 @@ func TestABlockOfACommentIsAddressable(t *testing.T) {
 		t.Fatalf("?to= block b2 lists the replies %#v, want the reply", replies)
 	}
 	if all := readGraph(t, handler, url.Values{"to": {xRef}}).Edges; len(all) != 2 {
-		t.Fatalf("?to= comment X lists %d edges, want the mention and the reply, each once: %#v", len(all), all)
+		t.Fatalf("?to= comment X lists %d edges, want the mention and the reply once: %#v", len(all), all)
+	}
+	if answers := readGraph(t, handler, url.Values{"to": {xRef}, "kind": {"answers"}}).Edges; len(answers) != 1 || answers[0].Node.ID != reply {
+		t.Fatalf("?to= comment X lists the answers %#v, want the reply once", answers)
 	}
 
 	// A message reply naming a block keeps the message it answers in in_reply_to.
@@ -752,7 +780,7 @@ func TestAPinnedCommentBlockReadsItsRevision(t *testing.T) {
 		t.Helper()
 		read := readGraph(t, handler, url.Values{"to": {ref}})
 		want := model.BlockPin{Version: 1, Ref: blockRef + "@v1", Text: text, State: state, RemovedVersion: removedVersion}
-		if read.Node.Pin == nil || *read.Node.Pin != want {
+		if read.Node.Pin == nil || !reflect.DeepEqual(*read.Node.Pin, want) {
 			t.Fatalf("%s: the pin reads %#v, want %#v", step, read.Node.Pin, want)
 		}
 		if read.Node.Text != current {
@@ -897,7 +925,7 @@ func TestTheBlocksRoutesListAnItemsBlocks(t *testing.T) {
 	empty, _ := read("an empty suggestion", "/api/v1/comments/"+suggestion.ID+"/blocks", true)
 	requireRead("an empty suggestion", empty, "comment", suggestion.ID, new(1), true, "")
 
-	if malformed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/7430fab3/blocks", nil, "alice"); malformed.Code != http.StatusBadRequest ||
+	if malformed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/7430fab/blocks", nil, "alice"); malformed.Code != http.StatusBadRequest ||
 		!strings.Contains(malformed.Body.String(), `"code":"COMMENT_ID_INPUT"`) {
 		t.Fatalf("a non-uuid comment id: status=%d body=%s, want 400 COMMENT_ID_INPUT", malformed.Code, malformed.Body.String())
 	}
@@ -972,7 +1000,7 @@ func TestTheBlocksRoutesListAnItemsBlocks(t *testing.T) {
 		!strings.Contains(unnamed.Body.String(), `"code":"SESSION_REQUIRED"`) {
 		t.Fatalf("a bearer naming no session: status=%d body=%s, want 400 SESSION_REQUIRED", unnamed.Code, unnamed.Body.String())
 	}
-	if malformed := bearerRequest(t, handler, http.MethodGet, "/api/v1/messages/7430fab3/blocks?session=s1", nil); malformed.Code != http.StatusBadRequest ||
+	if malformed := bearerRequest(t, handler, http.MethodGet, "/api/v1/messages/7430fab/blocks?session=s1", nil); malformed.Code != http.StatusBadRequest ||
 		!strings.Contains(malformed.Body.String(), `"code":"MESSAGE_ID_INPUT"`) {
 		t.Fatalf("a non-uuid message id: status=%d body=%s, want 400 MESSAGE_ID_INPUT", malformed.Code, malformed.Body.String())
 	}

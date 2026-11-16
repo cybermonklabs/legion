@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // heldLock is a Request.StoreLock that knows whether it is held, so a runner can read, at each
@@ -49,11 +51,11 @@ func isCheckout(argv []string) bool {
 // Every command provisioning runs on the repository's shared clone runs under the request's
 // StoreLock — its clone, fetch, bookmark reads and writes, the workspace's registration (`jj
 // workspace add`, which writes no file of it), git worktree bookkeeping and configuration — and the
-// lock is let go only while `jj sparse reset` writes the issue's own working copy, the step whose
-// time follows the repository's size, so the checkouts of several issues can run side by side while
-// nothing else of the clone ever does. Provision returns with the lock released, on the first
-// workspace of a clone, on another issue's, and on a workspace that already exists, which it checks
-// out no more.
+// lock is let go only while `jj sparse reset` writes the issue's own working copy, which of the
+// steps whose time follows the repository's size is the one that writes nothing of the clone's, so
+// the checkouts of several issues can run side by side while nothing else of the clone ever does.
+// Provision returns with the lock released, on the first workspace of a clone, on another issue's,
+// and on a workspace that already exists, which it checks out no more.
 func TestProvisionHoldsTheStoreLockForEverythingButTheCheckout(t *testing.T) {
 	lock := &heldLock{}
 	run := &lockReadingRunner{recordingRunner: newLocalRunner(t), lock: lock}
@@ -479,4 +481,60 @@ func TestAHostProvisionFetchesOnlyTheBranchesItNeeds(t *testing.T) {
 	if listed := runSetup(t, first.Clone, "jj", "bookmark", "list", "--all-remotes", "--ignore-working-copy", "-R", first.Clone); strings.Contains(listed, "WIDGETS-99") {
 		t.Errorf("the fetch brought another issue's branch: %q", listed)
 	}
+}
+
+// CheckedOut reads a workspace's sparse patterns, and a shared clone made from a pod's feed
+// permanently holds none (feedClone's `jj sparse set --clear`), so a caller that asked it about a
+// clone would read the clone as an unfinished checkout and check the whole tree out into it. It
+// refuses the clone itself and every directory under the clone root the clone sits in, before it
+// runs any jj, and still answers for the issue's own workspace.
+func TestCheckedOutCloneRootDirectoriesAreRefused(t *testing.T) {
+	run := newLocalRunner(t)
+	req := provisionRequest(t)
+	working, err := Provision(context.Background(), run, req)
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	// A second repository in the same state directory, so its own shared clone — a real jj clone,
+	// with a .jj of its own, which guardWorkspace refuses only once the runner is called, as no
+	// workspace of this clone (sharedRepository) — sits beside the first under one clone root.
+	beside := req
+	beside.Repo = ghrepo.MustParse("acme/gadgets")
+	beside.Issue = "GADGETS-7"
+	other, err := Provision(context.Background(), run, beside)
+	if err != nil {
+		t.Fatalf("Provision of the second repository: %v", err)
+	}
+	if root := filepath.Dir(filepath.Dir(working.Clone)); root != CloneRoot(req.StateDir) || filepath.Dir(filepath.Dir(other.Clone)) != root {
+		t.Fatalf("the two clones %s and %s do not share the clone root %s", working.Clone, other.Clone, CloneRoot(req.StateDir))
+	}
+	for _, refused := range []struct {
+		what string
+		ws   Workspace
+	}{
+		{"the shared clone itself", Workspace{Dir: working.Clone, Clone: working.Clone, Bookmark: working.Bookmark, Repo: working.Repo}},
+		{"another repository's clone under the same clone root", Workspace{Dir: other.Clone, Clone: working.Clone, Bookmark: working.Bookmark, Repo: working.Repo}},
+	} {
+		t.Run(refused.what, func(t *testing.T) {
+			before := len(run.Calls())
+			whole, err := CheckedOut(context.Background(), run, refused.ws)
+			if err == nil || whole {
+				t.Fatalf("CheckedOut of %s = %t, %v; want false and a refusal", refused.ws.Dir, whole, err)
+			}
+			if !strings.Contains(err.Error(), refused.ws.Dir) {
+				t.Errorf("the refusal %q does not name %s", err, refused.ws.Dir)
+			}
+			if !strings.Contains(err.Error(), "CheckedOut cannot answer for") {
+				t.Errorf("the refusal is %q, want CheckedOut's own refusal to answer for a clone", err)
+			}
+			if ran := run.Calls()[before:]; len(ran) != 0 {
+				t.Errorf("the refusal ran %d command(s), the first %q; want none", len(ran), ran[0].Argv)
+			}
+		})
+	}
+	t.Run("the issue's own workspace", func(t *testing.T) {
+		if whole, err := CheckedOut(context.Background(), run, working); err != nil || !whole {
+			t.Fatalf("CheckedOut of the provisioned workspace %s = %t, %v; want true", working.Dir, whole, err)
+		}
+	})
 }

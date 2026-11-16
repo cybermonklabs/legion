@@ -57,6 +57,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -115,6 +116,8 @@ var liveChecks = []liveCheck{
 	{"orphan-sweep", (*liveRig).checkOrphanSweep, nil},
 	{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
 	{"displaced", (*liveRig).checkDisplaced, nil},
+	{"pod-update", (*liveRig).checkPodUpdate, nil},
+	{"pod-update-fleet", (*liveRig).checkPodUpdateFleet, nil},
 	{"previous-layout", (*liveRig).checkPreviousLayout, previousLayoutBlocked},
 	{"postgres-resume", (*liveRig).checkPostgresResume, nil},
 	{"issue-suspend-resume", (*liveRig).checkIssueSuspendResume, nil},
@@ -236,10 +239,11 @@ type liveEnv struct {
 	// streamHost, when the two differ.
 	podReachability                             string
 	streamHost, streamAdvertiseHost, streamPort string
-	// appKeyCommand is LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND: lib/github-apps.sh's own
-	// app_key_command for appKeyName, which the script hands the harness so no copy of the key
-	// runner's command lives here; resolveApp runs it with `sh -c`.
-	appID, appKeyName, appKeyCommand string
+	// appTokenCommand is LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND: lib/github-apps.sh's own
+	// app_token_command for appSecret, the secrets broker's github-app secret, which the script
+	// hands the harness so no copy of the broker client's command lives here; resolveApp's token
+	// manager runs it with `sh -c` for every lease.
+	appID, appSecret, appTokenCommand string
 	// storageClass is the issue volumes' StorageClass: AWS's gp2, GKE's standard-rwo, or whatever
 	// else the cluster under test defaults issue volumes to. No default of its own: the plan
 	// behind LEGION_E2E_STORAGE_CLASS is the operator's to pick, never this harness's to guess.
@@ -272,13 +276,15 @@ type liveEnv struct {
 	// audience filled in, the operator's pod every launch carries; operatorConfigMap is the run's
 	// copy of the ConfigMap it names.
 	operatorPodFile, operatorConfigMap string
-	// The agent-secrets checks' inputs: the production broker, the email of the person who
-	// approves the run's credential request for LEGION_E2E_APPROVAL, the sha256 of the automatic
-	// rule's dummy value, the checkout's agent-secrets binary, and the token file the script mints
-	// for LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
-	// person approving it. Every field here is read with os.Getenv, unlike the rest of liveEnv: unset
-	// is a blocked run of the secrets-* checks, never a refusal to start (secretsBlocked).
-	agentSecretsURL, agentSecretsOperator, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
+	// The agent-secrets checks' inputs: the production broker, the sha256 of the automatic rule's
+	// dummy value, the checkout's agent-secrets binary, and the token file the script mints for
+	// LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
+	// person approving it. No check here waits on a person:
+	// secrets-approval-ask asserts its pending request's approver is one owner rather than the
+	// shared marker and cancels the request itself. Every field here is read with os.Getenv,
+	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
+	// to start (secretsBlocked).
+	agentSecretsURL, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the
 	// providers Secret under liveSessionsSecretKey for every pod to dial as it dials the worker
@@ -327,15 +333,14 @@ func readLiveEnv(t *testing.T) liveEnv {
 		platform:              get("LEGION_E2E_PLATFORM"),
 		runtimeIdentityKind:   get("LEGION_E2E_RUNTIME_IDENTITY_KIND"),
 		appID:                 get("LEGION_E2E_IMPLEMENT_APP_ID"),
-		appKeyName:            get("LEGION_E2E_IMPLEMENT_APP_KEY_NAME"),
-		appKeyCommand:         get("LEGION_E2E_IMPLEMENT_APP_KEY_COMMAND"),
+		appSecret:             get("LEGION_E2E_IMPLEMENT_APP_SECRET"),
+		appTokenCommand:       get("LEGION_E2E_IMPLEMENT_APP_TOKEN_COMMAND"),
 		record:                get("LEGION_E2E_RECORD"),
 		work:                  get("LEGION_E2E_WORK"),
 		from:                  os.Getenv("LEGION_E2E_FROM"),
 		operatorPodFile:       get("LEGION_E2E_OPERATOR_POD"),
 		operatorConfigMap:     get("LEGION_E2E_OPERATOR_CONFIGMAP"),
 		agentSecretsURL:       os.Getenv("LEGION_E2E_AGENT_SECRETS_URL"),
-		agentSecretsOperator:  os.Getenv("LEGION_E2E_AGENT_SECRETS_OPERATOR"),
 		agentSecretsAutoSHA:   os.Getenv("LEGION_E2E_AGENT_SECRETS_AUTO_SHA256"),
 		agentSecretsBin:       os.Getenv("LEGION_E2E_AGENT_SECRETS_BIN"),
 		agentSecretsTokenFile: os.Getenv("LEGION_E2E_AGENT_SECRETS_TOKEN_FILE"),
@@ -746,6 +751,7 @@ type liveRig struct {
 }
 
 func TestStage4aSandboxRuntimeLive(t *testing.T) {
+	fixtureenv.Live(t)
 	env := readLiveEnv(t)
 	r := newLiveRig(t, env)
 	defer r.close()
@@ -822,7 +828,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
 		fail("%v", err)
 	}
-	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsOperator, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
+	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
 		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
 		// person approves it, and the client keeps logging in for as long as the run lasts.
 		client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
@@ -845,7 +851,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	}
 	r.prompt = prompt
 
-	cacheIssue := cacheRunIssue(env.project)
+	cacheIssue, updateIssue, fleetIssue := cacheRunIssue(env.project), podUpdateRunIssue(env.project), podUpdateFleetRunIssue(env.project)
 	for _, c := range []struct {
 		name, tree, issue string
 		role              claim.Role
@@ -869,6 +875,18 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 		// replaces while the displaced role still runs in it (displaced).
 		{"displaced", "S4A-6", "S4A-6", claim.RoleArchitect},
 		{"displacer", "S4A-6", "S4A-6", claim.RoleImplementer},
+		// update-a and update-b are the two workers of one more issue pod, which an update round
+		// replaces once each of them has pushed its work and answered (pod-update). Their issue is
+		// its run's own (podUpdateRunIssue), since each of them pushes the issue's branch onto the
+		// repository every run shares.
+		{"update-a", updateIssue, updateIssue, claim.RoleArchitect},
+		{"update-b", updateIssue, updateIssue, claim.RoleImplementer},
+		// fleet-a and fleet-b are the two workers of a second issue pod, which the one pod-template
+		// change drifts beside update-a and update-b's (pod-update-fleet): each issue's pod is a
+		// round of its own. Their issue is its run's own (podUpdateFleetRunIssue), since they push
+		// its branch onto the repository every run shares, as pod-update's workers push theirs.
+		{"fleet-a", fleetIssue, fleetIssue, claim.RoleArchitect},
+		{"fleet-b", fleetIssue, fleetIssue, claim.RoleImplementer},
 		// cache-b is one more issue pod on the run's repository, launched while its cache is Ready
 		// (cache-second-pod) and again after its volume is lost (cache-lost-volume). Its issue is
 		// its run's own (cacheRunIssue), since cache-lost-volume pushes the issue's branch onto the
@@ -910,6 +928,9 @@ func (r *liveRig) claim(name string) *liveClaim {
 func (r *liveRig) close() {
 	r.stopRuntime()
 	r.cancel()
+	if r.tokens.apps != nil {
+		r.tokens.apps.Close()
+	}
 }
 
 // sameLocator compares two locators by what they name; the struct holds pointers.
@@ -952,6 +973,8 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		AdoptTimeout:          liveAdoptTimeout,
 		Tokens:                r.tokens,
 		GitHubCredential:      r.tokens.Credential,
+		ControllerCredential:  r.tokens.ControllerCredential,
+		GitHubDirs:            r.tokens.ProjectDirs,
 		Conns:                 ln,
 		Log:                   r.log,
 		SessionStore:          r.sessionStore,

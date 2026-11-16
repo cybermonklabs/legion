@@ -1,0 +1,5 @@
+kind: Changed
+body: The daemon state mirror reads `workers.<role>.backwardMoves`, how many times an issue has gone back by each kind of move, keyed `<from>-<to>`; it is absent for an issue that has had no move back and for a caller below daemon API contract 62.
+time: 2026-11-11T02:11:13.60323641Z
+custom:
+    Issue: pr3522

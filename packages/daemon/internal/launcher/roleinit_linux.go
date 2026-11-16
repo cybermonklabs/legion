@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
@@ -248,9 +249,9 @@ func privateHome(cfg RoleInitConfig, homes, work string) error {
 		return fmt.Errorf("the home %s carries mounts (%s): the container mounts what belongs under the home under %s instead",
 			cfg.Home, strings.Join(carried, ", "), cfg.HomeMounts)
 	}
-	options := "lowerdir=" + cfg.Home + ",upperdir=" + filepath.Join(homes, "upper") + ",workdir=" + work
+	options := homeOverlayOptions(cfg.Home, filepath.Join(homes, "upper"), work)
 	if err := unix.Mount("overlay", cfg.Home, "overlay", 0, options); err != nil {
-		return fmt.Errorf("give the role its own layer over %s: %w", cfg.Home, err)
+		return fmt.Errorf("give the role its own layer over %s with %s: %w", cfg.Home, options, err)
 	}
 	// The image reaches the home mounts directory through a link (its /var/run is /run), and
 	// mountinfo names each mount by the path the link resolves to, so each is placed relative to
@@ -288,6 +289,17 @@ func privateHome(cfg RoleInitConfig, homes, work string) error {
 		}
 	}
 	return nil
+}
+
+// homeOverlayOptions is the option string for the role's own layer over its home. userxattr is
+// there because gVisor marks a renamed directory opaque by writing the extended attribute
+// trusted.overlay.opaque, which a task in a nested user namespace may not write, and gVisor panics
+// when that write is refused, which ends the pod's whole sandbox. userxattr puts the mark in the
+// user.overlay. namespace instead, which the role's own upper layer keeps and its owner may write.
+// gVisor turns the option on by itself only when the upper layer is a gofer mount, and a role's
+// upper layer is a sandbox tmpfs.
+func homeOverlayOptions(home, upper, work string) string {
+	return "lowerdir=" + home + ",upperdir=" + upper + ",workdir=" + work + ",userxattr"
 }
 
 // ownConfigHome is the role's own config home, own, made the first time a generation of the role
@@ -453,12 +465,36 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 	return nil
 }
 
+// roleNamespaceDrain bounds the wait role-init gives a role whose shim exited on its own: the
+// span between the SIGTERM it sends over the role's namespace and the SIGKILL that ends the
+// namespace, which is the only time anything the role left running has to finish what it was
+// doing. Two seconds, because what the wait is there for is a git or a jj whose index or
+// operation lock is held across a write of a few files, which it finishes in milliseconds, and
+// the wait ends the moment the namespace is empty, so the bound is paid only by a process that
+// ignores SIGTERM or hangs on it. It is a constant and no flag of role-init and no setting of the
+// pod, so no deployment can set it to a span that holds the launcher's next generation up.
+//
+// It costs the role's next generation nothing the daemon waits on: the launcher reads the status
+// pipe and only then waits on role-init (manager.wait), so the daemon learns the role's exit
+// before this wait begins, and only the generation's own teardown spends it.
+const roleNamespaceDrain = 2 * time.Second
+
 // runRoleShim runs the generation's shim as this init's own child, in a nested user namespace as
 // the image's unprivileged user with no capability outside it. role-init stays the role's PID 1:
-// it forwards the launcher's stop (stop's end, held since role-init began) to every process of
-// the role as SIGTERM, once, reaps the orphans the role leaves behind, reports the shim's own wait
-// status, and ends the namespace with its own exit. The launcher's only other signal is SIGKILL,
-// which ends role-init, and the namespace with it, without asking.
+// it reaps the orphans the role leaves behind, reports the shim's own wait status, and ends the
+// namespace with its own exit. A generation ends down one of two paths, and on either of them
+// every process of the role is asked to leave before anything is killed.
+//
+// On the launcher's stop (stop's end, held since role-init began) role-init forwards it to every
+// process of the role as SIGTERM, once, and the shim has the launcher's stop grace to end; the
+// launcher's SIGKILL of role-init at the end of that grace ends the namespace with it, without
+// asking, and is the only other signal the launcher sends.
+//
+// A shim that exits on its own is the other path, and there is no stop and no grace on it: role-
+// init sends that SIGTERM itself once it has reported the shim's status, and waits up to
+// roleNamespaceDrain for the role's processes to go before the SIGKILL below ends the namespace.
+// Without it a git or a jj the role left running would be killed outright and leave its lock in
+// the issue's shared clone, which stops every jj command of every role of the pod.
 func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signal) error {
 	cmd := exec.Command(cfg.Argv[0], cfg.Argv[1:]...)
 	cmd.Env = os.Environ()
@@ -476,6 +512,7 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 	ended := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(ended) }()
 	stopped := stop.Done()
+	stopArrived := false
 	for running := true; running; {
 		select {
 		case <-ended:
@@ -485,14 +522,48 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 				roleLogf(cfg, "role-init: %v", err)
 			}
 		case <-stopped:
-			// Every process of the role, a detached one included: this is its PID 1.
-			stopped = nil
+			// Every process of the role, a detached one included: this is its PID 1. The stop is
+			// forwarded once: the channel goes to nil so this arm, ready for good once the stop's
+			// end is closed, stops being chosen, and stopArrived is what the drain below reads.
+			stopped, stopArrived = nil, true
 			if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 				roleLogf(cfg, "role-init: %v", err)
 			}
 		}
 	}
 	reportStatus(cfg, cmd.ProcessState)
+	// The role's processes are asked to leave before the kill below takes the namespace: a git or
+	// a jj the shim left running, killed outright, leaves its lock behind in the issue's shared
+	// clone. Where the launcher's stop arrived its SIGTERM is that signal, sent once and already
+	// answered through the stop grace, so this path is the one where no stop came, and no role of
+	// a container's stop pays this wait twice. A stop that arrives during the wait does not cut
+	// it short: every process it waits for has this init's SIGTERM in hand, and ending the wait
+	// there would send the SIGKILL below to a git a few milliseconds after it was asked to leave,
+	// which is the one thing this wait exists to prevent. It holds the container's stop up by
+	// nothing worth having: roleNamespaceDrain is two seconds, inside the shortest stop grace the
+	// daemon allows, and the wait ends the moment the namespace is empty.
+	if !stopArrived {
+		if err := signalGeneration(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+			roleLogf(cfg, "role-init: %v", err)
+		}
+		// Each pass reaps as it counts, so the zombies this init adopts as the role's processes
+		// end are not counted as processes that keep the wait running.
+		ticks := time.NewTicker(namespaceReapPoll)
+		drained := time.Now().Add(roleNamespaceDrain)
+		for draining := true; draining; {
+			remaining, err := reapNamespace()
+			switch {
+			case err != nil:
+				roleLogf(cfg, "role-init: %v", err)
+				draining = false
+			case !remaining, !time.Now().Before(drained):
+				draining = false
+			default:
+				<-ticks.C
+			}
+		}
+		ticks.Stop()
+	}
 	// Nothing of the role outlives its report. The kernel ends a PID namespace with its init, and
 	// this kill makes that certain before the launcher admits the role's next generation.
 	_ = syscall.Kill(-1, syscall.SIGKILL)
@@ -500,7 +571,8 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 }
 
 // reportStatus writes the shim's own wait status to the launcher's pipe, so the daemon is told
-// the role's exit code and signal rather than its namespace init's.
+// the role's exit code and signal rather than its namespace init's. It writes the status as the
+// 32 bits a syscall.WaitStatus is, which is the width parseStatus reads back.
 func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 	status, ok := state.Sys().(syscall.WaitStatus)
 	if !ok {
@@ -511,7 +583,7 @@ func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 		roleLogf(cfg, "role-init: no status pipe at descriptor %d", cfg.StatusFD)
 		return
 	}
-	if _, err := fmt.Fprintf(file, "%d", int(status)); err != nil {
+	if _, err := fmt.Fprintf(file, "%d", uint32(status)); err != nil {
 		roleLogf(cfg, "role-init: report the shim's status: %v", err)
 	}
 	_ = file.Close()
@@ -595,12 +667,14 @@ func makeLike(cfg RoleInitConfig, source, root, target string) error {
 // role-init named itself (the home, a temporary directory, the stage); what lies below it is one
 // of the role's own layers, which an earlier generation of the role wrote, so a link there could
 // name any path the container shows, another role's directory under the roles directory among
-// them, before the covers go on, and a walk that followed it would make directories there: an
-// empty config home a sibling would then keep as its own. A link in the way is the role's own
-// entry, and is removed and replaced by the directory or file the mount needs, with replaced told
-// its path; any other entry in the way that is not a directory is refused. Nothing of the role
-// runs while role-init does, and no other role reaches the role's layers, so the path the walk
-// made is the path the bind that follows lands on.
+// them, before the covers go on, and a walk that followed it would make directories there: inside
+// a config home that already carries its marker, what the walk makes there is what a sibling then
+// keeps as its own. A link in the way is the role's own entry, and is removed and replaced by the
+// directory or file the mount needs, with replaced told its path; any other entry in the way that
+// is not a directory is refused. Each component is decided from a handle the walk opened and read:
+// the kind comes from fstat of the handle, never from a flag of the open and never by comparing
+// two readings of the name. Nothing of the role runs while role-init does, and no other role
+// reaches the role's layers, so the path the walk made is the path the bind that follows lands on.
 func mountPointBeneath(root, target string, dir bool, replaced func(link string)) error {
 	rel, err := filepath.Rel(root, target)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
@@ -619,17 +693,33 @@ func mountPointBeneath(root, target string, dir bool, replaced func(link string)
 	defer func() { _ = unix.Close(parent) }()
 	names := strings.Split(rel, string(filepath.Separator))
 	path := root
+	// read opens the component named name and reads the handle it opened. The open is O_PATH,
+	// so it opens the entry itself whatever that entry is, a symlink included, and then
+	// the kind comes from fstat of the handle, not from a flag of the open. It reads parent
+	// and path at each call, which the loop below moves to the component it descends from.
+	read := func(name string) (int, unix.Stat_t, error) {
+		var stat unix.Stat_t
+		fd, err := unix.Openat(parent, name, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return -1, stat, fmt.Errorf("open %s: %w", path, err)
+		}
+		if err := unix.Fstat(fd, &stat); err != nil {
+			_ = unix.Close(fd)
+			return -1, stat, fmt.Errorf("read %s: %w", path, err)
+		}
+		return fd, stat, nil
+	}
 	for index, name := range names {
 		path = filepath.Join(path, name)
 		file := !dir && index == len(names)-1
-		var stat unix.Stat_t
-		err := unix.Fstatat(parent, name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+		entry, stat, err := read(name)
 		if err == nil && stat.Mode&unix.S_IFMT == unix.S_IFLNK {
+			_ = unix.Close(entry)
 			if err := unix.Unlinkat(parent, name, 0); err != nil {
 				return fmt.Errorf("remove the link %s: %w", path, err)
 			}
 			replaced(path)
-			err = unix.ENOENT
+			entry, err = -1, unix.ENOENT
 		}
 		switch {
 		case errors.Is(err, unix.ENOENT) && file:
@@ -639,22 +729,34 @@ func mountPointBeneath(root, target string, dir bool, replaced func(link string)
 			}
 			return unix.Close(fd)
 		case errors.Is(err, unix.ENOENT):
-			if err := unix.Mkdirat(parent, name, 0o755); err != nil {
+			// An entry that appeared under the walk answers EEXIST here; the read below
+			// decides it, whatever it is, and there is no second attempt.
+			if err := unix.Mkdirat(parent, name, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
 				return fmt.Errorf("make %s: %w", path, err)
 			}
+			entry, stat, err = read(name)
+			if err != nil {
+				return err
+			}
+			if stat.Mode&unix.S_IFMT == unix.S_IFLNK {
+				_ = unix.Close(entry)
+				return fmt.Errorf("%s became a link under the walk, where a mount point's directory goes", path)
+			}
 		case err != nil:
-			return fmt.Errorf("read %s: %w", path, err)
+			return err
 		case file:
+			_ = unix.Close(entry)
 			return nil
-		case stat.Mode&unix.S_IFMT != unix.S_IFDIR:
-			return fmt.Errorf("%s is neither a directory nor a link, where a mount point's directory goes", path)
 		}
-		next, err := unix.Openat(parent, name, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		if err != nil {
-			return fmt.Errorf("open %s: %w", path, err)
+		// Whether the walk found this component or made it, it descends only from a directory.
+		// No link reaches here: the one the first read saw was removed above, and one that appeared
+		// at the name after Mkdirat was refused where the second read decided it.
+		if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+			_ = unix.Close(entry)
+			return fmt.Errorf("%s is neither a directory nor a link, where a mount point's directory goes (kind %#o)", path, stat.Mode&unix.S_IFMT)
 		}
 		_ = unix.Close(parent)
-		parent = next
+		parent = entry
 	}
 	return nil
 }

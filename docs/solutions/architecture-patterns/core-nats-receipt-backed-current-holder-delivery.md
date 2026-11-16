@@ -31,6 +31,16 @@ related_issues:
 
 # Receipt-Backed Core NATS Delivery to Current Holders
 
+**This page records the design before dispatch://INFRA-771, not how Envoy works now.** Since that
+change a role forward is stored only: the listener publishes it to the holder's agent subject,
+which `ENVOY_NOTIFICATIONS` captures, and waits for the stream's acknowledgement alone
+(`bus.Client.StartRequestStoredTo`, `startRoleForward`). No session answers a receipt, and
+`receipt_timeout` is no reason the listener gives any more — every forward the stream did not
+store is `delivery_failed`. The stored copy is the delivery, which the holder's own session
+consumer relays (`packages/envoy/AGENTS.md`, "Session consumers"). Read what follows as the
+reasoning that got the system here, and for the lesson about vendor error sentinels, which still
+holds.
+
 ## Context
 
 A role, lease, or session registry can identify a current holder and show that its heartbeat is fresh. That is useful routing state, but it does not prove that the holder still has a live core-NATS subscription or that its receiver pump can accept an envelope. Core NATS `Publish` reports success after accepting the publish locally even when zero subscribers match the subject.
@@ -147,7 +157,7 @@ The first cut of the three-reason model keyed `receipt_timeout` on `errors.Is(er
 
 ### One vendor sentinel, two exits: mint your own at the exit that means what you need
 
-nats.go v1.50.0's `Conn.Flush()` is `FlushTimeout(10 * time.Second)` and returns the very same `nats.ErrTimeout` value the receipt wait's `NextMsg` returns. `RequestCoreTo` flushes between `PublishRequest` and the receipt wait, so on a reconnecting or stalled connection — `ensureConnWithContext` hands back any connection that is not `CLOSED`, `SubscribeSync` and `PublishRequest` buffer without error — the *flush* timed out with the forward still in the client's buffer, and the caller's `errors.Is(err, nats.ErrTimeout)` read that as "forwarded, no receipt". Under the LEGION-101 contract the daemon treats `receipt_timeout` from a live process as delivered and does nothing, so that message was gone; before the change it had been `delivery_failed` and recovered. Three rules fall out:
+nats.go v1.50.0's `Conn.Flush()` is `FlushTimeout(10 * time.Second)` and returns the very same `nats.ErrTimeout` value the receipt wait's `NextMsg` returns. That first cut of `RequestCoreTo` flushed between `PublishRequest` and the receipt wait, so on a reconnecting or stalled connection — `ensureConnWithContext` hands back any connection that is not `CLOSED`, and `SubscribeSync` and `PublishRequest` buffered without error — the *flush* timed out with the forward still in the client's buffer, and the caller's `errors.Is(err, nats.ErrTimeout)` read that as "forwarded, no receipt". Under the LEGION-101 contract the daemon treats `receipt_timeout` from a live process as delivered and does nothing, so that message was gone; before the change it had been `delivery_failed` and recovered. Three rules fall out:
 
 - Do not key an application decision on a vendor sentinel that more than one call site in your own function can produce. Mint a package sentinel (`bus.ErrReceiptTimeout`) and return it from exactly the exits that carry the meaning — here the post-flush deadline check and a `NextMsg` timeout — mapping the vendor value to yours at those exits only.
 - Wrap every other failure with `%w` under a distinct message (`bus: flush publish to %q: %w`, in the `publishConfirmed` helper `RequestCoreTo` shares with `PublishCoreTo`), so `errors.Is(err, nats.ErrTimeout)` stays true for diagnostics while the consumer keys on the package sentinel alone. The consumer's table test then has a row for the raw vendor value and a row for the wrapped one, both mapping to `delivery_failed`.
@@ -157,7 +167,7 @@ The regression lock for the flush branch needed a real stalled transport — the
 
 ### The listener cannot tell deaf from slow, by construction
 
-`RequestCoreTo` publishes to a manually subscribed inbox; it never uses `Conn.Request`. On an agent subject the stream itself answers that inbox with its acknowledgement, so a holder that is gone never shows as no responders. A holder whose session registration is still inside `ClaimStaleAfter` but whose process is gone therefore looks exactly like a busy holder: the publish succeeds, the flush succeeds, no receipt arrives, `receipt_timeout`. That is the intended division of labour — the registry check bounds how long a dead holder can look live, and the daemon owns the process probe that tells slow from dead — so a `receipt_timeout` consumer must not read it as "the holder has the envelope". Write the docs that way too: an earlier wording of this page said exactly that and had to be corrected in review.
+`RequestCoreTo` builds a `nats.Msg` whose `Reply` is a manually subscribed inbox, with the `Nats-Msg-Id` header its caller passes (the listener's role lane passes `bus.ForwardMsgID` of the forward's dedupe key and subject when the original envelope's dedupe key, before its `envoy.role.forward.` prefix is added, names its event, and of the envelope's `event_id` and subject otherwise: `roleForward.msgID`), and sends it with `conn.PublishMsg` through `publishConfirmed`; it never uses `Conn.Request`. On an agent subject the stream itself answers that inbox with its acknowledgement, so a holder that is gone never shows as no responders. A holder whose session registration is still inside `ClaimStaleAfter` but whose process is gone therefore looks exactly like a busy holder: the publish succeeds, the flush succeeds, no receipt arrives, `receipt_timeout`. That is the intended division of labour — the registry check bounds how long a dead holder can look live, and the daemon owns the process probe that tells slow from dead — so a `receipt_timeout` consumer must not read it as "the holder has the envelope". Write the docs that way too: an earlier wording of this page said exactly that and had to be corrected in review.
 
 ### The forward mark is an internal namespace; the API must refuse it
 

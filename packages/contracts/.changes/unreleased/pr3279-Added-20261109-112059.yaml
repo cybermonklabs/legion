@@ -1,0 +1,5 @@
+kind: Added
+body: 'A `@legion/contracts/trailing-slash` subpath exports `withoutTrailingSlashes`, the rule the Dispatch, Envoy, broker and daemon clients read a configured address by: a URL without the slashes it ends in, read once rather than once per position.'
+time: 2026-11-09T11:20:59.845607983Z
+custom:
+    Issue: pr3279

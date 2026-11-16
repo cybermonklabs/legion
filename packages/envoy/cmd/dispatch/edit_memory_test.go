@@ -10,7 +10,19 @@ import (
 
 // A one-word edit of the heaviest documents the element limit admits, and the settlement after it,
 // hold at most the bound above the idle memory of a server that has not loaded the document, on a
-// real Dispatch process (LEGION-504).
+// real Dispatch process (LEGION-504). Each document is edited once, on a fresh server of its own.
+//
+// The row failed at random in CI for two reasons, both of them repaired (INFRA-985). A measured
+// server could start while a document was owed a block index or a settlement, so the block-index
+// pass - which reads another, far heavier document - ran inside the measured window and the peak
+// was that pass's memory and not the edit's; the harness now leaves nothing owed when it starts a
+// server and fails where a pass logs inside a window (memoryHarness.drainBeforeStart,
+// memoryServer.peakAboveIdle). And the server ran at Go's default GOGC=100, where the collector
+// lets the heap grow to twice the live set before it collects, so the peak carried an unbounded
+// amount of garbage and varied from run to run; every measured server now runs at GOGC=25. With
+// the window holding only the edit and the collector's margin bounded, one run per document says
+// what the edit holds, and the least of three runs this test used to hold to the bound is no
+// longer needed.
 func TestAColdEditOfTheHeaviestDocumentsStaysWithinTheMemoryBound(t *testing.T) {
 	memory := newMemoryHarness(t)
 	writer := memory.start(t)
@@ -28,15 +40,16 @@ func TestAColdEditOfTheHeaviestDocumentsStaysWithinTheMemoryBound(t *testing.T) 
 	for _, document := range documents {
 		t.Run(document.name, func(t *testing.T) {
 			server := memory.start(t)
-			var answer response
+			// The edit swaps the sentinel word for its other spelling, so it is one word of the
+			// document and leaves the document's length as it was.
 			peak := server.peakAboveIdle(t, func() {
-				answer = server.edit(t, document.artifactID, map[string]any{"op": "replace", "find": sentinelWord, "with": "wird"})
+				answer := server.edit(t, document.artifactID, map[string]any{"op": "replace", "find": sentinelWord, "with": "wird"})
+				if answer.status != http.StatusOK {
+					t.Fatalf("a one-word edit of %s answered %d %.300s, want 200", document.name, answer.status, answer.body)
+				}
 				memory.waitForSettled(t, document.artifactID)
 			})
 			server.stop(t)
-			if answer.status != http.StatusOK {
-				t.Fatalf("a one-word edit of %s answered %d %.300s, want 200", document.name, answer.status, answer.body)
-			}
 			t.Logf("%s: a cold one-word edit and its settlement, %d MiB above idle", document.name, peak>>20)
 			if peak > requestMemoryBound {
 				t.Errorf("a cold one-word edit of %s held %d MiB above idle, want at most %d MiB", document.name, peak>>20, requestMemoryBound>>20)

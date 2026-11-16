@@ -275,6 +275,107 @@ func TestAScriptedFailureReachesTheMethodItWasSetOn(t *testing.T) {
 	}
 }
 
+// The fake answers an update round the way a runtime does: PodDrift names what a test scripted for
+// that claim and nothing for any other, says runtime.ErrPodGone for a claim whose pod a test
+// scripted gone — which a caller must never read as a claim that has drifted from nothing —
+// ReplacePod records its call and leaves the claim drifted from nothing — the place it ended is
+// built again from the configuration the runtime has now — and each refuses with the failure set
+// on it.
+func TestPodDriftAnswersTheScriptAndReplacePodEndsIt(t *testing.T) {
+	ctx := context.Background()
+	fake := NewRuntime()
+	drifted, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-tester"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	other, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-reviewer"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	reasons := []string{"image ghcr.io/cybermonklabs/legion-worker@sha256:old, now ghcr.io/cybermonklabs/legion-worker@sha256:new"}
+	fake.ScriptPodDrift(drifted.Claim, reasons...)
+	known := runtime.Known{Claim: drifted.Claim, Locator: &drifted}
+	if got, err := fake.PodDrift(ctx, known); err != nil || !slices.Equal(got, reasons) {
+		t.Fatalf("pod drift: got %q, %v; want %q", got, err, reasons)
+	}
+	if got, err := fake.PodDrift(ctx, runtime.Known{Claim: other.Claim, Locator: &other}); err != nil || len(got) > 0 {
+		t.Fatalf("a claim no call named has drifted: %q, %v", got, err)
+	}
+	if got, err := fake.PodDrift(ctx, runtime.Known{Claim: drifted.Claim}); err != nil || len(got) > 0 {
+		t.Fatalf("a claim running nowhere has drifted: %q, %v", got, err)
+	}
+	fake.ScriptPodGone(other.Claim, true)
+	if got, err := fake.PodDrift(ctx, runtime.Known{Claim: other.Claim, Locator: &other}); !errors.Is(err, runtime.ErrPodGone) || len(got) > 0 {
+		t.Fatalf("a claim whose pod is gone: %q, %v; want runtime.ErrPodGone", got, err)
+	}
+	fake.ScriptPodGone(other.Claim, false)
+	if got, err := fake.PodDrift(ctx, runtime.Known{Claim: other.Claim, Locator: &other}); err != nil || len(got) > 0 {
+		t.Fatalf("a claim whose pod is there again has drifted: %q, %v", got, err)
+	}
+
+	if err := fake.ReplacePod(ctx, known, stillDue); err != nil {
+		t.Fatalf("replace pod: %v", err)
+	}
+	if got, err := fake.PodDrift(ctx, known); err != nil || len(got) > 0 {
+		t.Fatalf("the claim is still drifted after its pod was replaced: %q, %v", got, err)
+	}
+	if calls := fake.CallsOf("ReplacePod"); len(calls) != 1 || calls[0].Pod.Claim != drifted.Claim || calls[0].Pod.Locator == nil {
+		t.Fatalf("ReplacePod recorded %+v, want the claim and its process", calls)
+	}
+
+	refused := errors.New("the API server would not answer")
+	fake.FailPodDrift(refused)
+	fake.FailReplacePod(refused)
+	if _, err := fake.PodDrift(ctx, known); !errors.Is(err, refused) {
+		t.Fatalf("pod drift: got %v, want %v", err, refused)
+	}
+	if err := fake.ReplacePod(ctx, known, stillDue); !errors.Is(err, refused) {
+		t.Fatalf("replace pod: got %v, want %v", err, refused)
+	}
+}
+
+// A ReplacePod over a pod the runtime finds no longer there answers nil as the Sandbox runtime
+// does, without asking due: the last word is asked only of a pod there is to replace. It records
+// a ReplacePodNoPod call and no ReplacePod one, and leaves the claim's drift as it was. Cleared,
+// the next ReplacePod asks due and replaces as before.
+func TestReplacePodOfAPodThatIsNotThereAsksNothingAndReplacesNothing(t *testing.T) {
+	ctx := context.Background()
+	fake := NewRuntime()
+	drifted, err := fake.Spawn(ctx, spec("legion-omp-LEGION-208-tester"))
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	fake.ScriptPodDrift(drifted.Claim, "image")
+	known := runtime.Known{Claim: drifted.Claim, Locator: &drifted}
+	asked := 0
+	due := func(context.Context) error { asked++; return nil }
+
+	fake.FindNoPodToReplace(true)
+	if err := fake.ReplacePod(ctx, known, due); err != nil {
+		t.Fatalf("replace a pod that is not there: %v, want nil", err)
+	}
+	if asked != 0 {
+		t.Fatalf("due was asked %d times for a pod that is not there, want never", asked)
+	}
+	if calls := fake.CallsOf("ReplacePod"); len(calls) != 0 {
+		t.Fatalf("ReplacePod recorded %+v for a pod that is not there, want no replacement", calls)
+	}
+	if calls := fake.CallsOf("ReplacePodNoPod"); len(calls) != 1 || calls[0].Pod.Claim != drifted.Claim {
+		t.Fatalf("ReplacePodNoPod recorded %+v, want the one call of the claim", calls)
+	}
+	if got, err := fake.PodDrift(ctx, known); err != nil || !slices.Equal(got, []string{"image"}) {
+		t.Fatalf("the claim's drift after no replacement = %q, %v; want it as scripted", got, err)
+	}
+
+	fake.FindNoPodToReplace(false)
+	if err := fake.ReplacePod(ctx, known, due); err != nil {
+		t.Fatalf("replace pod: %v", err)
+	}
+	if asked != 1 || len(fake.CallsOf("ReplacePod")) != 1 {
+		t.Fatalf("after the clear, due was asked %d times and ReplacePod recorded %d calls, want one of each", asked, len(fake.CallsOf("ReplacePod")))
+	}
+}
+
 func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	ctx := context.Background()
 	conn := NewConn()
@@ -401,3 +502,8 @@ func TestReleaseResumeAndTheSweepRefuseALocatorOfAnotherClaim(t *testing.T) {
 		t.Fatalf("methods: got %v, want the refused calls recorded", methods)
 	}
 }
+
+// stillDue is the last word a test gives ReplacePod when its own subject is not that word: the
+// replacement is due, so the runtime goes on. The parameter is required, since a replacement is
+// the one call that deletes an issue's disk and every caller states what makes it still due.
+func stillDue(context.Context) error { return nil }

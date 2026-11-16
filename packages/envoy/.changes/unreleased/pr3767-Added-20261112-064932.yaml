@@ -1,0 +1,32 @@
+kind: Added
+body: |-
+  A priority is a node Dispatch holds for the whole deployment: a title, a description, an owner
+  and an order, in no project, carried by five routes — `GET` and `POST /api/v1/priorities`,
+  `PATCH` and `DELETE /api/v1/priorities/{id}`, and `GET /api/v1/priorities/{id}/history` —
+  where a delete writes the state `gone` and removes no row, and the history answers one
+  priority's own acts, newest first, every write of its attributes and every relation an issue
+  stated or retracted on it, which is what the margin of its page draws. Work in any project
+  states that it advances one (`advances` on the issue create and patch, held to its revision),
+  a child inherits every priority the issues above it advance, and `GET /api/v1/issues` takes
+  `advances=<id>`, repeated, `advances=none` and `advances=any`, a repeated `status`, and
+  `moved=true`, which adds to each row standing in `backlog` or `icebox` when it was moved there
+  and by whom, so the issues table draws both faults over the one listing. A `status` value is
+  still matched as written and never refused: one the lifecycle does not hold alone answers the
+  empty list, as it always has, and beside another status adds nothing.
+  `GET /api/v1/priorities` answers every live priority in rank order with the work under it — its
+  open issues by lifecycle status, how many are claimed, their open asks, what closed in the last
+  seven days and when anything under it last moved — and the two faults: the work in flight that
+  advances no priority, counted by project, and the work that advances one and stands in
+  `backlog` or `icebox`, counted by priority, each carrying its newest 50 rows. Each row carries
+  `advances` as every issue read does, one `{id, inherited}` entry per live priority the issue
+  advances, own or inherited from an issue above it; a row of the first fault carries none.
+  `?project=`, repeated, narrows the counts and the lists; `?summary=true` answers the two counts
+  alone.
+  Each of the three writes appends one `priority.updated` event (`{id, change}`, `change` being
+  `created`, `updated` or `deleted`) in its own transaction, owned by nothing: it wakes nobody,
+  the outbox publishes it on no subject, and `/ws/live` carries it to every open page, which
+  refetches the priorities on it, and on a delete also the issues that advanced the priority and
+  the work under none. A refused write appends none.
+time: 2026-11-12T06:49:32.000000000Z
+custom:
+    Issue: pr3767

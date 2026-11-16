@@ -39,13 +39,16 @@ func standInEventLog(ctx *AppContext, head int64) {
 }
 
 // storeRouter is the router main serves over database, with header identity naming the person and
-// a Lifetime, so it mounts GET /ws/live as production does.
+// a Lifetime, so it mounts GET /ws/live as production does. Its people are the database's own
+// table, as main's are: a header names a person by recording them there, and a project create
+// names its default from that same table (allowedLogin), so an in-memory store here would leave
+// the person the header names unknown to the create.
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
-	people := newMemoryPeople()
+	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	ctx, err := BuildAppContext(AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,

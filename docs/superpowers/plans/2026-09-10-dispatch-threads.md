@@ -14,7 +14,7 @@
 
 ## Decisions needed (Sami)
 
-None. The threads spec's own "Decisions needed" is empty; the thread-UI ownership question is settled (Main's ruling 2026-09-10: Proof owns highlights via `onMarkClick`, Dispatch owns the thread cards).
+None. The threads spec's own "Decisions needed" is empty; the thread-UI ownership question is settled (Main's decision 2026-09-10: Proof owns highlights via `onMarkClick`, Dispatch owns the thread cards).
 
 ## Scope boundary
 

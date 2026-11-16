@@ -87,7 +87,8 @@ const (
 	livePaneClaude = "/bin/sh\x00-c\x00tmux set-option -w -t \"$TMUX_PANE\" @legion_owner legion-t1 && export PATH=/state/bin:/usr/bin:/bin && " +
 		"cd /state/workspaces/LEGION-2 && /opt/legion/legion worker-shim --connect unix:///state/stream.sock " +
 		"--boot-token-file /state/secrets/legion-t1-legion-2-implementer -- /opt/legion/legion claude-bridge -- /opt/claude/bin/claude -p " +
-		"--input-format stream-json --output-format stream-json --verbose --permission-mode bypassPermissions --strict-mcp-config " +
+		"--input-format stream-json --output-format stream-json --verbose --replay-user-messages " +
+		"--thinking-display summarized --permission-mode bypassPermissions --strict-mcp-config " +
 		"--mcp-config /state/claude/legion-t1-legion-2-implementer/mcp.json --plugin-dir /opt/claude-envoy --plugin-dir /opt/claude-envoy/legion " +
 		"--session-id a1917bc9-2989-441e-9eef-c65e0d51bfbf --append-system-prompt \"$(cat /roles/implementer.md)\"\x00"
 )
@@ -185,10 +186,10 @@ func TestLaunchRefusesWhatItsLaunchersCannotRun(t *testing.T) {
 
 	resumed := spec
 	resumed.ResumeSessionFile = filepath.Join(stateDir, "sessions", "--work--", "2026-10-26T00-00-00-000Z_ses-gone.jsonl")
-	want = "Refusing to start LEGION-43 fresh while respawning: recorded OMP session file is missing: " + resumed.ResumeSessionFile +
+	want = "resume " + string(resumed.Claim) + ": the recorded session file is missing: no OMP session at " + resumed.ResumeSessionFile +
 		", and no other folder of " + filepath.Join(stateDir, "sessions") + " or of the pane's sessions directory " +
 		filepath.Join(stateDir, "home", ".omp", "agent", "sessions") + " holds that session"
-	if _, err := rt.Resume(context.Background(), nil, resumed); err == nil || errors.Is(err, runtime.ErrSessionFileMissing) || err.Error() != want {
+	if _, err := rt.Resume(context.Background(), nil, resumed); !errors.Is(err, runtime.ErrSessionFileMissing) || err.Error() != want {
 		t.Errorf("Resume from a missing session = %v, want %q", err, want)
 	}
 	if entries, _ := os.ReadDir(filepath.Join(stateDir, "secrets")); len(entries) != 0 {

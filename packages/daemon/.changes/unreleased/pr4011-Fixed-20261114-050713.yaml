@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  The wrapper keeps only public visibility answers, reads private and internal answers on every
+  call, and serializes call-log append and rotation across processes.

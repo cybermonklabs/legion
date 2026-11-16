@@ -6,19 +6,18 @@ adopt children, split a change across repositories, or attach architecture compo
 ## Reading the tree
 
 Read the root issue, its acceptance criteria, its existing children and their current handoffs.
-Your issue record is the `legion` tool's `read_record`. A child's committed handoff is a plain file
-on its issue branch: read `.legion/<child>/<phase>.json` from that issue's workspace, or from GitHub:
-
-```bash
-gh api repos/<owner>/<repo>/contents/.legion/<child>/<phase>.json?ref=legion/<child> --jq .content | base64 -d
-```
+Your issue record is the `legion` tool's `read_record`. A child's handoffs are records on its
+Dispatch issue: read the newest of a phase with
+`dispatch handoff-read --issue <child> --phase <word>` (`plan`, `implement`, `test` or `review`),
+and an earlier one with `--version <n>`. The child's Conversation lists every version.
 
 ## Adopting children
 
-Put every adopted child into the first wave and release it with
+Release every adopted child at once with
 `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`. The daemon runs nothing on
 a child until it is released. Once it is released, the daemon moves it to `todo` and, while the
-root's design gate is open, starts its phases itself. It starts no sub-architect, and you start no
+root's design gate is open, starts its first phase itself at the child's own admission slot, and
+not while Dispatch shows an open child under that child. It starts no sub-architect, and you start no
 worker. A release is accepted whole whatever the `--blocked-by` links say: its answer names
 `started` and `held` (each held child with the issues it waits on) beside `released`, and a held
 child waits in your tree until Legion starts it.
@@ -32,10 +31,12 @@ EOF
 ```
 
 - Write each child's spec as `skill://dispatch-writing-specs` says, scaled to the child: its
-  outline (`Summary` through `Acceptance`, a few sentences a part for a small child), a proposed
+  outline (a few sentences a part for a small child), each requirement marked as a `requirement`
+  block, a proposed
   answer to each point, each term a new reader may not know explained, no item number from another
   document (name a requirement of the root by what it says), and no text copied from the root that
-  does not apply to this child. The child's workers read only this spec.
+  does not apply to this child. Write the child's Verification document with it, one `check` block
+  per thing that must be proved. The child's workers read only this spec and those checks.
 - Before `dispatch issue` creates any child, dispatch a fresh red-team subagent
   (`task(agent="oracle")`) with the
   root spec, the tree's open children with their repositories and pull requests, and the proposed
@@ -43,18 +44,27 @@ EOF
   that each child should not exist. Name every child that is a to-do, a fix found in review, a
   proof of the root's acceptance, or a part of the architect's own work, and say where it folds:
   the root's pull request or an open child's."* `wait` for its verdict, since it runs as a job of
-  its own. A child survives only when it cannot ride in the
-  root's pull request or an open child's: its code is in a repository no open pull request of this
-  tree is in, or it is its own deploy: it must be applied on its own before other work of the tree
-  can build on it.
-  A repeated change — the same edit per program, directory or wave of this tree's own work —
-  survives as one child, never one per instance, and a deletion of what this tree replaced rides
-  in the pull request of the last change it waits on, never a child of its own: a wave is an order
-  of merges, not a deliverable.
-  Post the verdict, with the folds you made, as one `dispatch comment` on your own issue (the root,
-  in a root session): the architect
-  who wrote the list reads every child on it as needed, and the comment stops a later session
-  filing the same children again.
+  its own. A child survives it only when it needs a repository or a deploy order of its own: its
+  code is in a repository no open pull request of this tree is in, or it must be applied on its
+  own before other work of the tree can build on it. A repeated change — the same edit per
+  program, directory or instance of this tree's own work — is one child, never one per instance.
+  Work in a repository this tree already has a pull request in, which waits on a sibling's merge,
+  is no child and is not parked in `backlog`: write it into the spec of the issue whose pull
+  request carries it — the parent's, or the sibling's when the parent's pull request is in another
+  repository — so one pull request lands it in order, and a deletion of what this tree replaced
+  rides in the pull request of the last change it waits on the same way.
+  Post the verdict, with the folds you made, as one `dispatch comment` on your own issue (the
+  root, in a root session). Its first line is exactly `Red-team verdict for <root key>:`, with
+  the root's own key in place of the placeholder, so a reader can find it among the issue's
+  comments; the controller's weekly audit matches that line, and counts no child filed before
+  the release that first asked for it. The architect who wrote the list reads every child on it
+  as needed, and the comment stops a later session filing the same children again.
+- A child that duplicates another issue and is not yet released is never released: fold it by the
+  duplicate rule of `skill://dispatch-first`. The daemon records a child at its release and
+  re-asserts a status only on an issue it has recorded, so that close stands. A released duplicate
+  goes out with `park_child` instead, because its work is folded into the issue you keep.
+  Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue:
+  for a duplicate, name the issue you keep in a `dispatch comment` on the child.
 - Then paste each survivor's whole spec into a fresh `task(agent="plan-gap-analyst")` to check it
   against `skill://dispatch-writing-specs`, `wait` for its result, and fix what it flags: your own
   reread misses the terms
@@ -66,9 +76,17 @@ EOF
 - `--project` is the issue key's prefix before `-<n>` (`LEGSMOKE-3` → `LEGSMOKE`).
 - In a root session `$LEGION_ISSUE` is the root (it equals `$LEGION_TREE`): pass it as `--parent`.
   The daemon makes the sub-issue link from `--parent`.
-- Order the returned keys into waves with `--blocked-by` links (a later wave's child blocked by the
-  children it builds on), then release every child at once with `release_children`: Legion holds a
-  released child until its last blocker closes, and a child is inert only until it is released.
+- File every child before you request the root spec's approval, and before `register_gate` under
+  `gates.design: off`: the gate's opening starts the root's own first phase unless the root waits
+  on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`,
+  so a child filed after that leaves the root working beside its children.
+- Give a child `--blocked-by` only for an issue outside this tree's own repositories, or one whose
+  deploy another child builds on, then release every child at once with `release_children`:
+  Legion holds a released child until its last blocker closes, and a child is inert only until it
+  is released. No child waits on a sibling's merge in a repository this tree already has a pull
+  request in; that work is written into the spec of the issue whose pull request carries it.
+  Each child the daemon starts takes an admission slot of its own, so four started children can
+  take four of the deployment's cap; when a child holds none, [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says.
 - Never release a child `--blocked-by` its own parent: the parent now merges last, so that child
   would wait forever.
 - Do not pass `--assignee`, because the default keeps the tree's questions in one Inbox: under the
@@ -76,9 +94,9 @@ EOF
   the project's default assignee, which a person sets on the Settings page; under a personal token
   it goes to that token's owner (`dispatch whoami`). Set it only when a human told you a specific
   person owns that child.
-- Write into each child's acceptance that its pull request updates
-  `.dispatch/architecture/<id>.md` for each component whose code it changes, when the project has
-  architecture components (below).
+- Write a `check` of each child for the update of
+  `.dispatch/architecture/<id>.md` for each component whose code its pull request changes, when
+  the project has architecture components (below).
 
 A role token's `<project>` is not the `--project` above: it is the daemon's own project. The daemon
 encodes a token as `legion-<project>-<key>-<role>` with the key lower-cased, so project `acme`,
@@ -97,6 +115,44 @@ other one by commit (a lock file or dependency pin), the pin is that commit. Do 
 child with `--blocked-by` instead, because Legion would start it at the blocker's close, before you
 name the merged commit. Read the other repositories with your gh's read-only access
 (`-R owner/repo`).
+
+## Recording a wait on other work
+
+Set an issue's `blocked_by` list when its work must wait on an issue outside this tree
+(`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which replaces the whole
+list, so read the issue's existing links first).
+That list is how Legion learns of the wait.
+An issue the daemon has already started returns its admission slot while a blocker of it is not
+`done`, so the deployment's cap goes to work that can move,
+except for three roots that keep it: one in `awaiting_person`, one at `admitted` whose design gate has never opened,
+and one that arrived from another tree carrying the row it held there
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label));
+nothing of the waiting issue stops — its workers stay live, its phase does not move, and its
+Dispatch status is not written — and it takes one again by itself;
+you do nothing for it.
+
+A blocker's close is the blocker's own Dispatch issue reaching `done`, and nothing more.
+It is not a merge of that work, and it is not a deployment of it.
+So pick a blocker whose close is the fact the waiting issue needs, and where the fact arrives
+later than the close, set the list again at that point rather than letting the issue start early.
+
+This does not change the rule above:
+a child that waits on another repository's merged change is released after that merge, not held by
+a link, because a link starts the child no earlier than its blocker's close, which is before you
+can name the merged commit.
+Releasing a child too early starts work that cannot build;
+a `blocked_by` link on a started issue takes a slot from work already under way, which stops
+nothing.
+
+## A root with no code of its own
+
+When every change of the tree lands through its children, the root's branch has no commit of its
+own, and GitHub opens no pull request for a branch with no commits ahead of its base: implementing
+would never end. The root's implementer then pushes one empty commit
+(`jj new -m '<KEY>: the root of its children; no code of its own'`), writes no trailer itself,
+and opens the pull request on it, as its role prompt says; that push starts the required checks
+like any other.
+Plan no code for the root in that case, and do not create a child only to give the root a commit.
 
 ## Architecture components
 

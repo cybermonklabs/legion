@@ -7,13 +7,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -36,10 +35,10 @@ func (l *factLocks) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndD
 // requests opened and pushed to, their reviews and CI settlements, and every workflow its CI runs.
 // None of them can change a record, so each is acknowledged without a transaction, the fact lock
 // or a GitHub read: a pull request event on a branch that is no issue's, a review or a checks
-// settlement of a pull request the daemon does not record, and a run of a workflow no deploy names.
-// Once the daemon records the pull request, the same review and settlement are applied under the
-// lock, the review's author's permission read first, and so are a pull request event on an issue's
-// branch and a deploy's run.
+// settlement of a pull request the daemon does not record, and a run of any workflow, which wakes
+// nothing. Once the daemon records the pull request, the same review and settlement are applied
+// under the lock, the review's author's permission read first, and so is a pull request event on
+// an issue's branch.
 func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T) {
 	pool := migratedPool(t)
 	createWrites(t, pool)
@@ -53,8 +52,49 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 	t.Cleanup(counted.Close)
 
 	js, stream := testJetStream(t)
-	spec := consumerSpec(&lockedBuffer{})
-	spec.Deploys = []config.Deploy{{Repo: ghrepo.MustParse("sjawhar/legion"), Workflow: ".github/workflows/deploy.yaml", Step: "Apply"}}
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	// A failure here prints a count, and a count alone cannot tell a late progress report from a
+	// nak: each makes the message due again at the server. The cleanup below prints what
+	// separates them - the consumer's own log, and for each durable its delivery count, its
+	// delivery sequence, its acknowledgement floor and its counts of pending and redelivered
+	// messages. It is registered after testJetStream, so it runs before that fixture's own
+	// cleanup closes the connection its consumer reads go through and before the shared server is
+	// released to the next test, which empties it: cleanups run last in, first out.
+	t.Cleanup(func() {
+		if !t.Failed() {
+			return
+		}
+		t.Logf("the consumer's log:\n%s", logs.String())
+		for _, name := range []string{dispatchConsumerName(spec.Project), githubConsumerName(spec.Project), wakeConsumerName(spec.Project)} {
+			consumer, err := stream.Consumer(context.Background(), name)
+			if err != nil {
+				t.Logf("look up consumer %s: %v", name, err)
+				continue
+			}
+			info, err := consumer.Info(context.Background())
+			if err != nil {
+				t.Logf("consumer %s info: %v", name, err)
+				continue
+			}
+			t.Logf("%s delivered %d messages, through stream sequence %d, acknowledged through %d, with %d pending and %d redelivered",
+				name, info.Delivered.Consumer, info.Delivered.Stream, info.AckFloor.Stream, info.NumPending, info.NumRedelivered)
+		}
+	})
+	// A hang guard, not the subject: this row asserts exact counts of the fact lock's statements
+	// and of the permission reads, so nothing of its own may be cut short and tried again.
+	// AckWait bounds each read the handler makes - whether the pull request is recorded
+	// (recordedPullRequest) and the review author's permission (resolveReviewPermission) - and
+	// consumerSpec's 200 ms is about the length of this handler's own work on a loaded runner, so
+	// the row sets a minute as a guard far above it. The margin is what makes these counts sound:
+	// a redelivery the counts would see needs the whole minute to pass before the handling's
+	// acknowledgement reaches the server. The campaign of dispatch://INFRA-1113 measured that
+	// trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work
+	// and that trip together, about 717 ms, are a factor of about 80 below this window.
+	// The progress keeper reports nothing here: it ticks at a third of the window
+	// (spec.AckWait/3 in consume.go), so at 20 s, and each handling of this row acknowledges in
+	// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
+	spec.AckWait = time.Minute
 	var mu sync.Mutex
 	var asked []string
 	spec.ReviewPermission = func(_ context.Context, review PullRequestReview) (bool, error) {
@@ -93,7 +133,8 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 		{"a push to such a pull request", prSubject, onOtherBranch("pr-synchronized.json")},
 		{"a review of a pull request the daemon does not record", reviewSubject, capturedGitHubEnvelope(t, "review.json")},
 		{"a checks settlement of such a pull request", checksSubject, capturedGitHubEnvelope(t, "checks.json")},
-		{"a run of a workflow no deploy names", runSubject, run("ci-run", ".github/workflows/ci.yaml")},
+		{"a completed run of a workflow", runSubject, run("ci-run", ".github/workflows/ci.yaml")},
+		{"a completed run of a workflow that deploys", "notifications.github.sjawhar.legion.workflow.deploy_yaml.completed", run("deploy-run", ".github/workflows/deploy.yaml")},
 	} {
 		waitAcknowledged(t, stream, githubConsumerName(spec.Project), publishAt(t, js, event.subject, event.body))
 		if taken := locks.taken.Load(); taken != 0 {
@@ -117,7 +158,6 @@ func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T
 		{"the review of the recorded pull request", reviewSubject, capturedGitHubEnvelope(t, "review.json")},
 		{"its checks settlement", checksSubject, capturedGitHubEnvelope(t, "checks.json")},
 		{"a pull request opened on an issue's branch", prSubject, capturedGitHubEnvelope(t, "pr-opened.json")},
-		{"a run of the deploy's workflow", "notifications.github.sjawhar.legion.workflow.deploy_yaml.completed", run("deploy-run", ".github/workflows/deploy.yaml")},
 	} {
 		waitAcknowledged(t, stream, githubConsumerName(spec.Project), publishAt(t, js, event.subject, event.body))
 		if taken := locks.taken.Load(); taken != int64(i+1) {

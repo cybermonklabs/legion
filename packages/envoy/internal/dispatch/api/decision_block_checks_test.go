@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -309,8 +310,8 @@ func TestDecisionBlockCheckOnAProjectDocumentLeavesTheDocumentOut(t *testing.T) 
 }
 
 // The checks of one edit's blocks run at once, and each reads its items' ask states and writes
-// its record on a connection of its own: every block whose question restates an answered ask is
-// answered with that decision, its ask state on the item, and every block's check is recorded.
+// its record on a connection of its own: every block whose question restates an ask is offered
+// that ask with its state on the item, and every block's check is recorded.
 // On the request's one connection mark, one check's open cursor had the pool refuse another's
 // ask-state read and record (store.ErrNestedAcquire), which dropped the state and the row. Every
 // ask shares a word with every block and carries a long answer, so each check reads every ask's
@@ -338,7 +339,7 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 		}
 		asks[block.id] = decodeBody[testAskWithSuggestions](t, opened).ID
 		answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+asks[block.id]+"/answer",
-			map[string]any{"selected": []string{"Brass"}, "text": strings.Repeat("ballast ", 40_000)}, "alice")
+			map[string]any{"selected": []string{"Brass"}, "text": strings.Repeat("ballast ", contracts.DispatchEventBodyMax/len("ballast "))}, "alice")
 		if answered.Code != http.StatusOK {
 			t.Fatalf("answer the %s ask: status=%d body=%s", block.id, answered.Code, answered.Body.String())
 		}
@@ -359,11 +360,6 @@ func TestDecisionBlockChecksEachReadTheirAskStatesAndRecord(t *testing.T) {
 		block := blocks[index]
 		if check.BlockID != block.id || check.Suggestions == nil {
 			t.Fatalf("check %d = %+v, want block %s checked", index, check, block.id)
-		}
-		decision := check.Suggestions.Decision
-		if decision == nil || decision.ID != asks[block.id] || decision.Ask == nil || decision.Ask.State != "answered" {
-			t.Fatalf("block %s: decision = %+v (suggestions %+v), want the answered ask %s with its state",
-				block.id, decision, check.Suggestions, asks[block.id])
 		}
 		listed := false
 		for _, item := range check.Suggestions.Related {

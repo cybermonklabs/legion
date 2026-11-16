@@ -67,6 +67,9 @@ type RequestReply struct {
 	RecordID   *string         `json:"record_id"`
 	Approver   json.RawMessage `json:"approver"`
 	ApproveURL string          `json:"approve_url"`
+	// Detail is the broker's own one sentence about why it denied the request, empty when it
+	// denied none.
+	Detail string `json:"detail"`
 }
 
 // LogIn logs service in with a token for account and returns its launcher credential.
@@ -117,6 +120,32 @@ func (b Pods) Enroll(by Launcher, runtimeID, account string) Pod {
 		b.T.Fatalf("enroll %s as %s = %d %s, want 201 with an enrollment_id", runtimeID, account, status, answer)
 	}
 	return Pod{RuntimeID: runtimeID, Key: key, EnrollmentID: enrolled.EnrollmentID}
+}
+
+// EnrollRefused is Enroll for an enrollment the broker is expected to refuse: it answers the
+// status and the refusal's code, and fails only when the broker created the enrollment instead.
+func (b Pods) EnrollRefused(by Launcher, runtimeID, account string) (int, string) {
+	b.T.Helper()
+	key := b.newKey()
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		b.T.Fatalf("thumbprint %s's key: %v", runtimeID, err)
+	}
+	signed, err := proof.SignLauncher(by.Key, by.CredentialID, http.MethodPost, b.Base+"/v1/enrollments", time.Now())
+	if err != nil {
+		b.T.Fatalf("sign %s's enrollment: %v", runtimeID, err)
+	}
+	status, answer := b.send(http.MethodPost, "/v1/enrollments", map[string]string{"Proof": signed}, map[string]any{
+		"kind": "pod", "runtime_id": runtimeID, "thumbprint": thumbprint, "pod_token": b.Token(account, runtimeID),
+	})
+	if status == http.StatusCreated {
+		b.T.Fatalf("enroll %s as %s = 201 %s, want a refusal", runtimeID, account, answer)
+	}
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	b.decode(answer, &refusal)
+	return status, refusal.Code
 }
 
 // Ask has p request the agent secret secretName, naming the reason a pod names, and returns the

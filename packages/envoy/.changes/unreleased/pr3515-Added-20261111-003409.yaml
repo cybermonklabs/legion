@@ -1,0 +1,5 @@
+kind: Added
+body: agent-secrets --github-token hands the command one GitHub App installation token alone, in place of the JSON object of installations. It needs --github-owner, and it refuses a release that does not hold exactly one installation. Without the flag the value is the object, as before.
+time: 2026-11-11T00:34:09.390567128Z
+custom:
+    Issue: pr3515

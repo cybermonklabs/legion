@@ -43,7 +43,7 @@ state does not work for this.
 - **When you move state from one scope to another, list every property the old scope enforced and
   keep a test for each.** The properties nobody names are the ones that get dropped. Changing the
   expected wire order in an existing test is a behaviour change, not test maintenance. It needs
-  the ruling of whoever owns the behaviour (the architect), not the implementer's judgement.
+  the decision of whoever owns the behaviour (the architect), not the implementer's judgement.
 - **For a native `<select>`, coalescing is a requirement, not an optimisation.** Each ArrowDown
   on a closed select fires `change`, so a reader passing through the list makes one pick per key
   press. Here every stored intermediate pick is a project default that an issue created at that
@@ -90,3 +90,7 @@ the previous round's tests could not see.
    (the refusal alert on return). The tester then drove the built page: a refusal still shown
    after 320 s away, past the default `gcTime`; 40 picks against 30 ms saves stored and showed the
    last pick, with one entry left in the project's mutation cache.
+
+Since INFRA-3090 the worked example's route takes no null.
+Every project names a default assignee, so the picker moves one person to another and clears none.
+The rules above still hold for the queue.

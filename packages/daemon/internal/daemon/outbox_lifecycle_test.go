@@ -11,16 +11,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -58,7 +59,7 @@ func TestAnEarlierGenerationsSuperviseRowNeverActsOnTheNextGeneration(t *testing
 	if got := machine.Claim().State; got != supervise.StateFailed {
 		t.Fatalf("implementer = %s, want failed", got)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
 	handlers := []intake.Handler{engine, admission}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "todo"}}
@@ -154,6 +155,10 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
+	// The issue is at work, so it holds one of the cap's slots: a phase worker's start is one
+	// row, which carries the task and runs when the issue holds a slot (workflow.StartOrOwe).
+	// This test runs no admission pass of its own, so the slot is seeded here.
+	holdSlot(t, pool, issue.Key)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
@@ -185,7 +190,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 		t.Fatalf("start the planning turn: %v", err)
 	}
 	// The linger outlasts the test's clock, so the close's suspends are all the close does here.
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Linger: 24 * time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -233,7 +238,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 
 	// Inside that turn the planner reports planning complete, and the issue moves to implementing:
 	// the implementer is started while the planner's turn still runs, and no stop is queued.
-	if result, err := intake.ApplyFact(ctx, pool, "api", "handoff:planner:planning", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RolePlanner, Claim: planner, Commit: "plan-1"}, engine); err != nil || result.Refusal != nil {
+	if result, err := intake.ApplyFact(ctx, pool, "api", "handoff:planner:planning", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RolePlanner, Claim: planner, HandoffRecord: "plan-1", HandoffVersion: 1}, engine); err != nil || result.Refusal != nil {
 		t.Fatalf("complete planning = %+v, %v", result.Refusal, err)
 	}
 	var queuedStops int
@@ -286,7 +291,7 @@ func TestAPhaseCompletionLeavesTheWorkerResidentUntilItsIssueCloses(t *testing.T
 	}
 	endTurn(ctx, t, machine, planner)
 	// Answering, it completes again, and the completion changes nothing.
-	result, err := intake.ApplyFact(ctx, pool, "api", "handoff:planner:after", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RolePlanner, Claim: planner, Commit: "plan-2"}, engine)
+	result, err := intake.ApplyFact(ctx, pool, "api", "handoff:planner:after", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RolePlanner, Claim: planner, HandoffRecord: "plan-2", HandoffVersion: 2}, engine)
 	if err != nil || result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" {
 		t.Fatalf("the finished planner's later completion = %+v, %v; want HANDOFF_NOT_CURRENT_PHASE", result.Refusal, err)
 	}
@@ -354,7 +359,7 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: planner}); err != nil {
 		t.Fatalf("start the planning turn: %v", err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Linger: 24 * time.Hour}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: 24 * time.Hour}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -398,20 +403,24 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	}
 }
 
-// CI settling red while the tester is in a turn — running a tool, its phase not completed — takes
-// the phase back to implementing with nobody's completion. The implementer's start runs at once, as
-// at every other phase change: it waits for no turn to end, and hands the implementer the CI-red
-// task while the tester is still working. The tester's turn is its own — nothing interrupts it and
-// nothing stops it — and it keeps its launch, its session and its capability.
-func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
+// The head starting to conflict with its base while the tester is in a turn — running a tool, its
+// phase not completed — takes the phase back to implementing with nobody's completion. The
+// implementer's start runs at once, as at every other phase change: it waits for no turn to end,
+// and hands the implementer the conflict's task while the tester is still working. The tester's
+// turn is its own — nothing interrupts it and nothing stops it — and it keeps its launch, its
+// session and its capability.
+func TestAConflictStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
+	// The issue is at work in testing and at work in implementing after the red, so it holds its
+	// admission slot throughout: the implementer's task is delivered rather than held for one.
+	holdSlot(t, pool, issue.Key)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1",
-			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, Required: []string{"ci"}})
+			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
 		t.Fatalf("seed the pull request: %v", err)
 	}
@@ -457,7 +466,7 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 	implementer, implementerConn := boot(claim.RoleImplementer, "", "")
 	tester, _ := boot(claim.RoleTester, "Continue Workflow. Issue: LEGION-208. Phase: testing.", phase.Testing)
 	before := tester.Claim()
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -473,23 +482,23 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 		}
 		implementer.Wait()
 	}
-	ciRedTasks := func() int {
+	conflictTasks := func() int {
 		t.Helper()
 		count := 0
 		for _, prompt := range implementerConn.Prompts() {
-			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "CI is red at sha-1: ci") {
+			if strings.Contains(prompt.Message, "Phase: implementing.") && strings.Contains(prompt.Message, "the head conflicts with main") {
 				count++
 			}
 		}
 		return count
 	}
 
-	if result, err := intake.ApplyFact(ctx, pool, "github", "red", intake.PullRequestChecks{Repo: "acme/widgets", Number: 86, HeadSHA: "sha-1",
-		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, Snapshot: "red-1", Failing: []string{"ci"}}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the red verdict = %+v, %v", result, err)
+	if result, err := intake.ApplyFact(ctx, pool, "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86, HeadSHA: "sha-1",
+		Base: "main", Mergeable: record.MergeabilityConflicting}, engine); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the conflicting head = %+v, %v", result, err)
 	}
 	run("the send-back's effects")
-	testwait.Eventually(t, "the implementer to be handed its CI-red task", func() bool { return ciRedTasks() == 1 })
+	testwait.Eventually(t, "the implementer to be handed its conflict task", func() bool { return conflictTasks() == 1 })
 	during := tester.Claim()
 	if during.State != supervise.StateWorking {
 		t.Fatalf("while the implementer started the tester is %s, want working: its turn is its own", during.State)
@@ -502,8 +511,8 @@ func TestACIRedStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) 
 		*after.Locator != *before.Locator || !bytes.Equal(after.CapabilityHash, before.CapabilityHash) {
 		t.Fatalf("after the send-back the tester is %+v, want idle on its launch, session and capability", after)
 	}
-	if ciRedTasks() != 1 {
-		t.Fatalf("the implementer was handed %d CI-red tasks, want the one the start delivered", ciRedTasks())
+	if conflictTasks() != 1 {
+		t.Fatalf("the implementer was handed %d conflict tasks, want the one the start delivered", conflictTasks())
 	}
 	for _, method := range []string{"Suspend", "Release"} {
 		for _, call := range rt.CallsOf(method) {
@@ -525,14 +534,16 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
 	putOutboxIssue(t, pool, records, issue)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: "planner", HandoffCommit: "plan-1", LastHandoff: "plan-1"})
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: "planner", HandoffRecord: "plan-1", HandoffVersion: 1, LastHandoff: "plan-1"})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
-	sup.OnTerminal((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
+	// The terminal hook carries the deployment's limits into the fact, as the boot's attach does
+	// (workflowRuntime.attach), so the notice below names each count against its own limit.
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Limits}).claimDurableState)
 	planner, err := claim.NewToken("legion", issue.Key, claim.RolePlanner)
 	if err != nil {
 		t.Fatal(err)
@@ -585,11 +596,26 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	if err := die(); err == nil {
 		t.Fatal("the death whose relaunch the runtime refused answered nil, want the refusal")
 	}
-	if got := machine.Claim().State; got != supervise.StateFailed {
-		t.Fatalf("after its relaunches ran out the planner is %s, want failed", got)
+	failed := machine.Claim()
+	if failed.State != supervise.StateFailed {
+		t.Fatalf("after its relaunches ran out the planner is %s, want failed", failed.State)
 	}
+	// The worker-died carries the failure with it: the cause the relaunch of the death recorded,
+	// the sentence the supervisor wrote beside it, the counts that failure left against the
+	// deployment's limits, and the two the claim itself recorded — why its process was last found
+	// gone and why its last start produced no agent (record.NoticeFailure, workflow's
+	// noticeFailure, dispatch://INFRA-714 R6). The deaths are not counted here — a parked agent
+	// holding no task dies uncounted — which the record says in as many words.
 	died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Implementing,
-		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held"}
+		Reason: "the planner does not work LEGION-208's phase implementing; nothing is held",
+		Failure: &record.NoticeFailure{Cause: string(supervise.CauseDied), Detail: failed.Failure,
+			LaunchFailures: record.FailureBudget{Count: 2, Limit: 2}, Deaths: record.FailureBudget{Limit: 2},
+			PromptFailures: record.FailureBudget{Limit: 2}, PromptRetires: record.FailureBudget{Limit: 2},
+			Death: failed.LastDeathCause, StartFailure: failed.LastStartFailure}}
+	if failed.LastDeathCause == "" || failed.LastStartFailure == "" {
+		t.Fatalf("the failed planner recorded death %q and start failure %q; want both, since the record below is what carries them to the architect",
+			failed.LastDeathCause, failed.LastStartFailure)
+	}
 	var notices []record.OutboxPayload
 	testwait.Eventually(t, "the architect to be told of the finished planner's failure", func() bool {
 		notices = nil
@@ -612,7 +638,14 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 		return len(notices) > 0
 	})
 	if len(notices) != 1 || !reflect.DeepEqual(notices[0], record.OutboxPayload(died)) {
-		t.Fatalf("notices = %+v, want the one worker-died %+v", notices, died)
+		// The failure record is behind a pointer, so it is printed beside each notice: a diff of
+		// two addresses says nothing to the reader of a failing run.
+		var got *record.NoticeFailure
+		if notice, ok := notices[0].(record.Notice); ok && len(notices) == 1 {
+			got = notice.Failure
+		}
+		t.Fatalf("notices = %+v with failure %+v, want the one worker-died %+v with failure %+v",
+			notices, got, died, died.Failure)
 	}
 	var current phase.Phase
 	var held bool
@@ -624,7 +657,7 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	}
 }
 
-func unfinishedSuperviseRows(t *testing.T, pool *pgxpool.Pool) int {
+func unfinishedSuperviseRows(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where kind = 'supervise'").Scan(&rows); err != nil {
@@ -654,11 +687,11 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 			return err
 		}
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "acme/widgets", Number: 86, Branch: "legion/" + key, HeadSHA: "sha-1",
-			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, FixAttempts: 2})
+			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}, CheckedHead: "sha-1"})
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
 	for _, step := range []struct {
 		id   string
@@ -668,8 +701,8 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 		{"todo", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: "U", HandedOver: true}},
 		{"gate", intake.GateRegistered{Issue: key, ArtifactID: artifact, Version: 2}},
 		{"approve", intake.DispatchArtifact{Key: key, ArtifactID: artifact, Kind: intake.DispatchArtifactApproved, Version: 2}},
-		{"plan", intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Summary: "plan", Commit: "plan-1"}},
-		{"implement", intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Summary: "impl", Commit: "impl-1"}},
+		{"plan", intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RolePlanner, Summary: "plan", HandoffRecord: "plan-1", HandoffVersion: 1}},
+		{"implement", intake.HandoffComplete{Generation: 2, Issue: key, Role: claim.RoleImplementer, Summary: "impl", Commit: "impl-1", HandoffRecord: "implement-1", HandoffVersion: 1}},
 	} {
 		if _, err := intake.ApplyFact(ctx, pool, "test", step.id, step.fact, engine, admission); err != nil {
 			t.Fatalf("apply %s: %v", step.id, err)
@@ -683,12 +716,12 @@ func TestAReadmittedTreeKeepsItsOpenPullRequest(t *testing.T) {
 	if current != phase.Testing || generation != 2 {
 		t.Fatalf("generation %d is in %s after its implementer completed, want generation 2 in testing on the open pull request #86", generation, current)
 	}
-	var fixAttempts int
-	if err := pool.QueryRow(ctx, "select fix_attempts from pull_requests where issue = $1 and number = 86", key).Scan(&fixAttempts); err != nil {
+	var checkedHead string
+	if err := pool.QueryRow(ctx, "select checked_head from pull_requests where issue = $1 and number = 86", key).Scan(&checkedHead); err != nil {
 		t.Fatalf("read the kept pull request: %v", err)
 	}
-	if fixAttempts != 0 {
-		t.Fatalf("kept pull request fix attempts = %d, want generation 1's count reset", fixAttempts)
+	if checkedHead != "" {
+		t.Fatalf("kept pull request checked head = %q, want generation 1's reading cleared", checkedHead)
 	}
 }
 
@@ -702,16 +735,19 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	parent := "LEGION-208"
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "child", Parent: &parent, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V", LastDispatchSeq: 1})
+	// The tree runs: its lifecycle is open (openTree), which is what says so (record.TreeLive),
+	// and each of its two issues holds the admission slot its work holds — the root implementing
+	// and the child testing. Without the lifecycle admission would find a root in the workflow
+	// that no slot can reach and take the whole tree out of it, which is not what this test moves.
+	openTree(t, pool, "LEGION", "LEGION-208")
+	holdSlot(t, pool, "LEGION-208", "LEGION-209")
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: time.Now()}); err != nil {
-			return err
-		}
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "acme/widgets", Number: 90, Branch: "legion/LEGION-209", HeadSHA: "sha",
 			HeadUpdatedAt: time.Now(), Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 	}); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
 
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "child", Parent: parent, Rank: "V"}, engine, admission); err != nil {
@@ -727,7 +763,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-pass", intake.HandoffComplete{Generation: 1, Issue: "LEGION-209", Role: claim.RoleTester, Summary: "pass", Verdict: "pass", Commit: "test-1"}, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-pass", intake.HandoffComplete{Generation: 1, Issue: "LEGION-209", Role: claim.RoleTester, Summary: "pass", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1}, engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	var childPhase phase.Phase
@@ -775,6 +811,12 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
+	// An issue in retro holds no admission slot (record.KeepsSlot), and the move back to
+	// implementing writes a start that waits for one (workflow.StartOrOwe). This row stands for
+	// the grant the admission pass gives that start, which this test does not run: what it proves
+	// is the handoff between two phases of one worker, so the implementing task is given its row
+	// up front and waits for nothing.
+	holdSlot(t, pool, issue.Key)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "claim"})
 	}); err != nil {
@@ -783,7 +825,7 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 	clock := time.Now()
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION",
 		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
@@ -1008,7 +1050,7 @@ func TestARootLeavingTheWorkflowSuspendsEveryWorkerOfItsTree(t *testing.T) {
 		return machine
 	}
 	rootWorker, childWorker := ready(root.Key), ready(child.Key)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: outboxTreeStore(t, pool, root.Key), project: "legion", log: quietLogger(), now: time.Now,
 		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: root.Key, Status: "backlog"}}, notices: &outboxPublisher{}, handlers: []intake.Handler{engine}}
 

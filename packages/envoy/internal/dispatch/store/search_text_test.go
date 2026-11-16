@@ -19,7 +19,7 @@ func seedSearchDocument(t *testing.T, ctx context.Context, store *Store) string 
 	t.Helper()
 	var artifactID string
 	if err := store.Pool.QueryRow(ctx, `
-		with p as (insert into projects (key, name) values ('CORE', 'Core') returning key),
+		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
 		i as (insert into issues (key, project_key, number, title, created_by, rank) values ('CORE-1', 'CORE', 1, 'Search', '{"kind":"user","id":"alice"}', 'A') returning key),
 		a as (insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by) select 'CORE-1', 'CORE', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}' from i returning id)
 		select id::text from a
@@ -116,7 +116,13 @@ func TestSearchTextKeepsEveryLexeme(t *testing.T) {
 			return err
 		}
 		files++
-		same(path, string(body))
+		// A file read off disk is not text a caller wrote: every reader of a caller's markdown
+		// reads a U+0000 as U+FFFD before any parser sees it (pmdoc, nulAsReplacement), and what
+		// a document is stored as is the markdown the renderer wrote from that reading, so no
+		// text holding the character reaches this store. PostgreSQL takes no U+0000 in a text
+		// parameter at all, and the pmdoc corpus holds a document of them as the proof of that
+		// reading, so the walk reads it the way the readers do.
+		same(path, strings.ReplaceAll(string(body), "\x00", "\uFFFD"))
 		return nil
 	}); err != nil {
 		t.Fatalf("walk %s: %v", moduleRoot, err)

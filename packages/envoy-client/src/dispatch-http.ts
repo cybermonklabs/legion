@@ -8,30 +8,44 @@ import type {
   Artifact,
   ArtifactBlock,
   ArtifactReferences,
+  ArtifactReview,
   ArtifactText,
   ArtifactUploadResponse,
   ArtifactVersionText,
-  Ask,
   AskRead,
+  AskWithTrees,
+  CheckResultRecorded,
+  CheckResultRetraction,
+  CheckResultRetractionInput,
   ClaimedIssue,
   Comment,
   CommentRead,
   CommentWriteResponse,
+  CreateAgentMessageInput,
   CreateArtifactInput,
   CreateAskInput,
   CreateCommentInput,
+  CreatedProject,
   CreateIssueInput,
   CreateMessageInput,
   CreateProjectInput,
   CreateVersionInput,
+  CredentialPendingResponse,
+  DispatchEvent,
+  DispatchLimits,
   DispatchServiceErrorShape,
+  DocumentAdvised,
   EditArtifactInput,
   EditArtifactResponse,
   EditAskInput,
-  Event,
   GraphEdgeKind,
   GraphReferences,
+  Handoff,
+  HandoffSummary,
+  InboxRow,
   Issue,
+  IssueCheckResults,
+  IssueCoverage,
   IssueDetails,
   IssuePriority,
   IssueRead,
@@ -40,12 +54,16 @@ import type {
   IssueSummary,
   IssueSummaryPage,
   ItemBlocks,
+  MarkdownRoundTripResponse,
   Message,
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
+  MyRepliesResponse,
   OpenAsksResponse,
+  Priorities,
   Project,
+  RecordCheckResultInput,
   RelatedCheckInput,
   ResolveAskInput,
   SearchResponse,
@@ -58,6 +76,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -66,10 +85,17 @@ import {
   type IdempotencyLandedCode,
   retriesUnderKey,
 } from "@legion/contracts";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
 import { textHead } from "./ask-answer";
+import type { RequestCredential } from "./bearer";
 
-export type { DispatchServiceErrorShape } from "@legion/contracts";
+export type {
+  CredentialPendingResponse,
+  CredentialPendingRow,
+  CredentialSession,
+  DispatchServiceErrorShape,
+} from "@legion/contracts";
 
 /** The stored bytes of one version of an uploaded file, and the MIME type Dispatch serves them as. */
 export interface ArtifactFileVersion {
@@ -140,7 +166,9 @@ export class DispatchGatewayError extends DispatchServiceError {
  * no answer at all, after an attempt that may have reached Dispatch: its last attempt was cut off
  * for silence, or the call's deadline ended it. This is deliberately no `DispatchServiceError`,
  * which a caller reads as a refusal Dispatch decided. `last` (also the `cause`) is that last
- * refusal, the silence cut or the deadline's timeout.
+ * refusal, the silence cut or the deadline's timeout. Where the call saw Dispatch's keyed layer
+ * judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and that a
+ * resend is a new command's, under a new key, so the write is to be read back first.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -152,27 +180,32 @@ export class DispatchWriteUnsettledError extends Error {
      * What the write got, as the message's first clause, where `last` is no refusal that says it:
      * `<METHOD> <url>` and how it ended. `last`'s own message otherwise.
      */
-    unanswered?: string
+    unanswered?: string,
+    keyed = false
   ) {
     let answer: string;
     let why = "an earlier attempt of the write may have reached Dispatch";
     if (last instanceof DispatchGatewayError) {
       answer = last.answer;
+    } else if (last instanceof DispatchServiceError && last.code === IDEMPOTENCY_KEY_IN_FLIGHT) {
+      // Dispatch's own text tells the caller to ask again under the same key, which the client
+      // already did and a person or agent reading this cannot: the code alone names the answer.
+      answer = last.code;
+      why = "Dispatch was still running an earlier attempt of the write";
     } else if (last instanceof DispatchServiceError) {
       answer = `${last.code}: ${last.message}`;
-      if (last.code === IDEMPOTENCY_KEY_IN_FLIGHT) {
-        why = "Dispatch was still running an earlier attempt of the write";
-      }
     } else {
       answer = unanswered ?? last.message;
       why = "an attempt of the write may have reached Dispatch";
     }
     const tried = attempts === 1 ? "its only attempt" : `the last of ${attempts} attempts`;
-    super(
-      `${answer} (${tried}), and ${why}, so it may or may not have taken effect: check whether ` +
-        "it did before retrying it.",
-      { cause: last }
-    );
+    const next = keyed
+      ? ". Dispatch finishes an attempt it received whatever this command does, so read the " +
+        "write back before you send it again: a new command sends it under a new key."
+      : ": check whether it did before retrying it.";
+    super(`${answer} (${tried}), and ${why}, so it may or may not have taken effect${next}`, {
+      cause: last,
+    });
   }
 }
 
@@ -244,6 +277,11 @@ export interface IssuePageRequest {
   readonly offset: number;
 }
 
+/** What the `dispatch search` command narrows by. It carries none of the five members the search
+ *  bar sends (`number_project`, `status`, `author`, `updated_since`, `keywords_only`): those
+ *  belong to the bar's own feature, and the command cannot narrow by them today. `search` reads
+ *  the request's keys rather than this shape, so the day one is added here it is routed to
+ *  `GET /api/v1/search/results` with nobody remembering to. */
 export interface SearchOptions {
   readonly project?: string;
   readonly limit?: number;
@@ -283,30 +321,50 @@ function requestSignal(signal: AbortSignal | undefined): AbortSignal {
  * in that time - is cut off and asked again like one that failed in transport, so a write Dispatch
  * is slow to finish is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed)
  * rather than waited on for the call's whole deadline, while an upload still going out is never
- * cut. `pause` and `now` are the timer and the monotonic clock, which a test replaces; `now` also
- * dates what the process learns about which Dispatch runs the keyed layer
+ * cut. Once an attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
+ * `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed layer finishes that
+ * run whatever the client does, so the write keeps asking until it gets the run's stored answer:
+ * every `inFlightPauseMs` at most, unless a shorter pause of the schedule's or a longer
+ * `Retry-After` applies, with no retry starting once `inFlightWithinMs` has passed. An upload keeps
+ * the schedule alone, since each repeat sends its whole body again. No retry of any write starts
+ * more than `inFlightWithinMs` after the client was made, since the client's deadline counts from
+ * there. `pause` and `now` are the timer and the monotonic clock, which a test replaces; `now`
+ * also dates what the process learns about which Dispatch runs the keyed layer
  * (`KEYED_LAYER_MEMORY_MS`).
  */
 export interface DispatchWriteRetry {
   readonly pausesMs: readonly number[];
   readonly withinMs: number;
   readonly silenceMs: number;
+  readonly inFlightPauseMs: number;
+  readonly inFlightWithinMs: number;
   /** Waits `ms`, or rejects with the signal's reason once it aborts. */
   readonly pause?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly now?: () => number;
 }
 
 /**
- * At most five attempts, 1, 2, 4 and 8 s apart, none starting more than 30 s after the first, each
- * cut off after 20 s without progress: a write whose every attempt fails at once settles in about
- * 15 s, a `Retry-After` can stretch that to the 30 s bound, and an attempt started then that hears
- * nothing is cut off by 50 s, all inside the call's 60 s deadline, so a Dispatch that is down holds
- * the `dispatch` command, and the session waiting on it, for no longer.
+ * At most five attempts, 1, 2, 4 and 8 s apart, none starting more than 30 s after the first, so a
+ * write whose every attempt fails at once settles in about 15 s and a `Retry-After` can stretch that
+ * to 30 s. A write Dispatch may still be running is asked every 3 s at most (longer only when a
+ * `Retry-After` asks) until 55 s, so an attempt cut off for silence at 20 s still has 35 s in which
+ * Dispatch can finish it, two silent attempts and the ask that collects the answer fit, and the
+ * last ask has 5 s before the client's 60 s deadline.
+ *
+ * Measured from the transcript store over 3,612 `dispatch` write commands that succeeded between
+ * 2026-10-31 21:00Z and 2026-11-02 07:30Z, Dispatch's busiest days so far: p50 1.8 s, p90 10.5 s,
+ * p95 19.6 s, p99 45.5 s, p99.9 62 s, each command timed whole, process start included, so an
+ * upper bound on the write itself. 20 s of silence is that p95, and two silent attempts and the
+ * ask that collects the answer still fit in 55 s (20 + 1 + 20 + 2 = 43 s). Cutting off a healthy
+ * write costs nothing against a Dispatch known to run the keyed layer, which goes on running it
+ * and replays its answer.
  */
 export const DISPATCH_WRITE_RETRY: DispatchWriteRetry = {
   pausesMs: [1_000, 2_000, 4_000, 8_000],
   withinMs: 30_000,
   silenceMs: 20_000,
+  inFlightPauseMs: 3_000,
+  inFlightWithinMs: 55_000,
 };
 
 function pauseFor(ms: number, signal: AbortSignal): Promise<void> {
@@ -346,8 +404,9 @@ export const KEYED_LAYER_MEMORY_MS = 5 * 60_000;
 /**
  * The Dispatch origins this process has lately seen run the keyed-write layer, each with when it
  * last saw it (on `DispatchWriteRetry.now`'s clock): an answer that carried back the key its request
- * sent (`keyEchoed`), or a `/healthz` that said `idempotency_keys: true`. Only such a Dispatch is
- * asked again under a key; against any other a repeat would be a second write. An entry older than
+ * sent (`keyEchoed`), or a `/healthz` that said `idempotency_keys: true`, in this process or in an
+ * earlier one of the same `dispatch` session (`rememberKeyedLayer`). Only such a Dispatch is asked
+ * again under a key; against any other a repeat would be a second write. An entry older than
  * `KEYED_LAYER_MEMORY_MS` says nothing, and only a yes is kept: a probe that found no layer is asked
  * again by the next write that fails.
  */
@@ -370,6 +429,50 @@ const KEY_LAYER_PROBE_MS = 5_000;
 export function forgetKeyedLayerMemory(): void {
   KEYED_LAYER_SEEN.clear();
   KEYED_LAYER_PROBES.clear();
+}
+
+/**
+ * What this process has seen of the keyed layer within `KEYED_LAYER_MEMORY_MS`, each origin with
+ * the wall-clock time of its sighting, for a host that runs each call in a process of its own to
+ * hand to the next (`rememberKeyedLayer`): the `dispatch` command keeps it in its session's state,
+ * since otherwise every call would know nothing and ask `/healthz`, which the load that stalled
+ * the write can keep from answering in time. Read on the monotonic clock a client dates by when
+ * `DispatchWriteRetry.now` is unset, as the command's are.
+ */
+export function keyedLayerMemory(): Record<string, string> {
+  const wall = Date.now();
+  const now = performance.now();
+  const kept: Record<string, string> = {};
+  for (const [origin, seen] of KEYED_LAYER_SEEN) {
+    const age = now - seen;
+    if (age >= 0 && age < KEYED_LAYER_MEMORY_MS) {
+      kept[origin] = new Date(wall - age).toISOString();
+    }
+  }
+  return kept;
+}
+
+/**
+ * Takes in what an earlier process saw (`keyedLayerMemory`'s shape), so a yes still holds only
+ * `KEYED_LAYER_MEMORY_MS` from the answer that showed it. Anything else says nothing and is passed
+ * over: a value that is not that shape, a time that does not parse, one older than the bound and
+ * one ahead of the wall clock. The wall clock is the one clock processes share across a reboot
+ * (Bun's `process.hrtime` counts from its own process's start), so a wall clock set back between
+ * two calls stretches the bound by as much. A sighting this process already holds gives way only
+ * to a later one.
+ */
+export function rememberKeyedLayer(saved: unknown): void {
+  if (typeof saved !== "object" || saved === null) return;
+  const wall = Date.now();
+  const now = performance.now();
+  for (const [origin, at] of Object.entries(saved)) {
+    if (typeof at !== "string") continue;
+    const age = wall - Date.parse(at);
+    if (!(age >= 0 && age < KEYED_LAYER_MEMORY_MS)) continue;
+    const seen = now - age;
+    const known = KEYED_LAYER_SEEN.get(origin);
+    if (known === undefined || known < seen) KEYED_LAYER_SEEN.set(origin, seen);
+  }
 }
 
 /**
@@ -443,6 +546,8 @@ interface WriteAnswer {
   readonly again: boolean;
   /** Whether this attempt, or one Dispatch was still running, may have reached Dispatch. */
   readonly reached: boolean;
+  /** Whether it is Dispatch's `409 KEY_IN_FLIGHT`: an earlier attempt still runs under the key. */
+  readonly running: boolean;
   /** Whether it carried back the request's key, so Dispatch's keyed layer judged the request. */
   readonly echoed: boolean;
   /**
@@ -469,7 +574,7 @@ const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
 async function writeAnswer(response: Response, key: string): Promise<WriteAnswer> {
   const echoed = keyEchoed(response, key);
   if (response.ok || NULL_BODY_STATUSES.has(response.status)) {
-    return { response, again: false, reached: false, echoed, unjudged: false };
+    return { response, again: false, reached: false, running: false, echoed, unjudged: false };
   }
   const { status } = response;
   const text = await response.text();
@@ -482,6 +587,7 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
     }
   }
   const again = retriesUnderKey(status, shape.code);
+  const running = again && status === 409;
   return {
     response: new Response(text, {
       status,
@@ -489,7 +595,8 @@ async function writeAnswer(response: Response, key: string): Promise<WriteAnswer
       headers: response.headers,
     }),
     again,
-    reached: status >= 500 || (again && status === 409),
+    reached: status >= 500 || running,
+    running,
     echoed,
     unjudged: !echoed && typeof shape.error === "string",
   };
@@ -668,21 +775,41 @@ function excerpt(text: string, token: string): string {
  * JSON HTTP client for Dispatch's native-tool API. Every request goes through `#send`, where each
  * write (POST or PATCH) carries an `Idempotency-Key` of its own and asks again under it as
  * `writeRetry` paces it.
+ *
+ * `credential` is what every request presents: a bearer (`bearerCredential`, src/bearer.ts), or
+ * what this machine trades its own identity for at the secrets broker, presented under the
+ * `DPoP` scheme with a fresh proof of this process's key on every request. A resolved Dispatch
+ * holds exactly one of them (`ActiveDispatchConfig.credential`), so no caller chooses.
  */
 export class DispatchClient {
   readonly #baseUrl: string;
   readonly #resolvedIssues = new Map<string, Promise<string>>();
   readonly #signal: AbortSignal;
+  readonly #credential: RequestCredential;
+  /**
+   * When this client was made, on the write clock (`#now`): its 60 s deadline counts from here, so
+   * no write asks again later than `writeRetry.inFlightWithinMs` after it, however late in the
+   * client's life the write began.
+   */
+  readonly #madeAt: number;
 
   constructor(
     baseUrl: string,
-    readonly token: string,
+    credential: RequestCredential,
     readonly fetchImpl: typeof fetch = fetch,
     signal?: AbortSignal,
     readonly writeRetry: DispatchWriteRetry = DISPATCH_WRITE_RETRY
   ) {
-    this.#baseUrl = baseUrl.replace(/\/+$/, "");
+    this.#credential = credential;
+    this.#baseUrl = withoutTrailingSlashes(baseUrl);
     this.#signal = requestSignal(signal);
+    this.#madeAt = this.#now();
+  }
+
+  /** The secret this client presents, which an excerpt of someone else's answer redacts; "" while
+   *  a broker credential has yet to trade for one. */
+  get token(): string {
+    return this.#credential.secret();
   }
 
   /**
@@ -739,6 +866,26 @@ export class DispatchClient {
     );
   }
 
+  /** `GET /api/v1/issues/{key}/artifacts`: every document and file the issue holds, each with
+   *  its versions, which is what `dispatch artifact` reads to refuse a name the issue already
+   *  holds. */
+  async listIssueArtifacts(issue: string): Promise<Artifact[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"]);
+  }
+
+  /** `POST /api/v1/markdown/round-trip`: the markdown Dispatch would store for this text. The
+   *  route writes nothing: it parses the text and renders it again, as a document write does, so
+   *  a caller compares the answer with the text it holds and refuses a text the store would
+   *  change. */
+  async markdownRoundTrip(markdown: string): Promise<string> {
+    const answer: MarkdownRoundTripResponse = await this.#json(
+      "POST",
+      ["api", "v1", "markdown", "round-trip"],
+      { markdown }
+    );
+    return answer.markdown;
+  }
+
   async listProjectArtifacts(project: string, unlinked = false): Promise<Artifact[]> {
     return this.#json(
       "GET",
@@ -758,7 +905,7 @@ export class DispatchClient {
     project: string,
     input: CreateArtifactInput,
     key?: string
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<DocumentAdvised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "projects", project, "artifacts"], input, key);
   }
 
@@ -772,7 +919,7 @@ export class DispatchClient {
   async agentArtifact(
     sessionId: string,
     input: CreateArtifactInput
-  ): Promise<ArtifactUploadResponse> {
+  ): Promise<Advised<ArtifactUploadResponse>> {
     return this.#upload(["api", "v1", "agents", sessionId, "artifacts"], input);
   }
 
@@ -791,8 +938,15 @@ export class DispatchClient {
     ]);
   }
 
+  /** `GET /api/v1/search`, or `GET /api/v1/search/results` for a request carrying a member a
+   *  Dispatch released before that route would drop (`everyBuildReadsSearch`), which such a
+   *  build refuses rather than answering unnarrowed. */
   async search(query: string, options: SearchOptions = {}): Promise<SearchResponse> {
-    return this.#json("GET", ["api", "v1", "search"], undefined, { q: query, ...options });
+    const request = { q: query, ...options };
+    const path = everyBuildReadsSearch(request)
+      ? ["api", "v1", "search"]
+      : ["api", "v1", "search", "results"];
+    return this.#json("GET", path, undefined, request);
   }
 
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
@@ -838,7 +992,11 @@ export class DispatchClient {
     );
   }
 
-  async getIssueEvents(issue: string, after = 0, limit = ISSUE_EVENTS_PAGE_MAX): Promise<Event[]> {
+  async getIssueEvents(
+    issue: string,
+    after = 0,
+    limit = ISSUE_EVENTS_PAGE_MAX
+  ): Promise<DispatchEvent[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "events"],
@@ -861,7 +1019,7 @@ export class DispatchClient {
         : requested === "all"
           ? issue.last_seq
           : Math.min(requested, issue.last_seq);
-    const events: Event[] = [];
+    const events: DispatchEvent[] = [];
     let after = Math.max(0, issue.last_seq - count);
     while (events.length < count) {
       const limit = Math.min(ISSUE_EVENTS_PAGE_MAX, count - events.length);
@@ -881,7 +1039,7 @@ export class DispatchClient {
     return { issue, events };
   }
 
-  async ask(issue: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -899,6 +1057,12 @@ export class DispatchClient {
   /** Every open ask on a project's issues and documents (issue- or document-owned), oldest first. */
   async openAsksForProject(project: string): Promise<OpenAsksResponse> {
     return this.#json("GET", ["api", "v1", "asks", "open"], undefined, { project });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order with the work under it, and the
+   *  two faults; `project`, repeated, counts only those projects' work. */
+  async priorities(projects: readonly string[] = []): Promise<Priorities> {
+    return this.#json("GET", ["api", "v1", "priorities"], undefined, { project: projects });
   }
 
   /** `GET /api/v1/agents/{session_id}/answers`: what people wrote that Dispatch delivered to the
@@ -938,9 +1102,44 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "whoami"]);
   }
 
-  /** `POST /api/v1/projects`: create a project. A key that already exists is 409
+  /** `GET /api/v1/limits`: the bounds this server holds a write to, each read from the constant
+   *  that enforces it. The client keeps no copy of them: it prints what the server answers. */
+  async limits(): Promise<DispatchLimits> {
+    return this.#json("GET", ["api", "v1", "limits"]);
+  }
+
+  /** `GET /api/v1/inbox?assignee=<who>`: the open asks one person's Inbox lists, in the server's
+   *  own order (the owning issue's priority, then whose turn it is, then the latest activity),
+   *  which no reader re-sorts. `me` is the caller, and keeps the rows waiting on them — the asks
+   *  handed to them, and the asks on the issues assigned to them that nobody has handed on —
+   *  which is what the Inbox page shows by default. The route reads the caller's own `person`
+   *  scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
+  async inbox(assignee: string): Promise<InboxRow[]> {
+    return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
+  }
+
+  /** `GET /api/v1/me/replies?kind=reply,agent`: every unread thread the caller's Inbox lists —
+   *  a thread they wrote in that somebody else has written in since, and a one-off message they
+   *  sent an agent session that it answered — newest reply first, in the server's own order,
+   *  which no reader re-sorts. No `limit` is asked for, so the answer holds every row. The route
+   *  reads the caller's own `person` scope and refuses a credential without it with 403
+   *  OAUTH_SCOPE_REQUIRED, as the Inbox does. */
+  async myReplies(): Promise<MyRepliesResponse> {
+    return this.#json("GET", ["api", "v1", "me", "replies"], undefined, { kind: "reply,agent" });
+  }
+
+  /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may
+   *  decide, relayed from the secrets broker, or null from a Dispatch that has no broker
+   *  configured, which is an ordinary deployment rather than a failure. `me` is the only approver
+   *  the route takes. It needs the same `person` scope the Inbox does. */
+  async credentialPending(): Promise<CredentialPendingResponse | null> {
+    return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
+  }
+
+  /** `POST /api/v1/projects`: create a project. It answers the project with the default assignee
+   *  the create stored, which the project list leaves out. A key that already exists is 409
    *  PROJECT_EXISTS, and a key that is not a project key or an empty name 400 INVALID_PROJECT. */
-  async createProject(input: CreateProjectInput): Promise<Project> {
+  async createProject(input: CreateProjectInput): Promise<CreatedProject> {
     return this.#json("POST", ["api", "v1", "projects"], input);
   }
 
@@ -1040,7 +1239,7 @@ export class DispatchClient {
     ]);
   }
 
-  async resolveAsk(id: string, input: ResolveAskInput): Promise<Ask> {
+  async resolveAsk(id: string, input: ResolveAskInput): Promise<AskWithTrees> {
     return this.#json("POST", ["api", "v1", "asks", id, "resolve"], input);
   }
 
@@ -1054,7 +1253,7 @@ export class DispatchClient {
    */
   async requestApproval(
     artifactID: string,
-    input: { actor: Actor; summary: string }
+    input: { actor: Actor; summary: string; include_verification?: boolean }
   ): Promise<ApprovalRequestResponse & { recorded: boolean }> {
     const answer = await this.#jsonAnswer<ApprovalRequestResponse>(
       "POST",
@@ -1064,7 +1263,60 @@ export class DispatchClient {
     return { ...answer.payload, recorded: answer.status === 201 };
   }
 
-  async editAsk(id: string, input: EditAskInput): Promise<Ask> {
+  /**
+   * Records the plan review's approval of a plan document at `version`. A plan is approved by its
+   * review, never by a person: `requestApproval` on a plan answers 409 `PLAN_APPROVED_BY_REVIEW`,
+   * and this answers 409 `NOT_PLAN_DOCUMENT` on any document whose role is not `plan`.
+   */
+  async planApprove(
+    artifactID: string,
+    input: { actor: Actor; version: number }
+  ): Promise<ArtifactReview> {
+    return this.#json("POST", ["api", "v1", "artifacts", artifactID, "plan-reviews"], input);
+  }
+
+  /**
+   * Records one result of one check of an issue's Verification document, and answers it beside
+   * the pull-request body line it implies. `issue` is the issue the result is recorded on; the
+   * check may be one of an issue above it, and the result is recorded against that issue.
+   */
+  async recordResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultRecorded> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      input
+    );
+  }
+
+  /** Each check of an issue's Verification document with every result recorded against it, and
+   *  for a check CI proves the one result Dispatch derives from its check run.
+   *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
+   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
+   *  proves, at the issue's newest pull request head as on every read. */
+  async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      undefined,
+      at === undefined ? undefined : { at }
+    );
+  }
+
+  /**
+   * Records that one stored result is wrong, with the reason, and answers the retraction. The
+   * result itself is neither changed nor deleted: a reader of the results sees the result and
+   * its retraction together. The session that recorded the result, a session holding the
+   * Dispatch claim of the issue it was recorded on, and a caller whose credential carries a
+   * person may each retract it.
+   */
+  async retractResult(
+    resultID: string,
+    input: CheckResultRetractionInput
+  ): Promise<CheckResultRetraction> {
+    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
+  }
+
+  async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {
     return this.#json("PATCH", ["api", "v1", "asks", id], input);
   }
 
@@ -1077,7 +1329,7 @@ export class DispatchClient {
   }
 
   /** Every ask on an issue (all states unless narrowed). */
-  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async listIssueAsks(issue: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
@@ -1086,7 +1338,7 @@ export class DispatchClient {
     );
   }
 
-  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<Ask[]> {
+  async getArtifactAsks(id: string, state?: "all" | "open" | "answered"): Promise<AskWithTrees[]> {
     return this.#json(
       "GET",
       ["api", "v1", "artifacts", id, "asks"],
@@ -1095,7 +1347,7 @@ export class DispatchClient {
     );
   }
 
-  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<Ask>> {
+  async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
     return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
   }
 
@@ -1151,6 +1403,16 @@ export class DispatchClient {
   }
 
   /**
+   * `POST /api/v1/agents/{session_id}/messages`: one message into a session's own conversation,
+   * which belongs to no issue. The route is the person's, so the credential must hold the
+   * `person` scope. It answers once the message's first delivery attempt has settled, with that
+   * attempt on the message.
+   */
+  async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
+    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
+  }
+
+  /**
    * `POST /api/v1/messages/{id}/reply`: the targeted session's reply to the delivery it
    * received. It takes no issue, so it is the route that answers a human's direct message -
    * a conversation Dispatch keeps without one - and the server settles the delivery attempt
@@ -1174,15 +1436,23 @@ export class DispatchClient {
   /**
    * `POST /api/v1/{messages|comments}/{id}/reply` as the session a targeted delivery reached: its
    * reply to that delivery attempt, or why it could not honour it (`postDeliveryReply`, whose
-   * body names the session as `actor` and the `attempt`).
+   * body names the session as `actor` and the `attempt`). `followUp` is `messageReply`'s own
+   * option: the attempt is settled by the first reply Dispatch takes, so a second answer to it -
+   * the output a waiting reply promised - is posted only when it asks (`?follow_up=true`).
    */
   async deliveryReply(
     resource: "message" | "comment",
     id: string,
-    input: Readonly<Record<string, unknown>>
+    input: Readonly<Record<string, unknown>>,
+    options: { readonly followUp?: boolean } = {}
   ): Promise<void> {
     const collection = resource === "message" ? "messages" : "comments";
-    await this.#json("POST", ["api", "v1", collection, id, "reply"], input);
+    await this.#json(
+      "POST",
+      ["api", "v1", collection, id, "reply"],
+      input,
+      options.followUp === true ? { follow_up: "true" } : undefined
+    );
   }
 
   async getMessage(issue: string, id: string): Promise<MessageRead> {
@@ -1226,7 +1496,9 @@ export class DispatchClient {
     issue: string,
     input: CreateArtifactInput
   ): Promise<
-    ArtifactUploadResponse & { readonly artifact: Artifact & { readonly issue_key: string } }
+    Advised<ArtifactUploadResponse> & {
+      readonly artifact: Artifact & { readonly issue_key: string };
+    }
   > {
     return this.#upload(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"],
@@ -1247,6 +1519,14 @@ export class DispatchClient {
       : this.#json("GET", ["api", "v1", "artifacts", id, "versions", String(version)]);
   }
 
+  /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its
+   *  version and its blocks in one answer, every part of it rendered from the one tree, so a write
+   *  by another session between two reads cannot leave the blocks indexing markdown they were not
+   *  computed over. A Dispatch older than the parameter answers the text without `blocks`. */
+  async docReadWithBlocks(id: string): Promise<ArtifactText> {
+    return this.#json("GET", ["api", "v1", "artifacts", id, "text"], undefined, { blocks: true });
+  }
+
   /** One version of an uploaded file as Dispatch stores it: `GET /artifacts/{id}/versions/{n}`
    * answers a file with its bytes under its own MIME type, never a JSON envelope. */
   async fileVersion(id: string, version: number): Promise<ArtifactFileVersion> {
@@ -1261,6 +1541,23 @@ export class DispatchClient {
 
   async artifactBlocks(id: string): Promise<ArtifactBlock[]> {
     return this.#json("GET", ["api", "v1", "artifacts", id, "blocks"]);
+  }
+
+  /** `GET /api/v1/issues/{key}/artifacts/{slug}/blocks`: the blocks of one issue document named
+   *  by its slug (`spec` for the issue's spec), with no read of the issue to resolve its id. */
+  async issueArtifactBlocks(issue: string, slug: string): Promise<ArtifactBlock[]> {
+    return this.#json("GET", ["api", "v1", "issues", issue, "artifacts", slug, "blocks"]);
+  }
+
+  /** `GET /api/v1/projects/{key}/artifacts/{slug}/blocks`: the same for a project document. */
+  async projectArtifactBlocks(project: string, slug: string): Promise<ArtifactBlock[]> {
+    return this.#json("GET", ["api", "v1", "projects", project, "artifacts", slug, "blocks"]);
+  }
+
+  /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks, with
+   *  one `gaps` line per gap. Nothing is ever refused for a gap. */
+  async issueCoverage(key: string): Promise<IssueCoverage> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(key), "coverage"]);
   }
 
   /** `GET /api/v1/comments/{id}/blocks`: the comment's current blocks with their ids, text,
@@ -1287,7 +1584,11 @@ export class DispatchClient {
    * AskGate's one append per decision, which a resumed session must not write twice — and replaces
    * the key this call would mint for itself. It must match `IDEMPOTENCY_KEY_PATTERN`.
    */
-  async docEdit(id: string, input: EditArtifactInput, key?: string): Promise<EditArtifactResponse> {
+  async docEdit(
+    id: string,
+    input: EditArtifactInput,
+    key?: string
+  ): Promise<Advised<EditArtifactResponse>> {
     return this.#json(
       "POST",
       ["api", "v1", "artifacts", id, "edits"],
@@ -1302,7 +1603,7 @@ export class DispatchClient {
     return this.#json("POST", ["api", "v1", "artifacts", id, "versions"], input);
   }
 
-  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<Event[]> {
+  async getArtifactEvents(id: string, after = 0, limit = 200): Promise<DispatchEvent[]> {
     return this.#json("GET", ["api", "v1", "artifacts", id, "events"], undefined, { after, limit });
   }
 
@@ -1334,6 +1635,45 @@ export class DispatchClient {
 
   async getComments(issue: string): Promise<Comment[]> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"]);
+  }
+
+  /** `POST /api/v1/issues/{key}/handoffs/{phase}`: records `body`, the handoff's exact text, as
+   *  the next version of the issue's phase, written by `actor`, the session it names. The text
+   *  travels as one JSON string, so the server stores the very characters it was given. */
+  async writeHandoff(
+    issue: string,
+    phase: string,
+    input: { readonly actor: Actor; readonly body: string }
+  ): Promise<HandoffSummary> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "issues", await this.#resolveIssue(issue), "handoffs", phase],
+      input
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/handoffs`: every handoff of the issue, newest first, without bodies. */
+  async listHandoffs(issue: string): Promise<HandoffSummary[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "handoffs"]);
+  }
+
+  /** `GET /api/v1/issues/{key}/handoffs/{phase}/latest`: the phase's newest handoff with its body;
+   *  404 HANDOFF_NOT_FOUND when the phase has none. */
+  async latestHandoff(issue: string, phase: string): Promise<Handoff> {
+    return this.#json("GET", [
+      "api",
+      "v1",
+      "issues",
+      await this.#resolveIssue(issue),
+      "handoffs",
+      phase,
+      "latest",
+    ]);
+  }
+
+  /** `GET /api/v1/handoffs/{id}`: one handoff by id, with its body. */
+  async handoff(id: string): Promise<Handoff> {
+    return this.#json("GET", ["api", "v1", "handoffs", id]);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {
@@ -1404,9 +1744,12 @@ export class DispatchClient {
     return { status: response.status, payload: await this.#response<T>(method, url, response) };
   }
 
-  /** An upload to an owner's artifact route: inline content as JSON, a file as multipart. */
+  /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
+   *  inline content, and a name alone, which makes an empty document. */
   async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
-    if ("content" in input) return this.#json("POST", path, input, undefined, undefined, key);
+    if (input.file === undefined) {
+      return this.#json("POST", path, input, undefined, undefined, key);
+    }
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
@@ -1465,33 +1808,62 @@ export class DispatchClient {
     signal?: AbortSignal,
     callerKey?: string
   ): Promise<Response> {
-    const headers: Record<string, string> = {
-      Accept: accept,
-      Authorization: `Bearer ${this.token}`,
-    };
+    // The credential is presented once here, and again for each attempt the write loop makes
+    // below: a key-bound scheme signs one proof per request, so one presentation is one proof
+    // sent, never a second minted and discarded. It is asked before the loop so a credential
+    // that cannot answer throws here, out of the loop's reach, rather than being taken for a
+    // failed attempt.
+    const headers: Record<string, string> = { Accept: accept };
+    let presented = await this.#credential.headers(method, url);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (method !== "POST" && method !== "PATCH") {
       return this.fetchImpl(url, {
         method,
-        headers,
+        headers: { ...headers, ...presented },
         signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
         ...(body === undefined ? {} : { body: body.content }),
       });
     }
     const key = callerKey ?? crypto.randomUUID();
     headers[IDEMPOTENCY_KEY_HEADER] = key;
-    const { pausesMs, withinMs, silenceMs, pause = pauseFor } = this.writeRetry;
+    const { pausesMs, withinMs, silenceMs, inFlightPauseMs, inFlightWithinMs } = this.writeRetry;
+    const pause = this.writeRetry.pause ?? pauseFor;
     const request = `${method} ${url}`;
     const started = this.#now();
+    // An upload, a body of `STREAMED_BODY_MIN` or more that goes out as a stream (`attemptBody`),
+    // sends that whole body again on every repeat, so it keeps the schedule alone and never enters
+    // the in-flight asking below.
+    const bodyBytes =
+      body === undefined
+        ? 0
+        : typeof body.content === "string"
+          ? Buffer.byteLength(body.content)
+          : body.content.byteLength;
+    const upload = bodyBytes >= STREAMED_BODY_MIN;
+    // No ask starts later than this: the client's deadline counts from when it was made.
+    const lastAsk = this.#madeAt + inFlightWithinMs;
     let reached = false;
+    // Whether Dispatch may still be running an attempt: one was cut off for silence or answered
+    // 409 KEY_IN_FLIGHT. Its keyed layer finishes that run whatever this call does, so the call
+    // keeps asking for its stored answer under `inFlightWithinMs`.
+    let running = false;
+    // Whether this call ever saw the keyed layer judge the write (an echoed key, or `/healthz`),
+    // which the unsettled message says. Whether it may ask again is decided afresh each time.
+    let sawKeyedLayer = false;
     for (let attempt = 1; ; attempt++) {
       let answer: WriteAnswer | undefined;
       let thrown: unknown;
       try {
-        answer = await writeAnswer(await this.#attempt(url, method, headers, body, silenceMs), key);
+        // Each attempt after the first presents the credential afresh: a resource server that
+        // keeps a replay store refuses a proof it has already seen.
+        if (attempt > 1) presented = await this.#credential.headers(method, url);
+        const sent = { ...headers, ...presented };
+        answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) return answer.response;
         reached ||= answer.reached;
+        running ||= answer.running && !upload;
+        sawKeyedLayer ||= answer.echoed;
       } catch (error) {
         // A deadline or a cancellation is the caller's limit, never a reason to ask again; the
         // attempt's own silence cut is such a reason, as a transport failure is.
@@ -1500,33 +1872,52 @@ export class DispatchClient {
           !(error instanceof WriteAttemptSilent) &&
           (this.#signal.aborted || name === "AbortError" || name === "TimeoutError")
         ) {
-          throw this.#ended(error, request, attempt, true);
+          throw this.#ended(error, request, attempt, true, sawKeyedLayer);
         }
         thrown = error;
         reached = true;
+        running ||= error instanceof WriteAttemptSilent && !upload;
       }
-      const scheduled = pausesMs[attempt - 1];
+      const scheduled = running
+        ? Math.min(pausesMs[attempt - 1] ?? inFlightPauseMs, inFlightPauseMs)
+        : pausesMs[attempt - 1];
       const wait = Math.max(
         scheduled ?? 0,
         answer === undefined ? 0 : retryAfterMs(answer.response)
       );
+      const latest = Math.min(started + (running ? inFlightWithinMs : withinMs), lastAsk);
       // Only a Dispatch that runs the keyed layer may be asked again: against any other a repeat
-      // would be a second write.
-      const inTime = scheduled !== undefined && this.#now() - started + wait <= withinMs;
-      if (!inTime || !(answer?.echoed || (await this.#runsKeyedLayer(answer?.unjudged ?? false)))) {
+      // would be a second write. The `/healthz` probe takes time of its own, and a timer can fire
+      // late on a loaded host, so the bound is read again after each of them.
+      let again = scheduled !== undefined && this.#now() + wait <= latest;
+      if (again) {
+        again = answer?.echoed || (await this.#runsKeyedLayer(answer?.unjudged ?? false));
+        sawKeyedLayer ||= again;
+        again &&= this.#now() + wait <= latest;
+      }
+      if (again) {
+        try {
+          await pause(wait, this.#signal);
+        } catch (error) {
+          throw this.#ended(error, request, attempt, reached, sawKeyedLayer);
+        }
+        again = this.#now() <= latest;
+      }
+      if (!again) {
+        // An answer the write would have asked again after was read whole and rebuilt from its
+        // text (`writeAnswer`), so it holds no connection and can be read here.
         if (answer !== undefined) {
-          return this.#unsettled(method, url, answer.response, reached, attempt);
+          return this.#unsettled(method, url, answer.response, reached, attempt, sawKeyedLayer);
         }
         if (thrown instanceof WriteAttemptSilent) {
-          throw new DispatchWriteUnsettledError(thrown, attempt, `${request} ${thrown.message}`);
+          throw new DispatchWriteUnsettledError(
+            thrown,
+            attempt,
+            `${request} ${thrown.message}`,
+            sawKeyedLayer
+          );
         }
         throw thrown;
-      }
-      await answer?.response.body?.cancel().catch(() => undefined);
-      try {
-        await pause(wait, this.#signal);
-      } catch (error) {
-        throw this.#ended(error, request, attempt, reached);
       }
     }
   }
@@ -1578,10 +1969,17 @@ export class DispatchClient {
    * What a write throws when its deadline or its caller's cancellation ends it, with `error` the
    * fetch's or the pause's: once an attempt may have reached Dispatch (`mayHaveReached`), the
    * deadline's timeout is a `DispatchWriteUnsettledError` saying the write may or may not have
-   * taken effect; a cancellation, the caller's own, and a timeout before anything reached Dispatch
-   * are thrown as they are.
+   * taken effect (and, where the call saw the keyed layer judge it, `keyed`, that Dispatch finishes
+   * it); a cancellation, the caller's own, and a timeout before anything reached Dispatch are
+   * thrown as they are.
    */
-  #ended(error: unknown, request: string, attempts: number, mayHaveReached: boolean): unknown {
+  #ended(
+    error: unknown,
+    request: string,
+    attempts: number,
+    mayHaveReached: boolean,
+    keyed: boolean
+  ): unknown {
     const reason: unknown = this.#signal.aborted ? this.#signal.reason : error;
     const timedOut =
       (reason instanceof Error || reason instanceof DOMException) && reason.name === "TimeoutError";
@@ -1589,7 +1987,8 @@ export class DispatchClient {
     return new DispatchWriteUnsettledError(
       error,
       attempts,
-      `${request} had no definitive answer when its deadline ended it`
+      `${request} had no definitive answer when its deadline ended it`,
+      keyed
     );
   }
 
@@ -1627,9 +2026,10 @@ export class DispatchClient {
    */
   async #probeKeyedLayer(): Promise<boolean> {
     try {
-      const response = await this.fetchImpl(`${this.#baseUrl}/healthz`, {
+      const probe = `${this.#baseUrl}/healthz`;
+      const response = await this.fetchImpl(probe, {
         method: "GET",
-        headers: { Accept: "application/json", Authorization: `Bearer ${this.token}` },
+        headers: { Accept: "application/json", ...(await this.#credential.headers("GET", probe)) },
         signal: AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),
       });
       if (!isJson(response)) return false;
@@ -1647,15 +2047,17 @@ export class DispatchClient {
   /**
    * What a write throws once it stops asking with no definitive answer: the last attempt's refusal
    * as `#response` reads it, unless that refusal alone would say the write never took effect while
-   * an attempt may have reached Dispatch (`reached`), when it is a `DispatchWriteUnsettledError`.
-   * `#response` throws for every status `writeAnswer` asks again after.
+   * an attempt may have reached Dispatch (`reached`), when it is a `DispatchWriteUnsettledError`
+   * (which says, where the call saw the keyed layer judge the write, `keyed`, that Dispatch finishes
+   * it). `#response` throws for every status `writeAnswer` asks again after.
    */
   async #unsettled(
     method: string,
     url: string,
     response: Response,
     reached: boolean,
-    attempts: number
+    attempts: number,
+    keyed: boolean
   ): Promise<never> {
     const refusal: unknown = await this.#response(method, url, response).catch(
       (error: unknown) => error
@@ -1665,7 +2067,7 @@ export class DispatchClient {
         refusal instanceof DispatchGatewayError
           ? refusal.mayHaveReachedDispatch
           : refusal.status >= 500;
-      if (!landedAlone) throw new DispatchWriteUnsettledError(refusal, attempts);
+      if (!landedAlone) throw new DispatchWriteUnsettledError(refusal, attempts, undefined, keyed);
     }
     throw refusal;
   }
@@ -1677,7 +2079,13 @@ export class DispatchClient {
     );
     if (query) {
       for (const [name, value] of Object.entries(query)) {
-        if (typeof value === "string" || typeof value === "number") {
+        // A boolean is sent as `true` or `false`, the two words every route that reads one
+        // takes (`parseQueryBool` in the server). It must be sent rather than dropped: a
+        // search's path is picked from the members the request carries
+        // (`everyBuildReadsSearch`), so a dropped `keywords_only: true` would ask for
+        // `/api/v1/search/results` and then arrive with the flag gone, and the server would
+        // answer by meaning the search asked it to skip.
+        if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
           url.searchParams.set(name, String(value));
         } else if (Array.isArray(value)) {
           for (const item of value) url.searchParams.append(name, String(item));

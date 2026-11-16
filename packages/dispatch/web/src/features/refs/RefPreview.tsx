@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
+import type { DisplayTree } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import {
@@ -17,12 +18,14 @@ import {
 } from "../../theme/classes";
 import { type IssueStatus, statusLabel } from "../project/board-model";
 import { AgentName } from "./AgentName";
-import { itemOfBlock } from "./block-reference";
+import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { REF_PREVIEW_CARD_ID, refPreviewCardContains } from "./ref-preview-card";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import {
   artifactTextQuery,
   blockText,
+  blockTextTree,
   prefetchReference,
   useBlockDocument,
   useReferenceData,
@@ -36,8 +39,8 @@ import {
   shortForm,
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
+import { type TextSource, textSourceOf } from "./text-references";
 
-const CARD_ID = "ref-preview";
 /** Every hover-card trigger: a Markdown anchor `collectReferenceAnchors` tagged, a Proof link
  * mark (`data-dispatch-href`, the sanitized mark's real target), or a React link that set
  * `data-dispatch-ref` — see `referenceTriggerProps`. */
@@ -155,16 +158,14 @@ function triggerOf(node: EventTarget | null): HTMLElement | null {
   return node instanceof Element ? node.closest<HTMLElement>(TRIGGER_SELECTOR) : null;
 }
 
-function cardContains(node: EventTarget | null): boolean {
-  return node instanceof Element && node.closest(`#${CARD_ID}`) !== null;
-}
-
 /** The one region the pointer may roam without closing the card: the current target's anchor -
  * the open card's, or the one a pending hover is waiting on - and the card itself. Every pointer
  * transition is judged against this predicate, in the document listeners alone, so no close
  * depends on the order in which two event systems see one `pointerout`. */
 function inHoverZone(node: EventTarget | null): boolean {
-  return state !== undefined && (triggerOf(node) === state.target.anchor || cardContains(node));
+  return (
+    state !== undefined && (triggerOf(node) === state.target.anchor || refPreviewCardContains(node))
+  );
 }
 
 /** The route a trigger names, read as a node's reference whatever the length of its target id: a
@@ -177,15 +178,71 @@ function routeOf(trigger: HTMLElement): DispatchReferenceRoute | undefined {
   return reference === null ? undefined : parseNodeReference(reference);
 }
 
+/** How long after the reader's last input a boundary event or a scroll still counts as theirs.
+ *  A page that moves under a still pointer - a card above the reference settling its height, a
+ *  picture landing, a long body formatting - slides the anchor out from under the pointer and
+ *  scrolls the page under it, and the browser reports each with no input behind it. */
+const READER_INPUT_GRACE_MS = 100;
+
+/** `event.timeStamp` of the reader's last input that moves the pointer or the page: a pointer
+ *  they moved, a wheel they turned, a key they pressed, a button they put down. Module-level
+ *  beside the card's own state because two document listeners judge an event by it - the one
+ *  that judges a boundary event (`attachTriggers`) and the one that judges a scroll
+ *  (`RefPreviewHost`) - and the two must read the same answer. */
+let lastInputAt = Number.NEGATIVE_INFINITY;
+
+/** Where `element` sits in the viewport, rounded, for telling an anchor that moved from a
+ *  pointer that did. */
+function placeOf(element: HTMLElement): { left: number; top: number } {
+  const box = element.getBoundingClientRect();
+  return { left: Math.round(box.left), top: Math.round(box.top) };
+}
+
 /** Delegated hover/focus triggers for every reference trigger in the document, present or
  * future — React-rendered links and the anchors inside Markdown bodies and the Proof editor
  * alike, which come and go outside React's knowledge. Returns the detach function. */
 function attachTriggers(): () => void {
+  /** Where the hovered anchor sat when the pointer came to rest on it, so a boundary event can
+   *  say which of the two moved. A card the keyboard opened has none: nothing rested on it. */
+  let anchorWas: { anchor: HTMLElement; left: number; top: number } | undefined;
+  /** The page slid an open card's zone out from under a still pointer, and the card was kept.
+   *  The reader's next movement decides it: back in the zone it stays, anywhere else it goes. */
+  let keptUnderAStillPointer = false;
+  /** Where the pointer last was, so a `pointermove` the reader made can be told from the one the
+   *  engine makes itself: WebKit and Firefox both dispatch a move at the pointer's own place
+   *  after the page scrolls under it, to settle `:hover` on whatever is under it now
+   *  (sjawhar/legion#2519). The reader moving is the position changing. */
+  let pointerWas: { x: number; y: number } | undefined;
+  /** Anything the reader did that moves the pointer or the page, so neither a boundary event nor
+   *  a scroll after it is read as the page moving by itself: a wheel they turned, a key they
+   *  pressed (a space or an arrow scrolls), a button they put down (a drag of the scrollbar). */
+  const onReaderInput = (event: Event) => {
+    lastInputAt = event.timeStamp;
+  };
+  const onPointerMove = (event: PointerEvent) => {
+    const moved =
+      pointerWas === undefined || event.clientX !== pointerWas.x || event.clientY !== pointerWas.y;
+    pointerWas = { x: event.clientX, y: event.clientY };
+    if (!moved) {
+      // The engine's own move, at the place the reader left the pointer: it says only that the
+      // page moved under it, which is what the card is being kept for.
+      return;
+    }
+    lastInputAt = event.timeStamp;
+    if (!keptUnderAStillPointer) {
+      return;
+    }
+    keptUnderAStillPointer = false;
+    if (!inHoverZone(event.target)) {
+      refPreview.leave();
+    }
+  };
   const onPointerOver = (event: PointerEvent) => {
     // Inside the zone there is nothing to open: a pointer arriving from outside it only cancels
     // the close its leaving armed, whatever kind of pointer it is.
     if (inHoverZone(event.target)) {
       if (!inHoverZone(event.relatedTarget)) {
+        keptUnderAStillPointer = false;
         refPreview.reenter();
       }
       return;
@@ -201,13 +258,36 @@ function attachTriggers(): () => void {
     }
     const route = routeOf(trigger);
     if (route !== undefined) {
+      keptUnderAStillPointer = false;
+      anchorWas = { anchor: trigger, ...placeOf(trigger) };
       refPreview.hoverStart(trigger, route);
     }
   };
   const onPointerOut = (event: PointerEvent) => {
-    if (inHoverZone(event.target) && !inHoverZone(event.relatedTarget)) {
-      refPreview.leave();
+    if (!inHoverZone(event.target) || inHoverZone(event.relatedTarget)) {
+      return;
     }
+    // A card the reader is reading is not taken away because the page moved: where the anchor
+    // has slid out from under a pointer that never moved - a card above it settling its height,
+    // a picture landing, a long body formatting - the card stays, measured where the anchor is
+    // now, until the reader themselves moves away. The reader leaving is the reader doing
+    // something, and that is what tells the two apart. A hover that has not opened yet is
+    // abandoned as before: there is nothing on screen to protect.
+    const anchor = state?.phase === "open" ? state.target.anchor : undefined;
+    if (
+      anchor !== undefined &&
+      anchorWas?.anchor === anchor &&
+      event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
+    ) {
+      const place = placeOf(anchor);
+      if (place.left !== anchorWas.left || place.top !== anchorWas.top) {
+        anchorWas = { anchor, ...place };
+        keptUnderAStillPointer = true;
+        refPreview.reposition();
+        return;
+      }
+    }
+    refPreview.leave();
   };
   const onFocusIn = (event: FocusEvent) => {
     const trigger = triggerOf(event.target);
@@ -226,19 +306,27 @@ function attachTriggers(): () => void {
     // Focus moving from the anchor into its own card is not leaving: a press on the card's link
     // while the anchor holds focus (dnd-kit hands focus back to a board card's link after a
     // drop) must reach the link as a click, not unmount it under the pointer.
-    if (trigger !== null && !cardContains(event.relatedTarget)) {
+    if (trigger !== null && !refPreviewCardContains(event.relatedTarget)) {
       refPreview.blur(trigger);
     }
   };
+  document.addEventListener("pointermove", onPointerMove, { passive: true });
   document.addEventListener("pointerover", onPointerOver);
   document.addEventListener("pointerout", onPointerOut);
   document.addEventListener("focusin", onFocusIn);
   document.addEventListener("focusout", onFocusOut);
+  document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
+  document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
+  document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
   return () => {
+    document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerover", onPointerOver);
     document.removeEventListener("pointerout", onPointerOut);
     document.removeEventListener("focusin", onFocusIn);
     document.removeEventListener("focusout", onFocusOut);
+    document.removeEventListener("wheel", onReaderInput, { capture: true });
+    document.removeEventListener("keydown", onReaderInput, { capture: true });
+    document.removeEventListener("pointerdown", onReaderInput, { capture: true });
   };
 }
 
@@ -246,10 +334,25 @@ function Heading({ children }: { children: ReactNode }): ReactNode {
   return <span className={`block font-semibold ${linkText}`}>{children}</span>;
 }
 
-/** The card's body: three rendered lines of what the target says, formatted, then cut. */
-function Body({ markdown }: { markdown: string }): ReactNode {
+/** The card's body: three rendered lines of what the target says, formatted, then cut. A `#id`
+ *  in it names a question block of `source`, the document the target's own text belongs to. */
+function Body({
+  markdown,
+  source,
+  tree,
+}: {
+  markdown: string;
+  source?: TextSource;
+  tree: DisplayTree | undefined;
+}): ReactNode {
   return (
-    <MarkdownPreview className={`mt-1 ${textSecondaryOnSurface}`} lines={3} markdown={markdown} />
+    <MarkdownPreview
+      className={`mt-1 ${textSecondaryOnSurface}`}
+      lines={3}
+      markdown={markdown}
+      source={source}
+      tree={tree}
+    />
   );
 }
 
@@ -268,6 +371,10 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   }
   const specMarkdown =
     specText.data !== undefined && "markdown" in specText.data ? specText.data.markdown : undefined;
+  const specTree =
+    specText.data !== undefined && "markdown_tree" in specText.data
+      ? specText.data.markdown_tree
+      : undefined;
   return (
     <>
       <Heading>
@@ -285,18 +392,18 @@ function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
             P{issue.priority}
           </span>
         )}
-        {issue.labels.map((label) => (
+        {(issue.labels ?? []).map((label) => (
           <LabelPill key={label}>{label}</LabelPill>
         ))}
-        {issue.open_asks.length === 0 ? null : (
+        {(issue.open_asks ?? []).length === 0 ? null : (
           <span className={`inline-flex items-center gap-1 text-xs ${textMutedOnSurface}`}>
-            <AttentionBadge count={issue.open_asks.length} />
-            open {issue.open_asks.length === 1 ? "ask" : "asks"}
+            <AttentionBadge count={(issue.open_asks ?? []).length} />
+            open {(issue.open_asks ?? []).length === 1 ? "ask" : "asks"}
           </span>
         )}
       </span>
       {specMarkdown === undefined || specMarkdown.trim() === "" ? null : (
-        <Body markdown={specMarkdown} />
+        <Body markdown={specMarkdown} source={textSourceOf("artifact", spec?.id)} tree={specTree} />
       )}
     </>
   );
@@ -318,7 +425,7 @@ function documentOwner(route: DispatchReferenceRoute): ReactNode {
 }
 
 function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
-  const { artifact, markdown } = useReferenceData(route, { text: true });
+  const { artifact, markdown, markdownTree } = useReferenceData(route, { text: true });
   if (artifact === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
@@ -333,30 +440,45 @@ function DocumentPreview({ route }: { route: DispatchReferenceRoute }): ReactNod
       {latest === null ? null : (
         <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>v{latest}</span>
       )}
-      {markdown === undefined || markdown.trim() === "" ? null : <Body markdown={markdown} />}
+      {markdown === undefined || markdown.trim() === "" ? null : (
+        <Body
+          markdown={markdown}
+          source={textSourceOf("artifact", artifact.id)}
+          tree={markdownTree}
+        />
+      )}
     </>
   );
 }
 
+/** The holder a block's card heads with, one label for each kind of item `itemOfBlock` names
+ *  (`BLOCK_ITEM_KINDS`). */
+const BLOCK_HOLDER_LABELS: Record<BlockItemKind, string> = {
+  ask: "Ask",
+  comment: "Comment",
+  message: "Message",
+};
+
 /** A block of a document: its document, then for a pinned reference the version it pins and how
  *  the block stands since (`BlockPin.state`), then its text - the pinned version's for a pinned
  *  reference, its current text otherwise. The document's name is the card's own read of its
- *  summary, which no link to the block reads. A block of a comment or message heads with its item
- *  and author in place of the document, and reads no summary (`useBlockDocument`), a comment's pin
- *  naming a revision of the comment; its text is the one its graph node carries, as a document
+ *  summary, which no link to the block reads. A part of an ask, or a block of a comment or
+ *  message, heads with its item and author in place of the document, and reads no summary
+ *  (`useBlockDocument`), a comment's pin naming a revision of the comment and an ask part's a
+ *  revision of the ask's parts; its text is the one its graph node carries, as a document
  *  block's is. */
 function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const { block } = useReferenceData(route, { text: false });
   const artifact = useBlockDocument(route);
   const item = itemOfBlock(route);
-  const holder =
-    item === undefined ? artifact?.name : item.kind === "comment" ? "Comment" : "Message";
+  const holder = item === undefined ? artifact?.name : BLOCK_HOLDER_LABELS[item.kind];
   if (holder === undefined || block === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
   const { node } = block;
   const pin = node.pin;
   const text = blockText(node);
+  const textTree = blockTextTree(node);
   const author = item === undefined ? undefined : node.made_by?.[0];
   const unit = item === undefined ? "version" : "revision";
   return (
@@ -385,7 +507,9 @@ function BlockPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
           </span>
         </span>
       )}
-      {text === undefined || text.trim() === "" ? null : <Body markdown={text} />}
+      {text === undefined || text.trim() === "" ? null : (
+        <Body markdown={text} source={textSourceOf("artifact", artifact?.id)} tree={textTree} />
+      )}
     </>
   );
 }
@@ -395,11 +519,16 @@ function AskPreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   if (ask === undefined) {
     return <Heading>{shortForm(route)}</Heading>;
   }
-  const options = ask.ask.options.length;
+  const options = (ask.ask.options ?? []).length;
   return (
     <>
       <Heading>
-        <MarkdownPreview lines={2} markdown={ask.ask.question} />
+        <MarkdownPreview
+          lines={2}
+          markdown={ask.ask.question}
+          source={textSourceOf("ask", ask.ask.id)}
+          tree={ask.ask.question_tree}
+        />
       </Heading>
       <span className={`mt-1 block text-xs ${textMutedOnSurface}`}>
         {ask.ask.state}
@@ -419,7 +548,11 @@ function CommentPreview({ route }: { route: DispatchReferenceRoute }): ReactNode
       <Heading>
         <AgentName actor={comment.comment.author} kind="static" />
       </Heading>
-      <Body markdown={comment.comment.body} />
+      <Body
+        markdown={comment.comment.body}
+        source={textSourceOf("comment", comment.comment.id)}
+        tree={comment.comment.body_tree}
+      />
     </>
   );
 }
@@ -434,7 +567,11 @@ function MessagePreview({ route }: { route: DispatchReferenceRoute }): ReactNode
       <Heading>
         <AgentName actor={message.message.author} kind="static" />
       </Heading>
-      <Body markdown={message.message.body} />
+      <Body
+        markdown={message.message.body}
+        source={textSourceOf("message", message.message.id)}
+        tree={message.message.body_tree}
+      />
     </>
   );
 }
@@ -491,7 +628,7 @@ function PreviewCard({ target }: { target: PreviewTarget }): ReactNode {
   return (
     <div
       className={`fixed top-0 left-0 z-[60] w-80 max-w-[calc(100vw-1rem)] rounded-xl border p-3 text-sm shadow-lg ${card}`}
-      id={CARD_ID}
+      id={REF_PREVIEW_CARD_ID}
       ref={element}
       role="tooltip"
     >
@@ -526,11 +663,24 @@ export function RefPreviewHost(): ReactNode {
     // Only an open card reacts to scroll. A pending hover is left alone — the pointer often
     // comes to rest on a link while the page is still settling (smooth scrolling, a
     // scrollIntoView), and the card is measured fresh when it opens anyway.
-    const onScroll = () => {
+    const onScroll = (event: Event) => {
       if (state?.phase !== "open") {
         return;
       }
-      if (document.activeElement === state.target.anchor) {
+      // The card follows its anchor rather than closing where the reader did nothing to move the
+      // page: a long body above the reference formatting, a picture landing, the reader's place
+      // being kept after a late paint all scroll the page under a resting pointer, and a card
+      // the reader is reading must not be taken away by that. It is the same page movement the
+      // `pointerout` rule above protects it from, reported as a scroll rather than as a boundary
+      // event, and in WebKit and Firefox the scroll is the one that arrives first
+      // (sjawhar/legion#2519). The reader's own scroll - a wheel, a key, a drag of the scrollbar
+      // - still closes it, and so does any scroll once they have moved the pointer away, since
+      // leaving the zone closes the card itself. An anchor that holds keyboard focus keeps its
+      // card either way: focusing it may itself scroll it into view.
+      if (
+        document.activeElement === state.target.anchor ||
+        event.timeStamp - lastInputAt > READER_INPUT_GRACE_MS
+      ) {
         refPreview.reposition();
       } else {
         closeRefPreview();
@@ -574,7 +724,7 @@ export function RefPreviewHost(): ReactNode {
       return;
     }
     const previous = openAnchor.getAttribute("aria-describedby");
-    openAnchor.setAttribute("aria-describedby", CARD_ID);
+    openAnchor.setAttribute("aria-describedby", REF_PREVIEW_CARD_ID);
     return () => {
       if (previous === null) {
         openAnchor.removeAttribute("aria-describedby");

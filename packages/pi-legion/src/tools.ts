@@ -1,14 +1,18 @@
-import type { LegionRole } from "@legion/contracts";
+import { GATED_STEPS, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import {
+  LEGION_PHASES,
   LegionGateRegisterRequest,
   type LegionGrant,
+  type LegionIssue,
   type LegionPhase,
+  type LegionState,
 } from "@legion/contracts/legion-api";
 import {
   type DaemonRestartRetry,
   type LegionDaemonClient,
   retryWhileDaemonRestarts,
 } from "@legion/pi-shared/daemon-client";
+import type { HandoffReport } from "@legion/pi-shared/handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -17,6 +21,7 @@ import {
   mintClaimGrant,
   PHASE_OP_SENTENCES,
   phaseOpParameters,
+  unknownFieldsRefusal,
 } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext, ToolResult } from "@legion/pi-shared/pi-types";
 import { toolFailure, toolSuccess } from "@legion/pi-shared/tool-result";
@@ -52,23 +57,33 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "park_child",
     "rerun_child",
     "read_record",
+    "read_release_records",
     "handoff_complete",
+    "ready_for_update",
   ],
-  "phase-worker": ["request_backward_move", "read_record", "handoff_complete"],
-  controller: ["read_state", "set_status"],
+  "phase-worker": [
+    "request_backward_move",
+    "read_record",
+    "read_release_records",
+    "handoff_complete",
+    "ready_for_update",
+  ],
+  controller: ["read_state", "set_status", "fresh_session", "compact"],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  register_gate: ["issue", "artifactId", "version"],
+  register_gate: ["issue", "artifactId", "version", "step"],
   release_children: ["issues"],
-  retry_or_escalate: ["issue", "decision"],
+  retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
   close_root: ["issue", "reason"],
   park_child: ["issue"],
   rerun_child: ["issue"],
-  read_state: [],
+  read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
+  fresh_session: ["issue", "role"],
+  compact: ["issue", "role"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -76,29 +91,170 @@ const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
 
+/** `read_state`'s filters, each naming the full records it answers with, in the order the schema
+ * declares them. Naming none answers the summary. */
+const STATE_FILTERS = ["issue", "issues", "phase", "settings"] as const;
+
+/** One claim as the summary shows it, the architect's or a phase worker's. */
+type SummaryClaim = NonNullable<LegionIssue["architect"]>;
+
+/** The first line of every summary: what the lines below it are, since they are not JSON. */
+const SUMMARY_LEGEND =
+  "legion state summary. Lines: project; admission cap; active/waiting/blocked; " +
+  "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
+  "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
+  "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
+  "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
+  "read_state with issue, issues, phase or settings returns the full records it names.";
+
+/**
+ * The whole state as the controller reads it between its filtered reads: the project, the
+ * admission lists, each capability's status, one line per recorded issue, and under each issue
+ * Legion still runs its slot, its hold, its gate and its claims.
+ *
+ * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
+ * it records, and the tool's output reaches the controller cut at about 41 KB
+ * (dispatch://INFRA-329), so the controller acted on a read whose middle it never saw. Every
+ * recorded key is named, whatever the size: a summary that drops issues to fit is the bug this
+ * replaces. What costs the bytes is the per-claim detail, so only an issue Legion still runs
+ * carries it — a `done` issue's claims are retired and an `unrecorded` one (an operator's claim)
+ * has none — and `read_state` with a filter answers the rest in full.
+ */
+function stateSummary(state: LegionState): string {
+  const { admission, daemon } = state;
+  const lines = [
+    SUMMARY_LEGEND,
+    `project ${daemon.project} boots ${daemon.boots} started ${daemon.startedAt}`,
+    `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
+    `active ${admission.active.join(" ") || "(none)"}`,
+    `waiting ${admission.waiting.join(" ") || "(none)"}`,
+  ];
+  for (const blocked of admission.blocked) {
+    lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy.join(" ")}`);
+  }
+  for (const capability of state.capabilities) {
+    // A row that is not `present` is one someone acts on, so it keeps the fact its check found
+    // and the legion.yaml line that would record a decision; no filter answers for capabilities.
+    const detail = capability.status === "present" ? "" : ` ${capability.detail}`;
+    const config = capability.configLine === undefined ? "" : ` config ${capability.configLine}`;
+    lines.push(`capability ${capability.name} ${capability.status}${detail}${config}`);
+  }
+  const keys = Object.keys(state.issues).sort();
+  lines.push(`issues ${keys.length}`);
+  for (const key of keys) {
+    const issue = state.issues[key];
+    if (issue === undefined) continue;
+    lines.push(`${key} ${issue.phase} ${issue.status}`);
+    if (issue.phase === "done" || issue.phase === "unrecorded") continue;
+    if (issue.slot !== undefined) {
+      const lent = issue.slot.lentTo === undefined ? "" : ` lent ${issue.slot.lentTo}`;
+      lines.push(`  slot ${issue.slot.index} since ${issue.slot.admittedAt}${lent}`);
+    }
+    if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
+    if (issue.designGate !== undefined) {
+      const gate = issue.designGate;
+      lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`);
+    }
+    const claims: Array<readonly [string, SummaryClaim]> = [];
+    if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
+    for (const role of LEGION_ROLES) {
+      const worker = issue.workers[role];
+      if (worker !== undefined) claims.push([role, worker.claim]);
+    }
+    for (const [role, claim] of claims) {
+      // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
+      // it last did anything, and a dash is a turn the daemon recorded none of.
+      lines.push(
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+      );
+    }
+  }
+  return lines.join("\n");
+}
+
+/** `read_state`'s answer: the summary when the call names no filter, and the full records the one
+ * filter it names selects. Two filters are refused: each answers a different shape. */
+function readState(state: LegionState, parameters: Record<string, unknown>): ToolResult {
+  const named = STATE_FILTERS.filter((filter) => parameters[filter] !== undefined);
+  if (named.length === 0) return toolSuccess(stateSummary(state));
+  if (named.length > 1) {
+    throw new Error(
+      `read_state takes one of ${STATE_FILTERS.join(", ")}, not ${named.join(" and ")}`
+    );
+  }
+  if (named[0] === "settings") {
+    if (parameters.settings !== true) throw new Error("read_state's settings is true");
+    return jsonSuccess({ settings: state.settings });
+  }
+  if (named[0] === "phase") {
+    const phase = LEGION_PHASES.find((candidate) => candidate === parameters.phase);
+    if (phase === undefined) {
+      throw new Error(`read_state's phase is one of ${LEGION_PHASES.join(", ")}`);
+    }
+    const selected = Object.entries(state.issues).filter(([, issue]) => issue.phase === phase);
+    return jsonSuccess({ issues: Object.fromEntries(selected) });
+  }
+  let keys: readonly string[];
+  if (named[0] === "issue") keys = [requiredString(parameters, "read_state", "issue")];
+  else {
+    const issues = parameters.issues;
+    if (!Array.isArray(issues) || !issues.every((issue) => typeof issue === "string")) {
+      throw new Error("read_state's issues is a list of issue keys");
+    }
+    keys = issues;
+  }
+  const missing = keys.filter((key) => state.issues[key] === undefined);
+  if (missing.length > 0) throw new Error(`The daemon has no record for ${missing.join(", ")}`);
+  const records = keys.map((key) => [key, state.issues[key]] as const);
+  return jsonSuccess({ issues: Object.fromEntries(records) });
+}
+
 /** The tool's one object schema, `op` choosing the operation; its fields and the `op` values are
  * in the order `tools.test.ts` pins. */
 function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
-  const phase = phaseOpParameters(z);
+  const phaseOp = phaseOpParameters(z);
   return z.object({
     op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
-    issue: phase.issue,
+    issue: phaseOp.issue,
+    since: phaseOp.since,
     artifactId: z
       .string()
       .describe(
-        "register_gate's root spec document: its artifact id, slug, or filename, as a dispatch command's --artifact takes it"
+        "register_gate's document for the step it registers: its artifact id, slug, or filename, as a dispatch command's --artifact takes it"
       )
       .optional(),
     version: z.number().optional(),
+    // The steps are `GATED_STEPS`, the one tuple the contracts package holds them in, so this
+    // schema and the daemon's own (`LegionGateRegisterRequest.shape.step`) admit the same words
+    // and a step added to the contract reaches both. The tuple is what crosses, not a zod
+    // schema: this schema is built with the host's own zod instance (`pi.zod`).
+    step: z
+      .enum(GATED_STEPS)
+      .describe(
+        "register_gate's design-gate step: decisions for the issue's decisions document, criteria for its Verification document, spec for its primary document. A deployment that gates one step takes the registration without it"
+      )
+      .optional(),
     issues: z.array(z.string()).optional(),
-    to: phase.to,
-    reason: phase.reason,
+    to: phaseOp.to,
+    // The why of the two operations that take one, a string as the phase op's own `reason` is.
+    // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
+    // that why goes.
+    reason: z
+      .string()
+      .describe(
+        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+      )
+      .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
-    summary: phase.summary,
-    verdict: phase.verdict,
-    ready: phase.ready,
+    summary: phaseOp.summary,
+    verdict: phaseOp.verdict,
+    wake_at: phaseOp.wake_at,
+    round: phaseOp.round,
     status: z.enum(ISSUE_STATUSES).optional(),
+    phase: z.enum([...LEGION_PHASES]).optional(),
+    settings: z.boolean().optional(),
+    role: z.enum(LEGION_ROLES).optional(),
   });
 }
 
@@ -113,22 +269,29 @@ function requiredString(
   return value;
 }
 
+/** Refuses every field `operation` does not take, in the phase ops' wording
+ * (`unknownFieldsRefusal`). A `reason` refused on park_child or rerun_child also says where its
+ * why goes: agents send one there, and the daemon keeps no why for either. */
 function assertOperationInput(parameters: Record<string, unknown>, operation: string): void {
   const fields = OPERATION_FIELDS[operation];
   if (fields === undefined) throw new Error(`Unsupported legion operation: ${operation}`);
-  for (const name of Object.keys(parameters)) {
-    if (name !== "op" && !fields.includes(name)) {
-      throw new Error(`${operation} does not accept field "${name}"`);
-    }
-  }
+  const refused = Object.keys(parameters).filter((name) => name !== "op" && !fields.includes(name));
+  if (refused.length === 0) return;
+  const refusal = unknownFieldsRefusal(operation, refused, fields);
+  const childOperation = operation === "park_child" || operation === "rerun_child";
+  throw new Error(
+    childOperation && refused.includes("reason")
+      ? `${refusal}. Say why in a dispatch comment on the child`
+      : refusal
+  );
 }
 
 /** The daemon's role-local workflow surface: no operation can schedule a worker. Every operation
  * that writes mints its own grant in-process and posts it with the request; nothing is written
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
- * sub-architect: an architect whose issue is not its tree), and finds the commit it reports in the
- * pane first (`handoffCommit`); `read_state` and `set_status` belong to the controller. */
+ * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
+ * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -137,11 +300,23 @@ export function createLegionTool(deps: {
   readonly controllerGrant: (sessionId: string) => Promise<LegionGrant>;
   /** Told of each `handoff_complete` that succeeded: the session's phase is complete. */
   readonly onPhaseCompleted: (context: SessionContext) => void;
-  /** The commit a completion of `phase` by `role` reports: for a file-backed phase the role
-   * works, the pushed commit carrying `.legion/<issue>/<phase>.json`, found with the pane's jj
-   * (`findHandoffCommit`); otherwise the commit the workspace stands on. Throws naming the remedy
-   * when the handoff is uncommitted, missing, not on this branch, another pane's, or unpushed. */
-  readonly handoffCommit: (phase: LegionPhase, role: LegionRole) => Promise<string>;
+  /** Told of each `ready_for_update` that succeeded: the session has answered the daemon's
+   * update message on its pod, and its phase stays open. */
+  readonly onUpdateAnswered: (context: SessionContext) => void;
+  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
+   * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
+   * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
+   * names under `head`, which for the implementer's round, while the issue stands in
+   * implementing, must be the commit its workspace stands on, pushed to `legion/<issue>@origin`;
+   * otherwise, and for a left phase with no record or an implementer's left record naming no head,
+   * the commit the workspace stands on, alone. Throws
+   * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
+   * in implementing, the implementer's record names no head, the commit its workspace stands on
+   * is not pushed, or its record's head is not that pushed commit. */
+  readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
+  /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
+   * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
+  readonly branchHead: () => Promise<string>;
   /** The id of the document `issue` carries under `reference` (`spec`, a slug, or a filename),
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
    * when none matches, or when it names two documents. */
@@ -155,25 +330,90 @@ export function createLegionTool(deps: {
     session,
     controllerGrant,
     onPhaseCompleted,
-    handoffCommit,
+    onUpdateAnswered,
+    handoffReport,
+    branchHead,
     resolveDocument,
     restartClock,
   } = deps;
   return {
     name: "legion",
     label: "legion",
-    // No sentence on read_record; after handoff_complete's contract the shared sentence on
-    // request_backward_move (an architect's names the issue it returns from accepting), then the
-    // architect's sign_off and the controller's operations: the exact text tools.test.ts pins, so a
-    // change to the shared template cannot reach an Oh My Pi agent unnoticed.
+    // The shared sentence on read_record, since its name does not say that it reads the caller's
+    // own issue when the call names none; the shared sentence on read_release_records before
+    // handoff_complete's contract, since the records it answers are not read from its name;
+    // after that contract the shared sentence on request_backward_move (an architect's names the
+    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
+    // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
+    // template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
+      before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
+        "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
+        "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
+        "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
-        "other phase (SIGNOFF_OUTSIDE_ACCEPTING), and issues still running beneath it do not hold it: a root's close waits " +
-        "for them instead. " +
-        "The controller's read_state returns the daemon's whole state and set_status moves an issue to todo, backlog or icebox. ",
+        "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
+        "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
+        "to done, and sign off again. " +
+        "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
+        "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+        "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
+        "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
+        "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+        "under it now: wait for the ancestor to close, then release it. " +
+        "The controller's read_state with no field returns a summary of the daemon's whole state — the project, admission, each " +
+        "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
+        "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
+        "set_status moves an issue to todo, backlog or icebox. " +
+        "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+        "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
+        "controller's report issue's icebox, because that issue holds no work. " +
+        "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+        "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
+        "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+        "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
+        "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
+        "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
+        "in read_state, and ask for a fresh session again only where the claim is suspended. " +
+        "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
+        "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
+        "The daemon refuses it for a claim whose process that read finds running " +
+        "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
+        "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
+        "one that records no process to read, and for one that moved under the request and that a second read " +
+        "finds no longer working or gone once more, each left exactly as the request found it " +
+        "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
+        "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
+        "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
+        "one queued, one whose launch is in flight, and one left working under a relaunch the " +
+        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
+        "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
+        "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
+        "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
+        "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
+        "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
+        "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
+        "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
+        "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
+        "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
+        "runtime would not answer for, for one that records no process to read, and for one " +
+        "that moved out of working while the request was made " +
+        "(CLAIM_UNSETTLED), for a claim a " +
+        "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
+        "where it is not), for a claim between states — one queued, one whose launch is in " +
+        "flight, one whose agent has registered and is not ready yet, which fresh_session " +
+        "reaches, and one left working under a relaunch the wake pacing parked " +
+        "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
+        "and for role controller. " +
+        "Each refusal says what the claim does now and which operation reaches each state. It " +
+        "names no moment to come back at: ask again later, and read the claim's state in " +
+        "read_state. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -199,22 +439,44 @@ export function createLegionTool(deps: {
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
-            { daemon: daemon(), claim: active, handoffCommit, restart },
+            { daemon: daemon(), claim: active, handoffReport, branchHead, restart },
             parameters
           );
           // A call that returned without throwing: a completion, and a backward move, which hands
           // the issue to another phase. Either way this session's phase is no longer open.
+          // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
+          // then waits for its process to be replaced rather than working, so the turn it ends
+          // after answering earns no reminder (the `update-answered` input of
+          // `@legion/pi-shared/phase-stall`).
           if (operation === "handoff_complete" || operation === "request_backward_move") {
             onPhaseCompleted(context);
+          } else if (operation === "ready_for_update") {
+            onUpdateAnswered(context);
           }
           return jsonSuccess(answer);
         }
         assertOperationInput(parameters, operation);
         const client = daemon();
         if (active.kind === "controller") {
-          if (operation === "read_state") return jsonSuccess(await client.state());
-          // set_status, the controller's one write: validated whole before its grant is minted.
+          if (operation === "read_state") return readState(await client.state(), parameters);
+          // The controller's three writes: each validated whole before its grant is minted.
           const issue = requiredString(parameters, operation, "issue");
+          if (operation === "fresh_session" || operation === "compact") {
+            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
+            if (role === undefined) {
+              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            if (operation === "compact") {
+              // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so
+              // and names why, and the claim is back whatever it says.
+              return jsonSuccess(await client.compact({ grantId, issue, role }));
+            }
+            // The daemon's answer again: empty for a claim whose phase was restarted or needed
+            // no restart, and naming the refusal where the claim came back owing no task and
+            // the workflow refused the restart that would have handed it one.
+            return jsonSuccess(await client.freshSession({ grantId, issue, role }));
+          }
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {
             throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);
@@ -248,8 +510,16 @@ export function createLegionTool(deps: {
             const reference = requiredString(parameters, operation, "artifactId");
             const isId = LegionGateRegisterRequest.shape.artifactId.safeParse(reference).success;
             const artifactId = isId ? reference : await resolveDocument(issue, reference);
-            // The fact is keyed by the gate's issue, generation, document, version and Dispatch
-            // sequence; a repeat after the sequence moved is a re-registration the gate absorbs.
+            // The step the document is for; a deployment that gates one step takes the
+            // registration without it, and one that gates several refuses it.
+            const named = LegionGateRegisterRequest.shape.step.safeParse(parameters.step);
+            if (!named.success) {
+              throw new Error(`register_gate's step is one of ${GATED_STEPS.join(", ")}`);
+            }
+            const step = named.data;
+            // The fact is keyed by the gate's issue, generation, step, document, version and
+            // Dispatch sequence; a repeat after the sequence moved is a re-registration the gate
+            // absorbs.
             await retryWhileDaemonRestarts(
               "register_gate",
               async () =>
@@ -258,6 +528,7 @@ export function createLegionTool(deps: {
                   issue,
                   artifactId,
                   version,
+                  ...(step === undefined ? {} : { step }),
                 }),
               restart
             );
@@ -276,11 +547,19 @@ export function createLegionTool(deps: {
             if (decision !== "retry" && decision !== "escalate") {
               throw new Error("retry_or_escalate requires decision retry or escalate");
             }
+            // The reason is optional: one given is written into the task the restarted role is
+            // given and into the daemon's own log line for the release, and a call that names
+            // none is unchanged.
+            const reason =
+              parameters.reason === undefined
+                ? {}
+                : { reason: requiredString(parameters, operation, "reason") };
             const grantId = await mintClaimGrant(client, active);
             await client.phaseRetry({
               grantId,
               issue: requiredString(parameters, operation, "issue"),
               decision,
+              ...reason,
             });
             return jsonSuccess({});
           }

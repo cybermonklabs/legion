@@ -1,0 +1,44 @@
+name: Report ci-ok when this job decides a merge-group run
+description: >-
+  The last step of every job of ci.yaml but `changes` and those CI_OK_EXEMPT names, and of the job
+  of each workflow ci.yaml calls. On a merge-group run whose group this job's own result decides —
+  its failure or its cancellation, or a `changes` that failed or was cancelled — it posts the
+  failing ci-ok on the group's commit at once (.github/scripts/ci-ok-report.sh says how), so the
+  queue takes the pull request out at the first failure instead of waiting for the rest of the
+  run. It posts nothing on any other run: there the verdict is ci.yaml's own `ci-ok` job, which
+  needs every job of the run and carries the verdict as its own check run. Call it with
+  `if: always()`, so a failed, timed-out or cancelled job reaches it. The job needs `actions: read`
+  (the run's jobs, which the posted check's summary names) and `checks: write` (the post).
+
+  It posts on a merge_group run and nowhere else, so on a pull request's run — a fork's included
+  — the script prints what it saw and exits 0 before it makes any GitHub call. A fork's pull
+  request gets its ci-ok from ci.yaml's `ci-ok` job, whose own check run carries the verdict and
+  costs no token scope, where a POST under a fork's read-only token could never have landed one.
+  This repository takes no fork pull requests in any case: their runs wait for an approval
+  nobody gives.
+
+inputs:
+  job:
+    description: The job's id in ci.yaml; a called workflow's job passes the id of ci.yaml's job that calls it.
+    default: ${{ github.job }}
+  changes:
+    description: "`toJSON(needs.changes)` of the job (a called workflow takes it as an input from its caller)."
+    required: true
+  job-status:
+    description: "`job.status` of the job: success, failure or cancelled."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Post the failing ci-ok when this job's result decides a merge-group run
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        JOB: ${{ inputs.job }}
+        JOB_STATUS: ${{ inputs.job-status }}
+        CHANGES: ${{ inputs.changes }}
+        EVENT: ${{ github.event_name }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      run: '"$GITHUB_ACTION_PATH/../../scripts/ci-ok-report.sh"'

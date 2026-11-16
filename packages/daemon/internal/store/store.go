@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"net/url"
@@ -26,18 +27,69 @@ import (
 // turns on. The number is arbitrary and fixed: only agreement matters.
 const migrateLock int64 = 1208001
 
-// Store is the daemon's handle on its database.
+// sessionResetBound bounds each step that ends apply's hold on a migration's connection: the reset
+// of the connection's session, and the close of a connection whose reset failed
+// (releaseMigrationConn). Five seconds, as for the state route's rollback (internal/api,
+// stateRollbackBound). Each step is one or two round trips to a server that has just answered. So
+// the bound stops only a wait for a server that no longer answers, and a longer bound would only
+// hold the boot.
+const sessionResetBound = 5 * time.Second
+
+// idleBoundParam is the PostgreSQL setting that ends a connection sitting inside an open
+// transaction with no statement running, and idleBound the value this pool's connections carry
+// (Open). It is set once, on the pool, because the invariant is the pool's and not any one call
+// site's: no transaction of this daemon idles on purpose, so one setting enforces it and no
+// caller can forget it. The measured failure it answers is INFRA-3169, where all 32 connections
+// of the production pool sat `idle in transaction` and every claim write and state read timed
+// out behind them.
+//
+// Thirty seconds, because inside a healthy transaction of this daemon the gap between two
+// statements is the Go work between them — milliseconds in the state projection's per-issue loop
+// — so the bound is three orders of magnitude above the gap it must never cut, and far below the
+// hour a stalled connection would otherwise be held. It bounds the gap between statements and
+// nothing else: a statement that runs long, a lock wait included, is a statement_timeout's to
+// bound, and the state route sets that one on its own transaction (internal/api's stateRoute).
+const (
+	idleBoundParam = "idle_in_transaction_session_timeout"
+	idleBound      = 30 * time.Second
+)
+
+// Store is the daemon's handle on its database. The pool is the guarded one (Pool): the pgx pool
+// it wraps is this package's alone, so no caller can ask for a connection past the refusal a
+// caller holding one gets (ErrNestedAcquire).
 type Store struct {
-	pool *pgxpool.Pool
+	pool *Pool
 }
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
+// Every connection of the pool carries the idle bound (idleBound) unless dsn names a value of
+// its own, so a deployment can raise or lower it without a release.
+//
+// "Names a value of its own" is what pgx reads out of the DSN: pgconn.ParseConfig puts every key
+// it does not know itself — pool_max_conns and the rest of pgxpool's own keys aside, which
+// pgxpool.ParseConfig takes out — into Config.RuntimeParams under that key, so a DSN written
+// `?idle_in_transaction_session_timeout=5s` arrives here as that entry and is kept. A value
+// written as `options=-c%20idle_in_transaction_session_timeout%3D5s` does not: pgx parses no
+// `options` string, so it arrives as one RuntimeParams entry under `options` and this check does
+// not see it. Such a DSN gets the daemon's value set beside it in the startup packet, and the
+// startup parameter is what the server ends up running with (measured on PostgreSQL 18.6,
+// 2026-11-12). A deployment that wants another value writes it as its own DSN key.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, dsn)
+	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, ConnectError(dsn, err)
 	}
+	if _, named := config.ConnConfig.RuntimeParams[idleBoundParam]; !named {
+		// Milliseconds with no unit, which is the unit this setting counts in: the one spelling
+		// the server reads the same whatever its own unit display is.
+		config.ConnConfig.RuntimeParams[idleBoundParam] = strconv.FormatInt(idleBound.Milliseconds(), 10)
+	}
+	raw, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		return nil, ConnectError(dsn, err)
+	}
+	pool := NewPool(raw)
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, ConnectError(dsn, err)
@@ -60,8 +112,11 @@ func (s *Store) Close() {
 }
 
 // Pool exposes the caller-owned transaction source to components, such as workflow intake, that
-// must make their whole operation atomic rather than asking Store to wrap a callback.
-func (s *Store) Pool() *pgxpool.Pool {
+// must make their whole operation atomic rather than asking Store to wrap a callback. What it
+// hands out is the guarded pool, so a component that asks it for a second connection while it
+// holds one is refused at the call that asked (ErrNestedAcquire) instead of waiting for a
+// connection only it can give back.
+func (s *Store) Pool() *Pool {
 	return s.pool
 }
 
@@ -195,9 +250,23 @@ func boots(ctx context.Context, db queryRower, project string) (int, time.Time, 
 // apply runs one migration unless the database already records it, and reports
 // whether it ran. The check, the migration and the record share a transaction,
 // and the advisory lock is held to its end.
+//
+// The transaction runs on a connection that apply takes for itself (Pool.acquire), not through Tx,
+// because apply resets the connection's session before the connection returns to the pool.
+// releaseMigrationConn says why, and what a failed reset changes.
 func (s *Store) apply(ctx context.Context, migration migrations.Migration) (bool, error) {
+	conn, unmark, err := s.pool.acquire(ctx)
+	if err != nil {
+		return false, err
+	}
+	// The mark clears only after the connection is back in the pool or closed, so the guard
+	// refuses this caller a second connection for as long as it holds this one.
+	defer func() {
+		releaseMigrationConn(ctx, conn, migration.Name)
+		unmark()
+	}()
 	ran := false
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "select pg_advisory_xact_lock($1)", migrateLock); err != nil {
 			return fmt.Errorf("lock the schema: %w", err)
 		}
@@ -226,6 +295,59 @@ func (s *Store) apply(ctx context.Context, migration migrations.Migration) (bool
 		return false, err
 	}
 	return ran, nil
+}
+
+// releaseMigrationConn returns conn to the pool once apply's transaction has ended, and it resets
+// conn's session first. A migration's own text can run a SET without LOCAL, and its stored code
+// can call set_config(..., false). Either one stays on the session after the commit. Without the
+// reset, the pool's next caller would meet it. A statement_timeout would cancel its queries, or a
+// search_path would resolve its names to another schema's tables. No migration of the daemon does
+// either today. The reset protects the pool's next caller from a later migration that does.
+//
+// The reset runs DISCARD ALL and then pgx's DeallocateAll. DISCARD ALL gives each setting its
+// reset value, ends a SET ROLE, and drops temporary tables and the server's prepared statements.
+// It also releases the session's advisory locks. apply's lock is a transaction lock
+// (pg_advisory_xact_lock), which the commit or the rollback has already released, so no unlock
+// has to run before the reset. pgx caches prepared statements on each connection. After DISCARD
+// ALL, pgx would still name statements that the server has dropped, and the next cached query
+// would fail with SQLSTATE 26000. DeallocateAll empties pgx's caches, so that query prepares
+// again.
+//
+// The reset keeps the idle bound. Open gives idleBoundParam to each connection as a startup
+// parameter (RuntimeParams). DISCARD ALL gives such a setting the value of its startup parameter,
+// not the server's default. Measured on PostgreSQL 18.6, whose default there was 0: a connection
+// opened with 30000 as that startup parameter read 30s. After a session SET of 0 it read 0, and
+// after DISCARD ALL it read 30s again.
+//
+// The reset and the close run on contexts that a cancelled ctx does not cancel, each bounded by
+// sessionResetBound. A connection that pgx has already closed returns to the pool, which destroys
+// it. pgx closes a connection whose statement a cancelled ctx interrupted, or whose rollback
+// failed. A connection whose reset fails carries a session that nobody knows, so
+// releaseMigrationConn removes it from the pool (Hijack) and closes it. It never returns to the
+// pool. The failed reset does not change apply's answer: the migration has already committed or
+// rolled back, and no later caller meets the closed connection. So releaseMigrationConn logs the
+// failure at WARN with the migration's name, and apply returns what its transaction returned, a
+// migration's error included.
+func releaseMigrationConn(ctx context.Context, conn *pgxpool.Conn, migration string) {
+	if conn.Conn().IsClosed() {
+		conn.Release()
+		return
+	}
+	resetCtx, cancelReset := context.WithTimeout(context.WithoutCancel(ctx), sessionResetBound)
+	defer cancelReset()
+	_, err := conn.Exec(resetCtx, "discard all")
+	if err == nil {
+		err = conn.Conn().DeallocateAll(resetCtx)
+	}
+	if err == nil {
+		conn.Release()
+		return
+	}
+	slog.Warn("legion: the session reset of a migration's connection failed, so the connection is closed and not returned to the pool",
+		"migration", migration, "error", err)
+	closeCtx, cancelClose := context.WithTimeout(context.WithoutCancel(ctx), sessionResetBound)
+	defer cancelClose()
+	_ = conn.Hijack().Close(closeCtx)
 }
 
 // widenSchemaVersion makes schema_version.version a bigint when it is still the
@@ -277,6 +399,14 @@ func versionRecorded(ctx context.Context, tx pgx.Tx, version int) (bool, error) 
 // through.
 type queryRower interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// rowsQuerier is the part of a pool and of a transaction this package reads many rows through.
+// It is its own interface rather than queryRower, which carries QueryRow alone and so cannot
+// carry a read of more than one row; every read of rows in this package — claims, pod resumes —
+// takes this one, because the shape is the same wherever the rows come from.
+type rowsQuerier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
 // execer is the part of a pool and of a transaction this package writes through.

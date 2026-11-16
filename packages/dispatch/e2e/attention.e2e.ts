@@ -1,17 +1,11 @@
-import { expect, type Page, test } from "@playwright/test";
-
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
-import { resetDatabase } from "./seed";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
   actor: { id: "e2e-attention", kind: "session" as const },
   as: "agent" as const,
 };
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 /**
  * The row the reader is on, read the way `ViewportAnchor` reads it: the row nearest the visible
@@ -46,7 +40,8 @@ async function readingAnchor(page: Page, root: string, item: string): Promise<st
   return value ?? "";
 }
 
-test("a reader scrolled up keeps their Conversation viewport when a new card arrives @phone", async ({
+// @pr: A delivery arriving: a new card must not move the Conversation under a reader who scrolled up.
+test("a reader scrolled up keeps their Conversation viewport when a new card arrives @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -76,7 +71,7 @@ test("a reader scrolled up keeps their Conversation viewport when a new card arr
   }
 });
 
-test("a reader at the Conversation top follows a new card @phone", async ({ browser }) => {
+test("a reader at the Conversation top follows a new card", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Attention test" });
   for (let index = 0; index < 30; index += 1) {
@@ -108,10 +103,11 @@ test("a reader at the Conversation top follows a new card @phone", async ({ brow
 // Paging is the Activity tab's: the Conversation reads each of its three lists whole and offers
 // no `Load older` at all. Older events land beneath the rows already on screen, so the row the
 // reader is on does not move.
-test("loading older Activity rows keeps the reader anchor @phone", async ({ browser }) => {
+test("loading older Activity rows keeps the reader anchor", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Older events" });
-  for (let index = 0; index < 250; index += 1) {
+  // One more than the Activity tab's 200-row page (`ActivityTab.tsx`), so a second page exists.
+  for (let index = 0; index < 205; index += 1) {
     await createMessage(issue.key, { body: `Older message ${index}` }, session);
   }
 
@@ -261,7 +257,7 @@ async function verifyGapDetection(
   }
 }
 
-test("a read mark moving under a reader parked in a Conversation gap keeps the lower card fixed @phone", async ({
+test("a read mark moving under a reader parked in a Conversation gap keeps the lower card fixed", async ({
   browser,
 }) => {
   await verifyGapDetection(browser);

@@ -1,67 +1,54 @@
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import {
   type Block,
   type Cleanup,
   call,
+  deliveryFor,
   isSummarization,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
+  sendRelayFrame,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { connect, ErrorCode, type NatsConnection, NatsError, StringCodec } from "nats";
+import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
+import { readCardLines } from "../test/card-entries";
 
 // How an Envoy card and a person's Send reach the real Oh My Pi (extensions/envoy.ts's card send,
-// and src/card-wake.ts's delivery choice and its wake for a card the host folds): cards come over
-// a real NATS server as the listener forwards a role lane to the session's agent subject, the Send
-// as Dispatch's delivery frame accepted through the stand-in. What reached the model is read off
-// the requests the binary sends the stand-in gateway, each held until the test answers it.
+// and src/card-wake.ts's delivery choice and its wake for a card the host folds): both come over a
+// real NATS server on the one path a session receives on, its own consumer's relay subject
+// (`notifications.envoy.deliver.<session id>`, INFRA-771), each frame carrying the subject the
+// stream stored the message on — a role lane the listener forwarded to the session's agent
+// subject, and Dispatch's delivery frame, which the session accepts through the stand-in. What
+// reached the model is read off the requests the binary sends the stand-in gateway, each held
+// until the test answers it.
 // LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server (the name the daemon's tests read, packages/daemon/internal/testnats/nats.go). A run
-// without both skips, except on GitHub Actions, where the pi-envoy job supplies both.
-// This file runs in a Bun process of its own (the package's `test` script): envoy.test.ts's
-// `mock.module("nats", …)` replaces `nats` for the whole process, and a file loaded after it gets
-// the mock's `connect`, which the check below turns into one clear failure.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
-
-// The real `connect`'s connection reports the server it reached (`getServer`); the mock's has no
-// such method. Checked once, before any case spends a binary's startup on a connection that
-// reaches no server.
-beforeAll(async () => {
-  if (skip) return;
-  const probe = await connect({ servers: setup().nats });
-  try {
-    if (typeof probe.getServer !== "function") {
-      throw new Error(
-        "`nats` here is envoy.test.ts's mock: run this file in its own process with `bun run test`"
-      );
-    }
-  } finally {
-    await probe.close();
-  }
-});
+// without both skips, except on GitHub Actions, where the pi-envoy job supplies both
+// (`ompNatsGuard`).
+const { skip, setup } = ompNatsGuard();
 
 /** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
 const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
 
 /** How long a case waits for one thing the session owes it before failing on it. */
 const DEADLINE_MS = 30_000;
+
+/** How long a card read waits for the session file to end on a finished line. One line is one
+ * write, so this is orders of magnitude more than it takes; it is a hang guard, not a sleep. */
+const CARDS_WHOLE_MS = 5_000;
+
+/** The one stream the stand-in listener answers a consumer registration with, and stamps every
+ *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
+const RELAY_STREAM = "card-delivery-stream";
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -84,10 +71,10 @@ function text(reply: string): Block {
 }
 
 /**
- * A role-lane card as the listener forwards it to the role holder's agent subject: the envelope
- * keeps the role topic, so the session acknowledges it on the request's reply inbox
- * (`expectsLaneReceipt`, packages/envoy-client/src/delivery.ts), under a key minted per label as
- * envoy.test.ts's `forwardedRoleEnvelope` builds it.
+ * A role-lane card as the listener forwards it to the role holder's agent subject, which is the
+ * subject its frame carries: the envelope keeps the role topic, and the session is not the one
+ * the forward is answered to, since it counts as delivered once the stream stored it. Its key is
+ * minted per label as envoy.test.ts's `forwardedRoleEnvelope` builds it.
  */
 function forwardedRoleEnvelope(summary: string, label: string): string {
   const minted = createHash("sha256").update(label).digest("hex").slice(0, 32);
@@ -106,13 +93,14 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
 /**
  * A person's direct Send to session `sid` from Dispatch's Agents page, as the listener hands the
  * session its delivery frame (envoy.test.ts's `directDispatchEnvelope`): no issue, the person as
- * the event's actor, attempt 1 in steer.
+ * the event's actor, attempt 1 in `mode`.
  */
 function directDispatchEnvelope(
   sid: string,
   messageID: string,
   body: string,
-  label: string
+  label: string,
+  mode: "btw" | "steer"
 ): string {
   const actor = { id: "alice", kind: "user" };
   return JSON.stringify({
@@ -135,7 +123,7 @@ function directDispatchEnvelope(
         },
         type: "message.created",
       },
-      delivery: { attempt: 1, mode: "steer" },
+      delivery: { attempt: 1, mode },
     }),
     payload_summary: body,
     source: "dispatch",
@@ -170,16 +158,22 @@ interface CardSession {
   readonly frames: readonly object[];
   /** The next Messages request after the ones already taken, once it arrives. */
   nextTurn(what: string): Promise<Turn>;
-  /** Publishes a card and resolves once the session has acknowledged it (its lane receipt). */
+  /** Publishes a card and resolves once the session's subscription has taken its frame. */
   card(label: string): Promise<string>;
   /** Publishes a person's Send and resolves once the session asked Dispatch to accept it. */
   send(label: string): Promise<string>;
+  /**
+   * Relays one late BTW to the session as the listener relays a session's consumer, and resolves
+   * with the body it carries once the session has answered the frame `done`: the card is written.
+   */
+  lateBtw(label: string): Promise<string>;
   /** Sends one RPC command and resolves with its response frame. */
   command(command: Record<string, unknown>): Promise<Record<string, unknown>>;
   state(): Promise<z.infer<typeof RpcStateSchema>>;
   /** Resolves once `get_state` reports the session settled. */
   settled(): Promise<void>;
-  /** The session file's `envoy-message` custom messages, as raw JSON lines. */
+  /** The session file's `envoy-message` custom messages, as raw JSON lines, read once that file
+   * ends on a finished line, so an exact count of them is not one short (`readCardLines`). */
   cardEntries(): Promise<string[]>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
@@ -216,7 +210,7 @@ async function until<T>(
  * go into the profile's config.yml. Resolves once the session has registered its id with the
  * listener and the test holds a NATS connection. With `holdStartup` the stand-in holds its answer
  * to that first registration until `releaseStartup`: envoy.ts's `session_start` awaits it
- * (`reconcileNow` registers once the agent subject is open), so the host is still inside its
+ * (`reconcileNow` registers once the relay subject is open), so the host is still inside its
  * startup, before it starts any extension send or reads any RPC command. With `holdSetup` it holds
  * the first open-asks read until `releaseSetup`: envoy.ts's `before_agent_start` awaits it (for a
  * session its run-end nudge could reach, which this one is: a UI over RPC, a side turn, Dispatch
@@ -291,17 +285,24 @@ async function startSession(
     }
     // The Envoy listener: registration and any read answer with an interest. A held startup
     // holds the first registration.
-    if (url.pathname === "/v1/interests/subscribe" && startupHold !== undefined) {
-      const held = startupHold.promise;
-      startupHold = undefined;
-      await held;
+    const id = typeof body.session_id === "string" ? body.session_id : "";
+    const interest = { session_id: id, machine_id: "card-delivery-machine", dir: workspace };
+    if (url.pathname === "/v1/interests/subscribe") {
+      if (startupHold !== undefined) {
+        const held = startupHold.promise;
+        startupHold = undefined;
+        await held;
+      }
+      // Every registration the listener accepts is answered the consumer it gave the session,
+      // and one it can give none is refused (INFRA-771): a session receives only what its own
+      // consumer holds, and the plugin fails a registration answered no delivery.
+      return Response.json({
+        ...interest,
+        topics: [],
+        ...deliveryFor(url.pathname, body, id),
+      });
     }
-    return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
-      machine_id: "card-delivery-machine",
-      dir: workspace,
-      topics: [],
-    });
+    return Response.json({ ...interest, topics: [] });
   });
   // A request still held at the end (an aborted one, a held registration or open-asks read) is
   // answered, so the server stops at once.
@@ -343,6 +344,12 @@ async function startSession(
   rpc.closed.catch((error: unknown) => {
     closed.error = error;
   });
+  // Whether the pane may still be appending to its session file, which decides whether a read of
+  // that file withholds a last line with no newline yet (`cardEntries`).
+  let running = true;
+  void rpc.exited.then(() => {
+    running = false;
+  });
 
   const sid = await until(
     "the session's registration with the listener",
@@ -356,7 +363,32 @@ async function startSession(
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
   const codec = StringCodec();
-  const subject = `notifications.agent.${sid}`;
+  // The subject the stream stored a message on, which every frame carries: the session's own
+  // inbox, where the listener's role lane forwards a role card and Dispatch addresses a Send. A
+  // session always follows it, so no frame of a case is dropped by the follow filter.
+  const stored = `notifications.agent.${sid}`;
+
+  // Sends one frame as the listener's relay sends it (`sendRelayFrame`), under the sequence
+  // after the last: one stream for the whole case. A run whose binary died fails the wait at
+  // once rather than at the frame's own deadline.
+  let streamSeq = 0;
+  const relayFrame = async (what: string, envelope: string): Promise<void> => {
+    streamSeq += 1;
+    try {
+      await sendRelayFrame({
+        connection,
+        newHeaders: headers,
+        sessionID: sid,
+        subject: stored,
+        payload: codec.encode(envelope),
+        seq: streamSeq,
+        withinMs: DEADLINE_MS,
+        stopped: closed,
+      });
+    } catch (error) {
+      throw new Error(`${what} failed: ${String(error)}`);
+    }
+  };
 
   let taken = 0;
   const session: CardSession = {
@@ -370,23 +402,9 @@ async function startSession(
     },
     async card(label) {
       const summary = `CARD-${label}-${randomUUID().slice(0, 8)}`;
-      const envelope = codec.encode(forwardedRoleEnvelope(summary, `${label}-${randomUUID()}`));
-      // The session opens its agent subject after it registers: until then a request finds no
-      // responder, and nothing took it, so it is sent again.
-      await until(
-        `the session's receipt for card ${label}`,
-        async () => {
-          try {
-            await connection.request(subject, envelope, { timeout: 5_000 });
-            return true;
-          } catch (error) {
-            if (error instanceof NatsError && error.code === ErrorCode.NoResponders) {
-              return undefined;
-            }
-            throw error;
-          }
-        },
-        closed
+      await relayFrame(
+        `the session to take card ${label}`,
+        forwardedRoleEnvelope(summary, `${label}-${randomUUID()}`)
       );
       return summary;
     },
@@ -394,9 +412,9 @@ async function startSession(
       const body = `SEND-${label}-${randomUUID().slice(0, 8)}`;
       const messageID = randomUUID();
       sends.set(messageID, body);
-      connection.publish(
-        subject,
-        codec.encode(directDispatchEnvelope(sid, messageID, body, label))
+      await relayFrame(
+        `the session to take Send ${label}`,
+        directDispatchEnvelope(sid, messageID, body, label, "steer")
       );
       await until(
         `Dispatch's accept of Send ${label}`,
@@ -406,6 +424,55 @@ async function startSession(
             : undefined,
         closed
       );
+      return body;
+    },
+    async lateBtw(label) {
+      const body = `BTW-${label}-${randomUUID().slice(0, 8)}`;
+      // The relay subject is subscribed before the registration that asks for consumer delivery
+      // (envoy.ts's `subscribeRelay`, which confirms the subscription first), so a frame
+      // published once such a registration has reached the stand-in has a subscriber.
+      await until(
+        "the registration that asks for consumer delivery",
+        () =>
+          requests.some(
+            (request) =>
+              request.path === "/v1/interests/subscribe" && request.body.delivery !== undefined
+          )
+            ? true
+            : undefined,
+        closed
+      );
+      const frame = headers();
+      frame.set(RelayHeader.subject, stored);
+      // The next sequence of the one stream this case publishes on, shared with relayFrame, so a
+      // late frame never repeats or rewinds a sequence the session's ledger has already read: its
+      // lateness is the delivered count below and nothing else.
+      streamSeq += 1;
+      frame.set(RelayHeader.streamSeq, String(streamSeq));
+      frame.set(RelayHeader.streamID, RELAY_STREAM);
+      // Delivered before: the frame is late (`ConsumerFrame.late`), which is what makes a BTW an
+      // inert card rather than a side turn.
+      frame.set(RelayHeader.delivered, "2");
+      frame.set(RelayHeader.storedAt, new Date().toISOString());
+      // The session answers the frame on its reply subject, one word at a time: `received` as it
+      // decodes, then `done` once the card is written.
+      const inbox = createInbox();
+      const answers = connection.subscribe(inbox);
+      const words: string[] = [];
+      void (async () => {
+        for await (const word of answers) words.push(codec.decode(word.data));
+      })();
+      connection.publish(
+        deliverSubject(sid),
+        codec.encode(directDispatchEnvelope(sid, randomUUID(), body, label, "btw")),
+        { headers: frame, reply: inbox }
+      );
+      await until(
+        `the session's done for the late BTW ${label}`,
+        () => (words.includes("done") ? true : undefined),
+        closed
+      );
+      answers.unsubscribe();
       return body;
     },
     async command(command) {
@@ -431,11 +498,13 @@ async function startSession(
       );
     },
     async cardEntries() {
+      // The pane's state is read before the file and never after: a read that caught half a
+      // line while the pane then exited would be marked "gone" and parsed, and that parse error
+      // would stand in for the real failure, which is that omp exited (dispatch://INFRA-2188).
+      const writer = running ? "alive" : "gone";
       const file = (await session.state()).sessionFile;
       if (file === undefined) throw new Error("get_state named no session file");
-      return (await readFile(file, "utf8"))
-        .split("\n")
-        .filter((line) => line.includes('"custom_message"') && line.includes('"envoy-message"'));
+      return readCardLines(file, writer, CARDS_WHOLE_MS);
     },
     until: (what, probe) => until(what, probe, closed),
     releaseStartup,
@@ -694,11 +763,28 @@ test.skipIf(skip)(
 // same card `message_end` with no interrupt, so its wake runs the fold path the compaction case
 // above proves, and src/card-wake.test.ts's fold cases cover the rules.
 
+/** What of a persisted `envoy-message` entry the hand-over assertions read: the host keeps the
+ *  card's `details` (src/card-wake.ts, `EnvoyCardMarker`) on the entry it writes to the file. */
+const CardEntrySchema = z.object({
+  type: z.literal("custom_message"),
+  customType: z.literal("envoy-message"),
+  details: z.object({ handOver: z.string() }),
+});
+
 // The first idle card of a session that got none while it started is still in the startup phase
 // (src/card-wake.ts, `CardWake`): it goes into the context with no turn, and its wake
 // starts the turn and ends the phase. An idle card after that starts its turn itself.
+//
+// The host state pi-envoy read at each hand-over (src/card-wake.ts, `CardHandOver`) survives the
+// host's own persistence path: it is in the `details` of the `envoy-message` entry the host
+// writes to the session file, which is all a later reading of the stored transcripts has. Both
+// states asserted are the only one their host condition can produce. The first card is
+// `startup`: `deliveryFor` reads the startup phase still open, the host idle and the mode `rpc`,
+// which is that state and nothing else, and the wake's turn proves the phase held. That turn
+// ends the phase, so the second card, handed once the host has settled again, is read as idle
+// with no run and no prompt being set up: `idle`.
 test.skipIf(skip)(
-  "a card that reaches an idle session starts a turn",
+  "a card that reaches an idle session starts a turn, and its hand-over state reaches the file",
   async () => {
     const session = await startSession();
     const first = await session.card("d1");
@@ -713,6 +799,48 @@ test.skipIf(skip)(
     expect(lastMessage(turn.request)).toContain(card);
     turn.reply([text("Read the card.")]);
     await probe(session, turn.index + 1);
+
+    // Read off the file the host wrote, never the extension's own record of what it handed over.
+    const entries = await session.cardEntries();
+    const handOver = (label: string): string => {
+      const written = entries.filter((entry) => entry.includes(label));
+      expect(written).toHaveLength(1);
+      return CardEntrySchema.parse(JSON.parse(written[0] as string)).details.handOver;
+    };
+    expect(handOver(first)).toBe("startup");
+    expect(handOver(card)).toBe("idle");
+  },
+  120_000
+);
+
+// The third hand-over an Envoy card can be given (extensions/envoy.ts, `handCard`): the inert
+// card, a steer with `triggerTurn: false`. A BTW is answered on Dispatch and never shown as a
+// card that starts a turn, and one whose relay frame is late — delivered before, or stored before
+// this connection's epoch began (`ConsumerFrame.late`) — can no longer be answered there: it is
+// written to the transcript as one card and nothing more. That is the only path `handCard` hands
+// an inert card on, and the state it stamps is `inert` whatever the host is doing, since
+// `UnwrittenFrames` holds the card until the host is settled and hands it only then (`hostSettled`).
+// What `lateBtw` publishes is a relay frame, so a late BTW reaches the session over its own
+// consumer's relay subject, which the stand-in answers every registration with. The state is read
+// off the file the host wrote, as the two cases above read theirs: an inert card the host
+// persisted without `handOver` would be read, in a later reading of the stored transcripts, as a
+// card written before any state was stamped at all.
+test.skipIf(skip)(
+  "a late BTW is written as an inert card, and its hand-over state reaches the file",
+  async () => {
+    const session = await startSession();
+    // An inert card is handed only to a settled host; one sent before that waits for one.
+    await session.settled();
+    const btw = await session.lateBtw("i1");
+
+    // The card started no turn of its own: the session's first model request is the probe's. A
+    // session that ran no turn has written no file yet, so the probe is also what puts the card
+    // the host holds on disk, as it is in every other case that reads the file.
+    await probe(session, 0);
+
+    const written = (await session.cardEntries()).filter((entry) => entry.includes(btw));
+    expect(written).toHaveLength(1);
+    expect(CardEntrySchema.parse(JSON.parse(written[0] as string)).details.handOver).toBe("inert");
   },
   120_000
 );
@@ -769,9 +897,10 @@ test.skipIf(skip)(
 // settled (runtime-init.ts `initializeExtensions`: `runner.sends.drain()`), and an idle card sent
 // with `triggerTurn` lasts as long as the turn it starts: a card that reached pi-envoy while the
 // session started ran its whole turn inside that drain, and `get_state` and `prompt` waited for
-// it. The stand-in holds the registration envoy.ts's `session_start` awaits, with the agent
-// subject already open, so the cards reach pi-envoy inside the host's startup: the RPC command
-// written meanwhile is not even read until startup is over.
+// it. The stand-in holds the registration envoy.ts's `session_start` awaits, with the relay
+// subject already open (it is opened before the registration that asks for the consumer), so the
+// cards reach pi-envoy inside the host's startup: the RPC command written meanwhile is not even
+// read until startup is over.
 test.skipIf(skip)(
   "a card that arrives while the session starts holds no RPC input",
   async () => {

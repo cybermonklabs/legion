@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -302,7 +303,7 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 			return importedSession{}, err
 		}
 		source = onVolume
-		root = filepath.Join(treeVolume, sandbox.SessionsSubPath)
+		root = treeVolume
 	}
 	content, info, err := readSessionFile(source, root)
 	if err != nil {
@@ -315,9 +316,119 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 	return importedSession{Outcome: outcome, Summary: ompsessions.Summarize(content)}, nil
 }
 
-// readSessionFile reads one regular session file. When root names a mounted
-// legacy sessions directory, os.Root resolves source beneath its descriptor so
-// a path or symlink cannot escape between validation and the read.
+// ignoringEINTR calls fn until the error it answers with is not EINTR, and returns that error. A
+// signal can interrupt any open or fstat of the walk, and the rooted-directory API this walk
+// replaced retried each of its own calls the same way (src/os/root_unix.go).
+func ignoringEINTR(fn func() error) error {
+	for {
+		err := fn()
+		if !errors.Is(err, unix.EINTR) {
+			return err
+		}
+	}
+}
+
+// openNoFollow opens name in the directory the descriptor parent holds, refusing a symbolic link
+// at name with ELOOP, and retries the EINTR an open may answer with. Every component of
+// openSessionFileBeneath's walk and its leaf are opened through it, so the flag set is written
+// once and a later change to it cannot reach only one of them.
+func openNoFollow(parent int, name string) (int, error) {
+	var fd int
+	err := ignoringEINTR(func() error {
+		var err error
+		fd, err = unix.Openat(parent, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		return err
+	})
+	return fd, err
+}
+
+// openSessionFileBeneath opens the session file at relative, the path below the sessions
+// directory of the tree volume mounted at volume, one component at a time, and returns the leaf's
+// open file for the caller to close.
+//
+// The walk's one open by a path is volume itself, the mount the operator named on --tree-volume:
+// a link there is the operator's own, so it is followed. Every directory below it, the sessions
+// directory first, was writable by every agent of a legion-v10.0.0 deployment, so any of them may
+// be a link an agent left pointing off the volume; each is therefore opened from the descriptor
+// of the one before it with O_NOFOLLOW and refused when it is a link.
+//
+// The flag set is O_RDONLY|O_NOFOLLOW rather than O_PATH, which is Linux's alone while legion is
+// released for darwin/amd64 and darwin/arm64. Measured on 2026-11-08 under gVisor 4.19.0, the
+// kernel every Legion pod runs: openat of a link to a directory with
+// O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC answers ELOOP, as it does under an ordinary Linux
+// kernel, while Go's rooted-directory API follows that link out of its root. O_NONBLOCK stops the
+// open of a named pipe from waiting for a writer: measured in this pod on 2026-11-08, a FIFO at
+// the leaf is refused in 0.47 s with the flag, and the same open blocks without end without it.
+//
+// A component's kind comes from fstat of the handle just opened rather than from a second reading
+// of the name, so a rename between the check and the open cannot change what was opened. Every
+// open and every fstat runs through ignoringEINTR, keeping the behaviour of the loop Go's
+// rooted-directory API wraps each of its own opens in (src/os/root_unix.go).
+func openSessionFileBeneath(volume, relative string) (*os.File, error) {
+	sessions := filepath.Join(volume, sandbox.SessionsSubPath)
+	if !filepath.IsLocal(relative) {
+		return nil, fmt.Errorf("%s is not under the sessions directory %s", filepath.Join(sessions, relative), sessions)
+	}
+	if relative == "." {
+		return nil, fmt.Errorf("%s is the sessions directory itself, not a session file", sessions)
+	}
+	var parent int
+	if err := ignoringEINTR(func() error {
+		var err error
+		parent, err = unix.Open(volume, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("the tree volume %s cannot be opened: %w", volume, err)
+	}
+	// The walk starts at the volume, so the sessions directory's own components come first.
+	// relative is filepath.Rel's output, which is clean, and IsLocal has refused an absolute, an
+	// empty and an escaping one, so splitting on the separator yields the components themselves.
+	components := append(strings.Split(sandbox.SessionsSubPath, string(filepath.Separator)), strings.Split(relative, string(filepath.Separator))...)
+	walked := volume
+	for _, name := range components[:len(components)-1] {
+		walked = filepath.Join(walked, name)
+		directory, err := openNoFollow(parent, name)
+		unix.Close(parent)
+		if err != nil {
+			switch {
+			case errors.Is(err, unix.ELOOP):
+				return nil, fmt.Errorf("%s is a symbolic link", walked)
+			case errors.Is(err, unix.ENOENT):
+				return nil, fmt.Errorf("%s is not on the tree volume", walked)
+			}
+			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
+		}
+		var st unix.Stat_t
+		if err := ignoringEINTR(func() error { return unix.Fstat(directory, &st) }); err != nil {
+			unix.Close(directory)
+			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+			unix.Close(directory)
+			return nil, fmt.Errorf("%s is not a directory", walked)
+		}
+		parent = directory
+	}
+	leaf := components[len(components)-1]
+	path := filepath.Join(walked, leaf)
+	file, err := openNoFollow(parent, leaf)
+	unix.Close(parent)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("%s is a symbolic link", path)
+		}
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// The name carried on the handle is what a later Stat or read error prints, so it is the leaf's
+	// own path on the tree volume.
+	return os.NewFile(uintptr(file), path), nil
+}
+
+// readSessionFile reads one regular session file. When root names a mounted tree volume,
+// openSessionFileBeneath walks source beneath that volume's sessions directory one descriptor at
+// a time, rather than through Go's rooted-directory API, which under a gVisor kernel follows a
+// directory symlink out of its root, so a path or symlink cannot escape between validation and
+// the read.
 func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 	var (
 		opened *os.File
@@ -329,16 +440,15 @@ func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 			return nil, nil, errors.New("refuses a symbolic link")
 		}
 	} else {
-		volume, err := os.OpenRoot(root)
+		// The path is taken relative to the sessions directory rather than to the volume: against
+		// the volume, a source under `sessions/..` would look local and the walk would climb out.
+		sessions := filepath.Join(root, sandbox.SessionsSubPath)
+		var relative string
+		relative, err = filepath.Rel(sessions, source)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("%s is not under the sessions directory %s", source, sessions)
 		}
-		defer volume.Close()
-		relative, err := filepath.Rel(root, source)
-		if err != nil {
-			return nil, nil, err
-		}
-		opened, err = volume.Open(relative)
+		opened, err = openSessionFileBeneath(root, relative)
 	}
 	if err != nil {
 		return nil, nil, err

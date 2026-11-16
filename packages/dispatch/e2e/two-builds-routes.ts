@@ -15,20 +15,25 @@ export interface WalkRoute {
 export const walkRoutes = [
   { page: "InboxPage", path: "/" },
   { page: "AnswersPage", path: "/answers" },
-  { page: "RepliesPage", path: "/replies" },
   { page: "AgentsPage", path: "/agents" },
   { page: "BroadcastsPage", path: "/agents/broadcasts" },
   { page: "BroadcastPage", path: "/agents/broadcasts/:id" },
-  { page: "AgentConversationPage", path: "/agents/:sessionId/live" },
+  // The live route renders nothing of its own: the walk still loads the live view's chunk,
+  // which `MountedLiveViews` imports as the address brings that view up.
+  { page: "LiveViewRoute", path: "/agents/:sessionId/live" },
   { page: "AgentArtifactPage", path: "/agents/:sessionId/artifacts/:slug" },
+  { page: "MachinesPage", path: "/machines" },
+  { page: "MachinePage", path: "/machines/:machine" },
   { page: "IssuePage", path: "/issues/:key/*" },
+  { page: "PrioritiesPage", path: "/priorities" },
+  { page: "PriorityPage", path: "/priorities/:id" },
   { page: "ProjectPage", path: "/projects/:key" },
   { page: "ProjectPage", path: "/projects/:key/architecture" },
   { page: "ProjectPage", path: "/projects/:key/issues" },
   { page: "ProjectPage", path: "/projects/:key/documents" },
   { page: "DocumentPage", path: "/projects/:key/documents/:slug" },
-  { page: "CredentialRecordPage", path: "/credentials/:recordId" },
-  { page: "MachineLoginPage", path: "/credentials/machine" },
+  { page: "InboxPage", path: "/credentials/*" },
+  { page: "MachineLoginRoute", path: "/credentials/machine" },
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
   { page: "PipelinePage", path: "/pipeline" },
@@ -47,6 +52,10 @@ export const lazyPieces = {
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
+  "markdown-worker":
+    "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
+    "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +
+    "(features/refs/markdown-engine.ts)",
   mermaid:
     "the Mermaid renderer's Web Worker (features/refs/mermaid-render.worker.ts), which a body " +
     "holding a fenced `mermaid` block starts (features/refs/mermaid-diagrams.ts)",

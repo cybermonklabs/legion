@@ -82,6 +82,13 @@ declare module "@oh-my-pi/pi-coding-agent/config/settings" {
   export class Settings {
     /** The configured selector of a model role (`modelRoles.<role>`), or undefined when it is unset. */
     getModelRole(role: string): string | undefined;
+    /**
+     * A read-only view of the operator's own layers, without the project layer: a repository's
+     * settings file is writable by the agent, so anything that authorizes a model is read here.
+     * Optional: a host build without it offers no safe view, and a caller that authorizes
+     * anything must then read nothing rather than fall back to the merged settings.
+     */
+    grantAuthority?(): Settings;
   }
   export const settings: Settings;
 }
@@ -97,6 +104,26 @@ declare module "@oh-my-pi/pi-coding-agent/extensibility/settings" {
 /** The runner's default handler ceiling, used when `extensionHandlers.toolCallTimeoutMs` is unusable. */
 declare module "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner" {
   export const EXTENSION_HANDLER_TIMEOUT_MS: number;
+}
+
+/**
+ * The host's settings registry. A plugin that carries a setting of its own declares it here with
+ * `register` and reads it through the handle, as the host's own modules do; `lookup` answers a
+ * handle already registered, so a second evaluation of the declaring module (a plugin reload)
+ * reuses it instead of failing on `register`'s refusal of a repeated id. The registration is the
+ * declaring process's alone: a host command that loads no extension does not know the id.
+ */
+declare module "@oh-my-pi/pi-coding-agent/config/registry" {
+  import type { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+  export interface SettingHandle<T> {
+    get(settings: Settings): T;
+  }
+  export function register(definition: {
+    readonly id: string;
+    readonly type: "array";
+    readonly default: readonly string[];
+  }): SettingHandle<string[]>;
+  export function lookup(id: string): SettingHandle<unknown> | undefined;
 }
 
 declare module "@oh-my-pi/pi-coding-agent/config/model-settings" {

@@ -12,24 +12,27 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // The merge of a child's pull request while it awaits the merge closes the child and opens its
-// production check in the implementer's live session: the child is done on the record and on
-// Dispatch, its architect is told child-closed, five of its six claims are closed, and the
-// implementer's is handed the check's first look — a start with no phase, fenced on the check's
-// look 1, whose task opens with the line a resumed session tells the check by — with no
-// IssueSuspend at the close, since the check's close writes the release. The check records the
+// production check, under a project whose `production_check` names the tester, in the tester's
+// live session: the child is done on the record and on Dispatch, its architect is told
+// child-closed, five of its six claims are closed — the implementer's with the rest — and the
+// tester's is handed the check's first look, a start with no phase, fenced on the check's
+// look 1, whose task opens with the line a resumed session tells the check by, with no
+// IssueSuspend at the close, since the check's close writes the release and the issue's pod
+// stands until then. The check records the role that works it, the
 // repository, the pull request, the merge commit and its one open look; its look is bounded two
 // hours out and the whole check at the project's bound.
-func TestAChildsMergeClosesItAndHandsItsImplementerTheFirstLook(t *testing.T) {
+func TestATesterProjectsMergedChildCloseOpensItsCheckAndSparesTheTester(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, Clock: func() time.Time { return now }}, nil)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return now }}, nil)
 
 	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
 		t.Fatalf("ApplyFact merge = %+v, %v", result.Refusal, err)
@@ -54,28 +57,31 @@ func TestAChildsMergeClosesItAndHandsItsImplementerTheFirstLook(t *testing.T) {
 	closed := superviseRequests(t, pool, "issue_close")
 	for _, role := range claim.Roles {
 		want := 1
-		if role == claim.RoleImplementer {
+		if role == claim.RoleTester {
 			want = 0
 		}
 		if closed["LEGION-209/"+string(role)] != want {
-			t.Fatalf("issue_close rows = %v, want one for every role but the implementer", closed)
+			t.Fatalf("issue_close rows = %v, want one for every role but the tester, the implementer's among them", closed)
 		}
 	}
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
 	if len(starts) != 1 {
-		t.Fatalf("start rows = %+v, want the implementer's check look alone", starts)
+		t.Fatalf("start rows = %+v, want the tester's check look alone", starts)
 	}
 	start := starts[0]
-	if start.Role != claim.RoleImplementer || start.CheckLook != 1 || start.Phase != "" || start.Generation != 7 || start.Tree != "LEGION-208" {
-		t.Fatalf("the check's start row = %+v, want the implementer's, check look 1, no phase, generation 7", start)
+	if start.Role != claim.RoleTester || start.CheckLook != 1 || start.Phase != "" || start.Generation != 7 || start.Tree != "LEGION-208" || !start.CheckOpenedAt.Equal(now) {
+		t.Fatalf("the check's start row = %+v, want the tester's, check look 1 of the check opened now, no phase, generation 7", start)
 	}
 	if lead, _, _ := strings.Cut(start.Task, "\n"); lead != "Production check of LEGION-209: child." {
 		t.Fatalf("the check task opens %q, want the line a resumed session tells the check by", lead)
 	}
-	for _, want := range []string{"sjawhar/legion", "#43", "merge-43", "Look 1, woken by the merge.", "handoff_complete", "pass", "pending", "fail", "the daemon wakes the check",
+	for _, want := range []string{"sjawhar/legion", "#43", "merge-43", "Look 1, woken by the merge.", "handoff_complete", "pass", "pending", "fail",
+		// Nothing the daemon reads from a deployment wakes a look any more, so the task asks the
+		// checking agent for the time of its own next look and tells it to wait for nothing here.
+		"A pending report also carries wake_at", "Wait for nothing in this session",
 		// A defect with a clear fix goes to the controller topic, which hands it to the tree that
 		// owns the code and files it for Legion only when none does; one that needs a decision is a
-		// finding ask on the report issue, whose reference the implementer publishes to the
+		// finding ask on the report issue, whose reference the checking agent publishes to the
 		// controller, which files only on a person's answer.
 		"a defect with a clear fix goes to the controller topic", "dispatch ask", "skill://legion-worker/references/findings.md", "report issue", "controller topic"} {
 		if !strings.Contains(start.Task, want) {
@@ -95,9 +101,9 @@ func TestAChildsMergeClosesItAndHandsItsImplementerTheFirstLook(t *testing.T) {
 		t.Fatalf("issue suspensions at the close = %+v, want none until the check closes", got)
 	}
 	check := productionCheck(t, pool, "LEGION-209")
-	if check == nil || !check.Open() || check.Repo != "sjawhar/legion" || check.Number != 43 || check.MergeSHA != "merge-43" || check.Tree != "LEGION-208" || check.Project != "LEGION" ||
+	if check == nil || !check.Open() || check.Role != claim.RoleTester || check.Repo != "sjawhar/legion" || check.Number != 43 || check.MergeSHA != "merge-43" || check.Tree != "LEGION-208" || check.Project != "LEGION" ||
 		check.Looks != 1 || !check.LookOpen || !check.OpenedAt.Equal(now) || !check.BoundAt.Equal(now.Add(48*time.Hour)) || check.LastWakeKind != "merge" || check.Last {
-		t.Fatalf("the production check = %+v, want it open on sjawhar/legion#43 at merge-43, look 1 open, woken by the merge, bound 48h out", check)
+		t.Fatalf("the production check = %+v, want the tester's, open on sjawhar/legion#43 at merge-43, look 1 open, woken by the merge, bound 48h out", check)
 	}
 	if look := issueOutboxOf(t, pool, "LEGION-209", "check_look"); len(look) != 1 || !look[0].nextAt.Equal(now.Add(CheckLookBound)) || decodeLook(t, look[0]) != 1 {
 		t.Fatalf("check_look rows = %+v, want one for look 1 due two hours out", look)
@@ -110,15 +116,49 @@ func TestAChildsMergeClosesItAndHandsItsImplementerTheFirstLook(t *testing.T) {
 	}
 }
 
+// A project whose `production_check` is off checks nothing in production, so the same merge
+// closes its child outright: no production check record, no look and no bound row, every claim of
+// the issue retired (issue_close, the tester's among them) and the issue's Sandbox deleted with
+// the pod and the disk it ran on (an IssueSuspend), where the tester project's close spares a
+// claim and leaves the pod standing for the check.
+func TestAnOffProjectsMergedChildCloseRetiresEveryClaimAndReleasesItsPod(t *testing.T) {
+	pool := migratedPool(t)
+	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
+	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, Clock: func() time.Time { return now }}, nil)
+
+	if result, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil || result.Refusal != nil {
+		t.Fatalf("ApplyFact merge = %+v, %v", result.Refusal, err)
+	}
+	if check := productionCheck(t, pool, "LEGION-209"); check != nil {
+		t.Fatalf("the production check = %+v, want none where the project checks nothing in production", check)
+	}
+	for _, kind := range []string{"check_look", "check_bound"} {
+		assertOutboxCount(t, pool, kind, 0)
+	}
+	if got := superviseRequests(t, pool, "start"); len(got) != 0 {
+		t.Fatalf("start rows = %v, want none: no look was queued", got)
+	}
+	closed := superviseRequests(t, pool, "issue_close")
+	for _, role := range claim.Roles {
+		if closed["LEGION-209/"+string(role)] != 1 {
+			t.Fatalf("issue_close rows = %v, want one for every claim of the issue", closed)
+		}
+	}
+	if got := issueSuspensions(t, pool, "LEGION-209"); len(got) != 1 || got[0].Generation != 7 || got[0].TreeGeneration != 7 {
+		t.Fatalf("issue suspensions = %+v, want the one row that takes the pod", got)
+	}
+}
+
 // A root's merge waits for the rest of its tree, so the close that lingers the tree is the one its
 // last child's departure brings: every member's claims are suspended and each member's Sandbox
 // kept. The root's production check opens behind the linger's rows — its start row is newer than
 // every suspend and every IssueSuspend the linger wrote — so the root's own suspension finishes
-// without acting on the check's start, and the start resumes the implementer in the still-live pod.
+// without acting on the check's start, and the start resumes the tester in the still-live pod.
 func TestARootsCloseLingersItsTreeAndOpensItsCheckBehindTheLingersRows(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	pool := rig.pool
-	assertPhase(t, pool, phase.AwaitingMerge)
+	assertPhase(t, pool, phase.Merging)
 
 	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
 	assertPhase(t, pool, phase.Done)
@@ -160,14 +200,47 @@ func TestARootsCloseLingersItsTreeAndOpensItsCheckBehindTheLingersRows(t *testin
 	if got := issueSuspensions(t, pool, "LEGION-208"); len(got) != 1 {
 		t.Fatalf("the root's issue suspensions = %+v, want the linger's one row", got)
 	}
-	if check := productionCheck(t, pool, "LEGION-208"); check == nil || !check.Open() || check.Looks != 1 || !check.LookOpen || check.MergeSHA != "merge" {
-		t.Fatalf("the root's production check = %+v, want it open at look 1 on merge", check)
+	if check := productionCheck(t, pool, "LEGION-208"); check == nil || !check.Open() || check.Role != claim.RoleTester || check.Looks != 1 || !check.LookOpen || check.MergeSHA != "merge" {
+		t.Fatalf("the root's production check = %+v, want the tester's, open at look 1 on merge", check)
+	}
+}
+
+// A merged root's close under a project whose `production_check` is off lingers its tree as any
+// root's close does, with every claim of every member suspended and none spared: no check record,
+// no look and no bound row, and the tree's own close is all that follows.
+func TestAnOffProjectsMergedRootCloseLingersWithEveryClaimSuspended(t *testing.T) {
+	rig := seedMergedRootUnder(t, "", record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
+	pool := rig.pool
+	assertPhase(t, pool, phase.Merging)
+
+	rig.apply("child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
+	assertPhase(t, pool, phase.Done)
+	everyClaim := map[string]int{}
+	for _, issue := range []string{"LEGION-208", "LEGION-209"} {
+		for _, role := range claim.Roles {
+			everyClaim[issue+"/"+string(role)]++
+		}
+	}
+	if suspended := superviseRequests(t, pool, "suspend"); !sameCounts(suspended, everyClaim) {
+		t.Fatalf("the linger suspended %v, want each tree claim once: %v", suspended, everyClaim)
+	}
+	if check := productionCheck(t, pool, "LEGION-208"); check != nil {
+		t.Fatalf("the root's production check = %+v, want none where the project checks nothing in production", check)
+	}
+	for _, kind := range []string{"check_look", "check_bound"} {
+		assertOutboxCount(t, pool, kind, 0)
+	}
+	if got := superviseRequests(t, pool, "start"); len(got) != 0 {
+		t.Fatalf("start rows = %v, want none: no look was queued", got)
+	}
+	if got := issueSuspensions(t, pool, "LEGION-208"); len(got) != 1 {
+		t.Fatalf("the root's issue suspensions = %+v, want the linger's one row", got)
 	}
 }
 
 // A merge that lands while the tree lingers still closes the member: its phase and status are done,
 // its architect is told child-closed, and its production check opens with look 1 as a wake start
-// row, since the linger already suspended its implementer. It retires nobody and suspends nothing:
+// row, since the linger already suspended its tester. It retires nobody and suspends nothing:
 // no issue_close and no IssueSuspend, which the linger's own rows already wrote and the tree's
 // close completes.
 func TestALingeringMembersMergeClosesItAndWakesItsCheck(t *testing.T) {
@@ -175,7 +248,7 @@ func TestALingeringMembersMergeClosesItAndWakesItsCheck(t *testing.T) {
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
 	until := now.Add(time.Hour)
 	seedMergingChild(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 7, Status: "done", Rank: "U", LingerUntil: &until, LastDispatchSeq: 1})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, Clock: func() time.Time { return now }}, nil)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return now }}, nil)
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "github", "merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact merge: %v", err)
@@ -196,8 +269,8 @@ func TestALingeringMembersMergeClosesItAndWakesItsCheck(t *testing.T) {
 		t.Fatalf("child notices = %v, want child-closed", got)
 	}
 	starts := superviseRowsOf(t, pool, "LEGION-209", "start")
-	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].CheckLook != 1 || starts[0].Phase != "" {
-		t.Fatalf("start rows = %+v, want the check's look 1 as the implementer's wake", starts)
+	if len(starts) != 1 || starts[0].Role != claim.RoleTester || starts[0].CheckLook != 1 || starts[0].Phase != "" {
+		t.Fatalf("start rows = %+v, want the check's look 1 as the tester's wake", starts)
 	}
 	for _, op := range []string{"issue_close", "suspend"} {
 		if got := superviseRequests(t, pool, op); len(got) != 0 {
@@ -220,7 +293,7 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "V", LastDispatchSeq: 1})
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, Clock: func() time.Time { return time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC) }}, nil)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckRole: claim.RoleTester, Clock: func() time.Time { return time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC) }}, nil)
 
 	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "child-done", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.closed", Status: "done", Title: "child", Parent: "LEGION-208", Rank: "V"}, engine, admissionStub{}); err != nil {
 		t.Fatalf("ApplyFact done: %v", err)
@@ -245,12 +318,14 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 	}
 }
 
-// A root's merge while a child runs records the merge and waits: the root stays in awaiting_merge
-// with nothing written to Dispatch, no linger deadline, no member suspended and its slot still
-// held, and its architect is told once, by name, which issue the close waits for.
+// A root's merge while a child runs records the merge and waits: the root stays in merging
+// with nothing written to Dispatch, no linger deadline and no member suspended, and its architect
+// is told once, by name, which issue the close waits for. The merged root holds no slot while it
+// waits, since merging stands past its review (record.KeepsSlot), and the merge takes none from
+// the running child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
-	assertPhase(t, rig.pool, phase.AwaitingMerge)
+	assertPhase(t, rig.pool, phase.Merging)
 	var lingering bool
 	if err := rig.pool.QueryRow(context.Background(), "select linger_until is not null from issues where key = 'LEGION-208'").Scan(&lingering); err != nil || lingering {
 		t.Fatalf("the waiting root lingers = %t, %v; want no linger deadline", lingering, err)
@@ -273,8 +348,8 @@ func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	if got := issueSuspensions(t, rig.pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("the child's issue suspensions = %+v, want none: nothing of the tree is suspended", got)
 	}
-	if got := slottedIssues(t, rig.pool); len(got) != 1 || got[0] != "LEGION-208" {
-		t.Fatalf("slots = %v, want the waiting tree's kept", got)
+	if got := slottedIssues(t, rig.pool); len(got) != 1 || got[0] != "LEGION-209" {
+		t.Fatalf("slots = %v, want the running child's alone: the merged root stands past its review and holds none while it waits", got)
 	}
 	if check := productionCheck(t, rig.pool, "LEGION-208"); check != nil {
 		t.Fatalf("the waiting root's production check = %+v, want none until it closes", check)
@@ -290,14 +365,14 @@ func TestAWaitingRootsChildCompletesItsPhase(t *testing.T) {
 	seedPhase(t, rig.pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer"})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 
-	result := rig.apply("child-implemented", intake.HandoffComplete{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer", Generation: 3, Commit: "head-43", Summary: "implemented"})
+	result := rig.apply("child-implemented", intake.HandoffComplete{Issue: "LEGION-209", Role: claim.RoleImplementer, Claim: "child-implementer", Generation: 3, Commit: "head-43", HandoffRecord: "implement-1", HandoffVersion: 1, Summary: "implemented"})
 	if result.Refusal != nil {
 		t.Fatalf("the child's completion = %+v, want it accepted", result.Refusal)
 	}
 	if got := issueAt(t, rig.pool, "LEGION-209"); got != phase.Testing {
 		t.Fatalf("the child after its completion = %s, want testing", got)
 	}
-	assertPhase(t, rig.pool, phase.AwaitingMerge)
+	assertPhase(t, rig.pool, phase.Merging)
 }
 
 // The architect is told once, when the wait begins. A second child leaving while a third still
@@ -311,11 +386,11 @@ func TestAWaitingRootTellsItsArchitectOnlyWhenTheWaitBegins(t *testing.T) {
 	assertWaitNotice(t, rig.pool, "LEGION-209, LEGION-210, LEGION-211")
 
 	rig.apply("child-parked", intake.DispatchIssue{Key: "LEGION-210", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-210", Parent: "LEGION-208", Rank: "V2"})
-	assertPhase(t, rig.pool, phase.AwaitingMerge)
+	assertPhase(t, rig.pool, phase.Merging)
 	assertWaitNotice(t, rig.pool, "LEGION-209, LEGION-210, LEGION-211")
 
 	rig.apply("boot", intake.DaemonBooted{Boot: 1})
-	assertPhase(t, rig.pool, phase.AwaitingMerge)
+	assertPhase(t, rig.pool, phase.Merging)
 	assertWaitNotice(t, rig.pool, "LEGION-209, LEGION-210, LEGION-211")
 }
 
@@ -329,7 +404,7 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 		child record.Issue
 		leave func(t *testing.T, rig mergedRootRig)
 	}{
-		{name: "the child's own merge", child: record.Issue{Key: "LEGION-209", Phase: phase.AwaitingMerge, Status: "retro"}, leave: func(t *testing.T, rig mergedRootRig) {
+		{name: "the child's own merge", child: record.Issue{Key: "LEGION-209", Phase: phase.Merging, Status: "retro"}, leave: func(t *testing.T, rig mergedRootRig) {
 			seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			rig.apply("child-merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
 		}},
@@ -370,24 +445,24 @@ func TestAMergedRootClosesWhenItsLastOpenChildLeaves(t *testing.T) {
 	}
 }
 
-// An issue that reaches awaiting_merge on an already-merged pull request waits the same way while
+// An issue that reaches merging on an already-merged pull request waits the same way while
 // a child runs, and its architect is told there: the notice it got when the pull request merged
-// could not say which issues the close waits for, since the issue was not awaiting the merge then.
-func TestAnIssueReachingAwaitingMergeOnAMergedPullRequestWaitsForItsTree(t *testing.T) {
+// could not say which issues the close waits for, since the issue had not reached merging then.
+func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T) {
 	pool := migratedPool(t)
-	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Merging, Generation: 1, Status: "retro", Rank: "U"})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U"})
 	parent := "LEGION-208"
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4, ApprovedVersion: new(4)})
-	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger-claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implementer-claim"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head",
 		MergeSHA: "merge", Failing: []string{}, CheckRuns: []record.AttemptRun{}})
 
-	result := applyFacts(t, pool, readyEngine(""))("ready", intake.HandoffComplete{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merger-claim", Generation: 1, Ready: true, Summary: readyPacket, Commit: "head"})
+	result := applyFacts(t, pool, mergingEngine())("retro", intake.HandoffComplete{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implementer-claim", Generation: 1, Summary: "retro done", Commit: "head"})
 	if result.Refusal != nil {
-		t.Fatalf("the merger's READY = %+v, want it accepted", result.Refusal)
+		t.Fatalf("the implementer's retro completion = %+v, want it accepted", result.Refusal)
 	}
-	assertPhase(t, pool, phase.AwaitingMerge)
+	assertPhase(t, pool, phase.Merging)
 	assertOutboxCount(t, pool, "linger_close", 0)
 	if got := superviseRequests(t, pool, "suspend"); len(got) != 0 {
 		t.Fatalf("suspend rows = %v, want none while the close waits", got)
@@ -397,8 +472,14 @@ func TestAnIssueReachingAwaitingMergeOnAMergedPullRequestWaitsForItsTree(t *test
 
 // Which members hold a merged root's close up: an issue is in the workflow when its status is one
 // the workflow runs in and its phase is short of done, so a child in backlog and a child already
-// done hold it not at all, while a released child that has not started a phase and one held
-// because its worker ran out of launches both do.
+// done hold it not at all, while one held because its worker ran out of launches does.
+//
+// A released child that has not started a phase holds it no longer. It stands at admitted
+// beneath a root in merging, a root the daemon has already accepted, so the daemon itself
+// pins the child there until that root closes (record.AcceptedAncestor), and a child the daemon
+// pins is left out of the set the close waits on (record.OpenBeneath). Counting it would
+// deadlock the pair. This is the one recorded departure from the spec of dispatch://INFRA-980,
+// decided on dispatch://INFRA-980/comment/d642164a-31d2-4d6c-ae5e-4da5dd0b9104.
 func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -407,7 +488,7 @@ func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
 	}{
 		{name: "parked in backlog", child: record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "backlog"}},
 		{name: "already done", child: record.Issue{Key: "LEGION-209", Phase: phase.Done, Status: "done"}},
-		{name: "released, no phase started", child: record.Issue{Key: "LEGION-209", Phase: phase.Admitted, Status: "todo"}, waits: true},
+		{name: "released, no phase started", child: record.Issue{Key: "LEGION-209", Phase: phase.Admitted, Status: "todo"}},
 		{name: "held out of launches", child: record.Issue{Key: "LEGION-209", Phase: phase.Held, Hold: &record.Hold{From: phase.Implementing}, Status: "in_progress"}, waits: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -415,7 +496,7 @@ func TestWhichChildrenHoldAMergedRootsCloseUp(t *testing.T) {
 			want := phase.Done
 			notices := 0
 			if tc.waits {
-				want, notices = phase.AwaitingMerge, 1
+				want, notices = phase.Merging, 1
 			}
 			assertPhase(t, rig.pool, want)
 			if got := architectNotices(t, rig.pool); len(got) != notices {
@@ -439,13 +520,12 @@ func TestARootWithNoOpenTreeClosesAtItsMerge(t *testing.T) {
 	}
 }
 
-// A merged root stands in awaiting_merge for as long as its tree runs, so the two facts that would
-// take an awaiting pull request back to implementing can land on a merge GitHub already made. A
-// synchronize past the head READY named is older than the merge, since GitHub synchronizes only an
-// open pull request, and changes nothing (pullRequestSynchronized), and a red required check
-// withdraws nothing there, as it never has (classify.RedWithdrawsReady): there is nothing left to
-// merge or to re-implement.
-func TestNothingWithdrawsTheREADYOfAWaitingMergedRoot(t *testing.T) {
+// A merged root stands in merging for as long as its tree runs, so the facts that would take an
+// open pull request back to implementing can land on a merge GitHub already made: a synchronize
+// past the head the merger merged is older than the merge, since GitHub synchronizes only an open
+// pull request, and moves nothing there (pullRequestSynchronized), and a red check moves nothing
+// anywhere. There is nothing left to merge or to re-implement.
+func TestNothingMovesAWaitingMergedRoot(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		fact intake.Fact
@@ -456,14 +536,13 @@ func TestNothingWithdrawsTheREADYOfAWaitingMergedRoot(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
-			seedPhase(t, rig.pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "head", Summary: readyPacket})
 			rig.apply("moved", tc.fact)
-			assertPhase(t, rig.pool, phase.AwaitingMerge)
+			assertPhase(t, rig.pool, phase.Merging)
 			if got := superviseRequests(t, rig.pool, "start"); len(got) != 0 {
-				t.Fatalf("start rows = %v, want none: no READY was withdrawn", got)
+				t.Fatalf("start rows = %v, want none: nothing moved", got)
 			}
 			if got := messageBodies(t, rig.pool); len(got) != 0 {
-				t.Fatalf("Dispatch messages = %q, want none: no READY was withdrawn", got)
+				t.Fatalf("Dispatch messages = %q, want none: nothing moved", got)
 			}
 			for _, notice := range architectNotices(t, rig.pool) {
 				if notice.Kind != "pr-merged" {
@@ -474,17 +553,17 @@ func TestNothingWithdrawsTheREADYOfAWaitingMergedRoot(t *testing.T) {
 	}
 }
 
-// A merged root can stand in awaiting_merge for days, and a pull request opened from its branch in
+// A merged root can stand in merging for days, and a pull request opened from its branch in
 // that time is new work, not the change the root waits to close on: GitHub has already merged that
 // one and never sends the merge again. The root still closes on that merge when its last child
-// leaves, its production check reading pull request #42 at merge. The tree's slot is admission's,
-// freed at phase done, and is asserted in admit's
-// TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves.
+// leaves, its production check reading pull request #42 at merge. The slots are admission's
+// rows, and a root in merging holds none; admit's
+// TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves asserts them.
 func TestANewPullRequestFromAWaitingRootsBranchLeavesItsMergeStanding(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	rig.apply("follow-up-opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 99, Branch: "legion/LEGION-208", HeadSHA: "follow-up",
 		UpdatedAt: time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC)})
-	assertPhase(t, rig.pool, phase.AwaitingMerge)
+	assertPhase(t, rig.pool, phase.Merging)
 
 	rig.apply("child-parked", intake.DispatchIssue{Key: "LEGION-209", Seq: 2, Type: "issue.updated", Status: "backlog", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V1"})
 	assertPhase(t, rig.pool, phase.Done)
@@ -501,23 +580,40 @@ type mergedRootRig struct {
 	apply func(id string, fact intake.Fact) intake.Result
 }
 
-// seedMergedRoot seeds the root LEGION-208 awaiting the merge of its open sjawhar/legion#42, the
-// slot its tree holds, and one child of it per entry of children — each seeded with the key, phase,
-// status and hold its entry names — then merges the root's pull request at merge.
+// seedMergedRoot is seedMergedRootUnder for a project whose `production_check` names the tester,
+// the setting a project that names none gets.
 func seedMergedRoot(t *testing.T, children ...record.Issue) mergedRootRig {
+	t.Helper()
+	return seedMergedRootUnder(t, claim.RoleTester, children...)
+}
+
+// seedMergedRootUnder seeds the root LEGION-208 awaiting the merge of its open sjawhar/legion#42,
+// its open tree, and one child of it per entry of children — each seeded with the key, phase,
+// status and hold its entry names — then merges the root's pull request at merge, under an engine
+// whose production checks are role's, and which opens none when role is empty. The slot rows are
+// the ones the admission pass leaves such a tree: the root in merging stands past its review and
+// holds none (record.KeepsSlot), and a child holds one where it has started in a phase that keeps
+// one, which is every phase it is seeded in here but admitted.
+func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue) mergedRootRig {
 	t.Helper()
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)
-	engine := New(record.NewStore(), Config{Project: "LEGION", Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, Clock: func() time.Time { return now }}, nil)
+	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: role, Clock: func() time.Time { return now }}, nil)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
-		Phase: phase.AwaitingMerge, Generation: 7, Status: "retro", Rank: "U", LastDispatchSeq: 1})
-	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+		Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U", LastDispatchSeq: 1})
+	seedTreeLifecycle(t, pool, "LEGION-208")
 	parent := "LEGION-208"
+	slots := 0
 	for i, child := range children {
 		child.Repo, child.DefaultBranch, child.GitHubRepo = "sjawhar/legion", "main", "sjawhar/legion"
 		child.Tree, child.Project, child.Title, child.Parent = "LEGION-208", "LEGION", child.Key, &parent
 		child.Generation, child.Rank, child.LastDispatchSeq = 3, fmt.Sprintf("V%d", i+1), 1
 		seedIssue(t, pool, child)
+		if child.Phase != phase.Admitted && record.KeepsSlot(child) {
+			slot := record.Slot{Issue: child.Key, Index: slots}
+			seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutSlot(t.Context(), tx, slot) })
+			slots++
+		}
 	}
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
 	rig := mergedRootRig{pool: pool, apply: applyFacts(t, pool, engine)}
@@ -536,7 +632,7 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves, or take one out of the workflow with park_child", waiting)
+	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is", waiting)
 	if len(got) != 1 || got[0].Reason != want {
 		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
 	}
@@ -572,7 +668,7 @@ func seedMergingChild(t *testing.T, pool *pgxpool.Pool, root record.Issue) {
 	t.Helper()
 	seedIssue(t, pool, root)
 	parent := root.Key
-	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root.Key, Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.AwaitingMerge, Generation: 7, Status: "retro", Rank: "V", LastDispatchSeq: 1})
+	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: root.Key, Project: "LEGION", Title: "child", Parent: &parent, Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "V", LastDispatchSeq: 1})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleMerger, Claim: "child-merger", HandoffCommit: "head-43"})
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43, Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 }
@@ -620,14 +716,19 @@ func issueOutboxOf(t *testing.T, pool *pgxpool.Pool, issue, kind string) []outbo
 	return got
 }
 
-// superviseRowsOf decodes issue's supervise rows of op, oldest first.
+// superviseRowsOf decodes issue's supervise rows of op, oldest first, with no start passed over:
+// in this package every start carries a task — a phase worker's is one row and carries it
+// (StartOrOwe) — and the task-less starts admission brings back are written in internal/admit,
+// never here.
 func superviseRowsOf(t *testing.T, pool *pgxpool.Pool, issue, op string) []record.SuperviseRequest {
 	t.Helper()
 	var requests []record.SuperviseRequest
 	for _, row := range issueOutboxOf(t, pool, issue, "supervise") {
-		if request := decodeSupervise(t, row); string(request.Op) == op {
-			requests = append(requests, request)
+		request := decodeSupervise(t, row)
+		if string(request.Op) != op {
+			continue
 		}
+		requests = append(requests, request)
 	}
 	return requests
 }

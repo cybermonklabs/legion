@@ -1,4 +1,14 @@
-import { type QueryClient, type QueryStatus, queryOptions, useQuery } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  type QueryKey,
+  QueryObserver,
+  type QueryObserverOptions,
+  type QueryObserverResult,
+  type QueryStatus,
+  queryOptions,
+  type UseQueryResult,
+  useQuery,
+} from "@tanstack/react-query";
 
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
@@ -9,10 +19,12 @@ import type {
   ArtifactVersionContent,
   AskRead,
   CommentRead,
+  DisplayTree,
   GraphReferences,
   IssueReferenceSummary,
   IssueReferenceSummaryDocument,
   MessageRead,
+  ReferenceQuestions,
 } from "../../api/types";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
@@ -21,9 +33,11 @@ import {
   buildReferencePath,
   type DispatchReferenceRoute,
   type IssueRoute,
+  type ReferencedArtifact,
   referencedArtifact,
 } from "./routes";
 import { referenceTargetKind } from "./target-id";
+import { prefixReference, routeWithWholeIds, type TextSource } from "./text-references";
 
 /**
  * The queries behind a `dispatch://` reference's target, shared by every surface that resolves
@@ -55,6 +69,9 @@ export interface ReferenceTarget {
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's
    *  text. `undefined` while loading or for a target with nothing to say. */
   readonly description: string | undefined;
+  /** The reading Go made of `description`, which a card draws (`MarkdownPreview`); absent for a
+   *  description Dispatch does not store, a GitHub body among them. */
+  readonly descriptionTree: DisplayTree | undefined;
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
@@ -147,6 +164,45 @@ export const blockQuery = (reference: string | undefined) =>
     refetchOnWindowFocus: refetchFailedOnFocus,
   });
 
+/** `GET /api/v1/references/questions?kind=&id=`: the question map a `#id` in one source's text
+ *  resolves against, which is the server's own map (`refs.ScopeOf` for the document that text
+ *  belongs to, `refs.QuestionMap` for the questions that document's latest version declares) -
+ *  the one map the page and the reference graph share. Keyed by the source, so two texts of one
+ *  source read it once. A source whose text belongs to no document answers 404, which leaves
+ *  its `#id`s as plain text, so the read is not retried. */
+export const questionsQuery = (source: TextSource | undefined) =>
+  queryOptions({
+    queryKey: ["references", "questions", source?.kind, source?.id] as const,
+    queryFn: async () => {
+      // `useTextReferences` enables the read only for a text that names its source, so an
+      // absent one never reaches Dispatch.
+      if (source === undefined) {
+        throw new Error("the question map is read for one named source");
+      }
+      return await api.getReferenceQuestions(source.kind, source.id);
+    },
+    retry: false,
+  });
+
+/** The question map of a read's answer: each question block id its document declares to the
+ *  `dispatch://` reference of the ask settled for it, as the server writes that address. A
+ *  block whose ask has no address - an ask on an agent conversation's document - is left out,
+ *  since no reference names it. Undefined until the read answers. */
+export function questionReferences(
+  answer: ReferenceQuestions | undefined
+): Readonly<Record<string, string>> | undefined {
+  if (answer === undefined) {
+    return undefined;
+  }
+  const questions: Record<string, string> = {};
+  for (const question of answer.questions ?? []) {
+    if (question.reference !== "") {
+      questions[question.block_id] = question.reference;
+    }
+  }
+  return questions;
+}
+
 /** The document a reference names, as much of it as a reference shows: an issue summary's
  *  document, a project document's summary, or an agent conversation's artifact cut to the same
  *  fields. `latest_version` is its greatest version number, null when it has none. */
@@ -160,7 +216,7 @@ function agentReferenceArtifact(artifact: Artifact): ReferenceArtifact {
   return {
     id: artifact.id,
     kind: artifact.kind,
-    latest_version: artifact.versions.at(-1)?.number ?? null,
+    latest_version: (artifact.versions ?? []).at(-1)?.number ?? null,
     name: artifact.name,
   };
 }
@@ -169,7 +225,7 @@ function agentReferenceArtifact(artifact: Artifact): ReferenceArtifact {
 export function summarySpec(
   summary: IssueReferenceSummary | undefined
 ): IssueReferenceSummaryDocument | undefined {
-  return summary?.documents.find((document) => document.primary);
+  return (summary?.documents ?? []).find((document) => document.primary);
 }
 
 /** The block a route names, as the reference its graph read is keyed by; undefined for a route
@@ -191,6 +247,8 @@ export interface ReferenceData {
   readonly issue: IssueReferenceSummary | undefined;
   readonly artifact: ReferenceArtifact | undefined;
   readonly markdown: string | undefined;
+  /** The reading Go made of `markdown`, which a card draws. */
+  readonly markdownTree: DisplayTree | undefined;
   readonly ask: AskRead | undefined;
   readonly comment: CommentRead | undefined;
   readonly message: MessageRead | undefined;
@@ -288,10 +346,61 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
   }
 }
 
+/** The whole id each short id of a prefix's graph read names, to the reference it is stored
+ *  under: a block by its block id, every other record by its own. A read that answered nothing
+ *  names nothing, and the reference stays as the text wrote it. */
+export function resolvedPrefixItems(
+  answer: GraphReferences | undefined
+): Readonly<Record<string, string>> {
+  const node = answer?.node;
+  const reference = node?.ref;
+  if (node === undefined || reference === undefined) {
+    return {};
+  }
+  const id = node.block_id ?? node.id;
+  return id === "" ? {} : { [id]: reference };
+}
+
+/** `useWholeRouteRead`'s answer: the route with its short ids replaced, the reference its graph
+ *  read was keyed by (undefined for a route that writes every id whole, which reads nothing),
+ *  and that read, for a caller that also shows what an ambiguous prefix matched. */
+export interface WholeRouteRead {
+  readonly prefix: string | undefined;
+  readonly resolution: UseQueryResult<GraphReferences>;
+  readonly route: DispatchReferenceRoute | undefined;
+}
+
+/**
+ * `route` with every id it writes short replaced by the whole id it names, which one graph read
+ * of the reference as written answers (`GET /api/v1/references?to=…`, which the server resolves
+ * within the owner the reference names). A route that writes every id whole - every reference a
+ * page or a node gave - is answered as it stands and reads nothing extra. One whose short id
+ * names nothing yet, or nothing at all, is `undefined`, so the record behind it is read under
+ * its whole id or not at all and nothing is ever cached under a prefix.
+ *
+ * The read itself is returned beside it, for the surfaces that show an ambiguous prefix's
+ * matches (`ArtifactDocument`, `useItemLanding`); a caller that wants the route alone reads
+ * `.route`.
+ */
+export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): WholeRouteRead {
+  const origin = window.location.origin;
+  const prefix = route === undefined ? undefined : prefixReference(route);
+  const resolution = useQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
+  return {
+    prefix,
+    resolution,
+    route:
+      route === undefined || prefix === undefined
+        ? route
+        : routeWithWholeIds(route, resolvedPrefixItems(resolution.data), origin),
+  };
+}
+
 export function useReferenceData(
-  route: DispatchReferenceRoute | undefined,
+  given: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceData {
+  const route = useWholeRouteRead(given).route;
   const blockReference = blockReferenceOf(route);
   // A block of a comment or message is read from its graph node alone, which carries its text:
   // no issue, document, ask, comment or message read behind it.
@@ -360,7 +469,7 @@ export function useReferenceData(
       ? projectDocument.data
       : agentArtifact !== undefined
         ? sessionArtifact.data
-        : issue.data?.documents.find(
+        : (issue.data?.documents ?? []).find(
             (candidate) => route?.kind === "artifact" && candidate.slug === route.slug
           );
   const text = useQuery({
@@ -373,6 +482,8 @@ export function useReferenceData(
     issue: issue.data,
     artifact,
     markdown: text.data !== undefined && "markdown" in text.data ? text.data.markdown : undefined,
+    markdownTree:
+      text.data !== undefined && "markdown_tree" in text.data ? text.data.markdown_tree : undefined,
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
@@ -416,7 +527,7 @@ export function useBlockDocument(
     case "spec":
       return summarySpec(issue.data);
     case "artifact":
-      return issue.data?.documents.find((candidate) => candidate.slug === named.slug);
+      return (issue.data?.documents ?? []).find((candidate) => candidate.slug === named.slug);
     default:
       return undefined;
   }
@@ -428,15 +539,22 @@ export function blockText(node: GraphReferences["node"]): string | undefined {
   return node.pin === undefined ? node.text : node.pin.text;
 }
 
+/** The reading Go made of the text `blockText` answers, which a reference's title and card draw
+ *  rather than parsing the block's markdown again. */
+export function blockTextTree(node: GraphReferences["node"]): DisplayTree | undefined {
+  return node.pin === undefined ? node.text_tree : node.pin.text_tree;
+}
+
 /**
  * Every query behind a resolved reference title, shared by the Unfurl card and the inline
- * `RefLink` markdown/document rendering so both draw from one fetch path. An ask or comment
- * (whether issue-scoped or nested under a project document's `item`) resolves to its own text
- * rather than the owning issue's title or document; everything else falls back to the artifact
- * name (a document reference) or the issue title. A title drawn from text its author wrote (the
- * question, the comment) is that Markdown projected to plain words and cut
- * (`useMarkdownHeadline`): a link's text can hold no formatting, so a `**Blocking:**` question
- * titles its link `Blocking: …`, never `**Blocking:** …`. The description is the target's own
+ * `RefLink` markdown/document rendering so both draw from one fetch path. An ask, a comment or
+ * an issue message (whether issue-scoped or nested under a project document's `item`) resolves
+ * to its own text rather than the owning issue's title or document; everything else falls back
+ * to the artifact name (a document reference) or the issue title. A title drawn from text its
+ * author wrote (the question, the comment, the message's body) is that Markdown projected to
+ * plain words and cut (`useMarkdownHeadline`): a link's text can hold no formatting, so a
+ * `**Blocking:**` question titles its link `Blocking: …`, never `**Blocking:** …`. The
+ * description is the target's own
  * Markdown, for the caller to render formatted: a message's body, a document's text (read only
  * with `options.text`), and an ask's or comment's text where the title had to cut it (a title
  * that holds the whole text needs no second copy under it); an issue with no document falls back
@@ -450,32 +568,44 @@ export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, comment, issue, markdown, message } = useReferenceData(
-    route,
-    options
-  );
+  const { artifact, ask, block, comment, issue, markdown, markdownTree, message } =
+    useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
+  let authoredTree: DisplayTree | undefined;
   switch (kind) {
     case "ask":
       authored = ask?.ask.question;
+      authoredTree = ask?.ask.question_tree;
       break;
     case "comment":
       authored = comment?.comment.body;
+      authoredTree = comment?.comment.body_tree;
       break;
     case "block":
       authored = block === undefined ? undefined : blockText(block.node);
+      authoredTree = block === undefined ? undefined : blockTextTree(block.node);
+      break;
+    case "message":
+      authored = message?.message.body;
+      authoredTree = message?.message.body_tree;
       break;
   }
-  const headline = useMarkdownHeadline(authored, TITLE_HEADLINE_MAX);
+  // The tree is the reading Go made of this text, and where there is one nothing here parses
+  // markdown. An answer that carries none still has a title: a server that has not rolled yet,
+  // or any caller that did not ask for trees, answers the markdown alone, and a deploy serving
+  // two builds has a dashboard reading both at once. `useMarkdownHeadline` reads the fallback
+  // only where `tree` is undefined, so a stored text that came with its tree is still parsed
+  // nowhere (`e2e/parse-count.e2e.ts`).
+  const headline = useMarkdownHeadline(authoredTree, TITLE_HEADLINE_MAX, authored);
 
   if (kind === "message") {
+    // A message reads as the head of what it says, the way a comment does; its own body is the
+    // description, which the cards under a message reference render formatted.
     return {
-      title:
-        message === undefined
-          ? undefined
-          : `${message.message.author.kind} ${message.message.author.id}`,
+      title: headline?.text,
       description: message?.message.body,
+      descriptionTree: message?.message.body_tree,
       picture: undefined,
     };
   }
@@ -483,20 +613,92 @@ export function useReferenceTarget(
     return {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
+      descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
     };
   }
   const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
   const named = route === undefined ? undefined : referencedArtifact(route);
-  const pictureVersion = named?.version ?? artifact?.latest_version;
   return {
     title: artifact?.name ?? issue?.title,
     description: text ?? (artifact === undefined ? issue?.status : undefined),
-    picture:
-      named === undefined || artifact?.kind !== "image" || !pictureVersion
-        ? undefined
-        : artifactVersionPath(named.owner, named.slug, pictureVersion),
+    descriptionTree: text === undefined ? undefined : markdownTree,
+    picture: named === undefined ? undefined : picturePath(named, artifact),
   };
+}
+
+/** The bytes route of the picture `named` shows: the version it pins, else `artifact`'s latest.
+ *  Undefined unless `artifact` (the document the reference names, once read) is an image with a
+ *  version, since a document or another file is no picture the browser can draw. */
+function picturePath(
+  named: ReferencedArtifact,
+  artifact: Pick<ReferenceArtifact, "kind" | "latest_version"> | undefined
+): string | undefined {
+  const version = named.version ?? artifact?.latest_version;
+  return artifact?.kind !== "image" || !version
+    ? undefined
+    : artifactVersionPath(named.owner, named.slug, version);
+}
+
+/** Calls `onPicture` with the picture path a summary's data gives, now and whenever the summary
+ *  query changes (an event refreshes it, a failed read recovers), until the returned function
+ *  unsubscribes. Undefined while the summary is unread or unreadable. */
+function observePicturePath<TData, TKey extends QueryKey>(
+  queryClient: QueryClient,
+  options: QueryObserverOptions<TData, Error, TData, TData, TKey>,
+  artifactOf: (data: TData) => ReferenceArtifact | undefined,
+  named: ReferencedArtifact,
+  onPicture: (path: string | undefined) => void
+): () => void {
+  const observer = new QueryObserver(queryClient, options);
+  const report = (result: QueryObserverResult<TData, Error>) =>
+    onPicture(result.data === undefined ? undefined : picturePath(named, artifactOf(result.data)));
+  const unsubscribe = observer.subscribe(report);
+  report(observer.getCurrentResult());
+  return unsubscribe;
+}
+
+/** `useReferenceTarget`'s `picture`, for a caller outside React (the document editors' picture
+ *  node view): it observes the same summary queries through `queryClient`, so every picture of
+ *  one issue shares one summary read with the links and cards on the page, and follows the
+ *  summary as an event refreshes it - a new version uploaded, a failed read recovered. Calls
+ *  `onPicture` at once and on every change, with undefined for a reference to anything but an
+ *  image artifact or while its summary is unread or unreadable; the returned function stops. */
+export function watchPicturePath(
+  queryClient: QueryClient,
+  route: DispatchReferenceRoute,
+  onPicture: (path: string | undefined) => void
+): () => void {
+  const named = referencedArtifact(route);
+  if (named !== undefined && route.kind === "document") {
+    return observePicturePath(
+      queryClient,
+      documentSummaryQuery(route.project, route.slug),
+      (summary) => summary,
+      named,
+      onPicture
+    );
+  }
+  if (named !== undefined && route.kind === "agent-artifact") {
+    return observePicturePath(
+      queryClient,
+      agentArtifactQuery(route.session, route.slug),
+      agentReferenceArtifact,
+      named,
+      onPicture
+    );
+  }
+  if (named !== undefined && route.kind === "artifact") {
+    return observePicturePath(
+      queryClient,
+      issueSummaryQuery(route.key),
+      (summary) => (summary.documents ?? []).find((candidate) => candidate.slug === route.slug),
+      named,
+      onPicture
+    );
+  }
+  onPicture(undefined);
+  return () => {};
 }
 
 /** Whether a reference's path waits on its issue: a block of an issue's spec pinned to a version

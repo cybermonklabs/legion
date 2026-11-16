@@ -1,3 +1,4 @@
+import { actorActText } from "@legion/contracts";
 import type { ReactNode } from "react";
 
 import type { SearchAsk } from "../../api/types";
@@ -9,8 +10,8 @@ import {
 } from "../../theme/classes";
 import { AskResolutionLine } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { markdownHead } from "../refs/markdown-fragment";
 import { Timestamp } from "../refs/Timestamp";
+import { textHead, treeHead } from "../refs/tree-fragment";
 
 function askStateLabel(ask: SearchAsk): string {
   if (ask.state === "open") return "Open";
@@ -30,6 +31,9 @@ export const ANSWER_PREVIEW_CHARS = 280;
  *  label or name never widens the row it sits in. */
 export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean }): ReactNode {
   const answer = ask.state === "open" ? undefined : ask.answer;
+  // `resolution` is on an ask the server resolved alone, so the state and the record are read
+  // together: a resolved hit whose record did not come carries no line of its own.
+  const resolution = ask.resolution;
   return (
     <div
       className={`mt-1 min-w-0 text-xs ${muted ? textMutedOnSelectedCard : textSecondaryOnSurface}`}
@@ -38,20 +42,20 @@ export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean })
         <span className={`rounded-full px-2 py-0.5 font-medium ${badgeLow.bg} ${badgeLow.text}`}>
           {askStateLabel(ask)}
         </span>
-        {ask.state === "resolved" ? (
+        {ask.state === "resolved" && resolution !== undefined ? (
           <span className="min-w-0 [overflow-wrap:anywhere]">
-            <AskResolutionLine agent="static" resolution={ask.resolution} /> ·{" "}
-            <Timestamp at={ask.resolution.at} />
+            <AskResolutionLine agent="static" resolution={resolution} /> ·{" "}
+            <Timestamp at={resolution.at} />
           </span>
         ) : null}
         {answer === undefined ? null : (
           <span
             className={`min-w-0 [overflow-wrap:anywhere] ${ask.state === "resolved" ? "basis-full" : ""}`}
           >
-            {answer.user} · <Timestamp at={answer.at} /> ·{" "}
-            {answer.selected.length === 0
+            {actorActText(answer.user, answer.act)} · <Timestamp at={answer.at} /> ·{" "}
+            {(answer.selected ?? []).length === 0
               ? "No option chosen"
-              : `Chose ${answer.selected.join(", ")}`}
+              : `Chose ${(answer.selected ?? []).join(", ")}`}
           </span>
         )}
       </div>
@@ -59,7 +63,12 @@ export function AskHitStatus({ ask, muted }: { ask: SearchAsk; muted: boolean })
         <MarkdownPreview
           className={`mt-1 ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
           lines={3}
-          markdown={markdownHead(answer.text, ANSWER_PREVIEW_CHARS)}
+          markdown={textHead(answer.text, ANSWER_PREVIEW_CHARS)}
+          tree={
+            answer.text_tree === undefined
+              ? undefined
+              : treeHead(answer.text_tree, ANSWER_PREVIEW_CHARS)
+          }
         />
       )}
     </div>

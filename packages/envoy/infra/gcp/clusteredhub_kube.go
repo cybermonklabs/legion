@@ -89,7 +89,8 @@ func refuseClusteredHubSecret(value pulumi.StringInput, name, input string) pulu
 // newClusteredHubKubernetes registers the hub's Kubernetes children, each the component's child
 // on the Kubernetes provider it builds from kubeconfig: the priority class read, the nats chart,
 // the hub pods' NetworkPolicy and their PodMonitoring and, with tailnet, the tailnet hosts
-// (newClusteredHubTailnetHosts).
+// (newClusteredHubTailnetHosts) and the session listener they forward to
+// (newClusteredHubListener).
 func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name string, args *ClusteredNatsHubArgs, s clusteredHubSettings) error {
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
 	// replaces a ConfigMap whose data changes otherwise, deleting it first, and a hub pod
@@ -108,8 +109,8 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		pulumi.Transforms([]pulumi.ResourceTransform{protectClusteredHubStatefulSet}),
 	}
 	// Kubernetes refuses every pod naming a class that does not exist, so the class is read first
-	// and the chart and the tailnet hosts wait on the read: a missing class fails the preview rather
-	// than the rollout.
+	// and the chart, the tailnet hosts and the session listener wait on the read: a missing class
+	// fails the preview rather than the rollout.
 	var classRead []pulumi.Resource
 	if s.priorityClassName != "" {
 		class, err := schedulingv1.GetPriorityClass(ctx, s.name+"-priority-class", pulumi.ID(s.priorityClassName), nil, child...)
@@ -147,12 +148,18 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 	if err != nil || s.tailnet == nil {
 		return err
 	}
-	return newClusteredHubTailnetHosts(ctx, name, args.TailnetAuthKey, s, classRead, child...)
+	if err := newClusteredHubTailnetHosts(ctx, name, args.TailnetAuthKey, s, classRead, child...); err != nil {
+		return err
+	}
+	return newClusteredHubListener(ctx, s, classRead, child...)
 }
 
 // clusteredHubIngress is what the hub pods' NetworkPolicy admits, by TCP port: NATS's client port
 // from every pod of each client namespace and, with tailnet, from the component's tailnet hosts,
-// which forward the tailnet's NATS port to it; the route port from the hub pods alone, which is
+// which forward the tailnet's NATS port to it, and from its session listener, which since the
+// split is a pod of neither kind: it carried the tailnet hosts' labels while it was a container
+// of their pods, and without a rule of its own it would reach NATS only while clientNamespaces
+// happened to name the hub's namespace; the route port from the hub pods alone, which is
 // all that keeps anything else from joining the cluster, since routes carry no credential; the
 // monitoring port from each monitor namespace, and from none without one, as an empty from would
 // admit every pod; and the exporter's port from each metrics namespace.
@@ -160,6 +167,7 @@ func clusteredHubIngress(s clusteredHubSettings) networkingv1.NetworkPolicyIngre
 	ingress := networkingv1.NetworkPolicyIngressRuleArray{ingressFrom(natsPort, namespacePeers(s.clientNamespaces))}
 	if s.tailnet != nil {
 		ingress = append(ingress, ingressFrom(natsPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubTailnetSelector(s.name))}))
+		ingress = append(ingress, ingressFrom(natsPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubListenerSelector(s.name))}))
 	}
 	ingress = append(ingress, ingressFrom(clusteredHubClusterPort, networkingv1.NetworkPolicyPeerArray{labelPeer(clusteredHubSelector(s.name))}))
 	if len(s.monitorNamespaces) > 0 {

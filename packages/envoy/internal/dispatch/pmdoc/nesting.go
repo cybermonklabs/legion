@@ -15,7 +15,9 @@ import (
 
 // maxNesting is how many blocks a markdown document may open inside one another. Quotes, lists,
 // list items, typed blocks, and footnote definitions each count one. The next block is refused
-// before any deep tree is built.
+// before any deep tree is built. It is also the bound past which the browser editor's parser reads
+// a list or a quote opener as the text it is (maxBlockNesting, proof-editor's block-nesting.ts),
+// so a document this refuses is the one the browser draws as text.
 const maxNesting = 100
 
 // maxTypedNesting is how many typed blocks a markdown document may open inside one another, the
@@ -220,12 +222,17 @@ func markNesting(root ast.Node, measured map[*ast.Image]int) int {
 	}
 }
 
+// displayParseKey marks a parse the display reader runs (markdownReader.read).
+var displayParseKey = parser.NewContextKey()
+
 // nestingRefusal is the refusal of root, parsed from source with pc, for markdown nested past a
 // bound, or nil: the block nestingGuard refused, since goldmark opens every block before it reads
 // any inline markdown, and otherwise the first textblock whose inline marks nest past
-// maxInlineNesting, an image imageNesting measured past it among them.
+// maxInlineNesting, an image imageNesting measured past it among them. A display parse keeps no
+// refusal of the guard's: the opener it declined is the paragraph text the browser's tokenizer
+// reads it as, which is what a reader is shown (ReadForDisplay).
 func nestingRefusal(root ast.Node, source []byte, pc parser.Context) error {
-	if refused, ok := pc.Get(nestingRefusalKey).(nestingError); ok {
+	if refused, ok := pc.Get(nestingRefusalKey).(nestingError); ok && pc.Get(displayParseKey) == nil {
 		return refused
 	}
 	measured, _ := pc.Get(imageNestingKey).(map[*ast.Image]int)

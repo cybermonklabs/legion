@@ -53,8 +53,10 @@
 #                   issue, attached table and message (seed.ts). Scored by askOnMessage.
 #   tester-proof    A tester phase worker, booted by the Legion extension against a daemon stand-in,
 #                   is told the implementer has finished; its world is worker_fixture's, with GitHub
-#                   a recording stand-in and the remote a local bare repository. Scored by
-#                   testerProof.
+#                   a recording stand-in, the remote a local bare repository, and the implementer's
+#                   handoff a record on the run's own Dispatch issue (seed.ts tester-proof and
+#                   implement-handoff). After the run, seed.ts capture-handoffs reads back every
+#                   handoff record of the issue. Scored by testerProof.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -125,10 +127,14 @@
 #                                 host, once per judge, and its container gets only the token
 #                                 (cmd_judge_omp)
 #   LEGION_E2E_MODEL_GATEWAY_URL  gateway: the model gateway (scripts/e2e/lib/install-model-gateway.sh)
-#   LEGION_E2E_ANTHROPIC_KEY_FILE key-file: a 0600 file holding a plaintext Anthropic key
-#                                 (scripts/e2e/lib/install-key-file-model-route.sh); the key command
-#                                 that reads it lives in the label's profile directory, and removing
-#                                 that directory removes it
+#   LEGION_E2E_ANTHROPIC_KEY_FILE key-file: a 0600 file holding the plaintext key the endpoint
+#                                 takes (scripts/e2e/lib/install-key-file-model-route.sh); the key
+#                                 command that reads it lives in the label's profile directory,
+#                                 and removing that directory removes it
+#   LEGION_E2E_MODEL_BASE_URL     key-file: an Anthropic-compatible gateway in place of Anthropic
+#                                 itself, whose key the file above holds, so a batch reaches a
+#                                 gateway on the documented route rather than a hand-written
+#                                 provider block
 #   LEGION_E2E_MODEL_PROVIDER_FILE, LEGION_E2E_MODEL_PROVIDER
 #                                 provider: an operator's own models.yml and the name of the
 #                                 anthropic-messages provider block in it to route through
@@ -210,8 +216,9 @@ root=$(cd "$here/../../../.." && pwd -P)
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
-# The tester-proof world (worker_fixture below).
-worker_key=LWEVAL-1
+# The tester-proof world (worker_fixture below): its repository, and the run's own issue, which
+# run_tester_proof sets once seed.ts has filed it.
+worker_key=''
 worker_repo=example/widgets
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
@@ -252,9 +259,9 @@ judge_model=anthropic/$route_model_id
 [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" != provider ] || judge_model=${LEGION_E2E_MODEL_PROVIDER:-}/$route_model_id
 judge_thinking=high
 # The container every judge runs in (cmd_judge_omp), by digest: Ubuntu 24.04, whose glibc runs the
-# pinned omp binary. Every image a CI job fetches is a copy in ghcr.io/sjawhar/legion/ci, named by
+# pinned omp binary. Every image a CI job fetches is a copy in ghcr.io/cybermonklabs/legion/ci, named by
 # digest, which ci.yaml's ci-images job publishes from .github/ci-images.yaml.
-judge_image=ghcr.io/sjawhar/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+judge_image=ghcr.io/cybermonklabs/legion/ci@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 # The superpowers skills a spec run's profile holds as its own user skills (cmd_profile).
 superpowers_skills=(writing-plans brainstorming)
 
@@ -325,8 +332,14 @@ install_model_route() {
       echo "LEGION_E2E_ANTHROPIC_KEY_FILE is unset: name a 0600 file holding a plaintext Anthropic key" >&2
       return 1
     fi
+    local base=()
+    # An Anthropic-compatible gateway, whose key the file holds, in place of Anthropic itself:
+    # the installer's own --base-url, which this route did not pass, so a batch on a gateway had
+    # to be written as a provider block by hand (scripts/e2e/claude-backend-tmux.sh takes the
+    # same variable for the same reason).
+    [ -z "${LEGION_E2E_MODEL_BASE_URL:-}" ] || base=(--base-url "$LEGION_E2E_MODEL_BASE_URL")
     bash "$co/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$dir/home" --dest "$dir/key" \
-      --key-dir "$dir/model-key" --key-file "$LEGION_E2E_ANTHROPIC_KEY_FILE" || {
+      --key-dir "$dir/model-key" --key-file "$LEGION_E2E_ANTHROPIC_KEY_FILE" "${base[@]}" || {
       rm -rf "$dir/model-key"
       return 1
     }
@@ -379,6 +392,9 @@ install_provider_route() {
   {
     echo "# Written by rig.sh install_provider_route: $model is the one model, and no other provider"
     echo "# a session or a subagent could fall back to without a word is enabled."
+    # The handler limit the gateway and key-file installers write, and which load_label requires
+    # of every profile: AskGate's review is one tool call, and the default limit cuts it short.
+    printf 'extensionHandlers:\n  toolCallTimeoutMs: 120000\n'
     printf 'enabledModels:\n  - %s\n' "$model"
     printf 'disabledProviders:\n'
     printf '  - %s\n' anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio
@@ -711,7 +727,7 @@ services_env=$work/services/env
 # start_listener serves the Envoy listener on a port the kernel chose, held from that choice until
 # the listener serves on it (lib/rig.sh's start_held), and sets envoy_port.
 start_listener() {
-  ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_HOST_BRIDGE=127.0.0.1 \
+  ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
@@ -752,14 +768,14 @@ lock_services() {
 # servers at once, so max_connections is 30 for each concurrent run and 20 more for psql.
 services_up() {
   evidence=$S
-  # ghcr.io/sjawhar/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+  # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
   docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-    -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/sjawhar/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+    -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
     -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
-  # ghcr.io/sjawhar/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/sjawhar/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f -js >/dev/null
+  # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
+  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f -js >/dev/null
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
@@ -861,7 +877,7 @@ run_measure_before_ask() {
 # write the agent makes. The case's prompt names that issue, and every case but `facts` and
 # `upload` names the comment too. `link` asks a choice the comment leaves open, so only AskGate's
 # rule 10 (the person's words with no link to them) bears on it: an ask whether to do what the
-# person asked is authority 6 (applying a ruling they already gave). Its reindex fact cites the
+# person asked is authority 6 (applying a decision they already gave). Its reindex fact cites the
 # file it comes from, export-host.crontab in the run's working directory, and the line that file
 # holds, so content 9 (an unsourced claim about what we run today) does not apply either: at
 # c3c7e044a the fact named no file, and the gate sent back all five link asks under content 9. The
@@ -892,7 +908,7 @@ run_askgate() {
     printf '# m h dom mon dow command\n0 2 * * * /opt/export/nightly-export\n0 4 * * 0 /opt/search/reindex --all\n' >"$R/cwd/export-host.crontab"
     printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. Question: "export-host.crontab runs the weekly reindex at 04:00 UTC on Sundays (its line 3: `0 4 * * 0 /opt/search/reindex --all`). Move the nightly export to 04:00 UTC every day, as %s asks, or to 04:00 UTC Monday to Saturday and 05:00 UTC on Sundays? I recommend 05:00 on Sundays." Options: "04:00 every day", "05:00 on Sundays".\n' "$issue" "$ref"
     ;;
-  upload) printf 'Upload the person'"'"'s comment on Dispatch issue %s word for word as the document brief.md, with dispatch artifact, so that you can link it. Then open an ask that links brief.md and asks whether to move the nightly export.\n' "$issue" ;;
+  upload) printf 'Upload the person'"'"'s comment on Dispatch issue %s word for word as the document brief.md, with dispatch artifact --force, so that you can link it. Then open an ask that links brief.md and asks whether to move the nightly export.\n' "$issue" ;;
   nochange) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
   nochange-rebuttal) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, and send it with the flag --advisor-rebuttal whose value is this line: "The person asked for the move, so keeping 02:00 needs their authority." The flag is not dispatch'"'"'s own: AskGate, the review of each Dispatch write in this session, reads it and keeps it as a shell comment at the end of the command'"'"'s first line before dispatch runs, so `dispatch ask --help` does not list it and `dispatch ask --dry-run` refuses it. Send the ask once, with the flag. %s Question: "%s" Options: "Keep it at 02:00", "Move it to 04:00".\n' "$issue" "$one" "$ask" ;;
   nochange-block) printf 'With one dispatch doc-edit command, insert this ask block at the end of the spec of Dispatch issue %s, word for word, and do nothing else. Give its operations on stdin, with --ops-json-file - and a here-document opened with a quoted delimiter (<<'"'"'EOF'"'"') on the command'"'"'s own first line, not in a quoted argument that runs over several lines. %s\n\n:::ask{#export-time urgency="med"}\n%s\n\n- Keep it at 02:00\n- Move it to 04:00\n:::\n' "$issue" "$one" "$ask" ;;
@@ -1246,11 +1262,14 @@ cmd_judge_omp() {
   key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
   route=(-v "$keys:/opt/key:ro")
   [ -z "$key_file" ] || route+=(-v "$key_file:$key_file:ro")
-  if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" != key-file ]; then
-    host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
-    ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
-    [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
-  fi
+  # The judge's container resolves the model endpoint's hostname itself, and a tailnet name the
+  # host resolves is often not resolvable inside Docker, so the host's answer is passed in. This
+  # once skipped the key-file route, which reached Anthropic's own public name and needed none;
+  # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
+  # route left out here would let the scenario agents reach it while its judges could not.
+  host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
+  ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
+  [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"
   : >>"$dir/$output"
@@ -1259,9 +1278,21 @@ cmd_judge_omp() {
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself.
-  docker image inspect "$judge_image" >/dev/null 2>&1 || docker pull --quiet "$judge_image" >/dev/null ||
-    fail "judge-omp: docker could not pull $judge_image"
+  # failed pull names itself. The registry answers one request of a batch badly now and then (a
+  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
+  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
+  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
+  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
+    local pulled='' pull_error='' attempt
+    for attempt in 1 2 3; do
+      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+        pulled=1
+        break
+      }
+      [ "$attempt" -eq 3 ] || sleep 2
+    done
+    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
+  fi
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \
@@ -1288,19 +1319,22 @@ cmd_judge() {
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
 }
 
-# The tester's frozen world under $R: a bare remote whose post-receive hook logs every push, the
-# issue workspace cloned from it, the implementer's commit and handoff on legion/<key>, the PR the
-# gh stand-in serves, and the architect's assignment. The fixture's content is the same in every
-# run; the PR number is 1000 plus <index>, the run's index in its batch, and the commits are dated
-# <index> seconds after <start>, the batch's start, so no two runs of a batch share a PR number or
-# a head (two runs can meet in a scratch file in the shared /tmp), and each batch's heads carry its
-# own start time.
-# The CLI must meet every acceptance criterion the seeded spec lists. testerProof fails a run whose
-# push changes more than .legion/<key>/test.json, and it cannot tell a tester that pinned a real defect
-# with a red test, which roles/core/tester.md asks for, from one that went off-task. A defect left
-# in the fixture turns correct testing into a fail.
+# The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
+# run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
+# workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves,
+# and the implementer's handoff body at $R/implement.json, which run_tester_proof records on the
+# issue. The fixture's content is the same in every run; the PR number is 1000 plus <index>, the
+# run's index in its batch, and the commits are dated <index> seconds after <start>, the batch's
+# start, so no two runs of a batch share a PR number or a head (two runs can meet in a scratch file
+# in the shared /tmp), and each batch's heads carry its own start time.
+# The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
+# holds the check that the implementer's seeded result and the tester's own run are against.
+# testerProof fails a run that
+# pushes a change to legion/<key>, and it cannot tell a tester that pinned a real defect with a red
+# test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
+# fixture turns correct testing into a fail.
 worker_fixture() {
-  local index=$1 start=$2 src C1 C2 body when worker_pr worker_pr_url jj_setup_config
+  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config
   worker_pr=$((1000 + index))
   worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   when="@$((start + index)) +0000"
@@ -1348,21 +1382,16 @@ test("trims the name", () => {
 EOF
   g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
   C1=$(g rev-parse HEAD)
-  # The implement handoff as the implementer writes it with its write tool: the three stamps
-  # (schemaVersion, phase, issue), previousHandoff empty because this is the phase's first handoff,
-  # and the phase's fields, at .legion/<key>/implement.json, the file whose pushed commit the
-  # implementer's handoff_complete reports and the tester reads with `read`.
-  mkdir -p "$src/.legion/$worker_key"
-  jq -n --arg key "$worker_key" --arg head "$C1" '
-    {schemaVersion:1, phase:"implement", issue:$key, previousHandoff:"",
-     filesChanged:["greet.ts","greet.test.ts"],
-     proof:[{criterion:"greet(name) greets by name, trimmed, and `bun greet.ts <name>` prints it; no name is a usage error",
-       surface:"the CLI", command:"bun greet.ts Ada", observed:"prints Hello, Ada! and exits 0", headSha:$head,
-       negativeControl:"bun greet.ts → exit 2, usage: greet.ts <name> on stderr"}]}' >"$src/.legion/$worker_key/implement.json"
-  g add -A && g commit -qm "implement: record handoff ($worker_key)"
-  C2=$(g rev-parse HEAD)
   g push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
+  # The implement handoff as the implementer records it with `dispatch handoff-write`: the three
+  # stamps (schemaVersion, phase, issue) and the phase's fields; Dispatch records when it was
+  # written. What the implementer ran is no part of it: seed.ts implement-handoff records that as a
+  # result against the issue's check k1. The PR's head is the implementer's code commit, since no
+  # handoff commit sits above it.
+  jq -n --arg key "$worker_key" '
+    {schemaVersion:1, phase:"implement", issue:$key,
+     filesChanged:["greet.ts","greet.test.ts"]}' >"$R/implement.json"
   # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
   # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
   # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
@@ -1379,17 +1408,13 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 
 **Threads:** 0 resolved, 0 unresolved.
 
-**E2E (implementer):** the CLI — ran \`bun greet.ts Ada\`, observed \`Hello, Ada!\` exit 0, at head $C1.
-Negative control: \`bun greet.ts\` (no name) → exit 2, \`usage: greet.ts <name>\` on stderr.
-
-**E2E (tester):** pending.
-
-**Production:** pending the merge.
+**Checks:**
+- Check k1 (before_merge): pass at ${C1:0:12}, recorded by implementer. Ran \`bun greet.ts '  Ada  '\` and read \`Hello, Ada!\`, so the name is trimmed, and \`bun greet.ts\` with no name exited 2 and printed the usage line.
 
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  jq -n --arg head "$C2" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
+  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --argjson number "$worker_pr" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
@@ -1407,18 +1432,26 @@ Negative control: \`bun greet.ts\` (no name) → exit 2, \`usage: greet.ts <name
       {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
       {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
     ]}' >"$R/fixtures.json"
-  # The world the scorer reads: head is the PR's head, code the implementer's code commit under it.
-  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C2" --arg code "$C1" \
-    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head, code:$code}' >"$R/world.json"
-  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s, and its implement handoff is on the branch. Test it and finish your phase.\n' \
-    "$worker_key" "$worker_pr" "$worker_pr_url" "$worker_repo" "$C2" >"$R/prompt.txt"
+  # The world the scorer reads: head is the PR's head, the implementer's code commit.
+  jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
+    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
 }
 
 run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port
-  worker_fixture "$index" "$start" >"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  # The issue the tester's world implements, LWEVAL-1, on the run's own Dispatch.
+  local name=$1 n=$2 index=$3 start=$4 state project port pr head version
+  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
+  # reads and whose newest test record it writes.
   own_dispatch project
+  seed_ts tester-proof "$R/fixture.json"
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
+  version=$(jq -r .implement.version "$R/fixture.json")
+  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
+  # record in (packages/daemon/internal/workflow/effects.go).
+  printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
+    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$version" "$worker_key" "$version" >"$R/prompt.txt"
   state=$R/state
   # Each run its own Legion project, so concurrent runs claim distinct role tokens on one listener.
   # A project token is lower-case letters and digits only (isLegionProjectToken), so the label's
@@ -1450,6 +1483,8 @@ run_tester_proof() {
     echo "GH_REPO=$worker_repo"
   } >"$R/pane.env"
   launch "$name"
+  # What the run left on its issue: every handoff record, each with its body, for testerProof.
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
 cmd_run() {

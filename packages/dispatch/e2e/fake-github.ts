@@ -4,30 +4,52 @@ import { harnessPorts } from "./harness-ports";
 // architecture importer, the delivery reconcile and the issue header's GitHub link:
 // the installation lookup, the installation-token mint, the repository read that
 // proves the minted token works, the exact branch read a source's save makes, the
-// commit/tree/blob reads a sync walks, empty delivery listings, and a seeded pull
-// request with its head's check runs and workflow runs. Tests seed per-repository
-// state through /__fixture/repos; the server reaches this via
-// DISPATCH_GITHUB_API_BASE.
+// commit/tree/blob reads a sync walks, the commits read whose 422 says a repository
+// holds no such commit, empty delivery listings, and a seeded pull request with its
+// head's check runs and workflow runs. Tests seed per-repository state through
+// /__fixture/repos and read how many times the server asked for each commit's check runs
+// through /__fixture/requests; the server reaches this via DISPATCH_GITHUB_API_BASE.
 
 const ARCHITECTURE_DIR = ".dispatch/architecture";
 
-/** A pull request the GitHub link reads: its title, state and head commit. */
+/** A pull request the GitHub link reads: its title, state and head commit, and the branch,
+ *  base and body Dispatch's pull-request head tracking attributes it by. */
 interface FakePull {
   readonly head_sha: string;
   readonly merged?: boolean;
   readonly state: string;
   readonly title: string;
+  readonly body?: string;
+  readonly head_ref?: string;
+  /** The repository the head branch lives in, as GitHub's `head.repo.full_name`; the pull
+   *  request's own repository when unset. Dispatch compares a check's results with a pull
+   *  request's head only when the two are the same, so a fork's name here is how a fixture
+   *  describes a pull request that attributes nobody. */
+  readonly head_repo?: string;
+  readonly base_ref?: string;
+  readonly updated_at?: string;
 }
 
-/** One check run of a commit, in the check suite `check_suite_id` names. */
+/** One check run of a commit, in the check suite `check_suite_id` names. GitHub always answers
+ *  `completed_at`, `html_url` and `output`, so the fake does too: a run that leaves
+ *  `completed_at` unset answers null, as a run not yet completed does, one that leaves
+ *  `html_url` unset answers the run's page on github.com, and one that leaves `output` unset
+ *  answers a null title and summary, as a GitHub Actions job does. */
 interface FakeCheckRun {
   readonly app_id?: number;
   readonly check_suite_id: number;
+  readonly completed_at?: string | null;
   readonly conclusion: string | null;
+  readonly html_url?: string;
   readonly id: number;
   readonly name: string;
+  readonly output?: { readonly title: string | null; readonly summary: string | null };
   readonly status: string;
 }
+
+/** What the check-runs read of one commit does in place of answering at once: answers `status`
+ *  with GitHub's error body, or waits `hold_ms` milliseconds and then answers as it would have. */
+type FakeCheckRunFault = { readonly status: number } | { readonly hold_ms: number };
 
 /** One workflow run of a commit: its workflow's name, its triggering event and its check suite. */
 interface FakeWorkflowRun {
@@ -60,10 +82,29 @@ interface FakeRepo {
   readonly branches?: readonly string[];
   /** Pull requests keyed by number; a number not here answers a server error, as before. */
   readonly pulls?: Record<string, FakePull>;
-  /** Check runs keyed by commit sha, in any order. */
+  /** Check runs keyed by commit sha, in any order. The read pages them as GitHub does
+   *  (`pageOf`), so a commit of 101 runs answers 100 on page 1 and one on page 2. */
   readonly check_runs?: Record<string, readonly FakeCheckRun[]>;
+  /** What the check-runs read of a commit does instead of answering at once, keyed by commit
+   *  sha; a commit not here answers at once. */
+  readonly check_run_faults?: Record<string, FakeCheckRunFault>;
   /** Workflow runs keyed by head sha. */
   readonly workflow_runs?: Record<string, readonly FakeWorkflowRun[]>;
+  /** The repository's default branch; "main" when unset. */
+  readonly default_branch?: string;
+  /** The pull request numbers GitHub names for a commit, keyed by commit sha: what
+   *  `GET /repos/{o}/{r}/commits/{sha}/pulls` answers, read from `pulls`. */
+  readonly commit_pulls?: Record<string, readonly number[]>;
+  /** The commits each branch holds, keyed by branch name: what the compare read answers
+   *  `behind` (or `identical`, for the last of them) about, and `diverged` about any other. */
+  readonly branch_commits?: Record<string, readonly string[]>;
+  /** Commits the repository holds with nothing else attached to them: what the commits read
+   *  answers 200 for beside the commits the fields above imply. A fixture that wants a commit
+   *  refused simply leaves it out of every one of them. */
+  readonly commits?: readonly string[];
+  /** A repository Dispatch's App is not installed on: every read of it answers, but the
+   *  installation lookup is GitHub's 404, so the server can reach no token for it. */
+  readonly installation_missing?: boolean;
 }
 
 /** Deterministic commit sha for a repository's current files. */
@@ -71,6 +112,22 @@ function commitFor(repo: FakeRepo): string {
   const hasher = new Bun.CryptoHasher("sha1");
   hasher.update(JSON.stringify(repo.files ?? {}));
   return hasher.digest("hex");
+}
+
+/** Every commit a repository holds, which the commits read answers 200 for: each commit the
+ *  fixture attaches something to — the pull requests GitHub names for a commit, each pull
+ *  request's head, the commits a branch holds, and the commits check runs and workflow runs
+ *  hang off — the commit `files` derives, and the bare `commits` the fixture names. */
+function heldCommits(repo: FakeRepo): Set<string> {
+  return new Set([
+    commitFor(repo),
+    ...Object.keys(repo.commit_pulls ?? {}),
+    ...Object.values(repo.pulls ?? {}).map((pull) => pull.head_sha),
+    ...Object.values(repo.branch_commits ?? {}).flat(),
+    ...Object.keys(repo.check_runs ?? {}),
+    ...Object.keys(repo.workflow_runs ?? {}),
+    ...(repo.commits ?? []),
+  ]);
 }
 
 /** The permissions an installation reports for a repository, in both installation answers. */
@@ -82,23 +139,45 @@ function permissionsOf(repo: FakeRepo): Record<string, string | undefined> {
 // installed).
 let repos = new Map<string, FakeRepo>();
 
+// "owner/repo" → commit sha → how many check-runs reads (one a page) the fake has answered for
+// that commit since the last seed, faulted ones included. GET /__fixture/requests answers it as
+// `{check_runs: {"owner/repo": {"<sha>": <count>}}}`, and every PUT /__fixture/repos empties it.
+let checkRunReads = new Map<string, Map<string, number>>();
+
+function countCheckRunRead(repo: string, sha: string): void {
+  const commits = checkRunReads.get(repo) ?? new Map<string, number>();
+  commits.set(sha, (commits.get(sha) ?? 0) + 1);
+  checkRunReads.set(repo, commits);
+}
+
 // FAKE_GITHUB_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: harnessPorts().fakeGithub.port,
-  async fetch(request) {
+  async fetch(request, server) {
     const url = new URL(request.url);
     if (request.method === "PUT" && url.pathname === "/__fixture/repos") {
       const seeded = (await request.json()) as Record<string, FakeRepo>;
       repos = new Map(Object.entries(seeded));
+      checkRunReads = new Map();
       return Response.json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/__fixture/requests") {
+      return Response.json({
+        check_runs: Object.fromEntries(
+          [...checkRunReads].map(([repo, commits]) => [repo, Object.fromEntries(commits)])
+        ),
+      });
     }
 
     const installation = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/installation$/);
     if (request.method === "GET" && installation !== null) {
       const repo = repos.get(`${installation[1]}/${installation[2]}`);
-      if (repo === undefined) {
+      // A repository nobody seeded, and one seeded as not installed on: both are GitHub's 404,
+      // the answer the Go client reads as ErrNoInstallation.
+      if (repo === undefined || repo.installation_missing === true) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
       return Response.json({
@@ -189,7 +268,10 @@ const server = Bun.serve({
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
       }
       return Response.json({
-        head: { sha: seeded.head_sha },
+        head: {
+          repo: { full_name: seeded.head_repo ?? `${pull[1]}/${pull[2]}` },
+          sha: seeded.head_sha,
+        },
         merged: seeded.merged ?? false,
         number: Number(pull[3]),
         state: seeded.state,
@@ -201,18 +283,88 @@ const server = Bun.serve({
       /^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/check-runs$/
     );
     if (request.method === "GET" && checkRuns !== null) {
-      const repo = repos.get(`${checkRuns[1]}/${checkRuns[2]}`);
+      const fullName = `${checkRuns[1]}/${checkRuns[2]}`;
+      const sha = checkRuns[3] ?? "";
+      const repo = repos.get(fullName);
       if (repo === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
-      const runs = repo.check_runs?.[checkRuns[3] ?? ""] ?? [];
+      countCheckRunRead(fullName, sha);
+      const fault = repo.check_run_faults?.[sha];
+      if (fault !== undefined && "status" in fault) {
+        return Response.json({ message: "Server Error" }, { status: fault.status });
+      }
+      if (fault !== undefined) {
+        // Bun.serve closes a connection idle for 10 s, as long as Dispatch's own read deadline:
+        // a held request lifts that bound, so Dispatch's deadline is what ends the wait.
+        server.timeout(request, 0);
+        await Bun.sleep(fault.hold_ms);
+      }
+      const runs = repo.check_runs?.[sha] ?? [];
       return Response.json({
-        check_runs: pageOf(runs, url).map(({ app_id, check_suite_id, ...run }) => ({
-          ...run,
-          app: { id: app_id ?? 15368, slug: "github-actions" },
-          check_suite: { id: check_suite_id },
-        })),
+        check_runs: pageOf(runs, url).map(
+          ({ app_id, check_suite_id, completed_at, html_url, output, ...run }) => ({
+            ...run,
+            app: { id: app_id ?? 15368, slug: "github-actions" },
+            check_suite: { id: check_suite_id },
+            completed_at: completed_at ?? null,
+            html_url: html_url ?? `https://github.com/${fullName}/runs/${run.id}`,
+            output: output ?? { summary: null, title: null },
+          })
+        ),
         total_count: runs.length,
+      });
+    }
+
+    // The pull requests GitHub names for a commit, which Dispatch reads through when a result
+    // names a commit that is the head of no pull request it has an event for. It must match
+    // before the bare `commits/{ref}` route below.
+    const commitPulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/pulls$/);
+    if (request.method === "GET" && commitPulls !== null) {
+      const repo = repos.get(`${commitPulls[1]}/${commitPulls[2]}`);
+      if (repo === undefined) {
+        return Response.json({ message: "Not Found" }, { status: 404 });
+      }
+      const numbers = repo.commit_pulls?.[commitPulls[3] ?? ""] ?? [];
+      return Response.json(
+        numbers.flatMap((number) => {
+          const seeded = repo.pulls?.[String(number)];
+          if (seeded === undefined) return [];
+          return [
+            {
+              base: { ref: seeded.base_ref ?? "main" },
+              body: seeded.body ?? "",
+              head: {
+                ref: seeded.head_ref ?? `branch-${number}`,
+                repo: { full_name: seeded.head_repo ?? `${commitPulls[1]}/${commitPulls[2]}` },
+                sha: seeded.head_sha,
+              },
+              html_url: `https://github.com/${commitPulls[1]}/${commitPulls[2]}/pull/${number}`,
+              merged: seeded.merged ?? false,
+              number,
+              state: seeded.state,
+              title: seeded.title,
+              updated_at: seeded.updated_at ?? "2026-01-01T00:00:00Z",
+            },
+          ];
+        })
+      );
+    }
+
+    // `compare/{base}...{head}`, of which Dispatch decodes only `status`: a branch that holds
+    // the commit is `behind` it (`identical` when it is the branch's last commit), and one that
+    // does not is `diverged`.
+    const compare = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/compare\/(.+)$/);
+    if (request.method === "GET" && compare !== null) {
+      const repo = repos.get(`${compare[1]}/${compare[2]}`);
+      const [base, head] = decodeURIComponent(compare[3] ?? "").split("...", 2);
+      if (repo === undefined || base === undefined || head === undefined) {
+        return Response.json({ message: "Not Found" }, { status: 404 });
+      }
+      const commits = repo.branch_commits?.[base] ?? [];
+      const held = commits.indexOf(head);
+      return Response.json({
+        status: held === -1 ? "diverged" : held === commits.length - 1 ? "identical" : "behind",
       });
     }
 
@@ -233,19 +385,26 @@ const server = Bun.serve({
     }
 
     // As GitHub does: the bare sha for `Accept: application/vnd.github.sha` (what the Go
-    // client's Ref asks for), the commit's JSON otherwise.
+    // client's Ref asks for), the commit's JSON otherwise, and `422 No commit found for SHA`
+    // for a commit the repository does not hold — the one answer HasCommit reads as absence.
+    // Only a 40-hex ref can be refused: any other ref is a commit-ish, which a branch read asks
+    // this route for, and answers the repository's head as it always has.
     const commit = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)$/);
     if (request.method === "GET" && commit !== null) {
       const repo = repos.get(`${commit[1]}/${commit[2]}`);
       if (repo === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
-      if (request.headers.get("Accept") === "application/vnd.github.sha") {
-        return new Response(commitFor(repo), {
-          headers: { "Content-Type": "application/vnd.github.sha" },
-        });
+      const ref = decodeURIComponent(commit[3] ?? "");
+      const isSHA = /^[0-9a-f]{40}$/.test(ref);
+      if (isSHA && !heldCommits(repo).has(ref)) {
+        return Response.json({ message: `No commit found for SHA: ${ref}` }, { status: 422 });
       }
-      return Response.json({ sha: commitFor(repo) });
+      const sha = isSHA ? ref : commitFor(repo);
+      if (request.headers.get("Accept") === "application/vnd.github.sha") {
+        return new Response(sha, { headers: { "Content-Type": "application/vnd.github.sha" } });
+      }
+      return Response.json({ sha });
     }
 
     // The architecture directory's subtree at a commit
@@ -292,7 +451,10 @@ const server = Bun.serve({
       if (!repos.has(`${repository[1]}/${repository[2]}`)) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
-      return Response.json({ full_name: `${repository[1]}/${repository[2]}` });
+      return Response.json({
+        default_branch: repos.get(`${repository[1]}/${repository[2]}`)?.default_branch ?? "main",
+        full_name: `${repository[1]}/${repository[2]}`,
+      });
     }
 
     if (url.pathname === "/healthz") return Response.json({ ok: true });

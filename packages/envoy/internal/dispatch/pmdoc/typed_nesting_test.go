@@ -7,20 +7,22 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/heavybodies"
 )
 
 // The two bodies that froze a reader's tab in the browser engine (INFRA-581) are refused by a
 // document write in a few milliseconds: Go reads a bare `:::a` as a malformed directive, whatever
 // it is nested in. Each refusal is held to 1 s of this process's CPU time (cpuTimeOf), hundreds of
 // times what it takes, so neither a loaded runner nor -race flakes it.
+//
+// The bodies are heavybodies.NestedDirectives (pmdoc/heavybodies), so the API's own test of the
+// verdict a write of each gets reads the very same bytes (INFRA-1404).
 func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
-	for _, test := range []struct{ name, markdown string }{
-		{name: "2,000 unclosed openers then a long line", markdown: strings.Repeat(":::a\n", 2000) + strings.Repeat("x", 21000)},
-		{name: "1,000 openers then 1,000 closing lines", markdown: strings.Repeat(":::a\n", 1000) + strings.Repeat(":::\n", 1000)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
+	for _, test := range heavybodies.NestedDirectives() {
+		t.Run(test.Name, func(t *testing.T) {
 			var err error
-			took, timing := cpuTimeOf(again(func() { _, err = ParseForWrite(test.markdown, nil) }))
+			took, timing := cpuTimeOf(again(func() { _, err = ParseForWrite(test.Markdown, nil) }))
 			if timing != nil {
 				t.Fatal(timing)
 			}
@@ -85,9 +87,10 @@ func TestReadBackRefusalNamesTheTypedBlockNesting(t *testing.T) {
 	block := &Node{Type: "callout", Attrs: Attrs{"blockId": "outer", "kind": "note", "title": "T"}, Children: doc.Children}
 	refusal := fmt.Sprintf("the result nests %d typed blocks inside one another; a document nests at most %d typed blocks",
 		expectedMaxTypedNesting+1, expectedMaxTypedNesting)
-	for name, check := range map[string]func(*Node) error{"BlockReadError": BlockReadError, "BlockShapeError": BlockShapeError} {
-		if err := check(block); !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), refusal) {
-			t.Errorf("%s of %d nested callouts: %v, want ErrSchema saying %q", name, expectedMaxTypedNesting+1, err, refusal)
+	back := ReadBackBlock(block)
+	for name, verdict := range map[string]error{"Read": back.Read, "Shape": back.Shape} {
+		if !errors.Is(verdict, ErrSchema) || !strings.Contains(verdict.Error(), refusal) {
+			t.Errorf("the read-back's %s of %d nested callouts: %v, want ErrSchema saying %q", name, expectedMaxTypedNesting+1, verdict, refusal)
 		}
 	}
 }

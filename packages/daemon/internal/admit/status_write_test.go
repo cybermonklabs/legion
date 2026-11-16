@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -37,7 +38,7 @@ const (
 // no session (TestDecodeDispatchIssueNamesASessionActor). A session holding a claim in the tree is an
 // agent, never a human move, since a phase ends only by its completion and an issue only by its
 // merge; here the implementer closes its own issue while it awaits its merge instead of leaving
-// that to the merge. The workflow does not react (no linger, the slot kept, the phase
+// that to the merge. The workflow does not react (no linger, the tree still running, the phase
 // unchanged) and the daemon re-asserts its own status through the outbox. Any other session —
 // another tree's agent, or one outside Legion that took the issue for its own — cannot end or park
 // the tree either: the daemon re-asserts its status, and the tree's architect is told who wrote what.
@@ -60,7 +61,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 			seedSlotted(t, pool, "LEGION-1", "A")
 			seedSlotted(t, pool, "LEGION-9", "Z")
 			inTx(t, pool, func(tx pgx.Tx) {
@@ -69,7 +70,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read root: %v", err)
 				}
-				root.Phase, root.Status, root.LastDispatchSeq = phase.AwaitingMerge, "retro", 1
+				root.Phase, root.Status, root.LastDispatchSeq = phase.Merging, "retro", 1
 				if err := records.PutIssue(ctx, tx, *root); err != nil {
 					t.Fatalf("put root: %v", err)
 				}
@@ -90,7 +91,7 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 			var reasserted int
 			var told []record.Notice
 			for _, effect := range effects(t, pool) {
-				if write, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-1" && write == (record.StatusWrite{Status: "retro", ObservedStatus: tc.status}) {
+				if write, ok := effect.payload.(record.StatusWrite); ok && effect.issue == "LEGION-1" && write == record.ReassertStatusWrite("retro", tc.status) {
 					reasserted++
 				}
 				if notice, ok := effect.payload.(record.Notice); ok && notice.Kind == "status-reasserted" {
@@ -104,10 +105,14 @@ func TestWhoseStatusWriteTakesARunningRootOutOfTheWorkflow(t *testing.T) {
 				}
 				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 			case setBack, setBackAndTold:
-				if got.Phase != phase.AwaitingMerge || got.LingerUntil != nil || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
-					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want awaiting_merge, not lingering, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
+				if got.Phase != phase.Merging || got.LingerUntil != nil || got.Status != "retro" || got.LastDispatchSeq != 2 || reasserted != 1 {
+					t.Fatalf("root after %s = %#v with %d re-asserted status writes, want merging, not lingering, status retro kept, seq 2, and retro re-asserted over %s once", tc.name, got, reasserted, tc.status)
 				}
-				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}, {Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
+				// The root stands in merging, which is past its own review, so it holds none of
+				// the cap's rows whoever wrote on it; what the write must not do is end its
+				// tree, which the kept phase, the absent linger and LEGION-9's slot beside it
+				// say.
+				assertSlots(t, pool, []record.Slot{{Issue: "LEGION-9", Index: 1, AdmittedAt: fixedNow}})
 				wantTold := 0
 				if tc.outcome == setBackAndTold {
 					wantTold = 1
@@ -177,7 +182,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			write := func(actor string) (*pgxpool.Pool, result) {
 				pool := migratedPool(t)
 				admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-				engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+				engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 				for _, seeded := range tc.issues {
 					putIssue(t, pool, seeded)
 				}
@@ -192,7 +197,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 					Parent: deref(tc.issues[len(tc.issues)-1].Parent), Rank: "B", HandedOver: true, ActorSession: actor}, engine)
 				var got result
 				for _, seeded := range tc.issues {
-					got.issues = append(got.issues, issue(t, pool, seeded.Key))
+					got.issues = append(got.issues, withoutMovement(issue(t, pool, seeded.Key)))
 				}
 				got.slots, got.effects = slots(t, pool), effects(t, pool)
 				return pool, got
@@ -217,7 +222,8 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 // after two outside writes were set back parks the tree, and neither set-back lands over it.
 func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) {
 	type step struct{ actor, status, title string }
-	inFlight := &record.StatusWrite{Status: "testing", ObservedStatus: "in_progress"}
+	inFlightWrite := record.OrdinaryStatusWrite("testing", "in_progress", "")
+	inFlight := &inFlightWrite
 	for _, tc := range []struct {
 		name string
 		// queued is a status write the daemon already queued, so the record holds its status;
@@ -235,13 +241,13 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 			steps: []step{{"ses-outsider", "in_progress", "renamed"}}},
 		{name: "an outside session's rename before its backlog is set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"ses-outsider", "backlog", "renamed"}},
-			rows:  []record.StatusWrite{{Status: "in_progress", ObservedStatus: "backlog"}}, notices: 1},
+			rows:  []record.StatusWrite{record.ReassertStatusWrite("in_progress", "backlog")}, notices: 1},
 		{name: "a person's rename before an outside backlog is set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"", "backlog", "renamed"}},
-			rows:  []record.StatusWrite{{Status: "in_progress", ObservedStatus: "backlog"}}, notices: 1},
+			rows:  []record.StatusWrite{record.ReassertStatusWrite("in_progress", "backlog")}, notices: 1},
 		{name: "an outside session's backlog while the daemon's testing is on its way", queued: inFlight,
 			steps: []step{{"ses-outsider", "backlog", "renamed"}},
-			rows:  []record.StatusWrite{*inFlight, {Status: "testing", ObservedStatus: "backlog"}}, notices: 1},
+			rows:  []record.StatusWrite{*inFlight, record.ReassertStatusWrite("testing", "backlog")}, notices: 1},
 		{name: "a person parks the tree after two outside writes were set back",
 			steps: []step{{"ses-outsider", "backlog", "LEGION-1"}, {"ses-outsider", "icebox", "LEGION-1"}, {"", "backlog", "renamed"}},
 			ends:  true, notices: 2},
@@ -252,7 +258,7 @@ func TestOnlyAChangeFromTheStatusDispatchLastShowedIsAStatusWrite(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 			seedSlotted(t, pool, "LEGION-1", "A")
 			event := func(seq int64, actor, status, title string) {
 				apply(t, pool, admission, "event-"+strconv.FormatInt(seq, 10), intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: status,
@@ -351,7 +357,7 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 					}
 				}
 				event(4, editor.actor, "backlog", "renamed")
-				got := outcome{root: issue(t, pool, "LEGION-1"), slots: slots(t, pool)}
+				got := outcome{root: withoutMovement(issue(t, pool, "LEGION-1")), slots: slots(t, pool)}
 				for _, effect := range effects(t, pool) {
 					if notice, ok := effect.payload.(record.Notice); ok && notice.Kind == "status-reasserted" {
 						got.notices++
@@ -377,7 +383,7 @@ func TestAnEditReachesTheSameOutcomeWhetherOrNotTheSetBackHasFinished(t *testing
 func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	putIssue(t, pool, record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-1", Tree: "LEGION-1", Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: "A", HandedOver: true, LastDispatchSeq: 1})
 	write := func(seq int64, status string) {
 		apply(t, pool, admission, "person-"+strconv.FormatInt(seq, 10), intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: status, Title: "LEGION-1", Rank: "A", HandedOver: true}, engine)
@@ -398,7 +404,7 @@ func TestAParkAndATodoWhileThePromotionsWriteIsOnItsWayRunTheTreeAgain(t *testin
 			writes = append(writes, payload)
 		}
 	}
-	if want := []record.StatusWrite{{Status: "in_progress", ObservedStatus: "todo"}}; !reflect.DeepEqual(writes, want) {
+	if want := []record.StatusWrite{record.OrdinaryStatusWrite("in_progress", "todo", "")}; !reflect.DeepEqual(writes, want) {
 		t.Fatalf("queued status writes %+v, want only the new generation's promotion %+v", writes, want)
 	}
 }

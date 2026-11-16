@@ -1,14 +1,19 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
+import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { AssigneeControl } from "./AssigneeControl";
 
 const issue: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: "alice",
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -22,7 +27,10 @@ const issue: Issue = {
   number: 1,
   parent: null,
   blocked_by: [],
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   priority: null,
   project: "CORE",
   rank: "U",
@@ -36,19 +44,27 @@ const issue: Issue = {
 const details: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   ...issue,
   artifacts: [],
   children: [],
+  design_gates: [],
   open_asks: [],
   progress: { tasks: null, children: null },
   referenced_by_count: 0,
 };
 const summary: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   route: null,
   repo: null,
   resolved_repo: null,
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
   assignee: issue.assignee,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -65,11 +81,20 @@ const summary: IssueSummary = {
   status: issue.status,
   title: issue.title,
   updated_at: issue.updated_at,
+  closed_at: issue.closed_at,
+  created_by: issue.created_by,
+  created_at: issue.created_at,
 };
 const inboxRow: InboxRow = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
   author: { id: "session-1", kind: "session" },
+  block_id: null,
+  last_reply: null,
   created_at: "2026-09-09T00:00:00Z",
   edited_at: null,
   id: "ask-1",
@@ -88,6 +113,7 @@ const inboxRow: InboxRow = {
     route: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
   },
   priority: null,
   snoozed_until: null,
@@ -123,12 +149,14 @@ function renderControl() {
   queryClient.setQueryData(detailKey, details);
   queryClient.setQueryData(listKey, [summary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
+  const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CachedControl />
     </QueryClientProvider>
   );
   return {
+    user,
     listUsers,
     queryClient,
     unmount: () => {
@@ -154,6 +182,7 @@ test("AssigneeControl reads who has signed in only once the reader reaches for i
     ]);
     expect(listUsers).not.toHaveBeenCalled();
 
+    // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(select());
     await waitFor(() =>
       expect([...select().options].map((option) => option.textContent)).toEqual([
@@ -172,11 +201,11 @@ test("AssigneeControl reads who has signed in only once the reader reaches for i
 test("AssigneeControl reassigns optimistically on every surface and merges the server's answer", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
-    fireEvent.pointerEnter(select());
+    await user.hover(select());
     await waitFor(() => expect(select().options.length).toBe(3));
-    fireEvent.change(select(), { target: { value: "bob" } });
+    await user.selectOptions(select(), "bob");
     await waitFor(() => expect(select().value).toBe("bob"));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
@@ -196,16 +225,73 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
 
 test("AssigneeControl sends null for Unassigned", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, assignee: null });
-  const { unmount } = renderControl();
+  const { unmount, user } = renderControl();
   try {
+    // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(select());
     await waitFor(() => expect(select().options.length).toBe(3));
-    fireEvent.change(select(), { target: { value: "" } });
+    await user.selectOptions(select(), "");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
     await waitFor(() => expect(select().value).toBe(""));
     expect(screen.getByText("Unassigned", { selector: "span" })).toBeTruthy();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A question on an issue nobody holds reaches the project's default assignee, so the unassign's
+// optimistic write must leave the issue's rows that nobody handed on waiting on that person: a
+// row that named nobody would drop out of the default person's own (`assignee=me`) list until
+// the PATCH settled. Where the client holds no defaults read, the row keeps the person it waited
+// on rather than naming nobody.
+test.each([
+  ["names the project's default where the defaults read holds it", true, "carol"],
+  ["keeps the person it waited on where the client has no defaults read", false, "alice"],
+])("AssigneeControl's unassign leaves an inbox row nobody handed on waiting on a person: it %s", async (_name, defaultsRead, person) => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { queryClient, unmount, user } = renderControl();
+  const handedOn: InboxRow = {
+    ...inboxRow,
+    asked_of: "bob",
+    asked_of_at: "2026-09-09T01:00:00Z",
+    asked_of_by: "alice",
+    id: "ask-2",
+    waiting_on_person: "bob",
+  };
+  queryClient.setQueryData(inboxKey, [{ ...inboxRow, waiting_on_person: "alice" }, handedOn]);
+  if (defaultsRead) {
+    queryClient.setQueryData(projectDefaultAssigneesQuery().queryKey, [
+      { project: "OPS", assignee: "dana" },
+      { project: "CORE", assignee: "carol" },
+    ]);
+  }
+  try {
+    // A focus with no press before it: user-event has no form for a bare focus.
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.selectOptions(select(), "");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
+    );
+
+    // The save is still in flight: what the rows hold is the optimistic write alone.
+    const rows = queryClient.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    expect(rows.map((row) => [row.id, row.issue?.assignee, row.waiting_on_person])).toEqual([
+      ["ask-1", null, person],
+      ["ask-2", null, "bob"],
+    ]);
+
+    await act(async () => {
+      save.resolve({ ...issue, assignee: null });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
+    );
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -219,13 +305,14 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
       error: '"bob" has not signed in to Dispatch',
     })
   );
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
+    // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(select());
     await waitFor(() => expect(select().options.length).toBe(3));
-    fireEvent.change(select(), { target: { value: "bob" } });
+    await user.selectOptions(select(), "bob");
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain('"bob" has not signed in to Dispatch');
+    expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
     expect(select().value).toBe("alice");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([summary]);
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
@@ -241,19 +328,19 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
   const patchIssue = answerIssuePatches()
     .mockImplementationOnce(() => first.promise)
     .mockImplementationOnce(() => second.promise);
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
     select().focus();
     await waitFor(() => expect(select().options.length).toBe(3));
-    fireEvent.change(select(), { target: { value: "bob" } });
+    await user.selectOptions(select(), "bob");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
     );
     // A disabled control drops focus and leaves the tab order for the length of the save.
     expect(select().disabled).toBe(false);
-    expect(document.activeElement).toBe(select());
+    expect(select()).toHaveFocus();
 
-    fireEvent.change(select(), { target: { value: "" } });
+    await user.selectOptions(select(), "");
     expect(select().value).toBe("");
     expect(patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => {
@@ -270,7 +357,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
     );
-    expect(document.activeElement).toBe(select());
+    expect(select()).toHaveFocus();
   } finally {
     unmount();
     patchIssue.mockRestore();

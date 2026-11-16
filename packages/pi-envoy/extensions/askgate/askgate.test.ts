@@ -1,4 +1,5 @@
-import { afterAll, afterEach, describe, expect, jest, mock, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, jest, mock, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,14 +11,21 @@ import {
   askgateState,
   consumeMarker,
   openStore,
+  pidNamespace,
   processStart,
   setRecordMode,
   writeAskgateRecord,
 } from "@legion/envoy-client/askgate-marker";
 import { newAsks } from "@legion/envoy-client/askgate-new-asks";
+import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
+import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
 import type { DispatchSession } from "../../src/dispatch-session";
 import * as core from "./askgate-core";
 import {
@@ -55,17 +63,12 @@ const NO_DOCUMENT = new DispatchServiceError(
 );
 
 /**
- * The suite's own TMPDIR, set before any test runs: every scratch directory a test makes through
- * `tmpdir()` lands here, and the suite removes it at the end.
+ * The suite's own TMPDIR, pointed at this directory before the file's first test and put back
+ * when it ends: every scratch directory a test makes through `tmpdir()` lands here, and the
+ * fixture's `afterAll` removes it. The fixture makes the directory and writes `TMPDIR` in a
+ * `beforeAll`, so a run that selects no row of this file does neither.
  */
-const CALLER_TMPDIR = process.env.TMPDIR;
-const SUITE_TMP = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "gate-suite-")));
-process.env.TMPDIR = SUITE_TMP;
-afterAll(() => {
-  fs.rmSync(SUITE_TMP, { recursive: true, force: true });
-  if (CALLER_TMPDIR === undefined) delete process.env.TMPDIR;
-  else process.env.TMPDIR = CALLER_TMPDIR;
-});
+const SUITE_TMP = temporaryTmpdir("gate-suite");
 /**
  * Directories named as the gate's old snapshots were (`askgate-` and six characters): the gate
  * reads each file in place now and writes no copy of one, which the suite's last test holds.
@@ -167,6 +170,8 @@ interface BindOptions {
   dryRun?: DryRunner;
   /** The gate role's fallback chain after its first model, as the entry resolves it; none unless a test says otherwise. */
   fallbacks?: Array<{ provider: string; id: string }>;
+  /** `askgate.sharedAccountProviders` as the entry reads it; none unless a test says otherwise. */
+  sharedAccounts?: string[];
   /** The session's entries, read on each call: an `experiments` entry whose askgate_block arm is off (warn) unless a test says otherwise. */
   entries?: readonly unknown[] | (() => readonly unknown[]);
   /** Whether the session has a UI, which a notice needs; true unless a test says otherwise. */
@@ -234,7 +239,12 @@ function bind(opts: BindOptions = {}): BoundGate {
   // The session directory the gate records its mode into (one real process keeps a record per
   // session it binds). A test may share a store and a session across binds to drive the switch case.
   const sessionDir = opts.sessionDir ?? fs.mkdtempSync(path.join(SUITE_TMP, "session-"));
-  const self: AskgateOwner = { pid: process.pid, start: processStart(process.pid), store };
+  const self: AskgateOwner = {
+    pid: process.pid,
+    start: processStart(process.pid),
+    ns: pidNamespace(),
+    store,
+  };
   try {
     openStore(store);
     // The bind, as envoy.ts does it: the mode from OMP_ASKGATE, which an arm does not change here.
@@ -303,6 +313,7 @@ function bind(opts: BindOptions = {}): BoundGate {
       fallbackRoles.push(role);
       return opts.fallbacks ?? [];
     },
+    sharedAccountProviders: () => opts.sharedAccounts ?? [],
     configFile: CONFIG_FILE,
     contextMessages: () => (opts.context ?? (() => [fx.user("Post the comment.")]))(),
     handlerCeilingMs: () => opts.ceiling ?? 120_000,
@@ -442,11 +453,25 @@ function dispatchServing(
     const doc = documents.find((held) => held.id === read?.[1]);
     if (doc === undefined) return body({ code: "NOT_FOUND", error: "not found" }, 404);
     if (read?.[2] === "text")
-      return body({ markdown: doc.markdown, version: 1, token: "sha256:d" });
+      return body({
+        markdown: doc.markdown,
+        version: 1,
+        token: "sha256:d",
+        // The text route carries the blocks when the caller asks for them, as Dispatch does:
+        // one answer holds the markdown and the blocks whose ranges index it.
+        ...(url.searchParams.get("blocks") === "true"
+          ? { blocks: documentBlocks(doc.markdown) }
+          : {}),
+      });
     return body(documentBlocks(doc.markdown));
   }) as typeof fetch;
   const session = (_directory: string, signal: AbortSignal): DispatchSession => ({
-    client: new DispatchClient("https://dispatch.example", "token", fetchImpl, signal),
+    client: new DispatchClient(
+      "https://dispatch.example",
+      bearerCredential("token"),
+      fetchImpl,
+      signal
+    ),
     serverUrls: ["https://dispatch.example"],
   });
   return { requests, session };
@@ -890,10 +915,10 @@ describe("untrusted text (security)", () => {
     );
   });
   test("the recorded reason is exactly what the agent saw, so a check for it finds a reason quoting markup", async () => {
-    const reason = "Failure 7: the ruling says <b>use option B</b> && keep > 2 lines";
+    const reason = "Failure 7: the decision says <b>use option B</b> && keep > 2 lines";
     const g = bind({ complete: reviseWith(reason) });
     const context = (await g.device("t1", "dispatch_comment", COMMENT))?.additionalContext ?? "";
-    const delivered = "Failure 7: the ruling says &lt;b>use option B&lt;/b> && keep > 2 lines";
+    const delivered = "Failure 7: the decision says &lt;b>use option B&lt;/b> && keep > 2 lines";
     expect(g.entries[0].deliveredReason).toBe(delivered);
     expect(context).toContain(delivered);
     expect(context).not.toContain("<b>");
@@ -919,8 +944,8 @@ describe("untrusted text (security)", () => {
     expect(context).toMatch(/… \[elided \d+ bytes\]/);
   });
   test("a revise reason holding a full-length rewritten question in non-ASCII text arrives whole", async () => {
-    // 2,000 UTF-16 units (ASK_QUESTION_MAX) of three-byte characters is 6,000 bytes, and the reason
-    // names its failure and quotes the words on top: the recommendation at its end must survive.
+    // 2,000 three-byte characters is 6,000 UTF-8 bytes, and the reason names its failure and
+    // quotes the words on top: the recommendation at its end must survive.
     const reason = `failure 13 (content): "Hi! I hope this finds you well." is a preamble. Send: ${"€".repeat(2_000)} I recommend A.`;
     const g = bind({ complete: reviseWith(reason) });
     const context = (await g.device("t1", "dispatch_comment", COMMENT))?.additionalContext ?? "";
@@ -1738,12 +1763,13 @@ describe("dispatch CLI calls", () => {
   // A stand-in for the plugin's `dispatch`: under --dry-run it prints the arguments its flags name as
   // JSON (a `-file` flag reads its path, `-` reads stdin). A real call can record the arguments it
   // would post under ASKGATE_POSTED, so the gate tests compare reviewed content with sent content.
-  const work = fs.mkdtempSync(path.join(tmpdir(), "askgate-cli-"));
+  const work = temporaryDirectory("askgate-cli");
   const bin = path.join(work, "bin");
-  fs.mkdirSync(bin);
-  fs.writeFileSync(
-    path.join(bin, "dispatch"),
-    `#!${process.execPath}
+  beforeAll(() => {
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "dispatch"),
+      `#!${process.execPath}
 const [command, ...rest] = process.argv.slice(2);
 const dryRun = rest.includes("--dry-run");
 const args = {};
@@ -1765,9 +1791,9 @@ if (!dryRun) {
 }
 console.log(JSON.stringify(args, null, 2));
 `,
-    { mode: 0o755 }
-  );
-  afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
+      { mode: 0o755 }
+    );
+  });
   const STUB = { PATH: `${bin}:${process.env.PATH}` };
   const QUESTION = "Should the release wait for the staging soak? Recommendation: wait one day.\n";
   const ASK = `dispatch ask --issue X-1 --question-file - <<'EOF'\n${QUESTION}EOF`;
@@ -1779,7 +1805,7 @@ console.log(JSON.stringify(args, null, 2));
       {
         script: `dispatch ask --issue X-1 --question-file - --dry-run <<'EOF'\n${QUESTION}EOF`,
         cwd: work,
-        timeoutMs: 10_000,
+        timeoutMs: core.DRY_RUN_TIMEOUT_MS,
       },
     ]);
     const args = { issue: "X-1", question: QUESTION };
@@ -2643,10 +2669,13 @@ console.log(JSON.stringify(args, null, 2));
   // the call lost its marker. Every row below is run through real bash with a stand-in
   // `dispatch` that prints the argv it got and its standard input.
   describe("the override comment, wherever the command's line ends", () => {
-    const argvBin = fs.mkdtempSync(path.join(SUITE_TMP, "argv-dispatch-"));
-    fs.writeFileSync(
-      path.join(argvBin, "dispatch"),
-      `#!${process.execPath}
+    const argvBin = temporaryDirectory("argv-dispatch");
+    /** Where a rebuttal that ran would leave its mark; no row may create one. */
+    const sentinels = temporaryDirectory("sentinel");
+    beforeAll(() => {
+      fs.writeFileSync(
+        path.join(argvBin, "dispatch"),
+        `#!${process.execPath}
 import { readFileSync } from "node:fs";
 let stdin = "";
 try {
@@ -2654,10 +2683,9 @@ try {
 } catch {}
 console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
 `,
-      { mode: 0o755 }
-    );
-    /** Where a rebuttal that ran would leave its mark; no row may create one. */
-    const sentinels = fs.mkdtempSync(path.join(SUITE_TMP, "sentinel-"));
+        { mode: 0o755 }
+      );
+    });
     const BODY = "First.\nSecond.\n";
     /** Each command shape the grammar takes, written with and without the override flag. */
     const SHAPES: Array<[string, (flag: string) => string, string]> = [
@@ -3057,7 +3085,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       expect(g.dryRuns[0]).toMatchObject({
         script: "cd sub >/dev/null && pwd -P",
         cwd: work,
-        timeoutMs: 10_000,
+        timeoutMs: core.DRY_RUN_TIMEOUT_MS,
       });
       // The dry run names the file as the call wrote it: the gate copies nothing.
       expect(g.dryRuns[1]?.script).toBe(
@@ -3066,7 +3094,7 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
       expect(g.dryRuns[2]).toMatchObject({
         script: "cd inner >/dev/null && pwd -P",
         cwd: path.join(work, "sub"),
-        timeoutMs: 10_000,
+        timeoutMs: core.DRY_RUN_TIMEOUT_MS,
       });
       expect(g.dryRuns[3]?.script).toBe(
         "cd inner >/dev/null && dispatch message --issue X-1 --body-file note.txt --dry-run"
@@ -3182,21 +3210,80 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     ]);
     expect(g.entries[0].reason).toContain("unknown flag --fail");
   });
-  test("a dry-run past its limit is recorded as an error and the command runs", async () => {
+  // A dry run contacts no Dispatch server, so only a busy machine makes it slow: the gate runs a
+  // cut run once more within half the call's deadline, and the review keeps the rest. The clock
+  // here moves only as each stand-in run spends its whole limit.
+  test("a dry-run cut at its limit runs once more within half the deadline, and the call is reviewed", async () => {
+    let clock = 1_000_000;
+    let runs = 0;
+    const g = bind({
+      env: { ...STUB, OMP_ASKGATE: "block" },
+      cwd: work,
+      now: () => clock,
+      dryRun: async (script, runOpts) => {
+        runs += 1;
+        if (runs > 1) return core.spawnDryRun(script, runOpts);
+        clock += runOpts.timeoutMs;
+        return { exitCode: null, stdout: "", stderr: "", timedOut: true };
+      },
+    });
+    expect(await g.bash("b1", ASK)).toBeUndefined();
+    // The deadline is 90 s at a 120 s ceiling: 20 s first, then what is left of its 45 s half.
+    expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([core.DRY_RUN_TIMEOUT_MS, 25_000]);
+    expect(g.entries).toMatchObject([{ tool: "dispatch_ask", outcome: "verdict" }]);
+    expect(g.calls.filter(isCharter)).toHaveLength(1);
+  }, 30_000);
+  test("a dry-run cut twice runs the call unreviewed and tells the agent why and what to do", async () => {
+    let clock = 1_000_000;
     const g = bind({
       env: { OMP_ASKGATE: "block" },
       cwd: work,
-      dryRun: async () => ({ exitCode: null, stdout: "", stderr: "", timedOut: true }),
+      now: () => clock,
+      dryRun: async (_script, runOpts) => {
+        clock += runOpts.timeoutMs;
+        return { exitCode: null, stdout: "", stderr: "", timedOut: true };
+      },
+    });
+    const result = await g.bash("b1", ASK);
+    expect(result?.block).toBeUndefined();
+    expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([core.DRY_RUN_TIMEOUT_MS, 25_000]);
+    expect(g.calls).toHaveLength(0);
+    expect(g.entries).toMatchObject([
+      { tool: "dispatch_ask", outcome: "error", deadlineMs: 90_000 },
+    ]);
+    expect(g.entries[0].reason).toBe(
+      "dispatch ask --dry-run did not finish within 20000 ms, nor within 25000 ms when run again"
+    );
+    const note = result?.additionalContext ?? "";
+    expect(note).toContain(g.entries[0].reason ?? "");
+    expect(note).toContain("contacts no Dispatch server");
+    expect(note).toContain("The call ran unreviewed: read back what it posted");
+  });
+  test("at a short deadline the reads keep to half of it, and a run cut there is not run again", async () => {
+    let clock = 1_000_000;
+    const g = bind({
+      env: { OMP_ASKGATE: "block" },
+      cwd: work,
+      // A 30 s ceiling holds the deadline at 25 s, so the reads get 12.5 s.
+      ceiling: 30_000,
+      now: () => clock,
+      dryRun: async (_script, runOpts) => {
+        clock += runOpts.timeoutMs;
+        return { exitCode: null, stdout: "", stderr: "", timedOut: true };
+      },
     });
     expect((await g.bash("b1", ASK))?.block).toBeUndefined();
-    expect(g.entries).toMatchObject([{ tool: "dispatch_ask", outcome: "error" }]);
-    expect(g.entries[0].reason).toContain("10000 ms");
+    expect(g.dryRuns.map((run) => run.timeoutMs)).toEqual([12_500]);
+    expect(g.entries).toMatchObject([{ outcome: "error", deadlineMs: 25_000 }]);
+    expect(g.entries[0].reason).toBe(
+      "dispatch ask --dry-run did not finish within 12500 ms, and the call's deadline left no time to run it again"
+    );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
     const began = Date.now();
     const result = await core.spawnDryRun("sleep 5", {
       cwd: work,
-      env: process.env,
+      env: { PATH: process.env.PATH ?? "", HOME: work },
       timeoutMs: 100,
     });
     expect(result.timedOut).toBe(true);
@@ -3321,6 +3408,51 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         ],
       ]);
     });
+
+    test("a session on another provider, and a halt, mint an argv-only marker: no review stands behind either", async () => {
+      const skipped = bind({
+        env: STUB,
+        cwd: work,
+        primary: { provider: "openai-codex", id: "gpt-5.5" },
+      });
+      await skipped.bash("s", ASK);
+      // The halt is three of the gate's own deadlines in a row, so nothing else of the call may
+      // race that deadline. A real `dispatch … --dry-run` is a Bun process, and the reads get
+      // READ_SHARE (half) of the deadline: on a busy machine the spawn loses that race, the call
+      // is an `error`, whose effect is `none`, and three of those never halt the gate. This dry
+      // run answers at once with what the stub would have printed, and the clock never moves, so
+      // the reads spend none of the deadline however busy the machine is. Nothing the outcome
+      // reads is measured against the wall clock: the review never answers (untilAborted), so the
+      // call's own stop is the only thing that can settle it.
+      const halted = bind({
+        env: { ...STUB, OMP_ASKGATE_TIMEOUT_MS: "20" },
+        cwd: work,
+        complete: untilAborted,
+        now: () => 1_000_000,
+        dryRun: async () => ({
+          exitCode: 0,
+          stdout: JSON.stringify({ issue: "X-1", question: QUESTION }, null, 2),
+          stderr: "",
+          timedOut: false,
+        }),
+      });
+      for (const id of ["a", "b", "c", "d"]) await halted.bash(id, ASK);
+      expect(halted.entries.map((e) => e.outcome)).toEqual([
+        "timeout",
+        "timeout",
+        "timeout",
+        "halted",
+      ]);
+      expect([
+        markersIn(skipped.store),
+        markersIn(halted.store).filter((m) => m.toolCallId === "d"),
+      ]).toMatchObject([
+        [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "skipped" }],
+        [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "halted" }],
+      ]);
+      // The row's own bound is a hang guard, the file's convention: its work is three 20 ms
+      // deadlines, far below this.
+    }, 30_000);
 
     test("a rebuttal binds the dry run's arguments, its flag gone from the argv", async () => {
       const g = bind({ env: { ...STUB, OMP_ASKGATE: "block" }, cwd: work });
@@ -3450,8 +3582,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         getProjectArtifact: () => Promise.reject(NO_DOCUMENT),
         projectArtifact: async () => ({ artifact: { id: "doc-1" } }),
         docEdit: async (_id, input) => {
-          for (const op of input.ops) appended.push(op.markdown ?? "");
-          return { applied: input.ops.length };
+          for (const op of input.ops ?? []) appended.push(op.markdown ?? "");
+          return { applied: (input.ops ?? []).length };
         },
       } satisfies RecordClient;
       const g = bind({
@@ -3490,8 +3622,8 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         getProjectArtifact: () => Promise.reject(NO_DOCUMENT),
         projectArtifact: async () => ({ artifact: { id: "doc-1" } }),
         docEdit: async (_id, input) => {
-          for (const op of input.ops) appended.push(op.markdown ?? "");
-          return { applied: input.ops.length };
+          for (const op of input.ops ?? []) appended.push(op.markdown ?? "");
+          return { applied: (input.ops ?? []).length };
         },
       } satisfies RecordClient;
       const g = bind({
@@ -3565,7 +3697,9 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
           return Promise.reject(NO_DOCUMENT);
         },
         projectArtifact: async () => ({ artifact: { id: "doc-1" } }),
-        docEdit: async (_id: string, input: { ops: unknown[] }) => ({ applied: input.ops.length }),
+        docEdit: async (_id: string, input: { ops?: unknown[] | null }) => ({
+          applied: (input.ops ?? []).length,
+        }),
       } satisfies RecordClient;
       const g = bind({
         env: { ...STUB, OMP_ASKGATE_RECORD_PROJECT: "INFRA" },
@@ -3611,10 +3745,11 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
      * the CLI does: it parses its own flags into the arguments the marker binds, reads `-` from
      * standard input, and prints both the argv it got and what `consumeMarker` answered.
      */
-    const consumingBin = fs.mkdtempSync(path.join(SUITE_TMP, "consuming-dispatch-"));
-    fs.writeFileSync(
-      path.join(consumingBin, "dispatch"),
-      `#!${process.execPath}
+    const consumingBin = temporaryDirectory("consuming-dispatch");
+    beforeAll(() => {
+      fs.writeFileSync(
+        path.join(consumingBin, "dispatch"),
+        `#!${process.execPath}
 import { consumeMarker } from ${JSON.stringify(path.join(import.meta.dir, "..", "..", "..", "envoy-client", "src", "askgate-marker.ts"))};
 const argv = process.argv.slice(2);
 const args = {};
@@ -3628,8 +3763,9 @@ for (let i = 1; i < argv.length; i++) {
 }
 console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_STORE], argv, args, [], Date.now()) }));
 `,
-      { mode: 0o755 }
-    );
+        { mode: 0o755 }
+      );
+    });
 
     // Design 2: the mint reads the command the handler finally returns, the override comment put
     // back, and a comment token is never a word. So the marker's argv is the one bash passes.
@@ -3775,9 +3911,11 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
   describe("dispatch artifact uploads of markdown (Task 4.3)", () => {
     const BRIEF = "# Brief\n\nThe person said: ship it on Friday.\n";
     const docs = path.join(work, "docs");
-    fs.mkdirSync(docs, { recursive: true });
-    fs.writeFileSync(path.join(work, "brief.md"), BRIEF);
-    fs.writeFileSync(path.join(docs, "brief.md"), `${BRIEF}(the copy in docs)\n`);
+    beforeAll(() => {
+      fs.mkdirSync(docs, { recursive: true });
+      fs.writeFileSync(path.join(work, "brief.md"), BRIEF);
+      fs.writeFileSync(path.join(docs, "brief.md"), `${BRIEF}(the copy in docs)\n`);
+    });
     /** The upload request applies failure 10 alone: its own instruction, and no other rule's. */
     const uploadRule = "Judge this upload against content failure 10 alone.";
 
@@ -3872,7 +4010,9 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       expect(g.calls[0].user).toContain(JSON.stringify(`${BRIEF}(the copy in docs)\n`));
       // The directory comes from the command's own cd and then pwd -P, run as the dry run runs.
       expect(g.dryRuns.map((run) => run.script)).toContain("cd docs >/dev/null && pwd -P");
-      expect(g.dryRuns.every((run) => run.cwd === work && run.timeoutMs === 10_000)).toBe(true);
+      expect(
+        g.dryRuns.every((run) => run.cwd === work && run.timeoutMs === core.DRY_RUN_TIMEOUT_MS)
+      ).toBe(true);
     });
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its
@@ -3916,9 +4056,14 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
     // The CLI resolves --path against its process.cwd(), the physical directory, so `..` from a
     // symlinked directory leaves the link's target, not the link.
     const real = path.join(work, "real");
-    fs.mkdirSync(path.join(real, "inner"), { recursive: true });
-    fs.writeFileSync(path.join(real, "brief.md"), `${BRIEF}(the copy beside the link's target)\n`);
-    fs.symlinkSync(path.join(real, "inner"), path.join(work, "link"));
+    beforeAll(() => {
+      fs.mkdirSync(path.join(real, "inner"), { recursive: true });
+      fs.writeFileSync(
+        path.join(real, "brief.md"),
+        `${BRIEF}(the copy beside the link's target)\n`
+      );
+      fs.symlinkSync(path.join(real, "inner"), path.join(work, "link"));
+    });
     test("(f) after a cd into a symlinked directory, ../ is read from the link target's parent, as the CLI reads it", async () => {
       const g = bind({ env: STUB, cwd: work });
       await g.bash(
@@ -4234,7 +4379,7 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
         ]);
         const run = Bun.spawnSync(["bash", "-c", command], {
           cwd: work,
-          env: { ...process.env, ...STUB, ASKGATE_POSTED: posted },
+          env: { ...STUB, HOME: work, ASKGATE_POSTED: posted },
         });
         expect(run.exitCode).toBe(0);
         expect(JSON.parse(fs.readFileSync(posted, "utf8"))).toMatchObject({ question: text });
@@ -4260,11 +4405,14 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       await expectUnread("dispatch artifact --issue DSP-1 --name brief.md --path brief.md | cat");
     });
     // What Dispatch stores as a markdown document: an upload of inline text (`--content`,
-    // `--content-file`), whatever its name, or a `--path` file the CLI sends as text/markdown (its
-    // name ends in .md or .markdown); and the gate also reviews any upload whose name ends in .md.
-    fs.writeFileSync(path.join(work, "notes.txt"), "The person said: ship it on Friday.\n");
-    fs.writeFileSync(path.join(work, "name-md.txt"), "brief.md\n");
-    fs.writeFileSync(path.join(work, "name-png.txt"), "shot.png\n");
+    // `--content-file`), which the CLI takes only under a name ending in .md or .markdown or with
+    // no extension, or a `--path` file the CLI sends as text/markdown (its name ends in .md or
+    // .markdown); and the gate also reviews any upload whose name ends in .md.
+    beforeAll(() => {
+      fs.writeFileSync(path.join(work, "notes.txt"), "The person said: ship it on Friday.\n");
+      fs.writeFileSync(path.join(work, "name-md.txt"), "brief.md\n");
+      fs.writeFileSync(path.join(work, "name-png.txt"), "shot.png\n");
+    });
     test("(i) a --name-file whose name ends in .md is reviewed, decided from the name its dry run prints", async () => {
       const g = bind({ env: STUB, cwd: work });
       await g.bash(
@@ -4296,12 +4444,9 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       ])
         await expectUnread(command);
     });
-    test("(l) inline text is a markdown document whatever its name, and so is a --path file named .md", async () => {
+    test("(l) inline text is a markdown document, and so is a --path file named .md", async () => {
       const g = bind({ env: STUB, cwd: work });
-      await g.bash(
-        "u14",
-        "dispatch artifact --issue DSP-1 --name shot.png --content-file notes.txt"
-      );
+      await g.bash("u14", "dispatch artifact --issue DSP-1 --name notes --content-file notes.txt");
       await g.bash("u15", "dispatch artifact --issue DSP-1 --name notes --path brief.md");
       expect(g.calls).toHaveLength(2);
       for (const call of g.calls) expect(call.user).toContain(uploadRule);
@@ -4367,22 +4512,30 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
   });
 });
 
-// The round at cf3f1e021, ruling item 2: the literal grammar takes every form whose words bash
+// The round at cf3f1e021, decision item 2: the literal grammar takes every form whose words bash
 // passes as written, with no expansion, and a call outside it gets a note that names its cause.
 describe("the literal grammar, widened to forms with no expansion", () => {
   // A stand-in `dispatch` that prints the argv it gets as one JSON line, so real bash shows what
-  // the CLI would receive for each form.
-  const bin = fs.mkdtempSync(path.join(tmpdir(), "askgate-argv-"));
-  fs.writeFileSync(
-    path.join(bin, "dispatch"),
-    `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`,
-    { mode: 0o755 }
-  );
-  afterAll(() => fs.rmSync(bin, { recursive: true, force: true }));
+  // the CLI would receive for each form. The directory's path is reserved here and the fixture is
+  // staged in the `beforeAll` below, which Bun runs after the one the reservation registered: a
+  // run that selects no row of this describe makes none of it.
+  const root = temporaryDirectory("askgate-argv");
+  const bin = path.join(root, "bin");
+  // A home of the test's own: no child here reads the caller's.
+  const home = path.join(root, "home");
+  beforeAll(() => {
+    fs.mkdirSync(bin);
+    fs.mkdirSync(home);
+    fs.writeFileSync(
+      path.join(bin, "dispatch"),
+      `#!${process.execPath}\nconsole.log(JSON.stringify(process.argv.slice(2)));\n`,
+      { mode: 0o755 }
+    );
+  });
   /** The argv real bash gives the stand-in for `command`. */
   const bashArgv = (command: string): unknown => {
     const run = Bun.spawnSync(["bash", "-c", command], {
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      env: { PATH: `${bin}:${process.env.PATH}`, HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -4527,6 +4680,87 @@ describe("the literal grammar, widened to forms with no expansion", () => {
       expect(core.nonLiteralCause(command)).toBeUndefined();
   });
 
+  // A body written as `--body "$(cat <<'EOF' … EOF)"` is a command
+  // substitution, so every flag's value was an expansion the gate could not read and the write
+  // posted unreviewed with a warning the writer can miss. The text is written out in the command,
+  // so the gate reads it and reviews the write. The flag was never the discriminator: a literal
+  // `--body hi` was always read, and an unquoted delimiter still expands and still is not.
+  describe("a quoted here-document in a command substitution", () => {
+    const BODY = "Done.\nSee the note.\n\n- one\n- two";
+    // A home of the test's own, so the bash below reads nothing of the caller's.
+    const home = temporaryDirectory("askgate-here-doc");
+    const quoted = (flag: string, text: string) =>
+      `dispatch comment --issue X-1 ${flag} "$(cat <<'EOF'\n${text}\nEOF\n)"`;
+    /** What bash really hands the CLI for `command`, as argv. */
+    const bashArgv = (command: string) =>
+      execFileSync("bash", ["-c", command.replace(/^dispatch/, "printf '%s\\0'")], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "", HOME: home },
+      })
+        .split("\0")
+        .filter((word) => word !== "");
+    test("gives the CLI what bash gives it, for every flag that carries a body", () => {
+      for (const flag of ["--body", "--body-file", "--question", "--reason"])
+        expect(core.commandArgv(quoted(flag, BODY))).toEqual(bashArgv(quoted(flag, BODY)));
+    });
+    // Every form the gate reads as literal must give bash's own argv, or the gate reviews text
+    // that is not what is sent. Each body below sends a form that an earlier revision read and
+    // bash did not: a word split or a glob, a delimiter line bash ends earlier, a `cat` whose
+    // input is not the here-document, and a body whose quotes or parenthesis send a scan for the
+    // closing `)` past the end of the command.
+    test("every form it reads as literal matches bash, and no other is read", () => {
+      // [the command, whether the gate reads it]. A row the gate reads must also give bash's own
+      // argv; a row it refuses must be refused, since "not read" is half of what the fix claims.
+      for (const [command, read] of [
+        // Read: the shapes the fix is for.
+        [
+          `dispatch comment --issue X-1 --body "$(cat <<'EOF'\nIt's one, 1) two, a " quote\nEOF\n)"`,
+          true,
+        ],
+        [`dispatch comment --issue X-1 --body "$(cat <<"EOF"\nplain\nEOF\n)"`, true],
+        [`dispatch comment --issue X-1 --body "$(cat - <<'EOF'\nwith a dash\nEOF\n)"`, true],
+        [`dispatch comment --issue X-1 --body "$(cat <<-'EOF'\n\twith tabs\n\tEOF\n)"`, true],
+        // Not read: bash word-splits and globs an unquoted substitution.
+        [`dispatch comment --issue X-1 --body $(cat <<'EOF'\nok --issue Y-9\nEOF\n)`, false],
+        // Not read: bash removes the delimiter's quoting, so the body ends at `#$`.
+        [
+          `dispatch comment --issue X-1 --body "$(cat <<"#\\$"\nshown\n#$\necho SMUGGLED\n#$\n)"`,
+          false,
+        ],
+        // Not read: `cat` on its own line reads the shell's input, not the here-document.
+        [`dispatch comment --issue X-1 --body "$(cat\n<<'EOF'\nnot the body\nEOF\n)"`, false],
+        // Not read: bash refuses an unpaired backtick in the delimiter with a syntax error.
+        [`dispatch comment --issue X-1 --body "$(cat <<"A\`B"\nhi\nA\`B\n)"`, false],
+      ] as Array<[string, boolean]>) {
+        const argv = core.commandArgv(command);
+        if (read) {
+          expect(argv).toBeDefined();
+          expect(argv).toEqual(bashArgv(command));
+        } else {
+          expect(argv).toBeUndefined();
+        }
+      }
+    });
+    test("is in the literal grammar, so the write is reviewed", () => {
+      expect(core.scopedCommand(quoted("--body", BODY))).toBeDefined();
+      expect(core.nonLiteralCause(quoted("--body", BODY))).toBeUndefined();
+    });
+    test("an unquoted delimiter expands in the body, so it stays outside", () => {
+      const command = `dispatch comment --issue X-1 --body "$(cat <<EOF\nhi $USER\nEOF\n)"`;
+      expect(core.scopedCommand(command)).toBeUndefined();
+      // The value holds `$` over several lines, which is named before an expansion in a value.
+      expect(core.nonLiteralCause(command)?.cause).toBe("lines-expansion");
+    });
+    test("a command after the body is no here-document, and stays outside", () => {
+      const command = `dispatch comment --issue X-1 --body "$(cat <<'EOF'\nhi\nEOF\nid)"`;
+      expect(core.scopedCommand(command)).toBeUndefined();
+    });
+    test("a second operand reads a file, and stays outside", () => {
+      const command = `dispatch comment --issue X-1 --body "$(cat q.md <<'EOF'\nhi\nEOF\n)"`;
+      expect(core.scopedCommand(command)).toBeUndefined();
+    });
+  });
+
   /** What the CLI prints for a gated write with no marker, built on consumeMarker's own reason. */
   const unmarked = (mode: "block" | "warn") => {
     const spent = consumeMarker([], ["comment"], {}, [], Date.now());
@@ -4610,7 +4844,7 @@ describe("the literal grammar, widened to forms with no expansion", () => {
     ).toBeUndefined();
   });
 
-  // Ruling item 3: each skill example of a gated write is one the gate reads as literal, as
+  // Decision item 3: each skill example of a gated write is one the gate reads as literal, as
   // written (placeholders included), so an agent that copies it gets a marker.
   const REPO = path.resolve(import.meta.dir, "../../../..");
   /** The example in `file` that starts with the line `first`, up to its block's closing fence,
@@ -4690,6 +4924,8 @@ describe("eval cells that run the dispatch CLI (A1)", () => {
 });
 
 describe("sessions", () => {
+  const makeDirectory = temporaryDirectories("askgate");
+
   test("a halt in one session does not carry into the next", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
     for (const id of ["a", "b", "c", "d"]) await g.device(id, "dispatch_comment", COMMENT);
@@ -4718,7 +4954,7 @@ describe("sessions", () => {
   // a call whose shell had not read it yet, so that write failed. The gate takes no snapshot now;
   // a marker likewise goes only on its own call's end event, or at shutdown.
   test("N5: a session switch keeps each marker until its own call's end event, or until shutdown", async () => {
-    const work = fs.mkdtempSync(path.join(tmpdir(), "askgate-switch-"));
+    const work = makeDirectory("switch");
     fs.writeFileSync(path.join(work, "note.txt"), "Body from the session before.\n");
     const g = bind({ env: { PATH: "/usr/bin:/bin" }, cwd: work });
     const ids = () =>
@@ -4739,13 +4975,12 @@ describe("sessions", () => {
     expect(ids()).toEqual(["bg"]);
     await g.event("session_shutdown");
     expect(ids()).toEqual([]);
-    fs.rmSync(work, { recursive: true, force: true });
   }, 30_000);
   // The second re-gate of #2159, non-blocking: `./dispatch` is the literal grammar, and reading
   // the call runs that program once with `--dry-run`. A refusal that says nothing ran would not
   // be true of a checkout's own `./dispatch`.
   test("a refusal of a command names the dry run that already ran it", async () => {
-    const work = fs.mkdtempSync(path.join(tmpdir(), "askgate-claim-"));
+    const work = makeDirectory("claim");
     fs.writeFileSync(
       path.join(work, "dispatch"),
       `#!${process.execPath}\nconsole.log(JSON.stringify({ issue: "X-1", body: "hi" }));\n`,
@@ -4767,7 +5002,6 @@ describe("sessions", () => {
     expect((await g.device("device", "dispatch_comment", COMMENT))?.reason).not.toContain(
       "--dry-run"
     );
-    fs.rmSync(work, { recursive: true, force: true });
   }, 30_000);
 });
 
@@ -4781,7 +5015,7 @@ describe("data routing", () => {
     });
     const result = await g.device("t1", "dispatch_comment", COMMENT);
     expect(result?.block).toBeUndefined();
-    expect(result?.additionalContext).toContain("on another provider than the gate's");
+    expect(result?.additionalContext).toContain("does not bill the gate model's account");
     expect(g.calls).toHaveLength(0);
     expect(g.entries).toMatchObject([
       { decision: "allow", outcome: "skipped", reason: "primary on openai-codex" },
@@ -4792,6 +5026,88 @@ describe("data routing", () => {
     await g.device("t1", "dispatch_comment", COMMENT);
     expect(g.calls).toHaveLength(0);
     expect(g.entries).toMatchObject([{ outcome: "skipped", reason: "primary on no model" }]);
+  });
+  // The gate's rule is the account, not the provider id: on a machine whose direct Anthropic
+  // login and whose gateway bill one account, a session on either must be reviewed by the gate
+  // model on the other, and nothing may change where no one declares such a pair.
+  const GATEWAY = { provider: "model-gateway", id: "claude-fable-5-1" };
+  const DIRECT = { provider: "anthropic", id: "claude-opus-5" };
+  test("a session on a provider the machine declares to share the gate model's account is reviewed", async () => {
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: DIRECT,
+      sharedAccounts: ["anthropic", "model-gateway"],
+    });
+    const result = await g.device("t1", "dispatch_comment", COMMENT);
+    expect(result?.block).toBeUndefined();
+    expect(g.calls.map((call) => call.model)).toEqual([GATEWAY]);
+    expect(g.entries).toMatchObject([
+      { decision: "allow", outcome: "verdict", model: "model-gateway/claude-fable-5-1" },
+    ]);
+  });
+  test("a declaration that names only one of the two providers decides nothing", async () => {
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: DIRECT,
+      sharedAccounts: ["model-gateway"],
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(g.calls).toHaveLength(0);
+    expect(g.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+  });
+  test("with the declaration absent, a session on the gate model's own provider is reviewed as before", async () => {
+    const g = bind({ roles: { askgate: GATEWAY }, primary: GATEWAY });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(g.calls.map((call) => call.model)).toEqual([GATEWAY]);
+  });
+  test("a fallback is asked on the declared account and never off it", async () => {
+    const asked: string[] = [];
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: DIRECT,
+      sharedAccounts: ["anthropic", "model-gateway"],
+      // The foreign model sits BETWEEN the two of the account, so a chain that stopped at the
+      // first answer could not hide a filter that let it through.
+      fallbacks: [{ provider: "openai", id: "gpt-5.5" }, DIRECT],
+      complete: async (req) => {
+        const model = req.model as GateModel;
+        asked.push(`${model.provider}/${model.id}`);
+        return model.provider === "model-gateway"
+          ? { text: "", error: "503 from the provider" }
+          : { text: '{"decision":"allow"}' };
+      },
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(asked).toEqual(["model-gateway/claude-fable-5-1", "anthropic/claude-opus-5"]);
+  });
+  // The regression a declaration must never cause: a profile that bills another account keeps
+  // its own gate model and is never reviewed by, or failed over to, the declared account's.
+  test("a profile on its own account is reviewed by its own gate model while another account's pair is declared", async () => {
+    const PBC = { provider: "pbc-gateway", id: "claude-fable-5-1" };
+    const asked: string[] = [];
+    const g = bind({
+      roles: { askgate: PBC },
+      primary: { provider: "pbc-gateway", id: "claude-opus-5-5" },
+      sharedAccounts: ["anthropic", "model-gateway"],
+      fallbacks: [GATEWAY, DIRECT],
+      complete: async (req) => {
+        const model = req.model as GateModel;
+        asked.push(`${model.provider}/${model.id}`);
+        return { text: "", error: "503 from the provider" };
+      },
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(asked).toEqual(["pbc-gateway/claude-fable-5-1"]);
+  });
+  test("a session on another account is skipped while a declaration that does not name it stands", async () => {
+    const g = bind({
+      roles: { askgate: GATEWAY },
+      primary: { provider: "pbc-gateway", id: "claude-opus-5-5" },
+      sharedAccounts: ["anthropic", "model-gateway"],
+    });
+    await g.device("t1", "dispatch_comment", COMMENT);
+    expect(g.calls).toHaveLength(0);
+    expect(g.entries).toMatchObject([{ outcome: "skipped", reason: "primary on pbc-gateway" }]);
   });
 });
 
@@ -4965,9 +5281,25 @@ describe("askgate.ts, the entry", () => {
   mock.module("@oh-my-pi/pi-coding-agent/session/session-context", () => ({
     buildSessionContext: () => ({ messages: [fx.user("Post it.")] }),
   }));
-  mock.module("@oh-my-pi/pi-coding-agent/config/settings", () => ({
-    settings: { getModelRole: (role: string) => modelRoles[role] },
-  }));
+  /** `askgate.sharedAccountProviders` in the operator's own layers; unset until a test writes it. */
+  let sharedAccountSetting: unknown;
+  /** The same key in a repository's settings file, which the agent under review can write. */
+  let projectSharedAccountSetting: unknown;
+  /** The operator's layers alone, as `Settings.grantAuthority()` gives them. */
+  const operatorSettings = {
+    getModelRole: (role: string) => modelRoles[role],
+    sharedAccounts: () => sharedAccountSetting,
+  };
+  /** The merged settings, the project layer over the operator's, as every other read sees them. */
+  const mergedSettings = {
+    getModelRole: (role: string) => modelRoles[role],
+    sharedAccounts: () =>
+      projectSharedAccountSetting === undefined
+        ? sharedAccountSetting
+        : projectSharedAccountSetting,
+    grantAuthority: () => operatorSettings,
+  };
+  mock.module("@oh-my-pi/pi-coding-agent/config/settings", () => ({ settings: mergedSettings }));
   /** extensionHandlers.toolCallTimeoutMs as the stubbed settings answer it. */
   let toolCallCeilingMs = 120_000;
   mock.module("@oh-my-pi/pi-coding-agent/extensibility/settings", () => ({
@@ -4981,6 +5313,29 @@ describe("askgate.ts, the entry", () => {
   }));
   mock.module("@oh-my-pi/pi-coding-agent/config/model-settings", () => ({
     cfgDisabledProviders: { get: () => [] },
+  }));
+  /** What the two stubbed settings instances below answer the gate's own setting with. */
+  interface StubSettings {
+    sharedAccounts?: () => unknown;
+  }
+  /** omp's settings registry, as the host's: one handle per id, and `register` refuses a repeat. */
+  const registeredSettings = new Map<string, { get(settings: StubSettings): unknown }>();
+  mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
+    register: (definition: { id: string; default: unknown }) => {
+      if (registeredSettings.has(definition.id))
+        throw new Error(`Setting "${definition.id}" is registered twice`);
+      // The host's handle reads whichever settings instance it is given, which is how the gate's
+      // read through `grantAuthority()` can differ from a read of the merged settings.
+      const handle = {
+        get: (settings: StubSettings) => {
+          const value = settings.sharedAccounts?.();
+          return value === undefined ? definition.default : value;
+        },
+      };
+      registeredSettings.set(definition.id, handle);
+      return handle;
+    },
+    lookup: (id: string) => registeredSettings.get(id),
   }));
   mock.module("@oh-my-pi/pi-coding-agent/config/model-resolver", () => ({
     resolveModelOverride: ([raw]: string[]) => ({ model: stubModel(raw) }),
@@ -5008,6 +5363,8 @@ describe("askgate.ts, the entry", () => {
     throwAfterAttempts = false;
     notFound.clear();
     modelFallback = true;
+    sharedAccountSetting = undefined;
+    projectSharedAccountSetting = undefined;
     for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
     for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
@@ -5031,6 +5388,8 @@ describe("askgate.ts, the entry", () => {
       text?: string;
       entries?: readonly unknown[];
       roles?: { askgate?: GateModel; default?: GateModel };
+      /** The session's own model; the gate role's MODEL unless a test says otherwise. */
+      primary?: GateModel;
     } = {}
   ) {
     delete process.env.OMP_ASKGATE;
@@ -5049,6 +5408,7 @@ describe("askgate.ts, the entry", () => {
         configFile: { path: CONFIG_FILE, error: null },
         logger: { warn: (message: string) => warnings.push(message) },
         runtimeLogger: { warn: () => {} },
+        session: () => "gate-session",
       }
     ).loaded;
     const roles = opts.roles ?? { askgate: MODEL };
@@ -5061,7 +5421,7 @@ describe("askgate.ts, the entry", () => {
         resolve: (spec: string) =>
           spec === "@askgate" ? roles.askgate : spec === "@default" ? roles.default : undefined,
       },
-      model: MODEL,
+      model: opts.primary ?? MODEL,
       modelRegistry: { resolver: () => "resolved-key" },
       sessionManager: {
         getEntries: () => opts.entries ?? [experimentsEntry(false)],
@@ -5075,8 +5435,74 @@ describe("askgate.ts, the entry", () => {
       { type: "tool_call", toolName: "dispatch_comment", toolCallId: "t1", input: COMMENT },
       ctx
     );
-    return { result, entries, warnings };
+    // `again` runs ANOTHER call through the binding this one made, so a test can change a
+    // setting and see whether the live gate reads it or the value it bound with.
+    const again = (toolCallId: string) =>
+      handlers.get("tool_call")?.(
+        { type: "tool_call", toolName: "dispatch_comment", toolCallId, input: COMMENT },
+        ctx
+      );
+    return { result, entries, warnings, again };
   }
+  // The one setting the entry declares on omp's registry. A machine writes it in its own config
+  // layer, so the entry must read today's value at the call rather than the one it bound with.
+  const DEVBOX_GATE = { provider: "model-gateway", id: "claude-fable-5-1" };
+  const DEVBOX_PRIMARY = { provider: "anthropic", id: "claude-opus-5" };
+  test("a session reviewed only because omp's config declares the two providers one account", async () => {
+    const unset = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(unset.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    const declared = await gateOnce(
+      {},
+      { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY }
+    );
+    expect(declared.entries).toMatchObject([{ decision: "allow", outcome: "verdict" }]);
+  });
+  test("one bound gate reads the declaration again at each call, not the value it bound with", async () => {
+    const bound = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(bound.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    // No new binding: the same handler, after the machine's config changed under it.
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    await bound.again("t2");
+    expect(bound.entries[1]).toMatchObject({ decision: "allow", outcome: "verdict" });
+  });
+  // A host build that offers no operator-only view offers nothing safe to read: the merged
+  // settings carry the repository's own layer, which the agent under review can write.
+  test("a host with no grant authority declares nothing, whatever the merged settings hold", async () => {
+    const authority = mergedSettings.grantAuthority;
+    try {
+      Reflect.deleteProperty(mergedSettings, "grantAuthority");
+      sharedAccountSetting = ["anthropic", "model-gateway"];
+      const none = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+      expect(none.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+    } finally {
+      mergedSettings.grantAuthority = authority;
+    }
+  });
+  test("a value that is not a list of provider ids declares nothing, a list with a non-string in it too", async () => {
+    sharedAccountSetting = "anthropic,model-gateway";
+    const text = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(text.entries).toMatchObject([{ outcome: "skipped" }]);
+    sharedAccountSetting = ["anthropic", "model-gateway", 42];
+    const mixed = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(mixed.entries).toMatchObject([{ outcome: "skipped" }]);
+  });
+  // A repository's own settings file is writable by the agent under review, so a declaration
+  // there must not be able to send that agent's transcript to another account's model.
+  test("a declaration in a repository's settings, which the agent can write, decides nothing", async () => {
+    projectSharedAccountSetting = ["anthropic", "model-gateway"];
+    const project = await gateOnce(
+      {},
+      { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY }
+    );
+    expect(project.entries).toMatchObject([{ outcome: "skipped", reason: "primary on anthropic" }]);
+  });
+  test("a second bind in one process reuses the registered setting instead of failing on it", async () => {
+    sharedAccountSetting = ["anthropic", "model-gateway"];
+    await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    const again = await gateOnce({}, { roles: { askgate: DEVBOX_GATE }, primary: DEVBOX_PRIMARY });
+    expect(again.entries).toMatchObject([{ decision: "allow", outcome: "verdict" }]);
+  });
   test("with OMP_ASKGATE unset, a session whose experiments entry has the askgate_block arm on blocks a revise, and one with it off warns", async () => {
     const blocked = await gateOnce({}, { entries: [experimentsEntry(true)], text: REVISE });
     expect(blocked.result?.block).toBe(true);
@@ -5141,6 +5567,7 @@ describe("askgate.ts, the entry", () => {
         configFile: { path: CONFIG_FILE, error: null },
         logger: { warn: () => {} },
         runtimeLogger: { warn: () => {} },
+        session: () => "gate-session",
       }
     );
     const { loaded } = registration;
@@ -5486,16 +5913,17 @@ describe("askgate.ts, the entry", () => {
 // refused there. Here the gate runs its dry run on the real CLI, mints through its real code
 // path, and the real CLI (`runDispatchCli`, with a fake Dispatch) checks the marker and posts.
 describe("a marker the gate mints, checked by the real dispatch CLI", () => {
-  const work = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "askgate-real-cli-")));
-  afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
+  const work = temporaryDirectory("askgate-real-cli", { real: true });
   const bin = path.join(work, "bin");
-  fs.mkdirSync(bin);
   const entry = path.join(import.meta.dir, "..", "..", "..", "envoy-client", "bin", "dispatch.ts");
-  fs.writeFileSync(
-    path.join(bin, "dispatch"),
-    `#!/bin/sh\nexec "${process.execPath}" "${entry}" "$@"\n`,
-    { mode: 0o755 }
-  );
+  beforeAll(() => {
+    fs.mkdirSync(bin);
+    fs.writeFileSync(
+      path.join(bin, "dispatch"),
+      `#!/bin/sh\nexec "${process.execPath}" "${entry}" "$@"\n`,
+      { mode: 0o755 }
+    );
+  });
   const env = {
     PATH: `${bin}:${process.env.PATH}`,
     HOME: work,
@@ -5511,7 +5939,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   const gateEnv = { ...env, OMP_ASKGATE: "block" };
   const BRIEF = "# Brief\n\nShip it on Friday.\n";
   const NOTE = "The acceptance run passed on the staging cluster.\n";
-  const CHANGED = "a file this write posts changed after AskGate reviewed it";
+  const CHANGED = "a file this write posts changed after AskGate read it";
   const LATER = "send this call again in a later message";
 
   /** Posts `command` with the real CLI, as the session whose live record names `store`. */
@@ -5521,7 +5949,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // The session chose block (gateEnv), so the CLI refuses a write that spends no marker.
     writeAskgateRecord(
       sessionDirectory(env, env.DISPATCH_SESSION_ID),
-      { pid: process.pid, start: processStart(process.pid), store },
+      { pid: process.pid, start: processStart(process.pid), ns: pidNamespace(), store },
       "block"
     );
     const sent: Array<{ path: string; body: unknown }> = [];
@@ -5529,6 +5957,11 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       const request =
         url instanceof Request ? new Request(url, init) : new Request(url.toString(), init);
       const route = new URL(request.url).pathname;
+      // What the issue holds, which the upload reads to refuse a name that exists: DSP-1 holds
+      // no document here, so the upload below writes a first version.
+      if (route.endsWith("/artifacts") && request.method === "GET") {
+        return Response.json([]);
+      }
       if (route.endsWith("/artifacts")) {
         const file = (await request.formData()).get("file") as Blob;
         sent.push({ path: route, body: await file.text() });
@@ -5611,8 +6044,34 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
       const posted = await post(command, g.store);
       expect(posted.code).toBe(1);
       expect(posted.stdout).toContain(`${CHANGED} (\`${form} ${file}\`)`);
-      expect(posted.stdout).toContain("Send the call again in a later message.");
+      expect(posted.stdout).toContain(
+        "Send the call again in a later message than the one that changes the file."
+      );
       expect(posted.sent).toEqual([]);
+    }, 30_000);
+
+  // A session on another provider than the gate's: the gate reviews nothing, so a file that a call
+  // later in the same message changes posts as the CLI reads it, with no refusal naming a review.
+  for (const [form, file, command] of [
+    ["--body-file", "note.md", "dispatch comment --issue DSP-1 --body-file note.md"],
+    ["--path", "brief.md", "dispatch artifact --issue DSP-1 --name brief.md --path brief.md"],
+  ] as const)
+    test(`a ${form} file edited after a call the gate did not review posts its new bytes`, async () => {
+      fs.writeFileSync(path.join(work, file), BRIEF);
+      const g = bind({
+        env: gateEnv,
+        cwd: work,
+        primary: { provider: "openai-codex", id: "gpt-5.5" },
+      });
+      expect((await g.bash("skipped", command))?.block).toBeUndefined();
+      expect(g.entries).toMatchObject([{ outcome: "skipped" }]);
+      expect(g.calls).toHaveLength(0);
+      const edited = `${BRIEF}An edit made in the same message.\n`;
+      fs.writeFileSync(path.join(work, file), edited);
+      const posted = await post(command, g.store);
+      expect(posted.stdout).not.toContain(CHANGED);
+      expect(posted.code).toBe(0);
+      expect(posted.sent).toMatchObject([{ body: form === "--path" ? edited : { body: edited } }]);
     }, 30_000);
 
   test("a file a call earlier in the same message writes is refused with what to do, then posts when sent again", async () => {
@@ -6419,7 +6878,7 @@ describe("rules check", () => {
           new Promise<{ artifact: { id: string } }>((resolve) =>
             setTimeout(() => resolve({ artifact: { id: "doc-1" } }), 800)
           ),
-        docEdit: async (_id, input) => ({ applied: input.ops.length }),
+        docEdit: async (_id, input) => ({ applied: (input.ops ?? []).length }),
       } satisfies RecordClient;
       const signals: AbortSignal[] = [];
       const both = Promise.withResolvers<void>();
@@ -6506,7 +6965,7 @@ describe("rules check", () => {
               once: true,
             });
           }),
-        docEdit: async (_id, input) => ({ applied: input.ops.length }),
+        docEdit: async (_id, input) => ({ applied: (input.ops ?? []).length }),
       } satisfies RecordClient;
       const g = bind({
         now: () => clock,
@@ -6662,12 +7121,8 @@ describe("rules check", () => {
     );
     expect(g.entries).toMatchObject([{ rule: "no_change", ruleOutcome: "match" }]);
     expect(g.entries[0].ruleTextMissing).toBeUndefined();
-    expect(served.requests).toEqual([
-      "/api/v1/issues/X-1",
-      "/api/v1/artifacts/doc-spec/text",
-      "/api/v1/artifacts/doc-spec/blocks",
-      "/api/v1/artifacts/doc-spec/text",
-    ]);
+    // One read of the document: the text route carries the blocks it indexes.
+    expect(served.requests).toEqual(["/api/v1/issues/X-1", "/api/v1/artifacts/doc-spec/text"]);
     expect(g.dispatchReads.map((read) => read.directory)).toEqual(["/work"]);
   });
   test("a doc-edit retype after a leading cd reads its document through the Dispatch the cd's directory configures", async () => {
@@ -7191,7 +7646,7 @@ describe("the Dispatch decision record (A5)", () => {
         uploads.push({
           project,
           name: input.name,
-          content: "content" in input ? input.content : "",
+          content: input.content ?? "",
           key,
         });
         const answer = answers.projectArtifact
@@ -7201,8 +7656,8 @@ describe("the Dispatch decision record (A5)", () => {
         return answer;
       },
       docEdit: async (id, input) => {
-        for (const op of input.ops) edits.push({ id, markdown: op.markdown ?? "" });
-        return { applied: input.ops.length };
+        for (const op of input.ops ?? []) edits.push({ id, markdown: op.markdown ?? "" });
+        return { applied: (input.ops ?? []).length };
       },
     } satisfies RecordClient;
     // The gate's dependency hands back the host's own client; the record calls these three of it.
@@ -7547,12 +8002,7 @@ describe("the Dispatch decision record (A5)", () => {
     }
     expect(g.recordEntries).toEqual([]);
     // Only the upload's read of its stored version reached Dispatch: no record was posted.
-    expect(served.requests).toEqual([
-      "/api/v1/issues/X-1",
-      "/api/v1/artifacts/doc-brief/text",
-      "/api/v1/artifacts/doc-brief/blocks",
-      "/api/v1/artifacts/doc-brief/text",
-    ]);
+    expect(served.requests).toEqual(["/api/v1/issues/X-1", "/api/v1/artifacts/doc-brief/text"]);
   });
 });
 // Runs last: the gate reads each file in place, so no gated call of an earlier test left a copy of

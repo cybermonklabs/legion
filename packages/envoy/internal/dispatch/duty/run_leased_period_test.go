@@ -1,4 +1,4 @@
-package duty
+package duty_test
 
 import (
 	"context"
@@ -8,13 +8,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // A lone loop of a fixed cadence - the compaction, issue-ask repair and prune loops, each on
 // duty.RunLeased's ticker - must serve every period its run spans: each pass records the period
 // after the one the pass before it recorded. Here every pass takes 40% of the interval, as a
-// compaction that walks every document takes a noticeable share of its own. A loop whose next
+// compaction sweep of many owed documents takes a noticeable share of its own. A loop whose next
 // tick is armed only once the pass returns is due one interval plus that pass's time after the
 // tick before, so its due times drift across the period boundaries and, about every two and a
 // half passes here, jump over a whole period that no pass serves: the period a lone process
@@ -34,7 +35,7 @@ func TestRunLeasedServesEveryPeriodOfALoneLoopWhosePassesTakeTime(t *testing.T) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		RunLeased(ctx, leases, name, interval, TickAtStart, func(ctx context.Context) {
+		duty.RunLeased(ctx, leases, name, interval, duty.TickAtStart, func(ctx context.Context) {
 			var boundary time.Time
 			err := database.Pool.QueryRow(ctx, `select boundary from duty_passes where lease = $1`, name).Scan(&boundary)
 			if err == nil {

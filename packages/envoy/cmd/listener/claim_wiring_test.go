@@ -3,38 +3,17 @@ package main
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/session"
 )
 
-// The subscribe payload carries whether the claiming process is driving the
-// session; it must reach the session registry so competing claims can be
-// arbitrated (see session.mergeForClaim). Dropping it silently reinstates
-// last-writer-wins routing.
-func TestSessionEntryFromSubscribe_CarriesDrivingFlag(t *testing.T) {
-	got := sessionEntryFromSubscribe(subscribeBody{
-		SessionID: "ses_x",
-		Dir:       "/work",
-		Port:      42145,
-		Title:     "ipi eval",
-		Driving:   true,
-	}, "devbox-sami", sessionDeliveryOutcome{})
-
-	if !got.Driving {
-		t.Fatalf("expected Driving to be carried into the session entry, got %+v", got)
-	}
-	if got.Port != 42145 || got.Dir != "/work" || got.Title != "ipi eval" || got.MachineID != "devbox-sami" {
-		t.Fatalf("unexpected entry mapping: %+v", got)
-	}
-}
-
-// envoy-client's machineID() (ENVOY_MACHINE_ID, falling back to the kernel hostname) names
-// where the session process actually runs, which is the address a listener reaches the session's
-// serving port at when no host bridge of its own machine applies. It must reach the session entry
-// as Host, kept separate from MachineID (always the registering listener's own machine, never the
-// caller's), which decides which listener fans a topic out to the session.
+// envoy-client's machineID() (ENVOY_MACHINE_ID, falling back to the kernel hostname) names where
+// the session process actually runs. No delivery reads it, and it must still reach the session
+// entry as Host, kept separate from MachineID (always the registering listener's own machine,
+// never the caller's), which decides which listener fans a topic out to the session.
 func TestSessionEntryFromSubscribe_CarriesHost(t *testing.T) {
 	got := sessionEntryFromSubscribe(subscribeBody{
 		SessionID: "ses_z",
-		Port:      1,
 		Host:      "example-host-a",
 	}, "example-listener", sessionDeliveryOutcome{})
 
@@ -48,13 +27,70 @@ func TestSessionEntryFromSubscribe_CarriesHost(t *testing.T) {
 
 func TestSessionEntryFromSubscribe_DefaultsHostEmpty(t *testing.T) {
 	// An older plugin's subscribeBody has no "host" key; sessionEntryFromSubscribe must not
-	// invent one: an empty Host is what sends the owning listener's delivery (the only one; no
-	// other listener delivers to the session) to its fallback, host.docker.internal, and display
-	// to MachineID (HostOrMachine).
-	got := sessionEntryFromSubscribe(subscribeBody{SessionID: "ses_old", Port: 1}, "example-listener", sessionDeliveryOutcome{})
+	// invent one: an empty Host is what sends the session list's display to MachineID
+	// (HostOrMachine).
+	got := sessionEntryFromSubscribe(subscribeBody{SessionID: "ses_old"}, "example-listener", sessionDeliveryOutcome{})
 
 	if got.Host != "" {
 		t.Fatalf("expected Host to stay empty for a payload without the field, got %+v", got)
+	}
+}
+
+// A registration carries where its session sits in tmux, and the whole place must reach the
+// entry: Dispatch draws a machine's panes from what the entry holds and from nothing else, so a
+// member lost here is a pane drawn wrong.
+func TestSessionEntryFromSubscribe_CarriesTmuxPlace(t *testing.T) {
+	var body subscribeBody
+	if err := json.Unmarshal([]byte(`{
+		"session_id":"ses_tmux",
+		"tmux_place":{
+			"socket":"/tmp/tmux-1000/default","server_pid":"4242","session_name":"legion",
+			"window_id":"@7","window_index":3,"window_name":"infra-883",
+			"pane_id":"%12","pane_index":1,"layout":"a1b2,180x44,0,0,7","zoomed":true
+		}
+	}`), &body); err != nil {
+		t.Fatalf("decode subscribe body: %v", err)
+	}
+
+	got := sessionEntryFromSubscribe(body, "example-listener", sessionDeliveryOutcome{})
+
+	want := session.TmuxPlace{
+		Socket:      "/tmp/tmux-1000/default",
+		ServerPID:   "4242",
+		SessionName: "legion",
+		WindowID:    "@7",
+		WindowIndex: 3,
+		WindowName:  "infra-883",
+		PaneID:      "%12",
+		PaneIndex:   1,
+		Layout:      "a1b2,180x44,0,0,7",
+		Zoomed:      true,
+	}
+	if got.TmuxPlace == nil || *got.TmuxPlace != want {
+		t.Fatalf("entry place = %+v, want %+v", got.TmuxPlace, want)
+	}
+}
+
+// A session in no pane and a session whose plugin predates the field send the same bytes - no
+// "tmux_place" key - and both must leave the entry's place nil. An empty place would put a pane
+// on the Agents page that no tmux server knows.
+func TestSessionEntryFromSubscribe_DefaultsTmuxPlaceNil(t *testing.T) {
+	for name, payload := range map[string]string{
+		"a session outside tmux":           `{"session_id":"ses_plain","host":"example-host-a"}`,
+		"a plugin that predates the field": `{"session_id":"ses_old","self_subscribed":true}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var body subscribeBody
+			if err := json.Unmarshal([]byte(payload), &body); err != nil {
+				t.Fatalf("decode subscribe body: %v", err)
+			}
+
+			got := sessionEntryFromSubscribe(body, "example-listener", sessionDeliveryOutcome{})
+
+			if got.TmuxPlace != nil {
+				t.Fatalf("entry place = %+v, want nil for a body that names none", got.TmuxPlace)
+			}
+		})
 	}
 }
 
@@ -86,7 +122,6 @@ func TestSessionEntryFromSubscribe_DefaultsThePluginAndItsVersionEmpty(t *testin
 func TestSessionEntryFromSubscribe_CarriesTheClientInstanceID(t *testing.T) {
 	got := sessionEntryFromSubscribe(subscribeBody{
 		SessionID:        "ses_instance",
-		Port:             42145,
 		ClientInstanceID: "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a",
 	}, "example-listener", sessionDeliveryOutcome{})
 
@@ -117,14 +152,6 @@ func TestSessionEntryFromSubscribe_DefaultsTheClientInstanceIDEmpty(t *testing.T
 
 	if got.ClientInstanceID != "" {
 		t.Fatalf("expected no client instance id for a payload without the field, got %+v", got)
-	}
-}
-
-func TestSessionEntryFromSubscribe_DefaultsToNonDriving(t *testing.T) {
-	got := sessionEntryFromSubscribe(subscribeBody{SessionID: "ses_y", Port: 34751}, "devbox-sami", sessionDeliveryOutcome{})
-
-	if got.Driving {
-		t.Fatalf("expected a payload without the flag to claim non-driving, got %+v", got)
 	}
 }
 

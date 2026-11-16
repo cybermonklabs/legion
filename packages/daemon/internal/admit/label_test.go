@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -63,7 +64,7 @@ func TestAPersonsLabelOnAnUnrecordedRootInTriageIsQueuedByTheDaemon(t *testing.T
 	labelled := intake.DispatchIssue{Key: "LEGION-306", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "triage", Title: "Handed over by a person", Rank: "A", HandedOver: handed, LabelSetter: "user"}
 	apply(t, pool, admission, "labelled-by-a-person", labelled, engineStub{})
 	queued := []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-306", payload: record.StatusWrite{Status: "todo", ObservedStatus: "triage", PersonHandover: true}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-306", payload: record.PersonHandoverStatusWrite("todo", "triage")},
 	}
 	assertEffects(t, pool, queued)
 
@@ -162,7 +163,7 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 	apply(t, pool, admission, "root-labeled", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo", Title: "handed over", Rank: "A", HandedOver: true}, engineStub{})
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-1", Index: 0, AdmittedAt: fixedNow}})
 	assertEffects(t, pool, []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1}},
 	})
@@ -194,7 +195,7 @@ func TestTheWaitingLineRanksOnlyLabeledRootsInDispatchOrder(t *testing.T) {
 func TestAnUnlabeledChildOfAnAdmittedRootRunsInItsTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 
 	apply(t, pool, admission, "root", intake.DispatchIssue{Key: "LEGION-1", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "root", Rank: "A", HandedOver: handed}, engine)
 	apply(t, pool, admission, "child", intake.DispatchIssue{Key: "LEGION-2", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "child", Parent: "LEGION-1", Rank: "B"}, engine)
@@ -207,7 +208,7 @@ func TestAnUnlabeledChildOfAnAdmittedRootRunsInItsTree(t *testing.T) {
 
 // Taking the label off a waiting root drops it from the line, as moving it out of todo does, and
 // putting the label back queues it again. Taking it off a root already running changes nothing: the
-// label hands work to Legion, and a tree it is running keeps its slot until the tree leaves.
+// label hands work to Legion, and taking it off gives back no slot of a tree it is running.
 func TestTakingTheLabelOffAWaitingRootDequeuesItButStopsNoRunningTree(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -287,7 +288,7 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 
 	boot()
 	queued := []effect{
-		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-310", payload: record.StatusWrite{Status: "todo", ObservedStatus: "triage", PersonHandover: true}},
+		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-310", payload: record.PersonHandoverStatusWrite("todo", "triage")},
 	}
 	assertEffects(t, pool, queued)
 	assertWaiting(t, pool, nil)
@@ -313,7 +314,7 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 func TestReadmissionWaitsForTheLabel(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	until := fixedNow.Add(time.Hour)
 	lingering := record.Issue{Key: "LEGION-LINGER", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering", Tree: "LEGION-LINGER", Phase: phase.Done, Generation: 3, Status: "done", Rank: "A", LingerUntil: &until, LastDispatchSeq: 1, HandedOver: true}
 	putIssue(t, pool, lingering)
@@ -347,7 +348,7 @@ func TestALabelAddedToAReopenedChildOfALingeringTreeAdmitsItAsAnOrphan(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := newAdmission(t, 2, slog.New(slog.NewTextHandler(io.Discard, nil)))
-			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 			const root, child = "LEGION-1", "LEGION-2"
 			seedSlotted(t, pool, root, "A")
 			parent := root
@@ -405,7 +406,7 @@ func TestALabelAddedToAReopenedChildOfALingeringTreeAdmitsItAsAnOrphan(t *testin
 func TestReadmissionReentersAChildStrandedTodoWithoutTheLabel(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-LINGER", "LEGION-2"
 	until := fixedNow.Add(time.Hour)
 	parent := root
@@ -437,7 +438,7 @@ func TestReadmissionReentersAChildStrandedTodoWithoutTheLabel(t *testing.T) {
 func TestPromotingAWaitingRootReentersAChildStrandedWhileItsLabelWasOff(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	seedSlotted(t, pool, "LEGION-ACTIVE", "A")
 	const root, child = "LEGION-WAIT", "LEGION-CHILD"
 	parent := root

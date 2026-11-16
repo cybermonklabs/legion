@@ -140,3 +140,142 @@ func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
 		t.Errorf("Evaluate(NOT_A_SECRET) = %v, want ErrUnknownSecret", err)
 	}
 }
+
+// TestRequesters is the requesters tag's table: a secret that lists who may ask for it is denied,
+// with the reason requester-not-listed, to every session and pod the list does not name, and
+// decided by owner and tier as before for the ones it does. A session signed in as nobody and a
+// pod proving no service are on no list, so both are denied every listed secret, and a secret
+// carrying no list answers exactly as it did before the tag existed. A person is matched only by
+// a person's entry and a service only by a service's: an operator whose login is a registered
+// service's name — which record.CanonicalLogin allows, since a record from before people were
+// named by email keeps its GitHub login — is on no list that names that service. (The mirror,
+// a pod whose service is equal to a person's entry, cannot happen: every person entry holds an
+// @ and no service name may.)
+func TestRequesters(t *testing.T) {
+	const (
+		sami   = "sami@theorem.dev"
+		jason  = "jason@theorem.dev"
+		aditya = "aditya@theorem.dev"
+		daemon = "legion-daemon"
+	)
+	listed := func(name, owner, tier, requesters string) secrets.LocalSecret {
+		return policytest.ListedSecret(name, owner, tier, requesters, "v")
+	}
+	store := secrets.NewLocal(
+		listed("GCLOUD_SAMI", sami, policy.TierHuman, daemon+" "+sami),
+		listed("AZURE_ADMIN", sami, policy.TierHuman, jason+" "+daemon+" "+sami),
+		listed("DEV_ADITYA", aditya, policy.TierAgent, aditya),
+		policytest.Secret("SHARED_AGENT", policy.OwnerShared, policy.TierAgent, "v"),
+	)
+	set, err := policytest.Loader(store, daemon).Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	automatic := policy.Decision{Outcome: policy.Automatic}
+	notListed := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonRequesterNotListed}
+	approval := func(approver string) policy.Decision {
+		return policy.Decision{Outcome: policy.Approval, Approver: approver}
+	}
+	requesters := map[string]policy.Requester{
+		"sami's session":                      {Operator: sami},
+		"jason's session":                     {Operator: jason},
+		"aditya's session":                    {Operator: aditya},
+		"the daemon's pod":                    {Service: daemon},
+		"another service's pod":               {Service: "other-service"},
+		"a pod with no person and no service": {},
+		"a person named like the daemon":      {Operator: daemon},
+	}
+	table := map[string]map[string]policy.Decision{
+		"GCLOUD_SAMI": {
+			"sami's session": approval(sami), "jason's session": notListed,
+			"aditya's session": notListed, "the daemon's pod": approval(sami),
+			"another service's pod": notListed, "a pod with no person and no service": notListed,
+			"a person named like the daemon": notListed,
+		},
+		"AZURE_ADMIN": {
+			"sami's session": approval(sami), "jason's session": approval(sami),
+			"aditya's session": notListed, "the daemon's pod": approval(sami),
+			"another service's pod": notListed, "a pod with no person and no service": notListed,
+			"a person named like the daemon": notListed,
+		},
+		"DEV_ADITYA": {
+			"sami's session": notListed, "jason's session": notListed,
+			"aditya's session": automatic, "the daemon's pod": notListed,
+			"another service's pod": notListed, "a pod with no person and no service": notListed,
+			"a person named like the daemon": notListed,
+		},
+		"SHARED_AGENT": {
+			"sami's session": automatic, "jason's session": automatic,
+			"aditya's session": automatic, "the daemon's pod": automatic,
+			"another service's pod": automatic, "a pod with no person and no service": automatic,
+			"a person named like the daemon": automatic,
+		},
+	}
+	for name, row := range table {
+		for who, want := range row {
+			got, err := set.Evaluate(name, requesters[who])
+			want.Source = secrets.LocalARN(policytest.ID(name))
+			if err != nil || got != want {
+				t.Errorf("Evaluate(%s, %s) = %+v, %v; want %+v", name, who, got, err, want)
+			}
+		}
+	}
+}
+
+// TestTrimForShape is the shape rule's table: the value TrimForShape spends for each stored
+// value under each shape, and whether it says it changed it. A token's whole trailing run of
+// carriage returns and line feeds goes, however many and in whichever order; a document is
+// spent byte for byte; a secret with no shape tag is trimmed only where its value holds no
+// carriage return and no line feed inside it, so a PEM document keeps the line ending that ends
+// it. A value that is nothing but line endings keeps them under every shape, since the empty
+// string reads to a caller as a credential that is not set. (The values below are fixtures, not
+// credentials.)
+func TestTrimForShape(t *testing.T) {
+	const (
+		token = "tok-abc"
+		pem   = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
+	)
+	for _, c := range []struct {
+		name        string
+		value       string
+		shape       string
+		want        string
+		wantChanged bool
+	}{
+		{"a line feed, no shape tag", token + "\n", "", token, true},
+		{"a line feed, token", token + "\n", policy.ShapeToken, token, true},
+		{"a line feed, document", token + "\n", policy.ShapeDocument, token + "\n", false},
+		{"a carriage return and a line feed, no shape tag", token + "\r\n", "", token, true},
+		{"a carriage return and a line feed, token", token + "\r\n", policy.ShapeToken, token, true},
+		{"a carriage return and a line feed, document", token + "\r\n", policy.ShapeDocument, token + "\r\n", false},
+		{"a carriage return, no shape tag", token + "\r", "", token, true},
+		{"a carriage return, token", token + "\r", policy.ShapeToken, token, true},
+		{"a carriage return, document", token + "\r", policy.ShapeDocument, token + "\r", false},
+		{"two line feeds, no shape tag", token + "\n\n", "", token, true},
+		{"two line feeds, token", token + "\n\n", policy.ShapeToken, token, true},
+		{"two line feeds, document", token + "\n\n", policy.ShapeDocument, token + "\n\n", false},
+		{"no line ending, no shape tag", token, "", token, false},
+		{"no line ending, token", token, policy.ShapeToken, token, false},
+		{"no line ending, document", token, policy.ShapeDocument, token, false},
+		// A PEM document holds line endings inside it, so the untagged reading leaves its last
+		// one alone; an owner who tagged it a token asked for it to go.
+		{"a PEM document, no shape tag", pem, "", pem, false},
+		{"a PEM document, token", pem, policy.ShapeToken, "-----BEGIN KEY-----\nabc\n-----END KEY-----", true},
+		{"a PEM document, document", pem, policy.ShapeDocument, pem, false},
+		{"a line ending inside the value, no shape tag", "a\nb\r", "", "a\nb\r", false},
+		{"a line ending inside the value, token", "a\nb\r", policy.ShapeToken, "a\nb", true},
+		{"a line ending inside the value, document", "a\nb\r", policy.ShapeDocument, "a\nb\r", false},
+		{"one line feed alone, no shape tag", "\n", "", "\n", false},
+		{"one line feed alone, token", "\n", policy.ShapeToken, "\n", false},
+		{"one line feed alone, document", "\n", policy.ShapeDocument, "\n", false},
+		{"leading line feeds, no shape tag", "\n\n" + token, "", "\n\n" + token, false},
+		{"leading line feeds, token", "\n\n" + token, policy.ShapeToken, "\n\n" + token, false},
+		{"leading line feeds, document", "\n\n" + token, policy.ShapeDocument, "\n\n" + token, false},
+	} {
+		got, changed := policy.TrimForShape(c.value, c.shape)
+		if got != c.want || changed != c.wantChanged {
+			t.Errorf("%s: TrimForShape(%q, %q) = %q, %t; want %q, %t",
+				c.name, c.value, c.shape, got, changed, c.want, c.wantChanged)
+		}
+	}
+}

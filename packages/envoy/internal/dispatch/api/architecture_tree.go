@@ -44,6 +44,10 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Each component's prose is registered with the request's reader as the component is shaped
+	// into the answer below: the trees are the table's rows where it holds them, and the read
+	// stores what it did not.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	issues, err := loadTreeIssues(r.Context(), pool, project)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -54,11 +58,11 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tree.Components = make([]model.ArchitectureTreeComponent, 0, len(components))
+	answer := architectureTreeRead{Components: make([]architectureComponentRead, len(components))}
 	tree.Unassigned = []model.ArchitectureTreeIssueRef{}
 	tree.NotArchitectural = []model.ArchitectureTreeNone{}
 	tree.RetiredLinks = []model.ArchitectureTreeRetired{}
-	for _, component := range components {
+	for index, component := range components {
 		for _, row := range component.Issues {
 			component.Total++
 			if row.Status == "done" {
@@ -74,7 +78,8 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		if component.Total == 0 && !component.External {
 			tree.Totals.ComponentsWithoutWork++
 		}
-		tree.Components = append(tree.Components, *component)
+		answer.Components[index].ArchitectureTreeComponent = *component
+		reader.text(&answer.Components[index].ProseTree, component.Prose)
 	}
 	for _, issue := range issues {
 		tree.Totals.IssuesTotal++
@@ -102,7 +107,11 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.Unassigned = len(tree.Unassigned)
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
-	WriteJSON(w, http.StatusOK, tree)
+	// The trees are filled before the answer is written, and the store of what the table did
+	// not hold runs on a goroutine of its own, beside the rest of the request.
+	reader.resolve()
+	answer.ArchitectureTree = tree
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // loadTreeComponents reads the project's current model — every source's components — in id
@@ -142,19 +151,25 @@ type treeIssue struct {
 	Components model.IssueComponents
 }
 
-// loadTreeIssues reads every issue of the project — icebox and closed included — with its
-// effective attachment resolved, in the issue list's order (lifecycle status, then rank).
-func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue, error) {
-	rows, err := q.Query(ctx, `
+// treeIssuesQuery is the architecture tree's read of a project's issues with their components.
+// The text is built once, at start, for the reason issueRowStatement gives.
+var treeIssuesQuery = `
+		with recursive subjects as (select i.key from issues i where i.project_key = $1),
+		` + issueComponentsTerms + `
 		select i.key, i.title, i.status, i.priority, i.parent_key, i.updated_at,
 		       coalesce((select json_agg(json_build_object('url', l.url, 'kind', l.kind) order by l.url)
 		                 from issue_external_links l where l.issue_key = i.key), '[]'),
-		       `+issueComponentsColumns+`
+		       ` + issueComponentsColumns + `
 		from issues i
-		`+issueComponentsLateral+`
+		` + issueComponentsJoin + `
 		where i.project_key = $1
-		order by `+issueStatusCase+`, i.rank asc, i.created_at asc
-	`, project)
+		order by ` + issueStatusCase + `, i.rank asc, i.created_at asc
+	`
+
+// loadTreeIssues reads every issue of the project — icebox and closed included — with its
+// effective attachment resolved, in the issue list's order (lifecycle status, then rank).
+func loadTreeIssues(ctx context.Context, q queryer, project string) ([]treeIssue, error) {
+	rows, err := q.Query(ctx, treeIssuesQuery, project)
 	if err != nil {
 		return nil, err
 	}

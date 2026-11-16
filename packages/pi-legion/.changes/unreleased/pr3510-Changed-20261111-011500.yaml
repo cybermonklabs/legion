@@ -1,0 +1,9 @@
+kind: Changed
+custom:
+  Issue: pr3510
+body: |-
+  `read_release_records` counts a release that suspended no role apart. Such a release is never
+  woken, so it counts in the number of releases and in a count of its own, and it is left out of
+  the pod hours released and of the share of releases woken again within ten minutes, which it
+  would otherwise lower for ever. The tool's own description says which releases each number
+  counts.

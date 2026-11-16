@@ -23,6 +23,13 @@ it on ports the OS chooses before Playwright runs and gives the server's build t
 the 60 s `webServer` window below no longer applies. Pre-building the binary with the cache on the
 volume still saves the wait.
 
+**Update (2026-11-10, dispatch://INFRA-1410): `e2e/run.ts` is deleted.** Playwright starts the
+harness again, from its own `globalSetup` (`e2e/global-setup.ts`), which starts one stack per
+worker through `e2e/harness-pool.ts` and waits for each server with no 60 s `webServer` window
+over it, so the paragraph above still holds and pre-building the binary still saves the wait.
+Read "lane" below as "stack", which is what one role's own harness, ports and database are
+called now.
+
 Extends docs/solutions/testing/an-embedded-postgres-in-a-worker-pod-the-zonky-jar-unpacked-with-python-gives-the-daemons-database-suites-a-run-LEGION-631.md.
 
 That document's zonky-jar Postgres gives the daemon's Go suites a database and says it cannot give

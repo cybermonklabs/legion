@@ -57,6 +57,10 @@ export function useSendMarkOnce<T, R>({
   useEffect(() => {
     const current = latest.current.mark;
     if (!shouldSend || current === undefined || sent.current?.key === current.key) return;
+    // Built before the mark is recorded as sent: the builder refuses an id the route's pattern has
+    // no value for, and a refusal after `sent.current = current` would escape this effect with the
+    // mark counted as sent, so nothing would send it again. No caller passes an empty id.
+    const request = latest.current.request(current.value);
     sent.current = current;
     writes
       .run({
@@ -64,7 +68,7 @@ export function useSendMarkOnce<T, R>({
         kind: plainWrite,
         label: "Read mark",
         presentation: "quiet",
-        request: latest.current.request(current.value),
+        request,
         target: latest.current.target,
       })
       .then(

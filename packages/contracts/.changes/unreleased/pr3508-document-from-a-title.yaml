@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `dispatch_artifact` takes at most one of `path` and `content`, where it took exactly one. A call
+  with neither makes an empty document under the name, which a person or an agent writes in
+  afterwards with `dispatch doc-edit`. The rule that holds a document's name to Markdown holds
+  that call too, so `--name rows.jsonl` with neither flag is still refused.
+
+  The event union carries `artifact.renamed` and `artifact.removed`, and the OpenAPI document and
+  the generated client carry `PATCH /api/v1/artifacts/{id}` and `DELETE /api/v1/artifacts/{id}`.
+  `content` is no longer a required field of the JSON artifact upload.

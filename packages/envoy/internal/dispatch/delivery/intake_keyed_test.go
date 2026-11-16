@@ -6,6 +6,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -22,40 +23,69 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // heldPullRequests is a fake GitHub pull request read that records each fetch's start and end by
-// number and holds the first fetch of pull request 1 until release. Every fetch answers 500, which
-// the intake logs and acknowledges.
+// number and holds the first fetch of each number it was given until that number is released.
+// Every fetch answers 500, which the intake logs and acknowledges.
 type heldPullRequests struct {
-	mu      sync.Mutex
-	events  []string
+	mu     sync.Mutex
+	events []string
+	// holds is the hold on each number this fake was given, by number: each has an entered of
+	// its own and a release of its own, so a row can have two pull requests inside their fetches
+	// at once and let them go one at a time.
+	holds map[string]*pullRequestHold
+}
+
+// pullRequestHold is one number's hold: that number's first fetch closes entered and then waits
+// for held, which release closes. Its later fetches are not held, so the messages queueing
+// behind the held one are handled as they always are.
+type pullRequestHold struct {
 	entered chan struct{}
 	enter   sync.Once
 	held    chan struct{}
 	release func()
 }
 
-func holdPullRequestOne(fake *fakeGitHub) *heldPullRequests {
-	held := &heldPullRequests{entered: make(chan struct{}), held: make(chan struct{})}
-	held.release = sync.OnceFunc(func() { close(held.held) })
+// holdPullRequestOne holds the first fetch of pull request 1, and of every number in also, each
+// until that number is released (release, releaseNumber). A row that needs two handlers inside
+// their fetches at once names the second number here rather than installing a fake of its own.
+func holdPullRequestOne(fake *fakeGitHub, also ...string) *heldPullRequests {
+	held := newHeldPullRequests(append([]string{"1"}, also...))
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		number := r.PathValue("number")
 		held.record("start " + number)
-		if number == "1" {
-			first := false
-			held.enter.Do(func() {
-				first = true
-				close(held.entered)
-			})
-			if first {
-				<-held.held
-			}
+		if hold := held.holds[number]; hold != nil && hold.first() {
+			<-hold.held
 		}
 		held.record("end " + number)
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	return held
+}
+
+// newHeldPullRequests is a fake's record with one unreleased hold per number, for the two fakes
+// of this package, which differ only in what their held fetch waits on.
+func newHeldPullRequests(numbers []string) *heldPullRequests {
+	held := &heldPullRequests{holds: make(map[string]*pullRequestHold, len(numbers))}
+	for _, number := range numbers {
+		hold := &pullRequestHold{entered: make(chan struct{}), held: make(chan struct{})}
+		hold.release = sync.OnceFunc(func() { close(hold.held) })
+		held.holds[number] = hold
+	}
+	return held
+}
+
+// first reports whether this fetch is its number's first, and marks the hold entered as it does:
+// only that fetch waits for the release.
+func (h *pullRequestHold) first() bool {
+	first := false
+	h.enter.Do(func() {
+		first = true
+		close(h.entered)
+	})
+	return first
 }
 
 func (h *heldPullRequests) record(event string) {
@@ -77,12 +107,40 @@ func (h *heldPullRequests) of(number string) []string {
 	return events
 }
 
+// release lets every fetch this fake holds go, which for a fake holding one number is that
+// number's: what a row registers as its cleanup.
+func (h *heldPullRequests) release() {
+	for _, hold := range h.holds {
+		hold.release()
+	}
+}
+
+// releaseNumber lets one number's held fetch go, for a row that holds more than one and releases
+// them one at a time. A number this fake holds nothing of is the row's own mistake, and panics
+// rather than passing as a release that released nothing.
+func (h *heldPullRequests) releaseNumber(number string) {
+	hold, holding := h.holds[number]
+	if !holding {
+		numbers := make([]string, 0, len(h.holds))
+		for held := range h.holds {
+			numbers = append(numbers, held)
+		}
+		slices.Sort(numbers)
+		panic(fmt.Sprintf("release pull request %s, which this fake does not hold: it holds %q", number, numbers))
+	}
+	hold.release()
+}
+
+// awaitEntered waits for every number this fake holds to be inside its first fetch: a row that
+// holds two of them measures nothing until both are there.
 func (h *heldPullRequests) awaitEntered(t *testing.T) {
 	t.Helper()
-	select {
-	case <-h.entered:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the intake never fetched pull request 1")
+	for number, hold := range h.holds {
+		select {
+		case <-hold.entered:
+		case <-time.After(20 * time.Second):
+			t.Fatalf("the intake never fetched pull request %s", number)
+		}
 	}
 }
 
@@ -255,22 +313,14 @@ func TestAMessageQueuedBehindItsKeyAtStopIsRedeliveredAtOnce(t *testing.T) {
 // the intake abandons it (the request's context ends), so its end is recorded as soon as the
 // intake stops waiting on it, by a release or by giving the call up.
 func holdPullRequestOneUntilAbandoned(fake *fakeGitHub) *heldPullRequests {
-	held := &heldPullRequests{entered: make(chan struct{}), held: make(chan struct{})}
-	held.release = sync.OnceFunc(func() { close(held.held) })
+	held := newHeldPullRequests([]string{"1"})
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
 		number := r.PathValue("number")
 		held.record("start " + number)
-		if number == "1" {
-			first := false
-			held.enter.Do(func() {
-				first = true
-				close(held.entered)
-			})
-			if first {
-				select {
-				case <-held.held:
-				case <-r.Context().Done():
-				}
+		if hold := held.holds[number]; hold != nil && hold.first() {
+			select {
+			case <-hold.held:
+			case <-r.Context().Done():
 			}
 		}
 		held.record("end " + number)
@@ -530,6 +580,90 @@ func TestAMessageInTheClientBufferAtStopIsGivenBack(t *testing.T) {
 	}
 }
 
+// A handler that finishes inside the stop of a live link has its message acknowledged there and
+// then, not when the stop releases what it holds (intake_delivery.go's acknowledgeOrHold). Held
+// to the end of the stop, that message keeps one of the next holder's four in-flight slots
+// (intakeMaxAckPending) for every second the stop waits for the slowest handler -- during a
+// rolling deploy, a slot of the very process this stop is handing the durable to.
+//
+// Two pull requests are held inside their fetches before the stop begins, so both are
+// outstanding when it does, and the second is released while the stop still waits for the
+// first: the durable's outstanding count has to fall to one there, with the stop still running.
+// A stop that holds every acknowledgement of a finished handler leaves it at two until the
+// first fetch is released too.
+func TestAHandlerThatFinishesInsideTheStopIsAcknowledgedAtOnce(t *testing.T) {
+	// The stop has to be waiting for pull request 1's handler still while the counts below are
+	// read, and it is this row that releases that handler, so the budget has only to outlast
+	// two reads of the durable on a loaded runner. Above githubapp.RequestTimeout (20 s) it
+	// would buy nothing: the held fetch is given up by the GitHub client itself then, and the
+	// stop would end on a handler this row had not released.
+	budget := intakeStopBudget
+	intakeStopBudget = 20 * time.Second
+	t.Cleanup(func() { intakeStopBudget = budget })
+
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	fake := newFakeGitHub(t)
+	held := holdPullRequestOne(fake, "2")
+	// A NATS server of this row's own rather than the package's shared one (intakeTestClient):
+	// what the row reads is the durable's whole outstanding count, which on the shared server
+	// counts whatever another row left behind as well.
+	_, uri := testnats.Start(t)
+	natsClient := reconnectTestClient(t, uri)
+	stop := runIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	// Registered after runIntake, so it runs before the stop that cleanup makes: a stop begun
+	// with both fetches still held waits out the whole budget before it gives them up.
+	t.Cleanup(held.release)
+	awaitBoundDurable(t, natsClient)
+
+	// Two keys, so the two handlers run beside each other (intakeMaxAckPending is 4) rather than
+	// one waiting behind the other.
+	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
+	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 2, mergedPullRequest(2))
+	held.awaitEntered(t)
+	// 20 s, the bound every wait of this file on the durable's state carries: the server has
+	// counted a message outstanding by the time its handler is inside its fetch, and this read
+	// only has to see both.
+	waitFor(t, 20*time.Second, func() bool { return deliveryAckPending(natsClient) == 2 }, func() string {
+		return fmt.Sprintf("the durable reports %d message(s) outstanding with both handlers inside their fetches, want 2 (-1 reads as a consumer this test could not read)",
+			deliveryAckPending(natsClient))
+	})
+
+	// The stop runs beside this turn, as TestAMessageInTheClientBufferAtStopIsGivenBack runs it:
+	// it waits here for both handlers, until the budget.
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		stop()
+	}()
+	// The subscription goes before the stop waits for its handlers, so from here on what the
+	// durable reports outstanding is what this stopping process still owes it.
+	waitFor(t, 20*time.Second, func() bool { return !deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
+		return "the stopping intake kept its subscription"
+	})
+	held.releaseNumber("2")
+
+	// 10 s rather than the 20 s above: the acknowledgement is published as the handler returns,
+	// with no bind and no delivery to wait for, so this bound is for a loaded runner alone -- and
+	// it has to leave the stop inside its budget, still waiting for pull request 1.
+	waitFor(t, 10*time.Second, func() bool { return deliveryAckPending(natsClient) == 1 }, func() string {
+		return fmt.Sprintf("the durable still reports %d message(s) outstanding while the stop waits for the other handler, want 1: the finished handler's acknowledgement was held for the stop rather than made where the handler finished",
+			deliveryAckPending(natsClient))
+	})
+	select {
+	case <-stopped:
+		t.Fatal("the stop ended before pull request 1's fetch was released, so the count above was read of a stop that was waiting for nothing")
+	default:
+	}
+
+	held.release()
+	select {
+	case <-stopped:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the stopping intake did not return once both handlers were released")
+	}
+}
+
 // subscribe at a deliver subject it is given binds the durable created with that subject without
 // looking it up, as a process taking the durable over after recreating it does; StopDelivering
 // ends that subscription, and a second call returns at once.
@@ -634,13 +768,14 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	}
 }
 
-// A stop after the client replaced its connection drains the subscription the client bound again
-// on the new connection, which is the one delivering, rather than the handle subscribe returned,
-// which the closed connection took with it. The durable loses its subscriber as the stop begins, so
-// a message published while a handler still runs is not handed to the stopping process, which would
-// hand it back and be handed it again; the stop logs no failed drain, and the next process to bind
-// the durable handles the message.
-func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *testing.T) {
+// A stop after the client replaced its connection drains the subscription the intake bound again
+// itself on the new connection: the connection event gave the subscription the client had
+// restored up, and the bind poll took the durable afresh under its lease, so the handle the
+// intake holds is its own and live rather than the one the closed connection took with it. The
+// durable loses its subscriber as the stop begins, so a message published while a handler still
+// runs is not handed to the stopping process, which would hand it back and be handed it again;
+// the stop logs no failed drain, and the next process to bind the durable handles the message.
+func TestAStopAfterAReplacedConnectionDrainsTheSubscriptionTheIntakeBoundAgain(t *testing.T) {
 	logs := captureLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -657,24 +792,32 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
 	stop := runIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
+	// Read before the close, so the wait below can tell the delivery the intake binds afterwards
+	// from the one the closed connection carried.
+	intake.mu.Lock()
+	replaced := intake.delivering
+	intake.mu.Unlock()
 
-	// The client dials a connection to replace the closed one and binds its registration there: a
-	// handle of its own, not the one subscribe returned.
+	// The client dials a connection to replace the closed one and binds its registration there.
 	natsClient.Conn.Close()
 	select {
 	case <-hooked:
 	case <-time.After(30 * time.Second):
 		t.Fatal("the client's reconnect hooks never ran")
 	}
-	waitFor(t, 20*time.Second, func() bool { return natsClient.SubOK() && deliveryConsumerInfo(t, natsClient).PushBound }, func() string {
-		return "the client never bound the intake's subscription again on its new connection"
+	// The intake gives that restored subscription up on its connection event and binds the durable
+	// again under its lease, so what it holds is a delivery of its own: a different object from the
+	// one before the close, whose handle is live and whose durable the server reports bound. Until
+	// all three hold, the stop below would be draining something other than what this row measures.
+	var delivery *intakeDelivery
+	waitFor(t, 30*time.Second, func() bool {
+		intake.mu.Lock()
+		delivery = intake.delivering
+		intake.mu.Unlock()
+		return delivery != replaced && delivery.sub.IsValid() && deliveryConsumerInfo(t, natsClient).PushBound
+	}, func() string {
+		return "the intake never gave the subscription the client restored up and bound the delivery durable again on its new connection"
 	})
-	intake.mu.Lock()
-	delivery := intake.delivering
-	intake.mu.Unlock()
-	if delivery.sub.IsValid() {
-		t.Fatal("the handle subscribe returned is still valid on the replaced connection; the test proves nothing")
-	}
 
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 1, mergedPullRequest(1))
 	held.awaitEntered(t)
@@ -712,5 +855,176 @@ func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *test
 	awaitAcknowledged(t, natsClient)
 	if events, want := held.of("2"), []string{"start 2", "end 2"}; !slices.Equal(events, want) {
 		t.Fatalf("pull request 2's events = %q, want %q: the next process handles the message published during the stop", events, want)
+	}
+}
+
+// githubEnvelopeData is one GitHub envelope's bytes as the bus carries them, for a test that
+// hands intakeKey a message of its own rather than publishing one.
+func githubEnvelopeData(t *testing.T, topic, payload string) []byte {
+	t.Helper()
+	data, err := json.Marshal(contracts.Envelope{
+		EventID: "event-1", Source: "github", SourceEventID: "1", Topic: topic,
+		DedupeKey: "github.1", Payload: payload, TraceID: "test-trace", IssuedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatalf("encode the envelope of %s: %v", topic, err)
+	}
+	return data
+}
+
+// The repository a message's subject names decides whether the intake wants it: the one the
+// payload names is the canonical one, and a subject naming another is the copy the listener
+// publishes under a renamed repository's former name (internal/ghrename), which the original
+// already carries to the same handler. A message that names no repository to compare -- an
+// envelope or a payload that does not decode, or a payload with no repo -- is wanted and keyed
+// as it was keyed before the rule, since it cannot be judged.
+func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T) {
+	const (
+		prPayload       = `{"kind":"pr","action":"closed","merged":"true","repo":"cybermonklabs/legion","number":"42","author":"octocat"}`
+		workflowPayload = `{"kind":"workflow","action":"completed","repo":"cybermonklabs/legion","run_id":"77"}`
+	)
+	for _, tc := range []struct {
+		name     string
+		subject  string
+		payload  string
+		data     []byte
+		key      string
+		wanted   bool
+		envelope bool
+	}{
+		{
+			name:    "a pull request under its payload's repository",
+			subject: "notifications.github.cybermonklabs.legion.pr.42", payload: prPayload,
+			key: "pr cybermonklabs/legion#42", wanted: true, envelope: true,
+		},
+		{
+			name:    "the same pull request under the repository's former name",
+			subject: "notifications.github.sjawhar.legion.pr.42", payload: prPayload,
+		},
+		{
+			name:    "a workflow run under its payload's repository",
+			subject: "notifications.github.cybermonklabs.legion.workflow.deploy_yml.completed", payload: workflowPayload,
+			key: "workflow cybermonklabs/legion#77", wanted: true, envelope: true,
+		},
+		{
+			name:    "the same workflow run under the repository's former name",
+			subject: "notifications.github.sjawhar.legion.workflow.deploy_yml.completed", payload: workflowPayload,
+		},
+		{
+			name:    "a repository name holding a dot, which the subject sanitizes",
+			subject: "notifications.github.acme.site_io.pr.7", payload: `{"kind":"pr","repo":"acme/site.io","number":"7"}`,
+			key: "pr acme/site_io#7", wanted: true, envelope: true,
+		},
+		{
+			name:    "a capital in the payload's repository against a lowercase subject",
+			subject: "notifications.github.cybermonklabs.legion.pr.42", payload: `{"kind":"pr","repo":"CyberMonkLabs/Legion","number":"42"}`,
+			key: "pr cybermonklabs/legion#42", wanted: true, envelope: true,
+		},
+		{
+			name:    "a pull request whose envelope does not decode",
+			subject: "notifications.github.sjawhar.legion.pr.42", data: []byte("{not an envelope"),
+			key: "pr sjawhar/legion#42", wanted: true,
+		},
+		{
+			name:    "a workflow run whose envelope does not decode",
+			subject: "notifications.github.sjawhar.legion.workflow.deploy_yml.completed", data: []byte("{not an envelope"),
+			key: "workflow notifications.github.sjawhar.legion.workflow.deploy_yml.completed", wanted: true,
+		},
+		{
+			name:    "a pull request whose payload does not decode",
+			subject: "notifications.github.sjawhar.legion.pr.42", payload: "not a payload",
+			key: "pr sjawhar/legion#42", wanted: true, envelope: true,
+		},
+		{
+			name:    "a workflow run whose payload does not decode",
+			subject: "notifications.github.sjawhar.legion.workflow.deploy_yml.completed", payload: `{"run_id":["77"]}`,
+			key: "workflow notifications.github.sjawhar.legion.workflow.deploy_yml.completed", wanted: true, envelope: true,
+		},
+		{
+			name:    "a pull request whose payload names no repository",
+			subject: "notifications.github.sjawhar.legion.pr.42", payload: `{"kind":"pr","repo":"","number":"42"}`,
+			key: "pr sjawhar/legion#42", wanted: true, envelope: true,
+		},
+		{
+			name:    "a workflow run whose payload names no repository",
+			subject: "notifications.github.sjawhar.legion.workflow.deploy_yml.completed", payload: `{"kind":"workflow","repo":"","run_id":"77"}`,
+			key: "workflow #77", wanted: true, envelope: true,
+		},
+		{name: "a review on a pull request", subject: "notifications.github.cybermonklabs.legion.pr.42.review", payload: prPayload},
+		{name: "the checks of a pull request", subject: "notifications.github.cybermonklabs.legion.pr.42.checks", payload: prPayload},
+		{name: "a push", subject: "notifications.github.cybermonklabs.legion.push.heads.main", payload: prPayload},
+		{name: "a job", subject: "notifications.github.cybermonklabs.legion.job.500.completed", payload: prPayload},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := tc.data
+			if data == nil {
+				data = githubEnvelopeData(t, tc.subject, tc.payload)
+			}
+			key, envelope, wanted := intakeKey(&natsgo.Msg{Subject: tc.subject, Data: data})
+			if wanted != tc.wanted || key != tc.key {
+				t.Fatalf("intakeKey(%s) = key %q, wanted %t; want key %q, wanted %t", tc.subject, key, wanted, tc.key, tc.wanted)
+			}
+			if (envelope != nil) != tc.envelope {
+				t.Fatalf("intakeKey(%s) handed on envelope %v, want handed on = %t: a decode the handler would otherwise redo is handed on, and one that failed is not",
+					tc.subject, envelope, tc.envelope)
+			}
+		})
+	}
+}
+
+// The listener publishes a renamed repository's envelopes a second time under the repository's
+// former name (internal/ghrename): the same event_id, the same dedupe_key and the same payload,
+// differing only in the topic. Both copies reach this durable. Only the one whose subject is the
+// repository its payload names is wanted, so one merged pull request keys once and is fetched
+// from GitHub once; keyed by their own subjects the two copies would key apart, and keyedRunner
+// would run two handlers at once on that one pull request's row.
+func TestTheCopyUnderARepositorysFormerNameRunsNoSecondHandler(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	fake := newFakeGitHub(t)
+	var fetches atomic.Int64
+	fake.handle("GET /repos/cybermonklabs/legion/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		// The fetch's answer decides nothing here; what is counted is that it happened once. A
+		// 500 is logged and acknowledged, as every failed fetch of a merged pull request is.
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	natsClient := intakeTestClient(t)
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	awaitBoundDurable(t, natsClient)
+
+	id := fmt.Sprintf("%s-%d", t.Name(), time.Now().UnixNano())
+	published := contracts.Envelope{
+		EventID: id, Source: "github", SourceEventID: id, DedupeKey: "github." + id,
+		Topic:   "notifications.github.cybermonklabs.legion.pr.42",
+		Payload: `{"kind":"pr","action":"closed","merged":"true","repo":"cybermonklabs/legion","number":"42","author":"octocat"}`,
+		TraceID: id, IssuedAt: time.Now().Unix(),
+	}
+	renamed := published
+	renamed.Topic = "notifications.github.sjawhar.legion.pr.42"
+	copies := []contracts.Envelope{published, renamed}
+
+	keys := map[string]int{}
+	for _, item := range copies {
+		data, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("encode the envelope of %s: %v", item.Topic, err)
+		}
+		if key, _, wanted := intakeKey(&natsgo.Msg{Subject: item.Topic, Data: data}); wanted {
+			keys[key]++
+		}
+	}
+	if len(keys) != 1 || keys["pr cybermonklabs/legion#42"] != 1 {
+		t.Fatalf("the two copies of one merged pull request key as %v, want only pr cybermonklabs/legion#42 once", keys)
+	}
+
+	for _, item := range copies {
+		if err := natsClient.Publish(item); err != nil {
+			t.Fatalf("publish %s: %v", item.Topic, err)
+		}
+	}
+	awaitAcknowledged(t, natsClient)
+	if got := fetches.Load(); got != 1 {
+		t.Fatalf("fetched pull request 42 from GitHub %d times for one merged pull request published under its repository and under the repository's former name, want 1", got)
 	}
 }

@@ -174,7 +174,7 @@ func (s *Service) writeDocumentAskStates(
 		// id, as settlement makes its repairs (repairLive), and each repeat on the block at its place
 		// (markRepeatedAskBlocks), all in one rewrite of the fork, whose tree is the one current read.
 		// A document none of them changes is left as it was, and applyLive writes nothing for it.
-		_, _, err = rewriteLive(doc, nil, writes.apply)
+		_, err = rewriteLive(doc, nil, writes.apply)
 		return err
 	})
 	switch {
@@ -246,7 +246,7 @@ func readIssueAskStateWrites(
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
 			if ask, write := wanted(row); write && ask.State != "answered" {
-				found.writes.repairs = append(found.writes.repairs, askRepair{blockID: block.id, set: askServerAttributes(ask, "", false)})
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, askServerAttributes(ask, "", false)))
 			}
 			continue
 		}
@@ -256,20 +256,20 @@ func readIssueAskStateWrites(
 				if ask.State == "answered" {
 					set = answeredCopyAttributes(ask, source.document)
 				}
-				found.writes.repairs = append(found.writes.repairs, askRepair{blockID: block.id, set: set})
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, set))
 			}
 			continue
 		}
 		if markUnindexed {
 			ref := BlockRef{ArtifactID: artifactID, BlockID: block.id}
-			found.writes.repairs = append(found.writes.repairs, askRepair{blockID: block.id, set: func(node *pmdoc.Node) bool {
+			found.writes.repairs = append(found.writes.repairs, askRepair(block.id, func(node *pmdoc.Node) bool {
 				if node.Attrs["state"] == "resolved" {
 					return false
 				}
 				node.Attrs["state"] = "resolved"
 				found.marked = append(found.marked, ref)
 				return true
-			}})
+			}))
 		}
 	}
 	return found, nil
@@ -428,17 +428,18 @@ const (
 // stops short on a room that holds updates its persistence has not stored or made durable yet,
 // which the next attempt, after a pause of issueSettleRetryPause, finds stored; on one superseded
 // by a write that landed while it ran, which the next attempt settles with that write; and on a
-// room behind its durable head, because another envoy-dispatch process appended to the document
-// after this one loaded it. The gate's refusal closes that room itself (reloadRoomBehindHead) and
-// leaves the document owing its settlement, so the next attempt warms the room from the head and
-// settles every update, this process's and the other's. A settlement still short after its last
-// attempt, or once ctx ends or the service stops, which no further attempt would get past, is
-// logged and returned, joined with the others: the document's pending-settlement row keeps the
-// debt, for the room's next load or the resumption (RunSettlementResumption).
+// room whose stored history was replaced under it, which the settlement closes for a reload
+// (reloadReplacedRoom) and leaves owing its settlement, so the next attempt warms the room from
+// the head and settles every update. A room another envoy-dispatch process's append left behind
+// is caught up under the settlement's own lock (catchUpRoom), and that settlement goes on. A
+// settlement still short after its last attempt, or once ctx ends or the service stops, which no
+// further attempt would get past, is logged and returned, joined with the others: the document's
+// pending-settlement row keeps the debt, for the room's next load or the resumption
+// (RunSettlementResumption).
 //
 // It opens a transaction of its own for each settlement, which takes the issue's row, so it is
 // refused inside a transaction: a joined context's, or, for a context the pool tracks, any
-// (store.ErrNestedAcquire), as SetIssueClosed is.
+// (store.ErrNestedAcquire).
 func (s *Service) SettleIssueDocuments(ctx context.Context, issueKey string) error {
 	if ledgerFrom(ctx).inTransaction() {
 		return errSettleJoined
@@ -503,7 +504,7 @@ func (s *Service) settleOwedNow(ctx context.Context, room string, deadline time.
 	generation := state.roomGeneration
 	state.settling++
 	s.unlockState(room, state)
-	outcome := s.settleRoomWithin(ctx, room, generation)
+	outcome := s.settleRoomWithin(ctx, room, generation, false)
 	state.mu.Lock()
 	state.settling--
 	s.unlockState(room, state)

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development (one
 > implementer, one PR against `sjawhar/legion`, branch `legion/LEGION-11`). Steps use `- [ ]` for
-> tracking. Every ruling from a review round supersedes this document.
+> tracking. Every decision from a review round supersedes this document.
 
 **Goal:** A daemon restart fully retires a worker that died while the daemon was down — capability
 revoked, pane killed, locator cleared, secret file removed — with no `worker reconnection failed`
@@ -31,7 +31,7 @@ Acceptance 1–4, Design 1–5, Errors, Testing, Rejected.
 
 ## Decisions needed
 
-None. One scope point was raised to the architect and ruled during planning (verbatim ruling,
+None. One scope point was raised to the architect and ruled during planning (decision,
 2026-09-12T04:22Z, envoy id `4557e89b0fb6cfb523fd42643c7d047c`): *"Trim the false clause in
 processes.ts retireUnconfirmedBoot's doc comment (lines ~912-916), and update the two
 worker-admission.ts comments (120-129, 327-330) and the comment-only lines in processes.test.ts

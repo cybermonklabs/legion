@@ -3,6 +3,7 @@ import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { LegionState } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors"
+import type { ActivityInput } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import {
   createPhaseReminder,
@@ -10,6 +11,11 @@ import {
   type PhaseReminderLog,
 } from "@legion/pi-shared/phase-reminder"
 import { type PhaseStallEntry, phaseStallEntryFrom } from "@legion/pi-shared/phase-stall"
+import {
+  CLAUDE_BACKGROUND_TASK_KIND,
+  sessionActivity,
+  sessionActivityRequest,
+} from "@legion/pi-shared/session-activity"
 import { stallLimits } from "@legion/pi-shared/stall-limits"
 import { workspaceRecreated, workspaceRecreatedNotice } from "@legion/pi-shared/workspace-recreated"
 import { z } from "zod"
@@ -35,6 +41,15 @@ import { configuredValue } from "./claude-session"
  * appended to that turn as its next step (`deliver`/`step` in
  * `packages/daemon/internal/claudebridge/bridge.go`), which would destroy the turn boundary the
  * whole split exists for.
+ *
+ * A turn Claude Code ended on an API error fires `StopFailure` rather than `Stop`, and that is
+ * the provider refusing the turn: it earns no continuation, since the host would turn one into
+ * another turn at once and the provider would refuse that one the same way. It does arm one
+ * timer, because the task that refused turn carried ended with it and nothing else would wake
+ * this worker, so a single transient refusal would otherwise leave the issue idle. What stops
+ * the reminding for good is the runner's record check, which drops every reminder once the
+ * daemon has failed this role's claim — the refused turns themselves are counted by the bridge,
+ * which reports each turn's outcome to the daemon (INFRA-714).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -139,6 +154,12 @@ export interface PhaseHookEndpoint {
    * throwing: this session's phase is no longer open. The CallTool handler of the same server
    * calls it (`./envoy-channel-server`), as `onPhaseCompleted` does on the Oh My Pi host. */
   readonly phaseClosed: () => void
+  /** The `legion` tool's `ready_for_update` returned without throwing: the worker has pushed
+   * what it wants kept and waits for the process its claim runs in to be replaced. Its phase
+   * stays open, and the `Stop` of the turn it answered in must block nothing: the work a
+   * continuation did would go with the pod, and the daemon would see no turn end. The same
+   * CallTool handler calls it, as `onUpdateAnswered` does on the Oh My Pi host. */
+  readonly updateAnswered: () => void
   /** Drops the armed timer, so a 15-minute WAITING wait never holds a shutting-down server
    * open (the server's own `stop`). */
   readonly stop: () => void
@@ -153,9 +174,20 @@ export interface PhaseHookDeps {
    * reminder and the recreated-workspace notice both need the claim, and neither is sent before
    * one exists. Never rejects. */
   readonly booted: Promise<void>
+  /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
+   * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
+   * deferred role claim (`startLegionClaim`'s `onFirstTurn`), so the session takes its Envoy
+   * name inside a turn that is already running (INFRA-1573). It is called for every
+   * `UserPromptSubmit`, and the server decides which of them counts: one before the boot
+   * registered its step — the bridge's seeding `/rename` — signals nothing, and one after the
+   * name is taken costs nothing. */
+  readonly firstTurnStarted: () => void
   /** The daemon's whole state, for the reminder's record check, aborted with `signal` once the
    * check's bound passes (`PhaseReminderDeps.readState`). */
   readonly readState: (signal: AbortSignal) => Promise<LegionState>
+  /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
+   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
+  readonly reportActivity: (input: ActivityInput) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
    * where nothing can reach the worker between its turns. */
@@ -296,7 +328,7 @@ export function writePhaseStallRecord(
  * restored here before any hook can be answered.
  */
 export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint {
-  const limits = stallLimits(deps.env, deps.log)
+  const limits = stallLimits(deps.env, deps.log, configuredValue(deps.env["LEGION_ROLE"]))
   const restored = readPhaseStallRecord(deps.stateFile, deps.log)
   // The machine's entry and this host's own key are one record, so the last entry written is kept
   // for the write the notice makes.
@@ -390,6 +422,36 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   reminder.restore(restored.entry)
 
   /**
+   * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
+   * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
+   * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
+   * settle and nowhere else; the one kind it can name is a Claude Code background task.
+   *
+   * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
+   * the hook owes its worker, and a claim with no report after its last turn is held rather than
+   * released.
+   */
+  const sendActivity = async (claim: ClaimCapability, backgroundWork: boolean): Promise<void> => {
+    const request = sessionActivityRequest({
+      project: configuredValue(deps.env["LEGION_PROJECT"]),
+      claim,
+      report: sessionActivity(
+        backgroundWork ? [CLAUDE_BACKGROUND_TASK_KIND] : [],
+        reminder.phaseWake(),
+      ),
+    })
+    if (request === undefined) return
+    try {
+      await deps.reportActivity(request)
+    } catch (error) {
+      deps.log.warn("legion: this session's activity report did not reach the daemon", {
+        issue: claim.issue,
+        error: messageFor(error),
+      })
+    }
+  }
+
+  /**
    * D29: a worker whose launcher recreated its workspace is told so, as an Oh My Pi one is, over
    * the same inbox the reminders use. Once per launch: the record it is written in is the one the
    * phase and count live in, so a server Claude Code restarts inside the same `claude` process
@@ -428,6 +490,7 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   return {
     deliveryWritten: noteWritten,
     phaseClosed: () => reminder.apply({ kind: "phase-closed" }),
+    updateAnswered: () => reminder.apply({ kind: "update-answered" }),
     stop: dropTimer,
     handle: async (input) => {
       const parsed = hookArguments.safeParse(input)
@@ -435,6 +498,13 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
       // itself: it is refused, and no state moves, so it cannot zero its own count.
       if (!parsed.success) return { error: PHASE_HOOK_REFUSAL }
       const event = parsed.data
+      // Before the gate below, and before anything else this endpoint does: the claim's own
+      // first-turn signal is not the reminder's business, and a turn is a turn whether or not a
+      // claim has registered yet (the bridge's seeding `/rename` turn runs before one has) and
+      // whatever role this pane holds, an architect's included. What a prompt before the boot
+      // registered its step comes to is the server's to decide, not this endpoint's: it holds
+      // the step the signal runs (`src/envoy-channel-server.ts`).
+      if (event.event === "UserPromptSubmit") deps.firstTurnStarted()
       // The same gate as `phaseWorkerSession` in `packages/pi-legion/extensions/legion.ts`: the
       // machine runs for a phase worker whose claim has booted, and for nobody else. The bridge's
       // seeding `/rename` turn is what writes the transcript the claim boot waits for
@@ -455,19 +525,29 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
             stopHookActive: event.stopHookActive ?? "",
             backgroundWork,
           })
-          const reminded = await reminder.settle(event.lastAssistantMessage ?? "", {
+          const reminded = await reminder.settle({
+            kind: "settle",
+            lastAssistantText: event.lastAssistantMessage ?? "",
             backgroundWork,
           })
+          // After the settle, so the report carries the wake that settle armed. The daemon
+          // releases no claim whose last report is older than its last turn, so it goes at every
+          // settle, whatever it says.
+          await sendActivity(claim, backgroundWork)
           return reminded === undefined ? {} : { decision: "block", reason: reminded }
         }
         case "StopFailure": {
-          // The turn ended on an API error. Claude Code ignores whatever this hook returns, so
-          // this event cannot carry a continuation: the machine is told so and arms the reminder
-          // its settle earned itself, under every guard an armed reminder has. This is the one
-          // event of the five the pod measurements did not cover; it records only, so a
-          // `StopFailure` that never fires costs the reminder after an API-error turn and nothing
-          // else.
-          await reminder.settle(event.lastAssistantMessage ?? "", { canContinue: false })
+          // Claude Code runs this instead of `Stop` when the turn ended on an API error, and
+          // `${last_assistant_message}` is then the error text itself rather than anything the
+          // worker said ("Hooks reference", code.claude.com/docs/en/hooks). So this is the
+          // provider refusing the turn, and the machine takes it as one: it earns no
+          // continuation, because the next turn would be refused the same way, and one timer,
+          // because nothing else would wake this worker once the task that turn carried ended
+          // with it. What ends a session the provider keeps refusing is the daemon failing its
+          // claim on the outcomes the bridge reports, which the timer's own record check reads.
+          // Claude Code ignores whatever this hook returns, which costs nothing now that there
+          // is nothing to return.
+          await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })
           return {}
         }
         case "PostToolUse":
@@ -485,9 +565,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // Claude Code's stdin from the bridge and never this process, so what a turn means is
           // read from the prompt itself. The turn is declared first, which makes every armed
           // timer stale, and the pending one is dropped outright: the runner's generation guard
-          // answers the same for the timers it armed, and the one this endpoint arms itself (the
-          // `StopFailure` reminder) obeys the same rule that way rather than through a second
-          // guard of its own.
+          // answers the same for the timers it armed, and dropping the one timer this server
+          // holds is the plainest way to say the same thing.
           reminder.turnStarted()
           dropTimer()
           const prompt = event.prompt ?? ""

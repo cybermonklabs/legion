@@ -45,8 +45,12 @@ const (
 	testHookAcksChannel = "dispatch_test_hook_acks"
 	// testHookLockNamespace is the first key of every test-hook lock ("HOOK"), in the two-key form
 	// so it can never collide with the single-key locks internal/dispatch/docs takes, and apart
-	// from the two-key namespaces of the loop leases (duty.leaseNamespace, "LOOP") and the copy
-	// locks (docs.copiedAsksLockNamespace, "COPY"). The second key is the listening connection's
+	// from the other two-key namespaces of the server: the loop leases' (duty.leaseNamespace,
+	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), a conditional edit's
+	// admission's (docs.conditionalEditQueueLockNamespace, "QUEU"), the issue dependencies'
+	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
+	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite) and
+	// the rename graph's own (refuseRepoRenameChain). The second key is the listening connection's
 	// backend pid, which no other live connection has, so two processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every
@@ -440,6 +444,12 @@ func (f *testHookFanout) unanswered(ctx context.Context, err error, what string)
 	return testHookFailure(http.StatusServiceUnavailable, "TEST_HOOK_UNAVAILABLE", what+": "+err.Error())
 }
 
+// testHookOK is the body the test hooks that only report success answer: the live-socket
+// disconnect and rotate, the document quiesce, the agent-stream publish and the slow-write arm.
+type testHookOK struct {
+	OK bool `json:"ok"`
+}
+
 // runTestHookEverywhere runs call on every process and writes the answer. A server with no
 // database shares nothing with any other process, so it runs the hook on itself.
 func (s *server) runTestHookEverywhere(w http.ResponseWriter, r *http.Request, call testHookCall) {
@@ -451,7 +461,7 @@ func (s *server) runTestHookEverywhere(w http.ResponseWriter, r *http.Request, c
 		status, body = s.testHooks.call(r.Context(), call)
 	}
 	if status == http.StatusOK {
-		WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		WriteJSON(w, http.StatusOK, testHookOK{OK: true})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -497,7 +507,7 @@ func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byt
 
 // testHookFailure is the status and body writeError writes.
 func testHookFailure(status int, code, message string) (int, []byte) {
-	body, _ := json.Marshal(map[string]string{"error": message, "code": code})
+	body, _ := json.Marshal(errorBody{Code: code, Error: message})
 	return status, body
 }
 

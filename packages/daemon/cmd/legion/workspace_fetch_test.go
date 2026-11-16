@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -17,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -96,7 +96,7 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 			// --repo is read first: the feed and the token are wrong too.
 			name: "a bad --repo, before every other input",
 			args: func(*issueVolume) []string { return []string{"fetch", "--repo", "acme/..", "--feed", "feed"} },
-			env:  func(t *testing.T, _ *issueVolume) { unsetenv(t, "LEGION_PROVISION_TOKEN_FILE") },
+			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return `--repo "acme/.." has a ".." segment` },
 		},
@@ -108,7 +108,7 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 		},
 		{
 			name: "LEGION_PROVISION_TOKEN_FILE unset",
-			env:  func(t *testing.T, _ *issueVolume) { unsetenv(t, "LEGION_PROVISION_TOKEN_FILE") },
+			env:  func(t *testing.T, _ *issueVolume) { fixtureenv.Unset(t, "LEGION_PROVISION_TOKEN_FILE") },
 			code: 1,
 			says: func(*issueVolume) string { return "LEGION_PROVISION_TOKEN_FILE is not set" },
 		},
@@ -477,16 +477,12 @@ func (v *issueVolume) advanceRemote(t *testing.T) string {
 	work := filepath.Join(scratch, "work")
 	for _, argv := range [][]string{
 		{"clone", "--quiet", v.env["WINIT_REMOTE"], work},
-		{"-C", work, "-c", "user.name=Legion test", "-c", "user.email=legion-test@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "advanced"},
+		{"-C", work, "commit", "--quiet", "--allow-empty", "-m", "advanced"},
 		{"-C", work, "push", "--quiet", "origin", "HEAD:main"},
 	} {
-		command := exec.Command(v.env["WINIT_REAL_GIT"], argv...)
 		// The clone creates work, so every command in the run names its parent as the directory
 		// it runs in rather than inheriting the test process's.
-		command.Dir = scratch
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("git %s: %v\n%s", strings.Join(argv, " "), err, output)
-		}
+		v.runner(t).Run(scratch, append([]string{v.env["WINIT_REAL_GIT"]}, argv...)...)
 	}
 	return v.git(t, "--git-dir="+v.env["WINIT_REMOTE"], "rev-parse", "main")
 }
@@ -499,11 +495,10 @@ func (v *issueVolume) cacheTarServer(t *testing.T) (string, int) {
 	t.Helper()
 	scratch := t.TempDir()
 	cache := filepath.Join(scratch, "widgets.git")
-	clone := exec.Command(v.env["WINIT_REAL_GIT"], "clone", "--bare", "--quiet", "--no-local", v.env["WINIT_REMOTE"], cache)
 	// The clone creates the cache, so it runs in the scratch directory holding it rather than in
 	// the directory the test process happens to have.
-	clone.Dir = scratch
-	if output, err := clone.CombinedOutput(); err != nil {
+	clone := []string{v.env["WINIT_REAL_GIT"], "clone", "--bare", "--quiet", "--no-local", v.env["WINIT_REMOTE"], cache}
+	if output, err := v.runner(t).Try(scratch, clone...); err != nil {
 		t.Fatalf("clone the cache: %v\n%s", err, output)
 	}
 	var stream bytes.Buffer

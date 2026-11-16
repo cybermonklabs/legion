@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -10,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerReady, TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerChecksRed,
+	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict,
 }
 
 func TestEveryPhaseAndTriggerHasARowOrNamedIgnore(t *testing.T) {
@@ -27,6 +29,42 @@ func TestDeletingAnyTransitionRowBreaksCoverage(t *testing.T) {
 			t.Fatalf("deleting %s/%s -> %s left the table covered", Table[index].From, Table[index].Trigger, Table[index].To)
 		}
 	}
+}
+
+// The daemon counts a round for every row that moves an issue back (Engine.transition reads
+// phase.MovesBack), and the config loader refuses a hook written for a pair outside
+// phase.BackwardPairs. The two must name the same moves: a row added here and not there would be
+// a move the daemon counts and the loader refuses, and a pair added there and not here a hook
+// that never runs.
+func TestBackwardRowsMatchPhaseBackwardPairs(t *testing.T) {
+	fromTable := map[string]bool{}
+	fromTrigger := map[string]bool{}
+	for _, row := range Table {
+		if !phase.MovesBack(row.From, row.To) {
+			continue
+		}
+		fromTable[phase.Pair(row.From, row.To)] = true
+		if row.Trigger == TriggerBackward {
+			fromTrigger[phase.Pair(row.From, row.To)] = true
+		}
+	}
+	fromPhase := map[string]bool{}
+	for _, pair := range phase.BackwardPairs() {
+		fromPhase[pair] = true
+	}
+	if !maps.Equal(fromTable, fromPhase) {
+		t.Fatalf("table backward moves = %v, phase.BackwardPairs = %v", sortedPairs(fromTable), sortedPairs(fromPhase))
+	}
+	// The backward trigger carries every pair: a worker may ask for any move back the phases
+	// allow, and the daemon's own move for a conflicting head is a trigger of its own
+	// (TriggerConflict) over the same pairs rather than a pair the backward trigger is missing.
+	if !maps.Equal(fromTrigger, fromPhase) {
+		t.Fatalf("%s rows = %v, want %v", TriggerBackward, sortedPairs(fromTrigger), sortedPairs(fromPhase))
+	}
+}
+
+func sortedPairs(pairs map[string]bool) []string {
+	return slices.Sorted(maps.Keys(pairs))
 }
 
 func validateTable(rows []Row) error {
@@ -95,14 +133,12 @@ func workflowTransitionRequired(from phase.Phase, trigger TriggerKind) bool {
 		return from == phase.Testing
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return from == phase.Reviewing
-	case TriggerChecksRed:
-		return from == phase.Testing || from == phase.Reviewing || from == phase.Accepting || from == phase.Retro || from == phase.Merging || from == phase.AwaitingMerge
+	case TriggerConflict:
+		return from == phase.Testing || from == phase.Reviewing || from == phase.Accepting || from == phase.Retro || from == phase.Merging
 	case TriggerRetroCompleted:
 		return from == phase.Retro
-	case TriggerReady:
-		return from == phase.Merging
 	case TriggerPullRequestMerged:
-		return from == phase.AwaitingMerge
+		return from == phase.Merging
 	case TriggerSignOff:
 		return from == phase.Accepting
 	case TriggerBackward:

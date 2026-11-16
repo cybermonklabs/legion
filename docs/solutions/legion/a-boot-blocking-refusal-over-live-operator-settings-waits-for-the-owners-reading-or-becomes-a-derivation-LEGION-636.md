@@ -49,7 +49,7 @@ was a load refusal of that relation; its gap analysis named the claim unsupporte
 deferred the read to the implementer. Before Task A was built, the architect asked the deploy
 holder, who read both ConfigMaps: one daemon at 120 over 300, the other at 600 over 300 — raised
 days earlier because a cold issue pod's two init containers took 311–344 s plus up to 84 s for a
-node. The refusal would have stopped that daemon's next boot. The architect's ruling (spec v7)
+node. The refusal would have stopped that daemon's next boot. The architect's decision (spec v7)
 replaced Task A with the derivation above, a boot log line, the `--check-config` line and a test
 driving the stop under the 600-over-300 shape
 (`TestProbeImagesCapacityStopNeedsTheBudgetToOutliveTheBootTimeout`, with the old shape as its

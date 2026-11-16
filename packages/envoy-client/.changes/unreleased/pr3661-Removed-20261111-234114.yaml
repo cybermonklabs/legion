@@ -1,0 +1,7 @@
+kind: Removed
+body: |-
+    The `dispatch` command prints no `decision` line for the related-item check, since the server
+    sends no such item. The failure line that named it names the near copies alone.
+time: 2026-11-11T23:41:14.525436657Z
+custom:
+    Issue: pr3661

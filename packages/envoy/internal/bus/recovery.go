@@ -11,9 +11,11 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// onClosed is wired as the ClosedCB callback. It launches recovery in a
-// background goroutine so the NATS library callback returns immediately.
+// onClosed is wired as the ClosedCB callback. It reports the connection event (ConnectionChanged)
+// and launches recovery in a background goroutine so the NATS library callback returns
+// immediately.
 func (c *Client) onClosed() {
+	c.connectionChanged()
 	go c.recover()
 }
 
@@ -34,6 +36,9 @@ func (c *Client) onConnect(nc *nats.Conn) {
 }
 
 func (c *Client) onReconnect(nc *nats.Conn) {
+	// The reconnect is reported first (ConnectionChanged), so a publish waiting for it goes on
+	// without waiting for the re-subscribe and the hooks below.
+	c.connectionChanged()
 	// A reconnect after the client stopped belongs to a process that is shutting down: closeStopped
 	// closes the connection, or leaves it to the drain when the reconnect came before Drain stopped
 	// the client.
@@ -128,6 +133,34 @@ func (c *Client) AddReconnectHook(hook func(*nats.Conn) error) {
 	c.reconnectHooksMu.Lock()
 	c.reconnectHooks = append(c.reconnectHooks, hook)
 	c.reconnectHooksMu.Unlock()
+}
+
+// AddDisconnectHook registers what state attached to NATS, such as a KV watcher's cache, does when
+// the client's connection is lost. nats.go reconnects forever and keeps a watcher's subscription
+// open through the outage, so the watcher never ends and nothing else says its cache has stopped
+// following the bucket. The hooks run on every disconnect of the client's connection, in the order
+// they were added, on nats.go's callback goroutine and so before the reconnect hooks of the
+// reconnect that follows. A hook returns at once: it runs inside that callback.
+func (c *Client) AddDisconnectHook(hook func()) {
+	if hook == nil {
+		return
+	}
+	c.reconnectHooksMu.Lock()
+	c.disconnectHooks = append(c.disconnectHooks, hook)
+	c.reconnectHooksMu.Unlock()
+}
+
+// onDisconnect is wired as the DisconnectedErrCB callback, after its log line: it reports the
+// connection event (ConnectionChanged), so that a publish waiting for the connection reads it
+// again, and then runs the disconnect hooks.
+func (c *Client) onDisconnect() {
+	c.connectionChanged()
+	c.reconnectHooksMu.Lock()
+	hooks := slices.Clone(c.disconnectHooks)
+	c.reconnectHooksMu.Unlock()
+	for _, hook := range hooks {
+		hook()
+	}
 }
 
 // AddDrainHook registers an end Drain gives to state attached to NATS that the client does not
@@ -411,7 +444,10 @@ func (c *Client) restoreSubscriptions() (pending bool, err error) {
 		// it delivers as it did. Unsubscribing it to bind again would race the server's release of
 		// the consumer's push binding, which refuses the new bind while it still sees the old one.
 		// One on a replaced connection is invalid and is bound again. A registration its caller
-		// ended (DrainSubscription) is no longer here to bind.
+		// ended (DrainSubscription) is no longer here to bind, which is how a caller that must not
+		// be re-attached says so: Dispatch's delivery intake gives its registration up at a
+		// connection event, since neither branch here can tell a holder that has lost its durable
+		// from one that should go on delivering through the outage.
 		if subscription.handler == nil || subscription.active.IsValid() {
 			continue
 		}

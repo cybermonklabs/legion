@@ -1,3 +1,6 @@
+// Package architecture imports a project's architecture model. The importer
+// fetches a source's notes through the GitHub App, parses them with the notes
+// package, and projects the model into the components tables.
 package architecture
 
 import (
@@ -7,19 +10,23 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 // SourceDir is the fixed directory an architecture source's model is read
@@ -43,8 +50,8 @@ const SourceColumns = `project_key, id, repo, branch, enabled, installation_id, 
 	(select count(*) from components where components.project_key = architecture_sources.project_key and components.source_id = architecture_sources.id)`
 
 // syncTimeout bounds one whole sync — every GitHub call plus the projection —
-// so a slow upstream cannot hold the per-project lock (and every queued
-// Refresh behind it) indefinitely.
+// so a slow upstream ends one source's shared flight (and so every caller
+// waiting on it) instead of hanging on indefinitely.
 var syncTimeout = 2 * time.Minute
 
 // errSourceMoved is a sync that found the source's repo or branch changed
@@ -76,33 +83,51 @@ type loadedSource struct {
 // row: each write takes its lock and commits only while the row's version
 // (xmin) is still the one the sync loaded before its fetch, so a sync another
 // write overtook never records the older head, files or failure it read
-// (errSuperseded). The per-project mutex only keeps one process from fetching
-// one project twice at once.
+// (errSuperseded). Within one process, the callers of one source share one
+// flight instead of each making its own set of GitHub calls, no lock is held
+// across a GitHub call, and two sources — of one project or of two — never
+// wait on each other here; the source row still orders what every process
+// writes.
 type Importer struct {
 	store  *store.Store
 	github *githubapp.Client
 	events *events.Broker
 
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	// owner outlives every caller: the process stopping (Close) is the only
+	// thing that cancels a flight, since a flight runs on behalf of callers
+	// that have since left.
+	owner   context.Context
+	abandon context.CancelFunc
+	running syncCount
+	// syncs is keyed on the source, project and repository both, not on the
+	// project: Sync answers that source's row, and SyncProject needs one
+	// result per repository. Two sources of one project cannot corrupt each
+	// other without a mutex here, because every projection takes
+	// lockProjectSources (`order by id for update`) and judges heldElsewhere
+	// inside that lock.
+	syncs singleflight.Group
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
 // is the "no app credentials" state: every sync answers ErrNoAppKey), and the
 // event broker.
 func NewImporter(database *store.Store, github *githubapp.Client, broker *events.Broker) *Importer {
-	return &Importer{store: database, github: github, events: broker, locks: map[string]*sync.Mutex{}}
+	owner, abandon := context.WithCancel(context.Background())
+	return &Importer{store: database, github: github, events: broker, owner: owner, abandon: abandon}
 }
 
-func (i *Importer) lock(project string) *sync.Mutex {
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	lock, ok := i.locks[project]
-	if !ok {
-		lock = &sync.Mutex{}
-		i.locks[project] = lock
+// Close ends the importer's flights and waits for them: architecture.Run is
+// not among the waits shutdown takes (cmd/dispatch/shutdown.go waits
+// background.Wait and waitIntakes, then waitUntilIdle and pool.Close), and a
+// flight runs on a context the caller's cancellation no longer reaches, so
+// without this a sync still fetching when the process stops would write into
+// a closing pool. It is safe to call twice, and on a nil importer.
+func (i *Importer) Close() {
+	if i == nil {
+		return
 	}
-	return lock
+	i.abandon()
+	i.running.stop()
 }
 
 // HasApp reports whether the App credentials needed to sync are configured.
@@ -204,27 +229,52 @@ func (i *Importer) SyncProject(ctx context.Context, project string) ([]SyncResul
 // (errSuperseded: another process's sync, or a settings save, committed first)
 // starts again from the load inside the same deadline; each retry follows
 // another committed write, and usually ends in the unchanged-head refresh.
+//
+// Callers of one source share one flight in this process: the first makes the
+// GitHub calls and runs the retry chain, and the others read its answer, so a
+// Refresh clicked twice over costs one fetch. A flight older than its caller
+// does not serve it, though — the caller stamps the moment it asked and takes
+// an answer only from a flight that issued its head lookup no earlier, so a
+// person who pushes and then asks for a Refresh is never told the pre-push
+// commit with a fresh last_sync_at.
 func (i *Importer) Sync(ctx context.Context, project, repo string) (model.ArchitectureSource, error) {
-	lock := i.lock(project)
-	lock.Lock()
-	defer lock.Unlock()
-	// A sync opens its own transactions on the shared pool, so it is marked like an API
-	// request: a read it makes while one is open must come from that transaction, never from a
-	// second connection (store.ErrNestedAcquire). The scheduled sync has no request to inherit
-	// the mark from.
-	parent := store.WithTransactionTracking(ctx)
-	ctx, cancel := context.WithTimeout(parent, syncTimeout)
-	defer cancel()
+	// A caller that has already hung up, and an importer whose process is
+	// stopping, start no flight: the work would outlive both of them.
+	if err := ctx.Err(); err != nil {
+		return model.ArchitectureSource{}, err
+	}
+	if err := i.owner.Err(); err != nil {
+		return model.ArchitectureSource{}, err
+	}
+	// calledAt is stamped once, before any join: what a flight has to be
+	// newer than is the moment this caller asked, not the moment it last
+	// looked.
+	calledAt := time.Now()
+	key := project + "\x00" + repo
 	for {
-		source, err := i.syncOnce(ctx, parent, project, repo)
-		if !errors.Is(err, errSuperseded) {
-			return source, err
+		answered := i.syncs.DoChan(key, func() (any, error) { return i.flight(ctx, project, repo) })
+		select {
+		case <-ctx.Done():
+			return model.ArchitectureSource{}, ctx.Err()
+		case result := <-answered:
+			flight := result.Val.(*syncFlight)
+			// Not Before rather than After: two readings of the clock that
+			// land on the same instant must end the loop, not spin it.
+			if !flight.servedAt().Before(calledAt) {
+				return flight.source, result.Err
+			}
+			// That flight looked the head up before this caller existed, so
+			// its row may predate a push the caller already knows about: join
+			// the next one. This is the last round, because singleflight
+			// deletes the key before it sends a result, so the flight joined
+			// or created now necessarily began after calledAt.
 		}
 	}
 }
 
-// syncOnce is one attempt of Sync, from the load of the source row to its write.
-func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string) (model.ArchitectureSource, error) {
+// syncOnce is one attempt of Sync, from the load of the source row to its write. It stamps the
+// flight's head lookup, which is how fresh the answer every caller of the flight reads is.
+func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, flight *syncFlight) (model.ArchitectureSource, error) {
 	source, err := i.loadSourceByRepo(ctx, project, repo)
 	if err != nil {
 		return model.ArchitectureSource{}, err
@@ -233,6 +283,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string) (
 	if importErr != nil {
 		return i.failed(ctx, parent, source, importErr)
 	}
+	flight.headAt = time.Now()
 	commit, importErr := i.github.Ref(ctx, token, owner, name, source.Branch)
 	if importErr != nil {
 		return i.failed(ctx, parent, source, importErr)
@@ -255,7 +306,7 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string) (
 	if importErr != nil {
 		return i.failed(ctx, parent, source, importErr)
 	}
-	parsed, importErr := Parse(files)
+	parsed, importErr := notes.Parse(files)
 	if importErr != nil {
 		return i.failed(ctx, parent, source, importErr)
 	}
@@ -271,14 +322,19 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string) (
 }
 
 // failed records importErr on the source row and hands both back: the Sync
-// contract for every import failure. When the sync's own deadline is what
-// failed (the caller is still alive), the short record write runs on a
-// cancel-free context so the timeout lands on the row like any other failure;
-// a caller that has gone away (shutdown, client hang-up) records nothing.
+// contract for every import failure. The sync's own deadline is always
+// recorded, on parent — the flight's own context, which carries no sync
+// deadline of its own and which the process stopping is the only thing to end
+// — so that the timeout lands on the row like any other failure while Close
+// can still cut a record write short, as it must: cmd/dispatch runs Close
+// inside the wait the shutdown takes before the pool closes. Which caller is
+// still listening does not come into it: a flight has no single caller, and
+// nobody being there was never a reason to lose the fact that GitHub timed
+// out.
 func (i *Importer) failed(ctx, parent context.Context, source loadedSource, importErr error) (model.ArchitectureSource, error) {
 	recordCtx := ctx
-	if ctx.Err() != nil && parent.Err() == nil {
-		recordCtx = context.WithoutCancel(parent)
+	if ctx.Err() != nil {
+		recordCtx = parent
 	}
 	updated, err := i.recordFailure(recordCtx, source, importErr)
 	if err != nil {
@@ -496,7 +552,7 @@ func (i *Importer) abortMoved(ctx context.Context, tx pgx.Tx, source model.Archi
 // currently projects, with that source's repository: component ids are
 // project-wide, so such an import fails for the importing source alone and the
 // source holding the id keeps it.
-func heldElsewhere(ctx context.Context, tx pgx.Tx, source model.ArchitectureSource, repos map[int64]string, parsed Model) error {
+func heldElsewhere(ctx context.Context, tx pgx.Tx, source model.ArchitectureSource, repos map[int64]string, parsed notes.Model) error {
 	ids := make([]string, 0, len(parsed.Components))
 	for _, component := range parsed.Components {
 		ids = append(ids, component.ID)
@@ -535,7 +591,7 @@ func (i *Importer) project(
 	commit string,
 	treeSHA string,
 	files map[string][]byte,
-	parsed Model,
+	parsed notes.Model,
 ) (model.ArchitectureSource, error) {
 	encoded, err := json.Marshal(snapshotFiles(files))
 	if err != nil {
@@ -660,7 +716,33 @@ func (i *Importer) project(
 	if changed {
 		i.events.Publish(event)
 	}
+	i.storeComponentTrees(ctx, source.Project, parsed)
 	return updated, nil
+}
+
+// storeComponentTrees stores the display tree of every component's prose, now that the import's
+// own transaction has committed: a component's prose is a stored text a reader is shown
+// (api's component reads), so its tree is stored where it is written, as a comment's body is.
+// It runs after the commit rather than inside the import's transaction, because a tree that
+// cannot be stored must not fail an import, and because the import holds the project's source
+// rows locked until it commits: a connection taken for this while it held them would be a second
+// one of the pool taken under a lock (store.ErrNestedAcquire).
+//
+// A failure is logged with the project it was for and changes nothing: a read of a component
+// whose tree is missing reads its prose, as it did before there was a table. The store is
+// texttrees.StoreFor, the one policy every path that writes a stored text keeps, so an importer
+// whose caller still holds a pooled connection stores nothing rather than being refused one.
+func (i *Importer) storeComponentTrees(ctx context.Context, project string, parsed notes.Model) {
+	if i.store == nil || len(parsed.Components) == 0 {
+		return
+	}
+	prose := make([]string, 0, len(parsed.Components))
+	for _, component := range parsed.Components {
+		prose = append(prose, component.Prose)
+	}
+	if err := texttrees.StoreFor(ctx, i.store, pmdoc.DisplayLatest, prose...); err != nil {
+		slog.Warn("dispatch: store architecture component display trees failed", "project", project, "error", err)
+	}
 }
 
 // recordComponentFacts records, in the import's transaction, when each component of parsed was
@@ -670,7 +752,7 @@ func (i *Importer) project(
 // changed now. A row with the same digest stays as it is. Then every row of the project whose
 // component no source projects any more is deleted (DeleteOrphanComponentFacts), so a component
 // retired and imported again later is made again.
-func recordComponentFacts(ctx context.Context, tx pgx.Tx, project string, parsed Model) error {
+func recordComponentFacts(ctx context.Context, tx pgx.Tx, project string, parsed notes.Model) error {
 	facts := &pgx.Batch{}
 	for _, component := range parsed.Components {
 		facts.Queue(`
@@ -707,7 +789,7 @@ func DeleteOrphanComponentFacts(ctx context.Context, tx pgx.Tx, project string) 
 // componentDigest is the hex SHA-256 of a canonical JSON of the component's own fields: title,
 // prose, parent, external, paths in the model's order, and depends_on sorted. An absent list and
 // an empty one digest alike.
-func componentDigest(component Component) string {
+func componentDigest(component notes.Component) string {
 	paths := component.Paths
 	if paths == nil {
 		paths = []string{}

@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // roleMentionRegistry is the listener state a role-mention retry test moves between requests:
@@ -74,6 +77,7 @@ func TestPendingRoleMentionRetryKeepsTheCreateTimeHolder(t *testing.T) {
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep this holder.", "mentions": []map[string]any{{"target": "role:reviewer"}},
 	}))
+	settledCommentDeliveries(t, database, comment.ID)
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
 		where comment_id = $1 and target = 'role:reviewer' and attempt = 1
@@ -161,6 +165,7 @@ func TestStrandedAttemptRetriedDuringAListenerOutageKeepsThePinAndAcceptsTheRepl
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Attempt 1 goes out fine.", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
+	settledCommentDeliveries(t, database, comment.ID)
 
 	// A sender recorded attempt 2's resolution - pinning it to s1, the session its frame
 	// reached - and died before it could send or settle. The claim is old enough to be
@@ -230,6 +235,7 @@ func TestStrandedRoleAttemptRetriedDuringAnOutageKeepsThePinAndRefusesTheNewHold
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep this holder through an outage.", "mentions": []map[string]any{{"target": "role:reviewer"}},
 	}))
+	settledCommentDeliveries(t, database, comment.ID)
 
 	// Attempt 1 sent to s1, the role's holder at creation. A sender strands it back to
 	// pending, claimed long enough ago to be plainly abandoned; the row still names s1, the
@@ -326,6 +332,7 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep the original mode.", "mentions": []map[string]any{{"target": "session:s1"}}, "delivery": "btw",
 	}))
+	settledCommentDeliveries(t, database, comment.ID)
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
 		where comment_id = $1 and target = 'session:s1' and attempt = 1
@@ -394,8 +401,8 @@ func TestPendingMentionRetryRechecksCapabilityAgainstCurrentRegistration(t *test
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Created while steer was advertised.", "mentions": []map[string]any{{"target": "session:s1"}}, "delivery": "steer",
 	}))
-	if len(comment.Deliveries) != 1 || comment.Deliveries[0].State != "sent" {
-		t.Fatalf("initial delivery = %#v, want sent", comment.Deliveries)
+	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].State != "sent" {
+		t.Fatalf("initial delivery = %#v, want sent", settled)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -450,17 +457,18 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 		}
 	}))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Initial capability race", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body":     "Created while steer was advertised.",
 		"mentions": []map[string]any{{"target": "session:s1"}},
 		"delivery": "steer",
 	}))
-	if len(comment.Deliveries) != 1 {
-		t.Fatalf("deliveries = %#v, want one", comment.Deliveries)
+	settled := settledCommentDeliveries(t, database, comment.ID)
+	if len(settled) != 1 {
+		t.Fatalf("deliveries = %#v, want one", settled)
 	}
-	attempt := comment.Deliveries[0]
+	attempt := settled[0]
 	if attempt.State != "failed" || attempt.Error == nil ||
 		*attempt.Error != "session s1 (planner) does not advertise steer" || sends != 0 {
 		t.Fatalf("initial delivery reused stale capability: session reads=%d sends=%d attempt=%#v", sessionReads, sends, attempt)
@@ -494,9 +502,9 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Keep the original resolution error.", "mentions": []map[string]any{{"target": "role:reviewer"}},
 	}))
-	if len(comment.Deliveries) != 1 || comment.Deliveries[0].Error == nil ||
-		*comment.Deliveries[0].Error != "no holder for role reviewer" {
-		t.Fatalf("initial unresolved delivery = %#v", comment.Deliveries)
+	if settled := settledCommentDeliveries(t, database, comment.ID); len(settled) != 1 || settled[0].Error == nil ||
+		*settled[0].Error != "no holder for role reviewer" {
+		t.Fatalf("initial unresolved delivery = %#v", settled)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		update comment_deliveries set state = 'pending', envelope_id = null, error = null, claimed_at = null
@@ -525,7 +533,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 // A listener that cannot answer whether a session lives is not a listener saying that session
 // ended. The per-session read answers 503 here, as it does while the message bus is silent, and
 // what the attempt records must be the listener's own reason: "no live session " is the prefix a
-// mention's session pin is kept or dropped by (resolveMentionTargets in comment_delivery.go) and
+// mention's session pin is kept or dropped by (resolveMentionTarget in comment_delivery.go) and
 // the text the dashboard prints, so wording an unanswered read that way would un-name a
 // recipient that never went anywhere and tell a person to stop waiting on it.
 func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *testing.T) {
@@ -547,16 +555,17 @@ func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *
 		}
 	}))
 	defer listener.Close()
-	handler, _ := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Mention while the bus is silent", "before")
 	comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "Does this reach you?", "mentions": []map[string]any{{"target": "session:s1"}},
 		"delivery": "steer",
 	}))
-	if len(comment.Deliveries) != 1 || comment.Deliveries[0].Error == nil {
-		t.Fatalf("deliveries = %#v, want one failed delivery", comment.Deliveries)
+	settled := settledCommentDeliveries(t, database, comment.ID)
+	if len(settled) != 1 || settled[0].Error == nil {
+		t.Fatalf("deliveries = %#v, want one failed delivery", settled)
 	}
-	delivery := comment.Deliveries[0]
+	delivery := settled[0]
 	if delivery.State != "failed" || sends != 0 {
 		t.Fatalf("delivery during a silent bus = %#v sends=%d, want a failure and no send", delivery, sends)
 	}
@@ -564,5 +573,53 @@ func TestMentionDuringAnUnanswerableRegistryReadIsNotRecordedAsNoLiveSession(t *
 		t.Fatalf("delivery error = %q, want the listener's own reason, not an ended session", failure)
 	} else if !strings.Contains(failure, busSilent) {
 		t.Fatalf("delivery error = %q, want it to carry the listener's reason %q", failure, busSilent)
+	}
+}
+
+// dispatch://INFRA-392. A role whose holder missed its heartbeats still has that holder: the
+// listener keeps the claim and answers the lookup with holder_state unresponsive, so the
+// delivery resolves to that session and its frame is stored for it until it answers again.
+// Asked without the selector, the same listener answers 404 holder_lapsed - the answer that
+// used to drop the message - so this also pins the selector every lookup must send.
+//
+// A record the registry itself calls gone is the other half: a 200 is not a live session, and
+// the state, never the status code, says which.
+func TestDeliveryResolvesAnUnresponsiveHolderAndRefusesAGoneOne(t *testing.T) {
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("include") != "unresponsive" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"role reviewer holder s1 lapsed","reason":"holder_lapsed","holder":"s1"}`))
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/roles/reviewer":
+			_, _ = w.Write([]byte(`{"role":"reviewer","holder":"s1","title":"reviewer","holder_state":"unresponsive",` +
+				`"last_seen":1700000000000,"capabilities":["steer"]}`))
+		case "/v1/registry/s2":
+			_, _ = w.Write([]byte(`{"session_id":"s2","title":"retired","state":"gone","last_seen":1600000000000,` +
+				`"capabilities":["steer"]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"no live session"}`))
+		}
+	}))
+	defer listener.Close()
+	served := &server{deps: Deps{Envoy: envoy.New(listener.URL)}, lifetime: context.Background()}
+
+	id, title, refusal := served.resolveDeliveryTarget(
+		context.Background(), model.Route{Kind: "role", ID: "reviewer"}, "steer",
+	)
+	if refusal != "" {
+		t.Fatalf("a role whose holder is unresponsive: refused %q, want it delivered and stored for that holder", refusal)
+	}
+	if id != "s1" || title != "reviewer" {
+		t.Fatalf("resolved %q (%q), want the unresponsive holder s1", id, title)
+	}
+
+	gone, _, refused := served.resolveDeliveryTarget(
+		context.Background(), model.Route{Kind: "session", ID: "s2"}, "steer",
+	)
+	if gone != "s2" || refused != "no live session s2" {
+		t.Fatalf("a session the registry calls gone resolved %q with %q, want it refused as no live session", gone, refused)
 	}
 }
