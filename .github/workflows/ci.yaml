@@ -1081,6 +1081,7 @@ jobs:
               - '!packages/daemon/internal/testbin/**/*_test.go'
               - '!packages/daemon/internal/testnats/**/*_test.go'
               - '!packages/daemon/internal/testpg/**/*_test.go'
+              - '!packages/daemon/internal/testport/**/*_test.go'
               - '!packages/daemon/internal/testtmp/**/*_test.go'
               - '!packages/daemon/internal/textcheck/**/*_test.go'
               - '!packages/daemon/internal/wait/**/*_test.go'
