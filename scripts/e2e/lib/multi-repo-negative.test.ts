@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   closeServers,
   daemonActorEvent,
@@ -13,21 +13,17 @@ import {
   mutableDaemonStub,
   newFakeDir,
   noneNote,
-  observerReadDeadlineMs,
   run,
   spawnScript,
   stateBody,
-  useRowDeadline,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
 
 // The `negative` observations of scripts/e2e/multi-repo-acceptance.sh (no-repo, pr-in-x,
 // repo-edit); the other observations are in multi-repo-acceptance.test.ts. The stubs and fakes
 // they run against are in multi-repo-acceptance-harness.ts.
-// A row runs the observer, once or twice (a `before`, then an `after`), and nothing else that
-// waits: its bound is the observer's read deadline and the margin for its work (useRowDeadline),
-// set above every hook so the hooks have it too.
-useRowDeadline(observerReadDeadlineMs);
+// Hang guard, above every hook: the observer's 30 s curl --max-time, plus 30 s for the row's work.
+setDefaultTimeout(60_000);
 useScratchDirectory();
 
 afterEach(() => {

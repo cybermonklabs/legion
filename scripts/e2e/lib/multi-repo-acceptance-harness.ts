@@ -1,4 +1,4 @@
-import { beforeAll, setDefaultTimeout } from "bun:test";
+import { beforeAll } from "bun:test";
 import {
   accessSync,
   existsSync,
@@ -44,48 +44,6 @@ export function useScratchDirectory(): void {
   beforeAll(() => {
     writeFileSync(tokenFile, "dispatch-bearer\n");
   });
-}
-
-/** The one number `pattern` captures in `file`, or the largest of several; none is a refusal. */
-function deadlineSeconds(file: string, pattern: RegExp): number {
-  const found = [...readFileSync(file, "utf8").matchAll(pattern)].map((m) => Number(m[1]));
-  if (found.length === 0) throw new Error(`${file} names no deadline matching ${pattern}`);
-  return Math.max(...found);
-}
-
-/** The longest wait the observer allows one read of its own: the largest `--max-time` of its
- *  curl reads (30 s; /healthz's is 15 s). A read that fails ends the run (`set -e`, raw_fetch's
- *  `fail`), so a run waits that long at most on any one stalled server. */
-export const observerReadDeadlineMs = 1000 * deadlineSeconds(script, /--max-time (\d+)/g);
-
-/** The longest wait as-role.py allows one probe: PROBE_TIMEOUT_SECONDS (120 s), the bound on each
- *  command it runs and each request it sends. */
-export const proberDeadlineMs =
-  1000 * deadlineSeconds(join(import.meta.dir, "as-role.py"), /^PROBE_TIMEOUT_SECONDS = (\d+)$/gm);
-
-/** What a row is given for its own work beyond the code's deadline: the observer's read deadline
- *  once more. A row's work is process starts (bash, jq, tr, mktemp, curl, the fakes, python3), and
- *  the heaviest of the rows counted under `strace -f`, a repo-edit `before` and `after`, made 92
- *  execs in 164 forks (a second-owner row, 79 in 85), so the margin is over 180 ms a fork. No row
- *  times anything; the waits a row keeps (a stub's release, a real exec) wait on the event. */
-const rowWorkMarginMs = observerReadDeadlineMs;
-
-/**
- * Sets the calling test file's per-test timeout to `codeDeadlineMs`, the longest wait the code
- * its rows run allows itself, plus the margin above for the row's work. Call it once at the
- * file's module scope, above every hook the file registers, useScratchDirectory's among them:
- * Bun 1.4.4 applies `setDefaultTimeout` to the file whose module body calls it and to no other
- * file, and gives each hook the default in force where the hook is registered, so a hook above
- * the call keeps 5 s (the scratch tree's removal, held to a ninth of one CPU, took 6.6 s).
- *
- * The timeout is a hang guard, since nothing in a row is timed, and it is the file's own: Bun's
- * default 5 s is a count of milliseconds over process starts that a loaded machine stretches
- * (rows held to a ninth of one CPU ran past it and were killed mid-run, exit 143, with no reason of
- * the row's). Set past the code's own deadline, a server or probe that stalls fails the row with
- * the code's refusal, and only a hang outside every deadline the code keeps reaches the guard.
- */
-export function useRowDeadline(codeDeadlineMs: number): void {
-  setDefaultTimeout(codeDeadlineMs + rowWorkMarginMs);
 }
 
 let runs = 0;

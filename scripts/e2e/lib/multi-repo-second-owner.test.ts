@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -20,13 +20,10 @@ import {
   newWork,
   nextRun,
   OWNERS_DIR,
-  observerReadDeadlineMs,
-  proberDeadlineMs,
   realKubectl,
   recordedCalls,
   run,
   servers,
-  useRowDeadline,
   useScratchDirectory,
 } from "./multi-repo-acceptance-harness";
 import {
@@ -47,10 +44,8 @@ import {
 // `/opt/legion/bin/...`; the agent's PATH carries only a fake `git` that records every call and
 // fails, so a run that reached git would show.
 
-// A row runs the observer, which runs as-role.py, and the prober's deadline is the longer of the
-// two: its bound is that and the margin for its work (useRowDeadline), set above every hook so the
-// hooks have it too.
-useRowDeadline(Math.max(observerReadDeadlineMs, proberDeadlineMs));
+// Hang guard, above every hook: as-role.py's 120 s probe timeout, plus 30 s for the row's work.
+setDefaultTimeout(150_000);
 useScratchDirectory();
 
 const makeDirectory = temporaryDirectories("multi-repo-acceptance");
@@ -677,8 +672,8 @@ describe("second-owner: the role's credential, resolved once, with a positive pu
       });
       let postExecCmdline: Buffer | undefined;
       // Real wait: the exec is a real kernel transition on a real pid, not an in-process timer. It
-      // polls until the exec has happened, with no count of its own: the row's deadline
-      // (useRowDeadline) is the one bound on it.
+      // polls until the exec has happened, with no count of its own: the file's default timeout
+      // (setDefaultTimeout above) is the one bound on it.
       while (postExecCmdline === undefined) {
         try {
           const buf = await Bun.file(`/proc/${realProc.pid}/cmdline`).arrayBuffer();
