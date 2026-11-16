@@ -162,8 +162,14 @@ declare -A missing=(
 readonly projectless_kinds=" priority delivery-run live-pause session-group credential-request credential-grant machine-login signin "
 # The kinds of no-project node a Probe names (spec v34, Design: "A node of no project"): both
 # servers hold the same ones, and the walk fills them alike on both sides. A personal token is a
-# row of its person's, which both servers hold under one label; only its list can name PRIV.
-readonly no_project_kinds=" session person agent-token "
+# row of its person's, which both servers hold under one label; only its list can name PRIV. A
+# broadcast goes to sessions, which are no-project nodes, and both servers hold the same one.
+readonly no_project_kinds=" session person agent-token broadcast "
+# The write rows that name an object and wait on a Probe from another task, each with its task.
+declare -A awaiting_probe=(
+  ["PUT /api/v1/settings/repo-projects/{owner}/{repo}"]="t-a-32 (a hidden mapping answers as missing)"
+  ["DELETE /api/v1/settings/repo-projects/{owner}/{repo}"]="t-a-32 (a hidden mapping answers as missing)"
+)
 
 # priv_object KIND PATTERN prints PRIV's object of KIND in main's seed for a row of PATTERN, or
 # nothing when the seed holds none. A document is PRIV-1's spec, whose blocks the seed knows; a
@@ -178,6 +184,7 @@ priv_object() {
       case "$2" in
         /api/v1/projects/*) printf playbook-md ;;
         /api/v1/issues/*) printf notes-md ;;
+        /api/v1/agents/*) recalled main "PRIV session file slug" ;;
       esac
       ;;
     document-version) printf 1 ;;
@@ -185,6 +192,12 @@ priv_object() {
     ask) recalled main "PRIV ask" ;;
     comment) recalled main "PRIV comment" ;;
     message | thread) recalled main "PRIV message" ;;
+    handoff) recalled main "PRIV handoff" ;;
+    result) recalled main "PRIV result" ;;
+    going-run) recalled main "PRIV going run" ;;
+    group) printf priv-group ;;
+    # The labels resolve fills on each server with that server's own object.
+    broadcast) printf '{session broadcast}' ;;
     attempt) printf 1 ;;
     email) printf '%s' "$bob" ;;
     # The label resolve fills on each server with that server's own token.
@@ -286,6 +299,20 @@ for server in main twin; do
     '{"body":"A direct message to the PUB session.","delivery":"btw"}'
   expect_status 201 "$server: carol messages the PUB session"
   remember "$server" "PUB direct message" "$(jq -r .id "$work/body")"
+  # Two objects of no project, alike on both servers: an access group, the deployment's, which
+  # PRIV's list names on main below; and a broadcast to PRIV's session, a no-project node. Every
+  # uuid the broadcast's answer names is remembered, in order, so both servers' read alike.
+  send "$server" carol PUT /api/v1/access-groups/priv-group "$(jq -cn --arg c "$carol" '{members: [$c]}')"
+  [[ "$status" == 2?? ]] || fail "$server: carol makes the group priv-group: HTTP $status $(head -c 300 "$work/body")"
+  send "$server" carol POST /api/v1/broadcasts '{"body":"A broadcast to the PRIV session.","delivery":"btw","session_ids":["ses-priv-session"]}'
+  expect_status 201 "$server: carol broadcasts to the PRIV session"
+  remember "$server" "session broadcast" "$(jq -r .id "$work/body")"
+  index=0
+  while IFS= read -r uuid; do
+    index=$((index + 1))
+    remember "$server" "session broadcast uuid $index" "$uuid"
+  done < <(jq -r --arg id "$(recalled "$server" "session broadcast")" '[.. | strings | select(test("^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$") and . != $id)]
+    | reduce .[] as $u ([]; if index([$u]) then . else . + [$u] end) | .[]' "$work/body")
 done
 # bob is a person, not an object PRIV wrote, so both servers hold him alike.
 mark_restricted main bob
@@ -297,6 +324,32 @@ for person in "$bob" "$carol"; do
 done
 seed_objects main PRIV bob
 map_repository main acme/priv-repo PRIV
+send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
+expect_status 200 "main: carol names the group priv-group on PRIV's list"
+# The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result, a
+# file of PRIV's session's conversation, and a going run.
+send main shared POST /api/v1/issues/PRIV-1/handoffs/plan "$(with_actor shared '{"body":"{\"next\":\"seeded\"}"}')"
+expect_status 201 "main: the shared token records a handoff on PRIV-1"
+remember main "PRIV handoff" "$(jq -r '.id // .handoff.id' "$work/body")"
+send main carol POST /api/v1/issues/PRIV-1/artifacts "$(jq -cn '{name: "verification.md", content: ":::check{#k1 surface=\"cli\" run=\"go test ./...\"}\nThe server records a result against a check.\n:::\n"}')"
+expect_status 201 "main: carol uploads PRIV-1's Verification document"
+send main shared POST /api/v1/issues/PRIV-1/results \
+  "$(with_actor shared '{"check":"k1","role":"implementer","verdict":"pass","commit":"1111111111111111111111111111111111111111"}')"
+expect_status 201 "main: the shared token records a result of PRIV-1's check"
+remember main "PRIV result" "$(jq -r '.id // .result.id' "$work/body")"
+printf '\x89PNG\r\n\x1a\nproject-access' >"$work/priv-file.png"
+status=$(curl -sS -o "$work/body" -w '%{http_code}' --max-time "$call_seconds" -H "@$work/auth/main-shared" \
+  -F "name=priv-session-file.png" -F "actor=$(jq -cn --arg s "$seed_session" '{kind: "session", id: $s}')" \
+  -F "file=@$work/priv-file.png;type=image/png" "${build_url[main]}/api/v1/agents/ses-priv-session/artifacts" 2>"$work/curl") ||
+  status="curl failed: $(<"$work/curl")"
+expect_status 201 "main: the shared token sends a file in the PRIV session's conversation"
+remember main "PRIV session file slug" "$(jq -r '.artifact.slug' "$work/body")"
+send main carol POST /api/v1/going/requests '{"words":"What does PRIV hold?","project":"PRIV"}'
+if [ "$status" = 201 ]; then
+  remember main "PRIV going run" "$(jq -r .id "$work/body")"
+else
+  note "no going run of PRIV: POST /api/v1/going/requests answered HTTP $status $(head -c 200 "$work/body")"
+fi
 mint_token main carol carol-priv-token '["PRIV"]'
 mint_token main alice alice-priv-token '["PRIV"]'
 # The twin's alice holds a token whose list names PRIV, which the twin never wrote: no route mints
@@ -459,14 +512,30 @@ indexed() {
 # shows to an open viewer as it does today, and both servers hold the same ones: a row whose every
 # wildcard is one of them is filled alike on both servers and answered as the twin answers it.
 walk_rows() {
-  local row method pattern wildcards entry hidden none skip wildcard kind object body caller
-  walked=0 lists=0
+  local row method pattern wildcards entry hidden none skip wildcard kind object body caller no_project target
+  walked=0 lists=0 refused=0
   while IFS= read -r row; do
     method=$(jq -r .method <<<"$row")
     pattern=$(jq -r .path <<<"$row")
     entry=$(jq -c --arg m "$method" --arg p "$pattern" 'map(select(.method == $m and .pattern == $p))[0] // empty' "$work/probes.json")
     if [ "$(jq -r '.test_hook // false' <<<"${entry:-null}")" = true ]; then
       note "left out: $method $pattern is a test hook, which only DISPATCH_TEST_HOOKS mounts"
+      continue
+    fi
+    no_project=$(jq -r '.no_project // empty' <<<"${entry:-null}")
+    if [ -n "$no_project" ]; then
+      # The object belongs to no project, so there is no object of PRIV to hide: the row is held
+      # to its class's refusal (scopeDeployment) of every caller that is not open.
+      target=$(sed -E 's/\{[^}]+\}/project-access-walk/g' <<<"$pattern")
+      for caller in bob alice-priv-token carol-priv-token; do
+        send main "$caller" "$method" "$target" "$(jq -c '.body // empty' <<<"$entry")"
+        refused=$((refused + 1))
+        [ "$status" = 403 ] || {
+          printf '%s %s %s (%s): HTTP %s, want 403 for a caller that is not open: %s\n' "$caller" "$method" "$pattern" \
+            "$no_project" "$status" "$(head -c 300 "$work/body")" >>"$work/differences"
+          differed=$((differed + 1))
+        }
+      done
       continue
     fi
     wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
@@ -478,7 +547,7 @@ walk_rows() {
       continue
     fi
     if [ -z "$entry" ] || [ "$(jq -c '.probe' <<<"$entry")" = null ]; then
-      unrun "$method $pattern names an object and has no Probe"
+      unrun "$method $pattern names an object and has no Probe${awaiting_probe["$method $pattern"]:+: it waits on ${awaiting_probe["$method $pattern"]}}"
       continue
     fi
     hidden=$pattern
@@ -613,7 +682,7 @@ if [ "$priv_private" = 1 ]; then
   begin writes
   if [ "$probes_read" = 1 ]; then
     walk_rows 'select(.method != "GET")'
-    note "walked $walked write rows that name an object, as each unseeing caller"
+    note "walked $walked write rows that name an object, as each unseeing caller; $refused calls of rows whose object no project owns, each refused to a caller that is not open"
   fi
   pass
 fi

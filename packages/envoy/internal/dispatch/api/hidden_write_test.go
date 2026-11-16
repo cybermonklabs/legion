@@ -358,7 +358,8 @@ func objectWriteRows() []string {
 
 // writeProbeProblems names every row writeProbes leaves out, every entry that is no such row, and
 // every Probe that does not fill exactly its pattern's wildcards with known objects or whose body
-// is not JSON.
+// is not JSON; and every entry of noProjectWrites that is no write row of class scopeDeployment,
+// that writeProbes also holds, that says no reason, or whose body is not JSON.
 func writeProbeProblems(rows []string) []string {
 	var problems []string
 	for _, name := range rows {
@@ -389,6 +390,20 @@ func writeProbeProblems(rows []string) []string {
 		}
 		if probe.Body != "" && !json.Valid([]byte(probe.Body)) {
 			problems = append(problems, name+": a body that is not JSON")
+		}
+	}
+	for name, write := range noProjectWrites {
+		if writeClasses[name] != scopeDeployment {
+			problems = append(problems, fmt.Sprintf("%s: an entry of noProjectWrites for a row of class %q, not %q", name, writeClasses[name], scopeDeployment))
+		}
+		if _, ok := writeProbes[name]; ok {
+			problems = append(problems, name+": in both writeProbes and noProjectWrites")
+		}
+		if write.Reason == "" {
+			problems = append(problems, name+": an entry of noProjectWrites that says no reason")
+		}
+		if write.Body != "" && !json.Valid([]byte(write.Body)) {
+			problems = append(problems, name+": a noProjectWrites body that is not JSON")
 		}
 	}
 	slices.Sort(problems)

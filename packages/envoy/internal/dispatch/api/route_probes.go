@@ -19,6 +19,10 @@ type RouteProbe struct {
 	// TestHook is whether the row is a test hook: one the server mounts only under
 	// DISPATCH_TEST_HOOKS, which no deployment sets, so the driver leaves it out, naming why.
 	TestHook bool `json:"test_hook,omitempty"`
+	// NoProject is why the object the row's path names belongs to no project (noProjectWrites),
+	// and empty for every other row. Such a row has no Probe; the driver holds it to its class's
+	// refusal of every caller that is not open, sending Body.
+	NoProject string `json:"no_project,omitempty"`
 }
 
 // RouteProbes is every row of the route table, test hooks included, in table order, with its
@@ -43,6 +47,12 @@ func RouteProbes() []RouteProbe {
 			row.Probe = probeMap(probe.Probe)
 			if probe.Body != "" {
 				row.Body = json.RawMessage(probe.Body)
+			}
+		}
+		if write, ok := noProjectWrites[name]; ok {
+			row.NoProject = write.Reason
+			if write.Body != "" {
+				row.Body = json.RawMessage(write.Body)
 			}
 		}
 		probes[index] = row
