@@ -351,9 +351,11 @@ func mappedWorkflowConfig(t *testing.T, natsURL string, mapped ...string) config
 // boot's log reads like the next's.
 //
 // Both Apps are installed on a third account, initech, that no mapped repository belongs to, and
-// neither is minted on it: an owner the Apps are installed on that the mapping does not reach is
-// not proved at boot, since the boot would then depend on installations no work of this project
-// needs. Without initech the row would pass as well on a boot that minted every owner the Apps'
+// neither is minted on it: R1 asks only that an installed owner the mapping does not reach is not
+// PROVED at boot, and a bundle reads its App's installation when it is built, so nothing of that
+// owner is wanted before then. It is not that this project needs no work there: under R3 and R4
+// an issue of this project may name an initech repository, and the daemon records and runs it.
+// Without initech the row would pass as well on a boot that minted every owner the Apps'
 // installations name, because those would be the mapped owners exactly.
 func TestABootMintsEachAppOnceForEachOwnerOfTheMapping(t *testing.T) {
 	quickAppMints(t)
