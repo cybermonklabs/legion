@@ -171,6 +171,16 @@ func (w *approvingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// forceMetadataMachine makes this machine's identity, for the rest of t, the Google identity
+// token a metadata server of the test's own mints (AGENT_SECRETS_MACHINE_IDENTITY=metadata), the
+// actor a person's sign-in presents.
+func forceMetadataMachine(t *testing.T) {
+	t.Helper()
+	t.Setenv(brokerclient.IdentityVar, brokerclient.IdentityMetadata)
+	t.Setenv(brokerclient.MachineAudienceVar, "agent-secrets-vm")
+	startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
+}
+
 // TestLoginTradesUnderThePersonsOwnSessionName: login's first trade is the one the broker binds
 // the name to, so it must ask under brokerclient.SessionFor and never under
 // AGENT_SECRETS_SESSION — which is unset on most boxes, and on the rest is the name this machine
@@ -190,8 +200,7 @@ func TestLoginTradesUnderThePersonsOwnSessionName(t *testing.T) {
 			t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
 			t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)
 			t.Setenv(brokerclient.SessionVar, machineSession)
-			t.Setenv(brokerclient.IdentityVar, brokerclient.IdentityKubernetes)
-			t.Setenv(brokerclient.MachineTokenFileVar, writeLoginFile(t, "machine-token", "projected.service.account.token"))
+			forceMetadataMachine(t)
 
 			stderr := &approvingWriter{t: t, issuer: issuer}
 			if err := login(context.Background(), io.Discard, stderr); err != nil {
@@ -229,8 +238,7 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
 	t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)
 	t.Setenv(brokerclient.SessionVar, "")
-	t.Setenv(brokerclient.IdentityVar, brokerclient.IdentityKubernetes)
-	t.Setenv(brokerclient.MachineTokenFileVar, writeLoginFile(t, "machine-token", "projected.service.account.token"))
+	forceMetadataMachine(t)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", filepath.Join(t.TempDir(), "absent.sock"))
 
 	if err := login(context.Background(), io.Discard, &approvingWriter{t: t, issuer: issuer}); err != nil {
@@ -308,15 +316,6 @@ func TestLoginsSessionNameIsTheOneEveryLaterTradeAsks(t *testing.T) {
 	}
 }
 
-// noProjectedToken points brokerclient.DefaultProjectedTokenFile at a file that is not there for
-// the rest of t, so an in-process row never reads a token the machine running it holds.
-func noProjectedToken(t *testing.T) {
-	t.Helper()
-	previous := brokerclient.DefaultProjectedTokenFile
-	brokerclient.DefaultProjectedTokenFile = filepath.Join(t.TempDir(), "no-projected-token")
-	t.Cleanup(func() { brokerclient.DefaultProjectedTokenFile = previous })
-}
-
 // TestLoginFindsTheMachineWithNoSetting: a person signs in on a machine whose identity nothing
 // configures, and `agent-secrets login` finds it from the broker's exchange audience: the trade
 // carries the metadata server's identity token as its actor. A broker that names no exchange
@@ -332,10 +331,10 @@ func TestLoginFindsTheMachineWithNoSetting(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			broker := newLoginBroker(t)
-			broker.settings = storeSettings("gcp", row.audience, "")
+			broker.settings = storeSettings("gcp", row.audience)
 			issuer := loginIssuer(t, "ada@example.com")
 			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
-			noProjectedToken(t)
+
 			t.Setenv("HOME", t.TempDir())
 			t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
 			t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)

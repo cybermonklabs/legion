@@ -81,12 +81,10 @@ type Deps struct {
 	// name (BROKER_SECRETS_KMS_KEY_NAME).
 	SecretsKMSKey string
 	// GoogleExchangeAudience is BROKER_GOOGLE_OIDC_AUDIENCE where BROKER_VM_SERVICES lists a
-	// machine that may trade a Google identity token at the token exchange, and empty otherwise;
-	// KubernetesExchangeAudience is BROKER_EXCHANGE_K8S_AUDIENCE, the one a pod's projected token
-	// must carry there, empty where unset. GET /v1/settings answers both, so a machine's
-	// `agent-secrets` mints a token for the right audience with no setting of its own.
-	GoogleExchangeAudience     string
-	KubernetesExchangeAudience string
+	// machine that may trade a Google identity token at the token exchange, and empty otherwise.
+	// GET /v1/settings answers it, so a machine's `agent-secrets` mints a token for the right
+	// audience with no setting of its own.
+	GoogleExchangeAudience string
 	// LauncherLimits bounds POST /v1/oauth/device_authorization and POST
 	// /v1/launcher-credentials/token; nil means DefaultLauncherLimits.
 	LauncherLimits *LauncherLimits

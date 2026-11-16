@@ -73,8 +73,8 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 		return err
 	}
 	if machine == nil {
-		return fmt.Errorf("a person signs in on a machine, and this machine proves no identity of its own (%s); set %s (%s, %s or %s) to name one",
-			joinSkipped(skipped), brokerclient.IdentityVar, brokerclient.IdentityKubernetes, brokerclient.IdentityMetadata, brokerclient.IdentityPool)
+		return fmt.Errorf("a person signs in on a machine, and this machine proves no identity of its own (%s); set %s (%s or %s) to name one",
+			joinSkipped(skipped), brokerclient.IdentityVar, brokerclient.IdentityMetadata, brokerclient.IdentityPool)
 	}
 	boxKey, err := proof.NewKey()
 	if err != nil {

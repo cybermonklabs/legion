@@ -117,12 +117,13 @@ this order, and needs no registered agent session:
    only inherited `AGENT_SECRETS_HELPER_SOCK`. A stopped helper (no socket where that variable
    names one or the unit is installed), a socket that does not answer, `NO_CREDENTIAL` or any
    other refusal stops the command.
-4. `machine`: the machine's own cloud identity, found with no setting from the exchange audiences
-   the broker answers in `GET /v1/settings`: a projected token at
-   `/var/run/legion/agent-secrets-token/token` minted for the Kubernetes audience, an
-   `external_account` file `GOOGLE_APPLICATION_CREDENTIALS` names, or the Compute Engine metadata
-   server (`AGENT_SECRETS_MACHINE_IDENTITY` forces one of `kubernetes`, `metadata` or `pool`
-   instead). The settings are read only from an `https` broker, or an `http` one on loopback, and
+4. `machine`: the machine's own cloud identity, found with no setting from the Google exchange
+   audience the broker answers in `GET /v1/settings`: an `external_account` file
+   `GOOGLE_APPLICATION_CREDENTIALS` names, or the Compute Engine metadata server
+   (`AGENT_SECRETS_MACHINE_IDENTITY` forces `metadata` or `pool` instead; `kubernetes` is refused,
+   exit 2, since the broker mints no launcher credential for a Kubernetes identity, and a pod
+   enrolls through its launcher or `enroll --pod`). The settings are read only from an `https`
+   broker, or an `http` one on loopback, and
    the first Google audience they name is kept in the cache's `google-exchange-audience`: a broker
    that later names another is refused before any token is minted for it. The session it
    registers is kept in the machine cache, `$XDG_STATE_HOME/agent-secrets/machine` (a 0700

@@ -2,17 +2,17 @@
 //
 // The identity a machine can trade at the broker when nothing tells it which one it holds.
 // MachineIdentity reads a deployment's own choice (IdentityVar); DetectMachineIdentity finds one
-// with no setting, from the exchange audiences the broker answers in GET /v1/settings, so a VM,
-// a pod and a workload with an external_account credential each reach the broker as themselves
-// with nothing configured. It looks in a fixed order and takes the first identity whose token
-// can carry the broker's audience: a projected Kubernetes service-account token, an
-// external_account credential file, and the Compute Engine metadata server.
+// with no setting, from the Google exchange audience the broker answers in GET /v1/settings, so a
+// VM and a workload with an external_account credential each reach the broker as themselves with
+// nothing configured. It looks in a fixed order and takes the first identity whose token can carry
+// the broker's audience: an external_account credential file, and the Compute Engine metadata
+// server. A pod's projected Kubernetes token is not among them: the exchange mints no launcher
+// credential for a Kubernetes subject, so no session could be registered under it.
 
 package brokerclient
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,7 +20,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"slices"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -30,21 +29,8 @@ import (
 	"github.com/sjawhar/envoy/internal/googleidentity"
 )
 
-// DefaultProjectedTokenFile is where a Legion pod's runtime mounts the projected service-account
-// token minted for the broker's exchange audience, the file `agent-secrets enroll --pod` reads
-// too. It is a variable so a test points it at a file of its own.
-var DefaultProjectedTokenFile = "/var/run/legion/agent-secrets-token/token"
-
 // credentialsFileVar is the variable Google's own libraries read a credentials file from.
 const credentialsFileVar = "GOOGLE_APPLICATION_CREDENTIALS"
-
-// ExchangeSettings is the two exchange audiences a broker answers in GET /v1/settings: the one a
-// machine's Google identity token must carry (BROKER_GOOGLE_OIDC_AUDIENCE) and the one a pod's
-// projected token must carry (BROKER_EXCHANGE_K8S_AUDIENCE). Either is empty where the broker
-// accepts no such identity.
-type ExchangeSettings struct {
-	Google, Kubernetes string
-}
 
 // Skipped is one place DetectMachineIdentity looked and found nothing it could trade, and why, in
 // words a refusal prints as they stand.
@@ -52,40 +38,20 @@ type Skipped struct {
 	Source, Reason string
 }
 
-// DetectMachineIdentity is the first identity this machine holds for one of settings' audiences,
-// with every place it looked before that one and why it had nothing: (a) the projected token at
-// DefaultProjectedTokenFile, taken when its `aud` holds settings.Kubernetes; (b) the
-// external_account credential file GOOGLE_APPLICATION_CREDENTIALS names, taken when it names a
-// service account to act as; (c) the Compute Engine metadata server, taken when one answers
-// within googleidentity.ProbeTimeout. (a) is skipped when settings.Kubernetes is empty, and (b)
-// and (c) when settings.Google is. It answers nil and no error where none of them holds one,
-// which is a machine with no identity of its own rather than a fault. A place that is present
-// but broken — a token file it cannot read, a credentials file that does not parse, a metadata
-// server that answers with a fault — is an error, and nothing after it is tried.
-//
-// Nothing here verifies a token: the broker does that. A projected token's payload is read only
-// to see which audience it was minted for, since presenting one minted for another audience
-// would be refused at the exchange anyway and would hide the identity after it.
-func DetectMachineIdentity(ctx context.Context, settings ExchangeSettings) (Source, []Skipped, error) {
+// DetectMachineIdentity is the first identity this machine holds for audience, the Google
+// exchange audience the broker names, with every place it looked before that one and why it had
+// nothing: (a) the external_account credential file GOOGLE_APPLICATION_CREDENTIALS names, taken
+// when it names a service account to act as; (b) the Compute Engine metadata server, taken when
+// one answers within googleidentity.ProbeTimeout. It answers nil and no error where neither holds
+// one, which is a machine with no identity of its own rather than a fault. A place that is present
+// but broken — a credentials file that does not parse, a metadata server that answers with a
+// fault — is an error, and nothing after it is tried. Nothing here verifies a token: the broker
+// does that.
+func DetectMachineIdentity(ctx context.Context, audience string) (Source, []Skipped, error) {
 	var skipped []Skipped
 	skip := func(source, reason string) { skipped = append(skipped, Skipped{Source: source, Reason: reason}) }
 
-	if settings.Kubernetes == "" {
-		skip("projected token", "the broker names no Kubernetes exchange audience")
-	} else if found, reason, err := projectedTokenFor(settings.Kubernetes); err != nil {
-		return nil, skipped, err
-	} else if found != nil {
-		return found, skipped, nil
-	} else {
-		skip("projected token", reason)
-	}
-
-	if settings.Google == "" {
-		skip("credentials file", "the broker names no Google exchange audience")
-		skip("metadata server", "the broker names no Google exchange audience")
-		return nil, skipped, nil
-	}
-	if found, reason, err := externalAccountFor(settings.Google); err != nil {
+	if found, reason, err := externalAccountFor(audience); err != nil {
 		return nil, skipped, err
 	} else if found != nil {
 		return found, skipped, nil
@@ -99,64 +65,7 @@ func DetectMachineIdentity(ctx context.Context, settings ExchangeSettings) (Sour
 	} else if err != nil {
 		return nil, skipped, err
 	}
-	return NewMetadataIdentity(settings.Google), skipped, nil
-}
-
-// projectedTokenFor is the projected token at DefaultProjectedTokenFile when it was minted for
-// audience, or nil and why not.
-func projectedTokenFor(audience string) (Source, string, error) {
-	file := DefaultProjectedTokenFile
-	data, err := os.ReadFile(file)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, "no projected token at " + file, nil
-	}
-	if err != nil {
-		return nil, "", fmt.Errorf("read the projected service-account token %s: %w", file, err)
-	}
-	minted, ok := jwtAudiences(strings.TrimSpace(string(data)))
-	if !ok {
-		return nil, "the projected token at " + file + " is not a JWT", nil
-	}
-	if !slices.Contains(minted, audience) {
-		return nil, fmt.Sprintf("the projected token at %s was minted for %s, not the broker's exchange audience %s", file, quoteAll(minted), audience), nil
-	}
-	return NewProjectedToken(file), "", nil
-}
-
-// jwtAudiences reads the `aud` claim of a compact JWT without verifying it, as one string or a
-// list of them; ok is false where token is not a JWT whose payload says.
-func jwtAudiences(token string) (audiences []string, ok bool) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return nil, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, false
-	}
-	var claims struct {
-		Aud json.RawMessage `json:"aud"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil || len(claims.Aud) == 0 {
-		return nil, false
-	}
-	var one string
-	if json.Unmarshal(claims.Aud, &one) == nil {
-		return []string{one}, true
-	}
-	if json.Unmarshal(claims.Aud, &audiences) == nil {
-		return audiences, true
-	}
-	return nil, false
-}
-
-// quoteAll is audiences each quoted and joined, for a reason that names them.
-func quoteAll(audiences []string) string {
-	quoted := make([]string, len(audiences))
-	for i, a := range audiences {
-		quoted[i] = fmt.Sprintf("%q", a)
-	}
-	return strings.Join(quoted, ", ")
+	return NewMetadataIdentity(audience), skipped, nil
 }
 
 // externalAccountFor is the external_account credential GOOGLE_APPLICATION_CREDENTIALS names,

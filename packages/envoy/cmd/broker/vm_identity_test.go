@@ -261,12 +261,14 @@ func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
 	}
 }
 
-// TestTheSettingsNameTheGoogleAudienceOnlyWhereAMachineCanTradeIt drives the real binary twice: a
-// broker that lists a VM service publishes BROKER_GOOGLE_OIDC_AUDIENCE as google_exchange_audience
-// in GET /v1/settings, and one whose only Google caller is an API account publishes none, since its
+// TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor drives the real binary twice. A broker that
+// lists a VM service publishes BROKER_GOOGLE_OIDC_AUDIENCE as google_exchange_audience in GET
+// /v1/settings, and one whose only Google caller is an API account publishes none, since its
 // exchange refuses every machine and a client that read the audience would mint, trade and be
-// refused on every command.
-func TestTheSettingsNameTheGoogleAudienceOnlyWhereAMachineCanTradeIt(t *testing.T) {
+// refused on every command. Neither names a Kubernetes exchange audience, though both set
+// BROKER_EXCHANGE_K8S_AUDIENCE: a pod's trade there mints no launcher credential, so no machine
+// could register a session under it.
+func TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor(t *testing.T) {
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")
@@ -284,11 +286,17 @@ func TestTheSettingsNameTheGoogleAudienceOnlyWhereAMachineCanTradeIt(t *testing.
 		if err := json.NewDecoder(resp.Body).Decode(&settings); err != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET /v1/settings = %d, %v", resp.StatusCode, err)
 		}
+		if kubernetes, named := settings["kubernetes_exchange_audience"]; named {
+			t.Fatalf("GET /v1/settings names the Kubernetes exchange audience %v; want none, since a pod's trade mints no launcher credential", kubernetes)
+		}
 		audience, ok := settings["google_exchange_audience"].(string)
 		return audience, ok
 	}
 
 	listed := googleExchangeEnv(t, storetest.URL(t), cluster, github, google, longAccessSeconds)
+	if !slices.Contains(listed, "BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience) {
+		t.Fatalf("the broker's settings name no BROKER_EXCHANGE_K8S_AUDIENCE, so this row could not see it published: %v", listed)
+	}
 	if audience, ok := published(t, listed); !ok || audience != machineAudience {
 		t.Fatalf("a broker listing VM services publishes google_exchange_audience %q (%v); want %q", audience, ok, machineAudience)
 	}

@@ -265,11 +265,16 @@ func machineChainSource() signerSource {
 
 // machineSource is the identity this machine proves at the broker's token exchange: the one
 // AGENT_SECRETS_MACHINE_IDENTITY names, from the environment or the settings file, whose error
-// stops the caller; else the one brokerclient.DetectMachineIdentity finds for the exchange
-// audiences the broker answers in GET /v1/settings. It answers nil, with every place it looked and
+// stops the caller; else the one brokerclient.DetectMachineIdentity finds for the Google exchange
+// audience the broker answers in GET /v1/settings. It answers nil, with every place it looked and
 // why each had nothing, where this machine has none: a broker that names no exchange audience
 // accepts no machine identity, and nothing is asked of the machine then. The use command, `agent-
 // secrets login` and a sign-in's renewal all take the machine from here.
+//
+// AGENT_SECRETS_MACHINE_IDENTITY=kubernetes is a usage error here, before anything is traded: the
+// exchange mints a launcher credential for a Google subject and a person alone, so a pod's token
+// registers no session and acts as no sign-in's machine. The helper and the Legion controller,
+// which read the same setting through brokerclient.MachineIdentity, are unchanged.
 //
 // Those settings are unauthenticated and choose the audience of the identity token this machine
 // mints and hands over, so they are read only from an https broker, or a loopback one
@@ -277,13 +282,17 @@ func machineChainSource() signerSource {
 // refused (holdGoogleAudience). keep records the audience read where none is recorded yet;
 // `identity --source` passes false and records nothing.
 func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []brokerclient.Skipped, error) {
-	if strings.TrimSpace(clientGetenv(brokerclient.IdentityVar)) != "" {
+	if kind := strings.TrimSpace(clientGetenv(brokerclient.IdentityVar)); kind != "" {
+		if kind == brokerclient.IdentityKubernetes {
+			return nil, nil, &settingError{fmt.Errorf("%s=%s is not one agent-secrets takes: the broker mints no launcher credential for a Kubernetes identity, so no session could be registered under it; set %s or %s, or unset it to find this machine's identity from the broker's settings",
+				brokerclient.IdentityVar, kind, brokerclient.IdentityMetadata, brokerclient.IdentityPool)}
+		}
 		identity, err := brokerclient.MachineIdentity(clientGetenv)
 		return identity, nil, err
 	}
 	base := brokerBaseURL()
 	if base == "" {
-		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: brokerURLVar + " names no broker to read the exchange audiences from"}}, nil
+		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: brokerURLVar + " names no broker to read the exchange audience from"}}, nil
 	}
 	if err := requireTrustedBrokerURL(base); err != nil {
 		return nil, nil, &settingError{err}
@@ -295,21 +304,17 @@ func machineSource(ctx context.Context, keep bool) (brokerclient.Source, []broke
 		settings, err = Settings{}, nil
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("read the broker's exchange audiences (GET /v1/settings) to find this machine's identity: %w", err)
+		return nil, nil, fmt.Errorf("read the broker's exchange audience (GET /v1/settings) to find this machine's identity: %w", err)
 	}
-	if settings.GoogleExchangeAudience == "" && settings.KubernetesExchangeAudience == "" {
+	if settings.GoogleExchangeAudience == "" {
 		return nil, []brokerclient.Skipped{{Source: "broker settings", Reason: fmt.Sprintf(
-			"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published them, or one that accepts no machine identity)",
+			"the broker at %s names no exchange audience in GET /v1/settings (a broker from before it published one, or one that accepts no machine identity)",
 			redact.URL(base))}}, nil
 	}
-	if settings.GoogleExchangeAudience != "" {
-		if err := holdGoogleAudience(base, settings.GoogleExchangeAudience, keep); err != nil {
-			return nil, nil, err
-		}
+	if err := holdGoogleAudience(base, settings.GoogleExchangeAudience, keep); err != nil {
+		return nil, nil, err
 	}
-	return brokerclient.DetectMachineIdentity(ctx, brokerclient.ExchangeSettings{
-		Google: settings.GoogleExchangeAudience, Kubernetes: settings.KubernetesExchangeAudience,
-	})
+	return brokerclient.DetectMachineIdentity(ctx, settings.GoogleExchangeAudience)
 }
 
 // joinSkipped is each skipped place's reason, in the order they were looked at.

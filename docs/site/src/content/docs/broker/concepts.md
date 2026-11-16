@@ -192,24 +192,27 @@ and a pod.
 | `key-dir` | The `key.pem` and `enrollment` a launcher put in the key directory (`AGENT_SECRETS_KEY_DIR`, else `$XDG_RUNTIME_DIR/agent-secrets`): a box or a pod. | No `key.pem` there, and no `enrollment.pending` younger than 160 seconds. | A `key.pem` that does not parse, no `enrollment` beside it (with the launcher's `enrollment.error` when it left one), or a launcher still enrolling: a fresh `enrollment.pending` and no `key.pem` after `AGENT_SECRETS_ENROLL_WAIT`. |
 | `sign-in` | A person's `agent-secrets login` on this machine (`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`). | Nobody has signed in on this machine. | Several people signed in and `AGENT_SECRETS_PERSON` names none of them, a record that does not parse, or a broker that refuses the sign-in. |
 | `helper` | `agent-secrets-helper`, for a caller inside a session `agent-secrets register` registered. The command asks the helper first, so a process that only inherited the socket goes on. | No socket file where no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset and no helper unit installed), or the helper answers `NOT_A_SESSION`. | A stopped helper: no socket file where `AGENT_SECRETS_HELPER_SOCK` names one or the helper's unit is installed (a clean stop removes the socket). A socket that does not answer, `NO_CREDENTIAL` (the machine is not logged in), or any other refusal. |
-| `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no projected token for the broker's exchange audience, no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
+| `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables or set to `kubernetes`, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
 
 A source that is present but broken, and any refusal of the broker's, stop the command with that
 error: the command never acts under the next identity in its place. With no source, one refusal
 names each source and why it had nothing:
 `no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`.
 
-The machine source finds the machine's identity from the exchange audiences the broker answers in
-`GET /v1/settings` (`google_exchange_audience` and `kubernetes_exchange_audience`), and takes the
-first of these that gives a token for one of them: a projected Kubernetes service-account token
-at `/var/run/legion/agent-secrets-token/token` whose `aud` holds the Kubernetes audience; an
-`external_account` credential file that `GOOGLE_APPLICATION_CREDENTIALS` names, acting as the
-service account its `service_account_impersonation_url` names; and the Compute Engine metadata
-server, which a machine with none answers "no metadata server" within 1.5 seconds. On EC2 the
-machine source has nothing, since the broker takes no AWS identity: such a machine reaches the
-broker through a launcher's key directory, a sign-in or the helper.
-`AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`kubernetes`, `metadata`
-or `pool`, with its own variables), and then nothing is detected. Because the cache sits below
+The machine source finds the machine's identity from the Google exchange audience the broker
+answers in `GET /v1/settings` (`google_exchange_audience`), and takes the first of these that
+gives a token for it: an `external_account` credential file that `GOOGLE_APPLICATION_CREDENTIALS`
+names, acting as the service account its `service_account_impersonation_url` names; and the
+Compute Engine metadata server, which a machine with none answers "no metadata server" within 1.5
+seconds (a GKE pod's metadata server answers for the pod's own Google service account). A pod's
+projected Kubernetes token is not one of them: the broker's exchange mints no launcher credential
+for a Kubernetes identity, so no session could be registered under it, and a pod enrolls through
+its launcher or `agent-secrets enroll --pod` instead. On EC2 the machine source has nothing, since
+the broker takes no AWS identity: such a machine reaches the broker through a launcher's key
+directory, a sign-in or the helper.
+`AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`metadata` or `pool`,
+with its own variables; `kubernetes` is refused, exit 2, before anything is traded), and then
+nothing is detected. Because the cache sits below
 the sign-in, a person who runs `agent-secrets login` acts as themselves from their next command
 on, while the machine's session stays for every process no person signed in for. A machine
 session a client before this one kept in the key directory, marked `machine-session`, is moved to

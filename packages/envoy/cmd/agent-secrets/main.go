@@ -213,16 +213,15 @@ AGENT_SECRETS_MACHINE_* / AGENT_SECRETS_POOL_* settings reads them from
   AGENT_SECRETS_MACHINE_IDENTITY
                              the one identity this machine proves at the broker's token
                              exchange, which a person's sign-in presents as the actor token:
-                             kubernetes (AGENT_SECRETS_MACHINE_TOKEN_FILE), metadata
-                             (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (both, with
-                             AGENT_SECRETS_POOL_AUDIENCE and AGENT_SECRETS_POOL_ACCOUNT); unset,
-                             it is found from the exchange audiences the broker names: a
-                             projected token at /var/run/legion/agent-secrets-token/token, an
-                             external_account file GOOGLE_APPLICATION_CREDENTIALS names, or the
-                             Google metadata server, and kept in
-                             $XDG_STATE_HOME/agent-secrets/machine
+                             metadata (AGENT_SECRETS_MACHINE_AUDIENCE) or pool (that, with
+                             AGENT_SECRETS_MACHINE_TOKEN_FILE, AGENT_SECRETS_POOL_AUDIENCE and
+                             AGENT_SECRETS_POOL_ACCOUNT); kubernetes is refused, since the broker
+                             mints no launcher credential for it; unset, it is found from the
+                             Google exchange audience the broker names: an external_account file
+                             GOOGLE_APPLICATION_CREDENTIALS names, or the Google metadata
+                             server, and kept in $XDG_STATE_HOME/agent-secrets/machine
   AGENT_SECRETS_MACHINE_TOKEN_FILE
-                             this machine's projected Kubernetes service-account token
+                             the projected service-account token pool federates
   AGENT_SECRETS_MACHINE_AUDIENCE
                              the audience of this machine's Google identity token
   AGENT_SECRETS_POOL_AUDIENCE

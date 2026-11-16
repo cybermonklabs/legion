@@ -78,9 +78,9 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 }
 
 // isolateChain gives an in-process walk of the chain a home, a state directory and a runtime
-// directory of the test's own, no broker URL, no machine identity setting, and no projected token,
-// so neither a sign-in, a machine cache, a broker nor a machine identity of the machine running the
-// test reaches its answer.
+// directory of the test's own, no broker URL and no machine identity setting, so neither a
+// sign-in, a machine cache, a broker nor a machine identity of the machine running the test
+// reaches its answer.
 func isolateChain(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
@@ -89,7 +89,6 @@ func isolateChain(t *testing.T) {
 	t.Setenv("AGENT_SECRETS_SIGNIN_DIR", "")
 	t.Setenv("AGENT_SECRETS_URL", "")
 	t.Setenv("AGENT_SECRETS_MACHINE_IDENTITY", "")
-	noProjectedToken(t)
 }
 
 // TestBuildSignerNamesTheEnrollmentErrorDiagnostic covers the enrollment.error side-channel: when
@@ -633,10 +632,9 @@ func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 		for _, tc := range cases {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				p := identityPaths(t, mode)
-				broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm", "agent-secrets-exchange"))
+				broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 				t.Setenv("AGENT_SECRETS_URL", broker.URL())
 				metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
-				noProjectedToken(t)
 				tc.setup(t, p)
 
 				var stdout, stderr bytes.Buffer
