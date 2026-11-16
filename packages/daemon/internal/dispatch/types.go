@@ -48,6 +48,10 @@ type Client interface {
 	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
 	// gates record none.
 	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutRoleHolders publishes the session that holds each Legion role of the issue onto the
+	// issue's Dispatch row, replacing whatever set it holds; an empty list is an issue where no
+	// session holds a role.
+	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -69,6 +73,14 @@ type RepoProject struct {
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
+}
+
+// RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
+// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
+// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+type RoleHolder struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue

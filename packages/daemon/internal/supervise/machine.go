@@ -849,6 +849,16 @@ type Deps struct {
 	// one. Both are called inside the machine's decision, as TaskConfirmed is, so both return at
 	// once.
 	SessionStoreFault func(c Claim, detail string)
+	// ClaimEnded is told of each claim that has just ended — retired, failed or suspended — once
+	// the store holds the ended state (tellEnded): the daemon queues the publication of the issue's
+	// role sessions, and the session of the ended claim leaves the set. An end whose write the
+	// store refused tells no one, since the store still holds the claim live. Nil tells no one. It
+	// is called inside the machine's decision, so it returns at once and queues elsewhere, and a
+	// queue that fails there is logged and nothing else: such an end reaches Dispatch only at the
+	// daemon's next boot, or at the next ready or end of a claim on the same issue. In that time
+	// the ended session keeps its role on Dispatch, and a process whose stop failed can still write
+	// with the pane's Dispatch bearer.
+	ClaimEnded func(c Claim)
 	// SessionGone is told the Envoy session a claim recorded, once a probe has judged the agent
 	// process behind it gone (died), or a suspension has landed over a process a report found
 	// gone that no such judgement reached (suspendOverADeadProcess): the daemon's clean stop of
@@ -2800,7 +2810,22 @@ func (m *Machine) fail(ctx context.Context, cause FailureCause, why string) erro
 		"launchFailures", m.claim.Budgets.LaunchFailures,
 		"deaths", m.claim.Budgets.Deaths, "promptFailures", m.claim.Budgets.PromptFailures,
 		"promptRetires", m.claim.Budgets.PromptRetires)
-	return m.durableWrite(ctx, StateFailed, m.persist)
+	if err := m.durableWrite(ctx, StateFailed, m.persist); err != nil {
+		return err
+	}
+	m.tellEnded()
+	return nil
+}
+
+// tellEnded tells the daemon that the claim has just ended (Deps.ClaimEnded). Each of the three
+// writes that end a claim calls it after its own write landed: fail, retire and suspended. A
+// suspension can let go of a process whose stop the runtime refused (suspended), and a failure
+// fails the claim when its suspension fails (fail), so the process of an ended claim may still be
+// running: what ends here is the claim's hold on its role, once the daemon's publication lands.
+func (m *Machine) tellEnded() {
+	if m.deps.ClaimEnded != nil {
+		m.deps.ClaimEnded(m.current())
+	}
 }
 
 // release asks the runtime to let go of everything it holds for the claim — the process, when one
@@ -2878,6 +2903,7 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 	} else if err := m.persist(ctx); err != nil {
 		return err
 	}
+	m.tellEnded()
 	// Every drop of a delivery answers the question a restart armed for it; a retired claim is
 	// answered nothing there (answerAskFirstAfterDrop).
 	return m.answerAskFirstAfterDrop(ctx)

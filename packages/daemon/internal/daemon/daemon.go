@@ -377,6 +377,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		plan.claimEnded = workflow.claimEnded
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The memory guards' kill holder is filled here, once the workflow is open
 		// (memoryGuardKills).
@@ -721,6 +722,9 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
+	// claimEnded tells the workflow each claim that ended, so it publishes the issue's role
+	// sessions again; nil without a workflow, where nothing is published.
+	claimEnded func(c supervise.Claim)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -1463,6 +1467,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
+		ClaimEnded:              p.claimEnded,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
@@ -2278,6 +2283,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
+	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
 	var await func(repo, tree, child, parent string)
@@ -2287,6 +2293,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
+		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
 	}
@@ -2364,6 +2371,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
+		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 	})
@@ -2600,6 +2608,17 @@ func (s projectRecords) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publi
 		return err
 	}
 	s.wakeOnCommit(ctx, record.OutboxRow{Issue: publish.Issue, Kind: record.OutboxKindDesignGatesPublish})
+	return nil
+}
+
+// EnqueueRoleHolders wakes the issue's board lane as Enqueue does. The enqueue writes its row with
+// a statement of its own rather than through Enqueue (record.Postgres.EnqueueRoleHolders), so this
+// is the one place that can tell the lane a claim change left a publication due.
+func (s projectRecords) EnqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
+	if err := s.Store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, record.OutboxRow{Issue: issue, Kind: record.OutboxKindRoleHoldersPublish})
 	return nil
 }
 

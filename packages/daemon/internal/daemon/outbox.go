@@ -385,6 +385,14 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.RoleHoldersPublish:
+		// Nobody is told, for the design-gates publish's reason: the one refusal that ends this
+		// row is an issue Dispatch does not know (permanentRefusal, ISSUE_NOT_FOUND).
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox role-holders publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
+				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -599,7 +607,7 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
-	case record.OutboxKindDesignGatesPublish:
+	case record.OutboxKindDesignGatesPublish, record.OutboxKindRoleHoldersPublish:
 		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
 		// is one it will not know on the retry either, and nothing an operator does here would
 		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
@@ -675,6 +683,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.publishGatedSteps(ctx, value)
 	case record.DesignGatesPublish:
 		return r.publishDesignGates(ctx, value)
+	case record.RoleHoldersPublish:
+		return r.publishRoleHolders(ctx, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.CheckWakeDue:
@@ -1138,6 +1148,37 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 	}
 	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
 		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
+	}
+	return nil
+}
+
+// publishRoleHolders writes the session of each live Legion role of the issue onto the issue's
+// Dispatch row. The set is read from the claims now, in a transaction of its own, not when the row
+// was queued: a claim that ended after the queue is gone from it, and two claim changes of one
+// issue never publish a stale set. It is sent whole, empty included, since it replaces what
+// Dispatch holds, so a role whose claim ended leaves the set with no delete route.
+//
+// A Dispatch that has not got the route yet answers its router's 404 under the code NOT_FOUND,
+// and nothing here treats that as final (permanentRefusal, which ends the row on ISSUE_NOT_FOUND
+// alone), so the daemon and Dispatch deploy in either order.
+func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
+	if r.dispatch == nil {
+		return errors.New("role holders executor has no Dispatch client")
+	}
+	var live []record.RoleHolder
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		live, err = r.records.LiveRoleHolders(ctx, tx, payload.Issue)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the live role holders of %s: %w", payload.Issue, err)
+	}
+	holders := make([]dispatch.RoleHolder, len(live))
+	for i, holder := range live {
+		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
+	}
+	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
+		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
 	}
 	return nil
 }

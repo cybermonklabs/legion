@@ -473,6 +473,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.queueRecordedGatesPublish(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.queueRoleHoldersPublish(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -544,6 +547,85 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 	}
 	committed()
 	return nil
+}
+
+// roleHoldersPublishWindow is how far back the boot looks for a claim change it may not have
+// published (queueRoleHoldersPublish).
+const roleHoldersPublishWindow = 7 * 24 * time.Hour
+
+// queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
+// a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
+// in one transaction. A daemon that starts over running sessions has published nothing for them
+// yet, and an end whose queue failed (claimEnded) or that a crash lost before its queue is
+// published here, at the next boot: this pass is the one path that publishes such an end when no
+// later ready or end of the same issue comes first. A boot that cannot write the rows fails the
+// boot, as the design-gates pass does, and queueing rather than writing means a Dispatch that is
+// down refuses no boot. The lane is woken on commit (projectRecords), which before attach reaches
+// nothing: the outbox's first sweep runs whatever this pass left.
+func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		issues, err := w.records.RecentClaimIssues(scoped, tx, w.dispatchProject, now.Add(-roleHoldersPublishWindow))
+		if err != nil {
+			return err
+		}
+		for _, issue := range issues {
+			if err := w.records.EnqueueRoleHolders(scoped, tx, issue, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("queue the role-holder publications of %s: %w", w.dispatchProject, err)
+	}
+	committed()
+	return nil
+}
+
+// queueRoleHolders queues the publication of issue's role sessions in a transaction of its own,
+// which owns the commit hook its write registers, so the board lane is woken once it commits.
+func (w *workflowRuntime) queueRoleHolders(ctx context.Context, issue string) error {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		return w.records.EnqueueRoleHolders(scoped, tx, issue, time.Now().UTC())
+	}); err != nil {
+		return fmt.Errorf("queue the role-holder publication of %s: %w", issue, err)
+	}
+	committed()
+	return nil
+}
+
+// roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
+// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready. An
+// error is the route's to answer: it refuses the ready with 503, so no task goes first.
+func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
+	return w.queueRoleHolders(ctx, c.Issue)
+}
+
+// claimEnded queues the publication of c's issue's role sessions once c has ended — retired,
+// failed or suspended (supervise's Deps.ClaimEnded) — so the ended session leaves the set Dispatch
+// holds. The machine calls it inside its own decision, so the queue runs on a goroutine of its own,
+// bounded by readyReleaseTimeout. A queue that fails is logged and nothing else: no caller is there
+// to refuse. Such an end reaches Dispatch only at the next boot (queueRoleHoldersPublish), or at
+// the next ready or end of a claim of the same issue. Until then the ended session keeps its role
+// on Dispatch, and the process of a failed or suspended claim whose stop the runtime refused can
+// still run and write with the pane's Dispatch bearer. A claim on no issue, and the controller,
+// hold no role of an issue.
+func (w *workflowRuntime) claimEnded(c supervise.Claim) {
+	if c.Issue == "" || c.Role == claim.RoleController {
+		return
+	}
+	go func() {
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
+		defer cancel()
+		if err := w.queueRoleHolders(ctx, c.Issue); err != nil {
+			w.log.Warn("queue the role-holder publication of an ended claim; the next boot publishes it",
+				"claim", c.Token, "issue", c.Issue, "state", c.State, "error", err)
+		}
+	}()
 }
 
 // wakeOutbox is the records' wake (projectRecords.wake): it reaches the outbox attach stored, and

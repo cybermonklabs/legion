@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -418,6 +419,103 @@ func TestReadyWithoutACapabilityReportTellsTheDaemonNothing(t *testing.T) {
 	}
 	if got := *h.readied; len(got) != 1 {
 		t.Fatalf("ClaimReady told of %+v, want the one ready", got)
+	}
+}
+
+// A boot's ready carries no capability report, and it is what sends the claim its first task
+// (supervise's sendPending, which the machine runs when it takes the ready). So the route queues
+// the publication of the issue's role sessions (Options.RoleHoldersChanged) before the machine
+// takes the ready: the hook is told of the claim once, while the claim is still registered, with
+// its issue and its role, and the ready is then taken as before.
+func TestABootReadyQueuesTheRolePublicationBeforeTheMachineTakesIt(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleTester)
+	registered := h.registered(boot, "ses_tester")
+
+	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: token, SessionID: "ses_tester", Secret: registered.Secret, Generation: registered.Generation,
+	}, nil)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("ready = %d %q, want 204", recorder.Code, recorder.Body)
+	}
+	got := *h.roleHolders
+	if len(got) != 1 {
+		t.Fatalf("RoleHoldersChanged was told of %d claims, want the one ready", len(got))
+	}
+	if c := got[0]; c.Token != token || c.Issue != "LEGION-208" || c.Role != claim.RoleTester || c.State != supervise.StateRegistered {
+		t.Fatalf("RoleHoldersChanged was told of %s on %q as %s in state %s, want %s on LEGION-208 as the tester while it was still registered",
+			c.Token, c.Issue, c.Role, c.State, token)
+	}
+	if stored := h.stored(token); stored.State != supervise.StateReady {
+		t.Fatalf("stored state %s, want ready", stored.State)
+	}
+}
+
+// A ready that carries a capability report is a live session's report at an idle tick, not a boot
+// and not a role-regain, so it queues no publication: the boot's ready already did.
+func TestAReadyWithACapabilityReportQueuesNothing(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleImplementer)
+	registered := h.registered(boot, "ses_implementer")
+
+	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: token, SessionID: "ses_implementer", Secret: registered.Secret, Generation: registered.Generation,
+		Capabilities: &claim.CapabilityReport{
+			MeasuredAt: time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC), ElapsedMs: 700,
+			Rows: []claim.CapabilityRow{{Name: "github", OK: true, Detail: "gh viewer login: legion-implementer[bot]"}},
+		},
+	}, nil)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("ready = %d %q, want 204", recorder.Code, recorder.Body)
+	}
+	if got := *h.roleHolders; len(got) != 0 {
+		t.Fatalf("RoleHoldersChanged was told of %+v, want nothing", got)
+	}
+}
+
+// A ready whose publication the daemon could not queue is refused with 503, before the machine
+// takes it: the claim stays registered and the task it holds is not sent, so no worker starts
+// before its role is on its way to Dispatch. The plugin tries the ready again, and the ready
+// after the store takes the queue is taken and sends the task.
+func TestAReadyWhoseQueueFailsIsRefusedAndTakesNoTask(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleTester)
+	registered := h.registered(boot, "ses_tester")
+	conn := connected(h, token)
+	machine, _ := h.supervisor.Machine(token)
+	if err := machine.Handle(h.ctx, supervise.RequestDeliver{Claim: token, Task: "test LEGION-208", ID: "outbox:7", Generation: 1}); err != nil {
+		t.Fatalf("deliver the tester's task: %v", err)
+	}
+	*h.roleHoldersErr = errors.New("the store refused the outbox write")
+	ready := claim.ReadyRequest{
+		ClaimToken: token, SessionID: "ses_tester", Secret: registered.Secret, Generation: registered.Generation,
+	}
+
+	recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", ready, nil)
+
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "try the ready again") {
+		t.Fatalf("ready = %d %q, want 503 that says to try the ready again", recorder.Code, recorder.Body)
+	}
+	settled(h, token)
+	if stored := h.stored(token); stored.State != supervise.StateRegistered {
+		t.Fatalf("stored state %s, want the claim still registered", stored.State)
+	}
+	if prompts := conn.Prompts(); len(prompts) != 0 {
+		t.Fatalf("the connection was sent %#v, want nothing: the refused ready takes no task", prompts)
+	}
+
+	*h.roleHoldersErr = nil
+	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", ready, nil); recorder.Code != http.StatusNoContent {
+		t.Fatalf("the ready tried again = %d %q, want 204", recorder.Code, recorder.Body)
+	}
+	settled(h, token)
+	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != "outbox:7" {
+		t.Fatalf("the connection was sent %#v, want the tester's one task", prompts)
+	}
+	if got := *h.roleHolders; len(got) != 2 {
+		t.Fatalf("RoleHoldersChanged was told of %d readies, want both", len(got))
 	}
 }
 
