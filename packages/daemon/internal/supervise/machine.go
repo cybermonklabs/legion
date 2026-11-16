@@ -743,6 +743,11 @@ type Deps struct {
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
 	Secrets Enroller
+	// Registrar keeps each process's pod registered at the secrets broker to trade under the
+	// claim's session (ensureRegistered). nil — every deployment that names no
+	// `runtime.kubernetes.agent_secrets.exchange_audience` — registers nothing. It reads the pod
+	// token the shim's hello carried, so it does nothing without Secrets.
+	Registrar Registrar
 	// Identity is the git identity a role's commits carry on issue: its App's bot, minted for the
 	// owner of the repository the issue works. A phase task hands it to the agent's working copy
 	// before the task (adopts). nil, for a daemon with no workflow or no GitHub Apps, adopts
@@ -1290,6 +1295,10 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
+	// registration is the pod-session registration this machine keeps written for the claim's
+	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
+	// writes it again at its shim's first hello to the new daemon.
+	registration *podRegistration
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
 	// goroutines counts sends whose outcome has not been handled yet; idle wakes Wait.
@@ -2905,6 +2914,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 		m.revoke(*enrollment)
 	}
 	m.identity, m.enrollmentSent = nil, false
+	m.stopRegistration()
 	if m.claim.Locator != nil {
 		m.previous, m.claim.Locator = m.claim.Locator, nil
 	}

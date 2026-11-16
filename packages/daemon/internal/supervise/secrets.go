@@ -51,6 +51,32 @@ type PermanentError interface{ Permanent() bool }
 // drops the token, keeps the key, and enrolls that key with the token freshToken reads next.
 type ExpiredTokenError interface{ TokenExpired() bool }
 
+// Registrar is the secrets broker's pod-session registration as the machine uses it (Deps.Registrar):
+// KeepPodSession writes r's registration now, answering that first write's outcome, and keeps it
+// written, again and again on r.After, until ctx ends. The daemon's is agentsecrets.Client's own
+// KeepPodSession, which logs each write naming the pod and the session.
+type Registrar interface {
+	KeepPodSession(ctx context.Context, r PodSession) error
+}
+
+// PodSession is one pod's registration to trade under one session name. Token answers the pod's
+// own projected token for the broker's audience, which is what names the pod to the broker; it is
+// asked once per write, and the first time inside the decision that starts the registration.
+// After is the machine's clock, and Bound the longest one write may take.
+type PodSession struct {
+	PodUID, Session string
+	Token           func(ctx context.Context) (string, error)
+	After           func(d time.Duration, f func()) (stop func() bool)
+	Bound           time.Duration
+}
+
+// podRegistration is the registration a machine keeps written: the process incarnation and the
+// session it is for, and the cancel that ends its renewal.
+type podRegistration struct {
+	incarnation, session string
+	cancel               context.CancelFunc
+}
+
 const (
 	// revokeAttempts and revokeRetryDelay bound the revocation of a let-go process's enrollment;
 	// past them the enrollment's lease, which nothing renews once the pod is gone, ends it.
@@ -77,8 +103,11 @@ type heldIdentity struct {
 // transient one retried on the next Alive observation, a permanent one on the shim's next hello.
 // An expired token is dropped and the key kept, and the next attempt reads a fresh one
 // (freshToken). Once enrolled, the id is handed to the shim over the claim's connection, once per
-// connection.
+// connection. The pod's session registration comes first (ensureRegistered): every path that may
+// enroll may register, and the registration's first write presents the hello's token before the
+// enrollment drops it.
 func (m *Machine) ensureEnrolled(ctx context.Context) error {
+	m.ensureRegistered()
 	if m.deps.Secrets == nil || m.claim.Locator == nil {
 		return nil
 	}
@@ -139,6 +168,85 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	}
 	m.enrollmentSent = true
 	return nil
+}
+
+// ensureRegistered registers the claim's current pod to trade under the claim's session at the
+// broker, and keeps that registration written while the process lives (Deps.Registrar), once the
+// machine holds what the registration names: a process in a pod (the Sandbox locator's pod uid),
+// the session, and the shim's hello for this incarnation, whose connection reads the pod's token.
+// The session is the one the claim records — the agent's registration, or the session a relaunch
+// resumes, so a relaunched pod's uid is registered for the session it resumes at its shim's first
+// hello, before the resumed agent registers again — or else the one the runtime chose for this
+// launch (runtime.LaunchSessionNamer): a Claude Code role's, registered at its shim's hello,
+// before its agent registers. An Oh My Pi role's fresh session is known at its registration, and
+// is registered there before the registration is answered (register). The first write is made
+// in this decision, bounded by the RPC timeout, and its refusal changes nothing the machine
+// decides; the renewal goes on on the machine's clock until the process is let go (letGo,
+// stopRegistration) or the claim moves to another session. Each pod and session is registered
+// once per incarnation: a later hello or observation of the same one starts nothing.
+func (m *Machine) ensureRegistered() {
+	loc := m.claim.Locator
+	if m.deps.Registrar == nil || loc == nil || loc.Runtime != runtime.RuntimeSandbox || loc.Sandbox == nil {
+		return
+	}
+	if m.identity == nil || m.identity.incarnation != loc.Incarnation {
+		return
+	}
+	session := m.claim.Session
+	if session == "" {
+		if namer, ok := m.deps.Runtime.(runtime.LaunchSessionNamer); ok {
+			session, _ = namer.LaunchSession(*loc)
+		}
+	}
+	if session == "" {
+		return
+	}
+	if r := m.registration; r != nil && r.incarnation == loc.Incarnation && r.session == session {
+		return
+	}
+	m.stopRegistration()
+	// The renewal's context is the machine's own, not the decision's: the request that brought
+	// the session in ending does not end it, the process's let-go or the machine's end does. The
+	// first write's outcome is the registrar's to log; nothing here decides on it.
+	keeping, cancel := context.WithCancel(m.ctx)
+	m.registration = &podRegistration{incarnation: loc.Incarnation, session: session, cancel: cancel}
+	_ = m.deps.Registrar.KeepPodSession(keeping, PodSession{
+		PodUID: loc.Sandbox.PodUID, Session: session, Bound: m.deps.Timeouts.RPC,
+		Token: m.podToken(m.identity.PodToken),
+		After: func(d time.Duration, f func()) func() bool { return m.deps.Clock.AfterFunc(d, f).Stop },
+	})
+}
+
+// stopRegistration ends the renewal of the registration the machine keeps, if any. The broker
+// honours its last write for a day, past which an exchange naming the pod and session is refused.
+func (m *Machine) stopRegistration() {
+	if m.registration != nil {
+		m.registration.cancel()
+		m.registration = nil
+	}
+}
+
+// podToken is a registration's source of the pod's token: held, the token the hello carried while
+// it is far enough from its expiry for the write to present it (as freshToken judges it), and the
+// first time only; then, at each write, the token the shim reads from its mount at that moment,
+// over the claim's connection. It reads nothing of the machine's own state, so a renewal on the
+// clock's goroutine calls it without the machine's lock.
+func (m *Machine) podToken(held string) func(ctx context.Context) (string, error) {
+	token, conns, clock, skew := m.claim.Token, m.deps.Conns, m.deps.Clock, m.deps.Timeouts.RPC+podTokenSkew
+	return func(ctx context.Context) (string, error) {
+		if held != "" {
+			first := held
+			held = ""
+			if expires, ok := podTokenExpiry(first); ok && expires.After(clock.Now().Add(skew)) {
+				return first, nil
+			}
+		}
+		conn, ok := conns.Conn(token)
+		if !ok {
+			return "", errors.New("the claim's shim is not connected to read its projected token")
+		}
+		return conn.AgentSecretsToken(ctx)
+	}
 }
 
 // freshToken reports whether the held token can be presented, first asking the shim to read it

@@ -21,8 +21,9 @@ import (
 )
 
 var (
-	_ runtime.Runtime        = (*Runtime)(nil)
-	_ runtime.IssuePodReader = (*Runtime)(nil)
+	_ runtime.Runtime            = (*Runtime)(nil)
+	_ runtime.IssuePodReader     = (*Runtime)(nil)
+	_ runtime.LaunchSessionNamer = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -93,6 +94,7 @@ type Runtime struct {
 	drift        map[claim.Token][]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
+	sessions     map[claim.Token]string
 	holdReplace  func()
 	replaceNoPod bool
 	holdResume   func()
@@ -108,6 +110,7 @@ func NewRuntime() *Runtime {
 		drift:     map[claim.Token][]string{},
 		gone:      map[claim.Token]bool{},
 		issuePods: map[string]string{},
+		sessions:  map[claim.Token]string{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -210,6 +213,28 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.issuePods[issue] = pod
+}
+
+// ScriptLaunchSession makes every later LaunchSession of token's claim answer session, as the
+// Sandbox runtime answers the session it chose for a Claude Code role's launch. A claim no call
+// named has no session the runtime chose, which is an Oh My Pi role's case; "" clears it.
+func (r *Runtime) ScriptLaunchSession(token claim.Token, session string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if session == "" {
+		delete(r.sessions, token)
+		return
+	}
+	r.sessions[token] = session
+}
+
+// LaunchSession answers what ScriptLaunchSession set for loc's claim, whatever incarnation loc
+// records.
+func (r *Runtime) LaunchSession(loc runtime.Locator) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	session, named := r.sessions[loc.Claim]
+	return session, named
 }
 
 // FailPodDrift makes every later PodDrift return err; nil clears it.
