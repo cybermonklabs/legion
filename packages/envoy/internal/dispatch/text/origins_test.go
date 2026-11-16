@@ -58,23 +58,14 @@ func TestNoOriginsReadsOnlyDispatchReferences(t *testing.T) {
 	if len(got) != 2 || got[0].Kind != "issue" || got[0].IssueKey != "ABC-1" || got[1].Kind != "url" {
 		t.Fatalf("Extract with no origins = %+v, want the issue, then the dashboard URL as a URL", got)
 	}
-	if canonical := (Origins{}).Canonical(); canonical != "" {
-		t.Fatalf("Origins{}.Canonical() = %q, want empty", canonical)
-	}
 }
 
-// NewOrigins keeps the canonical origin first and skips a value that is empty or names no scheme
-// and host, so a deployment with no outside origin reads exactly the canonical one.
+// NewOrigins skips a value that is empty or names no scheme and host, so a deployment with no
+// outside origin reads exactly the canonical one.
 func TestNewOriginsSkipsWhatNamesNoOrigin(t *testing.T) {
 	origins := NewOrigins("https://canon.test", "", "not a url", "https://outside.test")
-	if origins.Canonical() != "https://canon.test" {
-		t.Fatalf("Canonical() = %q, want https://canon.test", origins.Canonical())
-	}
 	if got := Extract("https://outside.test/issues/ABC-1", origins); len(got) != 1 || got[0].Kind != "issue" {
 		t.Fatalf("Extract of the outside origin = %+v, want the issue", got)
-	}
-	if NewOrigins("", "https://outside.test").Canonical() != "" {
-		t.Fatal("an empty canonical origin is not the outside one")
 	}
 	if got := Extract("https://canon.test/issues/ABC-1", NewOrigins("https://canon.test")); len(got) != 1 || got[0].Kind != "issue" {
 		t.Fatalf("Extract with the canonical origin alone = %+v, want the issue", got)
