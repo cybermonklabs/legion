@@ -848,3 +848,51 @@ func documentAppendCount(t *testing.T, database *store.Store, artifactID string)
 	}
 	return appends
 }
+
+// Removing the document the search fill's cursor names leaves the fill's progress row as it was,
+// and the boot's fill still runs after it (dispatch://INFRA-4018). document_search_backfill holds
+// one row (migration 20261101182501), whose artifact_id is the keyset cursor: the highest document
+// id the pass has covered, and no row of that document's. A removal that deleted it where the
+// cursor equals the removed id left the table empty, and store.FillDocumentSearch, which the boot
+// runs before the server serves (cmd/dispatch/main.go), then failed its read of the row, so no
+// process could start again.
+//
+// The cursor is set rather than reached by a pass, since which document a pass ends on is the
+// order of random ids: a finished pass names its last document, and a running one the last
+// document of the batch it committed. Both states are cases here, each on a database of its own,
+// and each reads the row and then runs the fill, so a failure of the first still reports the
+// second.
+func TestRemovingTheDocumentTheSearchFillCursorNamesKeepsTheFillsProgressRow(t *testing.T) {
+	ctx := context.Background()
+	for _, pass := range []struct {
+		state string
+		done  bool
+	}{{"finished", true}, {"running", false}} {
+		t.Run("a "+pass.state+" pass", func(t *testing.T) {
+			handler, database := newTestHandlerWithStore(t)
+			issue := createInteractionIssue(t, handler, "TEST", "A document the search fill reached last", "# Spec\n\nA passage.\n")
+			document := emptyDocument(t, handler, issue.Key, "Cursor notes")
+			set, err := database.Pool.Exec(ctx,
+				`update document_search_backfill set artifact_id = $1, done = $2`, document.ID, pass.done)
+			if err != nil || set.RowsAffected() != 1 {
+				t.Fatalf("set the fill's cursor to %s: %d rows, %v; want its one row", document.ID, set.RowsAffected(), err)
+			}
+
+			removedDocument(t, handler, document.ID)
+
+			var rows int
+			var cursor string
+			var done bool
+			if err := database.Pool.QueryRow(ctx,
+				`select count(*) over (), artifact_id::text, done from document_search_backfill`).Scan(&rows, &cursor, &done); err != nil {
+				t.Errorf("read the fill's progress row after the removal of %s: %v", document.ID, err)
+			} else if rows != 1 || cursor != document.ID || done != pass.done {
+				t.Errorf("the fill's progress is %d rows, cursor %s, done %v after the removal, want its one row as it was: cursor %s, done %v",
+					rows, cursor, done, document.ID, pass.done)
+			}
+			if _, err := database.FillDocumentSearch(ctx); err != nil {
+				t.Errorf("the boot's fill after the removal of the document its cursor names: %v", err)
+			}
+		})
+	}
+}

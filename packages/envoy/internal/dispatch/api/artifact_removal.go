@@ -322,7 +322,6 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "snapshots", statement: `delete from doc_snapshots where artifact_id = $1`, args: id},
 		{what: "checkpoints", statement: `delete from doc_checkpoints where artifact_id = $1`, args: id},
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
-		{what: "search backfill rows", statement: `delete from document_search_backfill where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
 		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},
