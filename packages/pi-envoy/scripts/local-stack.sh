@@ -23,9 +23,10 @@ readonly natsd_client_line='Listening for client connections on 127\.0\.0\.1:'
 readonly natsd_monitor_line='Starting http monitor on 127\.0\.0\.1:'
 readonly listener_line='"msg":"envoy-listener listening".*"addr":"127\.0\.0\.1:'
 
-# reported_port LOG PATTERN VAR: assigns VAR the port a service that bound port 0 itself reported,
-# the digits right after the first match of PATTERN in LOG. It fails while LOG holds no such line,
-# so it is also the poll that waits for one (poll_until).
+# reported_port LOG PATTERN VAR: scripts/e2e/lib/rig.sh's report_port, which the smokes here do not
+# source, assigning VAR instead of printing so poll_until can call it: the port a service that bound
+# port 0 itself reported, the digits right after the first match of PATTERN in LOG. It fails while
+# LOG holds no such line, so it is also the poll that waits for one.
 reported_port() {
   local match
   match=$(grep -m1 -oE -- "$2[0-9]+" "$1" 2>/dev/null) || return 1
@@ -56,14 +57,22 @@ build_listener() {
   (cd -- "$1" && go build -o "$2" ./cmd/listener)
 }
 
-# set_natsd_argv BIN MONITOR STORE_DIR: sets the array `natsd_argv` to natsd serving 127.0.0.1 on a
-# port the kernel chooses (`-p -1`, natsd_client_line), with JetStream stored under STORE_DIR, and
-# monitoring on another such port (`-m -1`, natsd_monitor_line) unless MONITOR is empty. The caller
-# runs it under its own environment isolation and redirection.
+# set_natsd_argv BIN STORE_DIR [--monitor]: sets the array `natsd_argv` to natsd serving 127.0.0.1
+# on a port the kernel chooses (`-p -1`, natsd_client_line), with JetStream stored under STORE_DIR,
+# and with --monitor, monitoring on another such port (`-m -1`, natsd_monitor_line). Any other
+# third argument is refused with status 2. The caller runs it under its own environment isolation
+# and redirection.
 set_natsd_argv() {
   natsd_argv=("$1" -p -1)
-  [[ -z "$2" ]] || natsd_argv+=(-m -1)
-  natsd_argv+=(-js -store_dir "$3")
+  case "${3:-}" in
+    "") ;;
+    --monitor) natsd_argv+=(-m -1) ;;
+    *)
+      printf 'set_natsd_argv: %s is not --monitor\n' "$3" >&2
+      return 2
+      ;;
+  esac
+  natsd_argv+=(-js -store_dir "$2")
 }
 
 # set_listener_env NATS_URL MACHINE_ID: sets the array `listener_env` to the assignments the

@@ -174,7 +174,8 @@ export async function reportedPort(
 ): Promise<number> {
   let port = 0;
   await awaitReady(what, child, log, budget, async () => {
-    const reported = line.exec(tail(log, Number.MAX_SAFE_INTEGER))?.[1];
+    // The whole log; a log not yet written reads as "(no log)", which no line matches.
+    const reported = line.exec(tail(log, Infinity))?.[1];
     if (reported === undefined) return false;
     port = Number(reported);
     return true;

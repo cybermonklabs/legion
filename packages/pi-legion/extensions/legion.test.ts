@@ -57,7 +57,7 @@ import {
   type StallWatchdogProcesses,
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
-import { deliveryFor, jjBinary } from "@legion/pi-shared/test/omp-harness";
+import { deliveryFor, jjBinary, runTool } from "@legion/pi-shared/test/omp-harness";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
@@ -399,22 +399,12 @@ beforeAll(async () => {
   if (skip) return;
   jjProgram = await jjBinary(jjHomeDirectory);
   jjTemplate = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-template-"));
-  const child = Bun.spawn([jjProgram, "git", "init", jjTemplate], {
-    cwd: jjHomeDirectory,
-    stdout: "ignore",
-    stderr: "pipe",
-    env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
-  });
-  const exitCode = await child.exited;
-  if (exitCode !== 0) {
-    // A spawn killed under the runner exits non-zero with nothing on stderr, so name the code and
-    // signal too: the empty stderr alone reads as jj refusing the command (LEGION-243).
-    const stderr = (await new Response(child.stderr as ReadableStream<Uint8Array>).text()).trim();
-    const signal = child.signalCode === null ? "" : `, signal ${child.signalCode}`;
-    throw new Error(
-      `jj git init exited ${exitCode}${signal}: ${stderr === "" ? "no stderr" : stderr}`
-    );
-  }
+  await runTool(
+    jjProgram,
+    jjHomeDirectory,
+    { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
+    ["git", "init", jjTemplate]
+  );
 });
 
 afterAll(async () => {
@@ -770,28 +760,28 @@ async function createJjWorkspace(): Promise<string> {
  * stripped) keeps the answer the same when the process running the tests — a Legion pane —
  * carries `JJ_USER`/`JJ_EMAIL`, which would otherwise hide the repository value. */
 async function jjRepoConfig(directory: string, key: string): Promise<string> {
-  const child = Bun.spawn(
-    [jjProgram, "config", "list", "--repo", "--include-overridden", "-R", directory, key],
-    { cwd: directory, stdout: "pipe", stderr: "pipe" }
-  );
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout as ReadableStream<Uint8Array>).text(),
-    new Response(child.stderr as ReadableStream<Uint8Array>).text(),
+  const listed = await runTool(jjProgram, directory, process.env, [
+    "config",
+    "list",
+    "--repo",
+    "--include-overridden",
+    "-R",
+    directory,
+    key,
   ]);
-  if (exitCode !== 0) throw new Error(`jj config list failed: ${stderr}`);
-  return stdout.trim().replace(/^# /, "");
+  return listed.replace(/^# /, "");
 }
 
 async function setJjRepoConfig(directory: string, key: string, value: string): Promise<void> {
-  const child = Bun.spawn(
-    [jjProgram, "config", "set", "--repo", "-R", directory, key, JSON.stringify(value)],
-    { cwd: directory, stdout: "ignore", stderr: "pipe" }
-  );
-  if ((await child.exited) !== 0) {
-    const stderr = await new Response(child.stderr as ReadableStream<Uint8Array>).text();
-    throw new Error(`jj config set failed: ${stderr}`);
-  }
+  await runTool(jjProgram, directory, process.env, [
+    "config",
+    "set",
+    "--repo",
+    "-R",
+    directory,
+    key,
+    JSON.stringify(value),
+  ]);
 }
 
 interface DaemonRequest {

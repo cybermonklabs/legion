@@ -9,6 +9,7 @@ import {
   ompNatsGuard,
   type Reply,
   runLegionPane,
+  runTool,
   type ToolResult,
   toolResultsIn,
 } from "@legion/pi-shared/test/omp-harness";
@@ -40,25 +41,6 @@ const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
-
-/** Runs `jj` in `cwd` with a test identity, so it commits in CI too, with `home` as its home and no
- * configuration of the machine's (`versionControlEnvironment`), failing loudly on a non-zero
- * exit. */
-async function runJj(
-  jj: string,
-  home: string,
-  cwd: string,
-  args: readonly string[]
-): Promise<void> {
-  const child = Bun.spawn([jj, ...args], {
-    cwd,
-    env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(home) },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-  if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}:\n${stderr}`);
-}
 
 /**
  * Runs one pane of `role` on the real Oh My Pi (`runLegionPane`). `root` makes the pane the
@@ -96,9 +78,12 @@ async function toolsPane(
         const scratch = path.dirname(workspace);
         const jj = await jjBinary(scratch);
         await symlink(jj, path.join(bin, "jj"));
-        const fixtureHome = path.join(scratch, "fixture-home");
-        await runJj(jj, fixtureHome, scratch, ["git", "init", workspace]);
-        await runJj(jj, fixtureHome, workspace, ["describe", "-m", "role tools scratch"]);
+        const env = {
+          PATH: process.env.PATH ?? "",
+          ...versionControlEnvironment(path.join(scratch, "fixture-home")),
+        };
+        await runTool(jj, scratch, env, ["git", "init", workspace]);
+        await runTool(jj, workspace, env, ["describe", "-m", "role tools scratch"]);
       },
     },
     cleanup

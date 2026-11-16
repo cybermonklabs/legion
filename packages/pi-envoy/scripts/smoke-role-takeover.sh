@@ -428,7 +428,7 @@ readonly listener_exe listener_under_test
 
 # Each binds a port the kernel chooses and logs it (local-stack.sh's reported_port), so no other
 # process can take a port between its choice and the service's bind.
-set_natsd_argv "${work}/bin/natsd" monitor "${work}/nats-store"
+set_natsd_argv "${work}/bin/natsd" "${work}/nats-store" --monitor
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)

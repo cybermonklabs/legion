@@ -248,7 +248,7 @@ if ((local_stack == 1)); then
     build_listener "${repo_root}/packages/envoy" "${scratch}/bin/listener" ||
     refuse "go build of natsd or the listener failed (the reason is above)"
   # Each binds a port the kernel chooses and logs it (local-stack.sh's reported_port).
-  set_natsd_argv "${scratch}/bin/natsd" "" "${scratch}/nats-store"
+  set_natsd_argv "${scratch}/bin/natsd" "${scratch}/nats-store"
   env -i PATH="$PATH" HOME="${scratch}/nats-home" "${natsd_argv[@]}" \
     >"${scratch}/natsd.log" 2>&1 &
   nats_pid=$!

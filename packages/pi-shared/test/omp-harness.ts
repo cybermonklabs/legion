@@ -524,6 +524,33 @@ export async function gitBinary(dir: string, proc = "/proc"): Promise<string> {
 }
 
 /**
+ * Runs `binary`, a test's jj or git (`jjBinary`, `gitBinary`), with `args` in `cwd` and `env` as
+ * its whole environment, and answers its stdout, trimmed. A non-zero exit throws naming the
+ * program, the arguments, the status, the signal when one ended it (a spawn killed under the
+ * runner exits non-zero with nothing on stderr, which alone reads as the tool refusing the command:
+ * LEGION-243) and its stderr.
+ */
+export async function runTool(
+  binary: string,
+  cwd: string,
+  env: Record<string, string | undefined>,
+  args: readonly string[]
+): Promise<string> {
+  const child = Bun.spawn([binary, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (code !== 0) {
+    const signal = child.signalCode === null ? "" : `, signal ${child.signalCode}`;
+    const said = stderr.trim() === "" ? "no stderr" : stderr.trim();
+    throw new Error(`${path.basename(binary)} ${args.join(" ")} exited ${code}${signal}: ${said}`);
+  }
+  return stdout.trim();
+}
+
+/**
  * Runs the first `name` on this process's PATH with `args`, which make it run `PARENT_EXE` as its
  * child, in `dir` with this process's environment, `env` over it and `PROC_ROOT` naming `proc`,
  * and answers the absolute path that prints: the binary the PATH's `name` ran. Where `proc` holds
