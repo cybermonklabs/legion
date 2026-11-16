@@ -24,3 +24,9 @@ body: |-
   server of no version. The stream's consumer cap is decided on a version the connection reports
   in the same way, so an ensure across a reconnect no longer leaves a stream with no cap at
   nats-server 2.15's default of 1000.
+
+  **A connection that drops again right after a reconnect no longer stalls the listener for 10 s.**
+  The work a reconnect starts (re-subscribing, the stream ensure, every KV cache's re-watch) now
+  runs off nats.go's callback goroutine and ends when the connection it runs on is lost, so the
+  next disconnect is reported at once and the next reconnect's re-watch is not held behind a
+  request that will never be answered.

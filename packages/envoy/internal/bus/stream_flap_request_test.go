@@ -14,10 +14,12 @@ import (
 
 // The other half of the flap TestAFlapRunsTheSecondDisconnectHookAtOnce makes: the second outage
 // lands after the reconnect hook's ensure has read the server version, while its first stream
-// request is on the wire and unanswered. The hooks run on nats.go's one callback goroutine, and so
+// request is on the wire and unanswered. The hooks ran on nats.go's one callback goroutine, and so
 // does every disconnect callback (AddDisconnectHook, the KV caches' among them), so an ensure that
-// waits for that request's answer holds the second disconnect's callback for the request's whole
-// wait (the JetStream context's MaxWait, 10 s) while the connection is already down.
+// waited for that request's answer held the second disconnect's callback for the request's whole
+// wait (the JetStream context's MaxWait, 10 s) while the connection was already down. The run is
+// now off that goroutine (bus.Client.afterReconnect) and under a context its connection's loss
+// ends (whileConnected).
 //
 // Seen on the real surface at 3be3907a48: an Envoy listener behind a proxy that dropped its "envoy"
 // connection the moment a reconnect completed logged that second disconnect 10 s after the drop,

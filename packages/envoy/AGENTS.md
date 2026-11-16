@@ -4023,6 +4023,12 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
 - No run of the reconnect hooks is on nats.go's one callback goroutine: the reconnect callback (`bus.Client.onReconnect`) reports the reconnect, marks the hooks due and hands the re-subscribe and the run to a goroutine of its own (`afterReconnect`).
   A hook's request on a connection that drops again waits out its whole bound (10 s for most), and every callback queued behind it, the next disconnect's, its hooks and Dispatch's outbox wake among them, would wait too (`TestAFlapDuringTheEnsuresRequestRunsTheSecondDisconnectHookAtOnce`).
 
+- Each run's hooks get the run's context (`bus.Client.whileConnected`), which ends when the run's connection leaves CONNECTED or the client stops, and make every request under it, so a run never waits out a request on a connection that is gone and the next reconnect's run is not held behind it (`TestASecondReconnectRunsItsHooksWithoutWaitingOutTheFirstRunsRequest`).
+  A hook is `func(ctx context.Context, conn *nats.Conn) error`.
+  nats.go's legacy `js.KeyValue` lookup takes no context, so `bus.OpenKeyValue` waits for it only until ctx ends (`Bounded`); the legacy stream calls take `nats.Context` per call (`requestsUnder`).
+  A run that context ended is superseded, not failed (`errRunSuperseded`): it keeps no `lastHookErr`, logs INFO rather than the WARN, and covers no event, so every hook runs again on the next connection and no half-move survives.
+  The context bounds only a KV watch's create request, never the watcher's life, and the re-subscribe's binds are never under it: a cancelled bind would race the server's release of a push-bound durable.
+
 - A rewatch opens the bucket on the connection it is given, so a store bound to a replaced connection moves to the new one.
   Every watcher a watch installs reads the whole bucket again, and nothing empties the cache first (`kvwatch.Cache`):
   the cache keeps every row through the read, each delivered record replaces its row as it arrives, and only a read that delivered every record removes the rows it found no evidence of (`kvwatch.Copy`;

@@ -275,7 +275,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		return nil, err
 	}
 	s := newKnownSessions(conn, opts)
-	kv, err := openKnownBucket(conn, opts.replicas)
+	kv, err := openKnownBucket(context.Background(), conn, opts.replicas)
 	if err != nil {
 		s.logger().Warn("the known-session bucket is not open; this listener answers no session's 30-day record and writes none until an attempt of its own opens the bucket",
 			slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
@@ -308,7 +308,7 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 // and must not give up on a cluster that is merely slow: a write is bounded by its caller's own
 // context (RecordWithin, bus.Bounded), and the open's short wait is for the attempt a start waits
 // on, not for the work that follows it.
-func openKnownBucket(conn *nats.Conn, replicas int) (bus.KeyValue, error) {
+func openKnownBucket(ctx context.Context, conn *nats.Conn, replicas int) (bus.KeyValue, error) {
 	opening, err := knownJetStream(conn)
 	if err != nil {
 		return bus.KeyValue{}, err
@@ -329,7 +329,7 @@ func openKnownBucket(conn *nats.Conn, replicas int) (bus.KeyValue, error) {
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	return bus.OpenKeyValue(conn, serving, bus.KnownSessionBucket)
+	return bus.OpenKeyValue(ctx, conn, serving, bus.KnownSessionBucket)
 }
 
 // startWatch installs the watcher of the bucket kv is a handle on, and starts it: the watcher
@@ -448,21 +448,21 @@ func (s *KnownSessions) repairUntilStopped() {
 func (s *KnownSessions) retryRepair() (repairResult, error) {
 	s.repairMu.Lock()
 	defer s.repairMu.Unlock()
-	result, err := s.attemptRepair()
+	result, err := s.attemptRepair(context.Background())
 	if err == nil && result == repairNothing {
 		s.repairing = false
 	}
 	return result, err
 }
 
-// repairOnce is one attempt a caller of its own makes, the reconnect hook's move (Rewatch). It
-// leaves the retry as it found it: a caller that fails arms one (armRepair), and one that
-// succeeds leaves the running retry to find at its next attempt that there is nothing left to
-// repair, which is where a retry is retired.
-func (s *KnownSessions) repairOnce() (repairResult, error) {
+// repairOnce is one attempt a caller of its own makes, the reconnect hook's move (Rewatch), its
+// requests under ctx, the hook's run. It leaves the retry as it found it: a caller that fails arms
+// one (armRepair), and one that succeeds leaves the running retry to find at its next attempt that
+// there is nothing left to repair, which is where a retry is retired.
+func (s *KnownSessions) repairOnce(ctx context.Context) (repairResult, error) {
 	s.repairMu.Lock()
 	defer s.repairMu.Unlock()
-	return s.attemptRepair()
+	return s.attemptRepair(ctx)
 }
 
 // attemptRepair makes one attempt to make the store current on the connection it holds now: it
@@ -478,13 +478,13 @@ func (s *KnownSessions) repairOnce() (repairResult, error) {
 // background retry, or the next connection event's own move (Rewatch). The line is the store's
 // report that it is back, so it is written for every such repair and only for one: a move that
 // follows a connection event with nothing failed before it is the ordinary path, and says nothing.
-func (s *KnownSessions) attemptRepair() (repairResult, error) {
+func (s *KnownSessions) attemptRepair(ctx context.Context) (repairResult, error) {
 	s.openMu.RLock()
 	conn, watcher, asked, covered := s.conn, s.watcher, s.asked, s.covered
 	s.openMu.RUnlock()
 	switch {
 	case watcher == nil:
-		kv, err := openKnownBucket(conn, s.replicas)
+		kv, err := openKnownBucket(ctx, conn, s.replicas)
 		if err != nil {
 			return repairNothing, err
 		}
@@ -492,7 +492,7 @@ func (s *KnownSessions) attemptRepair() (repairResult, error) {
 		s.cover(asked)
 		return repairOpened, nil
 	case covered < asked || watcher.Err() != nil:
-		if err := watcher.Rewatch(conn); err != nil {
+		if err := watcher.Rewatch(ctx, conn); err != nil {
 			s.moveFailed = true
 			return repairNothing, err
 		}
@@ -797,8 +797,9 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 // never run at once, and each reads the connection the store holds at the moment it runs, so
 // neither can put the watcher back onto a connection the store has already left. A move that
 // succeeds is what ends the retry: its next attempt finds every move the listener asked for made
-// (covered, asked) and retires.
-func (s *KnownSessions) Rewatch(conn *nats.Conn) error {
+// (covered, asked) and retires. The hook's move makes its requests under ctx, the hook's run, so a
+// move on a connection that drops ends at the drop; the retry's attempts are its own.
+func (s *KnownSessions) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	if s == nil {
 		return nil
 	}
@@ -817,7 +818,7 @@ func (s *KnownSessions) Rewatch(conn *nats.Conn) error {
 		s.armRepair()
 		return nil
 	}
-	if _, err := s.repairOnce(); err != nil {
+	if _, err := s.repairOnce(ctx); err != nil {
 		s.armRepair()
 		return err
 	}

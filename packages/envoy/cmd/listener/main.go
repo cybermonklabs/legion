@@ -95,7 +95,7 @@ type listenerDeps struct {
 
 // kvCache is what the listener asks of each KV-backed cache it keeps.
 type kvCache interface {
-	Rewatch(*nats.Conn) error
+	Rewatch(context.Context, *nats.Conn) error
 	WatchErr() error
 	// NeedsRead reports a copy that does not follow its bucket with no read under way to make it
 	// (kvwatch.Watcher.NeedsRead), which only a Rewatch repairs.
@@ -202,12 +202,12 @@ func warnIgnoredEnv(logger *logging.Logger, name string, reason string) {
 }
 
 // rewatchListenerKVWatchers recreates cache watchers that are not represented
-// by bus.Client subscriptions. It attempts every one so a failed rebuild of one
-// cannot leave the other caches permanently stale too.
-func rewatchListenerKVWatchers(conn *nats.Conn, caches []listenerCache) error {
+// by bus.Client subscriptions, each move's requests under ctx. It attempts every one so a failed
+// rebuild of one cannot leave the other caches permanently stale too.
+func rewatchListenerKVWatchers(ctx context.Context, conn *nats.Conn, caches []listenerCache) error {
 	var errs []error
 	for _, c := range caches {
-		if err := c.cache.Rewatch(conn); err != nil {
+		if err := c.cache.Rewatch(ctx, conn); err != nil {
 			errs = append(errs, fmt.Errorf("rewatch %s cache: %w", c.name, err))
 		}
 	}
@@ -236,8 +236,8 @@ func hookListenerKVWatchers(client *bus.Client, caches []listenerCache) {
 			c.cache.Disconnected()
 		}
 	})
-	client.AddReconnectHook(func(conn *nats.Conn) error {
-		return rewatchListenerKVWatchers(conn, caches)
+	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
+		return rewatchListenerKVWatchers(ctx, conn, caches)
 	})
 	client.AddDrainHook(func(ctx context.Context) {
 		endListenerKVWatchers(ctx, caches)
@@ -286,7 +286,7 @@ func rebuildListenerDependencies(
 	if !client.Connected() {
 		return nats.ErrConnectionClosed
 	}
-	err := rewatchListenerKVWatchers(client.Conn, caches)
+	err := rewatchListenerKVWatchers(ctx, client.Conn, caches)
 	if durableProbe == nil {
 		return err
 	}
@@ -1348,10 +1348,12 @@ func main() {
 	// one succeeds, the store is stopped, or a later connection event's move makes it
 	// (session.KnownSessions.Rewatch). Until a move lands, the store serves its copy for the stale
 	// bound and then answers nothing (Opened), so a publish leaves its counts out rather than
-	// answer from a copy that stopped following the bucket.
+	// answer from a copy that stopped following the bucket. A move the run's own context ended
+	// (the connection it ran on was lost) is no failure and logs nothing: the run is superseded,
+	// and the run the next connection event brings moves the store again (bus.errRunSuperseded).
 	client.AddDisconnectHook(known.Disconnected)
-	client.AddReconnectHook(func(conn *nats.Conn) error {
-		if err := known.Rewatch(conn); err != nil {
+	client.AddReconnectHook(func(ctx context.Context, conn *nats.Conn) error {
+		if err := known.Rewatch(ctx, conn); err != nil && ctx.Err() == nil {
 			logger.Warn("the known-session cache did not move to the recovered connection; the store retries the move on its own backoff",
 				slog.String("bucket", bus.KnownSessionBucket), slog.String("error", err.Error()))
 		}

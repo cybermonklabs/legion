@@ -375,7 +375,7 @@ func TestAPublishCountsOnlyFromCopiesThatCanBeServed(t *testing.T) {
 				assertNoCounts(t, rig.publish(t, topic, "past-the-bound"))
 			}
 
-			if err := copies[stale].Rewatch(rig.harness.client.Conn); err != nil {
+			if err := copies[stale].Rewatch(context.Background(), rig.harness.client.Conn); err != nil {
 				t.Fatalf("read the %s bucket again: %v", stale, err)
 			}
 			awaitCopiesServable(t, copies, "the "+stale+" copy to be served once it read its bucket again")

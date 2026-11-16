@@ -2821,7 +2821,9 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	caches := listenerCaches(registry, sessions, nil)
-	client.AddReconnectHook(func(conn *natsgo.Conn) error { return rewatchListenerKVWatchers(conn, caches) })
+	client.AddReconnectHook(func(ctx context.Context, conn *natsgo.Conn) error {
+		return rewatchListenerKVWatchers(ctx, conn, caches)
+	})
 	if _, err := client.SubscribeCore(contracts.RoleTopicPrefix+">", func(*natsgo.Msg) {}, "envoy-listener-"+machineID); err != nil {
 		t.Fatalf("open the role lane: %v", err)
 	}
@@ -4560,7 +4562,7 @@ func TestRunSelfHealthMonitor_MovesADeadInterestRegistryToTheLiveConnection(t *t
 		func(err error) bool { return errors.Is(err, natsgo.ErrConnectionClosed) },
 		client.Connected,
 		func() error {
-			return rewatchListenerKVWatchers(client.Conn, []listenerCache{{name: "interest", cache: registry}})
+			return rewatchListenerKVWatchers(context.Background(), client.Conn, []listenerCache{{name: "interest", cache: registry}})
 		},
 	)
 
@@ -4630,7 +4632,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 		client.Connected,
 		func() error {
 			rebuilds.Add(1)
-			return rewatchListenerKVWatchers(client.Conn, []listenerCache{{name: "session", cache: sessions}})
+			return rewatchListenerKVWatchers(context.Background(), client.Conn, []listenerCache{{name: "session", cache: sessions}})
 		},
 	)
 	if got := rebuilds.Load(); got != 1 {
@@ -4891,7 +4893,7 @@ func TestRunSelfHealthMonitor_RestartsWithoutItsRoleBucket(t *testing.T) {
 			client.Connected,
 			func() error {
 				rebuilds.Add(1)
-				return rewatchListenerKVWatchers(client.Conn, caches)
+				return rewatchListenerKVWatchers(context.Background(), client.Conn, caches)
 			},
 			func() { terminated <- struct{}{} },
 			time.Millisecond,

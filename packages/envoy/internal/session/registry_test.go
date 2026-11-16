@@ -616,7 +616,7 @@ func TestSessionRegistry_RewatchRestartsStoppedWatcher(t *testing.T) {
 		t.Fatalf("connect replacement: %v", err)
 	}
 	defer replacement.Close()
-	if err := registry.Rewatch(replacement); err != nil {
+	if err := registry.Rewatch(context.Background(), replacement); err != nil {
 		t.Fatalf("rewatch registry: %v", err)
 	}
 	if err := registry.Ping(); err != nil {

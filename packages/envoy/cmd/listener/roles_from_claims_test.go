@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -372,7 +373,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		put(fmt.Sprintf("filler-%04d", i), filler)
 	}
 	put("reviewer", holder)
-	if err := registry.Rewatch(client.Conn); err != nil {
+	if err := registry.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 

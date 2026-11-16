@@ -20,11 +20,12 @@ import (
 // as it is. This connection keeps nats.go's default reconnect buffer, which holds the ensure's
 // requests until the reconnect, to make that window exact. The reconnect hook's ensure
 // (ensureStreamOn) decides only on a version the connection reports, and it looks once rather than
-// wait on nats.go's callback goroutine, so on a reconnecting connection it answers an error and
-// writes nothing; the recovery runs it again once the connection is back (onReconnect, recover),
-// and on the in-process v2.15.1 that run raises the stream to streamMaxConsumers. The control is
-// the empty reading itself: serverDefaultsAnUnsetCap of what the reconnecting connection reports
-// is false, the older server's answer, on a server that caps such a stream.
+// wait out an outage that would keep the next reconnect's run behind it (rewatch), so on a
+// reconnecting connection it answers an error and writes nothing; the next run (afterReconnect,
+// recover) runs it again once the connection is back, and on the in-process v2.15.1 that run
+// raises the stream to streamMaxConsumers. The control is the empty reading itself:
+// serverDefaultsAnUnsetCap of what the reconnecting connection reports is false, the older
+// server's answer, on a server that caps such a stream.
 func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.T) {
 	server, uri := testnats.Start(t)
 	conn, err := nats.Connect(uri, nats.Name(t.Name()), nats.MaxReconnects(-1), nats.ReconnectWait(50*time.Millisecond))
@@ -56,7 +57,7 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 
 	client := &Client{streamConfig: &cfg, stopCh: make(chan struct{})}
 	ensured := make(chan error, 1)
-	go func() { ensured <- client.ensureStreamOn(conn) }()
+	go func() { ensured <- client.ensureStreamOn(context.Background(), conn) }()
 	time.Sleep(300 * time.Millisecond)
 	server.Start(t)
 	select {
@@ -76,7 +77,7 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 		t.Fatalf("the refused ensure hook wrote the stream's consumer cap to %d, want it untouched at -1", info.Config.MaxConsumers)
 	}
 
-	if err := client.ensureStreamOn(conn); err != nil {
+	if err := client.ensureStreamOn(context.Background(), conn); err != nil {
 		t.Fatalf("the ensure hook once the connection is back: %v", err)
 	}
 	if info, err = js.StreamInfo(Stream); err != nil {

@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestASecondStartOpensABucketAMemberHasNotAppliedYet(t *testing.T) {
 	if kv.Bucket() != catchupBucket {
 		t.Fatalf("the second start's handle is on bucket %q, want %q", kv.Bucket(), catchupBucket)
 	}
-	if _, err := kv.ReadStreamState(); err != nil {
+	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("the second start could not read the bucket's stream: %v", err)
 	}
 }
@@ -174,7 +175,7 @@ func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
 	if watcher.behind != 0 {
 		t.Fatalf("the raise answered with %d catching-up reads still to come, want it to wait for every copy to be current", watcher.behind)
 	}
-	if _, err := kv.ReadStreamState(); err != nil {
+	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the raised bucket's stream: %v", err)
 	}
 }

@@ -3154,7 +3154,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	putInterest(t, recreated, Interest{SessionID: "ses_b", MachineID: "m1", Topics: []string{"notifications.b"}})
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = cachedIDs(reg) })
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, completion.reached, "the new bucket's read to deliver every record")
@@ -3203,7 +3203,7 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 	roles, roleWatch := reg.roles(), reg.roleWatcher.KV()
 	roleWatcher := reg.roleWatcher
 	second, closeSecond := connectNATS(t)
-	if err := reg.Rewatch(second); err == nil {
+	if err := reg.Rewatch(context.Background(), second); err == nil {
 		t.Fatal("Rewatch onto a connection without the role bucket succeeded")
 	}
 	closeSecond()
@@ -3252,7 +3252,7 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	roles, roleWatch := reg.roles(), reg.roleWatcher.KV()
 	roleWatcher := reg.roleWatcher
 	second, closeSecond := connectNATS(t)
-	if err := reg.Rewatch(second); err == nil {
+	if err := reg.Rewatch(context.Background(), second); err == nil {
 		t.Fatal("Rewatch onto a connection without the interest bucket succeeded")
 	}
 	closeSecond()

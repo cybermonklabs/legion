@@ -454,7 +454,7 @@ func TestListsRefuseAfterTheBoundWithAStaleCopy(t *testing.T) {
 				rig.assertNoSample(t, "envoy_active_interests")
 			}
 
-			if err := cache.Rewatch(rig.client.Conn); err != nil {
+			if err := cache.Rewatch(context.Background(), rig.client.Conn); err != nil {
 				t.Fatalf("read the %s bucket again: %v", stale, err)
 			}
 			rig.awaitServed(t, 5*time.Second, "both lists once the "+stale+" copy read its bucket again")
@@ -527,7 +527,7 @@ type unreadRewatch struct {
 	failed chan<- struct{}
 }
 
-func (c unreadRewatch) Rewatch(*natsgo.Conn) error {
+func (c unreadRewatch) Rewatch(context.Context, *natsgo.Conn) error {
 	select {
 	case c.failed <- struct{}{}:
 	default:

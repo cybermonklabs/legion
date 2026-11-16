@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -44,7 +45,7 @@ var errHookStallRewatch = errors.New("rewatch interest cache: watch role claims 
 // answers does.
 func failReconnectHooks(t *testing.T, client *bus.Client) {
 	t.Helper()
-	client.AddReconnectHook(func(*natsgo.Conn) error { return errHookStallRewatch })
+	client.AddReconnectHook(func(context.Context, *natsgo.Conn) error { return errHookStallRewatch })
 	if err := client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}

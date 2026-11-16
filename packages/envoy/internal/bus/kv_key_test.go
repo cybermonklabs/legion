@@ -41,7 +41,7 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find bucket: %v", err)
 	}
-	opened, err := OpenKeyValue(client.Conn, js, "kv_key_check")
+	opened, err := OpenKeyValue(context.Background(), client.Conn, js, "kv_key_check")
 	if err != nil {
 		t.Fatalf("open bucket: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 			t.Fatalf("store the %d-byte key as an earlier listener did: %v", len(key), err)
 		}
 	}
-	kv, err := OpenKeyValue(client.Conn, js, bucket)
+	kv, err := OpenKeyValue(context.Background(), client.Conn, js, bucket)
 	if err != nil {
 		t.Fatalf("open bucket: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAKeyAnEarlierListenerStoredStaysListableAndDeletable(t *testing.T) {
 			t.Fatalf("store the %d-byte key as an earlier listener did: %v", len(key), err)
 		}
 	}
-	kv, err := OpenKeyValue(client.Conn, js, "kv_legacy")
+	kv, err := OpenKeyValue(context.Background(), client.Conn, js, "kv_legacy")
 	if err != nil {
 		t.Fatalf("open bucket: %v", err)
 	}

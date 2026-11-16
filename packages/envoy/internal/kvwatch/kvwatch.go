@@ -297,7 +297,7 @@ func (w *Watcher) Start() {
 	}
 	w.mu.Unlock()
 	go func() {
-		err := w.watch(w.first, 0)
+		err := w.watch(context.Background(), w.first, 0)
 		if err == nil {
 			return
 		}
@@ -338,17 +338,20 @@ func (w *Watcher) Start() {
 // rewatched by the listener's self-health rebuild on the monitor's tick instead
 // (cmd/listener/main.go, rewatchListenerKVWatchers, called from rebuildListenerDependencies).
 // Either way the wait armed at the stop reports the outage once, at bus.RepairGrace (closed). The
-// error is returned unchanged, which its caller already logs.
-func (w *Watcher) Rewatch(conn *nats.Conn) error {
+// error is returned unchanged, which its caller already logs. Every request of the move (the
+// bucket's open, the stream read, the watcher's create) is made under ctx, which a reconnect hook
+// passes as the run's context, so a move on a connection that drops ends at the drop; the watcher a
+// move installs does not end with ctx (watch).
+func (w *Watcher) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err != nil {
 		return fmt.Errorf("open %s JetStream: %w", w.name, err)
 	}
-	kv, err := bus.OpenKeyValue(conn, js, w.bucket)
+	kv, err := bus.OpenKeyValue(ctx, conn, js, w.bucket)
 	if err != nil {
 		return fmt.Errorf("open %s KV bucket: %w", w.name, err)
 	}
-	if err := w.watch(kv, 0); err != nil {
+	if err := w.watch(ctx, kv, 0); err != nil {
 		return fmt.Errorf("watch %s KV bucket: %w", w.name, err)
 	}
 	return nil
@@ -429,9 +432,13 @@ func (w *Watcher) WaitReady(ctx context.Context) error {
 // Each watcher lives in a context of its own (subscription): nats.go ends the subscription when
 // that context ends and parks a goroutine on it until then (bus.KeyValue.WatchKeys), so it is
 // cancelled once the watcher is stopped or has ended, never before. Its create request is bounded
-// by nats.go itself, since the context carries no deadline (WatchKeys): a create that fails is the
-// watch's error, as a failed stream read is, and leaves nothing to stop.
-func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
+// by nats.go itself, since the context carries no deadline (WatchKeys), and by run: the stream read
+// is made under run, and a run that ends while the create is in flight cancels the watcher's
+// context, which ends the create; a watcher the create still returned then is discarded as an
+// overtaken one is. A create that fails is the watch's error, as a failed stream read is. A run that
+// ends after the create returned leaves the watcher's context alone (context.AfterFunc's stop), so
+// the watcher never ends with the hook run that installed it.
+func (w *Watcher) watch(run context.Context, kv bus.KeyValue, expect uint64) error {
 	w.mu.Lock()
 	stopped := w.stopped
 	if stopped {
@@ -449,13 +456,24 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 	// watcher's create request are part of it, not just the entries that follow.
 	started := time.Now()
 	sent := w.now()
-	state, err := kv.ReadStreamState()
+	state, err := kv.ReadStreamState(run)
 	if err != nil {
 		return err
 	}
 	stream := state.Created
 	ctx, cancel := context.WithCancel(context.Background())
+	abandon := context.AfterFunc(run, cancel)
 	watcher, err := kv.WatchKeys(ctx, jetstream.AllKeys)
+	if !abandon() {
+		// run ended while the create was in flight, and cancelled the watcher's context.
+		if err == nil {
+			sub := &subscription{watcher: watcher, cancel: cancel}
+			go sub.discard()
+			_ = sub.stop()
+		}
+		cancel()
+		return fmt.Errorf("create the %s watcher: %w", w.name, run.Err())
+	}
 	if err != nil {
 		cancel()
 		return err

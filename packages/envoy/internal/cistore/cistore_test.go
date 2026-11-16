@@ -483,7 +483,7 @@ func TestRewatchRestartsStoppedWatcher(t *testing.T) {
 		t.Fatalf("connect replacement: %v", err)
 	}
 	defer replacement.Close()
-	if err := s.Rewatch(replacement); err != nil {
+	if err := s.Rewatch(context.Background(), replacement); err != nil {
 		t.Fatalf("rewatch store: %v", err)
 	}
 	if err := s.Ping(); err != nil {
