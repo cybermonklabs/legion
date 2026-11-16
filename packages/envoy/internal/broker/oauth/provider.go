@@ -490,8 +490,10 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 }
 
 // RegisterPodSession records that the pod podUID of the service account account may exchange
-// under the session name session, and answers when that registration runs out
-// (oauthstore.PodSessionRetention from now, extended by every later write). It is what
+// under the session name session, bound to the key whose thumbprint is jkt when jkt is set, and
+// answers when that registration runs out (oauthstore.PodSessionRetention from now, extended by
+// every later write) and the key it is bound to after this write, since a write naming no key
+// keeps the one a live row names (oauthstore.Store.RegisterPodSession). It is what
 // POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the
 // only way a row the exchange's gate reads is written.
 //

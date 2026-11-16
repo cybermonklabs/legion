@@ -254,6 +254,15 @@ A daemon that stops registering costs its pods their writes within the registrat
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
 
+A registration may also name the thumbprint of the key that session's own role proves
+(`thumbprint`, 43 base64url characters, else `400 THUMBPRINT_INVALID`). The broker then admits a
+trade for that session only with a DPoP proof of that key, and refuses one proved with another
+`invalid_grant`, naming the session. The roles of one Legion issue pod read one exchange token and
+are registered for one pod, so this is what keeps one role from trading for another role's
+session; the Legion daemon names each role's key. A later write that names no key keeps the one
+the registration names, and a registration that names none, as a session pod's is, admits any key
+of that pod.
+
 Whoever can get a token for a listed account logs in as its service. Kubernetes access control on
 the daemon's namespace is that boundary: anyone who may create pods there naming the account,
 create `serviceaccounts/token` for it, or exec into the daemon's pod and read its token file can
