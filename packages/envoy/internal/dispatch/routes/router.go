@@ -48,6 +48,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/readclass"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -572,12 +573,37 @@ func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
 	api.WriteJSON(w, http.StatusOK, answer)
 }
 
-// apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App.
+// apiGithubRest serves the web app's GitHub reads to a person, as the GitHub App, of a repository
+// that person may see (repositoryHidden): a repository of a project the person does not see
+// answers as one the App is not installed on (githubapi.ProxyREST).
 func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
-	if _, ok := r.login(w, req); !ok {
+	login, ok := r.login(w, req)
+	if !ok {
 		return
 	}
-	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub)
+	githubapi.ProxyREST(w, req, r.ctx.apiDeps.GitHub, func(owner, repo string) (bool, error) {
+		return r.repositoryHidden(req.Context(), login, owner+"/"+repo)
+	})
+}
+
+// repositoryHidden reports whether the person login may not see repository: the cookie's viewer
+// (access.Resolve) fails access.RepositoryClause, so a repository mapped to no project the person
+// sees, or mapped to none while the person is a restricted member, is hidden. A router with no
+// Store, a test's, maps no repository and hides none.
+func (r *router) repositoryHidden(ctx context.Context, login, repository string) (bool, error) {
+	if r.ctx.Store == nil {
+		return false, nil
+	}
+	viewer, err := access.Resolve(ctx, r.ctx.Store.Pool, model.Actor{Kind: "user", ID: login})
+	if err != nil {
+		return false, err
+	}
+	var visible bool
+	if err := r.ctx.Store.Pool.QueryRow(ctx, `select `+access.RepositoryClause("$2", "$1"),
+		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&visible); err != nil {
+		return false, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
+	}
+	return !visible, nil
 }
 
 // login is the signed-in person the request's cookie names, and the caller its access-log line
