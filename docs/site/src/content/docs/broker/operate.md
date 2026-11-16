@@ -90,7 +90,9 @@ machine-login revokes and their sign-in revokes; it decides no secret request
 
 The four `BROKER_SIGNIN_*` settings are required, and a broker started without one of them exits
 naming the missing ones. They are the page where a person approves a secret request, signed in to
-the broker itself ([Approval sign-in](#approval-sign-in)).
+the broker itself ([Approval sign-in](#approval-sign-in)). A deployment that has not settled how
+its people sign in sets `BROKER_SIGNIN=off` instead, and that broker approves nothing
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)).
 
 A caller's **name** decides which of those routes its account reaches, so listing an account is
 not one authority but a choice between them. The broker knows three names: `dispatch`, which
@@ -462,7 +464,7 @@ A person approves or denies a secret request on the broker's own page,
 `<BROKER_PUBLIC_URL>/approve/<record>`, signed in to the broker with OpenID Connect through an
 OAuth client of the broker's own; Dispatch's Inbox only links there, and no route a service calls
 decides a secret request ([Concepts](/legion/broker/concepts/#approvals)). Four settings are the
-sign-in, and every one of them is required:
+sign-in, and every one of them is required unless `BROKER_SIGNIN=off`:
 
 | Setting | What it is |
 | --- | --- |
@@ -474,9 +476,10 @@ sign-in, and every one of them is required:
 
 A broker missing any of the four refuses to start, naming the ones it is missing: `broker: fatal
 error="the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID,
-BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"`. There is
-no broker that serves machines but approves nothing: a deployment either signs people in or does
-not run.
+BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"`. The one
+broker that starts without them is one told outright to sign nobody in, `BROKER_SIGNIN=off`
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)): a deployment either signs
+people in, says it signs nobody in, or does not run.
 
 On Google, create the client once, in the Google Cloud project whose OAuth consent screen is the
 Workspace's **Internal** one (APIs & Services → Credentials → Create credentials → OAuth client ID,
@@ -551,6 +554,40 @@ visit to a request's page signs them in again, if the provider still lets them; 
 them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. It is the only subcommand the
 broker takes: anything else is refused with a usage line, and `envoy-broker` with no argument
 serves.
+
+### A broker that signs nobody in
+
+A deployment whose way of signing people in is not settled yet runs the broker with
+`BROKER_SIGNIN=off` and none of the `BROKER_SIGNIN_*` settings. Such a broker serves machines and
+pods as any broker does and approves nothing:
+
+- It serves no approval page: every route under `/approve` and `/signin/`, `GET /signin/status`
+  among them, answers 404, and no sign-in client check runs.
+- A request naming a secret whose answer would be a person's approval — a human-tier secret,
+  another person's `tier=agent` secret, a secret the session's operator withheld from it — is
+  denied at once, whatever its reason says, and nothing waits in anyone's Inbox. The session reads
+  `<NAME>: a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)` after
+  `was denied: `, and the command exits 77.
+- What the policy grants at once is granted as on any broker: a person's own and a shared
+  `tier=agent` secret for their sessions, and a service's own secret for its pods. A machine
+  login, which a person decides on Dispatch's machine-login page, is unchanged.
+- A request still pending from a run with sign-in on — one written before a restart with
+  `BROKER_SIGNIN=off`, or by a broker pod still on the old setting during the roll — is denied by the
+  next sweep, within `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads
+  `was denied: a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and
+  the request records `broker:signin-off` as having decided it. A grant a person approved
+  before stays until it ends as any grant does.
+- `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off.
+
+`off` is the one value it takes: any other, `OFF` or `disabled` among them, refuses to start
+naming it, `broker: fatal error="BROKER_SIGNIN must be off or unset, got \"disabled\""`. `off`
+beside any `BROKER_SIGNIN_*` setting refuses to start naming the ones set, since the deployment
+has asked for both: `BROKER_SIGNIN=off turns the broker's person sign-in off, and
+BROKER_SIGNIN_DOMAIN is set: set BROKER_SIGNIN=off or the sign-in settings, not both`. `off`
+beside the [model judge](/legion/broker/concepts/#the-model-judge)'s settings refuses too, since
+the judge decides only a request that waits for a person. With `BROKER_SIGNIN` unset, a broker
+missing a sign-in setting refuses exactly as above, so a deployment that lost its sign-in settings
+never starts without its approval page.
 
 ## Signing in to RDS by IAM token
 
@@ -849,6 +886,7 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `database sign-in method=<method>` | At startup, before the broker reaches for AWS or its database: `rds-iam` when each connection signs in with an RDS IAM token the broker mints, `password` when it signs in as `BROKER_DATABASE_URL` and libpq's defaults say (a password in the URL, `PGPASSWORD`, a passfile, or none for a server that trusts it). |
 | `secret store store=<store> credentials=<source>` | At startup, once the store is built: `aws-secrets-manager` under the AWS SDK's credential chain (`aws-sdk`), `gcp-secret-manager` under Application Default Credentials (`application-default`), or either name over `BROKER_FAKE_SECRETS_FILE` (`fake secrets file`). |
 | `approval sign-in on issuer=<issuer> client_id=<client id> domain=<domain>` | At startup: the approval page signs people in through that client, holding each person to that Workspace domain ([Approval sign-in](#approval-sign-in)). The client's secret is never logged. |
+| `approval sign-in off detail=…` | At startup, in place of the line above: `BROKER_SIGNIN=off`, so the broker serves no approval page and denies at once a request a person would approve ([A broker that signs nobody in](#a-broker-that-signs-nobody-in)). No sign-in client check runs. |
 | `broker: the sign-in client check state=<state> issuer=<issuer> error=…` | At WARN, from the check each pod takes at startup and every hour after, when it finds a state other than `ready` that the pod did not log last: the provider refused the broker's client (`state=client_rejected`, so nobody can sign in) or could not be asked (`state=issuer_unreachable`). A check that finds the state the pod logged last, or finds the client ready with no such line before it, logs nothing, so a provider that stays away for a day is one line. Every check writes its answer to `GET /signin/status`. |
 | `broker: the sign-in client check finds the client ready again issuer=<issuer> was=<state>` | At INFO: the first check that finds the client ready after the line above. `was` is the state that line named. |
 | `broker: the sign-in client check was not written state=<state> error=…` | At WARN: a check could not write its answer to Postgres after the check before it wrote, so `GET /signin/status` answers the last answer written. The checks after it log nothing more until one writes. |

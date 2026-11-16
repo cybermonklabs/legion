@@ -1001,6 +1001,14 @@ const ReasonRequesterNotListed = "requester-not-listed"
 // policy's to see.
 const ReasonNoReason = "a reason is necessary; ask again with --reason"
 
+// ReasonSignInOff is the Reason of a Deny the request machine decided on a broker that signs
+// nobody in (BROKER_SIGNIN=off): the name's answer would be a person's approval, and no person
+// can sign in to give one, so the request is refused at once rather than left pending for
+// nobody. It is named before ReasonNoReason, since asking again with a reason would be refused
+// the same way. Set.Evaluate never answers it, since whether anyone can sign in is not the
+// policy's to see.
+const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
+
 // Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
 // whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
 // requester the list does not name, before owner and tier are read at all. A name withheld from r

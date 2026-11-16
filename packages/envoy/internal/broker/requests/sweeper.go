@@ -2,12 +2,14 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/store"
 )
 
 // SweepRecoveredMessage is logged, at INFO, by Tick for one of its sweeps on the first run of that
@@ -50,7 +52,8 @@ var sweeps = [...]struct{ name, failed string }{
 // Sweeper is the one thing that ends what no human decides: every tick it ends the enrollments
 // whose lease lapsed (revoking their grants and cancelling their pending requests), ends the
 // dormant enrollments whose carry window passed, expires overdue
-// pending agent_secret requests (waking each one's owner) and overdue pending machine logins,
+// pending agent_secret requests (waking each one's owner), denies every pending one on a broker
+// with BROKER_SIGNIN=off (Machine.denyUndecidable), expires overdue pending machine logins,
 // deletes spent OAuth state (oauthstore.Store.Sweep), deletes expired browser sessions, and
 // deletes the airlock placeholders of grants that have ended — all
 // read fresh from Postgres, never from memory, so a restart resumes exactly where the rows are. A
@@ -114,11 +117,20 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	}
 	s.settle(ctx, sweepDormantEnrollments, err)
 	now := time.Now()
+	// The pending-requests sweep: the overdue expire, and on a broker with BROKER_SIGNIN=off
+	// every request still pending is denied (Machine.denyUndecidable), each one's session woken
+	// once with the state it reached. One sweep, so a failure of either is one run of failures.
 	expired, err := s.Machine.expirePending(ctx, now)
-	s.settle(ctx, sweepPendingRequests, err)
-	for _, r := range expired {
-		if s.Wake != nil {
-			s.Wake(ctx, r.EnrollmentID, r.ID, "expired")
+	denied, deniedErr := s.Machine.denyUndecidable(ctx, now)
+	s.settle(ctx, sweepPendingRequests, errors.Join(err, deniedErr))
+	for _, ended := range []struct {
+		requests []store.EndedRequest
+		state    string
+	}{{expired, "expired"}, {denied, "denied"}} {
+		for _, r := range ended.requests {
+			if s.Wake != nil {
+				s.Wake(ctx, r.EnrollmentID, r.ID, ended.state)
+			}
 		}
 	}
 	s.settle(ctx, sweepPendingMachineLogins, s.MachineLogins.ExpirePending(ctx, now))

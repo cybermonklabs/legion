@@ -20,18 +20,22 @@ const (
 	// RequestsPastDeadline is every request whose pending_expires_at is before the argument, a
 	// time.Time.
 	RequestsPastDeadline
+	// RequestsCreatedBefore is every request created before the argument, a time.Time: on a
+	// broker with BROKER_SIGNIN=off, every pending request, since none is written pending there.
+	RequestsCreatedBefore
 )
 
 var pendingScopeWhere = [...]string{
-	RequestByID:          "id = $1",
-	RequestsOfEnrollment: "enrollment_id = $1",
-	RequestsPastDeadline: "pending_expires_at < $1",
+	RequestByID:           "id = $1",
+	RequestsOfEnrollment:  "enrollment_id = $1",
+	RequestsPastDeadline:  "pending_expires_at < $1",
+	RequestsCreatedBefore: "created_at < $1",
 }
 
 // RequestEnd is how EndPendingRequests ends each request it selects.
 type RequestEnd struct {
-	// State is "cancelled" or "expired": the request's new state, its record's event, and its
-	// audit row's kind, request.<State>.
+	// State is "cancelled", "expired" or "denied": the request's new state, its record's event,
+	// and its audit row's kind, request.<State>.
 	State string
 	// Actor names who ended the request, on its audit row and its record's event.
 	Actor string
@@ -72,7 +76,8 @@ select id, enrollment_id, record_id from ended`
 // credential-request record, the record's terminal event. A request no longer pending is left as
 // it is. It is how every writer but a human's decision (requests.Machine.ApplyDecision, which
 // writes its own event) ends a pending request: the requesting session's cancel, the sweeper's
-// expiry, and an enrollment's end. Each writes the record's event with the request's transition,
+// expiry and its denial of what a broker with BROKER_SIGNIN=off can never put to a person, and an
+// enrollment's end. Each writes the record's event with the request's transition,
 // but no reader relies on that event being there, since a database can hold requests an older
 // broker cancelled without one: requests.Machine.PendingForApprover and ReadRecord take an
 // agent_secret record's state from its request row, and record.ChainVerifier releases only on

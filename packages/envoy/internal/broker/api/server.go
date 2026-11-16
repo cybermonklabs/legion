@@ -126,9 +126,9 @@ type Deps struct {
 	// TokenHooks are the broker's steps around each token the provider issues.
 	TokenHooks oauth.TokenHooks
 	// Approval is the broker's own approval page and its sign-in (internal/broker/approval),
-	// which cmd/broker always builds, since config.Load requires BROKER_SIGNIN_*. Its routes,
-	// every one under /approve and /signin/, are mounted only when it is set, which leaves them
-	// off the mux of a test rig that wires no page.
+	// which cmd/broker builds from BROKER_SIGNIN_* unless BROKER_SIGNIN=off, when it builds none.
+	// Its routes, every one under /approve and /signin/, are mounted only when it is set, so a
+	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
@@ -239,7 +239,8 @@ func Register(mux *http.ServeMux, deps Deps) {
 const oauthRoutes = "/v1/oauth/"
 
 // approvalRoutes and signInRoutes prefix the approval page's routes, which Register mounts only
-// with the page: every broker has one, and a rig that wires none serves those paths not at all.
+// with the page: a broker with BROKER_SIGNIN=off has none, nor does a rig that wires none, and
+// either serves those paths not at all.
 const (
 	approvalRoutes = "/approve"
 	signInRoutes   = "/signin/"

@@ -27,6 +27,9 @@ Connect client, through which a person signs in to the approval page: `BROKER_SI
 `BROKER_SIGNIN_CLIENT_ID`, `BROKER_SIGNIN_CLIENT_SECRET_FILE` and `BROKER_SIGNIN_DOMAIN` are all
 required, and a broker missing any of them refuses to start, naming the missing ones.
 `GET /signin/status` reports what that sign-in has done, for an operator or a production check.
+The one broker that starts without them is one with `BROKER_SIGNIN=off`, which signs nobody in:
+it serves no approval page and denies at once every request a person would have to approve,
+while everything the policy grants at once is granted as ever.
 The docs site's "Operating the broker" page
 (`docs/site/src/content/docs/broker/operate.md`) gives a minimal production configuration and
 everything the broker depends on, and its generated configuration reference lists every variable
