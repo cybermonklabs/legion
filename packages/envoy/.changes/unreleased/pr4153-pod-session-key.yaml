@@ -11,10 +11,13 @@ body: |-
   cannot trade for a sibling role's session. A write that names no key keeps the one a live
   registration names, and a write of a lower generation than the registration's changes nothing,
   so an old incarnation's late write cannot put its key back. A registration that names neither
-  stays the pod's, as before. Migration 0032 (`0032_oauth_pod_sessions_binding`) adds both columns
-  (`oauth_pod_sessions.jkt`, `oauth_pod_sessions.generation`). Rolling the broker back past it
-  drops the binding and makes the older route refuse both fields, so unset `exchange_audience` in
-  every Legion daemon first.
+  stays the pod's, as before. The broker logs a trade refused for another key at WARN, naming the
+  pod, the session and both keys; logs each registration with the thumbprint and generation sent
+  beside those stored and the key it replaced; and logs a write the generation rule refused at
+  WARN, apart from the writes it applied. Migration 0032 (`0032_oauth_pod_sessions_binding`) adds
+  both columns (`oauth_pod_sessions.jkt`, `oauth_pod_sessions.generation`). Rolling the broker
+  back past it drops the binding and makes the older route refuse both fields, so unset
+  `exchange_audience` in every Legion daemon first.
 time: 2026-11-16T17:14:22Z
 custom:
     Issue: pr4153

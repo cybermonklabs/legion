@@ -7,11 +7,14 @@ package oauth_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 )
@@ -58,6 +61,49 @@ func TestASiblingRoleCannotTradeForAnotherRolesSession(t *testing.T) {
 
 	f.introspectsAs(t, f.exchanged(t, f.podTrade(t, roleB), kB), roleB, person, project)
 	f.introspectsAs(t, f.exchanged(t, f.podTrade(t, roleA), kA), roleA, person, project)
+}
+
+// TestASiblingRolesRefusedTradeLogsALineOfItsOwn: the trade a sibling role makes for another
+// role's session, refused because the registration is bound to another key, logs one WARN line of
+// its own naming the principal, the pod, the session, the key the registration is bound to and
+// the key the trade proved. writeError logs only a server error, so without it the broker's log
+// shows this refusal as it shows an expired grant or a registration not yet written. Neither
+// admitted trade logs it, and no line repeats the subject token.
+func TestASiblingRolesRefusedTradeLogsALineOfItsOwn(t *testing.T) {
+	logs := capturedLog(t)
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	kA, kB := newKey(t), newKey(t)
+	f.registersBound(t, account, issuePod, roleA, thumbprint(t, kA))
+	f.registersBound(t, account, issuePod, roleB, thumbprint(t, kB))
+
+	sibling := f.podTrade(t, roleB)
+	if status, body := f.exchange(t, sibling, kA); status != http.StatusBadRequest || body["error"] != "invalid_grant" {
+		t.Fatalf("role A's trade for %s's session = %d %v, want 400 invalid_grant", roleB, status, body)
+	}
+	f.exchanged(t, f.podTrade(t, roleB), kB)
+	f.exchanged(t, f.podTrade(t, roleA), kA)
+
+	const message = "broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to"
+	lines := logs.lines(`"msg":"` + message + `"`)
+	if len(lines) != 1 {
+		t.Fatalf("the refused sibling trade and the two admitted trades logged %d lines %q, want exactly 1, the refusal's own:\n%s",
+			len(lines), message, strings.Join(logs.lines(), "\n"))
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("the logged line %s: %v", lines[0], err)
+	}
+	delete(got, "time")
+	want := map[string]any{
+		"level": "WARN", "msg": message, "principal": exchange.AccountPrincipal(account), "pod": issuePod, "session": roleB,
+		"bound_thumbprint": thumbprint(t, kB), "presented_thumbprint": thumbprint(t, kA),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("the refusal's line = %v, want %v", got, want)
+	}
+	if subject := sibling.Get("subject_token"); len(logs.lines(subject)) != 0 {
+		t.Errorf("a logged line repeats the refused trade's subject token:\n%s", strings.Join(logs.lines(subject), "\n"))
+	}
 }
 
 // TestARegistrationWithNoThumbprintIsPodBound: a registration that names no key, as a session

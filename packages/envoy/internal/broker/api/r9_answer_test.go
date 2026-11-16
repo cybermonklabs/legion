@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"encoding/json"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -30,5 +31,18 @@ func TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore(t *testing.T)
 	got, want := slices.Sorted(maps.Keys(answer)), []string{"expires_at", "pod_uid", "session"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("a registration naming no key and no generation is answered the fields %v, want the merge base's %v: %s", got, want, body)
+	}
+}
+
+// TestARegistrationNamingNoKeyAndNoGenerationLogsAsBefore (R9): the same write, of a row that names
+// no key and no generation either, logs the line the merge base logged, with the attributes it
+// had and no others: no thumbprint or generation sent or stored, and none replaced.
+func TestARegistrationNamingNoKeyAndNoGenerationLogsAsBefore(t *testing.T) {
+	rig := newRegistrationRig(t, "pod-uid-watched")
+	for _, write := range []string{"the first write", "a renewal"} {
+		rig.register(t, map[string]any{"session": "watched-session"})
+		rig.loggedOnly(t, write+" of watched-session naming no key and no generation", map[string]any{
+			"level": slog.LevelInfo, "msg": registeredMessage, "session": "watched-session",
+		})
 	}
 }
