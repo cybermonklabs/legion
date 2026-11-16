@@ -62,16 +62,16 @@ agent-secrets LEGION_SLACK_BOT_TOKEN -- \
 ```
 
 Your own shell expands `$LEGION_SLACK_BOT_TOKEN` before `agent-secrets` runs, and in your shell that
-name is empty. Measured on 2026-11-04 from a Legion issue pod: Slack answered
-`{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
+name is empty. Slack then answers `{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
 a secret behind the airlock — exists only in the environment of the command the client starts, so
 that command must read it itself. Put the command in single quotes, inside
-`sh -c`, where the quotes keep the expansion for the child:
+`sh -c`, where the quotes keep the expansion for the child, and give `curl` the header on standard
+input (`-H @-`), so the value is in no command's arguments:
 
 ```sh
 # right
 agent-secrets LEGION_SLACK_BOT_TOKEN -- \
-  sh -c 'curl -sS -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" https://slack.com/api/auth.test'
+  sh -c 'printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" | curl -sS -H @- https://slack.com/api/auth.test'
 ```
 
 The repository uses the same form for a GitHub App token in `docs/deployment.md`:
@@ -235,8 +235,7 @@ A session on a person's own development box is not a pod, and `agent-secrets ide
 for two reasons:
 
 - **The machine is not logged in.** `agent-secrets machine login-status` prints `issued` only while
-  the machine holds its credential. The person logs the machine in; step 4b of `docs/joining.md` in
-  theorem-labs/agent-infra, "Log the VM in to the secrets broker", is that step.
+  the machine holds its credential. The person logs the machine in, as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows.
 - **The agent is not a broker session.** The helper knows only the process tree it registered. The
   person restarts the agent as one:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.
@@ -260,15 +259,15 @@ reaches no shell history.
 
 ```sh
 agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+  printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN" |
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @- \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'
 ```
 
-Measured on 2026-11-04 from a Legion issue pod: it exited 0 and answered `"ok": true` with the 12
-messages of the thread. A `ts` that names no message answers
+It exits 0 and answers `"ok": true` with the messages of the thread. A `ts` that names no message answers
 `{"ok":false,"error":"thread_not_found"}`, also at exit 0, which is why the body decides and not the
 status. A thread read needs the app's `channels:history` scope in a public channel and
 `groups:history` in a private one; without them Slack answers `missing_scope`, which only a person

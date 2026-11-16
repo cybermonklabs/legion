@@ -1,8 +1,9 @@
 // K8sPodVerifier verifies a projected service-account token with the shared internal/oidc
-// verifier (issuer, audience, signature, expiry, subject) and then reads the pod UID claim from
-// the same, already-verified token — the check Hawk's token broker makes (_is_pod_bound). A pod's
-// enrollment needs the token bound to its pod (Verify); a service's token login reads the account
-// and, when the token has one, its pod (VerifyAccount).
+// verifier (issuer, audience, signature, expiry, subject) and reads the pod UID claim from the
+// payload that verification's signature covers (oidc.Verifier.VerifyClaims), never from the
+// token's text — the check Hawk's token broker makes (_is_pod_bound). A pod's enrollment needs the
+// token bound to its pod (Verify); a service's token login reads the account and, when the token
+// has one, its pod (VerifyAccount).
 package enroll
 
 import (
@@ -10,7 +11,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -32,14 +32,6 @@ type AccountClaims struct {
 // VerifyAccount verifies raw as Verify does but accepts a token bound to no pod. Every error wraps
 // one of the oidc sentinels (oidc.ErrExpired for an expired token), or is a malformed private claim.
 func (k K8sPodVerifier) VerifyAccount(ctx context.Context, raw string) (AccountClaims, error) {
-	claims, err := k.Verifier.Verify(ctx, raw)
-	if err != nil {
-		return AccountClaims{}, err
-	}
-	parsed, err := jwt.ParseSigned(raw, []jose.SignatureAlgorithm{jose.RS256, jose.ES256})
-	if err != nil {
-		return AccountClaims{}, err
-	}
 	var registered jwt.Claims
 	var private struct {
 		Kubernetes struct {
@@ -48,9 +40,8 @@ func (k K8sPodVerifier) VerifyAccount(ctx context.Context, raw string) (AccountC
 			} `json:"pod"`
 		} `json:"kubernetes.io"`
 	}
-	// The signature was verified by oidc.Verifier on this exact token; reading the claims
-	// without a second verification is safe here and only here.
-	if err := parsed.UnsafeClaimsWithoutVerification(&registered, &private); err != nil {
+	claims, err := k.Verifier.VerifyClaims(ctx, raw, &registered, &private)
+	if err != nil {
 		return AccountClaims{}, err
 	}
 	var issuedAt time.Time

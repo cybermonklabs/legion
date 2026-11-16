@@ -43,9 +43,9 @@ alone. Read the whole thread before you decide what the person wants. The read i
 (`skill://agent-secrets`):
 
 ```sh
-agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- bash -c '
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @<(printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN") \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'

@@ -40,7 +40,7 @@ func TestAKindSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 	if err != nil || owners.GrantID == nil {
 		t.Fatalf("Create by the owner = %+v, %v; want a grant", owners, err)
 	}
-	if release, err := machine.Values(t.Context(), *owners.GrantID, otherEnr, nil); !errors.Is(err, ErrNotYours) || release.Values != nil {
+	if release, err := machine.Values(t.Context(), *owners.GrantID, otherEnr, nil, ReleaseCall{}); !errors.Is(err, ErrNotYours) || release.Values != nil {
 		t.Fatalf("Values of the owner's grant from %s's session = %v, %v; want ErrNotYours", other, release.Values, err)
 	}
 	if n := calls.Load(); n != 0 {
@@ -69,7 +69,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 	if err != nil || decision.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
-	release, err := machine.Values(t.Context(), decision.GrantID, enrollmentID, nil)
+	release, err := machine.Values(t.Context(), decision.GrantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil || release.Values["HUMAN_APP_KEY"] != "minted-token" {
 		t.Fatalf("Values = %v, %v; want the minted token", release.Values, err)
 	}
@@ -99,7 +99,7 @@ func TestConcurrentReleasesOfOneKindSecretAllMint(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range releases {
 		wg.Go(func() {
-			release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+			release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{})
 			tokens[i], errs[i] = release.Values["BUSY_APP_KEY"], err
 		})
 	}
