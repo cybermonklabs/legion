@@ -54,22 +54,25 @@ at the head, and the check takes no `run`. Its `when` is `before_merge`, and it 
 one result from the named run (`skill://legion-worker/references/ci-checks.md`). Where a CI job
 that runs on an ordinary pull request already makes a check's proof, write that check as
 `ci_check` rather than as a command. A check that a whole test suite proves names the CI job that
-runs that suite as its `ci_check`, and a check's `run` names at most specific tests or files, never
-a package path, a `./...` pattern or a package's whole `test` script: CI proves a suite on the pull
-request and the merge queue on the merged tree, and a suite run in a pod repeats that work slower.
+runs that suite as its `ci_check`, and a check's `run` that names tests names specific tests or
+files, never a package path, a `./...` pattern or a package's whole `test` script: CI proves a
+suite on the pull request and the merge queue on the merged tree, and a suite run in a pod repeats
+that work slower. Any other `run` is the procedure a role drives on the check's surface.
 Write a `ci_check` check by three rules:
 
 1. Name the check run of the job that runs the proof, never a roll-up run that stands for other
    jobs. A roll-up run can pass at a head where the job of the check did not run.
 2. Name a job that the repository holds back from an ordinary pull request too, because a `run` in
    its place leaves the pod as the only place its proof runs. The worker adds the label that runs
-   the held-back jobs at the head, and the tester takes the result from that run.
+   the held-back jobs at the head, and the tester takes the result from that run. Without the
+   label such a job reads `skipped`, so the label stays on for as long as a check of the issue
+   names a held-back job, and each later head gets its own run.
 3. Write in `negative_control` the case inside that job that fails when the property breaks. A
    job's conclusion is not the property: a step with `continue-on-error` keeps its job green,
    and a test deleted from a suite takes its failure with it.
 
 On cybermonklabs/legion: `ci-ok` passes when the jobs it did not select were skipped
-(`.github/scripts/ci-ok.sh`), so never name `ci-ok`. Eight slow suites and the full browser lane
+(`.github/scripts/ci-ok.sh`), so never name `ci-ok`. The slow suites and the full browser lane
 run only in the merge queue or under `full-ci`, the label of rule 2 (`AGENTS.md`).
 
 ## Show the surface before you ask

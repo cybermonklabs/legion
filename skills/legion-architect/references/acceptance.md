@@ -148,9 +148,12 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
   `squash_merge_commit_message` joins the branch's commit messages among them: the merger tells
   you, and only a person can change it. Ask one with `dispatch ask`, naming the pull request, the
   head and GitHub's refusal; never bypass a rule.
-- A squash into a base other than the default branch, where the repository allows only squash:
-  the merger names each open pull request of the tree built on the merged branch. Tell each one's
-  implementer (`envoy_publish` to its role topic) to merge that base forward.
+- A squash into a base other than the default branch, where the repository allows only squash or
+  the base's rules require a linear history: the merger names each open pull request of the tree
+  built on the merged branch. Each one GitHub then reports `CONFLICTING` comes back to
+  `implementing` (*A conflicting head*, below). Tell each one's implementer (`envoy_publish` to its
+  role topic) to expect its pull request back, and to merge that base forward in that implementing
+  round.
 
 ## A conflicting head
 

@@ -203,7 +203,10 @@ and decides there, the only gate on such an issue.
   with `implementerProof.verdict: "rejected"`, complete the phase with
   `verdict: "fail"`, and the daemon returns the issue to the implementer — the agent that developed the change owns
   proving it (a rejected verdict, or `failed > 0`, always comes with the failure recorded in
-  `failures`). Otherwise record your own result for each `before_merge` check before you complete,
+  `failures`). A check whose `run` is a whole test suite is the exception: its words are wrong, so
+  while the architect rewrites it, it fails no round, and the tester names it in
+  `implementerProof.how` and sends it to the architect. Otherwise record your own result for each
+  `before_merge` check before you complete,
   and put each printed line in the body. A code path whose first execution is after merge — a
   deploy workflow's inline step, a post-merge helper, a production-only resource — is a check
   marked `after_merge`, recorded after the merge on a look of the production check by the role

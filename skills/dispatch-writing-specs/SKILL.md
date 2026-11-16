@@ -24,7 +24,7 @@ Part | Content
 `Problem` | What goes wrong, for whom, with counts
 `Goals and non-goals` | What is in and out of scope
 `Requirements` | a `:::requirement` block each, `**R1.**` on, its source (`From:`)
-`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (specific tests or files only), `when`, `negative_control`. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
+`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (where it names tests, specific ones), `when`, `negative_control`. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
 `Design` | How it meets them; a value and its reason for each limit, size and time
 `Decisions` | One line: `The decisions are in dispatch://KEY/artifact/decisions-md.`
 
