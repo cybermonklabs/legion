@@ -503,7 +503,7 @@ func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) erro
 
 // raceCheck is how a tag write on AWS, whose tag calls take no condition, answers for the
 // github-owners rule when another writer retags the same secret between the write's read (held)
-// and the write itself: it reads the tags back, and when the kind and github-owners there are a
+// and the write itself: it reads the tags back, and when the type and github-owners there are a
 // pair the broker refuses (policy.GitHubOwnersFor), it answers errTagsChanged wrapping
 // errTagsRaced, naming the tags it read, the tags it found and the retag that sets the secret
 // right. It writes nothing: the tags it read are no more current than the other writer's, so
@@ -512,17 +512,17 @@ func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) erro
 func (b *awsBackend) raceCheck(ctx context.Context, slug string, held heldTags) error {
 	now, err := b.currentTags(ctx, slug)
 	if err != nil {
-		return fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a kind without the GitHub owners it needs is unknown: %w", err)
+		return fmt.Errorf("the retag was written, but reading its tags back failed, so whether another write left it a type without the GitHub owners it needs is unknown: %w", err)
 	}
-	kind, owners := now.tags[policy.TagKind], now.tags[policy.TagGitHubOwners]
-	if _, err := policy.GitHubOwnersFor(kind, owners); err == nil {
+	secretType, owners := policy.TypeFromTags(now.tags), now.tags[policy.TagGitHubOwners]
+	if _, err := policy.GitHubOwnersFor(secretType, owners); err == nil {
 		return nil
 	}
 	name := b.displayName(b.id(slug))
-	return fmt.Errorf("%w, leaving kind %q with github-owners %q, which the broker refuses; %w. This retag read %s and found %s. Give that kind its owners with `%s`, or drop the kind with `%s`",
-		errTagsChanged, kind, owners, errTagsRaced, tagPairs(held.tags), tagPairs(now.tags),
-		b.agentSecrets("secret", "retag", name, "--kind", kind, "--github-owners", "LOGINS"),
-		b.agentSecrets("secret", "retag", name, "--kind", policy.TagRemoved))
+	return fmt.Errorf("%w, leaving type %q with github-owners %q, which the broker refuses; %w. This retag read %s and found %s. Give that type its owners with `%s`, or drop the type with `%s`",
+		errTagsChanged, secretType, owners, errTagsRaced, tagPairs(held.tags), tagPairs(now.tags),
+		b.agentSecrets("secret", "retag", name, "--type", secretType, "--github-owners", "LOGINS"),
+		b.agentSecrets("secret", "retag", name, "--type", policy.TagRemoved))
 }
 
 func (b *awsBackend) delete(ctx context.Context, slug string) (*time.Time, error) {

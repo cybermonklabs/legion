@@ -42,25 +42,25 @@ const (
 	TagOwner = "owner"
 	// TagTier is TierAgent or TierHuman.
 	TagTier = "tier"
-	// TagKind selects the token type a secret mints on release. An absent or empty tag leaves the
+	// TagType selects the token type a secret mints on release. An absent or empty tag leaves the
 	// secret's stored value unchanged.
-	TagKind = "kind"
-	// KindGitHubApp mints one installation token for every installation of the stored GitHub App
+	TagType = "type"
+	// TypeGitHubApp mints one installation token for every installation of the stored GitHub App
 	// on an account its TagGitHubOwners lists.
-	KindGitHubApp = "github-app"
-	// KindGoogleLogin exchanges the stored authorized-user refresh token for an access token.
-	KindGoogleLogin = "google-login"
-	// KindAzureLogin releases the broker's projected token with the stored Entra identity ids.
-	KindAzureLogin = "azure-login"
-	// KindGoogleServiceAccount mints a Google access token for the one service account its stored
+	TypeGitHubApp = "github-app"
+	// TypeGoogleLogin exchanges the stored authorized-user refresh token for an access token.
+	TypeGoogleLogin = "google-login"
+	// TypeAzureLogin releases the broker's projected token with the stored Entra identity ids.
+	TypeAzureLogin = "azure-login"
+	// TypeGoogleServiceAccount mints a Google access token for the one service account its stored
 	// value names, {"service_account": "<id>@<project>.iam.gserviceaccount.com"}. The token acts
-	// as that account, which no person's sign-in bounds, so the kind is served only to the one
+	// as that account, which no person's sign-in bounds, so the type is served only to the one
 	// person the secret's requesters tag names, beside the registered services that tag lists at
 	// human tier, and only for grants of an hour at most (TagRules). The stored value does not
 	// choose the account alone: the deployment's BROKER_SERVICE_ACCOUNT_SECRETS binds each such
 	// secret to one account email, and a mint for any other account is refused, so a value
 	// rewritten to name another account releases no token.
-	KindGoogleServiceAccount = "google-service-account"
+	TypeGoogleServiceAccount = "google-service-account"
 	// TagMaxGrant bounds a request's signed grant lifetime for this secret (ParseMaxGrant).
 	TagMaxGrant = "max-grant"
 	// TagDefaultGrant, set to DefaultGrantSession, keeps a request that names no lifetime for this
@@ -76,7 +76,7 @@ const (
 	// registered services by name, separated by white space (ParseRequesters). A session or pod
 	// the list does not name is denied before owner and tier are read (ReasonRequesterNotListed),
 	// so the tag narrows who may ask and never widens it. It bounds no grant by itself: the
-	// hour-long cap is the business of TagAdmin and of the google-service-account kind, each of
+	// hour-long cap is the business of TagAdmin and of the google-service-account type, each of
 	// which demands one (TagRules).
 	TagRequesters = "requesters"
 	// TagScopes lists the OAuth scope names of the token a google-service-account secret mints,
@@ -86,11 +86,11 @@ const (
 	// what every such secret minted before the tag existed. The names are short because the
 	// broker's AWS store keeps its annotations as AWS tags, an AWS tag value holds at most 256
 	// characters, and five full scope URLs are longer than that. The tag on a secret of any
-	// other kind is refused (ReasonScopesKind), since no other minter reads it.
+	// other type is refused (ReasonScopesType), since no other minter reads it.
 	TagScopes = "scopes"
 	// TagAdmin marks a secret whose grant is an administrator's: "true" is the only value the
 	// loader accepts, and anything else is refused (ReasonAdminMalformed). The broker cannot tell
-	// such a secret from its kind — an admin console password and a personal API key are both
+	// such a secret from its type — an admin console password and a personal API key are both
 	// stored strings — so the program that declares the secret says so. An admin secret must be
 	// human tier, carry a requesters list and carry a max-grant of an hour or less, so every
 	// release of it is approved by a person, asked for by someone it names, and short enough to
@@ -100,23 +100,23 @@ const (
 	// loader refuses every other value (ReasonAdminMalformed), and `agent-secrets` holds --admin
 	// to it before it writes, so the two cannot drift on what the tag says.
 	AdminTrue = "true"
-	// kindSourcePrefix opens the Source of a kind secret (KindSource). The kind and store source
-	// are frozen into a request, so changing or clearing the kind ends every live grant.
-	kindSourcePrefix = "mint:"
-	// TagRemoved is the value of `agent-secrets secret retag --kind`, `--github-owners`,
+	// typeSourcePrefix opens the Source of a type secret (TypeSource). The type and store source
+	// are frozen into a request, so changing or clearing the type ends every live grant.
+	typeSourcePrefix = "mint:"
+	// TagRemoved is the value of `agent-secrets secret retag --type`, `--github-owners`,
 	// `--requesters` and `--max-grant` that removes the tag. It is never a login a github-owners
 	// tag names: an entry that reads `none` in any case was written by hand, and is refused
 	// rather than read as an account (ParseGitHubOwners).
 	TagRemoved = "none"
 	// TagRollbackGuard and RollbackGuardValue are the tag `agent-secrets secret` writes beside every
-	// kind, and the value it writes. This broker never reads the tag. Brokers from
-	// legion-envoy-v13.19.0 to the release before kinds read it as the service account a secret
+	// type, and the value it writes. This broker never reads the tag. Brokers from
+	// legion-envoy-v13.19.0 to the release before types read it as the service account a secret
 	// mints for, and refuse a value that is not a service account's email (mint-target-malformed),
-	// so a rollback to one of them refuses a kind secret rather than serving its stored App key or
+	// so a rollback to one of them refuses a type secret rather than serving its stored App key or
 	// refresh token. Brokers older than legion-envoy-v13.19.0 read no such tag and serve it; never
-	// run one against a store that holds kind secrets.
+	// run one against a store that holds type secrets.
 	TagRollbackGuard   = "mint-service-account"
-	RollbackGuardValue = "kind-secret"
+	RollbackGuardValue = "type-secret"
 	// OwnerShared is the owner value of a secret nobody owns alone.
 	OwnerShared = "shared"
 	// TierAgent is a secret its owner's agents use without asking.
@@ -132,12 +132,12 @@ const (
 	Deny      = "deny"
 )
 
-// Kinds is every value a secret's kind tag may name. The broker holds a minter for each.
-var Kinds = []string{KindGitHubApp, KindGoogleLogin, KindAzureLogin, KindGoogleServiceAccount}
+// Types is every value a secret's type tag may name. The broker holds a minter for each.
+var Types = []string{TypeGitHubApp, TypeGoogleLogin, TypeAzureLogin, TypeGoogleServiceAccount}
 
-// ValidKind reports whether kind is one of Kinds.
-func ValidKind(kind string) bool {
-	return slices.Contains(Kinds, kind)
+// ValidType reports whether type is one of Types.
+func ValidType(secretType string) bool {
+	return slices.Contains(Types, secretType)
 }
 
 // TrimLineEnding answers the value to spend for a stored value, and whether it changed it. Let
@@ -161,14 +161,14 @@ func TrimLineEnding(value string) (string, bool) {
 	return rest, true
 }
 
-// DecodeValue refuses value, which a secret of kind holds, when that kind's minter would refuse
+// DecodeValue refuses value, which a secret of type holds, when that type's minter would refuse
 // it: it decodes the value a release hands the minter (TrimLineEnding) with secrets.ParseValue,
 // the decoder every minter calls, so the error names what is wrong in the minter's own words and
 // never quotes the value. It is the one statement of trim-then-decode, which Current's value
 // reads and `agent-secrets`' writes both call.
-func DecodeValue(kind, value string) error {
+func DecodeValue(secretType, value string) error {
 	spend, _ := TrimLineEnding(value)
-	_, err := secrets.ParseValue(kind, spend)
+	_, err := secrets.ParseValue(secretType, spend)
 	return err
 }
 
@@ -417,11 +417,11 @@ var devServiceAccount = regexp.MustCompile(`^dev-[a-z0-9-]+$`)
 // (Loader.secret) or the values `agent-secrets secret create` and `retag` will write, beside the
 // one thing that is no tag at all, BoundAccount.
 type TagSet struct {
-	// Kind is the secret's kind tag, "" for a stored secret; Owner its owner tag; Tier its tier
+	// Type is the secret's type tag, "" for a stored secret; Owner its owner tag; Tier its tier
 	// tag; Requesters its requesters tag as ParseRequesters or ParseRequesterShapes answered it,
 	// "" for a secret that lists nobody; Scopes its scopes tag as ParseScopes answered it, "" for
 	// a secret that names none.
-	Kind, Owner, Tier, Requesters, Scopes string
+	Type, Owner, Tier, Requesters, Scopes string
 	// BoundAccount is the account email the deployment's BROKER_SERVICE_ACCOUNT_SECRETS binds to
 	// this secret, and "" when it binds none. It is "" as well for a caller that does not hold
 	// the setting — `agent-secrets`, which never sees it, exactly as it never sees BROKER_SERVICES
@@ -448,7 +448,7 @@ const (
 	// RequesterFaultOwnerNotPerson is a google-service-account secret whose owner is no person
 	// (ValidPersonOwner). The token it mints acts as a service account, which is given to the
 	// one person who owns the secret, so a secret owned by shared or by a service can carry no
-	// such kind and no requesters list could make it servable.
+	// such type and no requesters list could make it servable.
 	RequesterFaultOwnerNotPerson
 	// RequesterFaultServiceBelowHumanTier is a google-service-account secret whose requesters
 	// name a service at a tier that is not human. A service's pod may ask for such a token only
@@ -462,7 +462,7 @@ const (
 	RequesterFaultNotTheOwnerOnce
 	// RequesterFaultServiceOnDevAccount is a secret the deployment binds to a dev-<name> account
 	// (TagSet.BoundAccount, devServiceAccount) whose requesters name a service, at either tier.
-	// Such an account is one person's own, so no service may ask for its token, whatever kind
+	// Such an account is one person's own, so no service may ask for its token, whatever type
 	// the secret is.
 	RequesterFaultServiceOnDevAccount
 )
@@ -471,7 +471,7 @@ const (
 // no such condition refuses. It holds the conditions most fundamental first: the owner is no
 // person, so no list could make the secret servable; the list names a service below human tier;
 // the list does not name that owner exactly once; the secret is bound to a dev-<name> account
-// and the list names a service, which holds for every kind.
+// and the list names a service, which holds for every type.
 //
 // The loader reads none of these apart: it reads TagRules' reason, and every fault here is the
 // one reason ReasonRequestersNotOwner. The fault exists for `agent-secrets`' tagRefusal, which
@@ -485,7 +485,7 @@ func RequesterRule(t TagSet) RequesterFault {
 	// only the @ that tells a person from a service (SplitRequesters), and read it once for all
 	// of them.
 	people, services := SplitRequesters(t.Requesters)
-	if t.Kind == KindGoogleServiceAccount {
+	if t.Type == TypeGoogleServiceAccount {
 		switch {
 		case !ValidPersonOwner(t.Owner):
 			return RequesterFaultOwnerNotPerson
@@ -504,12 +504,12 @@ func RequesterRule(t TagSet) RequesterFault {
 // TagRules is the one statement of what a secret's tags demand of each other, which the loader
 // applies to every secret it reads and `agent-secrets secret` create and retag apply before they
 // write (so it asks for no registered service list of its own). It takes a TagSet rather than a
-// positional list because the rules weigh eight values — the kind, owner, tier, requesters,
+// positional list because the rules weigh eight values — the type, owner, tier, requesters,
 // scopes, admin and max-grant tags, and the deployment's binding of the secret to an
 // account — which no caller could pass in order without mistaking one for another. It answers
 // "" for a secret the rules allow, and otherwise the load reason that refuses it:
 //
-//   - ReasonScopesKind: a secret that is not a google-service-account one carries a scopes tag.
+//   - ReasonScopesType: a secret that is not a google-service-account one carries a scopes tag.
 //     No other minter reads it, so the tag would narrow nothing and say that it had.
 //   - ReasonAdminTier: an admin secret is not human tier. An administrator's credential is
 //     released only by a person's approval, which agent tier does not ask for.
@@ -522,15 +522,15 @@ func RequesterRule(t TagSet) RequesterFault {
 //   - ReasonRequestersNotOwner: a condition of RequesterRule refuses the secret's requesters —
 //     a google-service-account secret whose owner is no person, one whose list names a service
 //     below human tier, or one whose list does not name its person owner exactly once, and a
-//     secret of any kind the deployment binds to a dev-<name> account whose list names a
+//     secret of any type the deployment binds to a dev-<name> account whose list names a
 //     service. The one reason is all a load answers; which of those conditions refused it is
 //     RequesterRule's fault, which `agent-secrets` reads to name the flag that fixes the write.
 //
 // The rules above are weighed in the order they are written, so a secret several of them refuse
 // is refused by the first.
 func TagRules(t TagSet) string {
-	if t.Scopes != "" && t.Kind != KindGoogleServiceAccount {
-		return ReasonScopesKind
+	if t.Scopes != "" && t.Type != TypeGoogleServiceAccount {
+		return ReasonScopesType
 	}
 	if t.Admin && t.Tier != TierHuman {
 		return ReasonAdminTier
@@ -538,7 +538,7 @@ func TagRules(t TagSet) string {
 	if t.Admin && t.Requesters == "" {
 		return ReasonAdminRequesters
 	}
-	if (t.Admin || t.Kind == KindGoogleServiceAccount) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
+	if (t.Admin || t.Type == TypeGoogleServiceAccount) && (t.MaxGrant == 0 || t.MaxGrant > time.Hour) {
 		return ReasonMaxGrantRequired
 	}
 	if RequesterRule(t) != RequesterFaultNone {
@@ -594,46 +594,46 @@ func ParseGitHubNarrowing(owner string, repositories []string, readOnly bool) (s
 	return secrets.GitHubNarrowing{Owner: login, Repositories: slices.Compact(sorted), ReadOnly: readOnly}, nil
 }
 
-// KindNeedsGitHubOwners reports whether a secret of kind must carry a github-owners tag naming at
+// TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
 // least one account. Only a github-app secret reads the tag.
-func KindNeedsGitHubOwners(kind string) bool {
-	return kind == KindGitHubApp
+func TypeNeedsGitHubOwners(secretType string) bool {
+	return secretType == TypeGitHubApp
 }
 
 // GitHubOwnersFor is the github-owners rule every reader and writer of a secret's tags applies:
-// the loader, and `agent-secrets secret create` and `retag` before they write. For a kind that
-// needs owners (KindNeedsGitHubOwners) it answers ParseGitHubOwners of raw, with its two errors;
-// for any other kind the tag is not read, and it answers "".
-func GitHubOwnersFor(kind, raw string) (string, error) {
-	if !KindNeedsGitHubOwners(kind) {
+// the loader, and `agent-secrets secret create` and `retag` before they write. For a type that
+// needs owners (TypeNeedsGitHubOwners) it answers ParseGitHubOwners of raw, with its two errors;
+// for any other type the tag is not read, and it answers "".
+func GitHubOwnersFor(secretType, raw string) (string, error) {
+	if !TypeNeedsGitHubOwners(secretType) {
 		return "", nil
 	}
 	return ParseGitHubOwners(raw)
 }
 
-// KindSource is the Source of a kind secret: its kind frozen beside the store's own source.
-// A store's source never starts with kindSourcePrefix (an AWS source starts with "arn:", a
+// TypeSource is the Source of a type secret: its type frozen beside the store's own source.
+// A store's source never starts with typeSourcePrefix (an AWS source starts with "arn:", a
 // Secret Manager one with "projects/").
-func KindSource(kind, storeSource string) string {
-	return kindSourcePrefix + kind + ":" + storeSource
+func TypeSource(secretType, storeSource string) string {
+	return typeSourcePrefix + secretType + ":" + storeSource
 }
 
-// ErrKindSourceMalformed is a source that opens with kindSourcePrefix but names no kind or no
-// store source, which no KindSource built.
-var ErrKindSourceMalformed = errors.New("a minted source names no kind or no store source")
+// ErrTypeSourceMalformed is a source that opens with typeSourcePrefix but names no type or no
+// store source, which no TypeSource built.
+var ErrTypeSourceMalformed = errors.New("a minted source names no type or no store source")
 
-// ParseKindSource splits a source KindSource built into its kind and store source. minted is false
+// ParseTypeSource splits a source TypeSource built into its type and store source. minted is false
 // for a stored secret's source, which it answers whole as storeSource.
-func ParseKindSource(source string) (kind, storeSource string, minted bool, err error) {
-	rest, minted := strings.CutPrefix(source, kindSourcePrefix)
+func ParseTypeSource(source string) (secretType, storeSource string, minted bool, err error) {
+	rest, minted := strings.CutPrefix(source, typeSourcePrefix)
 	if !minted {
 		return "", source, false, nil
 	}
-	kind, storeSource, ok := strings.Cut(rest, ":")
-	if !ok || kind == "" || storeSource == "" {
-		return "", "", true, ErrKindSourceMalformed
+	secretType, storeSource, ok := strings.Cut(rest, ":")
+	if !ok || secretType == "" || storeSource == "" {
+		return "", "", true, ErrTypeSourceMalformed
 	}
-	return kind, storeSource, true, nil
+	return secretType, storeSource, true, nil
 }
 
 // ErrUnknownSecret is a name no secret the policy serves carries: none exists under the namespace
@@ -667,8 +667,8 @@ type Secret struct {
 	// an underscore (<prefix>deel-api-key is DEEL_API_KEY).
 	Name string
 	// Source is what the secret's value is read by: its ARN in Secrets Manager, or its resource
-	// name in Secret Manager. A kind secret's is KindSource of its kind and that store source, so
-	// the kind is frozen into every request (ParseKindSource reads it back).
+	// name in Secret Manager. A type secret's is TypeSource of its type and that store source, so
+	// the type is frozen into every request (ParseTypeSource reads it back).
 	Source string
 	// Owner is OwnerShared, a person's email, or a registered service.
 	Owner string
@@ -704,14 +704,14 @@ type Secret struct {
 	ownership      ownerKind
 }
 
-// Kind is the kind the secret is served as, read back from its Source (KindSource), or "" for a
+// Type is the type the secret is served as, read back from its Source (TypeSource), or "" for a
 // stored secret.
-func (secret Secret) Kind() string {
-	kind, _, minted, err := ParseKindSource(secret.Source)
+func (secret Secret) Type() string {
+	secretType, _, minted, err := ParseTypeSource(secret.Source)
 	if !minted || err != nil {
 		return ""
 	}
-	return kind
+	return secretType
 }
 
 // GitHubOwnerLogins is GitHubOwners as a list of lowercase logins, nil when it is "".
@@ -797,16 +797,16 @@ type Set struct {
 	// as Refused is. It is served to nobody and refused for nothing: it is in neither Version nor
 	// broker_unservable_secrets, and Current writes PendingMessage for an id that enters it.
 	Pending map[string]Pending
-	// versions is the version of each served kind secret's value as the load or reread that read
+	// versions is the version of each served type secret's value as the load or reread that read
 	// it listed it (secrets.Listing.Version), keyed by Name. It is in neither Secret nor Version,
 	// so a write of a new value moves no Version and ends no grant: Current decodes the value of
-	// each version, kind and shape it has not decoded, and refuses the secret only when the
+	// each version, type and shape it has not decoded, and refuses the secret only when the
 	// decoder does (ReasonValueMalformed).
 	versions map[string]string
 }
 
-// ValueVersion is the version of the kind secret name's value as s lists it, and "" for a name s
-// lists no kind secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
+// ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
+// lists no type secret's value for: what a mint the decoder refuses hands Current.RefuseValue, so
 // the refusal is keyed on the version the policy listed when the value was read.
 func (s *Set) ValueVersion(name string) string { return s.versions[name] }
 
@@ -839,8 +839,8 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[st
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets
 // (keyed by Name) as its Secrets. A secret with no max-grant, no github-owners, no requesters, no
-// scopes and no admin tag writes the pre-kind digest bytes,
-// "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a kind secret's kind is in its Source); one with any of
+// scopes and no admin tag writes the pre-type digest bytes,
+// "<Name>\t<Owner>\t<Tier>\t<Source>\n" (a type secret's type is in its Source); one with any of
 // them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
 // (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>" and
 // "\tadmin=true", in that order, for each of those three it carries. A

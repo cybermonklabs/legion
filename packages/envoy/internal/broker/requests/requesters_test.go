@@ -465,8 +465,8 @@ const accountValue = `{"service_account": "releases@example-project.iam.gservice
 func TestServiceRequesterAwaitsOwner(t *testing.T) {
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
-	account := policytest.KindSecret("GCLOUD_ACCOUNT_KEY", fixtureOperator, policy.TierHuman,
-		policy.KindGoogleServiceAccount, accountValue)
+	account := policytest.TypeSecret("GCLOUD_ACCOUNT_KEY", fixtureOperator, policy.TierHuman,
+		policy.TypeGoogleServiceAccount, accountValue)
 	account.Tags[policy.TagRequesters] = fixtureOperator + " " + fixtureService
 	retag(t, m, account)
 
@@ -514,7 +514,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 func TestUncappedListedLoginAwaitsOwner(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
-	login := policytest.KindSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
+	login := policytest.TypeSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	login.Tags[policy.TagRequesters] = fixtureOperator
 	retag(t, m, login)
 	if cap := m.Policy.Get().Secrets["UNCAPPED_LOGIN_KEY"].MaxGrant; cap != 0 {

@@ -81,14 +81,14 @@ writer are spent alike. Where the rule changes nothing, the client still removes
 final line feed, which it has always done, so `echo` and a file that ends in a newline store the
 value without one.
 
-A kind secret's value is checked before it is written, by the decoder the broker's minter for that
-kind reads it with: `secret create --kind` checks the value it stores, `secret set` checks it under
-the kind tag the secret holds, and `secret retag` checks the value the secret holds when it
-changes the kind. A value that minter could not mint
+A type secret's value is checked before it is written, by the decoder the broker's minter for that
+type reads it with: `secret create --type` checks the value it stores, `secret set` checks it under
+the type tag the secret holds, and `secret retag` checks the value the secret holds when it
+changes the type. A value that minter could not mint
 from is refused with the minter's reason, exit 2, and nothing is written. The retag reads the
 value for that check and never prints it. A sign-in the store refuses that read still writes the
 tags, and the retag says on standard error that the value was not checked and names the
-permission the read needs. The broker reads every kind secret's value with the same decoder and
+permission the read needs. The broker reads every type secret's value with the same decoder and
 refuses a secret whose value it refuses as `value-malformed`.
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds

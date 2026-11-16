@@ -276,7 +276,7 @@ type Machine struct {
 	// credential's service is that one (requester). It is read on every call, so an account
 	// dropped from the setting stops its machines' service secrets at their next one.
 	VMServicesByAccount map[string]string
-	// Minters maps each policy kind (policy.Kinds) to its Minter. A release never returns the
+	// Minters maps each policy kind (policy.Types) to its Minter. A release never returns the
 	// stored value of a kind secret.
 	Minters map[string]Minter
 	// Airlock is the airlock's rules as the broker read them at boot

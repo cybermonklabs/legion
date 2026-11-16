@@ -26,11 +26,11 @@ func (r retagDuringRead) Read(ctx context.Context, source string) (string, error
 	return r.Reader.Read(ctx, source)
 }
 
-// TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores: a grant made while its secret was
-// plain releases the secret's stored value. When a retag to a kind is reread while a release is
-// reading the store, and the kind's long-lived credential is stored once the broker serves the
-// kind, that release returns nothing the store holds: its values are discarded and the grant ends
-// for good, as a kind change found before the read ends it. Each route to a grant is held to it: a
+// TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores: a grant made while its secret was
+// plain releases the secret's stored value. When a retag to a type is reread while a release is
+// reading the store, and the type's long-lived credential is stored once the broker serves the
+// type, that release returns nothing the store holds: its values are discarded and the grant ends
+// for good, as a type change found before the read ends it. Each route to a grant is held to it: a
 // grant made at once, the same grant a later request reuses, and one a person approved.
 func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T) {
 	const canary = "refresh-token-canary-9f3c"
@@ -42,13 +42,13 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 				tier = policy.TierHuman
 			}
 			// The stored value is one the google-login decoder reads, so the retag below is
-			// served as that kind at once: the policy refuses a kind secret whose value it cannot
+			// served as that type at once: the policy refuses a type secret whose value it cannot
 			// decode (policy.ReasonValueMalformed), and the race needs it served.
-			ordinary := policytest.KindValue(policy.KindGoogleLogin)
+			ordinary := policytest.TypeValue(policy.TypeGoogleLogin)
 			retag(t, machine, policytest.Secret("RACED_LOGIN", fixtureOperator, tier, ordinary))
 			minted := 0
 			machine.Minters = map[string]Minter{
-				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 					minted++
 					return secrets.Minted{Value: "access-token"}, nil
 				},
@@ -83,11 +83,11 @@ func TestAPlainGrantRacingAKindRetagNeverReleasesWhatTheKindStores(t *testing.T)
 			store := fixtureStore(machine)
 			var duringErr error
 			machine.Secrets = retagDuringRead{Reader: machine.Secrets, once: &sync.Once{}, err: &duringErr, during: func(ctx context.Context) error {
-				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, ordinary))
+				store.Put(policytest.TypeSecret("RACED_LOGIN", fixtureOperator, tier, policy.TypeGoogleLogin, ordinary))
 				if err := machine.Policy.Refresh(ctx); err != nil {
 					return err
 				}
-				store.Put(policytest.KindSecret("RACED_LOGIN", fixtureOperator, tier, policy.KindGoogleLogin, canary))
+				store.Put(policytest.TypeSecret("RACED_LOGIN", fixtureOperator, tier, policy.TypeGoogleLogin, canary))
 				return nil
 			}}
 			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})

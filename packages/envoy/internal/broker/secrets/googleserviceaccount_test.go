@@ -289,7 +289,7 @@ func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
 // TestGoogleServiceAccountScopes pins what a release's scopes reach Google as: the whole scope
 // URLs the secret's scopes tag named, each under https://www.googleapis.com/auth/, in the one
 // order policy.ParseScopes answers and no other, beside the fixed one-hour lifetime; a release
-// whose secret names none asks for cloud-platform alone, as every token of this kind did before
+// whose secret names none asks for cloud-platform alone, as every token of this type did before
 // the tag existed. The list is built the way a release builds it, from a policy.Secret's
 // ScopeURLs, so what is pinned is the path a release takes and not a hand-written list.
 func TestGoogleServiceAccountScopes(t *testing.T) {

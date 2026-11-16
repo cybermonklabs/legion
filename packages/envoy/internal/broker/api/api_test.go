@@ -992,7 +992,7 @@ func TestCreateRequestForASecretWaitingForItsValueIs400PendingValue(t *testing.T
 
 func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	ts := newTestServer(t)
-	limited := policytest.KindSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
+	limited := policytest.TypeSecret("LIMITED_KEY", testApprover, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	ts.Secrets.Put(limited)
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LIMITED_KEY/reread", nil, nil); status != http.StatusOK {
@@ -1011,7 +1011,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 	}
 }
 
-// TestAFailedMintIs502MintFailed: a kind secret whose minter fails, such as a Google login that
+// TestAFailedMintIs502MintFailed: a type secret whose minter fails, such as a Google login that
 // needs a new sign-in, answers the session 502 MINT_FAILED with the minter's words, so it can tell
 // its person what to fix, rather than an opaque 500; and the broker logs it at ERROR for its
 // operator, naming the secret and the error's class, never the stored value: the refresh token
@@ -1020,14 +1020,14 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 				return secrets.Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)
 			},
 		}
 	})
 	const canary = "refresh-not-a-secret-canary-4e1d"
 	stored := `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"` + canary + `"}`
-	ts.Secrets.Put(policytest.KindSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.KindGoogleLogin, stored))
+	ts.Secrets.Put(policytest.TypeSecret("LAPSED_LOGIN", testApprover, policy.TierAgent, policy.TypeGoogleLogin, stored))
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LAPSED_LOGIN/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread LAPSED_LOGIN = %d %s", status, body)
 	}
@@ -1049,7 +1049,7 @@ func TestAFailedMintIs502MintFailed(t *testing.T) {
 			line = l
 		}
 	}
-	for _, want := range []string{"ERROR " + requests.MintFailedMessage, "name=LAPSED_LOGIN", "kind=google-login", "class=refused", "invalid_rapt"} {
+	for _, want := range []string{"ERROR " + requests.MintFailedMessage, "name=LAPSED_LOGIN", "type=google-login", "class=refused", "invalid_rapt"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("mint failure log line %q does not hold %q (log: %q)", line, want, logged.String())
 		}

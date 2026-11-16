@@ -288,7 +288,7 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, narrowing *secrets.GitHubNarrowing) (string, error) {
 	held := false
 	for _, g := range granted {
-		if kind, _, minted, err := policy.ParseKindSource(g.source); err != nil || !minted || kind != policy.KindGitHubApp {
+		if kind, _, minted, err := policy.ParseTypeSource(g.source); err != nil || !minted || kind != policy.TypeGitHubApp {
 			continue
 		}
 		held = true
@@ -318,7 +318,7 @@ func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, n
 func (m *Machine) recheckStoredSources(ctx context.Context, grantID string, granted []requestedSecret) error {
 	now := m.Policy.Get()
 	for _, g := range granted {
-		if _, _, minted, _ := policy.ParseKindSource(g.source); minted {
+		if _, _, minted, _ := policy.ParseTypeSource(g.source); minted {
 			continue
 		}
 		current, served := now.Secrets[g.name]
@@ -421,7 +421,7 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
-	kind, source, minted, err := policy.ParseKindSource(g.source)
+	kind, source, minted, err := policy.ParseTypeSource(g.source)
 	if err != nil {
 		return secrets.Minted{}, fmt.Errorf("secret %s: %w", g.name, err)
 	}
@@ -432,7 +432,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		}
 		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
 	}
-	if kind == policy.KindAzureLogin && g.decision != policy.Approval {
+	if kind == policy.TypeAzureLogin && g.decision != policy.Approval {
 		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
 	}
 	mint := m.Minters[kind]
@@ -453,7 +453,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
-		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
+		slog.Error(MintFailedMessage, "name", g.name, "type", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
 			m.Policy.RefuseValue(ctx, g.name, version, kind)
 		}
@@ -462,17 +462,17 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	return token, nil
 }
 
-// mintRequest is the input one granted name's release gives its minter: the name, the kind tag
+// mintRequest is the input one granted name's release gives its minter: the name, the type tag
 // its minters count their attempts under, the stored value as the line-ending rule spends it, the
 // tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
 // against, and the narrowing the caller asked for, nil where it asked for none. Create's check
 // builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
 // worth of the check: it asks GitHub about the same secret, with the same owners and the same
 // narrowing, as the release it stands for.
-func mintRequest(name, kind string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
+func mintRequest(name, secretType string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
 	return secrets.MintRequest{
 		Name:            name,
-		Kind:            kind,
+		Type:            secretType,
 		HumanTier:       served.Tier == policy.TierHuman,
 		Value:           value,
 		GitHubOwners:    served.GitHubOwnerLogins(),

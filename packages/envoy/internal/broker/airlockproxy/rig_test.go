@@ -232,7 +232,7 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 		slots := maps.Clone(held.Slots)
 		slots[slot] = placeholder
 		names := maps.Clone(conn.Names)
-		names[name] = requests.AirlockGrantName{Slots: slots, Kind: held.Kind}
+		names[name] = requests.AirlockGrantName{Slots: slots, Type: held.Type}
 		conn.Names = names
 		f.connections[password] = conn
 	}

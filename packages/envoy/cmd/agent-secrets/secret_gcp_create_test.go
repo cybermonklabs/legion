@@ -101,7 +101,7 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 }
 
 // TestGCPSecretCreateThatStoresNoValueLeavesNoSecret: once the create has made the secret, a value
-// it then does not store - one it reads empty, one the minter of its kind refuses, one the store
+// it then does not store - one it reads empty, one the minter of its type refuses, one the store
 // refuses outright to add - leaves no secret behind: the create verifies the creation label,
 // lists versions in case another writer added one, and deletes the empty secret it made. It
 // exits as that failure does, says the empty secret it made is deleted and nothing stays, and
@@ -116,7 +116,7 @@ func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
 		want   string
 	}{
 		{"an empty value", "", "", nil, exitUsageError, "the value is read from standard input, which was empty"},
-		{"a value its kind refuses", "not an App key", "", []string{"--kind", policy.KindGitHubApp, "--github-owners", "acme-org"}, exitUsageError,
+		{"a value its type refuses", "not an App key", "", []string{"--type", policy.TypeGitHubApp, "--github-owners", "acme-org"}, exitUsageError,
 			"the broker refuses this value as a github-app secret's"},
 		{"a value the store refuses", "shh", "AddSecretVersion", nil, 1, "PermissionDenied"},
 	} {

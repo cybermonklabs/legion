@@ -180,18 +180,18 @@ func handedOut(read []releasedName, held *AirlockRelease) []string {
 // (airlockSplitOf), which for a minted document is each token inside it rather than the fields
 // around it; and, for a stored value, every string inside it when it is a JSON document
 // (jsonStrings), since a command takes a stored login or key pair apart and holds its fields. A
-// name the airlock holds back has its split already; any other is taken apart as its kind says.
-// A value its kind cannot take apart is its whole self and its JSON strings alone.
+// name the airlock holds back has its split already; any other is taken apart as its type says.
+// A value its type cannot take apart is its whole self and its JSON strings alone.
 func (r releasedName) secretParts() []string {
 	parts := []string{r.value}
 	split := r.split
 	if !r.behindAirlock() {
-		split, _ = airlockSplitOf("", r.kind, r.value)
+		split, _ = airlockSplitOf("", r.secretType, r.value)
 	}
 	for _, value := range split.values {
 		parts = append(parts, value)
 	}
-	if r.kind == "" {
+	if r.secretType == "" {
 		parts = append(parts, jsonStrings(r.value)...)
 	}
 	return parts

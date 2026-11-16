@@ -228,13 +228,13 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
-	for _, kind := range policy.Kinds {
+	for _, kind := range policy.Types {
 		if m.Minters[kind] == nil {
 			t.Errorf("request Machine has no minter for kind %q, which the policy serves", kind)
 		}
 	}
-	if len(m.Minters) != len(policy.Kinds) {
-		t.Errorf("request Machine has %d minters for %d kinds: %v", len(m.Minters), len(policy.Kinds), m.Minters)
+	if len(m.Minters) != len(policy.Types) {
+		t.Errorf("request Machine has %d minters for %d kinds: %v", len(m.Minters), len(policy.Types), m.Minters)
 	}
 }
 

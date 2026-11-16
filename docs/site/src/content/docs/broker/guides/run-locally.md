@@ -316,7 +316,7 @@ demo-new-token-value
 Writing the file whole, as the `mv` does, keeps it readable throughout: while it does not parse,
 each of those calls fails, naming the file.
 
-The broker reads a kind secret's value at the first load that lists it, so a value its minter
+The broker reads a type secret's value at the first load that lists it, so a value its minter
 cannot mint from is refused before anyone asks for it. Here a copy of `DEMO_GITHUB_APP` whose value
 has no `app_id` is added, and then read twice:
 
@@ -492,9 +492,9 @@ $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
 broker_policy_store_reads_total{read="value"} 3
-broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="1"} 1
-broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="2"} 1
-broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1
+broker_mint_attempts_total{type="github-app",outcome="ok",attempt="1"} 1
+broker_mint_attempts_total{type="github-app",outcome="ok",attempt="2"} 1
+broker_mint_attempts_total{type="github-app",outcome="upstream",attempt="1"} 1
 broker_answers_total{outcome="refused",code="ACCOUNT_LACKS_POWER",caller_class="unauthenticated"} 1
 broker_answers_total{outcome="refused",code="SECRET_NAME_INVALID",caller_class="public"} 1
 broker_answers_total{outcome="refused",code="UNKNOWN_SECRET",caller_class="session"} 2

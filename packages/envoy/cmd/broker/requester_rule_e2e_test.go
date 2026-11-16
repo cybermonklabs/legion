@@ -871,7 +871,7 @@ func newRequesterStore(t *testing.T) *requesterStore {
 		// GCP_ADMIN below, may name registered services beside its owner), and its stored value
 		// names the account the broker impersonates.
 		requesterRow(requesterDevAditya, aditya, policy.TierAgent, `{"service_account":"`+requesterServiceAccount+`"}`, map[string]string{
-			policy.TagKind:       policy.KindGoogleServiceAccount,
+			policy.TagType:       policy.TypeGoogleServiceAccount,
 			policy.TagRequesters: aditya,
 			policy.TagMaxGrant:   requesterMaxGrant,
 		}),
@@ -881,7 +881,7 @@ func newRequesterStore(t *testing.T) *requesterStore {
 		// cap keeps each grant reviewable while it is live, and the scopes are the two Workspace
 		// scopes its token carries and nothing wider.
 		requesterRow(requesterGCPAdmin, jason, policy.TierHuman, `{"service_account":"`+requesterGCPAdminAccount+`"}`, map[string]string{
-			policy.TagKind:       policy.KindGoogleServiceAccount,
+			policy.TagType:       policy.TypeGoogleServiceAccount,
 			policy.TagRequesters: jason + " " + requesterDaemonService,
 			policy.TagMaxGrant:   requesterMaxGrant,
 			policy.TagAdmin:      requesterAdminTrue,
@@ -891,7 +891,7 @@ func newRequesterStore(t *testing.T) *requesterStore {
 		// so the policy serves it and its owner's own session is granted it at once, and left out
 		// of BROKER_SERVICE_ACCOUNT_SECRETS, so the release mints nothing.
 		requesterRow(requesterUnboundSecret, aditya, policy.TierAgent, `{"service_account":"`+requesterUnboundAccount+`"}`, map[string]string{
-			policy.TagKind:       policy.KindGoogleServiceAccount,
+			policy.TagType:       policy.TypeGoogleServiceAccount,
 			policy.TagRequesters: aditya,
 			policy.TagMaxGrant:   requesterMaxGrant,
 		}),

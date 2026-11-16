@@ -178,7 +178,7 @@ func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.
 		t.Fatal(err)
 	}
 	return secrets.GitHubApp{Base: up.server.URL, HTTP: up.server.Client(), Retry: retry}.Mint(ctx, secrets.MintRequest{
-		Kind: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}, GitHubNarrowing: narrowing,
+		Type: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}, GitHubNarrowing: narrowing,
 	})
 }
 
@@ -186,7 +186,7 @@ func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.
 // 201 mints at its third attempt. With the draw at the top of its range the two waits are their
 // ceilings, 2 s and then 4 s, so the ceilings grow; after a first 503 that asks 9 s, the second
 // wait's ceiling is the 1 s left of the mint's 10 s. With the real draw each wait falls under its
-// ceiling, and two runs wait differently. Each attempt is counted by kind, outcome and number.
+// ceiling, and two runs wait differently. Each attempt is counted by type, outcome and number.
 func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -216,10 +216,10 @@ func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 			}
 			samples := attemptSamples(registry)
 			for _, sample := range []string{
-				`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="1"} 1`,
-				`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1`,
-				`broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="2"} 1`,
-				`broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="3"} 1`,
+				`broker_mint_attempts_total{type="github-app",outcome="ok",attempt="1"} 1`,
+				`broker_mint_attempts_total{type="github-app",outcome="upstream",attempt="1"} 1`,
+				`broker_mint_attempts_total{type="github-app",outcome="upstream",attempt="2"} 1`,
+				`broker_mint_attempts_total{type="github-app",outcome="ok",attempt="3"} 1`,
 			} {
 				if !strings.Contains(samples, sample+"\n") {
 					t.Errorf("the attempts counter holds\n%s\nwant the sample %s", samples, sample)
@@ -284,7 +284,7 @@ func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 			// first attempt, which the installations call's own ok would share.
 			samples := attemptSamples(registry)
 			for number, outcome := range tc.outcomes {
-				sample := `broker_mint_attempts_total{kind="github-app",outcome="` + outcome + `",attempt="` + strconv.Itoa(number+1) + `"} 1`
+				sample := `broker_mint_attempts_total{type="github-app",outcome="` + outcome + `",attempt="` + strconv.Itoa(number+1) + `"} 1`
 				if !strings.Contains(samples, sample+"\n") {
 					t.Errorf("the attempts counter holds\n%s\nwant the sample %s", samples, sample)
 				}
@@ -342,14 +342,14 @@ func TestMintCallRetriesATransportFailure(t *testing.T) {
 	retry, clock, registry := testRetry(atTheTop)
 	up := newScripted(t, installed, tokenMinted)
 	minted, err := secrets.GitHubApp{Base: up.server.URL, HTTP: &http.Client{Transport: &failingFirst{}}, Retry: retry}.
-		Mint(t.Context(), secrets.MintRequest{Kind: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}})
+		Mint(t.Context(), secrets.MintRequest{Type: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}})
 	if err != nil || !strings.Contains(minted.Value, "token-7") {
 		t.Fatalf("Mint after a transport failure = %q, %v; want acme's token", minted.Value, err)
 	}
 	if waits := clock.slept(); !slices.Equal(waits, []time.Duration{2 * time.Second}) {
 		t.Fatalf("the mint waited %v; want one wait at the first ceiling", waits)
 	}
-	if samples := attemptSamples(registry); !strings.Contains(samples, `broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1`+"\n") {
+	if samples := attemptSamples(registry); !strings.Contains(samples, `broker_mint_attempts_total{type="github-app",outcome="upstream",attempt="1"} 1`+"\n") {
 		t.Fatalf("the attempts counter holds\n%s\nwant the transport failure as attempt 1's upstream outcome", samples)
 	}
 }
@@ -379,14 +379,14 @@ func TestMintCallTriesACancelledContextOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = secrets.GitHubApp{Base: server.URL, HTTP: server.Client(), Retry: retry}.
-		Mint(ctx, secrets.MintRequest{Kind: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}})
+		Mint(ctx, secrets.MintRequest{Type: "github-app", Value: githubAppValue(t, "1", key), GitHubOwners: []string{"acme"}})
 	if tokenCalls.Load() != 1 || secrets.MintAttempts(err) != 1 || !strings.Contains(err.Error(), "was cancelled before it answered") {
 		t.Fatalf("Mint under a context cancelled mid-call = %v after %d token calls (%d attempts); want one attempt, named cancelled", err, tokenCalls.Load(), secrets.MintAttempts(err))
 	}
 	if waits := clock.slept(); len(waits) != 0 {
 		t.Fatalf("the mint waited %v; want no wait", waits)
 	}
-	if samples := attemptSamples(registry); !strings.Contains(samples, `broker_mint_attempts_total{kind="github-app",outcome="cancelled",attempt="1"} 1`+"\n") {
+	if samples := attemptSamples(registry); !strings.Contains(samples, `broker_mint_attempts_total{type="github-app",outcome="cancelled",attempt="1"} 1`+"\n") {
 		t.Fatalf("the attempts counter holds\n%s\nwant attempt 1 counted as cancelled", samples)
 	}
 }
@@ -502,21 +502,21 @@ func TestGoogleMintersRetryA503AndAnswerInvalidGrantAtOnce(t *testing.T) {
 	unavailable := reply{status: http.StatusServiceUnavailable, body: `{"error":{"code":503,"status":"UNAVAILABLE"}}`}
 	login := func(retry *secrets.Retry, up *scripted) (secrets.Minted, error) {
 		return secrets.GoogleLogin{TokenURL: up.server.URL, HTTP: up.server.Client(), Retry: retry}.
-			Mint(t.Context(), secrets.MintRequest{Kind: "google-login", Value: googleLoginValue()})
+			Mint(t.Context(), secrets.MintRequest{Type: "google-login", Value: googleLoginValue()})
 	}
 	account := func(retry *secrets.Retry, up *scripted) (secrets.Minted, error) {
 		minter := &secrets.GoogleServiceAccount{
 			BaseURL: up.server.URL, HTTP: up.server.Client(), Source: brokerSource(),
 			Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail}, Retry: retry,
 		}
-		return minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Kind: "google-service-account", Value: serviceAccountValue})
+		return minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Type: "google-service-account", Value: serviceAccountValue})
 	}
 	for _, tc := range []struct {
-		name    string
-		mint    func(*secrets.Retry, *scripted) (secrets.Minted, error)
-		kind    string
-		replies []reply
-		class   string
+		name       string
+		mint       func(*secrets.Retry, *scripted) (secrets.Minted, error)
+		secretType string
+		replies    []reply
+		class      string
 	}{
 		{"a login through a 503", login, "google-login", []reply{unavailable, {status: http.StatusOK, body: `{"access_token":"minted"}`}}, ""},
 		{"a login's invalid_grant", login, "google-login", []reply{{status: http.StatusBadRequest, body: `{"error":"invalid_grant"}`}}, "refused"},
@@ -543,8 +543,8 @@ func TestGoogleMintersRetryA503AndAnswerInvalidGrantAtOnce(t *testing.T) {
 			if sent[0].body == "" || sent[1].body != sent[0].body {
 				t.Fatalf("the two attempts sent %q and %q; want the one body twice", sent[0].body, sent[1].body)
 			}
-			if samples := attemptSamples(registry); !strings.Contains(samples, `broker_mint_attempts_total{kind="`+tc.kind+`",outcome="ok",attempt="2"} 1`+"\n") {
-				t.Fatalf("the attempts counter holds\n%s\nwant attempt 2's ok under kind %s", samples, tc.kind)
+			if samples := attemptSamples(registry); !strings.Contains(samples, `broker_mint_attempts_total{type="`+tc.secretType+`",outcome="ok",attempt="2"} 1`+"\n") {
+				t.Fatalf("the attempts counter holds\n%s\nwant attempt 2's ok under type %s", samples, tc.secretType)
 			}
 		})
 	}
@@ -569,7 +569,7 @@ func TestRetryBudgetStopsManyMintsFailingAtOnce(t *testing.T) {
 	retry.Sleep = func(context.Context, time.Duration) error { return nil }
 	mint := func() error {
 		_, err := secrets.GoogleLogin{TokenURL: server.URL, HTTP: server.Client(), Retry: retry}.
-			Mint(t.Context(), secrets.MintRequest{Kind: "google-login", Value: googleLoginValue()})
+			Mint(t.Context(), secrets.MintRequest{Type: "google-login", Value: googleLoginValue()})
 		return err
 	}
 

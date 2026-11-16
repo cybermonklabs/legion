@@ -168,12 +168,12 @@ func newNarrowingFixture(t *testing.T, installations map[string]int64) *narrowin
 	t.Helper()
 	st := storetest.Open(t)
 	value := standInAppValue(t)
-	unlisted := policytest.KindSecret("UNLISTED_APP_KEY", checkOperator, policy.TierAgent, policy.KindGitHubApp, value)
+	unlisted := policytest.TypeSecret("UNLISTED_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value)
 	unlisted.Tags[policy.TagRequesters] = checkOutsider
 	local := secrets.NewLocal(
-		policytest.KindSecret("APP_KEY", checkOperator, policy.TierHuman, policy.KindGitHubApp, value),
-		policytest.KindSecret("OTHER_APP_KEY", checkOperator, policy.TierHuman, policy.KindGitHubApp, value),
-		policytest.KindSecret("AUTO_APP_KEY", checkOperator, policy.TierAgent, policy.KindGitHubApp, value),
+		policytest.TypeSecret("APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, value),
+		policytest.TypeSecret("OTHER_APP_KEY", checkOperator, policy.TierHuman, policy.TypeGitHubApp, value),
+		policytest.TypeSecret("AUTO_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value),
 		unlisted,
 		policytest.Secret("PLAIN_KEY", checkOperator, policy.TierHuman, "plain-v1"),
 	)
@@ -187,7 +187,7 @@ func newNarrowingFixture(t *testing.T, installations map[string]int64) *narrowin
 		Audience:   checkAudience,
 		Skew:       time.Minute,
 		Replay:     replayer(st),
-		Minters:    map[string]requests.Minter{policy.KindGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
+		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
 	}
 	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Airlock)
 	return &narrowingFixture{Machine: machine, enrollmentID: enrollmentID, key: key, stand: stand}

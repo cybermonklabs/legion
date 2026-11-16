@@ -419,7 +419,7 @@ func gcpServedBy(f *fakeSecretManager, settings Settings) func(name string) Rere
 		case len(entry.versions) == 0:
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Kind: entry.secret.GetAnnotations()[policy.TagKind]}
+		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(entry.secret.GetAnnotations())}
 	}
 }
 

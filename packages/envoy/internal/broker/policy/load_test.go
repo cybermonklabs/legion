@@ -528,21 +528,21 @@ func TestGoldenDigest(t *testing.T) {
 	}
 }
 
-// TestGoldenDigestWithKindAndMaxGrant pins the lines of secrets that carry a max-grant or
-// github-owners: a kind is in the Source (KindSource), and the two tags are a fifth field in
+// TestGoldenDigestWithTypeAndMaxGrant pins the lines of secrets that carry a max-grant or
+// github-owners: a type is in the Source (TypeSource), and the two tags are a fifth field in
 // time.Duration's own form (0s for none) and a sixth (empty for none). The expected value is the
 // SHA-256 of the lines printed by hand, so it holds the bytes, not just their stability:
 // printf 'A_B\tada@example.com\thuman\t<arn>/a-b\nA0\t…\tagent\t<arn>/a0\n
 // DEEL_API_KEY\tshared\thuman\t<arn>/deel-api-key\n
 // GOLDEN_APP\tada@example.com\tagent\tmint:github-app:<arn>/golden-app\t0s\tacme ada\n
-// GOLDEN_KIND\tada@example.com\tagent\tmint:google-login:<arn>/golden-kind\t1h0m0s\t\n' | sha256sum,
+// GOLDEN_KIND\tada@example.com\tagent\tmint:google-login:<arn>/golden-type\t1h0m0s\t\n' | sha256sum,
 // with <arn> arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets.
 func TestGoldenDigestWithKindAndMaxGrant(t *testing.T) {
 	store := goldenFixture()
-	kind := policytest.KindSecret("GOLDEN_KIND", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "v1")
-	kind.Tags[policy.TagMaxGrant] = "1h"
-	store.Put(kind)
-	app := policytest.KindSecret("GOLDEN_APP", "ada@example.com", policy.TierAgent, policy.KindGitHubApp, "v1")
+	secretType := policytest.TypeSecret("GOLDEN_KIND", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "v1")
+	secretType.Tags[policy.TagMaxGrant] = "1h"
+	store.Put(secretType)
+	app := policytest.TypeSecret("GOLDEN_APP", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, "v1")
 	app.Tags[policy.TagGitHubOwners] = "Ada  acme"
 	store.Put(app)
 	const want = "88c77e2ce85b8174fcfaa88ce25c7905ae902d12bc5584cf82cb3089aa7c364e"
@@ -551,7 +551,7 @@ func TestGoldenDigestWithKindAndMaxGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if set.Version != want {
-		t.Fatalf("Version = %s, want the kind golden %s", set.Version, want)
+		t.Fatalf("Version = %s, want the type golden %s", set.Version, want)
 	}
 }
 
@@ -571,8 +571,8 @@ func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
 	version := func(edit func(*secrets.LocalSecret)) string {
 		t.Helper()
 		store := goldenFixture()
-		account := policytest.KindSecret("GOLDEN_ACCOUNT", "ada@example.com", policy.TierHuman,
-			policy.KindGoogleServiceAccount, `{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
+		account := policytest.TypeSecret("GOLDEN_ACCOUNT", "ada@example.com", policy.TierHuman,
+			policy.TypeGoogleServiceAccount, `{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
 		edit(&account)
 		store.Put(account)
 		set, err := policytest.Loader(store).Load(context.Background())
@@ -789,7 +789,7 @@ func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
 // set with its own reason and its owner: a list it cannot read at all
 // is requesters-malformed, an entry naming a service this deployment does not register included;
 // a google-service-account secret whose grants are unbounded, or bounded past an hour, is
-// max-grant-required, the cap its kind demands; and one whose requesters are not its own person
+// max-grant-required, the cap its type demands; and one whose requesters are not its own person
 // owner is requesters-not-owner, a missing list included. The well-tagged secret beside them is
 // served, so the rules refuse these secrets and not every secret. A secret that merely lists its
 // requesters is held to no cap of its own: SERVED_KEY carries one, but dropping it would leave
@@ -811,7 +811,7 @@ func TestRequestersLoad(t *testing.T) {
 		refusals[name] = refusal{s, reason}
 	}
 	refuseKind := func(name, reason string, edit func(*secrets.LocalSecret)) {
-		s := policytest.KindSecret(name, sami, policy.TierAgent, policy.KindGoogleServiceAccount,
+		s := policytest.TypeSecret(name, sami, policy.TierAgent, policy.TypeGoogleServiceAccount,
 			`{"service_account": "releases@example-project.iam.gserviceaccount.com"}`)
 		edit(&s)
 		refusals[name] = refusal{s, reason}
@@ -890,7 +890,7 @@ func TestRequestersLoad(t *testing.T) {
 // requesters keeps its own cap, or none, whatever its tier. A google-service-account secret
 // carries that same hour's cap, is asked for by its one person owner, and may name registered
 // services beside that owner only at human tier and only where the deployment binds it to an
-// account that is not one person's own dev-<name> one. The scopes tag is read on that kind alone.
+// account that is not one person's own dev-<name> one. The scopes tag is read on that type alone.
 func TestAdminCap(t *testing.T) {
 	const (
 		sami         = "sami@theorem.dev"
@@ -909,13 +909,13 @@ func TestAdminCap(t *testing.T) {
 		return s
 	}
 	loginSecret := func(name, tier string, edit func(*secrets.LocalSecret)) secrets.LocalSecret {
-		s := policytest.KindSecret(name, sami, tier, policy.KindGoogleLogin, "v")
+		s := policytest.TypeSecret(name, sami, tier, policy.TypeGoogleLogin, "v")
 		s.Tags[policy.TagRequesters] = sami
 		edit(&s)
 		return s
 	}
 	accountSecret := func(name, tier string, edit func(*secrets.LocalSecret)) secrets.LocalSecret {
-		s := policytest.KindSecret(name, sami, tier, policy.KindGoogleServiceAccount, accountValue)
+		s := policytest.TypeSecret(name, sami, tier, policy.TypeGoogleServiceAccount, accountValue)
 		edit(&s)
 		return s
 	}
@@ -973,9 +973,9 @@ func TestAdminCap(t *testing.T) {
 	refuse(accountSecret("ACCOUNT_DEV_BOUND", policy.TierHuman, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagRequesters] = sami + " " + daemon
 	}), policy.ReasonRequestersNotOwner)
-	appScopes := policytest.KindSecret("APP_SCOPES", sami, policy.TierAgent, policy.KindGitHubApp, "v")
+	appScopes := policytest.TypeSecret("APP_SCOPES", sami, policy.TierAgent, policy.TypeGitHubApp, "v")
 	appScopes.Tags[policy.TagScopes] = "cloud-platform"
-	refuse(appScopes, policy.ReasonScopesKind)
+	refuse(appScopes, policy.ReasonScopesType)
 	refuse(accountSecret("ACCOUNT_BAD_SCOPES", policy.TierHuman, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagScopes] = "cloud-platform,bigquery"
 	}), policy.ReasonScopesMalformed)

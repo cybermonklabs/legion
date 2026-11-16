@@ -142,17 +142,17 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 		// The input is a value the github-app decoder reads, which the policy serves; the stored
 		// value is that with a line ending, which the rule removes before the minter sees it.
 		const secret, token = "MINTED_INPUT_KEY", "minted-token\n"
-		input := policytest.KindValue(policy.KindGitHubApp)
+		input := policytest.TypeValue(policy.TypeGitHubApp)
 		stored := input + "\n"
 		given := ""
 		m.Minters = map[string]Minter{
-			policy.KindGitHubApp: func(_ context.Context, request secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGitHubApp: func(_ context.Context, request secrets.MintRequest) (secrets.Minted, error) {
 				given = request.Value
 				return secrets.Minted{Value: token}, nil
 			},
 		}
 		released := grantAndRelease(t, m, enrollmentID, key,
-			policytest.KindSecret(secret, fixtureOperator, policy.TierAgent, policy.KindGitHubApp, stored), secret)
+			policytest.TypeSecret(secret, fixtureOperator, policy.TierAgent, policy.TypeGitHubApp, stored), secret)
 		if got, want := valueDigest(given), valueDigest(input); got != want {
 			t.Errorf("the minter was given %s, want the stored value with its trailing line ending removed, %s", got, want)
 		}

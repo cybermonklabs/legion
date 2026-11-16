@@ -48,7 +48,7 @@ func recordBrokerCalls(t *testing.T) func() []string {
 // for its settings and for a reread and for nothing else: no request (POST /v1/requests) and no
 // grant route, which is how a credential leaves the broker.
 func TestNoSecretFormAsksTheBrokerForACredential(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		calls := recordBrokerCalls(t)
 		for _, form := range []struct {

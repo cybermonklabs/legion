@@ -38,7 +38,7 @@ type wireReread struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
 	Reason string `json:"reason"`
-	Kind   string `json:"kind"`
+	Type   string `json:"type"`
 }
 
 func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
@@ -180,25 +180,25 @@ func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
 	}
 }
 
-// TestARereadNamesTheKindItServes: a reread's answer names the kind the broker serves the secret
-// as, and none for a stored secret, so a person who retags a secret to a kind can tell a reread
+// TestARereadNamesTheTypeItServes: a reread's answer names the type the broker serves the secret
+// as, and none for a stored secret, so a person who retags a secret to a type can tell a reread
 // that read the new tags from one that read them stale. It carries nothing else of the tags.
 func TestARereadNamesTheKindItServes(t *testing.T) {
 	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
 	_, body := ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)
-	if r := decode[wireReread](t, body); !r.Served || r.Kind != "" || strings.Contains(string(body), `"kind"`) {
-		t.Fatalf("reread of a stored secret = %s, want served with no kind", body)
+	if r := decode[wireReread](t, body); !r.Served || r.Type != "" || strings.Contains(string(body), `"type"`) {
+		t.Fatalf("reread of a stored secret = %s, want served with no type", body)
 	}
-	for _, kind := range policy.Kinds {
-		ts.Secrets.Put(policytest.KindSecret("PLAIN_KEY", testApprover, policy.TierAgent, kind, policytest.KindValue(kind)))
+	for _, secretType := range policy.Types {
+		ts.Secrets.Put(policytest.TypeSecret("PLAIN_KEY", testApprover, policy.TierAgent, secretType, policytest.TypeValue(secretType)))
 		_, body = ts.req(t, http.MethodPost, "/v1/secrets/PLAIN_KEY/reread", nil, nil)
-		if r := decode[wireReread](t, body); !r.Served || r.Kind != kind {
-			t.Fatalf("reread once the kind is %s = %s, want served as %s", kind, body, kind)
+		if r := decode[wireReread](t, body); !r.Served || r.Type != secretType {
+			t.Fatalf("reread once the type is %s = %s, want served as %s", secretType, body, secretType)
 		}
 		for _, private := range []string{testApprover, policy.TierAgent, "github-owners", "owner"} {
 			if strings.Contains(string(body), private) {
-				t.Fatalf("reread answer %s carries %q; it names only the kind", body, private)
+				t.Fatalf("reread answer %s carries %q; it names only the type", body, private)
 			}
 		}
 	}
@@ -208,7 +208,7 @@ func TestARereadNamesTheKindItServes(t *testing.T) {
 // finished - its caller went away, or its deadline passed - is answered 503 REQUEST_ENDED without
 // the ERROR line "broker: reread secret failed" that an operator's alert counts, as the miss path
 // logs nothing for one, while a reread Secrets Manager itself fails for a caller still waiting is
-// still that 500 and that line. A request that ends during the value read of a kind secret's
+// still that 500 and that line. A request that ends during the value read of a type secret's
 // version the pod has not decoded, once the metadata read has served the secret, ended before the
 // reread finished too: it is that 503, not a 200 answering for a value nobody checked. That
 // reread has merged the tags it read into this pod's policy, though, so the other pods are told
@@ -236,7 +236,7 @@ func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 	defer cancelValue()
 	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
 	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
-	valueLocal.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	valueLocal.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	logged := policytest.CaptureLog(t)
 
 	for _, ended := range []struct {

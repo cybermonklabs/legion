@@ -6,21 +6,21 @@ import (
 	"time"
 )
 
-// MintRequest is one release's input to a minter: the secret's stored value, its name, its kind
+// MintRequest is one release's input to a minter: the secret's stored value, its name, its type
 // and whether the policy snapshot checked for this release holds it as human tier. The Azure
-// minter requires that name to match its configured secret and HumanTier to be true. Kind is the
-// secret's kind tag, which the HTTP minters count their attempts under
+// minter requires that name to match its configured secret and HumanTier to be true. Type is the
+// secret's type tag, which the HTTP minters count their attempts under
 // (broker_mint_attempts_total).
 // GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
-// kind leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
+// type leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
 // owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
 // google-service-account secret's scopes tag as the whole OAuth scope URLs
 // policy.Secret.ScopeURLs answers, and nil both for such a secret that names no scopes and for
-// every other kind; the service-account minter then asks Google for the cloud-platform scope
+// every other type; the service-account minter then asks Google for the cloud-platform scope
 // alone, which is what it asked for before the tag existed.
 type MintRequest struct {
 	Name            string
-	Kind            string
+	Type            string
 	HumanTier       bool
 	Value           string
 	GitHubOwners    []string
@@ -43,7 +43,7 @@ type MintRequest struct {
 }
 
 // Minted is one minted token: the value a release hands over, and when it stops working, zero
-// when the kind's upstream does not say. The airlock's proxy mints again five minutes before
+// when the type's upstream does not say. The airlock's proxy mints again five minutes before
 // Expires, so no call starts on a token about to end.
 type Minted struct {
 	Value   string

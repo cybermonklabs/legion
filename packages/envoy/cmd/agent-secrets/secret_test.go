@@ -221,7 +221,7 @@ func (b *secretBroker) recorded() ([]string, []Reread) {
 
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
 // not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version,
-// served otherwise, as the kind its kind tag names.
+// served otherwise, as the type its type tag names.
 func servedBy(sm secretsAPI) func(name string) Reread {
 	return func(name string) Reread {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
@@ -231,7 +231,7 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 		case !secrets.HasCurrentVersion(out.VersionIdsToStages):
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Kind: secrets.TagMap(out.Tags)[policy.TagKind]}
+		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
 	}
 }
 
@@ -419,7 +419,7 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 // line naming the credential it signs in to the store with, and prints it before its first call of
 // the store.
 func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		for _, form := range []struct {
 			stdin string
@@ -703,7 +703,7 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 // writer who typed the old flag loses nothing — and a retag that names it is refused the same
 // way, leaving the secret's tags as they were.
 func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
 		before := store.tags(t, "API_KEY")
 		read := countingStdin(t, "value-never-read")
@@ -755,27 +755,27 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// TestSecretSetReadsTheSecretsOwnKind: a set names no tag, so it reads the kind the secret
-// already carries and checks the value as that kind's minter reads it. A value that minter
+// TestSecretSetReadsTheSecretsOwnType: a set names no tag, so it reads the type the secret
+// already carries and checks the value as that type's minter reads it. A value that minter
 // refuses is refused in its words, and nothing is written; one it reads is stored, less its
 // trailing line ending.
 func TestSecretSetReadsTheSecretsOwnKind(t *testing.T) {
 	notALogin := appValue(t, map[string]string{"type": "service_account"})
-	says := mintRefusal(t, policy.KindGoogleLogin, notALogin)
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
-		store.put(t, "LOGIN_KEY", policytest.KindSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, "").Tags, "old")
+	says := mintRefusal(t, policy.TypeGoogleLogin, notALogin)
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		store.put(t, "LOGIN_KEY", policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, "old")
 		useStdin(t, notALogin+"\n")
 		_, stderr, code := runSecret("set", "LOGIN_KEY")
 		if code != exitUsageError || !strings.Contains(stderr, says) {
-			t.Fatalf("set of a value the kind's minter refuses: exit %d stderr %q; want %d naming %q", code, stderr, exitUsageError, says)
+			t.Fatalf("set of a value the type's minter refuses: exit %d stderr %q; want %d naming %q", code, stderr, exitUsageError, says)
 		}
 		if got := store.value(t, "LOGIN_KEY"); got != "old" {
 			t.Fatalf("the refused set stored %q; want the value the secret held", got)
 		}
-		login := policytest.KindValue(policy.KindGoogleLogin)
+		login := policytest.TypeValue(policy.TypeGoogleLogin)
 		useStdin(t, login+"\n")
 		if _, stderr, code := runSecret("set", "LOGIN_KEY"); code != 0 {
-			t.Fatalf("set of a value the kind's minter reads: exit %d stderr %q", code, stderr)
+			t.Fatalf("set of a value the type's minter reads: exit %d stderr %q", code, stderr)
 		}
 		if got := store.value(t, "LOGIN_KEY"); got != login {
 			t.Fatalf("stored %q; want the piped value less its trailing line ending", got)
@@ -783,12 +783,12 @@ func TestSecretSetReadsTheSecretsOwnKind(t *testing.T) {
 	})
 }
 
-// TestSecretSetRefusedTagReadNamesThePermission: a set reads the secret's tags for the kind it
+// TestSecretSetRefusedTagReadNamesThePermission: a set reads the secret's tags for the type it
 // checks the value as, so whoever stores a value may read that secret's tags. When the store
 // refuses that read, the refusal names the permission the read needs, and the value is never
 // asked for.
 func TestSecretSetRefusedTagReadNamesThePermission(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
 		read := countingStdin(t, "a-new-value")
 		store.refuseTagReads()
@@ -1305,7 +1305,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	}
 	rows := map[string][]string{}
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
+	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER TYPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
 		t.Fatalf("header = %q", lines[0])
 	}
 	for _, line := range lines[1:] {
@@ -1443,7 +1443,7 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 // holds no `shape` key, and list's header carries no SHAPE column. The leftover tag is left in
 // the store untouched; nothing here removes it.
 func TestSecretShowAndListNameNoShape(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		leftover := policytest.Secret("LEFTOVER_KEY", "ada@example.com", policy.TierAgent, "v1").Tags
 		leftover["shape"] = "token"
 		store.put(t, "LEFTOVER_KEY", leftover, "tok-abc")

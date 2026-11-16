@@ -10,32 +10,32 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// A grant ends for good when a release finds its secret's kind changed or its lifetime over the
-// current max-grant (TestAKindChangedAwayAndBackLeavesTheGrantEnded and
+// A grant ends for good when a release finds its secret's type changed or its lifetime over the
+// current max-grant (TestATypeChangedAwayAndBackLeavesTheGrantEnded and
 // TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded pin that, with a release between the
 // change and its revert). A change reverted before any release finds it leaves the grant as it
-// was: the grant was approved for that secret, kind and source, and on its next release it mints
-// a token of that same kind from that same frozen source, never the stored value. To end a grant,
+// was: the grant was approved for that secret, type and source, and on its next release it mints
+// a token of that same type from that same frozen source, never the stored value. To end a grant,
 // revoke it. The tests below pin the revert with no release between.
 
-// TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas: a kind retag reverted
+// TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas: a type retag reverted
 // before any release leaves the grant live, and its next release goes through the minter of its
-// original kind, returning that minter's token and never the stored value.
+// original type, returning that minter's token and never the stored value.
 func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
-	for name, away := range map[string]string{"removed": "", "changed": policy.KindGoogleLogin} {
+	for name, away := range map[string]string{"removed": "", "changed": policy.TypeGoogleLogin} {
 		t.Run(name, func(t *testing.T) {
 			machine, enrollmentID, key, _ := newFixture(t)
-			secret := requestKindSecret("QUIET_KIND_KEY", policy.KindGitHubApp, policy.TierAgent, "")
+			secret := requestTypeSecret("QUIET_KIND_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 			retag(t, machine, secret)
 			var githubCalls, googleCalls int
 			var minted []string
 			machine.Minters = map[string]Minter{
-				policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+				policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 					githubCalls++
 					minted = append(minted, req.Value)
 					return secrets.Minted{Value: "github-installation-token"}, nil
 				},
-				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 					googleCalls++
 					return secrets.Minted{Value: "google-access-token"}, nil
 				},
@@ -50,12 +50,12 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 			moved := secret
 			moved.Tags = maps.Clone(secret.Tags)
 			if away == "" {
-				delete(moved.Tags, policy.TagKind)
+				delete(moved.Tags, policy.TagType)
 			} else {
-				moved.Tags[policy.TagKind] = away
-				// The value the away kind's decoder reads, so the policy serves the secret as
-				// that kind while it is away, rather than refusing it for its value.
-				moved.Value = policytest.KindValue(away)
+				moved.Tags[policy.TagType] = away
+				// The value the away type's decoder reads, so the policy serves the secret as
+				// that type while it is away, rather than refusing it for its value.
+				moved.Value = policytest.TypeValue(away)
 			}
 			retag(t, machine, moved)
 			retag(t, machine, secret)
@@ -83,26 +83,26 @@ func TestAKindChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 
 // TestAMaxGrantLoweredAndRaisedWithNoReleaseBetweenLeavesTheGrantAsItWas: a max-grant lowered
 // below a live grant's lifetime and raised back before any release leaves that grant live, and its
-// next release mints its kind's token, never the stored value.
+// next release mints its type's token, never the stored value.
 func TestAMaxGrantLoweredAndRaisedWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	var calls int
 	machine.Minters = map[string]Minter{
-		policy.KindGoogleLogin: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGoogleLogin: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			calls++
-			if req.Value != policytest.KindValue(policy.KindGoogleLogin) {
+			if req.Value != policytest.TypeValue(policy.TypeGoogleLogin) {
 				t.Error("the Google login minter was handed another value than the secret's stored value")
 			}
 			return secrets.Minted{Value: "google-access-token"}, nil
 		},
 	}
-	retag(t, machine, requestKindSecret("QUIET_BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "1h"))
+	retag(t, machine, requestTypeSecret("QUIET_BOUNDED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "1h"))
 	long, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "QUIET_BOUNDED_LOGIN"), "", nil)
 	if err != nil || long.GrantID == nil {
 		t.Fatalf("Create(1h) = %+v, %v", long, err)
 	}
-	retag(t, machine, requestKindSecret("QUIET_BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "30m"))
-	retag(t, machine, requestKindSecret("QUIET_BOUNDED_LOGIN", policy.KindGoogleLogin, policy.TierAgent, "1h"))
+	retag(t, machine, requestTypeSecret("QUIET_BOUNDED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "30m"))
+	retag(t, machine, requestTypeSecret("QUIET_BOUNDED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "1h"))
 	release, err := machine.Values(t.Context(), *long.GrantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil || release.Values["QUIET_BOUNDED_LOGIN"] != "google-access-token" {
 		t.Fatalf("Values(1h) once max-grant is 1h again, with no release while it was 30m = %v, %v; want the Google login minter's token: the grant is as it was", release.Values, err)

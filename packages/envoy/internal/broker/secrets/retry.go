@@ -72,7 +72,7 @@ type Retry struct {
 	// Draw is the jitter: a wait from zero to ceiling, both included, uniform at random when nil.
 	// What it answers is held to that range.
 	Draw func(ceiling time.Duration) time.Duration
-	// attempts counts each attempt in broker_mint_attempts_total by kind, outcome and attempt;
+	// attempts counts each attempt in broker_mint_attempts_total by type, outcome and attempt;
 	// nil counts nothing. NewRetry sets it.
 	attempts *metrics.Counter
 
@@ -85,7 +85,7 @@ type Retry struct {
 // NewRetry is the broker's Retry, counting its attempts on r as broker_mint_attempts_total.
 func NewRetry(r *metrics.Registry) *Retry {
 	return &Retry{attempts: r.NewCounter("broker_mint_attempts_total",
-		"Attempts of the calls the minters make upstream, by the secret's kind, the outcome (ok, upstream, rate_limited, refused, cancelled) and the attempt's number (1 to 3).")}
+		"Attempts of the calls the minters make upstream, by the secret's type, the outcome (ok, upstream, rate_limited, refused, cancelled) and the attempt's number (1 to 3).")}
 }
 
 // MintAttempts is the attempts the upstream call a mint failed at made, which the broker's
@@ -160,18 +160,18 @@ func (r *Retry) take() bool {
 	return r.budget.AllowN(r.now(), 1)
 }
 
-// mintRetry is one mint's share of its minter's Retry: the kind its attempts are counted under,
+// mintRetry is one mint's share of its minter's Retry: the type its attempts are counted under,
 // and what is left of the mint's mintWaitBudget, which every call the mint makes waits from. A
 // share of a nil Retry makes one attempt of each call.
 type mintRetry struct {
-	retry    *Retry
-	kind     string
-	waitLeft time.Duration
+	retry      *Retry
+	secretType string
+	waitLeft   time.Duration
 }
 
-// start is the share a Mint of kind begins with: the whole of mintWaitBudget.
-func (r *Retry) start(kind string) *mintRetry {
-	return &mintRetry{retry: r, kind: kind, waitLeft: mintWaitBudget}
+// start is the share a Mint of type begins with: the whole of mintWaitBudget.
+func (r *Retry) start(secretType string) *mintRetry {
+	return &mintRetry{retry: r, secretType: secretType, waitLeft: mintWaitBudget}
 }
 
 // count counts one attempt of a call in broker_mint_attempts_total.
@@ -179,7 +179,7 @@ func (m *mintRetry) count(outcome string, attempt int) {
 	if m.retry == nil {
 		return
 	}
-	m.retry.attempts.Inc([2]string{"kind", m.kind}, [2]string{"outcome", outcome}, [2]string{"attempt", strconv.Itoa(attempt)})
+	m.retry.attempts.Inc([2]string{"type", m.secretType}, [2]string{"outcome", outcome}, [2]string{"attempt", strconv.Itoa(attempt)})
 }
 
 // again reports whether a call whose attempt numbered attempt failed with err, a failure classify
