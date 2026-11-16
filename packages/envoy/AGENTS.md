@@ -5371,6 +5371,7 @@ any pod of the cluster can project a token for any audience, and that branch nam
 Unset or empty, the branch admits every subject the issuer signed for, as it did before the list existed;
 set beside no `ENVOY_OIDC_ISSUER` it refuses the start naming the pair it needs, and holding an entry of any other shape it refuses the start naming the entry.
 A value that names no account (only blanks or commas) refuses the start naming the setting, so a list emptied by mistake never admits every pod.
+Both account lists are whitespace-separated: an entry holding a comma, which a list written like `ENVOY_ALLOWED_HOSTS` would hold, refuses the start naming the setting and the entry, rather than starting with an entry no token carries and refusing that caller as `not_listed`.
 An unlisted subject gets the same 401 as every other refused credential, and its warning carries the class `not_listed` and the subject as `account`.
 The Google pair is for a caller on Google's platform that holds no Kubernetes token, such as the alert sink on Cloud Run.
 The listener admits a token that Google (`https://accounts.google.com`, `oidc.GoogleIssuer`) signed for `ENVOY_OIDC_GOOGLE_AUDIENCE`

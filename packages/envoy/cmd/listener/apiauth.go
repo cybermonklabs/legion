@@ -429,7 +429,9 @@ const serviceAccountSubjectPrefix = "system:serviceaccount:"
 // by mistake, and read as unset it would admit every pod of the cluster. A list beside no
 // ENVOY_OIDC_ISSUER is a refusal, since it would hold nothing to anything, and so is an entry of
 // any other shape, which no token could ever carry, so a misspelt list is refused at the start
-// rather than refusing its callers one by one.
+// rather than refusing its callers one by one. An entry holding a comma is refused by its own
+// message (listEntryWithComma): a list written comma-separated, as ENVOY_ALLOWED_HOSTS beside it
+// is, would otherwise start holding "A," and refuse A's every caller as not listed.
 func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]string, error) {
 	value := getenv("ENVOY_OIDC_ACCOUNTS")
 	if value == "" {
@@ -443,6 +445,9 @@ func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]s
 		return nil, errors.New("ENVOY_OIDC_ACCOUNTS needs ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE: it names the projected-token callers that pair's verifier admits")
 	}
 	for _, account := range accounts {
+		if err := listEntryWithComma("ENVOY_OIDC_ACCOUNTS", account); err != nil {
+			return nil, err
+		}
 		rest, prefixed := strings.CutPrefix(account, serviceAccountSubjectPrefix)
 		namespace, name, found := strings.Cut(rest, ":")
 		if !prefixed || !found || namespace == "" || name == "" || strings.Contains(name, ":") {
@@ -456,7 +461,8 @@ func resolveListenerOIDCAccounts(getenv func(string) string, issuer string) ([]s
 // identity token must carry, and ENVOY_OIDC_GOOGLE_ACCOUNTS, the whitespace-separated addresses of
 // the accounts it admits, each in lower case, the form Google's email claim is compared in. They
 // are set both or neither: an audience no account is listed for would admit no caller, and a list
-// with no audience would verify nothing. An entry that is not an address is a refusal naming it.
+// with no audience would verify nothing. An entry that is not an address is a refusal naming it,
+// and so is an entry holding a comma (listEntryWithComma), which the address shape would accept.
 func resolveListenerGoogleConfig(getenv func(string) string) (audience string, accounts []string, err error) {
 	audience = strings.TrimSpace(getenv("ENVOY_OIDC_GOOGLE_AUDIENCE"))
 	accounts = strings.Fields(strings.ToLower(getenv("ENVOY_OIDC_GOOGLE_ACCOUNTS")))
@@ -469,11 +475,25 @@ func resolveListenerGoogleConfig(getenv func(string) string) (audience string, a
 		return "", nil, errors.New("ENVOY_OIDC_GOOGLE_AUDIENCE is required when ENVOY_OIDC_GOOGLE_ACCOUNTS is set: it is the audience the listed accounts' tokens must carry")
 	}
 	for _, account := range accounts {
+		if err := listEntryWithComma("ENVOY_OIDC_GOOGLE_ACCOUNTS", account); err != nil {
+			return "", nil, err
+		}
 		if !oidc.EmailShape.MatchString(account) {
 			return "", nil, fmt.Errorf("ENVOY_OIDC_GOOGLE_ACCOUNTS must be whitespace-separated Google account addresses, got %q", account)
 		}
 	}
 	return audience, accounts, nil
+}
+
+// listEntryWithComma refuses an entry of a whitespace-separated account list that holds a comma,
+// naming the setting and the entry: no token carries an account with a comma in it, so the entry
+// is a list written comma-separated, and the start is refused rather than every caller it meant
+// being refused as not listed.
+func listEntryWithComma(setting, entry string) error {
+	if !strings.Contains(entry, ",") {
+		return nil
+	}
+	return fmt.Errorf("%s is whitespace-separated, and the entry %q holds a comma; separate its entries with spaces", setting, entry)
 }
 
 // describeListenerAPIAuth names the credentials /v1 accepts, for the boot log: the shared token,
