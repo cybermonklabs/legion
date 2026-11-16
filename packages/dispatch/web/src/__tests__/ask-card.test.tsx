@@ -24,6 +24,7 @@ import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
+import { specFormRefusal, specFormRefusalBody } from "./spec-form-fixture";
 import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -1184,6 +1185,58 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
     view.unmount();
   }
 });
+
+// Dispatch refuses the approval of a document that breaks the form of The Spec, and the refusal
+// names the person's next step: the card says it, offers no Retry, picks Request changes and fills
+// its reason with what Dispatch wrote for the author, so one more press sends the findings.
+for (const variant of ["full", "compact"] as const) {
+  test(`a ${variant} approval card refused for the form picks Request changes with Dispatch's reason`, async () => {
+    const user = userEvent.setup();
+    const submitted: AnswerAskInput[] = [];
+    const input = ask({
+      kind: "approval",
+      options: [{ label: "Approve" }, { label: "Request changes" }],
+    });
+    const { view } = renderCard(
+      <AskCard
+        answerAsk={async (_id, submission) => {
+          submitted.push(submission);
+          if (submitted.length === 1) throw specFormRefusal();
+          return answered(input, submission.selected, submission.text ?? null);
+        }}
+        ask={input}
+        getAskThread={emptyThread(input)}
+        variant={variant}
+      />
+    );
+
+    try {
+      const card = view.getByTestId("ask-ask-1");
+      await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+
+      const alert = await within(card).findByRole("alert");
+      expect(alert.textContent).toBe(specFormRefusalBody.error);
+      expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      expect(
+        (within(card).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+      ).toBe(true);
+      expect((within(card).getByLabelText("Reason (required)") as HTMLTextAreaElement).value).toBe(
+        specFormRefusalBody.changes_reason
+      );
+
+      await user.click(within(card).getByRole("button", { name: "Answer" }));
+      await waitFor(() => expect(submitted).toHaveLength(2));
+      expect(submitted[1]).toEqual({
+        expected_edited_at: null,
+        selected: ["Request changes"],
+        text: specFormRefusalBody.changes_reason,
+      });
+    } finally {
+      view.unmount();
+    }
+  });
+}
 
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
   const user = userEvent.setup();

@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `SpecFormTerm` carries `issue`, the issue of the document that defines the term. The
+  `dispatch_spec_form` spec takes `terms`, which lists the terms of the document's root in place of
+  the findings, and `root` goes with no `terms`.
+custom:
+    Issue: pr4207

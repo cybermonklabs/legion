@@ -77,6 +77,22 @@ export interface DispatchEvent {
   payload: Record<string, unknown>;
 }
 
+/** One reply to a Dispatch comment, with the fields `claimRunOf` (`reserve.ts`) reads. */
+export interface CommentReply {
+  id: string;
+  body: string;
+  created_at: string;
+  edited_at: string | null;
+}
+
+/** The replies to one comment, as `GET /api/v1/comments/<id>` serves its thread. */
+export async function dispatchRepliesOf(commentId: string): Promise<readonly CommentReply[]> {
+  const thread = await readJson<{ replies?: CommentReply[] | null }>(
+    `/api/v1/comments/${encodeURIComponent(commentId)}`
+  );
+  return thread.replies ?? [];
+}
+
 /** What `pageEventLog` is asked to walk, and what it hands each page to. */
 export interface PageEventLogOptions {
   /**

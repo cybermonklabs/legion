@@ -6,7 +6,7 @@ import {
   type PublishInput,
   type PublishResult,
 } from "@legion/envoy-client/transport";
-import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
+import { createPhaseReminder, type EnvoyPublish, type PhaseReminder } from "./phase-reminder";
 import { type PhaseStallEntry, REMINDER } from "./phase-stall";
 import { DEFAULT_STALL_LIMITS } from "./stall-limits";
 
@@ -86,7 +86,7 @@ interface Rig {
  * daemon holds no record for the issue unless a case names one, so every record check reminds. */
 function rig(options: {
   readonly sendReminder?: (reminder: string) => void | Promise<void>;
-  readonly publish?: (input: PublishInput) => Promise<Pick<PublishResult, "kept">>;
+  readonly publish?: EnvoyPublish;
   readonly state?: LegionState;
 }): Rig {
   const timers: ArmedTimer[] = [];
@@ -209,13 +209,22 @@ test("a notice the listener failed is published again by the run's next reminder
   expect(published).toHaveLength(2);
 });
 
-// The notice asks the listener to keep nothing, because this sender keeps its own retry: the
-// reminding never stops while the phase is open. A listener that keeps it all the same answers
-// 202 with a kept body, and that is not the architect being told — the kept copy is dropped once
-// its window passes, and nothing would publish the notice again. So the run's next delivered
-// reminder publishes it again, under the same key.
-test("a kept answer is not the architect being told, so the run's next reminder publishes again", async () => {
-  const requests: unknown[] = [];
+// The notice sends no `keep` field, so a listener keeps it for an architect role that no live
+// session holds, and answers 202 kept. That is not the architect being told: the copy waits for
+// the next session that holds the role, and is dropped if none takes it in its hour. So the run's
+// next delivered reminder publishes the notice again. A listener that names `kept_until` answers
+// a repeat of the key with the copy it still holds, so the key stays. A listener of an earlier
+// release names no time and answers a repeat as the first copy for 72 hours, even after it
+// dropped that copy, so the next attempt mints a new key (dispatch://INFRA-2846, R6).
+test("the owner notice is kept", async () => {
+  const requests: Record<string, unknown>[] = [];
+  // The listener's answers in turn: kept with its time, kept with no time (an earlier release),
+  // and kept with its time again.
+  const answers: Record<string, unknown>[] = [
+    { kept_until: 1_793_003_600_000 },
+    {},
+    { kept_until: 1_793_003_900_000 },
+  ];
   const client = createEnvoyClient({
     baseUrl: "http://listener.test",
     fetch: async (_input, init) => {
@@ -234,6 +243,7 @@ test("a kept answer is not the architect being told, so the run's next reminder 
           trace_id: "trace-kept",
           kept: true,
           kept_reason: "unclaimed",
+          ...answers.shift(),
         }),
         { status: 202, headers: { "Content-Type": "application/json" } }
       );
@@ -248,25 +258,44 @@ test("a kept answer is not the architect being told, so the run's next reminder 
   await fireLast(timers);
 
   expect(published).toHaveLength(1);
-  // The notice asks for `keep: false`, and the flag reaches the listener.
-  expect(published[0]?.keep).toBe(false);
-  expect(requests[0]).toMatchObject({ keep: false });
+  // The notice asks for no `keep`, and none reaches the listener.
+  expect(published[0]).not.toHaveProperty("keep");
+  expect(requests[0]).not.toHaveProperty("keep");
   // Nobody was told, and that is not this worker's doing: no warning, and the notice stands.
   expect(warned).toEqual([]);
   const kept = entries.at(-1);
   expect(kept).toMatchObject({ count: 2, reported: false });
+  expect(kept?.reportKey).toBe(published[0]?.idempotencyKey);
 
+  // The next reminder publishes again, under the same key. This answer names no time.
   expect(await reminder.settle(said("Still here."))).toBeUndefined();
   await fireLast(timers);
   expect(published).toHaveLength(2);
   expect(published[1]?.idempotencyKey).toBe(kept?.reportKey);
-  expect(entries.at(-1)).toMatchObject({ count: 3, reported: false });
+  expect(requests[1]).not.toHaveProperty("keep");
+  const timeless = entries.at(-1);
+  expect(timeless).toMatchObject({ count: 3, reported: false });
+  expect(timeless).not.toHaveProperty("reportKey");
+
+  // So the reminder after it publishes under a new key.
+  expect(await reminder.settle(said("Still here."))).toBeUndefined();
+  await fireLast(timers);
+  expect(published).toHaveLength(3);
+  expect(published[2]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+  expect(published[2]?.idempotencyKey).not.toBe(kept?.reportKey);
+  expect(entries.at(-1)).toMatchObject({
+    count: 4,
+    reported: false,
+    reportKey: published[2]?.idempotencyKey,
+  });
+  expect(warned).toEqual([]);
 });
 
-// With `keep: false` the listener keeps nothing for a role no live session holds: it answers the
-// 404 it always did, and that is the answer this sender's retry exists for. Nobody was told, so
-// the next delivered reminder publishes again under the same key, and the worker's transcript
-// gets no warning for something that is not its doing.
+// A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier
+// release answers it for an architect role whose holder is not live. That is the answer this
+// sender's retry exists for. Nobody was told, so the next delivered reminder publishes again
+// under the same key, and the worker's transcript gets no warning for something that is not its
+// doing.
 test("a notice no session held the architect role for is published again by the run's next reminder, under the same key", async () => {
   let attempt = 0;
   const { reminder, timers, entries, published, warned } = rig({
@@ -289,7 +318,6 @@ test("a notice no session held the architect role for is published again by the 
   expect(await reminder.settle(said("Still here."))).toBeUndefined();
   await fireLast(timers);
   expect(published).toHaveLength(1);
-  expect(published[0]?.keep).toBe(false);
   expect(warned).toEqual([]);
   const refused = entries.at(-1);
   expect(refused).toMatchObject({ count: 2, reported: false });

@@ -115,9 +115,11 @@ func TestAStateWithNoTimerIsReleasedWhileAnotherRoomArmsOne(t *testing.T) {
 	}
 }
 
-// A document written through the API whose issue closes before its settlement runs settles nothing
-// while the issue is closed, so its state goes with its room; its pending-settlement row stays, and
-// settles it once the issue reopens or its room next loads.
+// A document written through the API whose issue closes before its settlement runs loses that
+// settlement's timer to the close (closeRecordLocked), and nothing arms one again on the closed
+// room, so its state goes with its room. Its pending-settlement row stays: the resumption settles
+// the document from it whether or not the issue reopens (resumeOwedSettlements), as does its
+// room's next load.
 func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 	service, database := newRoomReleaseService(t)
 	service.settle = time.Hour // the issue closes before any settlement runs

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { specFormRefusal, specFormRefusalBody } from "../../__tests__/spec-form-fixture";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
 import { ApprovalChip } from "./ApprovalChip";
@@ -278,6 +279,154 @@ test("a change request made with its answer lost closes the dialog, refuses noth
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(queryClient.getQueryState(["artifact-reviews", "artifact-1"])?.isInvalidated).toBe(true);
     expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+test("an approval refused for the form of The Spec shows the refusal under the actions", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    specFormRefusal()
+  );
+  const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    const refusal = await screen.findByRole("alert");
+    expect(refusal.textContent).toBe(specFormRefusalBody.error);
+    expect(refusal.closest('[role="dialog"]')).toBeNull();
+    const requestChanges = screen.getByRole("button", { name: "Request changes" });
+    expect(
+      requestChanges.compareDocumentPosition(refusal) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// The refused approval is no failed request for changes: the dialog opens with the reason
+// Dispatch wrote for the author, and with no alert of its own before the person submits.
+test("Request changes after a form refusal opens with Dispatch's reason and no alert", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    specFormRefusal()
+  );
+  const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("disabled")
+    );
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+    const reason = within(dialog).getByLabelText("Reason") as HTMLTextAreaElement;
+    expect(reason.value).toBe(specFormRefusalBody.changes_reason);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// The control: after a form refusal the dialog still says so when its own request for changes is
+// refused. It sends a reason of its own, so it passes with the reason field empty or filled. A
+// 403, since a 5xx is tried again under its key and never reaches the dialog.
+test("a request for changes refused after a form refusal shows the dialog's own alert", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview")
+    .mockRejectedValueOnce(specFormRefusal())
+    .mockRejectedValueOnce(new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer" }));
+  const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("disabled")
+    );
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    const reason = within(dialog).getByLabelText("Reason");
+    await user.clear(reason);
+    await user.click(reason);
+    await user.paste("Needs another pass");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
+    expect(createArtifactReview).toHaveBeenLastCalledWith(
+      "artifact-1",
+      { reason: "Needs another pass", state: "changes_requested" },
+      keyedAttempt
+    );
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert").textContent).toBe(
+        "Could not request changes. Try again."
+      )
+    );
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+test("a request for changes the server records takes the form refusal away", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview")
+    .mockRejectedValueOnce(specFormRefusal())
+    .mockResolvedValueOnce({
+      actor: { id: "alice", kind: "user" },
+      artifact_id: "artifact-1",
+      ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
+      created_at: "2026-09-11T00:00:00Z",
+      id: "review-1",
+      kind: "person",
+      reason: specFormRefusalBody.changes_reason,
+      state: "changes_requested",
+      version: 12,
+    });
+  const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument()
+    );
+    expect(createArtifactReview).toHaveBeenLastCalledWith(
+      "artifact-1",
+      { reason: specFormRefusalBody.changes_reason, state: "changes_requested" },
+      keyedAttempt
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+// Each press of Approve is answered on its own: a second press that Dispatch refuses for another
+// reason leaves no refusal of the first press under the actions.
+test("a second approval takes the earlier form refusal away", async () => {
+  const user = userEvent.setup();
+  const createArtifactReview = spyOn(api, "createArtifactReview")
+    .mockRejectedValueOnce(specFormRefusal())
+    .mockRejectedValueOnce(new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer" }));
+  const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
+  try {
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(specFormRefusalBody.error);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Approve" })).not.toHaveAttribute("disabled")
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();

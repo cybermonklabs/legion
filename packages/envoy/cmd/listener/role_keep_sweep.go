@@ -1,55 +1,93 @@
 // The sweep of the listener's kept role lanes: the loop that runs every interval and once as the
 // listener starts, and the pass it makes, which hands over every lane the stream holds a kept
-// copy on and a session claims. It is the backstop behind the two handovers a running listener
-// starts for itself, the claim's and the keep's (role_keep.go).
+// copy on that its cursor has not finished, whether or not a session claims the role. It is the
+// backstop behind the handovers a running listener starts for itself - the claim route's, for a
+// claim it grants and for each role of a claimant it read not live before its refresh
+// (roleSetHandler), the keep's (role_keep.go), and the registration's that makes a holder live
+// again (subscribeHandler): it ends each copy whose hour ended, and it raises the role's wake
+// report again while a copy the listener kept waits for a live holder.
 
 package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/roles"
 )
 
-// startKeptRoleSweep is the backstop under which no kept lane waits for a claim that will not
-// come. A handover runs in a goroutine of this process, so a listener restarted or replaced
-// mid-handover ends it, and nothing starts another: a keep happens only while a role has no live
-// holder, and a live holder claims no second time. Every interval, and once as the listener
-// starts, this hands over every lane left that way (sweepKeptRoleLanes, startSweep).
+// roleKeepSweepHandovers is how many handovers one listener's sweep runs at once. A pass reads
+// every lane on the stream, and a lane with copies left costs a goroutine for its handover, which
+// can run for roleKeepHandoverWindow when its holder's bus is not answering; a deployment that
+// gathered copies on hundreds of lanes would otherwise start hundreds at once on the first pass
+// after a restart. Sixteen keep a pass of short handovers - most of them a walk with no holder
+// that reads one copy and stops - well inside one sweep interval, and a pass whose handovers are
+// all running waits for one to end before it starts the next.
+const roleKeepSweepHandovers = 16
+
+// roleKeepWakeAge is how old a copy the listener kept may be for the sweep to raise its role's
+// wake report again (raiseKeptRoleWake): forty minutes, so a role woken by the report has at
+// least twenty of the copy's hour left to claim the role before the walk drops the copy. A copy
+// whose first forty minutes have passed raises no more reports.
+const roleKeepWakeAge = roleKeepWindow - 20*time.Minute
+
+// startKeptRoleSweep is the backstop under which no kept copy waits past its hour. A handover runs
+// in a goroutine of this process, so a listener restarted or replaced mid-handover ends it, and
+// nothing starts another while the holder stays live: a keep happens only while a role has no live
+// holder, a live holder claims no second time, and a heartbeat of a holder that was live already
+// starts no handover, since only the registration that makes a holder live again
+// (subscribeHandler) and the claim route's refresh of a claimant that was not live
+// (roleSetHandler) start one. A role nobody claims is handed nothing at all, and its copies must
+// still end at the end of their hour, with a dead letter to their senders. Every interval, and
+// once as the listener starts, this hands over every lane with copies left (sweepKeptRoleLanes,
+// startSweep), at most roleKeepSweepHandovers at a time across the passes of this one loop.
 func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval time.Duration) <-chan struct{} {
-	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg) })
+	slots := make(chan struct{}, roleKeepSweepHandovers)
+	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
 }
 
-// sweepKeptRoleLanes hands over every role the stream holds a kept copy on and a session claims.
-// It reads every kept role subject the stream holds a copy on in one call
+// sweepKeptRoleLanes hands over every role the stream holds a kept copy on that its cursor has not
+// finished. It reads every kept role subject the stream holds a copy on in one call
 // (bus.Client.KeptRoleLanes), so a deployment where no role has a kept copy pays one round trip a
-// pass and no per-role work at all; a role that has one costs the read of its claim record, and a
-// handover of its own when that record names a session.
+// pass and no per-role work at all; a role that has one costs the read of its lane head
+// (readKeptLaneHead, two stream reads), and a lane with copies left a handover of its own. The
+// sweep reads no claim record: whether the role has a live holder, and whether it has any, is the
+// handover's own resolution to make, and a role with no live holder is walked all the same, with no
+// holder, so its copies end at the end of their hour.
 //
-// The claim is read from the role bucket itself (readRoleClaimHolder), within the pass's ctx and
-// roleHolderReadTimeout, and never from the registry's watched copy of it: a copy that kept a
-// claim the bucket dropped would start a handover for a role nobody holds, and one that lost a
-// claim the bucket holds would leave that holder's copies on the lane, which is the case this
-// backstop is for. A lane whose role no record claims is passed over rather than handed over, with
-// nothing logged for it: nothing moves such a lane's cursor - the handover it would start resolves
-// no live holder and walks nothing - so the role stays on the stream's list of kept lanes for as
-// long as it holds those copies, the stream's 72 h and not roleKeepWindow's hour, and a line and a
-// handover for it would cost a goroutine and a resolution every pass. A read that did not answer
-// passes the lane over too, under a debug line, since it shows no holder to hand the lane to; the
-// next pass reads it again. The record says only that a session holds the role: whether that
-// session is live is the handover's own resolution to make.
+// The pass waits for a slot of slots, the pool of roleKeepSweepHandovers its loop shares across
+// passes (startKeptRoleSweep), before it takes a role's guard: a pass whose pool is full waits for
+// the sweep's work on a role to end, or for ctx, and holds no guard while it waits, so a handover
+// of a role that the claim route, a keep or a registration started waits only for the sweep's
+// read of that role's lane head and for the handover the sweep starts on it, never for the whole
+// pool nor for the wake read after that handover. A role whose handover is already running on
+// this listener is left to it: the sweep takes that role's guard or passes the role over, and it
+// never waits for one (roleKeepGuards.tryHold), so one slow handover holds up no other role's
+// sweep; such a lane raises no wake report in this pass. A lane whose head read did not answer is
+// passed over under a debug line, and the next pass reads it again. A lane its cursor has
+// finished costs its two reads and no goroutine. Each of those gives its guard and its slot back
+// at once.
 //
-// The lane itself is left to the handover to read, which is the read its first pass opens with
-// (readKeptLaneHead): a lane its cursor is finished with ends that pass there, with no holder
-// resolved and nothing walked, where a read here would cost every swept lane that read twice.
-//
-// A role whose handover is already running on this listener is left to it: the sweep takes that
-// role's guard or passes the role over, and it never waits for one (roleKeepGuards.tryHold), so
-// one slow handover holds up no other role's sweep. The handover the sweep starts runs under the
-// guard the sweep took, in a goroutine of its own, so a pass starts the handovers of a hundred
-// lanes without walking any of them itself.
-func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig) {
-	roles, err := cfg.client.KeptRoleLanes(ctx)
+// A lane with copies left is handed over in a goroutine of its own, under the guard and the slot
+// the sweep took. The handover reads the lane head again rather than taking this one, as each of
+// its passes opens by reading it (handOverKeptRole). Each handover runs under
+// roleKeepHandoverWindow on the listener's clock (handOverSweptLane). The goroutine gives the
+// role's guard back once the handover has ended, and only then reads for the role's wake report,
+// which it raises again when the handover found no live holder (raiseKeptRoleWake): that read, of
+// up to roleKeepDrainWindow, and the report's publish hold no guard, so a handover of the role
+// that the claim route, a keep or a registration started waits for the sweep's handover alone.
+// The goroutine gives its slot back last, after the wake read and the report: the pool bounds the
+// sweep's own work, the wake read included, and a pass that has every slot of its pool back knows
+// that every handover it started, and every wake report behind one, has ended.
+func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, slots chan struct{}) {
+	lanes, err := cfg.client.KeptRoleLanes(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			cfg.logger.LogEvent(slog.LevelWarn, "listener kept role sweep could not read the kept lanes",
@@ -57,32 +95,125 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig) 
 		}
 		return
 	}
-	for _, role := range roles {
+	for _, role := range lanes {
 		if ctx.Err() != nil {
 			return
 		}
-		holder, err := readRoleClaimHolder(ctx, cfg, role)
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		release, taken := cfg.roleKeepDrains.tryHold(role)
+		if !taken {
+			<-slots
+			continue
+		}
+		headCtx, cancelHead := context.WithTimeout(ctx, roleKeepDrainWindow)
+		head, err := readKeptLaneHead(headCtx, cfg.client, role)
+		cancelHead()
 		if err != nil {
-			cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read a role's claim",
+			release()
+			<-slots
+			cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read a role's kept lane",
 				slog.String("role", role),
 				slog.String("error", err.Error()))
 			continue
 		}
-		if holder == "" {
+		if !head.left {
+			release()
+			<-slots
 			continue
 		}
-		release, taken := cfg.roleKeepDrains.tryHold(role)
-		if !taken {
-			continue
-		}
-		cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep is handing over a claimed role's kept lane",
+		cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep is handing over a role's kept lane",
 			slog.String("role", role),
-			slog.String("session_id", holder))
+			slog.Uint64("kept", head.cursor.Kept),
+			slog.Uint64("last", head.last))
 		go func() {
-			defer release()
-			handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
-			defer cancel()
-			reportKeptRoleDrain(cfg, role, handOverKeptRole(handoverCtx, cfg, role, time.Now))
+			from := handOverSweptLane(ctx, cfg, role)
+			release()
+			if from != 0 {
+				raiseKeptRoleWake(ctx, cfg, role, from)
+			}
+			<-slots
 		}()
 	}
+}
+
+// handOverSweptLane is one handover the sweep started, for a caller holding role's guard: it hands
+// role's kept lane over within roleKeepHandoverWindow on the listener's clock (handOverKeptRole),
+// logs it where every failed handover is logged (reportKeptRoleDrain), and returns the sequence
+// the role's wake read starts from (raiseKeptRoleWake), 0 for a handover after which the role's
+// wake report is not raised again. That sequence is the copy inside its hour the handover's walk
+// with no holder stopped at, when the handover's last pass resolved no live holder -
+// roles.Unclaimed or roles.Lapsed (roleKeepable). A resolution that did not answer raises none,
+// since it says nothing about whether the role has a live holder; the handovers the claim route,
+// a keep and a registration start raise none either, so the reports that follow the one a keep
+// raises are the sweep's alone, one for each interval. It makes no read for the wake itself: its
+// caller gives the role's guard back first, so no handover of the role waits on that read, and
+// keeps its sweep slot through the read and gives it back after it (sweepKeptRoleLanes).
+func handOverSweptLane(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) uint64 {
+	handoverCtx, cancel := context.WithTimeout(ctx, roleKeepHandoverWindow)
+	defer cancel()
+	handover, err := handOverKeptRole(handoverCtx, cfg, role, cfg.now)
+	reportKeptRoleDrain(cfg, role, err)
+	if !roleKeepable(roles.Resolution{State: handover.resolved}) {
+		return 0
+	}
+	return handover.waiting
+}
+
+// raiseKeptRoleWake raises role's wake report again when role's kept lane, read from the copy at
+// from - the first copy still inside its hour, where the handover's walk with no holder stopped -
+// holds a copy the listener kept with at least twenty minutes of its hour left
+// (keptLaneWakesItsRole). The report is published once, under the message id of the interval the
+// listener's clock falls in (publishSweptRoleWake), so every listener that sweeps the lane in that
+// interval names the same report and the stream stores one. A lane whose copies read nothing that
+// answers is passed over under a debug line, and the next sweep reads it again. It runs after the
+// sweep's handover of the role has given back the role's guard, so neither this read, which can
+// take up to roleKeepDrainWindow, nor the report's publish holds up a handover of the role that
+// the claim route, a keep or a registration started; it runs under that handover's sweep slot,
+// which is given back after it (sweepKeptRoleLanes).
+func raiseKeptRoleWake(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, from uint64) {
+	now := cfg.now()
+	readCtx, cancel := context.WithTimeout(ctx, roleKeepDrainWindow)
+	wakes, err := keptLaneWakesItsRole(readCtx, cfg.client, role, from, now)
+	cancel()
+	if err != nil {
+		if ctx.Err() == nil {
+			cfg.logger.LogEvent(slog.LevelDebug, "listener kept role sweep could not read the copies that wake a role",
+				slog.String("role", role),
+				slog.String("error", err.Error()))
+		}
+		return
+	}
+	if wakes {
+		publishSweptRoleWake(ctx, cfg.client, cfg.logger, role, now)
+	}
+}
+
+// keptLaneWakesItsRole reports whether role's kept lane holds, from the copy stored at from on and
+// within roleKeepScanMax copies, a copy the listener kept (isOutboxCopy) whose age at now is at
+// most roleKeepWakeAge. The read goes forward because the stream reads no message before a
+// sequence; a lane's copies grow younger along it, so the read ends at the first copy that wakes
+// the role. An outbox copy wakes nothing, as the outbox's own keep raises no report, and a copy
+// no read can decode wakes nothing either.
+func keptLaneWakesItsRole(ctx context.Context, client *bus.Client, role string, from uint64, now time.Time) (bool, error) {
+	subject := bus.KeptRoleSubject(role)
+	next := from
+	for range roleKeepScanMax {
+		stored, err := client.NextStoredMessage(ctx, subject, next)
+		if errors.Is(err, nats.ErrMsgNotFound) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read role %s's kept lane from %d: %w", role, next, err)
+		}
+		next = stored.Sequence + 1
+		var item contracts.Envelope
+		if now.Sub(stored.Time) <= roleKeepWakeAge && json.Unmarshal(stored.Data, &item) == nil && !isOutboxCopy(item) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
