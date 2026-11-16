@@ -65,13 +65,19 @@ type Registrar interface {
 // Generation is the launch generation of the process it registers (SandboxLocator.Generation, the
 // claim's generation, which every launch raises and stores before it starts the process): it rises
 // with each process of the claim, a process never sends two, and a daemon restart reads it back
-// from the claim, so the broker orders two processes' writes of one (pod, session) by it. Token
-// answers the pod's own projected token for the broker's audience, which is what names the pod to
-// the broker; it is asked once per write, and the first time inside the decision that starts the
-// registration. After is the machine's clock, and Bound the longest one write may take.
+// from the claim, so the broker orders two processes' writes of one (pod, session) by it. Latest
+// answers the claim's current generation, read when an answer comes back at a later one: an
+// answered generation above it was reached by no process of this claim, so the registration is
+// one this daemon never made. It reads the view each decision publishes, never the machine's lock,
+// since a renewal's answer comes back on the clock's goroutine while a decision may hold that lock
+// waiting on it (stopRegistration). Token answers the pod's own projected token for the broker's
+// audience, which is what names the pod to the broker; it is asked once per write, and the first
+// time inside the decision that starts the registration. After is the machine's clock, and Bound
+// the longest one write may take.
 type PodSession struct {
 	PodUID, Session, Thumbprint string
 	Generation                  uint64
+	Latest                      func() uint64
 	Token                       func(ctx context.Context) (string, error)
 	After                       func(d time.Duration, f func()) (stop func() bool)
 	Bound                       time.Duration
@@ -246,10 +252,21 @@ func (m *Machine) ensureRegistered() {
 	// does. The first write's outcome is the registrar's to log; nothing here decides on it.
 	stop, _ := m.deps.Registrar.KeepPodSession(m.ctx, PodSession{
 		PodUID: loc.Sandbox.PodUID, Session: session, Thumbprint: thumbprint, Generation: loc.Sandbox.Generation, Bound: m.deps.Timeouts.RPC,
-		Token: m.podToken(m.identity.PodToken),
-		After: func(d time.Duration, f func()) func() bool { return m.deps.Clock.AfterFunc(d, f).Stop },
+		Latest: m.latestGeneration(loc.Sandbox.Generation),
+		Token:  m.podToken(m.identity.PodToken),
+		After:  func(d time.Duration, f func()) func() bool { return m.deps.Clock.AfterFunc(d, f).Stop },
 	})
 	m.registration = &podRegistration{incarnation: loc.Incarnation, session: session, stop: stop}
+}
+
+// latestGeneration is a registration's reader of the claim's current generation: the generation of
+// the claim in the view the last decision published, or the registering process's own generation
+// when that view still predates it (a first write answered inside the decision that launched the
+// process), since the claim is never behind a process it launched. It takes no lock.
+func (m *Machine) latestGeneration(own uint64) func() uint64 {
+	return func() uint64 {
+		return max(m.view.Load().Claim.Generation, own)
+	}
 }
 
 // stopRegistration ends the renewal of the registration the machine keeps, if any, and returns
