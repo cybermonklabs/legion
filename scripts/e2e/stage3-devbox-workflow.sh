@@ -1298,7 +1298,11 @@ restart_scenarios() {
   # deployment's Apps, which are installed on several, so another owner's directory is no failure.
   # The root is read twice, as the pane's own `ls` listed it and as this host holds it, and each
   # reading must hold $owner and nothing that is neither a lowercased GitHub login, which is what
-  # a bundle's directory is named (ghconfig.IsOwner), nor that one file.
+  # a bundle's directory is named (ghconfig.IsOwner), nor that one file. A login is ghconfig's
+  # rule: a letter or digit, then up to 38 letters, digits, hyphens and underscores, since a
+  # managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its directory is a bundle's
+  # like any other; a name with a dot or a slash, one opening with a hyphen or an underscore, or
+  # one past 39 characters is still a stranger.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
   cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
@@ -1309,7 +1313,7 @@ restart_scenarios() {
   session_contains "$restart_issue" implementer "CRED-DIR=$cred_dir" || fail "the implementer's bash printed another GH_CONFIG_DIR than its OMP carries ($cred_dir)"
   cred_listed=$(pane_bundle_listing "$restart_issue") || fail "the implementer's session holds no bash result that lists its gh bundle's root"
   grep -qxF -- "$owner" <<<"$cred_listed" || fail "the implementer pane's ls of its gh bundle's root lacks $owner; it listed: $(tr '\n' ' ' <<<"$cred_listed")"
-  cred_strangers=$(grep -vxF -- renames.txt <<<"$cred_listed" | grep -vxE -- '[a-z0-9][a-z0-9-]*' || true)
+  cred_strangers=$(grep -vxF -- renames.txt <<<"$cred_listed" | grep -vxE -- '[a-z0-9][a-z0-9_-]{0,38}' || true)
   [ -z "$cred_strangers" ] ||
     fail "the implementer pane's ls of its gh bundle's root lists an entry that is neither an owner's directory nor the bundle's renames.txt: $(tr '\n' ' ' <<<"$cred_strangers")"
   for dir in "$cred_root" "$cred_dir"; do
@@ -1322,7 +1326,7 @@ restart_scenarios() {
     case $entry in
       "" | renames.txt) continue ;;
     esac
-    [[ $entry =~ ^[a-z0-9][a-z0-9-]*$ ]] && [ -d "$cred_root/$entry" ] ||
+    [[ $entry =~ ^[a-z0-9][a-z0-9_-]{0,38}$ ]] && [ -d "$cred_root/$entry" ] ||
       fail "$cred_root holds $entry, which is neither an owner's directory nor the bundle's renames.txt; it holds: $(tr '\n' ' ' <<<"$cred_root_entries")"
   done <<<"$cred_root_entries"
   cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)

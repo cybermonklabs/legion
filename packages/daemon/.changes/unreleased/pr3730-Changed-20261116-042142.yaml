@@ -17,7 +17,11 @@ body: |-
   An installation whose GitHub login is no valid directory name is left out of the bundle, with
   a WARN that names it; before, one such login failed every bundle of that App. It still fails
   the bundle when that name is the bundle's default directory or the owner a controller asked
-  for. The daemon reads a suspended installation from the installation's own `suspended_at`, and
+  for. A directory's name now takes every login GitHub serves an account under, a managed
+  user's `_<shortcode>` included, so an issue whose own repository belongs to such an account is
+  launched with that owner's directory and its roles push with that owner's token; before, the
+  bundle of that issue was an error and no role of it started. The daemon also reads a release
+  of its `token_command` that names such an account, where it refused the release before. The daemon reads a suspended installation from the installation's own `suspended_at`, and
   no longer from the words of a 403 to the token request, which is also the status of GitHub's
   secondary rate limit. A suspended installation leaves its owner's directory out of the bundle,
   and a message GitHub rewords can no longer turn it into a failure of every role's bundle.

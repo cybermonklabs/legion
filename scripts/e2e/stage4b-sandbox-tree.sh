@@ -957,7 +957,10 @@ pod_viewer() {
 # lists the kubelet's atomic-writer entries, `..data` and a `..<timestamp>` directory. The owner's
 # directory is required, and so is `..data`, which a subPath mount (which never refreshes) would not
 # have; any other `..`-prefixed entry is the kubelet's, and any other entry must be a lowercased
-# GitHub login; anything else at the root is a stranger, named.
+# GitHub login (ghconfig.IsOwner): a letter or digit, then up to 38 letters, digits, hyphens and
+# underscores, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`) and its
+# directory is a bundle's like any other. Anything else at the root is a stranger, named: a name
+# with a dot or a slash, one opening with a hyphen or an underscore, or one past 39 characters.
 #
 # The root's one file is required too, by its name alone: `renames.txt`, the configured renames
 # the bundle carries (ghconfig.PairsFile), which `legion gh` and `legion git-credential` route a
@@ -986,7 +989,7 @@ assert_gh_files() {
     fail "$3's $gh_owners_dir holds no ..data: it is not the whole-volume projection the kubelet refreshes in place; it holds: $(tr '\n' ' ' <<<"$root")"
   grep -qxF -- "$pairs_file" <<<"$root" ||
     fail "$3's $gh_owners_dir holds no $pairs_file: the bundle's configured renames, which legion gh and legion git-credential route a moved repository by; it holds: $(tr '\n' ' ' <<<"$root")"
-  strangers=$(grep -v '^\.\.' <<<"$root" | grep -vxF -- "$pairs_file" | grep -vxE '[a-z0-9][a-z0-9-]*' || true)
+  strangers=$(grep -v '^\.\.' <<<"$root" | grep -vxF -- "$pairs_file" | grep -vxE '[a-z0-9][a-z0-9_-]{0,38}' || true)
   [ -z "$strangers" ] || fail "$3's $gh_owners_dir holds an entry that is neither an owner's directory, the bundle's $pairs_file, nor the kubelet's: $(tr '\n' ' ' <<<"$strangers")"
   owned=$(pod_exec "$1" "$2" sh -c "ls -A $gh_config_dir") || fail "could not list $3's $gh_config_dir"
   for want in config.yml hosts.yml; do
@@ -2182,12 +2185,15 @@ shape_problems() {
       # the role directory of the roles directory, which only
       # that role namespace binds back at LEGION_GH_OWNERS_DIR; no init container mounts one; the
       # clone helper is legion git-credential; and no process namespace is shared with another pod.
+      # An <owner> is a lowercased login, as the directory of a bundle is (ghconfig.IsOwner), and
+      # the `_<shortcode>` a managed user ends in is part of one, so a key of any other shape is
+      # one this check counts against the projection.
       ($roles[] | . as $role | ([$s.volumes[] | select(.name == "gh-\($role)")] | first) as $v
         | ([$s.volumes[] | select(.name == "launcher-\($role)")] | first | .secret.secretName) as $own
         | if $v == null then "no gh-\($role) volume" else
             (if $v.secret.secretName != $own then "gh-\($role) projects Secret \($v.secret.secretName), not the role Secret \($own) its launcher token comes from" else empty end),
             (($v.secret.items // []) as $items
-              | ([$items[] | .key | capture("^github-hosts-(?<o>[a-z0-9][a-z0-9-]*)$") | .o] | sort) as $owners
+              | ([$items[] | .key | capture("^github-hosts-(?<o>[a-z0-9][a-z0-9_-]{0,38})$") | .o] | sort) as $owners
               | if ($owners | length) == 0 or ($items | length) != 2 * ($owners | length) + 1
                   or ($items | map({(.key): .path}) | add) != (($owners | map({("github-hosts-" + .): (. + "/hosts.yml"), ("github-config-" + .): (. + "/config.yml")}) | add) + {"github-renames": "renames.txt"})
                 then "gh-\($role) projects \($items | tostring), not <owner>/hosts.yml and <owner>/config.yml for each owner beside renames.txt" else empty end),
