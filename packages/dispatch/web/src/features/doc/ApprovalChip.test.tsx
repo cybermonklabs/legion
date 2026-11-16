@@ -2,12 +2,16 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import { ArtifactHeader } from "../artifacts/ArtifactHeader";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { ApprovalChip } from "./ApprovalChip";
 
@@ -468,6 +472,116 @@ test("a review the server records tells the host, once, that the document was re
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(reviewed).toBe(1));
     expect(createArtifactReview).toHaveBeenCalledTimes(1);
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+  }
+});
+
+/** The address of `target`'s own page on its issue. */
+function pathOf(target: Artifact): string {
+  return buildIssuePath({ key: "CORE-1", kind: "artifact", slug: target.slug });
+}
+
+/** The reader going back: the browser's Back button, or anything that calls `navigate(-1)`. */
+function GoBack(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
+/** The header of whichever of `documents` the route names: as on an issue's page, one header is
+ *  drawn for one document after another as the route moves. */
+function HeaderOfRoute({ documents }: { readonly documents: readonly Artifact[] }): ReactNode {
+  const route = parseIssuePath(useLocation().pathname);
+  const shown =
+    route?.kind === "artifact" ? documents.find(({ slug }) => slug === route.slug) : undefined;
+  return shown === undefined ? null : (
+    <ArtifactHeader
+      artifact={shown}
+      highlight={false}
+      showVersionPicker={false}
+      version={undefined}
+    >
+      {null}
+    </ArtifactHeader>
+  );
+}
+
+// A change request belongs to the document it was made on: the dialog holds the reason typed for
+// that document and what became of its request. Here Dispatch refused the request, the dialog
+// said to try again, and the reader went back to another document of the issue with it open. The
+// header there has no dialog open, and a change request there carries the reason typed for that
+// document: the dialog left open would post the first document's reason on this one.
+test("a change request refused on one document posts none of its reason on the document the reader goes back to", async () => {
+  const user = userEvent.setup();
+  const designNotes = artifact({ latest_version: 3, state: "awaiting" });
+  const releaseNotes: Artifact = {
+    ...designNotes,
+    id: "artifact-2",
+    name: "Release notes",
+    ref_key: "CORE-1/release-notes",
+    slug: "release-notes",
+  };
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "not a reviewer of CORE-1" })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={[pathOf(releaseNotes), pathOf(designNotes)]} initialIndex={1}>
+      <QueryClientProvider client={queryClient}>
+        <HeaderOfRoute documents={[designNotes, releaseNotes]} />
+        <GoBack />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByRole("heading", { name: "Design notes" });
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const refused = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(refused).getByLabelText("Reason"));
+    await user.paste("The intro names the wrong service");
+    await user.click(within(refused).getByRole("button", { name: "Request changes" }));
+    expect(await within(refused).findByRole("alert")).toHaveTextContent(
+      "Could not request changes. Try again."
+    );
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Release notes" });
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).toBeNull();
+
+    createArtifactReview.mockResolvedValue({
+      actor: { id: "alice", kind: "user" },
+      artifact_id: "artifact-2",
+      ask_id: null,
+      content_sha256: null,
+      content_sha256_source: null,
+      created_at: "2026-09-11T00:00:00Z",
+      id: "review-1",
+      kind: "person",
+      reason: "The dates are missing",
+      state: "changes_requested",
+      version: 3,
+    });
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    expect(within(dialog).getByLabelText("Reason")).toHaveValue("");
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("The dates are missing");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+
+    await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
+    expect(createArtifactReview).toHaveBeenLastCalledWith(
+      "artifact-2",
+      { reason: "The dates are missing", state: "changes_requested" },
+      keyedAttempt
+    );
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();

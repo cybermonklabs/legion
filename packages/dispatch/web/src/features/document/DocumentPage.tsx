@@ -3,6 +3,7 @@ import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
+import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
@@ -23,36 +24,24 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
-export function DocumentPage(): ReactNode {
-  const location = useLocation();
-  const navigate = useNavigate();
+/**
+ * The document's subscribed agents, with the unsubscribe the reader makes from that list and the
+ * refusal and Retry of that unsubscribe. All of it is the document's alone, and the page stays
+ * mounted as the reader moves to another document - by a link in its text, or by Referenced by -
+ * so the page keys this by the document (`DocumentPage`): each document is drawn with an
+ * unsubscribe of its own, never under another document's refusal with that document's
+ * unsubscribe as its Retry.
+ */
+function DocumentSubscribers({ artifact }: { readonly artifact: Artifact }): ReactNode {
   const queryClient = useQueryClient();
-  const route = parseProjectPath(location.pathname, location.search);
-  const documentRoute = route?.kind === "document" ? route : undefined;
-  const [showDiff, setShowDiff] = useState(false);
-  const [toolbar, setToolbar] = useState<DocumentToolbar | undefined>(undefined);
-  const handleToolbarChange = useCallback((next: DocumentToolbar | undefined) => {
-    setToolbar(next);
-    if (next === undefined) {
-      setShowDiff(false);
-    }
-  }, []);
-  const artifact = useProjectArtifact(documentRoute);
   const subscribers = useQuery({
-    enabled: artifact.data !== undefined,
-    queryKey: ["subscribers", artifact.data?.id],
-    queryFn: () => {
-      if (artifact.data === undefined) {
-        throw new Error("Document subscribers query requires an artifact.");
-      }
-      return api.getArtifactSubscribers(artifact.data.id);
-    },
+    queryKey: ["subscribers", artifact.id],
+    queryFn: () => api.getArtifactSubscribers(artifact.id),
   });
   const agentText = useAgentText();
-  // The press carries the document it unsubscribes from, its id and its name: the page stays
-  // mounted as the reader moves to another document, and the Retry of a stopped unsubscribe, and
-  // the sentence about it, are of the document that press named, not of the one the page shows
-  // by then.
+  // The press carries the document it unsubscribes from, its id and its name: the route takes the
+  // id, and the sentence of a stopped unsubscribe the name, from the press rather than from the
+  // render the write runs under.
   const unsubscribe = useKeyedWrite({
     label: ({ name, sessionId }: { artifactId: string; name: string; sessionId: string }) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${name}`,
@@ -68,6 +57,55 @@ export function DocumentPage(): ReactNode {
     onSuccess: (_result, { artifactId }) =>
       void queryClient.invalidateQueries({ queryKey: ["subscribers", artifactId] }),
   });
+
+  return (
+    <>
+      <SubscribedAgents
+        onUnsubscribe={(sessionId) =>
+          unsubscribe.mutate({ artifactId: artifact.id, name: artifact.name, sessionId })
+        }
+        ownerLabel={`${artifact.project}/${artifact.slug}`}
+        subscribers={subscribers.isError ? [] : (subscribers.data ?? [])}
+      />
+      {subscribers.isError ? (
+        <QueryError
+          error={subscribers.error}
+          message="Subscribed agents unavailable — Envoy listener unreachable."
+          onRetry={() => subscribers.refetch()}
+          retrying={subscribers.isFetching}
+        />
+      ) : null}
+      {unsubscribe.isError ? (
+        <QueryError
+          message={
+            stoppedNote(
+              unsubscribe,
+              `this agent's unsubscribe from “${(unsubscribe.variables ?? artifact).name}”`,
+              "made"
+            ) ?? "Could not unsubscribe this agent."
+          }
+          onRetry={unsubscribe.retry}
+          retrying={unsubscribe.isPending}
+        />
+      ) : null}
+    </>
+  );
+}
+
+export function DocumentPage(): ReactNode {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const route = parseProjectPath(location.pathname, location.search);
+  const documentRoute = route?.kind === "document" ? route : undefined;
+  const [showDiff, setShowDiff] = useState(false);
+  const [toolbar, setToolbar] = useState<DocumentToolbar | undefined>(undefined);
+  const handleToolbarChange = useCallback((next: DocumentToolbar | undefined) => {
+    setToolbar(next);
+    if (next === undefined) {
+      setShowDiff(false);
+    }
+  }, []);
+  const artifact = useProjectArtifact(documentRoute);
   const query = new URLSearchParams(location.search);
   const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
   const project = documentRoute?.project;
@@ -128,38 +166,7 @@ export function DocumentPage(): ReactNode {
         toolbar={artifact.data.kind === "doc" ? toolbar : undefined}
         version={version}
       >
-        <SubscribedAgents
-          onUnsubscribe={(sessionId) =>
-            unsubscribe.mutate({
-              artifactId: owner.artifactId,
-              name: artifact.data.name,
-              sessionId,
-            })
-          }
-          ownerLabel={`${artifact.data.project}/${artifact.data.slug}`}
-          subscribers={subscribers.isError ? [] : (subscribers.data ?? [])}
-        />
-        {subscribers.isError ? (
-          <QueryError
-            error={subscribers.error}
-            message="Subscribed agents unavailable — Envoy listener unreachable."
-            onRetry={() => subscribers.refetch()}
-            retrying={subscribers.isFetching}
-          />
-        ) : null}
-        {unsubscribe.isError ? (
-          <QueryError
-            message={
-              stoppedNote(
-                unsubscribe,
-                `this agent's unsubscribe from “${(unsubscribe.variables ?? artifact.data).name}”`,
-                "made"
-              ) ?? "Could not unsubscribe this agent."
-            }
-            onRetry={unsubscribe.retry}
-            retrying={unsubscribe.isPending}
-          />
-        ) : null}
+        <DocumentSubscribers artifact={artifact.data} key={artifact.data.id} />
         {artifact.data.kind === "doc" ? (
           <ArtifactDocument
             artifact={artifact.data}

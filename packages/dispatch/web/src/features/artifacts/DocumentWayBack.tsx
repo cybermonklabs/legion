@@ -74,6 +74,11 @@ function stoppedCorrection(title: string): string {
  * name is held to, a title the owner already holds, and the owner's own refusals. With a
  * `refusal` - the issue is closed - nothing is corrected, and the button says why, on a hidden
  * line of its own (`RefusableButton`).
+ *
+ * It holds the correction it made - the open form, the title typed into it and what became of
+ * its last Save - so it is drawn for one document alone, and its host keys it by the document
+ * (`ArtifactHeader`), which an issue's page and a project document's page each draw for one
+ * document after another.
  */
 export function CorrectTitle({
   artifact,
@@ -88,20 +93,25 @@ export function CorrectTitle({
   const submitGuard = useSubmitGuard();
   const rename = useKeyedWrite({
     inline: true,
-    label: (name: string) => `Rename ${artifact.name} to ${name}`,
+    // The press carries the document it corrects: the indicator names it, the route takes its
+    // id, and the reads made again are its own, from the press rather than from the render the
+    // write runs under.
+    label: ({ artifact: corrected, name }: { artifact: Artifact; name: string }) =>
+      `Rename ${corrected.name} to ${name}`,
     method: "PATCH",
-    write: (name: string, bounds) => api.renameArtifact(artifact.id, { name }, bounds),
+    write: ({ artifact: corrected, name }, bounds) =>
+      api.renameArtifact(corrected.id, { name }, bounds),
     onSettled: () => submitGuard.release(),
-    onSuccess: () => {
+    onSuccess: (_result, { artifact: corrected }) => {
       setCorrecting(false);
-      refreshArtifact(queryClient, artifact);
+      refreshArtifact(queryClient, corrected);
     },
     // A correction the reader stopped may have landed, and the heading still shows the title the
     // page held before it. Reading the document again is all this does - the write is settled and
     // no attempt of it is left to make - so the heading shows the title Dispatch holds, which is
     // what the form's sentence sends the reader to read.
-    onError: (error) => {
-      if (error instanceof SendStoppedError) refreshArtifact(queryClient, artifact);
+    onError: (error, { artifact: corrected }) => {
+      if (error instanceof SendStoppedError) refreshArtifact(queryClient, corrected);
     },
   });
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -111,14 +121,14 @@ export function CorrectTitle({
       setCorrecting(false);
       return;
     }
-    submitGuard.guard(() => rename.mutate(name));
+    submitGuard.guard(() => rename.mutate({ artifact, name }));
   };
   // The write is `inline`, so the shell lets go of a correction the reader stopped and this form
   // is the only place the reader learns what became of it: it may have been saved, which is no
   // failure to report.
   const problem = rename.isError
     ? rename.error instanceof SendStoppedError
-      ? stoppedCorrection(rename.variables ?? "")
+      ? stoppedCorrection(rename.variables?.name ?? "")
       : apiErrorMessage(rename.error, "Could not correct the title.")
     : undefined;
 
@@ -188,8 +198,14 @@ export function correctionIsOffered(artifact: Artifact): boolean {
  * nothing names, and refuses every other one with a sentence that names the test it failed, which
  * is shown here, where the person pressed.
  *
+ * It holds the removal it made - `Removing…`, a refusal and its Retry - so it is drawn for one
+ * document alone, and each host keys it by the document: the issue's document list keys the row
+ * it sits in (`ArtifactRow`), and the page's header, which the issue's page draws for one
+ * document after another, keys the control itself (`ArtifactHeader`).
+ *
  * `onRemoved` is the host's own way back from the page of a document that has gone, handed the
- * document the removal was of, which by then may not be the one the host shows.
+ * document the removal was of. It is called when the removal lands, by when the reader may have
+ * left that document's page.
  */
 export function RemoveDocument({
   artifact,
@@ -204,8 +220,8 @@ export function RemoveDocument({
   const submitGuard = useSubmitGuard();
   const remove = useKeyedWrite({
     inline: true,
-    // The press is of the document Remove was pressed on: the indicator names it, the route
-    // takes its id, and the Retry removes that document, whichever one the host shows by then.
+    // The press carries the document it removes: the indicator names it, and the route takes its
+    // id from the press rather than from the render the write runs under.
     label: ({ name }: Artifact) => `Remove ${name}`,
     // A removal made again after one that landed finds no document (`404 ARTIFACT_NOT_FOUND`),
     // which is the removal done (`removedEvenIfGone`): it lands as a `204` does (`onSuccess`), and

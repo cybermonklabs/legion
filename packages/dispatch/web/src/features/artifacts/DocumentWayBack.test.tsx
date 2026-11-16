@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { Link, MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -12,7 +12,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
-import { buildIssuePath } from "../refs/routes";
+import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { ArtifactHeader } from "./ArtifactHeader";
 
@@ -58,31 +58,49 @@ function Location(): ReactNode {
   return <output data-testid="location">{`${pathname}${search}`}</output>;
 }
 
+/** The address of `artifact`'s own page on its issue. */
+function pathOf(artifact: Artifact): string {
+  return buildIssuePath({ key: "CORE-1", kind: "artifact", slug: artifact.slug });
+}
+
 /**
- * The document's own page, cut to the header: the artifact it draws comes from the issue's
- * document list read, which is the read the two controls mark stale, so a correction that lands
- * shows its new title here without the page being loaded again.
+ * The document's own page, cut to the header and a link to each of the issue's documents: as on
+ * the issue's page, the header draws the document the route names, and one header is drawn for
+ * one document after another as the route moves. The artifact comes from the issue's document
+ * list read, which is the read the two controls mark stale, so a correction that lands shows its
+ * new title here without the page being loaded again.
  */
 function Page({ isClosed }: { readonly isClosed: boolean }): ReactNode {
+  const { pathname } = useLocation();
+  const route = parseIssuePath(pathname);
   const read = useQuery({
     queryKey: ["artifacts", "CORE-1"],
     queryFn: () => api.listArtifacts("CORE-1"),
   });
-  const artifact = read.data?.at(0);
-  if (artifact === undefined) {
-    return null;
-  }
+  const artifact =
+    route?.kind === "artifact" ? read.data?.find(({ slug }) => slug === route.slug) : undefined;
   return (
-    <ArtifactHeader
-      artifact={artifact}
-      highlight={false}
-      isClosed={isClosed}
-      showVersionPicker={false}
-      toolbar={toolbar()}
-      version={undefined}
-    >
-      {null}
-    </ArtifactHeader>
+    <>
+      <nav>
+        {read.data?.map((each) => (
+          <Link key={each.id} to={pathOf(each)}>
+            {each.name}
+          </Link>
+        ))}
+      </nav>
+      {artifact === undefined ? null : (
+        <ArtifactHeader
+          artifact={artifact}
+          highlight={false}
+          isClosed={isClosed}
+          showVersionPicker={false}
+          toolbar={toolbar()}
+          version={undefined}
+        >
+          {null}
+        </ArtifactHeader>
+      )}
+    </>
   );
 }
 
@@ -410,109 +428,152 @@ test("Remove after a stopped removal that landed takes the not-found as done", a
   }
 });
 
-// The header stays as the reader moves to another document of the issue, and the stopped removal
-// stays with it. Remove is still that removal's Retry, so it removes the document the stopped
-// press was of, and the words beside it name that document, not the one the header draws by then.
-test("Remove after a stopped removal removes that press's document, whichever the header draws", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  let stored: Artifact[] = [document()];
+/** A second document of the issue, which the reader moves to from the first. */
+const releaseNotes = document({
+  id: "artifact-2",
+  name: "Release notes",
+  ref_key: "CORE-1/release-notes",
+  slug: "release-notes",
+});
+
+// One header is drawn for one document after another as the route moves, and a refusal belongs
+// to the document whose removal it refused. The reader who moves on from that document is shown
+// none of it, and Remove there removes the document now shown: a Retry of the refused removal
+// would ask for it again, refused the same way each time, and this document could not be removed.
+test("after a refused removal, the next document's page shows no refusal and its Remove removes it", async () => {
+  const user = userEvent.setup();
+  let stored: Artifact[] = [document(), releaseNotes];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
   const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
-    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+    new ApiError(409, {
+      code: "ARTIFACT_NOT_UNTOUCHED",
+      error:
+        "Lauch notes is not untouched: it holds writing; a document is removed only while it holds nothing",
+    })
   );
+  const view = renderPage(documentPath);
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Lauch notes is not untouched");
+
+    await user.click(screen.getByRole("link", { name: "Release notes" }));
+    await screen.findByRole("heading", { name: "Release notes" });
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    deleteArtifact.mockImplementation(() => {
+      stored = [document()];
+      return Promise.resolve();
+    });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(deleteArtifact).toHaveBeenCalledTimes(2));
+    expect(deleteArtifact).toHaveBeenLastCalledWith("artifact-2", keyedAttempt);
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A removal lands when Dispatch answers it, by when the reader may have moved to another
+// document. The way back to the gone document's address is for a reader still on its page: one
+// who moved on stays on the page they moved to, which is still there.
+test("a removal that lands after the reader moved to another document leaves them on that one", async () => {
+  const user = userEvent.setup();
+  let stored: Artifact[] = [document(), releaseNotes];
+  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
+    Promise.resolve(stored)
+  );
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(async () => {
+    await landed;
+    stored = [releaseNotes];
+  });
+  const view = renderPage(documentPath);
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(deleteArtifact).toHaveBeenCalledWith("artifact-1", keyedAttempt));
+
+    await user.click(screen.getByRole("link", { name: "Release notes" }));
+    await screen.findByRole("heading", { name: "Release notes" });
+    await act(async () => land());
+    await waitFor(() => expect(view.queryClient.isMutating()).toBe(0));
+
+    expect(screen.getByTestId("location").textContent).toBe(pathOf(releaseNotes));
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    deleteArtifact.mockRestore();
+  }
+});
+
+// A correction belongs to the document it was made on, as a removal does: the open form, the
+// title typed into it and what became of its Save. Here Dispatch had not answered it when the
+// reader stopped it. The reader who moves on to the next document is shown none of it, and Save
+// there corrects the document now shown, to the title typed for it: the form left open would
+// rename this document to the other's title, the heading under it already this one's.
+test("after a stopped correction, the next document's page shows none of it and Save renames that document", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  let stored: Artifact[] = [document(), releaseNotes];
+  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
+    Promise.resolve(stored)
+  );
+  let answering = false;
+  const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((id, input) => {
+    if (!answering) {
+      return Promise.reject(
+        new NetworkError(`/api/v1/artifacts/${id}`, new TypeError("Failed to fetch"))
+      );
+    }
+    stored = stored.map((each) => (each.id === id ? { ...each, name: input.name } : each));
+    return Promise.resolve(stored.find((each) => each.id === id) ?? releaseNotes);
+  });
   const view = renderPage(documentPath);
   view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
   try {
     await screen.findByRole("heading", { name: "Lauch notes" });
-    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await user.click(screen.getByRole("button", { name: "Correct title" }));
+    await saveTitle(user, "Launch notes");
     await stopTheLateWrite(view.queryClient);
-    const stoppedKey = deleteArtifact.mock.calls[0]?.[1]?.key;
-    const stopped = deleteArtifact.mock.calls.length;
-
-    // The issue's list now leads with another document, which the header draws in its place.
-    stored = [
-      document({
-        id: "artifact-2",
-        name: "Release notes",
-        ref_key: "CORE-1/release-notes",
-        slug: "release-notes",
-      }),
-      document(),
-    ];
-    await act(() => view.queryClient.invalidateQueries({ queryKey: ["artifacts", "CORE-1"] }));
-    await screen.findByRole("heading", { name: "Release notes" });
-    const shown = screen.getByRole("alert").textContent;
-
-    deleteArtifact.mockResolvedValue(undefined);
-    await user.click(screen.getByRole("button", { name: "Remove" }));
-    await tick(1_000);
-
-    expect(deleteArtifact).toHaveBeenCalledTimes(stopped + 1);
-    const again = deleteArtifact.mock.calls.at(-1);
-    expect(again?.[0]).toBe("artifact-1");
-    expect(again?.[1]?.key).toBe(stoppedKey);
-    expect(shown).toBe(
-      stoppedWriteNote("the removal of “Lauch notes”", "made", {
-        again: "Remove",
-        method: "DELETE",
-        stopped: new SendStoppedError(),
-      })
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Dispatch has not confirmed the title “Launch notes”"
     );
-  } finally {
-    view.unmount();
-    listArtifacts.mockRestore();
-    deleteArtifact.mockRestore();
-    realClock();
-  }
-});
 
-// The way back a removal takes is the removed document's own address, as the plain removal's is
-// (above): the header may draw another document by the time a stopped removal's Retry lands, and
-// that document is still there.
-test("a stopped removal that lands after the header moved on goes to the removed document's address", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  let stored: Artifact[] = [document()];
-  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
-    Promise.resolve(stored)
-  );
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockRejectedValue(
-    new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
-  );
-  const view = renderPage(`${documentPath}?v=1`);
-  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-
-  try {
-    await screen.findByRole("heading", { name: "Lauch notes" });
-    await user.click(screen.getByRole("button", { name: "Remove" }));
-    await stopTheLateWrite(view.queryClient);
-
-    const release = document({
-      id: "artifact-2",
-      name: "Release notes",
-      ref_key: "CORE-1/release-notes",
-      slug: "release-notes",
-    });
-    stored = [release, document()];
-    await act(() => view.queryClient.invalidateQueries({ queryKey: ["artifacts", "CORE-1"] }));
+    await user.click(screen.getByRole("link", { name: "Release notes" }));
     await screen.findByRole("heading", { name: "Release notes" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("form", { name: "Correct title" })).toBeNull();
 
-    deleteArtifact.mockImplementation(() => {
-      stored = [release];
-      return Promise.resolve();
-    });
-    await user.click(screen.getByRole("button", { name: "Remove" }));
+    answering = true;
+    await user.click(screen.getByRole("button", { name: "Correct title" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Release notes");
+    await saveTitle(user, "Release plan");
     await tick(1_000);
 
-    expect(screen.getByTestId("location").textContent).toBe(documentPath);
+    expect(renameArtifact).toHaveBeenLastCalledWith(
+      "artifact-2",
+      { name: "Release plan" },
+      keyedAttempt
+    );
+    expect(renameArtifact).not.toHaveBeenCalledWith(
+      "artifact-2",
+      { name: "Launch notes" },
+      keyedAttempt
+    );
+    expect(screen.getByRole("heading", { name: "Release plan" })).not.toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
-    deleteArtifact.mockRestore();
+    renameArtifact.mockRestore();
     realClock();
   }
 });

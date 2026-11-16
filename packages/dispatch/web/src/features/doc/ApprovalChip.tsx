@@ -242,10 +242,19 @@ export interface ApprovalChipProps {
   onReviewed?(): void;
 }
 
+/** A review the chip makes: the document it is of, and what it says of that document. */
+interface DocumentReview {
+  readonly artifact: Artifact;
+  readonly input: CreateArtifactReviewInput;
+}
+
 /**
  * The document approval indicator: a small badge summarizing `artifact.approval`, clickable to
  * open a popover of every human review (`ArtifactReview`). On the document header only, it also
  * carries the Approve / Request changes actions that write a new review.
+ *
+ * It holds the review it made and the change-request dialog, with the reason typed into it, so a
+ * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
  */
 export function ApprovalChip({
   artifact,
@@ -261,29 +270,33 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
 
   const review = useKeyedWrite({
-    label: (input: CreateArtifactReviewInput) =>
-      `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
+    // The press carries the document it reviews: the indicator names it, the route takes its id,
+    // and the reads made again are its own, from the press rather than from the render the write
+    // runs under.
+    label: ({ artifact: reviewed, input }: DocumentReview) =>
+      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
     onSettled: () => submitGuard.release(),
     method: "POST",
-    write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
-    onSuccess: () => {
+    write: ({ artifact: reviewed, input }, bounds) =>
+      api.createArtifactReview(reviewed.id, input, bounds),
+    onSuccess: (_result, { artifact: reviewed }) => {
       setRequestChangesOpen(false);
       onReviewed?.();
-      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] });
-      void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
+      void queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] });
+      void queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] });
       void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
-      if (artifact.issue_key === null) {
+      if (reviewed.issue_key === null) {
         void queryClient.invalidateQueries({
-          queryKey: ["project", artifact.project, "artifacts"],
+          queryKey: ["project", reviewed.project, "artifacts"],
         });
         void queryClient.invalidateQueries({
-          queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+          queryKey: ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
         });
         return;
       }
-      void queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] });
-      void queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] });
+      void queryClient.invalidateQueries({ queryKey: ["issue", reviewed.issue_key] });
+      void queryClient.invalidateQueries({ queryKey: ["artifacts", reviewed.issue_key] });
+      void queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] });
     },
   });
 
@@ -319,7 +332,9 @@ export function ApprovalChip({
             <button
               className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}`}
               disabled={review.isPending}
-              onClick={() => submitGuard.guard(() => review.mutate({ state: "approved" }))}
+              onClick={() =>
+                submitGuard.guard(() => review.mutate({ artifact, input: { state: "approved" } }))
+              }
               type="button"
             >
               {approveLabel}
@@ -346,7 +361,9 @@ export function ApprovalChip({
             setRequestChangesOpen(false);
           }}
           onSubmit={(reason) =>
-            submitGuard.guard(() => review.mutate({ reason, state: "changes_requested" }))
+            submitGuard.guard(() =>
+              review.mutate({ artifact, input: { reason, state: "changes_requested" } })
+            )
           }
           saving={review.isPending}
         />
