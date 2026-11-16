@@ -600,48 +600,57 @@ func podTree(t *testing.T) (*guardPod, *podClassifier) {
 // Pi's helpers but its eval kernel, and a Claude Code role's claude and MCP server. It spares
 // neither the commands the agents started, a Python kernel or a JavaScript eval kernel, nor a
 // program that copies the name of an agent's own process, or a test database's, at a place in
-// the tree that process does not hold.
+// the tree that process does not hold. It marks as a session process, whose end ends its role's
+// session, each role's role-init, its shim and every direct child of the shim: Oh My Pi, the
+// Claude Code bridge, and the secrets renewer, which no place in the tree tells from the agent. It
+// marks no other process: no Oh My Pi helper or eval kernel, no Python kernel, nothing under the
+// bridge, no command or what a command runs, no orphan the role-init adopted, and none of the
+// launcher's own processes or the test database's.
 func TestMemoryGuardSparesTheLaunchersAndTheAgentsOwnProcessesByTheirPlaceInTheTree(t *testing.T) {
 	pod, classifier := podTree(t)
 	classes := classifier.classify(scanTable(t, pod))
 	for _, tc := range []struct {
 		pid       int
 		protected bool
+		session   bool
 		what      string
 	}{
-		{os.Getpid(), true, "the launcher"},
-		{treeHeldScript, true, "the test database's script, which the launcher holds"},
-		{treeHeldChild, true, "a child of the script the launcher holds"},
-		{treePostmaster, true, "the test database's postmaster"},
-		{treeBackend, true, "a backend of the test database"},
-		{treeOtherPostgres, false, "a postgres of the launcher's outside the test database's directory"},
-		{treeExecShell, false, "a shell a kubectl exec started"},
-		{treeExecChild, false, "what that shell ran"},
-		{treeTesterInit, true, "the Oh My Pi role's role-init"},
-		{treeTesterShim, true, "the Oh My Pi role's shim"},
-		{treeTesterOmp, true, "Oh My Pi, the shim's child"},
-		{treeTesterRenewer, true, "the secrets renewer, the shim's child"},
-		{treeTesterHelper, true, "an Oh My Pi helper"},
-		{treeTesterEval, false, "Oh My Pi's JavaScript eval kernel"},
-		{treeTesterKernel, false, "a Python kernel"},
-		{treeTesterCommand, false, "a command Oh My Pi started"},
-		{treeTesterTest, false, "what that command ran"},
-		{treeTesterFakeOmp, false, "an omp helper's name under the agent's command"},
-		{treeTesterFakeShim, false, "a worker-shim under the agent's command"},
-		{treeTesterOrphanShim, false, "a worker-shim the role-init adopted after its shim"},
-		{treeTesterSandbox, false, "a sandbox in a PID namespace of its own"},
-		{treeTesterReparented, false, "a role's process reparented out of its role-init's subtree"},
-		{treeTesterPostgres, false, "a postgres the agent started in the test database's directory"},
-		{treeReviewerInit, true, "the Claude Code role's role-init"},
-		{treeReviewerShim, true, "the Claude Code role's shim"},
-		{treeReviewerBridge, true, "the Claude Code bridge, the shim's child"},
-		{treeReviewerClaude, true, "claude, the bridge's child"},
-		{treeReviewerMCP, true, "claude's MCP server"},
-		{treeReviewerCommand, false, "a command claude started"},
-		{treeReviewerFakeMCP, false, "an MCP server's arguments under claude's command"},
+		{os.Getpid(), true, false, "the launcher"},
+		{treeHeldScript, true, false, "the test database's script, which the launcher holds"},
+		{treeHeldChild, true, false, "a child of the script the launcher holds"},
+		{treePostmaster, true, false, "the test database's postmaster"},
+		{treeBackend, true, false, "a backend of the test database"},
+		{treeOtherPostgres, false, false, "a postgres of the launcher's outside the test database's directory"},
+		{treeExecShell, false, false, "a shell a kubectl exec started"},
+		{treeExecChild, false, false, "what that shell ran"},
+		{treeTesterInit, true, true, "the Oh My Pi role's role-init"},
+		{treeTesterShim, true, true, "the Oh My Pi role's shim"},
+		{treeTesterOmp, true, true, "Oh My Pi, the shim's child"},
+		{treeTesterRenewer, true, true, "the secrets renewer, the shim's child, which no place in the tree tells from the agent"},
+		{treeTesterHelper, true, false, "an Oh My Pi helper"},
+		{treeTesterEval, false, false, "Oh My Pi's JavaScript eval kernel"},
+		{treeTesterKernel, false, false, "a Python kernel"},
+		{treeTesterCommand, false, false, "a command Oh My Pi started"},
+		{treeTesterTest, false, false, "what that command ran"},
+		{treeTesterFakeOmp, false, false, "an omp helper's name under the agent's command"},
+		{treeTesterFakeShim, false, false, "a worker-shim under the agent's command"},
+		{treeTesterOrphanShim, false, false, "a worker-shim the role-init adopted after its shim"},
+		{treeTesterSandbox, false, false, "a sandbox in a PID namespace of its own"},
+		{treeTesterReparented, false, false, "a role's process reparented out of its role-init's subtree"},
+		{treeTesterPostgres, false, false, "a postgres the agent started in the test database's directory"},
+		{treeReviewerInit, true, true, "the Claude Code role's role-init"},
+		{treeReviewerShim, true, true, "the Claude Code role's shim"},
+		{treeReviewerBridge, true, true, "the Claude Code bridge, the shim's child"},
+		{treeReviewerClaude, true, false, "claude, the bridge's child"},
+		{treeReviewerMCP, true, false, "claude's MCP server"},
+		{treeReviewerCommand, false, false, "a command claude started"},
+		{treeReviewerFakeMCP, false, false, "an MCP server's arguments under claude's command"},
 	} {
 		if got := classes[tc.pid].Protected; got != tc.protected {
 			t.Errorf("%s (pid %d): protected = %v, want %v", tc.what, tc.pid, got, tc.protected)
+		}
+		if got := classes[tc.pid].Session; got != tc.session {
+			t.Errorf("%s (pid %d): session = %v, want %v", tc.what, tc.pid, got, tc.session)
 		}
 	}
 }
@@ -724,52 +733,6 @@ func TestMemoryGuardGivesEachProcessItsRoleByAncestorThenByNamespace(t *testing.
 	} {
 		if got := classes[tc.pid].Role; got != tc.role {
 			t.Errorf("%s (pid %d): role = %q, want %q", tc.what, tc.pid, got, tc.role)
-		}
-	}
-}
-
-// The classifier marks as a session process, whose end ends its role's session, each role's
-// role-init, its shim and every direct child of the shim: Oh My Pi, the Claude Code bridge, and
-// the secrets renewer, which no place in the tree tells from the agent. It marks no Oh My Pi
-// helper or eval kernel, no Python kernel, nothing under the bridge, no command or what a command
-// runs, no orphan the role-init adopted, and none of the launcher's own processes or the test
-// database's.
-func TestMemoryGuardMarksEachRolesInitShimAndTheShimsChildrenAsItsSession(t *testing.T) {
-	pod, classifier := podTree(t)
-	classes := classifier.classify(scanTable(t, pod))
-	for _, tc := range []struct {
-		pid     int
-		session bool
-		what    string
-	}{
-		{os.Getpid(), false, "the launcher"},
-		{treeHeldScript, false, "the test database's script, which the launcher holds"},
-		{treeHeldChild, false, "a child of the script the launcher holds"},
-		{treePostmaster, false, "the test database's postmaster"},
-		{treeBackend, false, "a backend of the test database"},
-		{treeExecShell, false, "a shell a kubectl exec started"},
-		{treeTesterInit, true, "the Oh My Pi role's role-init"},
-		{treeTesterShim, true, "the Oh My Pi role's shim"},
-		{treeTesterOmp, true, "Oh My Pi, the shim's child"},
-		{treeTesterRenewer, true, "the secrets renewer, the shim's child, which no place in the tree tells from the agent"},
-		{treeTesterHelper, false, "an Oh My Pi helper"},
-		{treeTesterEval, false, "Oh My Pi's JavaScript eval kernel"},
-		{treeTesterKernel, false, "a Python kernel"},
-		{treeTesterCommand, false, "a command Oh My Pi started"},
-		{treeTesterTest, false, "what that command ran"},
-		{treeTesterFakeShim, false, "a worker-shim under the agent's command"},
-		{treeTesterOrphanShim, false, "a worker-shim the role-init adopted after its shim"},
-		{treeTesterReparented, false, "a role's process reparented out of its role-init's subtree"},
-		{treeTesterPostgres, false, "a postgres the agent started in the test database's directory"},
-		{treeReviewerInit, true, "the Claude Code role's role-init"},
-		{treeReviewerShim, true, "the Claude Code role's shim"},
-		{treeReviewerBridge, true, "the Claude Code bridge, the shim's child"},
-		{treeReviewerClaude, false, "claude, the bridge's child"},
-		{treeReviewerMCP, false, "claude's MCP server"},
-		{treeReviewerCommand, false, "a command claude started"},
-	} {
-		if got := classes[tc.pid].Session; got != tc.session {
-			t.Errorf("%s (pid %d): session = %v, want %v", tc.what, tc.pid, got, tc.session)
 		}
 	}
 }

@@ -170,8 +170,8 @@ const (
 // It marks as a session process (memoryguard.Class.Session), whose end ends its role's session,
 // each role-init, its shim, and every direct child of the shim: the agent (a Claude Code role's
 // bridge), and the shim's other children, which no place in the tree tells from it (the secrets
-// renewer, the working copy's adoption, the CodeGraph warm-up). That superset of the agent costs at
-// most a kill left unnamed, never a wrong name (memoryguard.Guest). Nothing below the agent is
+// renewer, the working copy's adoption, the CodeGraph warm-up). That superset of the agent costs
+// only kills left unnamed, never a wrong name (memoryguard.Guest). Nothing below the agent is
 // one: an Oh My Pi helper can end alone.
 //
 // It keeps nothing a scan changes: each role-init is read under its manager's lock and the

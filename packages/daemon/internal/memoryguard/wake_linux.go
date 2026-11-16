@@ -15,23 +15,24 @@ import (
 // its counters changes. Its channel takes one value for each read of the events the kernel queued
 // and holds one value at most, so the events that come while a value waits add none: the file,
 // read after a value is taken, holds every change whose event came before it, and a change after
-// that has a value of its own. stop ends the watch. The channel closes when the watch ends: after
-// stop, at a read that fails, or once the kernel drops the watch because the file went away
-// (IN_IGNORED).
+// that has a value of its own. stop ends the watch. The channel closes when the watch ends, and
+// the watch's err says why: the error of a read that failed, the closed file's after stop, or
+// errWatchIgnored once the kernel drops the watch because the file went away (IN_IGNORED).
 //
 // The inotify descriptor is non-blocking and held by an os.File, so its reader waits in Go's
 // poller, and stop, which closes the file, ends that wait.
-func watchModified(path string) (<-chan struct{}, func(), error) {
+func watchModified(path string) (*fileWatch, error) {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
-		return nil, nil, os.NewSyscallError("inotify_init1", err)
+		return nil, os.NewSyscallError("inotify_init1", err)
 	}
 	if _, err := unix.InotifyAddWatch(fd, path, unix.IN_MODIFY); err != nil {
 		_ = unix.Close(fd)
-		return nil, nil, fmt.Errorf("inotify_add_watch %s: %w", path, err)
+		return nil, fmt.Errorf("inotify_add_watch %s: %w", path, err)
 	}
 	file := os.NewFile(uintptr(fd), "inotify "+path)
 	modified := make(chan struct{}, 1)
+	w := &fileWatch{modified: modified, stop: func() { _ = file.Close() }}
 	go func() {
 		defer close(modified)
 		// One buffer for every read: room for many events, each of which is at most
@@ -40,6 +41,7 @@ func watchModified(path string) (<-chan struct{}, func(), error) {
 		for {
 			n, err := file.Read(buf)
 			if err != nil {
+				w.err = err
 				return
 			}
 			select {
@@ -47,11 +49,12 @@ func watchModified(path string) (<-chan struct{}, func(), error) {
 			default:
 			}
 			if watchIgnored(buf[:n]) {
+				w.err = errWatchIgnored
 				return
 			}
 		}
 	}()
-	return modified, func() { _ = file.Close() }, nil
+	return w, nil
 }
 
 // watchIgnored is whether the events a read of an inotify descriptor took hold IN_IGNORED, the
