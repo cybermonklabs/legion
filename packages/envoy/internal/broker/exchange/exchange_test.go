@@ -300,9 +300,9 @@ func TestNewSetTakesAManagedUsersRepository(t *testing.T) {
 		t.Fatalf("NewSet(a workflow of %s): %v", managed, err)
 	}
 	run := managed + "/" + workflow + "@" + ref
-	claims, err := set.Workflow(workflowToken(managed, run, run, ref), "release-bot")
-	if err != nil || claims.Project != project || claims.Person != person {
-		t.Errorf("Workflow(a run of %s) = %+v, %v; want project %s for %s", managed, claims, err, project, person)
+	claims, err := set.Workflow(workflowToken(managed, run, run, ref), "release-bot", nil)
+	if err != nil || !slices.Equal(claims.Projects, []string{project}) || claims.Person != person {
+		t.Errorf("Workflow(a run of %s) = %+v, %v; want the projects [%s] for %s", managed, claims, err, project, person)
 	}
 }
 
