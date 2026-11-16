@@ -107,20 +107,23 @@ type KeptRoleCursor struct {
 	Kept     uint64 `json:"kept"`
 	Claiming uint64 `json:"claiming"`
 	// DeadLetter names why the claim is a walk's claim of a copy it is ending with a dead letter
-	// to that copy's sender, rather than a forward's. It is one of three values:
-	// "delivery_mode" for a copy the role's live holder does not take for its delivery mode;
-	// "expired" for a copy whose hour ended; and "expired_unconfirmed" for a copy whose hour
-	// ended after a walk had claimed it to forward it and no walk confirmed that forward, so the
-	// copy may have reached the holder. The listener writes and reads them in one place each
+	// to that copy's sender, rather than a forward's. It is one of four values, a reason with or
+	// without one qualifier: "delivery_mode" for a copy the role's live holder does not take for
+	// its delivery mode, and "expired" for a copy whose hour ended; "delivery_mode_unconfirmed"
+	// and "expired_unconfirmed" for the same two drops of a copy that a walk had claimed to
+	// forward and whose forward no walk confirmed, so the copy may have reached the session that
+	// held the role then. The listener writes and reads them in one place each
 	// (cmd/listener/role_keep.go: keptRoleDrop.claimReason, keptCopyClaimOf). A walk that takes
 	// such a claim over once it is no longer outstanding sends that dead letter again under the
 	// same message id, for the reason and with the qualifier named here, whatever the copy's age
-	// and whoever holds the role, where it judges a forward's claimed copy as any copy. The reason
-	// is written into the claim because nothing else the walk that takes it over reads can tell
-	// it: the copy's age is measured on that walk's own clock, the holder that refused the copy's
-	// mode may hold the role no longer, and the forward's claim that showed the copy may have
-	// reached the holder is replaced by the dead letter's. Both expired values send the dead
-	// letter whose own reason is "expired"; only the claim tells the two apart.
+	// and whoever holds the role, where it judges a forward's claimed copy as any copy and writes
+	// the qualifier into the claim of a dead letter that copy turns out to be owed. Both are
+	// written into the claim because nothing else the walk that takes it over reads can tell
+	// them: the copy's age is measured on that walk's own clock, the holder that refused the
+	// copy's mode may hold the role no longer, and the forward's claim that showed the copy may
+	// have reached the holder is replaced by the dead letter's. The two values of one reason
+	// send the dead letter whose own reason is that reason, "expired" or "delivery_mode"; only
+	// the claim tells the two apart.
 	//
 	// An empty value is a forward's claim where Claiming names a copy, and no claim at all where
 	// it is 0, and it is left out of the body then, so those bodies are written exactly as before

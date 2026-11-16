@@ -94,10 +94,10 @@ const (
 // deadLetterReason is why a walk drops a copy with a dead letter, as the dead letter's lines name
 // it (keptRoleDrop.reason): the copy's hour ended, or the role's live holder does not take the
 // copy's delivery mode. The walk writes it into its claim of the copy as well, with the qualifier
-// of an expired copy whose forward may have reached the holder (keptRoleDrop.claimReason,
-// bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter), so the walk that takes that claim
-// over sends the dead letter again for the same reason and with the same qualifier
-// (keptCopyClaimOf).
+// of a copy whose forward a walk claimed and no walk confirmed (unconfirmedClaimSuffix,
+// keptRoleDrop.claimReason, bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter), so the
+// walk that takes that claim over sends the dead letter again for the same reason and with the
+// same qualifier (keptCopyClaimOf).
 type deadLetterReason string
 
 const (
@@ -105,14 +105,16 @@ const (
 	deadLetterDeliveryMode deadLetterReason = "delivery_mode"
 )
 
-// expiredUnconfirmedClaim is the reason a walk writes into its claim of an expired copy that a walk
-// before it claimed to forward and whose forward no walk confirmed (keptRoleDrop.forwarded), in
-// place of deadLetterExpired. The claim carries that qualifier because the walk that takes the
-// claim over reads the claim and nothing else, and its dead letter must still say that the message
-// may have reached the holder: the forward's claim that said so is overwritten by this one. It is a
-// value of the claim alone: the dead letter's own reason, its line and its label stay
-// deadLetterExpired.
-const expiredUnconfirmedClaim = "expired_unconfirmed"
+// unconfirmedClaimSuffix is what a walk adds to the reason it writes into its claim of a copy it
+// ends with a dead letter, whichever reason that is, when a walk before it claimed the copy to
+// forward it and no walk confirmed that forward (keptRoleDrop.forwarded, keptRoleDrop.claimReason):
+// the claim then reads expired_unconfirmed or delivery_mode_unconfirmed. The claim carries that
+// qualifier because the walk that takes the claim over reads the claim and nothing else
+// (keptCopyClaimOf), and its dead letter must still say that the message may have reached the
+// session that held the role then: the forward's claim that said so is overwritten by this one.
+// It is a part of the claim alone: the dead letter's own reason, its line and its label stay
+// deadLetterExpired or deadLetterDeliveryMode.
+const unconfirmedClaimSuffix = "_unconfirmed"
 
 // The walk's lines for a copy it drops: the drop itself, which keeps the text a production check
 // and the tests read, and the two outcomes of the copy's dead letter.
@@ -1088,9 +1090,12 @@ func readKeptLaneHead(ctx context.Context, client *bus.Client, role string) (kep
 // again under the same message id for the reason the claim names - the copy's hour ended, or the
 // holder did not take its delivery mode - whatever the copy's age and whoever holds the role, and
 // a forward's claim on a copy whose hour ended is owed a dead letter however old the copy is,
-// since that forward may have reached the holder before the hour ended. The claim of that dead
-// letter says so as well (keptRoleDrop.claimReason), so every walk that takes it over after this
-// one sends the dead letter that says the message may have reached the holder.
+// since that forward may have reached the holder before the hour ended. Where a copy under a
+// forward's claim is dropped with a dead letter, at the end of its hour or inside it because the
+// role's live holder does not take its delivery mode, the dead letter says that the message may
+// have reached the session that held the role then. The claim of that dead letter says so as
+// well, whichever reason it names (keptRoleDrop.claimReason), so every walk that takes it over
+// after this one sends the dead letter that says so too.
 //
 // The last write of those three is a confirm (roleKeepLaneCursor.confirm), whether the copy was
 // forwarded or ended with a dead letter. A confirm the stream stored with its answer lost is read
@@ -1323,12 +1328,28 @@ func keptCopyKeptBy(item contracts.Envelope) string {
 
 // keptCopyClaim is the claim a walk takes over on a copy it reads: the claim its lane-head read
 // found on the role's cursor no longer outstanding (bus.KeptRoleCursor.ClaimOutstanding), which
-// names the first copy after the cursor's kept, since a walk claims only that copy.
-type keptCopyClaim uint8
+// names the first copy after the cursor's kept, since a walk claims only that copy. It holds the
+// two things a claim says, which keptCopyClaimOf reads from the cursor together: what the walk
+// that made it claimed the copy for (kind), and the qualifier a dead letter's claim carries
+// (unconfirmed). judgeKeptRoleCopy takes the whole of it, so no drop it builds under a claim loses
+// the qualifier that claim carried (forwardUnconfirmed).
+type keptCopyClaim struct {
+	// kind is what the walk that made the claim claimed the copy for, keptCopyUnclaimed where no
+	// walk's claim names the copy.
+	kind keptCopyClaimKind
+	// unconfirmed is the qualifier of a dead letter's claim, whichever reason the claim names
+	// (unconfirmedClaimSuffix): a walk had claimed the copy to forward it before the dead
+	// letter's claim replaced that claim, and no walk confirmed the forward. No claim of another
+	// kind sets it.
+	unconfirmed bool
+}
+
+// keptCopyClaimKind is what the walk that made a claim claimed the copy for.
+type keptCopyClaimKind uint8
 
 const (
 	// keptCopyUnclaimed: no walk's claim names the copy.
-	keptCopyUnclaimed keptCopyClaim = iota
+	keptCopyUnclaimed keptCopyClaimKind = iota
 	// keptCopyForwardClaimed: a walk claimed the copy to forward it, and no walk confirmed the
 	// forward.
 	keptCopyForwardClaimed
@@ -1338,38 +1359,47 @@ const (
 	// keptCopyExpiryClaimed: a walk claimed the copy to end it with a dead letter because its
 	// hour ended, and no walk confirmed the dead letter.
 	keptCopyExpiryClaimed
-	// keptCopyUnconfirmedExpiryClaimed: an expiry claim of a copy that a walk claimed to forward
-	// before its hour ended and whose forward no walk confirmed, so the copy may have reached the
-	// holder (keptRoleDrop.forwarded), and no walk confirmed the dead letter.
-	keptCopyUnconfirmedExpiryClaimed
 )
 
+// forwardUnconfirmed reports whether a walk claimed the copy to forward it and no walk confirmed
+// that forward, so the stream may hold the forward and the copy may have reached the session that
+// held the role then: c is a forward's claim, or a dead letter's claim that carries the qualifier
+// a walk wrote when it took such a claim over. It is the one rule keptRoleDrop.forwarded is set
+// by, for a drop of either reason (judgeKeptRoleCopy).
+func (c keptCopyClaim) forwardUnconfirmed() bool {
+	return c.kind == keptCopyForwardClaimed || c.unconfirmed
+}
+
 // keptCopyClaimOf is the claim cursor, the cursor a walk started from, holds on the copy stored at
-// seq. A dead letter's claim names the reason the walk that made it ended the copy for, and for an
-// expired copy whether its forward may have reached the holder (bus.KeptRoleCursor.DeadLetter,
-// which endKeptCopyWithDeadLetter writes as keptRoleDrop.claimReason makes it), so the walk that
-// takes it over sends the dead letter again for that reason and with that qualifier:
-// deadLetterDeliveryMode is a mode claim, expiredUnconfirmedClaim an unconfirmed expiry claim, and
-// every other reason an expiry claim, deadLetterExpired being the only other one a walk writes.
-// This is the one place a claim's reason is read back, as claimReason is the one place a drop is
-// written into a claim, and judgeKeptRoleCopy builds the drop again from the claim this returns.
-// The reason is read from the claim and from nothing else: the copy's age on the clock of the walk
-// taking the claim over need not be what it was on the clock of the walk that made it, the holder
-// that refused the copy's mode may no longer hold the role, and the forward's claim that showed
-// the copy may have reached the holder is gone from the cursor once a dead letter's claim
-// replaced it.
+// seq. A dead letter's claim names the reason the walk that made it ended the copy for, and
+// whether the copy's forward may have reached the holder (bus.KeptRoleCursor.DeadLetter, which
+// endKeptCopyWithDeadLetter writes as keptRoleDrop.claimReason makes it), so the walk that takes
+// it over sends the dead letter again for that reason and with that qualifier. Both are read
+// here: the value with unconfirmedClaimSuffix cut from its end is the reason,
+// deadLetterDeliveryMode for a mode claim and deadLetterExpired for an expiry claim, and the
+// suffix is the qualifier of either. A value that names neither reason is an expiry claim with no
+// qualifier, whatever its end; no walk writes one. This is the one place a claim is read back, as
+// claimReason is the one place a drop is written into a claim, and judgeKeptRoleCopy builds the
+// drop again from the claim this returns. Both are read from the claim and from nothing else: the
+// copy's age on the clock of the walk taking the claim over need not be what it was on the clock
+// of the walk that made it, the holder that refused the copy's mode may no longer hold the role,
+// and the forward's claim that showed the copy may have reached the holder is gone from the
+// cursor once a dead letter's claim replaced it.
 func keptCopyClaimOf(cursor bus.KeptRoleCursor, seq uint64) keptCopyClaim {
 	switch {
 	case cursor.Claiming != seq:
-		return keptCopyUnclaimed
+		return keptCopyClaim{kind: keptCopyUnclaimed}
 	case cursor.DeadLetter == "":
-		return keptCopyForwardClaimed
-	case cursor.DeadLetter == string(deadLetterDeliveryMode):
-		return keptCopyModeClaimed
-	case cursor.DeadLetter == expiredUnconfirmedClaim:
-		return keptCopyUnconfirmedExpiryClaimed
+		return keptCopyClaim{kind: keptCopyForwardClaimed}
 	}
-	return keptCopyExpiryClaimed
+	reason, unconfirmed := strings.CutSuffix(cursor.DeadLetter, unconfirmedClaimSuffix)
+	switch deadLetterReason(reason) {
+	case deadLetterDeliveryMode:
+		return keptCopyClaim{kind: keptCopyModeClaimed, unconfirmed: unconfirmed}
+	case deadLetterExpired:
+		return keptCopyClaim{kind: keptCopyExpiryClaimed, unconfirmed: unconfirmed}
+	}
+	return keptCopyClaim{kind: keptCopyExpiryClaimed}
 }
 
 // keptCopyStep is what a walk does with one copy of a role's kept lane (judgeKeptRoleCopy).
@@ -1421,26 +1451,32 @@ type keptCopyVerdict struct {
 //     its delivery mode, so it is no expired copy however old it is when the dead letter is sent
 //     again.
 //  3. A copy whose hour ended (keptCopyEnded), and a copy under an expiry's dead-letter claim
-//     that this walk takes over (keptCopyExpiryClaimed, keptCopyUnconfirmedExpiryClaimed) whatever
-//     its age by this walk's clock, since the walk that made the claim found its hour ended, is
-//     dropped, counted and logged (keptRoleDroppedReport). It is owed a dead letter when the
-//     listener kept it and its publish named a sender session, unless no walk claimed it and its
-//     hour ended more than an hour before (roleKeepStaleAge): a copy a walk claimed is owed one
-//     whatever its age. A copy under a forward's claim, and one under the expiry claim a walk made
-//     of a forward's (keptCopyUnconfirmedExpiryClaimed), is dropped as a copy whose forward may
-//     have reached the holder (keptRoleDrop.forwarded), however many walks took the claim over
-//     before this one, and its dead letter says so. Otherwise a walk for a holder names that
-//     holder in the dead letter as the session that holds the role now (keptRoleDrop.holder),
-//     since telling the sender no session held the role would be false.
+//     that this walk takes over (keptCopyExpiryClaimed) whatever its age by this walk's clock,
+//     since the walk that made the claim found its hour ended, is dropped, counted and logged
+//     (keptRoleDroppedReport). It is owed a dead letter when the listener kept it and its publish
+//     named a sender session, unless no walk claimed it and its hour ended more than an hour
+//     before (roleKeepStaleAge): a copy a walk claimed is owed one whatever its age. A walk for a
+//     holder names that holder in the dead letter as the session that holds the role now
+//     (keptRoleDrop.holder), since telling the sender no session held the role would be false;
+//     the dead letter of a copy whose forward may have reached the holder (below) says that
+//     instead.
 //  4. A walk with no holder stops at every other copy.
 //  5. A walk for a holder applies beforeForward (keptRoleForwardAllowed): an allowed copy is
 //     forwarded; an echo or a repeat is passed over; and a copy whose delivery mode the holder
 //     does not take is dropped as the lane refuses it, and owed a dead letter naming that holder
 //     when the listener kept it and its publish named a sender session.
 //
+// Every copy owed a dead letter, by rule 2, 3 or 5, is dropped as a copy whose forward may have
+// reached the holder (keptRoleDrop.forwarded) when the claim this walk takes over is a forward's
+// claim, or a dead letter's claim a walk wrote with that qualifier
+// (keptCopyClaim.forwardUnconfirmed), however many walks took the claim over before this one, and
+// its dead letter says so beside its reason. The verdict of such a copy is made in one place
+// below, so no rule builds a drop without the qualifier its claim carried.
+//
 // The forward claim of a copy inside its hour is no reason of its own: that copy is judged as any
-// copy, and the walk claims it again. Nor is a dead letter's claim on a copy owed no dead letter,
-// which no walk writes. now is called once per copy that decodes, whatever the verdict.
+// copy, and the walk claims it again, for the forward or for the dead letter that judgement gives
+// it. Nor is a dead letter's claim on a copy owed no dead letter, which no walk writes. now is
+// called once per copy that decodes, whatever the verdict.
 func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
 	var item contracts.Envelope
 	if err := json.Unmarshal(stored.Data, &item); err != nil {
@@ -1454,23 +1490,27 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	}
 	at := now()
 	owed := !isOutboxCopy(item) && item.SourceSession != ""
-	if claim == keptCopyModeClaimed && owed {
+	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy
+	// is owed beside it. Every such verdict is made here, so every drop carries the qualifier of
+	// the claim this walk took over, whatever its reason (keptCopyClaim.forwardUnconfirmed).
+	deadLetter := func(report func(), drop keptRoleDrop) keptCopyVerdict {
+		drop.forwarded = claim.forwardUnconfirmed()
+		return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at, report: report, drop: drop}
+	}
+	if claim.kind == keptCopyModeClaimed && owed {
 		// The walk that made the claim knew the holder that did not take the copy, and the
 		// cursor does not keep it; the mode is the copy's own, read as that walk read it.
 		mode, err := payloadDeliveryMode(item.Payload)
-		return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at,
-			drop: keptRoleDrop{reason: deadLetterDeliveryMode, mode: mode, unreadable: err != nil}}
+		return deadLetter(nil, keptRoleDrop{reason: deadLetterDeliveryMode, mode: mode, unreadable: err != nil})
 	}
-	if claim == keptCopyExpiryClaimed || claim == keptCopyUnconfirmedExpiryClaimed || keptCopyEnded(at, stored.Time) {
+	if claim.kind == keptCopyExpiryClaimed || keptCopyEnded(at, stored.Time) {
 		age := at.Sub(stored.Time)
-		stale := claim == keptCopyUnclaimed && age > roleKeepStaleAge
+		stale := claim.kind == keptCopyUnclaimed && age > roleKeepStaleAge
 		report := keptRoleDroppedReport(cfg, role, holder, stored, item, age, stale)
 		if !owed || stale {
 			return keptCopyVerdict{step: keptCopyEnd, item: item, report: report}
 		}
-		forwarded := claim == keptCopyForwardClaimed || claim == keptCopyUnconfirmedExpiryClaimed
-		return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at, report: report,
-			drop: keptRoleDrop{reason: deadLetterExpired, forwarded: forwarded, holder: holder}}
+		return deadLetter(report, keptRoleDrop{reason: deadLetterExpired, holder: holder})
 	}
 	if holder == "" {
 		return keptCopyVerdict{step: keptCopyWait, item: item}
@@ -1481,8 +1521,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 		return keptCopyVerdict{step: keptCopyForward, item: item}
 	case forwardModeUnadvertised, forwardModeUnreadable:
 		if owed {
-			return keptCopyVerdict{step: keptCopyDeadLetter, item: item, at: at, report: report,
-				drop: keptRoleDrop{reason: deadLetterDeliveryMode, holder: holder, mode: verdict.mode, unreadable: verdict.kind == forwardModeUnreadable}}
+			return deadLetter(report, keptRoleDrop{reason: deadLetterDeliveryMode, holder: holder, mode: verdict.mode, unreadable: verdict.kind == forwardModeUnreadable})
 		}
 	}
 	return keptCopyVerdict{step: keptCopyEnd, item: item, report: report}
@@ -1518,10 +1557,13 @@ func keptRoleDroppedReport(cfg listenerDeliveryHandlerConfig, role, holder strin
 type keptRoleDrop struct {
 	// reason is deadLetterExpired or deadLetterDeliveryMode.
 	reason deadLetterReason
-	// forwarded is an expired copy a walk claimed to forward inside its hour and whose forward no
-	// walk confirmed: the stream may have stored that forward, so the copy may have reached the
-	// holder. The claim of the copy's dead letter carries it (claimReason), so every walk that
-	// takes that claim over drops the copy as forwarded again (keptCopyClaimOf).
+	// forwarded is a copy a walk claimed to forward inside its hour and whose forward no walk
+	// confirmed: the stream may have stored that forward, so the copy may have reached the
+	// session that held the role then. It qualifies a drop of either reason, since such a copy
+	// is dropped at the end of its hour or, inside it, because the role's live holder now does
+	// not take its delivery mode (keptCopyClaim.forwardUnconfirmed). The claim of the copy's dead
+	// letter carries it (claimReason), so every walk that takes that claim over drops the copy
+	// as forwarded again (keptCopyClaimOf).
 	forwarded bool
 	// holder is, for a delivery mode drop, the live session that held the role and does not take
 	// the copy's delivery mode, empty where a walk sends a dead letter again and no longer knows
@@ -1536,19 +1578,21 @@ type keptRoleDrop struct {
 }
 
 // claimReason is the reason a walk writes into its claim of the copy it ends with a dead letter for
-// d (bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter): d's reason, or
-// expiredUnconfirmedClaim for an expired copy whose forward may have reached the holder
-// (d.forwarded). It is the one place a drop is written into a claim, as keptCopyClaimOf is the one
-// place a claim is read back, so a walk that takes the claim over drops the copy for the reason,
-// and with the qualifier, this drop has.
+// d (bus.KeptRoleCursor.DeadLetter, endKeptCopyWithDeadLetter): d's reason, with
+// unconfirmedClaimSuffix after it for a copy whose forward may have reached the holder
+// (d.forwarded), whichever reason that is. It is the one place a drop is written into a claim, as
+// keptCopyClaimOf is the one place a claim is read back, so a walk that takes the claim over drops
+// the copy for the reason, and with the qualifier, this drop has.
 func (d keptRoleDrop) claimReason() string {
-	if d.reason == deadLetterExpired && d.forwarded {
-		return expiredUnconfirmedClaim
+	if d.forwarded {
+		return string(d.reason) + unconfirmedClaimSuffix
 	}
 	return string(d.reason)
 }
 
 // summary is the reason the dead letter's payload_summary gives, a phrase that ends its one line.
+// A delivery mode drop's is its delivery mode's whether or not its forward may have reached the
+// holder (d.forwarded), which the dead letter's text says after it (explanation).
 func (d keptRoleDrop) summary() string {
 	switch {
 	case d.reason == deadLetterDeliveryMode && d.unreadable:
@@ -1563,7 +1607,10 @@ func (d keptRoleDrop) summary() string {
 	return "no session held the role in the hour that Envoy kept it"
 }
 
-// explanation is the reason the dead letter's payload gives, in sentences.
+// explanation is the reason the dead letter's payload gives, in sentences. A copy whose forward
+// may have reached the holder (d.forwarded) is told of that forward whichever reason it was
+// dropped for: an expired one in the sentences about its hour, and one dropped for its delivery
+// mode in the sentences that end the text, after the ones about the delivery mode.
 func (d keptRoleDrop) explanation() string {
 	const readRole = "You can use envoy_role_get to see which session holds the role before you send the message again."
 	if d.reason == deadLetterExpired {
@@ -1580,13 +1627,20 @@ func (d keptRoleDrop) explanation() string {
 	if d.holder != "" {
 		subject, object, held = "Session "+d.holder, "session "+d.holder, "Session "+d.holder+" held the role. "
 	}
+	var text string
 	switch {
 	case d.unreadable:
-		return held + "Envoy could not read the delivery mode of the message, so Envoy did not send it to " + object + "."
+		text = held + "Envoy could not read the delivery mode of the message, so Envoy did not send it to " + object + "."
 	case d.mode != "":
-		return held + subject + " does not take the delivery mode " + d.mode + "."
+		text = held + subject + " does not take the delivery mode " + d.mode + "."
+	default:
+		text = held + subject + " does not take the delivery mode of the message."
 	}
-	return held + subject + " does not take the delivery mode of the message."
+	if d.forwarded {
+		text += " Before that, Envoy started to send the message to the session that held the role then. " +
+			"Envoy did not confirm that send. The message may have reached that session."
+	}
+	return text
 }
 
 // keyedEventID is the event id of an envelope several listeners publish under one message id, key:
@@ -1653,13 +1707,13 @@ func deadLetterRefusal(sender string, letter contracts.Envelope) error {
 // unconfirmed; and the error that ends the walk.
 //
 // It ends the copy as a forward is ended: the cursor is written to {kept: unchanged, claiming: the
-// copy's sequence, dead_letter: the drop's reason, qualified where the copy's forward may have
-// reached the holder (keptRoleDrop.claimReason)}, the dead letter is published through
-// cfg.publishDeadLetter (keptRoleDeadLetter), and the cursor is confirmed at {kept: the copy's
-// sequence} (roleKeepLaneCursor.confirm). The copy's report, the dead letter's line and its count
-// come only once that confirm has landed, so a walk that lost a write reports nothing another
-// walk reports, and a confirm that landed is reported even where another walk had gone on from
-// it, which ends this walk.
+// copy's sequence, dead_letter: the drop's reason, qualified, whichever reason it is, where the
+// copy's forward may have reached the holder (keptRoleDrop.claimReason)}, the dead letter is
+// published through cfg.publishDeadLetter (keptRoleDeadLetter), and the cursor is confirmed at
+// {kept: the copy's sequence} (roleKeepLaneCursor.confirm). The copy's report, the dead letter's
+// line and its count come only once that confirm has landed, so a walk that lost a write reports
+// nothing another walk reports, and a confirm that landed is reported even where another walk had
+// gone on from it, which ends this walk.
 //
 // A publish that failed for a reason that can pass - a stream that is full, a time-out, no
 // responders, a connection lost - is returned with the claim left where it is, so the walk ends
