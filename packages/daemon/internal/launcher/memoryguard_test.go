@@ -19,9 +19,10 @@ import (
 
 // useContainerInit has every launcher this test starts take its test process for the container's
 // first process, or not, until the test's end (containerInit). No test of this package runs as
-// PID 1, so every other test's launcher runs no memory guard and no git lock sweep at all; a test
-// of the guard stands its process in for PID 1, and points the guard at a pod of its own
-// (useGuardPod), and a test of the sweep does the same (useSweepingLauncher).
+// PID 1, so every other test's launcher runs no memory guard, no git lock sweep and no cache
+// trimmer at all; a test of the guard stands its process in for PID 1, and points the guard at a
+// pod of its own (useGuardPod), and a test of the sweep and one of the trimmer as the launcher
+// runs it do the same (useSweepingLauncher, useLauncherTrimmer).
 func useContainerInit(t *testing.T, first bool) {
 	t.Helper()
 	previous := containerInit

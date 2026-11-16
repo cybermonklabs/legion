@@ -369,18 +369,21 @@ type LauncherVolumeMissing struct {
 
 // The three things that raise an episode, which a report's RaisedBy names. An episode is the run
 // of readings the daemon's notice bounds count against, so what raised it is what a reader needs
-// to tell a volume that has just filled from one that is filling faster than the trimmer frees
-// it.
+// to tell three reports apart: one of a volume that has just filled, one of a volume that fell
+// below its low mark and has filled again, and one whose episode began at a reading five points
+// or more above the highest reading a reported sweep of the episode before it had started from.
 const (
 	// VolumeEpisodeFirst is the trimmer's first episode: its reading reached the high mark.
 	VolumeEpisodeFirst = "first"
 	// VolumeEpisodeRecovery is a reading that fell below the low mark after having been at or
 	// above the high mark.
 	VolumeEpisodeRecovery = "recovery"
-	// VolumeEpisodeRise is a reading five percentage points above the highest reading at the
-	// start of any sweep that reported in this episode: the volume is still filling under a
-	// trimmer that is already sweeping it, which is worth another notice where a steady reading
-	// is not.
+	// VolumeEpisodeRise is a reading five percentage points or more above the highest reading at
+	// the start of any sweep that reported in the episode the reading ends, and no other growth:
+	// each such sweep moves that highest reading up to its own start, so a volume that climbs by
+	// less than five points from one of them to the next raises no episode. The daemon sends a
+	// report of an episode raised this way without holding it for the pod's hour, and holds it
+	// to the three of its episode like any other (internal/workflow's volumeNoticeHeldBy).
 	VolumeEpisodeRise = "rise"
 )
 

@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,11 +65,21 @@ type launchedTrimmer struct {
 // because the cleanups run in reverse: the launcher is stopped and waited for while this seam is
 // still in place.
 //
+// Every launcher the case starts takes its test process for the container's first process until
+// the case's end (useContainerInit), since only that launcher builds a trimmer (serveVolumeTrim)
+// and no test of this package runs as PID 1. Such a launcher runs the memory guard and the git
+// lock sweep too. The guard is pointed at an empty pod of its own, as a case of the sweep points
+// it (useSweepingLauncher), rather than at this machine's /proc, whose processes the case knows
+// nothing of. The sweep is given no clone to walk: the working directory of a test is its
+// package's, which the workspace layout does not put a workspace at, and no case here starts a
+// role for it to learn one from (newGitLockSweep).
+//
 // prepare, where a case gives one, is run on that trimmer before its loop starts: it is the only
 // place a seam of the trimmer the launcher built can be set, since the case first sees that
 // trimmer through await, by which time its own goroutine is already reading these fields.
 func useLauncherTrimmer(t *testing.T, f *trimFixture, prepare ...func(trim *trimmer)) *launchedTrimmer {
 	t.Helper()
+	useGuardPod(t, newGuardPod(t), nil)
 	l := &launchedTrimmer{t: t, started: make(chan *trimmer, 1), stopped: make(chan struct{})}
 	previous := podTrimmer
 	podTrimmer = func(ctx context.Context, trim *trimmer) {
@@ -437,6 +449,64 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		acceptRole(t, listener).acknowledgeWith(shimwire.LauncherHelloAck{VolumeTrim: trimSettings()})
 		trims.never("the controller's pod runs one role, and its volume is its sandbox's")
 	})
+}
+
+// A launcher that is not its container's first process runs no cache trimmer. A sweep deletes no
+// entry a process of the pod is using, and reads what each one uses from /proc, and such a
+// launcher (one run by hand inside a role) sees only part of it: its sweep would delete a cache
+// entry a process of another role is using. Run's roles branch logs one off line, as it does for
+// the memory guard and the git lock sweep
+// (TestMemoryGuardAndTheGitLockSweepRunOnlyInTheContainersFirstProcess), and builds no trimmer:
+// the loop the launcher runs its trimmer in is never entered, although every role's answer
+// carries settings a trimmer would run by, and Run returns when its context ends, since the
+// channel it waits on for the trimmer is closed from the start. The negative control is
+// serveVolumeTrim without the check, which enters that loop on the first role's answer and
+// writes no off line.
+func TestTheCacheTrimmerRunsOnlyInTheContainersFirstProcess(t *testing.T) {
+	useContainerInit(t, false)
+	var entered atomic.Int32
+	previous := podTrimmer
+	podTrimmer = func(ctx context.Context, _ *trimmer) {
+		// Counted and held to the container's context, never run: a trimmer the launcher built
+		// with no fixture put into it is the pod's own, over this machine's /legion and /proc.
+		entered.Add(1)
+		<-ctx.Done()
+	}
+	t.Cleanup(func() { podTrimmer = previous })
+
+	pod := newFleetDialed(t, 2*time.Second, podRoles...)
+	// Every answer is in force once ackPod returns: a role's state frame, which it reads, is
+	// written after that role's answer is applied (serve), and the first role's applied answer
+	// is what a launcher with a trimmer enters its loop on (serveVolumeTrim).
+	ackPod(pod, trimSettings())
+	if err := pod.stop(); !errors.Is(err, context.Canceled) {
+		t.Errorf("Run = %v, want the container's own context ending it", err)
+	}
+	// Run waits for the trimmer's loop, so a loop entered at all was entered before it returned.
+	if loops := entered.Load(); loops != 0 {
+		t.Errorf("the launcher entered its trimmer's loop %d times, want never: it is not the container's first process", loops)
+	}
+	off := fmt.Sprintf("launcher: volume trim: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may be using the volume",
+		os.Getpid())
+	// Every line of the trimmer and the launcher's own line for it name it this way.
+	var lines []string
+	for _, line := range strings.Split(pod.stderr.String(), "\n") {
+		if strings.Contains(line, "volume trim") {
+			lines = append(lines, line)
+		}
+	}
+	if !slices.Equal(lines, []string{off}) {
+		t.Errorf("the launcher's volume trim lines are %q, want %q alone", lines, off)
+	}
+
+	log := &roleLog{stderr: &lockedBuffer{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	select {
+	case <-serveVolumeTrim(ctx, &manager{role: podRoles[0], log: log, acknowledged: make(chan struct{})}, &pidGuard{}):
+	default:
+		t.Error("serveVolumeTrim left something running in a launcher that runs no trimmer")
+	}
 }
 
 // A later answer on the bound connection replaces the settings in force, and reaches the next

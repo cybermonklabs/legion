@@ -11,13 +11,17 @@ body: |-
   `low_percent` (70), stopping there or sooner. It deletes nothing from workspaces, repositories,
   the Go module cache or the uv caches, and nothing else of the temporary directory.
   `enabled: false` switches it off, and the settled block is in the state body under
-  `settings.runtime.kubernetes.volume_trim`.
+  `settings.runtime.kubernetes.volume_trim`. A launcher that is not its container's first process
+  runs no trimmer, as it runs no memory guard: it cannot see every process that may be using the
+  volume.
 
   A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
   trimmer that switches itself off after three panics in a row, reach the issue's architect as a
-  new `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod,
-  which a sweep whose episode a rise raised skips (the switched-off notice is sent whatever the
-  bounds stand at). A rollback below this release has the operator delete the queued notices
+  new `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
+  A report skips the hour, and not the three, where the trimmer raised its episode at a reading
+  five points or more above the highest reading that a reported sweep of the episode before it
+  started from; a smaller climb raises no episode. The switched-off notice is sent whatever the
+  bounds stand at. A rollback below this release has the operator delete the queued notices
   first, as docs/kubernetes.md says.
 
   A `worker-died` notice of the tree architect, and of a held phase, now names the pod's own end

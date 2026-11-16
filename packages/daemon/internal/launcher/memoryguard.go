@@ -26,8 +26,10 @@ var newMemoryGuard = memoryguard.New
 // role-init is no role's. A launcher run anywhere else (a test of cmd/legion, a launcher run by
 // hand) shares its /proc with processes the classifier knows nothing of, and would end them. The
 // clone's git lock sweep runs behind the same rule (serveGitLockSweep), since a pass removes a
-// lock no process it sees holds open. It is a package variable so that a test of the guard or of
-// the sweep can stand its test process in for PID 1.
+// lock no process it sees holds open, and so does the pod's cache trimmer (serveVolumeTrim),
+// since a sweep may delete a cache entry that no process it sees is using. It is a package
+// variable so that a test of the guard, of the sweep or of the trimmer can stand its test
+// process in for PID 1.
 var containerInit = func() bool { return os.Getpid() == 1 }
 
 // maxWaitingMemoryKills is the most reports of the guard's kills a role keeps while no connection

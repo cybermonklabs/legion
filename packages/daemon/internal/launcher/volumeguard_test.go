@@ -29,7 +29,7 @@ import (
 // with it because they are the same guards read a cheaper way.
 
 // The two re-entrant helpers the pod case runs as processes of its own: the child cloned into
-// the role's namespaces, and each of the three processes it starts inside them. Each is the test
+// the role's namespaces, and each of the four processes it starts inside them. Each is the test
 // binary re-executed with its own LEGION_ marker, which fixtureenv.Guard would take out, so
 // TestMain runs no Guard in such a child (helperChildVariables, main_test.go); this file is
 // Linux-only, so it registers its markers itself rather than leaving them in that list.
@@ -720,6 +720,7 @@ type guardTree struct {
 	Self   string // the test binary, which the namespace child re-enters for its processes
 	Copy   string // that binary copied into the tree: the one process's exe and mapping
 	Open   string // the file one process holds open
+	Mapped string // the file one process maps and holds no descriptor on
 	Cwd    string // the directory one process and its threads work in
 	Root   string // the directory one process chroots into
 	Unused string // the negative control: a path of the tree no process of it uses
@@ -730,6 +731,7 @@ type guardTree struct {
 type volumeGuardProcess struct {
 	Kind   string
 	Open   string
+	Mapped string
 	Cwd    string
 	Root   string
 	Marker string
@@ -747,12 +749,19 @@ var guardHeldFile *os.File
 
 // A pod's processes are visible to the trimmer through every /proc entry it reads. The case
 // clones a child with roleNamespaceAttr's own flags and uid mapping — the user, mount, PID and
-// IPC namespaces every role generation runs in — and that child starts three processes inside
+// IPC namespaces every role generation runs in — and that child starts four processes inside
 // them: one holding a file open from a working directory of the tree, one that is the test
-// binary copied into the tree and executed from there, and one that chroots into a directory of
-// the tree. The test then reads its own container's /proc, which is what the trimmer reads, and
+// binary copied into the tree and executed from there, one that maps a file of the tree and
+// closes the descriptor it mapped it through, and one that chroots into a directory of the
+// tree. The test then reads its own container's /proc, which is what the trimmer reads, and
 // must find each of their paths: a role's agent runs in exactly those namespaces, and a guard
 // that could not see into them would delete the browser a sibling role is running.
+//
+// The mapper is what holds `maps` apart from `exe`. The copied binary is named by both, so a
+// reader that read no `maps` at all would still find it through `exe`; the mapped file is named
+// by `maps` and by nothing else, since its process is the test binary where it already is, works
+// in `/` and holds no descriptor on it. That is a library a running program loaded, which is
+// half of the Chromium case (readUsedPaths).
 //
 // The negative control is a path of the same tree no process uses: a reader that answered yes to
 // everything would pass every case above and fail this one.
@@ -767,16 +776,19 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		Self:   self,
 		Copy:   filepath.Join(dir, "bin", "legion-volume-guard-probe"),
 		Open:   filepath.Join(dir, "open", "held.bin"),
+		Mapped: filepath.Join(dir, "mapped", "loaded.so"),
 		Cwd:    filepath.Join(dir, "cwd"),
 		Root:   filepath.Join(dir, "root"),
 		Unused: filepath.Join(dir, "unused"),
 		Ready:  filepath.Join(dir, "ready"),
 	}
-	for _, made := range []string{filepath.Dir(tree.Copy), filepath.Dir(tree.Open), tree.Cwd, tree.Root, tree.Unused, tree.Ready} {
+	for _, made := range []string{filepath.Dir(tree.Copy), filepath.Dir(tree.Open), filepath.Dir(tree.Mapped), tree.Cwd, tree.Root, tree.Unused, tree.Ready} {
 		mkdirFixture(t, made)
 	}
-	if err := os.WriteFile(tree.Open, []byte("held"), 0o644); err != nil {
-		t.Fatal(err)
+	for _, held := range []string{tree.Open, tree.Mapped} {
+		if err := os.WriteFile(held, []byte("held"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := copyExecutable(self, tree.Copy); err != nil {
 		t.Fatal(err)
@@ -807,7 +819,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 
 	// Each process reports itself ready by a marker of its own; the chrooted one writes its
 	// marker inside the root it took, which is that same directory from here.
-	markers := []string{filepath.Join(tree.Ready, "opener"), filepath.Join(tree.Ready, "runner"), filepath.Join(tree.Root, "chrooted")}
+	markers := []string{filepath.Join(tree.Ready, "opener"), filepath.Join(tree.Ready, "runner"), filepath.Join(tree.Ready, "mapper"), filepath.Join(tree.Root, "chrooted")}
 	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
 	for ready := false; !ready; {
 		ready = true
@@ -825,7 +837,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the three processes were not ready within the bound\n%s", output.String())
+			t.Fatalf("the four processes were not ready within the bound\n%s", output.String())
 		}
 		time.Sleep(testwait.Poll)
 	}
@@ -842,6 +854,7 @@ func TestThePodsProcessesAreVisibleThroughEveryProcEntry(t *testing.T) {
 		{"fd", tree.Open},
 		{"cwd and task/<tid>/cwd", tree.Cwd},
 		{"exe and maps", tree.Copy},
+		{"maps alone", tree.Mapped},
 		{"root", tree.Root},
 	} {
 		if !used.Covers(tc.path) {
@@ -886,7 +899,7 @@ func threadCwdNames(t *testing.T, cwd string) bool {
 }
 
 // TestVolumeGuardNamespaceHelper is the child the case clones into a role's namespaces: it
-// starts the three processes the case looks for and then waits to be killed with its namespace.
+// starts the four processes the case looks for and then waits to be killed with its namespace.
 func TestVolumeGuardNamespaceHelper(t *testing.T) {
 	encoded := os.Getenv(volumeGuardNamespaceEnv)
 	if encoded == "" {
@@ -900,6 +913,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 	for _, process := range []volumeGuardProcess{
 		{Kind: "opener", Open: tree.Open, Cwd: tree.Cwd, Marker: filepath.Join(tree.Ready, "opener")},
 		{Kind: "runner", Marker: filepath.Join(tree.Ready, "runner")},
+		{Kind: "mapper", Mapped: tree.Mapped, Marker: filepath.Join(tree.Ready, "mapper")},
 		// The marker is written after the chroot, so its path is the one the process sees: the
 		// root it took is the case's directory from outside.
 		{Kind: "chrooter", Root: tree.Root, Marker: "/chrooted"},
@@ -910,7 +924,7 @@ func TestVolumeGuardNamespaceHelper(t *testing.T) {
 			os.Exit(2)
 		}
 		// The runner is the binary copied into the tree, so its exe and its mappings name a path
-		// of the tree; the other two are the test binary where it already is.
+		// of the tree; the other three are the test binary where it already is.
 		argv0 := tree.Self
 		if process.Kind == "runner" {
 			argv0 = tree.Copy
@@ -958,6 +972,25 @@ func TestVolumeGuardProcessHelper(t *testing.T) {
 		// Being this process is the whole of it: this binary is the copy under the tree, so the
 		// kernel's exe link and its file mappings name a path of the tree, and it holds no
 		// descriptor on that path at all — the Chromium case.
+	case "mapper":
+		// A file of the tree mapped and its descriptor closed, as a program holds a library it
+		// loaded: the mapping outlives the descriptor, so `maps` names the file and no other
+		// entry of this process does. The mapping is never unmapped, and unix.Mmap keeps the
+		// slice it answers reachable until it is, so nothing here need hold it.
+		file, err := os.Open(plan.Mapped)
+		if err != nil {
+			fail(err)
+		}
+		info, err := file.Stat()
+		if err != nil {
+			fail(err)
+		}
+		if _, err := unix.Mmap(int(file.Fd()), 0, int(info.Size()), unix.PROT_READ, unix.MAP_PRIVATE); err != nil {
+			fail(err)
+		}
+		if err := file.Close(); err != nil {
+			fail(err)
+		}
 	case "chrooter":
 		// The namespaces are the role's, and this process is root in their user namespace, which
 		// is what lets it chroot at all.

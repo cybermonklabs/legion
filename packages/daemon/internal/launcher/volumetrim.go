@@ -600,11 +600,14 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 // episodeOf raises the episode number on the reading, when the reading is one of the two things
 // that raise it, and leaves it alone otherwise.
 //
-// An episode is the run of readings the daemon's three-notice bound counts against, so what
-// raises it decides when the issue's architect is told again. A recovery is the volume coming
-// back under the low mark after having reached the high one: the next time it fills is news. A
-// rise is the volume filling five points past the worst this episode has already reported,
-// which is a volume filling faster than the trimmer frees it.
+// An episode is the run of readings the daemon's three-notice bound counts against, so raising
+// it starts that count over for the reports that follow and sends nothing itself: a report is
+// still a sweep's, and only of one that ends above the low mark (tick). A recovery is the volume
+// coming back under the low mark after having reached the high one: the next time it fills is
+// news. A rise is a reading five points or more above the highest reading that a reported sweep
+// of this episode started from (anchorAt), and no other growth: each reported sweep moves that
+// reading up to its own start, so a volume that climbs by less than five points from one
+// reported sweep to the next raises nothing, however far it climbs in all.
 //
 // The rise is measured against the highest reading at the start of a sweep that reported, never
 // against the figure a report carried, which is a post-sweep low point: anchored there, the

@@ -1249,10 +1249,11 @@ func (e *Engine) volumeNearFull(ctx context.Context, tx pgx.Tx, fact intake.Volu
 //     however long it runs and whatever raises a reading inside it. A new trimmer identifier is
 //     a new line and starts the count over, which the key gives: a restarted roles container
 //     mints one.
-//   - A reading five points above the highest this episode started a sweep at
-//     (shimwire.VolumeEpisodeRise) is sent at once, however recent the last notice was: a volume
-//     that has gone that much worse under a trimmer already sweeping it is news, where one that
-//     recovered and filled again can wait for the hour.
+//   - A report whose episode a rise raised (shimwire.VolumeEpisodeRise) is sent however recent
+//     the pod's last notice was, where one whose episode a recovery raised waits for the hour.
+//     The launcher raises an episode that way at a reading five points or more above the
+//     highest reading a reported sweep of the episode before it started from, and at no smaller
+//     climb (internal/launcher's episodeOf), and this function reads the word alone.
 //   - Everything else waits an hour from the pod's newest notice, whatever trimmer or episode
 //     wrote it — a recovery-raised episode included, which is a volume doing what it did before.
 func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeCounts, now time.Time) string {
@@ -1300,6 +1301,14 @@ func volumeNoticeHeldBy(report record.VolumeNearFull, counts store.VolumeNoticeC
 // How many entries each list carries is the launcher's bound (internal/launcher's bound), and
 // where that bound left entries out the sentence says so: a reader must not take a cut list for
 // the whole of what the trimmer measured.
+//
+// A size is what the launcher's walk measured (internal/launcher's measureTree): the apparent
+// size of every regular file at or under its path, counted once for each name the walk met it
+// under. So a sparse file counts at its length rather than at the blocks it holds, a file linked
+// under two names — bun links its install cache into a workspace's node_modules — counts under
+// both, and the sizes can sum past the used bytes this same sentence gives. The sentence says
+// so in one clause after the last size, once however many sizes it carries, and not at all where
+// the report carries none.
 //
 // The report of a switched-off trimmer is made by no sweep (launcher's switchOff), so its
 // sentence names no bytes freed and no episode: its freed bytes are zero because nothing swept,
@@ -1357,6 +1366,9 @@ func volumeNoticeReason(issue string, report record.VolumeNearFull) string {
 		// is where a reader looks for the rest (record.VolumeSize).
 		fmt.Fprintf(&out, "; %q holds at least %d bytes (%d older than an hour, %d older than a day, of what the walk could read): the walk could not make %d of its reads under it, the first at %q",
 			size.Path, size.Bytes, size.BytesOverHour, size.BytesOverDay, size.Refusals, size.Refused)
+	}
+	if len(report.Sizes) > 0 {
+		out.WriteString("; each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses")
 	}
 	if report.SizesOmitted > 0 {
 		fmt.Fprintf(&out, "; %d more sizes are left out of this report", report.SizesOmitted)

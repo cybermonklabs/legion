@@ -118,7 +118,8 @@ func fullSweep() record.VolumeNearFull {
 // One sweep that ended with the volume still above its low mark writes exactly one notice, to the
 // issue's own architect, carrying everything the architect needs to act: which pod, how full, what
 // the sweep freed, why it stopped, the /proc read the kernel refused, and what is on the volume
-// with the two age splits that tell a working set from cold bytes.
+// with the two age splits that tell a working set from cold bytes and the clause that says what
+// kind of size those are.
 func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
@@ -151,7 +152,8 @@ func TestASweepThatLeavesTheVolumeFullTellsTheArchitectOnce(t *testing.T) {
 		t.Fatalf("the notice carries sizes %+v, want the walk's own entries with both age splits", volume.Sizes)
 	}
 	for _, want := range []string{"LEGION-208", volumePod, "51539607552", "2147483648", "3221225472",
-		"nothing left older than the minimum age", "pid 42 (/proc/42/fd)", "caches/uv", "older than an hour", "older than a day"} {
+		"nothing left older than the minimum age", "pid 42 (/proc/42/fd)", "caches/uv", "older than an hour", "older than a day",
+		"each size is the apparent size of the files at or under its path"} {
 		if !strings.Contains(notice.Reason, want) {
 			t.Errorf("the sentence the architect reads does not name %q: %s", want, notice.Reason)
 		}
@@ -243,9 +245,10 @@ func TestANewTrimmerStartsTheCountOver(t *testing.T) {
 	}
 }
 
-// A rise — a reading five points above the highest this episode started a sweep at — is sent at
-// once, however recent the last notice was: a volume that has gone that much worse under a
-// trimmer already sweeping it is news.
+// A report whose episode a rise raised is sent however recent the pod's last notice was. The
+// launcher raises an episode that way at a reading five points or more above the highest reading
+// a reported sweep of the episode before it started from, and at no smaller climb
+// (internal/launcher's episodeOf); what this case holds is what the daemon does with the word.
 func TestARiseRaisedSweepIsToldAtOnce(t *testing.T) {
 	rig := newVolumeRig(t)
 	rig.report(t, fullSweep())
@@ -551,6 +554,40 @@ func TestTheNoticeTellsADirectoryReadInPartAndAWalkThatWasCutApart(t *testing.T)
 				t.Errorf("the notice carries sizes %+v, want the report's own %+v", notice.Volume, sweep.Sizes)
 			}
 		})
+	}
+}
+
+// The sizes a notice gives are apparent sizes, each file counted once for each name the walk met
+// it under (internal/launcher's measureTree), so a sparse file counts at its length and a file
+// bun linked from its install cache into a workspace's node_modules counts in both, and the sizes
+// can sum past the used bytes the same sentence gives. The sentence says so in one clause, once
+// however many sizes it carries, after the last of them, and says nothing of it where the report
+// carries no size, as a switched-off trimmer's carries none. The negative control is the
+// sentence at 8ce4ac94, which gave the sizes with no such clause.
+func TestANoticeSaysOnceThatItsSizesAreApparentSizes(t *testing.T) {
+	const clause = "; each size is the apparent size of the files at or under its path, with a file linked under more than one name counted under each name, so the sizes can sum past the bytes the volume uses"
+	sweep := fullSweep()
+	sweep.PodUID = volumePod
+	reason := volumeNoticeReason("LEGION-208", sweep)
+	if said := strings.Count(reason, clause); said != 1 {
+		t.Errorf("the sentence of a report of %d sizes says %d times that they are apparent sizes, want once: %s", len(sweep.Sizes), said, reason)
+	}
+	lastSize := `"workspaces/LEGION-208" holds 21474836480 bytes (2147483648 older than an hour, 0 older than a day)`
+	if !strings.Contains(reason, lastSize+clause+"; measured at ") {
+		t.Errorf("the sentence does not say it straight after the last size, %s: %s", lastSize, reason)
+	}
+
+	// A size read only in part is a size all the same, and a count of sizes left out follows
+	// the clause rather than parting it from the sizes it speaks of.
+	sweep.Sizes = []record.VolumeSize{{Path: "/legion/feed/pack", Bytes: 1, Refused: "/legion/feed/pack/under", Refusals: 2}}
+	sweep.SizesOmitted = 4
+	if reason := volumeNoticeReason("LEGION-208", sweep); !strings.Contains(reason, `the first at "/legion/feed/pack/under"`+clause+"; 4 more sizes are left out of this report") {
+		t.Errorf("the sentence of a size read in part does not say it between that size and the count left out: %s", reason)
+	}
+
+	sweep.Sizes, sweep.SizesOmitted = nil, 0
+	if reason := volumeNoticeReason("LEGION-208", sweep); strings.Contains(reason, "apparent") {
+		t.Errorf("the sentence of a report that carries no size speaks of apparent sizes: %s", reason)
 	}
 }
 

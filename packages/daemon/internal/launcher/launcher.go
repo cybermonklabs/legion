@@ -158,7 +158,9 @@ func Run(ctx context.Context, cfg Config) error {
 	// report from meeting a daemon that did not send the settings that produced it
 	// (serveVolumeTrim). It is built before any role starts, as the test database is, and its
 	// loop is waited on with the roles below, so Run returns with nothing of the launcher's
-	// still running.
+	// still running. Only a launcher that is the container's first process builds one, as only
+	// that one runs the memory guard and the lock sweep above, and any other logs a line
+	// instead.
 	trim := serveVolumeTrim(ctx, managers[0], pids)
 	var running sync.WaitGroup
 	for _, m := range managers {
@@ -187,6 +189,17 @@ func Run(ctx context.Context, cfg Config) error {
 // Run's single-role branch returns before this is reached, since that launcher runs one role, its
 // volume belongs to its Sandbox rather than to an issue, and no architect would read its report.
 //
+// The trimmer runs only where the launcher is the container's first process (containerInit), as
+// the memory guard and the git lock sweep do (serveMemoryGuard, serveGitLockSweep). A sweep
+// deletes no entry a process of the pod is using, and it reads what each process uses from
+// /proc (readUsedPaths): PID 1 of the container sees every process of the container, each
+// role's namespaces' included, where a launcher started anywhere else (by hand inside a role)
+// sees that role's processes alone and would delete a cache entry a process of another role is
+// using. Any other launcher logs one line, builds no trimmer, and answers a channel already
+// closed, so Run waits on nothing. Every acknowledgement still writes the settings it carries
+// into its role's manager (applyAck), where nothing then reads them: the trimmer is their one
+// reader and the one caller of sendVolumeReport, so no report is ever sent.
+//
 // The trimmer is constructed here, once per launcher process and never again: its identifier is
 // minted at construction (trimmer.id) and kept across every reconnection, where an identifier
 // per connection would multiply the daemon's three-notice bound over a rolling daemon restart.
@@ -211,8 +224,14 @@ func Run(ctx context.Context, cfg Config) error {
 // names a roles directory. guard is the launcher's pidGuard, which each sweep's deleter starts
 // through so PID 1's reaper leaves its exit to the deleter's own wait (startRemover).
 func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan struct{} {
-	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir), guard)
 	done := make(chan struct{})
+	if !containerInit() {
+		m.log.linef("launcher: volume trim: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may be using the volume",
+			os.Getpid())
+		close(done)
+		return done
+	}
+	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir), guard)
 	go func() {
 		defer close(done)
 		select {
