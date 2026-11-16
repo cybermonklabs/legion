@@ -38,32 +38,35 @@
  * name, before its job is killed from outside.
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
- * The readings behind `short`, `listing` and `generation` are the largest cost lines of two runs
- * of the whole lane, `bun test --parallel --timeout 60000 e2e/__tests__`, under nine busy loops,
- * three per CPU, on a pod of 3 CPUs on 2026-11-15, all but the 78.4 s of the first listing in a
- * fresh checkout; the reading behind `twoStackBuild` was taken from cold, on a pod with four cores.
+ * The readings behind `short`, `listing` and `generation` are the largest cost lines on record
+ * of runs of the whole lane, `bun test --parallel --timeout 60000 e2e/__tests__`, under nine busy
+ * loops, three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16, all but the 78.4 s of
+ * the first listing in a fresh checkout; the reading behind `twoStackBuild` was taken from cold,
+ * on a pod with four cores.
  *
- * - `short`, against 8.74 s: what the one `playwright test --help` of `playwright-argv.test.ts`
+ * - `short`, against 11.95 s: what the one `playwright test --help` of `playwright-argv.test.ts`
  *   cost. The other short commands, the two compare-recordings runs, the two `bun --eval`
- *   probes, and the harness and import children, read 4.94 s or less; so do the driver of
- *   `replace-blocks-guard.test.ts` and its psql and tail, at most 2.41 s, 0.45 s and 0.07 s.
- * - `listing`, against 76.20 s, the largest of the 22 listings, and against 78.4 s for the first
+ *   probes, and the harness and import children, read 7.06 s or less; so do the driver of
+ *   `replace-blocks-guard.test.ts` and its psql and tail, at most 3.59 s, 0.803 s and 0.19 s.
+ * - `listing`, against 113.61 s, one of four listings started at once, in a whole-lane run under
+ *   nine busy loops, three per CPU, on a pod of 3 CPUs, on 2026-11-16; against 76.20 s, the
+ *   largest of the 22 listings of two such runs on 2026-11-15; and against 78.4 s for the first
  *   listing in a fresh checkout.
  * - `generation`, 30 s above the listings inside it. The `row-map` generation starts two listings
  *   of its own, so the inner bound fires first and the inner message is what the reader sees. The
  *   30 s is the tool's own start and the work it does outside its two listings. The generation
- *   that `row-map.test.ts` waits for cost 34.66 s.
+ *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
- * laptop as in CI: a `short` child after 60 s, a listing after 5 minutes, the generation after
- * 5.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
+ * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
+ * 6.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
  * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
  * fires before the row's limit and the failure names the child. The lane runs in the
  * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
  * in 158 s (job 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of
- * those the lane started about 2 minutes in. A stuck listing therefore fails about 7 minutes into
+ * those the lane started about 2 minutes in. A stuck listing therefore fails about 8 minutes into
  * the job: more than twice as long as a green run of the job, and well inside its limit, so the
  * job reports the failure rather than losing it to a kill from outside. The largest row limit
  * below the two-stack row's is 450 000 ms, on the two rows that start seven `short` children one
@@ -88,9 +91,9 @@ export const bounds = Object.freeze({
   /** One command that starts nothing: a help, a refusal, a probe, an import. */
   short: 60_000,
   /** One `playwright test --list` run. */
-  listing: 300_000,
+  listing: 360_000,
   /** `bun e2e/tools/row-map.ts`, which starts two listings of its own. */
-  generation: 330_000,
+  generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
 });

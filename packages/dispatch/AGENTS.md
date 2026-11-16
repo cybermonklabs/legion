@@ -2105,8 +2105,8 @@ The child stays in the process group of the run that started it, so an
 interrupted `bun test --parallel` takes it along
 (`e2e/__tests__/bounded-subprocess.test.ts`).
 The bounds are `short` (60 000 ms, a command that
-starts nothing), `listing` (300 000 ms,
-one `playwright test --list`), `generation` (330 000 ms,
+starts nothing), `listing` (360 000 ms,
+one `playwright test --list`), `generation` (390 000 ms,
 `bun e2e/tools/row-map.ts`, which starts two listings of its own) and
 `twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
 derives a row's limit from them: `rowLimit(...)` sums the bounds of what the

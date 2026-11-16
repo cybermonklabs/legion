@@ -561,7 +561,7 @@ test("a row that awaits a name assigned to a listing waits for that listing", ()
   expect(refused[1].why).toStartWith(
     `${fixture}:168 the row "a row that awaits an assigned listing under the short bound" stops ` +
       'at boundedBy("short"), 90000 ms, and waits for `assigned` (which waits for `listing`), ' +
-      'under the `listing` bound of 300000 ms: the row needs `rowLimit("listing")`'
+      'under the `listing` bound of 360000 ms: the row needs `rowLimit("listing")`'
   );
 });
 
@@ -607,17 +607,17 @@ test("a rowLimit below the bound of what its row waits for is refused", () => {
   expect(refused.map((refusal) => refusal.limit.line)).toEqual([122, 129]);
   // Whole, so a claim of which clock fires first cannot come back after the needed total.
   const needs =
-    'the row needs `rowLimit("listing")`, 330000 ms, at the least. Name in `rowLimit(...)` ' +
+    'the row needs `rowLimit("listing")`, 390000 ms, at the least. Name in `rowLimit(...)` ' +
     "every bounded child and every poll the row waits for, so the limit is read from their bounds.";
   expect(refused[0].why).toBe(
     `${fixture}:122 the row "a row that calls a listing under the short bound" stops at ` +
       'boundedBy("short"), 90000 ms, and waits for `listing`, under the `listing` bound of ' +
-      `300000 ms: ${needs}`
+      `360000 ms: ${needs}`
   );
   expect(refused[1].why).toBe(
     `${fixture}:129 the row "a row whose runBounded names a bound its rowLimit falls short of" ` +
       'stops at boundedBy("short"), 90000 ms, and waits for `runBounded`, under the `listing` ' +
-      `bound of 300000 ms: ${needs}`
+      `bound of 360000 ms: ${needs}`
   );
 });
 
@@ -658,8 +658,8 @@ test("a file's own rowLimit is held to the bound of each waiting row it stands f
     expect(refused[0].why).toBe(
       `${short}:6 the row "awaits" states no limit of its own, so the file's own ` +
         'setDefaultTimeout on line 5 stops it at rowLimit("short"), 90000 ms, and waits for ' +
-        "`lane` (which waits for `listing`), under the `listing` bound of 300000 ms: the row " +
-        'needs `rowLimit("listing")`, 330000 ms, at the least. Name in `rowLimit(...)` every ' +
+        "`lane` (which waits for `listing`), under the `listing` bound of 360000 ms: the row " +
+        'needs `rowLimit("listing")`, 390000 ms, at the least. Name in `rowLimit(...)` every ' +
         "bounded child and every poll the row waits for, so the limit is read from their bounds."
     );
   } finally {
