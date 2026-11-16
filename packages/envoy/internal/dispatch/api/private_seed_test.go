@@ -126,17 +126,24 @@ func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed
 // route makes.
 func (s privateSeed) makePrivate(t *testing.T, key string) {
 	t.Helper()
+	s.setVisibility(t, key, model.ProjectPrivate)
+}
+
+// setVisibility sets project key's visibility as its owner carol, through the write the
+// visibility route makes.
+func (s privateSeed) setVisibility(t *testing.T, key, visibility string) {
+	t.Helper()
 	ctx := context.Background()
 	tx, err := s.database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin making %s private: %v", key, err)
+		t.Fatalf("begin making %s %s: %v", key, visibility, err)
 	}
 	defer tx.Rollback(ctx)
-	if _, _, err := access.SetVisibility(ctx, tx, s.deps.Events, key, model.ProjectPrivate, model.Actor{Kind: "user", ID: seedCarol}); err != nil {
-		t.Fatalf("make %s private: %v", key, err)
+	if _, _, err := access.SetVisibility(ctx, tx, s.deps.Events, key, visibility, model.Actor{Kind: "user", ID: seedCarol}); err != nil {
+		t.Fatalf("make %s %s: %v", key, visibility, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit making %s private: %v", key, err)
+		t.Fatalf("commit making %s %s: %v", key, visibility, err)
 	}
 }
 

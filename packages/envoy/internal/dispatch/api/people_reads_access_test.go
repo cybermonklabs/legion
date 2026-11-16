@@ -626,3 +626,41 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 		}
 	}
 }
+
+// TestTheUsersOfAPublicListedProjectAreEveryFullMember reproduces the state in which t-a-22's
+// driver (packages/dispatch/e2e/acceptance/project-access.sh) reads GET /api/v1/users as bob and as
+// carol's PRIV token: its "listed callers" section runs before its "private" section, so PRIV is
+// still public, with bob and carol on its list. The driver's alice is alice@example.com, a full
+// member no list names.
+//
+// A person is one of a project's people when the rule lets them see it (R2), so while PRIV is
+// public every full member is one of PRIV's people, and both callers read alice: she can read and
+// write PRIV like carol. Once PRIV is private, only its owner and its list see it, and neither
+// caller reads her any more.
+func TestTheUsersOfAPublicListedProjectAreEveryFullMember(t *testing.T) {
+	seed := seedPrivateProject(t)
+	const driverAlice = "alice@example.com"
+	seedPeople(t, seed.database, driverAlice)
+	users := func(caller privateCaller) []string {
+		t.Helper()
+		logins := []string{}
+		for _, user := range decodeBody[listUsersResponse](t, seed.mustRequest(t, caller, http.MethodGet, "/api/v1/users", nil, http.StatusOK)).Users {
+			logins = append(logins, user.Login)
+		}
+		return logins
+	}
+	for _, state := range []struct {
+		visibility string
+		want       []string
+	}{
+		{model.ProjectPublic, []string{"alice", driverAlice, "bob", seedBob, seedCarol}},
+		{model.ProjectPrivate, []string{seedBob, seedCarol}},
+	} {
+		seed.setVisibility(t, seedPrivate, state.visibility)
+		for _, caller := range []privateCaller{callerBob, callerCarolPrivToken} {
+			if got := users(caller); !slices.Equal(got, state.want) {
+				t.Errorf("PRIV %s: %s reads GET /api/v1/users = %v, want %v", state.visibility, caller, got, state.want)
+			}
+		}
+	}
+}
