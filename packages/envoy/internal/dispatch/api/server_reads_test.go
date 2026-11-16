@@ -111,8 +111,6 @@ var serverReads = map[string]string{
 		"who names the same pair, so it is read for no one reader; the owner's check runs before the kept answer is looked up",
 	"event_stream_relay.go:page": "the relay reads one page of the event log for every subscriber at once, which each live socket " +
 		"gates by its own viewer (eventReadableSQL) where it sends an event on",
-	"live_events.go:replayThrough": "an events subscription's catch-up reads the log it replays before its socket sends any of it, " +
-		"which the socket gates by its own viewer (eventReadableSQL) where it sends an event on",
 	"delivery_sweep.go:resumeOwedDelivery": "the delivery sweep resends an owed attempt of a comment or a message a writer already " +
 		"wrote, as that write's own send would, to the one session the attempt names; no caller reads what it loads",
 	"delivery_sweep.go:settleSupersededMention": "the delivery sweep settles an owed mention attempt of a comment a writer already " +

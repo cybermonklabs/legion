@@ -517,6 +517,10 @@ func (stream *gatedStream) SendWait(ctx context.Context, frame any) error {
 
 func (stream *gatedStream) Holds(string) bool { return false }
 
+// Caller names nobody and holds no list, so its viewer is the shared token's: open, and every
+// public project, which every project these tests write in is.
+func (stream *gatedStream) Caller() model.Actor { return model.Actor{} }
+
 // next is the next frame the subscription sent, within eventFeedWait.
 func (stream *gatedStream) next(t *testing.T, what string) any {
 	t.Helper()

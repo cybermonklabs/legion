@@ -18,6 +18,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -206,11 +207,12 @@ func socketRoom(r *http.Request) string {
 // resolve is refused 401, except a person whose lapsed confirmation the sign-in issuer could not
 // renew (identity.ErrSignInUnavailable), who is still signed in and is refused 503
 // SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError). A socket's admission
-// resolves the caller and reads the document's issue once each, here, and hands both to ygo's
-// authorization of the same request (authorize) on the connection's state; a warm room's schema
-// verdict is the one its update observer recorded (residentVerdict), so admitting a socket to a
-// warm room walks no rooms and renders nothing, and a cold one renders its document once
-// (admitDocument).
+// resolves the caller, what that person sees (access.Resolve) and the document's issue once each,
+// here, and hands the caller and the issue read to ygo's authorization of the same request
+// (authorize) on the connection's state; a room the person may not read is refused exactly as a
+// room no document holds is (readIssue). A warm room's schema verdict is the one its update
+// observer recorded (residentVerdict), so admitting a socket to a warm room walks no rooms and
+// renders nothing, and a cold one renders its document once (admitDocument).
 //
 // Before it loads anything the socket takes its places under the caps, a connection's
 // (reserveConnection) and its room's (reserveRoom), and a socket that cannot take either is
@@ -263,7 +265,17 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
 		return
 	}
-	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
+	// The count of access re-checks is read before the person's read of the room, so a re-check
+	// that begins before this socket is recorded closes it once it is (schemaAdmissions.admit).
+	accessChecks := s.schemaAdmissions.accessCheckCount()
+	viewer, err := access.Resolve(r.Context(), s.queryFrom(r.Context()), actor)
+	if err != nil {
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	reader := actor
+	reader.Viewer = &viewer
+	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room, reader)
 	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
@@ -287,7 +299,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// is how a re-check closes the socket (RunSchemaAdmission).
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
-	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel}}
+	connection := &connectionState{actor: actor, issue: issue, admission: &schemaAdmission{cancel: cancel, person: actor.ID, accessChecks: accessChecks}}
 	defer func() {
 		s.schemaAdmissions.remove(connection.admission)
 		s.releaseRoom(room)

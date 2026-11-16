@@ -147,14 +147,14 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 
 // admittedRequest is request on a request context of its own carrying the admission ServeHTTP
 // puts on every document socket's context, that context's cancel included, and the one read of
-// the document's issue ServeHTTP makes for it: authorize fills the admission in and takes that
-// read, and cancelling the context with errSchemaRevoked is how a re-check closes the socket
-// (revokeUnless).
+// the document's issue ServeHTTP makes for it, here for the room's own reader: authorize fills the
+// admission in and takes that read, and cancelling the context with errSchemaRevoked is how a
+// re-check closes the socket (revokeUnless).
 func admittedRequest(t *testing.T, service *Service, request *http.Request) *http.Request {
 	t.Helper()
 	ctx, cancel := context.WithCancelCause(request.Context())
 	t.Cleanup(func() { cancel(nil) })
-	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"))
+	issue, err := service.readIssue(ctx, service.queryFrom(ctx), request.PathValue("room"), roomReader)
 	if err != nil {
 		t.Fatalf("read the document's issue as the socket's admission does: %v", err)
 	}

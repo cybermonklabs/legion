@@ -84,7 +84,10 @@ type liveSocket struct {
 	// socket serves reads what the caller proved when it opened (holds).
 	credential *model.Credential
 	// reader is the caller as a read answers for it, with what it sees, resolved once at the
-	// upgrade (resolveReader): each delivery view the socket subscribes is read for it.
+	// upgrade (readerFor): each delivery view the socket subscribes is read for it. The delivery hub
+	// takes a reader resolved again on each event that can move what the caller sees, and an events
+	// subscription resolves what it sees again from it (caller), as it starts and on each such event
+	// (feedEvents).
 	reader model.Actor
 	// queue holds the hub's frames and the socket's own refusals (Send).
 	queue chan any
@@ -139,6 +142,14 @@ func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Creden
 // caller may watch, which is model.Credential.Holds over the credential the upgrade kept.
 func (socket *liveSocket) holds(scope string) bool {
 	return socket.credential.Holds(scope)
+}
+
+// caller is the caller as the upgrade resolved it, its credential kept: what an events subscription
+// resolves again (readerFor) to learn what the caller sees now.
+func (socket *liveSocket) caller() model.Actor {
+	caller := socket.reader
+	caller.Credential = socket.credential
+	return caller
 }
 
 // liveSocketAge is how long a socket opening now lives: Deps.LiveSocketAge's, or
@@ -325,17 +336,17 @@ func (socket *liveSocket) writeFrame(frame any) bool {
 }
 
 // serveLiveSocket serves GET /ws/live to a signed-in person or an agent's bearer, keeping what
-// that caller's credential may do: a frame carries no credential, so the credential the caller
-// proved here is what each of its views is answered against (liveSocket.credential). The upgrade
-// keeps gorilla's same-origin check, so another site's page cannot open the socket with a
-// person's cookie.
+// that caller's credential may do and what it sees: a frame carries no credential, so the
+// credential the caller proved here is what each of its views is answered against
+// (liveSocket.credential, liveSocket.reader). The upgrade keeps gorilla's same-origin check, so
+// another site's page cannot open the socket with a person's cookie.
 func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	reader, err := s.resolveReader(r)
+	reader, err := s.readerFor(r.Context(), actor)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return

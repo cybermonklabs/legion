@@ -45,12 +45,19 @@ func (s *server) resolveReader(r *http.Request) (model.Actor, error) {
 	if err != nil {
 		return model.Actor{}, err
 	}
+	return s.readerFor(r.Context(), actor)
+}
+
+// readerFor is actor as a read answers for it (model.Actor.Reader), with what its credential sees
+// now (access.Resolve): the one resolution behind resolveReader, and the one a live socket makes
+// again of the caller its upgrade resolved (feedEvents, the delivery hub's access re-check).
+func (s *server) readerFor(ctx context.Context, actor model.Actor) (model.Actor, error) {
 	reader := actor.Reader()
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		reader.Viewer = closedViewer()
 		return reader, nil
 	}
-	viewer, err := access.Resolve(r.Context(), s.deps.Store.Pool, actor)
+	viewer, err := access.Resolve(ctx, s.deps.Store.Pool, actor)
 	if err != nil {
 		return model.Actor{}, err
 	}

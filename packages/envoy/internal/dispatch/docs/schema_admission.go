@@ -8,9 +8,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // schemaPage is the schema a page presents on its document socket: version is C, the
@@ -79,6 +84,12 @@ func (f schemaFleet) admits(page schemaPage, documentSince int) bool {
 	return page.valid && page.creatable <= min(f.minVersion, f.maxCreatable) && page.version >= max(f.maxCreatable, documentSince)
 }
 
+// keeps reports whether fleet keeps admission's socket open: a read-only one always, and a
+// writable one while fleet admits its page (admits).
+func (f schemaFleet) keeps(admission *schemaAdmission) bool {
+	return !admission.writable || f.admits(admission.page, admission.documentSince)
+}
+
 // schemaAdmissionKey is the room a document socket joined and the token its page presented, which
 // is the schema_version it sends once the socket opens. It is what ygo's token hook is told about
 // a socket (Service.authorizeSchemaVersion), and never identifies one: two sockets of one room can
@@ -88,32 +99,45 @@ type schemaAdmissionKey struct {
 }
 
 // schemaAdmission is one document socket's admission: what its page presented, the documentSince
-// it was admitted against, whether it was admitted writable, and the cancel of the request context
-// ygo serves that socket on. revoked is set once a re-check has closed the socket (revokeUnless).
-// It travels on the socket's own request context (connectionState), which is how the answer to
-// that socket's token finds it and no other's.
+// it was admitted against, whether it was admitted writable, the person whose cookie opened it, and
+// the cancel of the request context ygo serves that socket on. revoked is set once a re-check has
+// closed the socket (revokeUnless). It travels on the socket's own request context
+// (connectionState), which is how the answer to that socket's token finds it and no other's.
 type schemaAdmission struct {
 	key           schemaAdmissionKey
 	page          schemaPage
 	documentSince int
 	writable      bool
 	revoked       bool
-	// cancel ends the socket's request context. Cancelling it with errSchemaRevoked makes ygo send
-	// the peer that cause's close frame and close the connection (sjawhar/ygo
-	// provider/websocket/server.go, ServeHTTP's context watcher).
+	// person is the login the socket's admission resolved (requestActor), and accessChecks how
+	// many access re-checks had begun before that admission read whether the person may read the
+	// room (schemaAdmissions.accessChecks).
+	person       string
+	accessChecks uint64
+	// cancel ends the socket's request context. Cancelling it with errSchemaRevoked or
+	// errAccessRevoked makes ygo send the peer that cause's close frame and close the connection
+	// (sjawhar/ygo provider/websocket/server.go, ServeHTTP's context watcher).
 	cancel context.CancelCauseFunc
 }
 
 // schemaAdmissions is the admission of every document socket this process serves, from authorize
 // until ServeHTTP returns. Its zero value is ready to use. A token's answer never looks in here -
-// it reads the admission its own socket's context carries - so this is the set a re-check walks
-// (revokeUnless), and the lock is what orders a re-check's revoke against that answer.
+// it reads the admission its own socket's context carries - so this is the set the re-checks walk
+// (revokeUnless), the schema's and the access one, and the lock is what orders a re-check's revoke
+// against that answer.
 type schemaAdmissions struct {
 	mu      sync.Mutex
 	sockets map[*schemaAdmission]struct{}
+	// accessChecks counts the access re-checks begun (beginAccessCheck). A socket's admission reads
+	// it before it reads whether its person may read the room, and admit closes a socket whose
+	// count has moved by then: a re-check that began meanwhile walked the sockets before this one
+	// was among them, so the socket's read may predate the access change that re-check is for.
+	accessChecks uint64
 }
 
 // admit records admission, once authorize has decided it, until its socket's ServeHTTP removes it.
+// A socket an access re-check began after the admission's read of the room is closed at once
+// (errAccessRevoked), and its provider's reconnect is admitted afresh.
 func (a *schemaAdmissions) admit(admission *schemaAdmission) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -121,6 +145,32 @@ func (a *schemaAdmissions) admit(admission *schemaAdmission) {
 		a.sockets = make(map[*schemaAdmission]struct{})
 	}
 	a.sockets[admission] = struct{}{}
+	if admission.accessChecks != a.accessChecks && !admission.revoked {
+		admission.revoked = true
+		admission.cancel(errAccessRevoked)
+	}
+}
+
+// accessCheckCount is how many access re-checks have begun (accessChecks).
+func (a *schemaAdmissions) accessCheckCount() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.accessChecks
+}
+
+// beginAccessCheck counts an access re-check begun (accessChecks) and answers, by person, every
+// socket held here that no re-check has closed.
+func (a *schemaAdmissions) beginAccessCheck() map[string][]*schemaAdmission {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.accessChecks++
+	held := make(map[string][]*schemaAdmission)
+	for admission := range a.sockets {
+		if !admission.revoked {
+			held[admission.person] = append(held[admission.person], admission)
+		}
+	}
+	return held
 }
 
 // remove forgets admission, once its socket has ended. Removing one already forgotten, or one no
@@ -144,23 +194,23 @@ func (a *schemaAdmissions) writable(admission *schemaAdmission, room, token stri
 	return admission.writable && !admission.revoked && admission.key == schemaAdmissionKey{room: room, token: token}
 }
 
-// revokeUnless closes every writable socket that fleet no longer admits: it cancels the socket's
-// request context with errSchemaRevoked, on which ygo sends the peer that close frame and closes
-// the connection. The admission stays here, marked revoked, until its own ServeHTTP removes it, so
-// its token is answered read-only from then on and a later pass leaves it as it is: its connection
-// is closing. It returns the sockets it closed.
-func (a *schemaAdmissions) revokeUnless(fleet schemaFleet) []*schemaAdmission {
+// revokeUnless closes every socket no re-check has closed yet that keep answers false for: it
+// cancels the socket's request context with cause, on which ygo sends the peer the close frame
+// cause names and closes the connection. The admission stays here, marked revoked, until its own
+// ServeHTTP removes it, so its token is answered read-only from then on and a later pass leaves it
+// as it is: its connection is closing. It returns the sockets it closed.
+func (a *schemaAdmissions) revokeUnless(keep func(*schemaAdmission) bool, cause error) []*schemaAdmission {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	var revoked []*schemaAdmission
 	for admission := range a.sockets {
-		if admission.writable && !admission.revoked && !fleet.admits(admission.page, admission.documentSince) {
+		if !admission.revoked && !keep(admission) {
 			admission.revoked = true
 			revoked = append(revoked, admission)
 		}
 	}
 	for _, admission := range revoked {
-		admission.cancel(errSchemaRevoked)
+		admission.cancel(cause)
 	}
 	return revoked
 }
@@ -195,12 +245,82 @@ func (s *Service) recheckSchemaAdmissions(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, admission := range s.schemaAdmissions.revokeUnless(fleet) {
+	for _, admission := range s.schemaAdmissions.revokeUnless(fleet.keeps, errSchemaRevoked) {
 		slog.Info("dispatch: close a writable document socket the live server processes no longer admit; the provider reconnects",
 			"room", admission.key.room, "schema_version", admission.page.version, "schema_creatable", admission.page.creatable,
 			"fleet_min_schema_version", fleet.minVersion, "fleet_max_schema_creatable", fleet.maxCreatable)
 	}
 	return nil
+}
+
+// accessChanged is access.ChangedChannel's handler, on its room-sync lane (roomSync.handlers): an
+// owner, a visibility, an access list or a group changed, in a transaction of any process, whose
+// commit announced it. The notification names nothing, so the pass reads every socket again
+// (recheckAccess).
+func (s *Service) accessChanged(ctx context.Context, _ string) {
+	s.recheckAccess(ctx)
+}
+
+// recheckAccess closes each document socket this process holds whose person may no longer read its
+// room (errAccessRevoked): for each person with a socket here it reads what they see now
+// (access.Resolve) and which of their rooms they may read (documentReadable), and revokes the rest
+// (revokeUnless). It runs on each access change and after each LISTEN stands, since a change
+// notified while the hub had no connection reached nobody. A socket whose admission read its room
+// before this pass began and that is recorded only after the pass looked is closed as it is
+// recorded (schemaAdmissions.admit). A person whose read fails keeps their sockets until the next
+// pass, as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
+func (s *Service) recheckAccess(ctx context.Context) {
+	hidden := make(map[*schemaAdmission]bool)
+	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
+		readable, err := s.readableRooms(ctx, person, admissions)
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Error("dispatch: read which documents a person with an open document socket still reads", "sockets", len(admissions), "error", err)
+			}
+			continue
+		}
+		for _, admission := range admissions {
+			if !readable[admission.key.room] {
+				hidden[admission] = true
+			}
+		}
+	}
+	if len(hidden) == 0 {
+		return
+	}
+	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] }, errAccessRevoked) {
+		slog.Info("dispatch: close a document socket whose person no longer reads its document; the provider reconnects", "room", admission.key.room)
+	}
+}
+
+// readableRoomsStatement reads which of the documents $1 the reader bound at $2 may read.
+var readableRoomsStatement = `select a.id::text from artifacts a where a.id = any($1::uuid[]) and ` + documentReadable("a", "$2")
+
+// readableRooms is the rooms of admissions, all person's sockets, that person may read now.
+func (s *Service) readableRooms(ctx context.Context, person string, admissions []*schemaAdmission) (map[string]bool, error) {
+	who := model.Actor{Kind: "user", ID: person}
+	viewer, err := access.Resolve(ctx, s.store.Pool, who)
+	if err != nil {
+		return nil, err
+	}
+	who.Viewer = &viewer
+	rooms := make([]string, len(admissions))
+	for i, admission := range admissions {
+		rooms[i] = admission.key.room
+	}
+	rows, err := s.store.Pool.Query(ctx, readableRoomsStatement, rooms, refs.VisibilityArg(who))
+	if err != nil {
+		return nil, err
+	}
+	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	readable := make(map[string]bool, len(held))
+	for _, room := range held {
+		readable[room] = true
+	}
+	return readable, nil
 }
 
 // errSchemaRevoked is the cause a re-check cancels a revoked socket's request context with. ygo
@@ -221,3 +341,19 @@ func (schemaRevoked) Error() string {
 func (schemaRevoked) CloseCode() (int, string) {
 	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
 }
+
+// errAccessRevoked is the cause a socket's request context is cancelled with once its person may no
+// longer read its room (recheckAccess, schemaAdmissions.admit). ygo sends the peer the close frame
+// a revoked admission gets, on which the provider reconnects, and the reconnect's admission refuses
+// the room as a room no document holds (readIssue).
+var errAccessRevoked error = accessRevoked{}
+
+// accessRevoked is that cause's type.
+type accessRevoked struct{}
+
+func (accessRevoked) Error() string {
+	return "this document socket's person no longer reads its document"
+}
+
+// CloseCode is the close frame ygo sends the peer, schemaRevoked's.
+func (accessRevoked) CloseCode() (int, string) { return schemaRevoked{}.CloseCode() }

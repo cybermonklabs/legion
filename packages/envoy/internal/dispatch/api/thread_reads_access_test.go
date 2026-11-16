@@ -267,11 +267,17 @@ func requireLogHoldsNothingOf(t *testing.T, seed privateSeed, caller privateCall
 // TestNoStateEventOfAHiddenProjectReachesAnOpenViewer: carol marks a PRIV thread read, snoozes a
 // PRIV ask and moves her read state on a PRIV issue. Each write appends a state event owned by
 // PRIV - user_thread_state.updated, then user_state.updated twice - so alice, an open viewer who
-// does not see PRIV, finds none of the three in her event log, and carol finds all three in hers.
-// The live socket's half is the socket's own test.
+// does not see PRIV, finds none of the three in her event log or on her live socket, and carol
+// finds all three in both.
 func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 	threads := seedThreads(t)
 	key := threads.issue[seedPrivate]
+	url := liveURLOf(t, threads.handler)
+	sockets := map[privateCaller]*socketClient{}
+	for _, caller := range []privateCaller{callerAlice, callerCarol} {
+		sockets[caller] = dialLive(t, url, threads.liveHeader(t, caller))
+		subscribeEvents(t, sockets[caller], "feed", nil)
+	}
 	now := time.Now().UTC()
 	threads.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/me/threads/"+threads.comment[seedPrivate]+"/read",
 		map[string]any{"read_through": now.Format(time.RFC3339Nano)}, http.StatusNoContent)
@@ -281,9 +287,9 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		map[string]any{"pinned": true}, http.StatusOK)
 
 	stateTypes := []string{"user_thread_state.updated", "user_state.updated"}
-	carolsStateEvents := func(caller privateCaller) map[string]int {
+	countCarols := func(events []loggedEvent) map[string]int {
 		counted := map[string]int{}
-		for _, event := range eventLogOf(t, threads.privateSeed, caller) {
+		for _, event := range events {
 			var payload struct {
 				Login string `json:"login"`
 			}
@@ -295,13 +301,31 @@ func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
 		}
 		return counted
 	}
-	if got := carolsStateEvents(callerCarol); got["user_thread_state.updated"] != 1 || got["user_state.updated"] != 2 {
-		t.Fatalf("carol's event log holds her PRIV state events %v; want user_thread_state.updated once and user_state.updated twice", got)
+	// Each caller's socket is read through a pin of its own, written after carol's three writes.
+	markAgentState(t, threads.handler, seedAlice)
+	markAgentState(t, threads.handler, seedCarol)
+	socketEvents := func(caller privateCaller, login string) []loggedEvent {
+		var logged []loggedEvent
+		for _, event := range liveEventsThrough(t, sockets[caller], "feed", agentStateOf(login)) {
+			logged = append(logged, loggedEvent{ID: event.ID, Type: event.Type, Project: event.Project, Payload: event.Payload})
+		}
+		return logged
 	}
-	got := carolsStateEvents(callerAlice)
-	for _, eventType := range stateTypes {
-		if got[eventType] != 0 {
-			t.Errorf("alice's event log holds %d of carol's %s of PRIV, a project alice does not see", got[eventType], eventType)
+	for _, read := range []struct {
+		what   string
+		events func(caller privateCaller, login string) []loggedEvent
+	}{
+		{"event log", func(caller privateCaller, _ string) []loggedEvent { return eventLogOf(t, threads.privateSeed, caller) }},
+		{"live socket", socketEvents},
+	} {
+		if got := countCarols(read.events(callerCarol, seedCarol)); got["user_thread_state.updated"] != 1 || got["user_state.updated"] != 2 {
+			t.Fatalf("carol's %s holds her PRIV state events %v; want user_thread_state.updated once and user_state.updated twice", read.what, got)
+		}
+		got := countCarols(read.events(callerAlice, seedAlice))
+		for _, eventType := range stateTypes {
+			if got[eventType] != 0 {
+				t.Errorf("alice's %s holds %d of carol's %s of PRIV, a project alice does not see", read.what, got[eventType], eventType)
+			}
 		}
 	}
 }

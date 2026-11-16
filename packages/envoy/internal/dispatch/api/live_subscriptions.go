@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -47,6 +48,9 @@ type liveStreamer interface {
 	// that credential at the upgrade: the gate a view only a person's credential may watch uses,
 	// since gateRouteScopes gates a route and no frame carries a credential.
 	Holds(scope string) bool
+	// Caller is the caller as the socket's upgrade resolved it, its credential kept, from which an
+	// events subscription resolves again what the caller sees (readerFor, feedEvents).
+	Caller() model.Actor
 }
 
 // runningSubscription is an events or agent subscription whose whole life runs on a goroutine of
@@ -142,6 +146,8 @@ func (stream *liveSubscriptionStream) ended(ctx context.Context) error {
 }
 
 func (stream *liveSubscriptionStream) Holds(scope string) bool { return stream.socket.holds(scope) }
+
+func (stream *liveSubscriptionStream) Caller() model.Actor { return stream.socket.caller() }
 
 // subscribeLive answers one subscribe frame: it starts the subscription the frame's view's kind
 // names in place of any the socket holds under the frame's sub, or answers the error frame refusing
