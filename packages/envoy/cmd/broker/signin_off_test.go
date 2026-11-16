@@ -60,6 +60,10 @@ func signInOffEnv() []string {
 	}
 }
 
+// signInOnJudgeDetail is the model judge's boot line on a broker that signs people in and has no
+// judge, as main logs it: the sign-in-off change leaves that broker's line as it was.
+const signInOnJudgeDetail = "none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE is set, so every human-tier request waits for the person who decides it today"
+
 // TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApprove drives the
 // REAL compiled broker on a real Postgres. First with the switch unset and the four sign-in
 // settings given, the control: a pod's request for the owner's human-tier secret waits on the
@@ -95,6 +99,9 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 		if len(recordsWith(on.Boot, "approval sign-in on", nil)) != 1 || len(recordsWith(on.Boot, "approval sign-in off", nil)) != 0 {
 			t.Fatalf("the control's boot log does not say the approval sign-in is on:\n%s", on.Boot)
 		}
+		if detail, _ := on.AwaitRecord(t, "model judge", map[string]any{"state": "off"})["detail"].(string); detail != signInOnJudgeDetail {
+			t.Fatalf("the control's model judge line reads %q, want main's %q", detail, signInOnJudgeDetail)
+		}
 		left = pods.Ask(pod, signInOffHumanSecret)
 		if left.State != "pending" || left.RecordID == nil || left.ApproveURL != base+"/approve/"+*left.RecordID {
 			t.Fatalf("the control's request for %s = %+v, want pending on the owner's record with its page", signInOffHumanSecret, left)
@@ -120,6 +127,11 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 	public.route(t, off)
 	if len(recordsWith(off.Boot, "approval sign-in off", nil)) != 1 || strings.Contains(off.Boot, "approval sign-in on") {
 		t.Fatalf("the boot log does not say the approval sign-in is off, and that alone:\n%s", off.Boot)
+	}
+	// The judge's boot line agrees with the sign-in's: with sign-in off no request waits for a
+	// person, so the line no longer says one does.
+	if detail, _ := off.AwaitRecord(t, "model judge", map[string]any{"state": "off"})["detail"].(string); !strings.Contains(detail, "BROKER_SIGNIN=off") || strings.Contains(detail, "waits for the person") {
+		t.Fatalf("the sign-in-off broker's model judge line reads %q, want it to say no request waits for a person under BROKER_SIGNIN=off", detail)
 	}
 
 	t.Run("no route of the approval page or its sign-in is served", func(t *testing.T) {

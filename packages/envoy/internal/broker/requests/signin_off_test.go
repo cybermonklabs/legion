@@ -134,11 +134,12 @@ const anotherBroker = "https://another-broker.internal.example"
 // sign-in off, or while one replica of a rolling change still has it on. Nobody can sign in to
 // decide them any more, so the sweep denies each of them at once, naming the setting, closes its
 // record with a denied event, writes its request.denied audit row and wakes its session, rather
-// than leaving a link to a page that is gone in the approver's Inbox until the deadline. It does
-// so whatever the database's clock says the request was written at. A grant a person approved
-// before is left as it was, and so is a request signed for another broker sharing the database,
-// which that broker still lists. The control is the same sweep with sign-in on, which leaves
-// every request pending.
+// than leaving a link to a page that is gone in the approver's Inbox until the deadline. A grant
+// a person approved before is left as it was, and so is a request signed for another broker
+// sharing the database, which that broker still lists, and one a pod still on sign-in writes
+// after this pod's first sweep, which that pod's page serves: the bound is the database's own
+// time of that sweep, so the broker's clock moves nothing. The control is the same sweep with
+// sign-in on, which leaves every request pending.
 func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.T) {
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
@@ -184,11 +185,6 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 		t.Fatalf("with sign-in on, the sweep woke %+v; want no one", woken)
 	}
 
-	// The broker's clock and the database's need not agree: a request row whose created_at, the
-	// database's own time, is an hour ahead of the sweep's clock is denied all the same.
-	if _, err := m.Store.Pool.Exec(ctx, `update requests set created_at = now() + interval '1 hour' where id = $1`, owned.ID); err != nil {
-		t.Fatalf("move %s's created_at ahead: %v", owned.ID, err)
-	}
 	m.SignInOff = true
 	sweeper.Tick(ctx)
 	for _, req := range []Request{owned, shared} {
@@ -237,5 +233,23 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 	sweeper.Tick(ctx)
 	if len(woken) != 0 {
 		t.Fatalf("a second sweep woke %+v; want no one, nothing being pending", woken)
+	}
+
+	// A mixed roll: a broker pod with sign-in on, sharing the database and the public URL, writes
+	// a request after this pod's first sweep. That pod serves its page, so this pod's sweeps leave
+	// the request to it, however far the broker's own clock runs ahead: the bound is the
+	// database's time of this pod's first sweep, read from the database.
+	m.SignInOff = false
+	fresh, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of a pod with sign-in on", "DEEL_API_KEY"), "", nil)
+	m.SignInOff = true
+	if err != nil || fresh.State != "pending" || fresh.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) on a pod with sign-in on = %+v, %v; want it pending", fresh, err)
+	}
+	sweeper.Tick(ctx)
+	if denied, err := m.denyUndecidable(ctx, time.Now().Add(24*time.Hour)); err != nil || len(denied) != 0 {
+		t.Fatalf("a sweep with the broker's clock a day ahead denied %+v, %v; want nothing", denied, err)
+	}
+	if got, err := m.Get(ctx, fresh.ID); err != nil || got.State != "pending" || len(woken) != 0 {
+		t.Fatalf("the request a pod with sign-in on wrote after this pod's first sweep = %+v, %v (woken %+v); want it left pending for that pod", got, err, woken)
 	}
 }

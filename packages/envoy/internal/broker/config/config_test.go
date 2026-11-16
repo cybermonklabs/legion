@@ -2007,6 +2007,34 @@ func TestLoadRefusesAPublicURLThatIsNotHTTP(t *testing.T) {
 	}
 }
 
+// TestLoadKeepsMainsPublicURLRefusal pins the refusal main gives a BROKER_PUBLIC_URL with a path,
+// or with no scheme, word for word: the http(s) rule is a check of its own, and it does not
+// reword the one a deployment already reads.
+func TestLoadKeepsMainsPublicURLRefusal(t *testing.T) {
+	for _, bad := range []string{"https://secrets.internal.example/broker", "secrets.internal.example"} {
+		e := validEnv()
+		e["BROKER_PUBLIC_URL"] = bad
+		want := "BROKER_PUBLIC_URL must be an absolute URL with no path: " + strconv.Quote(redact.URL(bad))
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_PUBLIC_URL=%q) = %v; want main's %q", bad, err, want)
+		}
+	}
+}
+
+// TestLoadRefusesTheSignInBeforeThePublicURLsScheme pins the order main refuses in: an ftp://
+// BROKER_PUBLIC_URL beside a sign-in missing BROKER_SIGNIN_DOMAIN is refused for the sign-in, as
+// main's Load did, since main refused the scheme only later, in approval.New. The scheme check is
+// Load's last, so every refusal main's Load gave comes first, as it did.
+func TestLoadRefusesTheSignInBeforeThePublicURLsScheme(t *testing.T) {
+	e := validEnv()
+	e["BROKER_PUBLIC_URL"] = "ftp://secrets.internal.example"
+	delete(e, "BROKER_SIGNIN_DOMAIN")
+	const want = "the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"
+	if _, err := Load(env(e)); err == nil || err.Error() != want {
+		t.Fatalf("Load(ftp:// URL, no BROKER_SIGNIN_DOMAIN) = %v; want main's sign-in refusal first, %q", err, want)
+	}
+}
+
 // TestLoadWithTheSwitchUnsetRefusesAnEmptySignIn pins that a broker which does not say
 // BROKER_SIGNIN=off still refuses to start with no sign-in, in the very words it always has: a
 // production broker that lost its sign-in settings must not come up without its approval page.

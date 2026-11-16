@@ -601,18 +601,22 @@ func writeError(w http.ResponseWriter, status int, code, msg string) {
 }
 
 // pageRefusal is the body of a refusal that names the approval page where a person decides the
-// record instead, beside the code and error every refusal carries.
+// record instead, beside the code and error every refusal carries. On a broker with
+// BROKER_SIGNIN=off, which serves no page, it names none and says why.
 type pageRefusal struct {
 	// The refusal's code.
 	Code string `json:"code"`
-	// What was refused, naming the page.
+	// What was refused, naming the page, or, on a broker with BROKER_SIGNIN=off, saying that it
+	// serves none.
 	Error string `json:"error"`
-	// The record's page on the broker's own approval page, <BROKER_PUBLIC_URL>/approve/<record>.
-	ApproveURL string `json:"approve_url"`
+	// The record's page on the broker's own approval page, <BROKER_PUBLIC_URL>/approve/<record>;
+	// absent on a broker with BROKER_SIGNIN=off, where that page is a 404.
+	ApproveURL string `json:"approve_url,omitempty"`
 }
 
 // writePageRefusal is writeError for a refusal naming the record's approval page, approveURL,
-// which its body carries as approve_url (pageRefusal) for a caller to link.
+// which its body carries as approve_url (pageRefusal) for a caller to link; an empty approveURL,
+// a broker that serves no page, leaves approve_url out.
 func writePageRefusal(w http.ResponseWriter, status int, code, msg, approveURL string) {
 	writeJSON(w, status, pageRefusal{Code: code, Error: msg, ApproveURL: approveURL})
 }

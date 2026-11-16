@@ -112,8 +112,10 @@ otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge
 and the id of the model it asks, the audience of the Google identity token the broker presents to
 that endpoint, and the Dispatch it reads an issue from with the file holding the broker's own
 projected ServiceAccount token for it. They are all-or-none: with none of them set there is no
-judge, and every human-tier request waits for the person who decides it today. A sixth setting
-names the protocol that endpoint speaks and has a default. The
+judge, and every human-tier request waits for the person who decides it today, except on a broker
+with `BROKER_SIGNIN=off`, which denies every such request at once and takes no judge
+([A broker that signs nobody in](#a-broker-that-signs-nobody-in)); its `model judge state=off`
+boot line says so. A sixth setting names the protocol that endpoint speaks and has a default. The
 [configuration reference](/legion/broker/reference/config/) names each and gives its accepted
 values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
 local stack's negative control of them, and a production start — one with
@@ -571,14 +573,17 @@ pods as any broker does and approves nothing:
 - What the policy grants at once is granted as on any broker: a person's own and a shared
   `tier=agent` secret for their sessions, and a service's own secret for its pods. A machine
   login, which a person decides on Dispatch's machine-login page, is unchanged.
-- A request still pending from a run with sign-in on — one written before a restart with
-  `BROKER_SIGNIN=off`, or by a broker pod still on the old setting during the roll — is denied by the
-  next sweep, within `BROKER_SWEEP_SECONDS`, and leaves the approver's Inbox: the session reads
-  `was denied: a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)`, and
-  the request records `broker:signin-off` as having decided it. A grant a person approved
-  before stays until it ends as any grant does, and a request signed for another broker sharing
-  the database, at another `BROKER_PUBLIC_URL`, is left to that broker.
-- `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off.
+- A request still pending from a run with sign-in on, written before this pod's first sweep —
+  one a restart with `BROKER_SIGNIN=off` left — is denied by that sweep and leaves the
+  approver's Inbox: the session reads `was denied: a person must approve it, and this broker
+  signs nobody in (BROKER_SIGNIN=off)`, and the request records `broker:signin-off` as having
+  decided it. The bound is the database's own time of that first sweep, so the broker's clock
+  moves nothing. A grant a person approved before stays until it ends as any grant does, and a
+  request signed for another broker sharing the database, at another `BROKER_PUBLIC_URL`, is
+  left to that broker.
+- `BROKER_PUBLIC_URL` is held to an `http` or `https` URL whether sign-in is on or off, by the
+  broker's last configuration check: `BROKER_PUBLIC_URL must be an http or https URL, got the
+  scheme "ftp"`.
 
 `off` is the one value it takes: any other, `OFF` or `disabled` among them, refuses to start
 naming it, `broker: fatal error="BROKER_SIGNIN must be off or unset, got \"disabled\""`. `off`
@@ -589,6 +594,20 @@ beside the [model judge](/legion/broker/concepts/#the-model-judge)'s settings re
 the judge decides only a request that waits for a person. With `BROKER_SIGNIN` unset, a broker
 missing a sign-in setting refuses exactly as above, so a deployment that lost its sign-in settings
 never starts without its approval page.
+
+Moving between the two settings is a roll of the broker's pods, and the sweep's bound is what
+keeps each direction safe while pods of both kinds share the database:
+
+- **Turning sign-in on.** Set the four `BROKER_SIGNIN_*` settings, unset `BROKER_SIGNIN`, and
+  roll the pods. A pod still `off` during the roll denies nothing the new pods queue, since
+  every request they write comes after its first sweep. It still denies at once a new request
+  it serves itself, so a session that reached an `off` pod during the roll asks again once the
+  roll is done.
+- **Turning sign-in off.** Set `BROKER_SIGNIN=off`, unset every `BROKER_SIGNIN_*` setting and
+  the model judge's, and roll the pods. A request a pod with sign-in on queues after the first
+  `off` pod's first sweep is left pending: its page is served while that pod runs, and once the
+  roll is done it expires undecided. Restart one `off` pod after the roll to deny those at its
+  first sweep instead.
 
 ## Signing in to RDS by IAM token
 

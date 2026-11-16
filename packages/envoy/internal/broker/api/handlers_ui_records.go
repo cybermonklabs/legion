@@ -90,8 +90,9 @@ func (s *server) denyRecord(w http.ResponseWriter, r *http.Request, needs power)
 // than in authenticate. It then reads the record's kind, before anything else about the caller:
 // a secret request answers 403 DECIDE_ON_BROKER_PAGE naming its page on the broker, whether or
 // not the caller holds a ServiceAccount token, since no token makes one decidable here and a
-// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do. Nothing
-// is written and no body is read for that refusal. Every other record is then authenticated
+// caller turned away with 401 or ACCOUNT_NOT_LISTED would be told the wrong thing to do; on a
+// broker with BROKER_SIGNIN=off, which serves no page, the refusal names the setting and no page.
+// Nothing is written and no body is read for that refusal. Every other record is then authenticated
 // exactly as the other account routes are (accountCaller: the ServiceAccount token and
 // BROKER_API_ACCOUNTS), and the caller's name must carry needs, the power its row declares, as
 // authenticate requires of every other route a listed caller's token authenticates
@@ -111,6 +112,13 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	}
 	kind, kindErr := s.deps.Machine.RecordKind(r.Context(), recordID)
 	if kindErr == nil && kind != record.KindLauncherCredential {
+		// A broker with BROKER_SIGNIN=off serves no page (Deps.Approval nil), so the refusal names
+		// none, since every /approve path is a 404 there, and says why nobody can decide it.
+		if s.deps.Approval == nil {
+			writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
+				"a secret request is decided only on the secrets broker's own page, and this broker serves none: it signs nobody in (BROKER_SIGNIN=off), so this request cannot be decided here", "")
+			return
+		}
 		page := s.approveURL(recordID)
 		writePageRefusal(w, http.StatusForbidden, "DECIDE_ON_BROKER_PAGE",
 			"a secret request is decided only on the secrets broker's own page, by a person signed in to the broker: "+page, page)

@@ -151,8 +151,8 @@ type Config struct {
 	// approval page (every route under /approve and /signin/ is a 404), and a request naming a
 	// secret whose answer would be a person's approval — a human-tier secret, another person's
 	// agent-tier secret, one the session's operator withheld from it — is denied at once, its
-	// detail naming this setting, rather than left pending for a person who cannot come; one a
-	// run with sign-in on left pending is denied by the next sweep. What
+	// detail naming this setting, rather than left pending for a person who cannot come; one an
+	// earlier run with sign-in on left pending is denied by this broker's first sweep. What
 	// the policy grants at once (a person's own or a shared agent-tier secret for their sessions,
 	// a service's own secret for its pods) is granted as with sign-in on, and a machine login,
 	// which a person decides on Dispatch's page, is unchanged. off refuses to start beside any
@@ -1383,11 +1383,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	// http or https and nothing else, checked here and not only where the approval page is built:
-	// a broker with BROKER_SIGNIN=off builds no page, and every proof, request object and
-	// metadata endpoint it names is under this URL, which its clients reach over HTTP.
-	if parsed, err := url.Parse(cfg.PublicURL); err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.Path != "" {
-		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute http(s) URL with no path: %q", redact.URL(cfg.PublicURL))
+	if parsed, err := url.Parse(cfg.PublicURL); err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" {
+		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute URL with no path: %q", redact.URL(cfg.PublicURL))
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an
 	// absolute URL for is a verification_uri no machine could follow, which is worse than the
@@ -1721,6 +1718,15 @@ func Load(getenv func(string) string) (Config, error) {
 	if model := leasetime.Production(); !model.Survives(lease, sweep) {
 		return Config{}, fmt.Errorf("BROKER_LEASE_SECONDS (%d) is too short for BROKER_SWEEP_SECONDS (%d): a session must outlive a gap of %d s that still counts as a broker serving and the time its renewer then takes to renew. The shortest lease that survives both renewers at this sweep is %d s.",
 			cfg.LeaseSeconds, cfg.SweepSeconds, leasetime.NotServingSweeps*cfg.SweepSeconds, int(model.Shortest(sweep)/time.Second))
+	}
+	// BROKER_PUBLIC_URL's scheme, http or https and nothing else: every proof, request object and
+	// metadata endpoint the broker names is under this URL, which its clients reach over HTTP.
+	// approval.New refuses any other scheme too, but a broker with BROKER_SIGNIN=off builds no
+	// page, so the rule is held here. It is Load's last check, so every other refusal comes first,
+	// in the order it always did, and only a configuration the page would have refused is refused
+	// here. The scheme alone is printed: it holds no credential.
+	if parsed, err := url.Parse(cfg.PublicURL); err == nil && parsed.Scheme != "https" && parsed.Scheme != "http" {
+		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an http or https URL, got the scheme %q", parsed.Scheme)
 	}
 	return cfg, nil
 }

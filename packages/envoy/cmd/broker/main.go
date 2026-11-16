@@ -1150,8 +1150,13 @@ const judgeDispatchTimeout = 10 * time.Second
 // drain, while a half-finished run would approve a credential as the pod goes away.
 func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
 	if cfg.JudgeModelURL == "" {
-		slog.Info("model judge", "state", "off",
-			"detail", "none of "+strings.Join(config.JudgeSettings, ", ")+" is set, so every human-tier request waits for the person who decides it today")
+		// config.Load refuses a judge beside BROKER_SIGNIN=off, so an off broker always lands here,
+		// and its line says what such a broker does with a request a person would decide.
+		detail := "none of " + strings.Join(config.JudgeSettings, ", ") + " is set, so every human-tier request waits for the person who decides it today"
+		if cfg.SignInOff {
+			detail = "BROKER_SIGNIN=off: no request waits for a person, since every one a person would decide is denied at once, so there is nothing for a judge to decide"
+		}
+		slog.Info("model judge", "state", "off", "detail", detail)
 		return
 	}
 	runner := judge.New(ctx, judge.Options{
