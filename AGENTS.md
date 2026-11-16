@@ -17,6 +17,9 @@ A measurement outranks any line here.
 - **Everything in Dispatch is a node in the graph, and a feature is a query over it.**
   When a feature is hard to build over the model, the model is the defect.
 
+- **One source of truth for each fact.**
+  A copy drifts, so read the fact from the system that writes it.
+
 - **The daemon is a state machine, not a gateway.**
 
 - **Agents are engineers.**
@@ -34,6 +37,9 @@ A measurement outranks any line here.
 - **Make it modular.**
 
 - **Instrument and log everything.**
+
+- **A refusal names its reason, and nothing drops in silence.**
+  A silent drop looks like success, so nobody looks for it.
 
 - **Self-organization over coordination.**
 
@@ -55,6 +61,9 @@ A measurement outranks any line here.
 
 - **Make invalid input impossible to represent.**
   Typing is your friend.
+
+- **Each interface has one declared contract, and a service keeps answering the older clients it supports.**
+  A hand-written copy of a schema drifts, and no rollout updates both sides at once.
 
 * **There are no rules, there are only reasons.**
   Explain what is not obvious, but do not turn that into law.
