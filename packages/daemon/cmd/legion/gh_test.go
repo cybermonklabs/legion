@@ -1185,6 +1185,14 @@ func readRecord(t *testing.T, path string) string {
 // of those reads: a write under it, another read under it, and the same read under a variable
 // naming no repository are each checked like anything else. The shared check's own read this
 // command answers itself, through the guard's REST read, which reaches gh.
+//
+// A push made with the caller's own token carries GH_TOKEN or GITHUB_TOKEN into the guard, and so
+// into each of those reads. Each read runs under that token, for a repository of an owner the
+// bundle holds no directory for too. The token widens nothing else. Under it, this command runs
+// the guard's two visibility reads, the shared check's own read, the exact `gh api rate_limit` and
+// `gh auth git-credential`, and refuses every other call before gh runs, naming the token. So
+// another read under the variable, the guard's read under no variable, and the guard's read of
+// another repository than the variable names are each refused.
 func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1315,6 +1323,55 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 		}
 	})
 
+	for _, token := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		for _, slug := range []string{"sjawhar/legion", "octo/elsewhere"} {
+			rest := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs(slug), " ") + "\n"
+			for _, read := range []struct {
+				name string
+				args []string
+				want string
+			}{
+				{"the shared check's own visibility read", leakguard.VisibilityReadArgs(slug), rest},
+				{"the guard's own REST visibility read", leakguard.VisibilityReadWithHeadersArgs(slug), rest},
+				{"the guard's own GraphQL visibility read", leakguard.VisibilityGraphQLArgs(slug), "visibility " + strings.Join(leakguard.VisibilityGraphQLArgs(slug), " ") + "\n"},
+			} {
+				t.Run("unchecked under "+token+": "+read.name+" of "+slug, func(t *testing.T) {
+					code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", map[string]string{token: "ghs_caller", leakguard.VisibilityReadVar: slug}, read.args...)
+					if code != 0 || stdout != "public\n" {
+						t.Errorf("legion gh %q under %s = exit %d, stdout %q, stderr %q; want exit 0 and the visibility", read.args, token, code, stdout, stderr)
+					}
+					if checked != "" {
+						t.Errorf("the shared check ran for a visibility read: %q", checked)
+					}
+					if ghRan != read.want {
+						t.Errorf("gh recorded %q, want %q", ghRan, read.want)
+					}
+				})
+			}
+		}
+		for _, tc := range []struct {
+			name string
+			env  map[string]string
+			args []string
+		}{
+			{"another read under the variable", map[string]string{leakguard.VisibilityReadVar: "sjawhar/legion"}, []string{"api", "--hostname", "github.com", "repos/sjawhar/legion", "--jq", ".name"}},
+			{"the guard's read under no variable", nil, leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion")},
+			{"the guard's read of another repository than the variable's", map[string]string{leakguard.VisibilityReadVar: "sjawhar/other"}, leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion")},
+		} {
+			t.Run("refused under "+token+": "+tc.name, func(t *testing.T) {
+				extra := map[string]string{token: "ghs_caller"}
+				maps.Copy(extra, tc.env)
+				code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", extra, tc.args...)
+				if want := token + " is set"; code != 2 || !strings.Contains(stderr, want) {
+					t.Errorf("legion gh %q under %s = exit %d, stdout %q, stderr %q; want exit 2 and %q", tc.args, token, code, stdout, stderr, want)
+				}
+				if checked != "" || ghRan != "" {
+					t.Errorf("the check recorded %q and gh %q; want neither run", checked, ghRan)
+				}
+			})
+		}
+	}
+
 	for _, tc := range []struct {
 		name string
 		slug string
@@ -1418,27 +1475,35 @@ func TestGhVisibilityReadLetsThroughOnlyTheExactReads(t *testing.T) {
 // serves under that name, and both reads of sjawhar/legion-smoke, which the pair does not move,
 // take sjawhar's. Were the GraphQL read resolved by its owner alone, the sjawhar/legion half
 // would take sjawhar's and this row would fail.
-func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysToken(t *testing.T) {
+//
+// Under the caller's own GH_TOKEN or GITHUB_TOKEN both reads run with that token, which gh sends
+// in place of any directory's: they keep the GH_CONFIG_DIR they were given and are routed by
+// nothing, for octo/elsewhere, whose owner the bundle holds no directory for, as much as for a
+// repository it does hold one for (#4219).
+func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysOrTheCallersToken(t *testing.T) {
 	root := pairRoutedBundle(t)
 	defaultDir := ghconfig.Dir(root, "cybermonklabs")
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The stub records the GH_CONFIG_DIR and the argv of every run, then answers as the
-	// package's stand-in does: a help request with the saved help, a visibility read with public.
+	// The stub records the GH_CONFIG_DIR, the GH_TOKEN, the GITHUB_TOKEN and the argv of every
+	// run, then answers as the package's stand-in does: a help request with the saved help, a
+	// visibility read with public.
 	stub := filepath.Join(t.TempDir(), "gh")
-	script := "#!/bin/sh\nprintf '%s|%s\\n' \"$GH_CONFIG_DIR\" \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
+	script := "#!/bin/sh\nprintf '%s|%s|%s|%s\\n' \"$GH_CONFIG_DIR\" \"$GH_TOKEN\" \"$GITHUB_TOKEN\" \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		strings.TrimPrefix(ghStandInPrefix(help), "#!/bin/sh\n") + "exit 0\n"
 	if err := os.WriteFile(stub, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	wrappers := ghWrapperDir(t)
 	for _, tc := range []struct {
-		slug, dir string
+		slug, token, dir string
 	}{
-		{"sjawhar/legion", ghconfig.Dir(root, "cybermonklabs")},
-		{"sjawhar/legion-smoke", ghconfig.Dir(root, "sjawhar")},
+		{"sjawhar/legion", "", ghconfig.Dir(root, "cybermonklabs")},
+		{"sjawhar/legion-smoke", "", ghconfig.Dir(root, "sjawhar")},
+		{"sjawhar/legion", "GH_TOKEN", defaultDir},
+		{"octo/elsewhere", "GITHUB_TOKEN", defaultDir},
 	} {
 		for _, read := range []struct {
 			name string
@@ -1447,21 +1512,72 @@ func TestLegionGhRunsTheGuardsVisibilityReadsWithTheRepositorysToken(t *testing.
 			{"REST", leakguard.VisibilityReadWithHeadersArgs(tc.slug)},
 			{"GraphQL", leakguard.VisibilityGraphQLArgs(tc.slug)},
 		} {
-			t.Run(read.name+" "+tc.slug, func(t *testing.T) {
+			t.Run(read.name+" "+tc.slug+" "+tc.token, func(t *testing.T) {
 				record := filepath.Join(t.TempDir(), "gh")
-				code, stdout, stderr := legionGh(t, map[string]string{
+				env := map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 					"PATH": wrappers + ":" + os.Getenv("PATH"), "GH_STANDIN_RECORD": record,
 					leakguard.VisibilityReadVar: tc.slug,
-				}, read.args...)
+				}
+				tokens := map[string]string{"GH_TOKEN": "", "GITHUB_TOKEN": ""}
+				if tc.token != "" {
+					env[tc.token], tokens[tc.token] = "ghs_caller", "ghs_caller"
+				}
+				code, stdout, stderr := legionGh(t, env, read.args...)
 				if code != 0 || stdout != "public\n" {
 					t.Fatalf("legion gh %q = exit %d, stdout %q, stderr %q; want exit 0 and gh's answer", read.args, code, stdout, stderr)
 				}
-				if want := tc.dir + "|" + strings.Join(read.args, " ") + "\n"; !strings.Contains(readRecord(t, record), want) {
+				if want := tc.dir + "|" + tokens["GH_TOKEN"] + "|" + tokens["GITHUB_TOKEN"] + "|" + strings.Join(read.args, " ") + "\n"; !strings.Contains(readRecord(t, record), want) {
 					t.Errorf("gh recorded\n%s\nwant the read run with %s:\n%s", readRecord(t, record), tc.dir, want)
 				}
 			})
 		}
+	}
+}
+
+// The other half of the octo/elsewhere row above: a visibility read runs under the caller's token
+// for an owner the bundle holds no directory for, and the SAME read with no caller token is
+// refused, exit 2, naming that owner. That is what makes the caller-token arm worth having rather
+// than a widening of what any read may reach: without a token of its own the read is still routed
+// through the bundle (ghConfigDirFor), which holds nothing for octo, and #4219's second reason —
+// that a read with the bundle's directory would be refused for a repository the caller's token
+// writes — is this refusal.
+//
+// TWO independent gates hold it, which is why its control mutates both: ghTargetOf refuses the
+// unheld owner before the switch, and this change's own routing in the ghVisibilityCall arm
+// refuses it again from the read's own repository. Either alone answers exit 2 with the same
+// text, so a control that removes one measures nothing.
+func TestLegionGhRefusesTheGuardsVisibilityReadForAnUnheldOwnerWithoutACallerToken(t *testing.T) {
+	root := pairRoutedBundle(t)
+	defaultDir := ghconfig.Dir(root, "cybermonklabs")
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wrappers := ghWrapperDir(t)
+	const slug = "octo/elsewhere"
+	for _, read := range []struct {
+		name string
+		args []string
+	}{
+		{"REST", leakguard.VisibilityReadWithHeadersArgs(slug)},
+		{"GraphQL", leakguard.VisibilityGraphQLArgs(slug)},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			env := map[string]string{
+				"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+				"PATH": wrappers + ":" + os.Getenv("PATH"), leakguard.VisibilityReadVar: slug,
+			}
+			code, stdout, stderr := legionGh(t, env, read.args...)
+			const refusal = `the role's GitHub App is not installed on "octo"`
+			if code != 2 || stdout != "" || !strings.Contains(stderr, refusal) {
+				t.Errorf("legion gh %q with no caller token = exit %d, stdout %q, stderr %q; want exit 2 and %s", read.args, code, stdout, stderr, refusal)
+			}
+		})
 	}
 }
 

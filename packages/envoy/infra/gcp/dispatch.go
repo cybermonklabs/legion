@@ -1064,12 +1064,18 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, err
 	return origin.String(), nil
 }
 
-// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape. Both resolvers run
-// it, so a cluster-only component holds its hostname, which names every cloud resource, to the
-// rule the full resolver holds it to, with the same refusal.
+// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one
+// weborigin.ReservedLabel refuses, since the front door puts <hostname>.<tailnetDnsName> on its
+// certificate (dispatch_frontdoor.go, its certificate field). Both resolvers run it, in every mode:
+// a stack in the cluster-only mode or the sandbox, which builds no front door, keeps a hostname a
+// front door can later serve, and its hostname, which names every cloud resource, is held to the
+// rule the full resolver holds it to, with the same refusals.
 func refuseDispatchHostname(hostname string) error {
 	if !hostnameRule.MatchString(hostname) {
 		return fmt.Errorf("hostname %q must match %s", hostname, hostnameRule)
+	}
+	if err := weborigin.ReservedLabel(hostname); err != nil {
+		return fmt.Errorf("hostname: %w", err)
 	}
 	return nil
 }

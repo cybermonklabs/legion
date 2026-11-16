@@ -44,7 +44,11 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // naming an owner the bundle holds no directory for — an owner the role's App is not installed
 // on — and one naming a repository a pair moved to an owner the bundle holds no directory for are
 // refused, exit 2, naming why, and the real gh never runs: no token is ever sent for a repository
-// it cannot reach.
+// it cannot reach. Under a GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's
+// token, every command is refused the same way but these: the guard's own visibility reads, which
+// run with that token (ghVisibilityRead), the shared check's visibility read
+// (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
+// git-credential`.
 //
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
@@ -103,8 +107,13 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return 2
 	}
 	rateLimitRead := ghRateLimitRead(args)
+	visibilityRead, isVisibilityRead := ghVisibilityRead(args, env)
+	// The guard's own visibility read under the caller's GH_TOKEN or GITHUB_TOKEN runs with that
+	// token (ghVisibilityRead says why). So it does not go through ghTargetOf, which refuses
+	// every call under either. Its argv is exact, so the resolver has nothing of it to read.
+	callerTokenRead := isVisibilityRead && ghCallerToken(env) != ""
 	var target ghTarget
-	if rateLimitRead {
+	if rateLimitRead || callerTokenRead {
 		target.command = "api"
 	} else {
 		// Every repository the command names is routed through the bundle's own pick, and the
@@ -158,7 +167,6 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// and needs no second reader of the argv for a call this command checked.
 	var buffered []byte
 	checkedOnly := false
-	visibilityRead, isVisibilityRead := ghVisibilityRead(args, env)
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
 	switch mode {
 	case ghRateLimitCall:
@@ -172,10 +180,17 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// so the directory this process resolved from the argv is that owner's. Route it by the
 		// repository instead: a configured rename serves the repository from the `to` owner's
 		// directory, and the `from` owner's token cannot read it (ghConfigDirFor, INFRA-2543).
-		target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
-		if target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
+		//
+		// Under the caller's token it keeps GH_CONFIG_DIR and is routed by nothing, because gh
+		// sends that token in place of any directory's: the bundle may hold no directory for the
+		// read's repository at all, and this routing would then refuse a read the caller's token
+		// can make, which is the second reason #4219 gives for running these reads under it.
+		if !callerTokenRead {
+			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
+			if target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
+				fmt.Fprintf(stderr, "legion gh: %v\n", err)
+				return 2
+			}
 		}
 	case ghReadCall, ghGuardedCall:
 		guard := leakguard.New(leakguard.Options{
@@ -253,7 +268,7 @@ const (
 	ghRateLimitCall
 	// ghVisibilityCall is one of the guard's own visibility reads, REST or GraphQL
 	// (ghVisibilityRead), which runs no guard, writes no line of the call log and takes the token
-	// of the repository it reads.
+	// of the repository it reads, or the caller's GH_TOKEN or GITHUB_TOKEN where one is set.
 	ghVisibilityCall
 )
 
@@ -382,6 +397,22 @@ func trimGhCallLog(path string) {
 // that name must parse as a repository GitHub could serve, so a variable someone else set lets
 // through one read of one repository and nothing else. The shared check's own read, the same
 // argv without `--include`, is not one of them (sharedCheckVisibilityRead).
+//
+// A caller's GH_TOKEN or GITHUB_TOKEN, which refuses every other call that reads the command
+// (ghTargetOf), does not refuse these reads. runGh runs them with that token, which gh sends in
+// place of any directory's token. That token, and not the bundle's directory for the repository
+// or its owner, is the credential of these reads on purpose:
+//
+//   - The guard reads a visibility under a caller's token for a write made with that token, such
+//     as a git push whose credential helper answers with GH_TOKEN. That token writes the
+//     repository the guard reads, so it can read that repository too.
+//   - The bundle may hold no directory for the repository's owner. A read with the bundle's
+//     directory would then be refused, and so would the push, for a repository the token writes.
+//   - gh sends the caller's token first, so a read with the bundle's directory would also have to
+//     remove that token from gh's environment.
+//
+// The visibility is the repository's own, so the answer is the same whichever token reads it. A
+// token that cannot read the repository makes the read fail, and the guard refuses the call.
 func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, bool) {
 	repo, ok := visibilityReadRepository(env)
 	if !ok {
@@ -714,6 +745,17 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 	return files
 }
 
+// ghCallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order,
+// and "" where env sets neither. gh sends that token in place of any gh directory's token.
+func ghCallerToken(env map[string]string) string {
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if env[name] != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // ghTargetOf is the ghTarget of the gh command argv (gh's arguments, without `gh`), the zero
 // target when the command names no owner. It fails closed: whenever it cannot be certain which
 // gh directory the command needs it is an error, which names the argument it could not place, and
@@ -762,10 +804,8 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return ghTarget{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
 	}
-	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
-		if env[name] != "" {
-			return ghTarget{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
-		}
+	if name := ghCallerToken(env); name != "" {
+		return ghTarget{}, fmt.Errorf("%s is set, and gh sends it in place of the token of the owner the command targets, so it sends no token; unset %s", name, name)
 	}
 	walk := ghWalk{help: help}
 	var rest []string
