@@ -7,23 +7,22 @@
 // The requirement is a server whose scan of a consumer's stored messages reads every filter. A
 // session consumer filters on a session's agent subject in both forms of its name,
 // notifications.agent.<session> beside notifications.agent.*.<session> (dispatch://INFRA-3862),
-// which puts a `*` and a literal at the same token of the server's filter tree. From v2.10.26
-// (nats-io/nats-server#7713), and in 2.11.0 to 2.11.11 and 2.12.0 to 2.12.3, nats-server reads a
-// file block by subject through an intersection that can miss a literal filter beside a `*`: at
-// v2.10.29 and v2.11.0 intersectStree (server/sublist.go 1750-1784 at v2.10.29) follows only the
-// `*` branch at such a level, and at v2.11.11 and v2.12.3 gsl.intersectStree visits a terminal
-// literal but skips one that has descendants (nats-io/nats-server#7726). With other subjects'
-// messages between a consumer's position and a message on the literal, the consumer is moved past
-// that message (consumer.go getNextMsg, 3700-3708 at v2.10.29) and never delivers it, with no
-// error. v2.11.12, v2.12.4 and every release from v2.14.0 read the block through
-// stree.IntersectGSL, which checks every filter; their first candidates did not (v2.11.12-RC.1 to
-// RC.3 and v2.12.4-RC.1 and RC.2 still call gsl.IntersectStree), so a prerelease counts as before
-// its release. There is no v2.13.
+// which puts a `*` and a literal at the same token of the server's filter tree. From v2.10.26, and
+// in 2.11.0 to 2.11.11 and 2.12.0 to 2.12.3, nats-server reads a file block by subject through an
+// intersection that can miss a literal filter beside a `*`: at v2.10.29 and v2.11.0
+// intersectStree (server/sublist.go 1750-1784 at v2.10.29) follows only the `*` branch at such a
+// level, and at v2.11.11 and v2.12.3 gsl.intersectStree visits a terminal literal but skips one
+// that has descendants. With other subjects' messages between a consumer's position and a message
+// on the literal, the consumer is moved past that message (consumer.go getNextMsg, 3700-3708 at
+// v2.10.29) and never delivers it, with no error. v2.11.12, v2.12.4 and every release from v2.14.0
+// read the block through stree.IntersectGSL, which checks every filter; their first candidates did
+// not (v2.11.12-RC.1 to RC.3 and v2.12.4-RC.1 and RC.2 still call gsl.IntersectStree), so a
+// prerelease counts as before its release. There is no v2.13.
 //
 // The floor requires one of those fixed releases, so every 2.10 is refused: the last 2.10, v2.10.29,
 // has the bug, and no 2.10 release has the fix, although the releases before v2.10.26 do not have
-// the bug. A connection is read for its server's version only while it is connected
-// (ConnectedRefusal), so a reconnect is waited out rather than read as an unknown server.
+// the bug. A connection is read for its server's version only once it reports one
+// (ConnectedRefusal), so a reconnect or a drain is waited out rather than read as an unknown server.
 //
 // Like subjectforms and sessiontiming, it is a door for the daemon's module, which Go's internal
 // rule keeps out of the envoy module's internal packages.
@@ -58,7 +57,7 @@ func Refusal(serverVersion string) error {
 	if fixed(major, minor, patch, prerelease) {
 		return nil
 	}
-	return fmt.Errorf("the NATS server is nats-server %s, which is not a release whose scan of a consumer's stored messages reads every filter: a consumer filtering on a wildcard and a literal at the same token can skip a message (nats-io/nats-server#7713); Envoy needs nats-server %s", serverVersion, FixedReleases)
+	return fmt.Errorf("the NATS server is nats-server %s, which is not a release whose scan of a consumer's stored messages reads every filter: from v2.10.26, and in 2.11 before v2.11.12 and 2.12 before v2.12.4, a consumer filtering on a wildcard and a literal at the same token can skip a message; Envoy needs nats-server %s", serverVersion, FixedReleases)
 }
 
 // fixed is whether a version is at or after the first fixed release of its line, a prerelease
@@ -108,25 +107,42 @@ func parse(version string) (major, minor, patch int, prerelease, ok bool) {
 	return major, minor, patch, prerelease, true
 }
 
-// VersionWait bounds how long ConnectedRefusal waits for a reconnecting connection, for a caller
-// whose context sets no nearer deadline: nats.go's default reconnect waits two seconds between
-// attempts, so a minute covers a hub restart without holding a start for ever.
+// VersionWait bounds how long ConnectedRefusal waits for a connection to report its server's
+// version, for a caller whose context sets no nearer deadline: the listener's connection
+// reconnects once a second (internal/bus Connect) and nats.go's default waits two seconds, so a
+// minute covers a hub restart without holding a start for ever. The Legion daemon's boot attempt
+// sets a nearer one, its 30 s bootTimeout, the same bound its stream lookup after this has.
 const VersionWait = time.Minute
 
-// reconnectPoll is how often ConnectedRefusal looks again at a connection that is not connected.
+// reconnectPoll is how often ConnectedRefusal looks again at a connection that reports no version.
 const reconnectPoll = 20 * time.Millisecond
 
-// ConnectedRefusal is Refusal of the version conn's server reports, read only while conn is
-// connected: (*nats.Conn).ConnectedServerVersion answers "" whenever a connection is not, which is
-// no reading of the server at all. So it waits for a reconnecting connection, until ctx is done or
-// VersionWait passes, and answers an error that the connection is not connected, naming no version,
-// when it does not reconnect in time or is closed. Only a connected client's answer is held to
-// Refusal, an empty one among them.
+// ConnectedRefusal is Refusal of the version conn's server reports, decided on that version alone:
+// (*nats.Conn).ConnectedServerVersion answers "" whenever a connection is not CONNECTED, while it
+// reconnects and while it drains among them, which is no reading of the server at all. So an empty
+// answer is never held to Refusal: ConnectedRefusal looks again until the connection reports a
+// version, until it is closed, or until ctx is done or VersionWait passes, and in the last two
+// answers an error that the connection is not connected, naming no version. It asks nothing else
+// of the connection before it decides (IsConnected counts a draining connection, and a second
+// read could see a reconnect the first did not), so the answer it holds to Refusal is the one it
+// read. A server that is connected and reports no version is refused as not connected at the
+// deadline, which is all that can be said of it.
 func ConnectedRefusal(ctx context.Context, conn *nats.Conn) error {
+	return connectedRefusal(ctx, conn)
+}
+
+// serverConn is what ConnectedRefusal reads of a connection, the seam its tests reach a reconnect
+// between two reads through.
+type serverConn interface {
+	ConnectedServerVersion() string
+	IsClosed() bool
+}
+
+func connectedRefusal(ctx context.Context, conn serverConn) error {
 	ctx, cancel := context.WithTimeout(ctx, VersionWait)
 	defer cancel()
 	for {
-		if version := conn.ConnectedServerVersion(); version != "" || conn.IsConnected() {
+		if version := conn.ConnectedServerVersion(); version != "" {
 			return Refusal(version)
 		}
 		if conn.IsClosed() {
@@ -134,7 +150,7 @@ func ConnectedRefusal(ctx context.Context, conn *nats.Conn) error {
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("the NATS connection is not connected, so its server's version cannot be checked against nats-server %s: it did not reconnect (%w)", FixedReleases, ctx.Err())
+			return fmt.Errorf("the NATS connection is not connected, so its server's version cannot be checked against nats-server %s: it reported none within the wait (%w)", FixedReleases, ctx.Err())
 		case <-time.After(reconnectPoll):
 		}
 	}

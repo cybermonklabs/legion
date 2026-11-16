@@ -22,7 +22,8 @@ import (
 // fails naming that subject.
 var subjectProjectCensus = map[string][]string{
 	// Each session's own messages: Dispatch's routes, mentions, follower and author copies, and
-	// every send (contracts.AgentSubject, cmd/listener sendHandler).
+	// every send, in either form (contracts.AgentSubject, contracts.LegacyAgentSubject, which
+	// cmd/listener sendHandler calls).
 	"notifications.agent.>": {"notifications.agent.>"},
 	// Dispatch's outbox (internal/dispatch/outbox envelope): an issue's, a document's and a
 	// project's events; and Dispatch's start (internal/dispatch/startup Subject).

@@ -213,11 +213,11 @@ type SessionConsumers struct {
 //
 // A server that can skip a message on a consumer filtering on a wildcard and a literal at the same
 // token is refused, naming its version and the fixed releases (natsversion.ConnectedRefusal, which
-// reads the version only once the connection is connected): every session consumer filters on its
-// agent subject in both forms, notifications.agent.<session> beside notifications.agent.*.<session>,
-// and on such a server it would lose the session's old-form messages behind other sessions' traffic
-// with no error. The listener calls this at its start and ends the process on the error, so it
-// refuses to start against such a server.
+// decides on a version the connection reports and waits out one that reports none): every session
+// consumer filters on its agent subject in both forms, notifications.agent.<session> beside
+// notifications.agent.*.<session>, and on such a server it would lose the session's old-form
+// messages behind other sessions' traffic with no error. The listener calls this at its start and
+// ends the process on the error, so it refuses to start against such a server.
 func ConnectSessionConsumers(urls []string, inactiveThreshold time.Duration, logger *slog.Logger, options ...ConnectOption) (*SessionConsumers, error) {
 	client, err := Connect(urls, append([]ConnectOption{WithName("envoy-session-consumers")}, options...)...)
 	if err != nil {

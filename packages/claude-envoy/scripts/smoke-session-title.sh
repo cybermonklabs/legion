@@ -46,14 +46,15 @@ fail() {
   exit 1
 }
 
-# nats-server is a `go install` away and lands in GOPATH's bin, which is often off PATH.
+# nats-server is a `go install` away and lands in GOPATH's bin, which is often off PATH. The
+# listener refuses a nats-server below v2.11.12, v2.12.4 or v2.14.0, so install the hub's v2.15.1.
 if ! command -v nats-server >/dev/null 2>&1; then
   PATH="$(go env GOPATH 2>/dev/null)/bin:${PATH}"
   export PATH
 fi
 for tool in bun curl jq go nats-server; do
   command -v "$tool" >/dev/null 2>&1 ||
-    fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.11.4)"
+    fail "$tool is required (nats-server: go install github.com/nats-io/nats-server/v2@v2.15.1)"
 done
 
 workdir="$(mktemp -d /tmp/claude-session-title.XXXXXX)"

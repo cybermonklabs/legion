@@ -15,10 +15,10 @@ body: |-
   is refused with 400, as every dotted role was before. Dispatch's subscriber list and its removal count a session that follows
   an issue in either form, and an unsubscribe answers every form it took out of the record.
   **The listener now needs nats-server v2.11.12, v2.12.4, or v2.14.0 and later**, and refuses to
-  start against any other, naming its version and those releases: from v2.10.26
-  (nats-io/nats-server#7713), and in 2.11 before 2.11.12 and 2.12 before 2.12.4, nats-server can
-  skip a message on a consumer that filters on a wildcard and a literal at the same token, which a
-  session's consumer does, and would lose the session's messages with no error. No 2.10 release
-  has the fix, so the floor refuses every 2.10, and it refuses the first fixed releases' own
-  candidates (v2.11.12-RC.1, v2.12.4-RC.1) too. A connection that is reconnecting when the check
-  runs is waited for, never read as a server of no version.
+  start against any other, naming its version and those releases: from v2.10.26, and in 2.11
+  before 2.11.12 and 2.12 before 2.12.4, nats-server can skip a message on a consumer that filters
+  on a wildcard and a literal at the same token, which a session's consumer does, and would lose
+  the session's messages with no error. No 2.10 release has the fix, so the floor refuses every
+  2.10, and it refuses the first fixed releases' own candidates (v2.11.12-RC.1, v2.12.4-RC.1) too.
+  A connection that is reconnecting or draining when the check runs is waited for, never read as a
+  server of no version.

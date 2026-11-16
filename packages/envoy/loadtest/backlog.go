@@ -18,9 +18,9 @@ import (
 )
 
 // The backlog publisher (`loadgen backlog`): it publishes envelopes to the simulated sessions'
-// agent subjects (contracts.AgentSubject), as Dispatch's outbox publishes a message meant for one
-// session, so that a listener which is down builds up a backlog the sessions must get once it is
-// back (restart-step.sh). Every publish goes to the notification stream over JetStream under a
+// agent subjects (contracts.LegacyAgentSubject), as Dispatch's outbox publishes a message meant
+// for one session, so that a listener which is down builds up a backlog the sessions must get once
+// it is back (restart-step.sh). Every publish goes to the notification stream over JetStream under a
 // Nats-Msg-Id of its own, and every acknowledgement is waited for, so the summary counts the
 // publishes that failed as well as those the stream stored.
 

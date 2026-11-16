@@ -743,13 +743,13 @@ written by nats-server 2.10.29 opens on 2.15.1 with its stream, its messages and
 intact.
 
 **The listener and the Legion daemon need nats-server v2.11.12, v2.12.4, or v2.14.0 and later**,
-and refuse to start against any other, naming its version and those releases. From v2.10.26
-(nats-io/nats-server#7713), and in 2.11 before v2.11.12 and 2.12 before v2.12.4, nats-server can
-skip a message on a consumer that filters on a wildcard and a literal at the same token, and a
-session's consumer does (its inbox in both forms of its name), so on such a server a session would
-lose messages with no error. No 2.10 release has the fix, so every 2.10 is refused, and so are the
-first fixed releases' own candidates. The 2.15.1 this file pins is past all of them; a machine still on an earlier file's 2.10
-moves to it as above.
+and refuse to start against any other, naming its version and those releases. From v2.10.26, and
+in 2.11 before v2.11.12 and 2.12 before v2.12.4, nats-server can skip a message on a consumer that
+filters on a wildcard and a literal at the same token, and a session's consumer does (its inbox in
+both forms of its name), so on such a server a session would lose messages with no error. No 2.10
+release has the fix, so every 2.10 is refused, and so are the first fixed releases' own
+candidates. The 2.15.1 this file pins is past all of them; a machine still on an earlier file's
+2.10 moves to it as above.
 
 1. Write the machine's settings:
 

@@ -263,9 +263,9 @@ type Consumers struct {
 // (envoy's natsversion.ConnectedRefusal, the rule the listener refuses one by): the Dispatch
 // consumer filters on the issue family beside this project's mapping subject, and the stream is the
 // listener's, whose session consumers need such a server too. The daemon's boot ends on the error.
-// The version is read only once the connection is connected: a connection reconnecting when the
-// boot reaches this is waited for, within ctx and natsversion.VersionWait, as the stream lookup
-// after it would wait, and is never read as a server of no version.
+// The version is decided on one the connection reports: a connection reconnecting or draining when
+// the boot reaches this is looked at again, within ctx (the boot attempt's 30 s bootTimeout, the
+// bound the stream lookup after this has), and is never read as a server of no version.
 func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
