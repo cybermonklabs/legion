@@ -13,6 +13,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ctxlock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
 )
@@ -197,8 +198,12 @@ type KnownSessions struct {
 	// the background retry's, so the watcher is never moved by two callers at once; and it guards
 	// repairing and moveFailed. Exactly one retry runs, or none: it is armed only under this lock
 	// and only while none runs (armRepair), and only the goroutine itself retires it, in the same
-	// hold as the attempt that found nothing left to repair.
-	repairMu  sync.Mutex
+	// hold as the attempt that found nothing left to repair. It is a ctxlock.Mutex so that a
+	// reconnect hook's run waits for it only while the run lasts (LockContext): the retry holds it
+	// through an attempt whose request takes no context, and on a connection that dropped with that
+	// request unanswered the attempt waits out the request's own bound, which would hold every other
+	// hook of the run behind it (TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt).
+	repairMu  ctxlock.Mutex
 	repairing bool
 	// moveFailed is set by a move to a recovered connection that failed and cleared by the next
 	// that succeeds, whichever caller makes it, which is the move that logs the store back
@@ -459,33 +464,14 @@ func (s *KnownSessions) retryRepair() (repairResult, error) {
 // waits on nothing past ctx, the hook's run. It leaves the retry as it found it: a caller that
 // fails arms one (armRepair), and one that succeeds leaves the running retry to find at its next
 // attempt that there is nothing left to repair, which is where a retry is retired. Its wait for
-// repairMu ends with ctx too (lockRepair), since the retry holds that lock through an attempt of
-// its own.
+// repairMu ends with ctx too (repairMu's LockContext), since the retry holds that lock through an
+// attempt of its own.
 func (s *KnownSessions) repairOnce(ctx context.Context) (repairResult, error) {
-	if err := s.lockRepair(ctx); err != nil {
+	if err := s.repairMu.LockContext(ctx); err != nil {
 		return repairNothing, err
 	}
 	defer s.repairMu.Unlock()
 	return s.attemptRepair(ctx)
-}
-
-// repairLockPoll is how often lockRepair tries repairMu again.
-const repairLockPoll = 10 * time.Millisecond
-
-// lockRepair takes repairMu, or answers ctx's error once ctx ends first. The background retry
-// holds repairMu through its attempt (retryRepair), whose request takes no context and so waits out
-// its own bound on a connection that dropped with it unanswered; a reconnect hook's run that waited
-// for the lock that long would hold every other hook of the run behind it
-// (TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt).
-func (s *KnownSessions) lockRepair(ctx context.Context) error {
-	for !s.repairMu.TryLock() {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(repairLockPoll):
-		}
-	}
-	return nil
 }
 
 // attemptRepair makes one attempt to make the store current on the connection it holds now: it
@@ -551,10 +537,10 @@ func (s *KnownSessions) armRepair() {
 }
 
 // armRepairWithin is armRepair for a reconnect hook's run, whose wait for repairMu ends with ctx
-// (lockRepair). A run that ends first arms nothing: its connection is gone, the run is superseded
+// (LockContext). A run that ends first arms nothing: its connection is gone, the run is superseded
 // and leaves the hooks due, and the run the next connection event brings asks again (Rewatch).
 func (s *KnownSessions) armRepairWithin(ctx context.Context) {
-	if s.lockRepair(ctx) != nil {
+	if s.repairMu.LockContext(ctx) != nil {
 		return
 	}
 	defer s.repairMu.Unlock()
@@ -838,8 +824,8 @@ func (s *KnownSessions) TouchWithin(ctx context.Context, sessionID string) error
 // succeeds is what ends the retry: its next attempt finds every move the listener asked for made
 // (covered, asked) and retires. The hook's move waits on nothing past ctx, the hook's run: not on
 // its requests (kvwatch.Watcher.Rewatch), nor on repairMu, which the retry holds through an
-// attempt of its own (lockRepair), so a move on a connection that drops ends at the drop; the
-// retry's attempts are its own.
+// attempt of its own (repairMu's LockContext), so a move on a connection that drops ends at the
+// drop; the retry's attempts are its own.
 func (s *KnownSessions) Rewatch(ctx context.Context, conn *nats.Conn) error {
 	if s == nil {
 		return nil

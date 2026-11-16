@@ -662,6 +662,8 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -845,6 +847,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
@@ -1610,6 +1614,9 @@ jobs:
               - *claude_envoy_build
               # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
               - *listener_command
+              # scripts/e2e/lib/nats-image.test.ts builds natsfloor, the command it asks the NATS
+              # floor through; its natsversion package is in the listener's list above.
+              - 'packages/envoy/natsversion/cmd/natsfloor/*'
               # Each harness step's own gate, named here so the job runs for the change that
               # makes one of those gates true. Each of those lists names this file and
               # ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
@@ -1933,6 +1940,8 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -2007,6 +2016,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
@@ -2058,6 +2069,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'

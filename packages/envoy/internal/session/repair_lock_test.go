@@ -14,7 +14,7 @@ import (
 
 // The background retry holds repairMu through each of its attempts (retryRepair), and an attempt's
 // request takes no context, so on a connection that dropped with it unanswered it waits out its
-// own bound. A reconnect hook's Rewatch waits for that lock only while its run lasts (lockRepair):
+// own bound. A reconnect hook's Rewatch waits for that lock only while its run lasts (LockContext):
 // a run that ends first returns at once, so it holds no other hook of the run behind it. That
 // holds for a store whose watcher is open, whose move (repairOnce) answers the run's error, and for
 // one whose bucket never opened, which only wakes the retry and arms it (armRepairWithin) and

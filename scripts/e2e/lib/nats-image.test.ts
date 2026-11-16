@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The listener and the Legion daemon refuse a nats-server below the floor packages/envoy/natsversion
@@ -87,34 +88,47 @@ const knownDrivers = [
   "packages/pi-legion/scripts/skill-scenarios/rig.sh",
 ];
 
-/** natsversion.FixedReleases, which names the floor in every refusal. */
-const floorReleases = "v2.11.12, v2.12.4, or v2.14.0 and later";
-
 /**
- * Whether the floor takes a nats-server version: natsversion's fixed() over its parse(). The first
- * fixed release of each line is 2.11.12, 2.12.4 and 2.14.0; every later line is taken, 2.13 (no
- * release) too, and every 2.10 and earlier is not. A prerelease (a `-` after the patch's digits)
- * counts as before the release it leads to, and a version it cannot read is not taken.
+ * natsversion's own rule, built once from packages/envoy/natsversion/cmd/natsfloor: the scanner
+ * asks it whether the floor takes a version rather than hold a copy of the rule, so the floor the
+ * listener and the daemon refuse a server by is the one this scan holds every pin to.
  */
-function floorTakes(version: string): boolean {
-  const parts = /^v?(\d+)\.(\d+)\.(\d+)(.*)$/.exec(version);
-  if (parts === null) return false;
-  const [major, minor, patch] = [Number(parts[1]), Number(parts[2]), Number(parts[3])];
-  const prerelease = parts[4]?.startsWith("-") ?? false;
-  if (major !== 2) return major > 2;
-  const at = (first: number) => patch > first || (patch === first && !prerelease);
-  switch (minor) {
-    case 11:
-      return at(12);
-    case 12:
-      return at(4);
-    case 13:
-      return true;
-    case 14:
-      return at(0);
-    default:
-      return minor > 14;
+const floorDir = mkdtempSync(join(tmpdir(), "natsfloor-"));
+afterAll(() => rmSync(floorDir, { recursive: true, force: true }));
+const floor = join(floorDir, "natsfloor");
+const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {
+  cwd: join(root, "packages/envoy"),
+  stdout: "pipe",
+  stderr: "pipe",
+});
+if (build.exitCode !== 0) {
+  throw new Error(`go build ./natsversion/cmd/natsfloor exited ${build.exitCode}: ${build.stderr}`);
+}
+
+/** natsfloor's answer lines for args; any exit but 0 throws. */
+function askFloor(args: string[]): string[] {
+  const result = Bun.spawnSync([floor, ...args], { stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) {
+    throw new Error(`natsfloor ${args.join(" ")} exited ${result.exitCode}: ${result.stderr}`);
   }
+  return result.stdout.toString().trimEnd().split("\n");
+}
+
+/** natsversion.FixedReleases, which names the floor in every refusal. */
+const floorReleases = askFloor(["-releases"])[0] ?? "";
+
+const floorVerdicts = new Map<string, boolean>();
+
+/** Whether the floor takes a nats-server version: natsversion.Refusal's verdict, through natsfloor. */
+function floorTakes(version: string): boolean {
+  let taken = floorVerdicts.get(version);
+  if (taken === undefined) {
+    const [verdict, answered] = (askFloor([version])[0] ?? "").split("\t");
+    if (answered !== version) throw new Error(`natsfloor answered ${answered} for ${version}`);
+    taken = verdict === "taken";
+    floorVerdicts.set(version, taken);
+  }
+  return taken;
 }
 
 /** The module a host nats-server install names, as `go install <serverModule>@<version>`. */
@@ -259,21 +273,26 @@ describe("every live proof starts the NATS server the floor takes", () => {
 });
 
 describe("every host nats-server install pins a release the floor takes", () => {
-  test("the floor is natsversion's", () => {
+  test("the floor the scan names is natsversion's", () => {
     const source = readFileSync(join(root, "packages/envoy/natsversion/natsversion.go"), "utf8");
     expect(/^const FixedReleases = "([^"]+)"$/m.exec(source)?.[1]).toBe(floorReleases);
   });
 
+  // Which versions the floor takes is natsversion's own test (TestRefusalNamesEveryServerThatCanSkipAFilter).
+  // These hold the scanner to naming a pin exactly when natsversion refuses its version, so a
+  // change of that rule moves what the scan names with no edit here but these expectations.
   test.each([
-    ["2.10.22", false],
-    ["2.11.4", false],
-    ["2.11.12", true],
-    ["2.12.4", true],
-    ["2.12.4-RC.1", false],
-    ["2.14.0", true],
-    ["2.15.1", true],
-  ])("%s is taken: %p", (version, taken) => {
-    expect(floorTakes(version)).toBe(taken);
+    ["2.10.22", true],
+    ["2.11.4", true],
+    ["2.11.12", false],
+    ["2.12.4", false],
+    ["2.12.4-RC.1", true],
+    ["2.14.0", false],
+    ["2.15.1", false],
+  ])("a pin of %s is named: %p", (version, refused) => {
+    const pin = `go install ${serverModule}@${version}\n`;
+    const named = `fixture.sh:1 pins nats-server ${version}, below ${floorReleases}: ${pin.trim()}`;
+    expect(hostPinProblems("fixture.sh", pin)).toEqual(refused ? [named] : []);
   });
 
   // The controls the scan below leans on: the pins this repository had before the floor are found.
