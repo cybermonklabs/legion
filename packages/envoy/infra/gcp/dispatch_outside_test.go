@@ -124,6 +124,8 @@ func TestDispatchOutsideOriginTakesEveryPlainHost(t *testing.T) {
 		"https://" + strings.Repeat("a", 63) + ".example.com",
 		"https://abc--d.example.com",
 		"https://example-outside.example-tailnet.ts.net",
+		"https://10.0.0.1",
+		"https://dispatch-outside.example.com:8443",
 	} {
 		t.Run(origin, func(t *testing.T) {
 			args := dispatchArgs()
@@ -202,13 +204,24 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 // as it refuses every input that configures Dispatch
 // (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
-	const notOrigin = "outsideOrigin must be an absolute https URL with no path, user, query or fragment, as an origin is (not echoed)"
+	// The web-origin refusals are weborigin.Parse's, prefixed with the input's name; that
+	// package's own test holds its whole table, and these rows hold that the component asks it.
+	const notOrigin = "outsideOrigin: must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"
 	reserved := func(label string) string {
-		return `outsideOrigin's host label "` + label + `" has "--" as its third and fourth characters, a reserved label (RFC 5890 section 2.3.1) ` +
-			"that no public certificate authority issues for, so the origin could serve no HTTPS: name it in letters, digits and hyphens without that pair"
+		return `outsideOrigin: host label "` + label + `" has "--" as its third and fourth characters, a reserved label (RFC 5890 section 2.3.1) ` +
+			"that no public certificate authority issues for, so the origin could serve no HTTPS"
+	}
+	notCanonical := func(canonical string) string {
+		return "outsideOrigin: must be written as a browser writes this origin, " + canonical + ": a lowercase scheme and no default port"
+	}
+	badPort := func(port string) string {
+		return `outsideOrigin: port "` + port + `" is not a port 1-65535 written without a leading zero`
+	}
+	notIPv4 := func(host string) string {
+		return "outsideOrigin: host " + host + " ends in a number and is no IPv4 address in its canonical form, which a browser refuses or rewrites"
 	}
 	notLabel := func(label string) string {
-		return `outsideOrigin's host label "` + label + `" is not a lowercase DNS label`
+		return `outsideOrigin: host label "` + label + `" is not a lowercase DNS label`
 	}
 	withOrigin := func(origin string) func() *gcp.DispatchArgs {
 		return func() *gcp.DispatchArgs {
@@ -249,10 +262,10 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 				args.OutsideOrigin = dispatchOutsideOrigin
 				return args
 			},
-			want: "outsideOrigin needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, " +
-				"and it answers a second origin only beside an https one of its own; unset outsideOrigin, or set the tailnet inputs",
+			want: "outsideOrigin needs the tailnet inputs: without them the component builds the sandbox, whose own origin is an in-cluster http:// address " +
+				"where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs",
 		},
-		{"outsideOrigin over http", withOrigin("http://dispatch-outside.example.com"), notOrigin},
+		{"outsideOrigin over http", withOrigin("http://dispatch-outside.example.com"), "outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does"},
 		{"outsideOrigin with no scheme", withOrigin("dispatch-outside.example.com"), notOrigin},
 		{"outsideOrigin with a path", withOrigin("https://dispatch-outside.example.com/dispatch"), notOrigin},
 		{"outsideOrigin with a query", withOrigin("https://dispatch-outside.example.com?a=b"), notOrigin},
@@ -267,6 +280,23 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 		{"outsideOrigin with a reserved label further up", withOrigin("https://outside.ab--cd.com"), reserved("ab--cd")},
 		{"outsideOrigin with a malformed xn-- label", withOrigin("https://xn--a.example.com"), reserved("xn--a")},
 		{"outsideOrigin with a well-formed xn-- label", withOrigin("https://xn--bcher-kva.example.com"), reserved("xn--bcher-kva")},
+		// Dispatch compares the Origin a browser sends with the rendered string, so a string other
+		// than the browser's own form of the origin, or one no browser opens, is refused rather than
+		// rewritten (WHATWG URL's origin serialization, as Node's new URL(v).origin prints it).
+		{"outsideOrigin with :443", withOrigin("https://dispatch-outside.example.com:443"), notCanonical("https://dispatch-outside.example.com")},
+		{"outsideOrigin with an upper-case scheme", withOrigin("HTTPS://dispatch-outside.example.com"), notCanonical("https://dispatch-outside.example.com")},
+		{"outsideOrigin with an empty port", withOrigin("https://dispatch-outside.example.com:"), badPort("")},
+		{"outsideOrigin with a leading-zero port", withOrigin("https://dispatch-outside.example.com:0443"), badPort("0443")},
+		{"outsideOrigin with port 0", withOrigin("https://dispatch-outside.example.com:0"), badPort("0")},
+		{"outsideOrigin with a port above 65535", withOrigin("https://dispatch-outside.example.com:65536"), badPort("65536")},
+		{"outsideOrigin with a five-nines port", withOrigin("https://dispatch-outside.example.com:99999"), badPort("99999")},
+		{"outsideOrigin with a short IPv4", withOrigin("https://127.1"), notIPv4("127.1")},
+		{"outsideOrigin with a hex IPv4 octet", withOrigin("https://0x7f.0.0.1"), notIPv4("0x7f.0.0.1")},
+		{"outsideOrigin with a whole-number IPv4", withOrigin("https://2130706433"), notIPv4("2130706433")},
+		{"outsideOrigin with an octal IPv4 octet", withOrigin("https://010.0.0.1"), notIPv4("010.0.0.1")},
+		{"outsideOrigin with five numeric labels", withOrigin("https://1.2.3.4.5"), notIPv4("1.2.3.4.5")},
+		{"outsideOrigin with a numeric top label", withOrigin("https://example.123"), notIPv4("example.123")},
+		{"outsideOrigin with a hex top label", withOrigin("https://a.example.0x1"), notIPv4("a.example.0x1")},
 		{
 			name: "outsideOrigin with the front door's host",
 			args: withOrigin("https://example-dispatch.example-tailnet.ts.net"),

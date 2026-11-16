@@ -730,17 +730,21 @@ start.
 `outsideOrigin` and `signInOutside`, both unset by default, are the component's part of sign-in
 for people from outside the company. Neither is in a group, and with both unset the component
 renders exactly what it rendered before they existed. `outsideOrigin` is a second origin Dispatch
-is reached at: an absolute `https` URL with no path, user, query or fragment (a trailing slash is
-trimmed), whose host is not the front door's `<hostname>.<tailnetDnsName>` and whose every host
-label is a lowercase DNS label without `--` as its third and fourth characters, a reserved form
-(RFC 5890 section 2.3.1) no public certificate authority issues for. It renders
-`DISPATCH_OUTSIDE_ORIGIN=<outsideOrigin>` on the app's container, right after
-`DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and forwards it to the app's
-Service on port 8766 is the deployment's to build, whatever way the people it serves come in by;
-if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
+is reached at: an `https` origin written as a browser writes it, with a lowercase scheme, no
+`:443`, a port (if any) of 1 to 65535 with no leading zero, and no path, user, query or fragment
+(a trailing slash is trimmed). Its host is not the front door's `<hostname>.<tailnetDnsName>`,
+ends in a number only if it is an IPv4 address in its canonical form, and has every label a
+lowercase DNS label without `--` as its third and fourth characters, a reserved form (RFC 5890
+section 2.3.1) no public certificate authority issues for. Dispatch compares the `Origin` a
+browser sends with it as a string, so another spelling of the same origin is refused rather than
+rewritten. It renders `DISPATCH_OUTSIDE_ORIGIN=<outsideOrigin>` on the app's container, right
+after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and forwards it to the
+app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
+in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
-the Google client `signInClientId` names must list `<outsideOrigin>/auth/callback` as an
-authorized redirect URI beside `https://<hostname>.<tailnetDnsName>/auth/callback`.
+the Google client `signInClientId` names must list the rendered `DISPATCH_OUTSIDE_ORIGIN`
+followed by `/auth/callback` as an authorized redirect URI, beside
+`https://<hostname>.<tailnetDnsName>/auth/callback`.
 `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`,
 which lets a verified Google account outside `signInDomain` sign in as a restricted member while
 some project's owner or access list names its email directly, never through a group; with it,
@@ -1159,10 +1163,12 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that is not an absolute `https` URL with
-no path, user, query or fragment, has a host label that is not a lowercase DNS label or has `--`
-as its third and fourth characters, has the front door's host or comes without the tailnet
-inputs, a `signInOutside` without the sign-in inputs, an
+`oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that is not an `https` origin written as
+a browser writes it (with no path, user, query or fragment, no `:443` and a port of 1 to 65535
+with no leading zero), has a host label that is not a lowercase DNS label or has `--` as its
+third and fourth characters, has a host ending in a number that is no canonical IPv4 address,
+has the front door's host or comes without the tailnet inputs, a `signInOutside` without the
+sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside

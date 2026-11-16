@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // dispatchType is the component's token. pulumi-go-provider derives the same one from the Dispatch
@@ -175,13 +176,15 @@ type DispatchArgs struct {
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
 	SignInDomain       string             `pulumi:"signInDomain,optional"`
 	// OutsideOrigin is a second origin Dispatch is reached at, by people from outside the
-	// company: an absolute https URL with no path, user, query or fragment, whose host is not the
-	// front door's and whose every host label is a lowercase DNS label without "--" as its third
-	// and fourth characters, a reserved form (RFC 5890 section 2.3.1) no public certificate
-	// authority issues for. It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves
-	// that origin and forwards it to the app is the deployment's, and the app's NetworkPolicy
-	// admits an in-cluster one only through allowedNamespaces. It needs the tailnet inputs, since
-	// Dispatch answers a second origin only beside an https one of its own. Unset renders nothing.
+	// company: an https origin written as a browser writes it (a lowercase scheme, no :443, no
+	// path, user, query or fragment; a trailing slash is trimmed), whose host is not the front
+	// door's and whose every host label is a lowercase DNS label without "--" as its third and
+	// fourth characters, a reserved form (RFC 5890 section 2.3.1) no public certificate authority
+	// issues for. It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves that origin
+	// and forwards it to the app is the deployment's, and the app's NetworkPolicy admits an
+	// in-cluster one only through allowedNamespaces. It needs the tailnet inputs: without them the
+	// component builds the sandbox, whose own origin is an in-cluster http:// address where browser
+	// sign-in is refused. Unset renders nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
 	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
 	// signInDomain sign in as a restricted member while some project's owner or access list names
@@ -980,9 +983,10 @@ const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset, which is what asks for the
 // mode: no front door is built, so a sign-in input, signInOutside among them, would ask an OAuth
-// provider to redirect to an in-cluster http:// address, outsideOrigin would be a second https
-// origin beside an http one, frontDoorReplicas and frontDoorPdbMinAvailable size and protect a
-// Deployment that does not exist, the pods reach a NATS hub only inside their own cluster, and
+// provider to redirect to an in-cluster http:// address, outsideOrigin would add an origin for
+// outside sign-in to a Dispatch where browser sign-in is refused, frontDoorReplicas and
+// frontDoorPdbMinAvailable size and protect a Deployment that does not exist, the pods reach a
+// NATS hub only inside their own cluster, and
 // the app's own policy is its only ingress. Each is refused by its own name rather than accepted
 // and quietly dropped. The sign-in inputs are refused here, before the sign-in group's own
 // checks, so one sent to a sandbox is refused for being sent at all and not for the rest of its
@@ -997,7 +1001,7 @@ func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) erro
 		return fmt.Errorf(dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
 	}
 	if args.OutsideOrigin != "" {
-		return errors.New("outsideOrigin needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, and it answers a second origin only beside an https one of its own; unset outsideOrigin, or set the tailnet inputs")
+		return errors.New("outsideOrigin needs the tailnet inputs: without them the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs")
 	}
 	if args.NatsInCluster == nil || !*args.NatsInCluster {
 		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
@@ -1034,34 +1038,25 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 
 // refuseDispatchOutsideOrigin judges outsideOrigin where the tailnet group is set, the one place
 // it may be set, and returns it with a trailing slash trimmed, as Dispatch trims one: "" when it
-// is unset. It must be an origin, an absolute https URL with no path, user, query or fragment,
-// and is not echoed until it is one, since a user or a query could carry a credential. Each label
-// of its host must be a lowercase DNS label without "--" as its third and fourth characters,
-// which no public certificate authority issues for (an xn-- label among them), so the origin
-// could serve no HTTPS. Its host must not be the front door's, whose origin Dispatch already is.
+// is unset. It must be a web origin as weborigin.Parse holds one to (written as a browser writes
+// it, with a host a public certificate authority can certify), whose refusals it prefixes with
+// the input's name; the component adds only that the origin is https, as the front door's is, and
+// that its host is not the front door's, whose origin Dispatch already is.
 func refuseDispatchOutsideOrigin(args *DispatchArgs) (string, error) {
 	if args.OutsideOrigin == "" {
 		return "", nil
 	}
-	origin := strings.TrimSuffix(args.OutsideOrigin, "/")
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(origin, "#") {
-		return "", errors.New("outsideOrigin must be an absolute https URL with no path, user, query or fragment, as an origin is (not echoed)")
+	origin, err := weborigin.Parse(args.OutsideOrigin)
+	if err != nil {
+		return "", fmt.Errorf("outsideOrigin: %w", err)
 	}
-	host := parsed.Hostname()
-	for _, label := range strings.Split(host, ".") {
-		if !dnsLabel(label) {
-			return "", fmt.Errorf("outsideOrigin's host label %q is not a lowercase DNS label", label)
-		}
-		if len(label) >= 4 && label[2:4] == "--" {
-			return "", fmt.Errorf("outsideOrigin's host label %q has \"--\" as its third and fourth characters, a reserved label (RFC 5890 section 2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS: name it in letters, digits and hyphens without that pair", label)
-		}
+	if origin.Scheme != "https" {
+		return "", errors.New("outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does")
 	}
-	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); host == frontDoor {
-		return "", fmt.Errorf("outsideOrigin's host %s is the front door's: a second origin needs a host of its own", host)
+	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); origin.Hostname() == frontDoor {
+		return "", fmt.Errorf("outsideOrigin's host %s is the front door's: a second origin needs a host of its own", frontDoor)
 	}
-	return origin, nil
+	return origin.String(), nil
 }
 
 // refuseDispatchHostname refuses a hostname that is not hostnameRule's shape. Both resolvers run
