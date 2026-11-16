@@ -845,26 +845,40 @@ func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
 // failure that is no refusal the store gives before it acts - Unavailable here - may have deleted
 // the empty secret, so the create reads it back rather than say it stays: none found is the delete
 // done, said as such, with the broker asked to reread the name and the value's own refusal's exit
-// code kept; the secret still found stays, said with the command that clears it; a read back that
-// fails says the store may still hold it, with the commands that tell and clear it, and never that
-// it stays.
+// code kept; the secret still found, its versions listed again and none found, stays, said with the
+// command that clears it; one found holding a version another writer added between the cleanup's
+// list and the delete may hold a value, so it stays with no command that deletes it, and the broker
+// is asked to reread the name; one whose versions cannot be listed again names the delete only for
+// `versions: none`; a read back that fails says the store may still hold it, with the commands that
+// tell and clear it, and never that it stays.
 func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) {
+	const (
+		readBackFails   = "the read back refused"
+		versionAdded    = "another writer's version added"
+		versionsUnknown = "the versions not listed again"
+	)
 	for _, row := range []struct {
 		name          string
 		refuse, after map[string]codes.Code
-		readBackFails bool
+		atDelete      string // what happens as the delete is asked for, or nothing
 		code, held    int
 		facts, not    []string
 		rereads       []string
 	}{
-		{"the delete done, its answer lost", nil, map[string]codes.Code{"DeleteSecret": codes.Unavailable}, false, exitUsageError, 0,
+		{"the delete done, its answer lost", nil, map[string]codes.Code{"DeleteSecret": codes.Unavailable}, "", exitUsageError, 0,
 			[]string{"the value is read from standard input, which was empty", "the empty secret " + newTestID + " is deleted, so nothing stays in the store"},
 			[]string{"an empty secret named", "may still hold"}, []string{"NEW_TEST"}},
-		{"the delete not done, its answer lost", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, false, 1, 1,
+		{"the delete not done, its answer lost", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, "", 1, 1,
 			[]string{"Unavailable", "leaves open whether it deleted " + newTestID, "reading it back still finds it", "`" + clearEmptySecret + "`"}, nil, nil},
-		{"the delete's answer lost and its read back failing", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, true, 1, 1,
+		{"the delete's answer lost and its read back failing", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, readBackFails, 1, 1,
 			[]string{"Unavailable", "leaves open whether it deleted " + newTestID, "may still hold it", "`agent-secrets secret show NEW_TEST`", "`" + clearEmptySecret + "`"},
 			[]string{"stays in the store"}, nil},
+		{"the delete's answer lost and the secret given a version meanwhile", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, versionAdded, 1, 1,
+			[]string{"Unavailable", "leaves open whether it deleted " + newTestID, "holds 1 version(s)", "`agent-secrets secret show NEW_TEST`", "`agent-secrets secret set NEW_TEST`"},
+			[]string{"empty secret stays", clearEmptySecret}, []string{"NEW_TEST"}},
+		{"the delete's answer lost and the versions not listed again", map[string]codes.Code{"DeleteSecret": codes.Unavailable}, nil, versionsUnknown, 1, 1,
+			[]string{"Unavailable", "leaves open whether it deleted " + newTestID, "listing its versions failed", "only with `versions: none`", "`" + clearEmptySecret + "`"},
+			[]string{"empty secret stays"}, nil},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fake := newFakeSecretManager()
@@ -872,13 +886,19 @@ func TestGCPSecretCreateWhoseDeleteAnswerIsLostReadsTheSecretBack(t *testing.T) 
 			if fake.refuseMethods == nil {
 				fake.refuseMethods = map[string]codes.Code{}
 			}
-			if row.readBackFails {
-				// Every GetSecret after the delete is refused, as a store that fails the read back.
-				fake.beforeCall = func(method string) {
-					if method == "DeleteSecret" {
-						fake.mu.Lock()
-						fake.refuseMethods["GetSecret"] = codes.Unavailable
-						fake.mu.Unlock()
+			fake.beforeCall = func(method string) {
+				if method != "DeleteSecret" {
+					return
+				}
+				switch row.atDelete {
+				case readBackFails, versionsUnknown:
+					refused := map[string]string{readBackFails: "GetSecret", versionsUnknown: "ListSecretVersions"}[row.atDelete]
+					fake.mu.Lock()
+					fake.refuseMethods[refused] = codes.Unavailable
+					fake.mu.Unlock()
+				case versionAdded:
+					if _, err := fake.AddSecretVersion(context.Background(), &secretmanagerpb.AddSecretVersionRequest{Parent: newTestID, Payload: &secretmanagerpb.SecretPayload{Data: []byte("theirs")}}); err != nil {
+						t.Errorf("another writer's add: %v", err)
 					}
 				}
 			}

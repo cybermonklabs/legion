@@ -807,10 +807,13 @@ func (n *gcpNewSecret) discardRead(ctx context.Context, secret *secretmanagerpb.
 
 // settleLostDelete answers what a DeleteSecret whose answer, deleteErr, leaves open whether the
 // store acted (no gcpDefiniteRefusal: a lost answer, a deadline, an outage) left, by reading the
-// secret back under storeCallDeadline: none found is the delete done; this create's secret still
-// there stays, though a delete the store has not finished may yet land; another writer's is left
-// as it is; and a read that fails leaves it unknown, so the store may still hold it. It says the
-// secret stays only where the store showed it.
+// secret back under storeCallDeadline: none found is the delete done; another writer's is left as
+// it is; and a read that fails leaves it unknown, so the store may still hold it. This create's
+// secret still there has its versions listed again, since another writer may have added one
+// between the cleanup's list and the delete: with none it stays, empty, though a delete the store
+// has not finished may yet land; with one it may hold a value, so it stays with no command that
+// deletes it (keptMayHoldValue, which the broker rereads); and a list that fails names the delete
+// only for a secret shown with no version. It says the secret stays only where the store showed it.
 func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteErr error) (discardOutcome, error) {
 	lost := why + "the store's answer to the delete leaves open whether it deleted " + n.name
 	getCtx, cancel := withStoreDeadline(ctx)
@@ -827,7 +830,17 @@ func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteE
 		return keptOthers, fmt.Errorf("%s, and reading it back finds a secret this create did not make (its %s label is not this create's), so it is left as it is: `%s` shows it. Deleting it failed: %w",
 			lost, createLabel, n.agentSecrets("secret", "show", n.display), deleteErr)
 	}
-	return keptEmpty, fmt.Errorf("%s, and reading it back still finds it, so this create's empty secret stays in the store unless a delete the store has not finished lands: `%s` says whether it is there, and %s clears it. Deleting it failed: %w",
+	versions, err := n.b.countVersions(ctx, n.name)
+	switch {
+	case err != nil:
+		return keptUnknown, fmt.Errorf("%s, and reading it back still finds it, but listing its versions failed, so whether it holds a value is unknown: `%s` says, and only with `versions: none` is it this create's empty secret, which %s then clears. Deleting it failed: %w; listing the versions failed: %v",
+			lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr, err)
+	case versions > 0:
+		n.mayHoldValue.Store(true)
+		return keptMayHoldValue, fmt.Errorf("%s, and reading it back finds it, and it holds %d version(s) now, so it stays: another writer may have stored a value. Check it with `%s`, and run `%s` to store yours. Deleting it failed: %w",
+			lost, versions, n.agentSecrets("secret", "show", n.display), n.agentSecrets("secret", "set", n.display), deleteErr)
+	}
+	return keptEmpty, fmt.Errorf("%s, and reading it back still finds it, with no version, so this create's empty secret stays in the store unless a delete the store has not finished lands: `%s` says whether it is there, and %s clears it. Deleting it failed: %w",
 		lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr)
 }
 

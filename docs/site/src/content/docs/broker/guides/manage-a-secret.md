@@ -235,10 +235,12 @@ deleted with the secret. A cleanup that deletes the empty secret says so: the fa
 prints ends with `the empty secret … is deleted, so nothing stays in the store`. Where the store's
 answer to the delete leaves open whether it deleted the secret - a lost answer, a deadline, an
 outage - the CLI reads the secret back: none found is the delete done, said as above; the secret
-still there is said to stay, with the `gcloud secrets delete` command that clears it; and a read
-back that fails says the store may still hold it, naming `agent-secrets secret show NAME` and that
-command. Only a delete the store refused, or a read back that found the secret, is said to leave it
-in the store.
+still there has its versions listed again, since another writer may have added one meanwhile, and
+stays: with no version it is said to stay, with the `gcloud secrets delete` command that clears it;
+with a version it may hold a value, so no delete is named and the broker rereads the name; and a
+list that fails names that command only for `versions: none`. A read back that fails says the store
+may still hold it, naming `agent-secrets secret show NAME` and that command. Only a delete the store
+refused, or a read back that found the secret, is said to leave it in the store.
 
 While the secret waits for its value, for ten minutes from its making, the broker serves it to
 nobody, logs that it waits, and refuses a request for it `PENDING_VALUE`, which says the secret
