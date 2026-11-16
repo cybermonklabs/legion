@@ -194,6 +194,8 @@ label(
 );
 // A profile built before the installers raised the handler limit.
 label("stale", "modelRoles:\n  default: anthropic/m\n");
+// A profile whose settings are not YAML, which the rig's check cannot read.
+label("broken", "extensionHandlers: [unclosed\n  toolCallTimeoutMs: 120000\n");
 put(path.join(work, "services/env"), "ENVOY_URL=http://127.0.0.1:1\n");
 put(path.join(work, "services/dispatch-token"), "e2e-token\n");
 /** The tag rig.sh names the work directory's containers with. */
@@ -234,6 +236,31 @@ const setpgid = [
   "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
 ].join("\n");
 
+/**
+ * The interpreter `python3` names in the caller's own environment (`sys.executable`), which the
+ * hook below reads before any row runs the rig, and which runs that parent by its own path.
+ *
+ * `python3` looked up on the rig's PATH can be a version manager's shim, and that shim rewrites
+ * the environment of what it runs. On a devbox it is mise's: under this file's HOME mise has no
+ * configuration, so the shim runs the system python3 with every mise install directory taken off
+ * PATH, and the rig's `bun` was then mise's bun shim, which has no version under that HOME either
+ * ("No version is set for shim: bun"): every run failed rig.sh's settings check. Run by its own
+ * path, the interpreter passes the rig exactly the environment this file gives it.
+ */
+function pythonInterpreter(): string {
+  const answer = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const executable = answer.stdout.toString().trim();
+  if (answer.exitCode !== 0 || !path.isAbsolute(executable))
+    throw new Error(
+      `python3 named no interpreter of its own (status ${answer.exitCode}, ${JSON.stringify(executable)}): ${answer.stderr.toString()}`
+    );
+  return executable;
+}
+let python = "";
+
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
  * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
@@ -261,9 +288,10 @@ const setpgid = [
  * ubuntu-24.04 image, with no setup-python step) and in a Legion worker pod
  * (packages/daemon/docker/worker.Dockerfile installs python3 in its runtime-base stage and checks
  * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
- * job control off, as it always has. */
+ * job control off, as it always has. python3 is run by its interpreter's path
+ * (`pythonInterpreter`), so nothing stands between the test and that parent either. */
 async function runRig(args: string[], vars: Record<string, string> = {}) {
-  const child = Bun.spawn(["python3", "-I", "-c", setpgid, "bash", rig, ...args], {
+  const child = Bun.spawn([python, "-I", "-c", setpgid, "bash", rig, ...args], {
     env: { ...env, ...vars },
     stdout: "pipe",
     stderr: "pipe",
@@ -289,6 +317,7 @@ beforeAll(async () => {
   // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
   // of them, and this hook would throw on a host that does not have it.
   if (withoutPython) return;
+  python = pythonInterpreter();
   // A staging may queue another, so the queue is drained until it is empty.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
@@ -384,6 +413,20 @@ test.skipIf(withoutPython)(
     expect(stderr).toContain("extensionHandlers.toolCallTimeoutMs to 120000 or more");
     expect(existsSync(path.join(work, "runs", "askgate-facts-stale-1"))).toBe(false);
     expect(lines(path.join(stub, "docker.log")).join("\n")).not.toContain("stale");
+  }
+);
+
+// A check that cannot answer is refused as that, with the reader's own error: settings that are
+// not YAML are not read as settings that leave the limit at its default.
+test.skipIf(withoutPython)(
+  "a run on a profile whose settings cannot be read is refused with the reader's own error",
+  async () => {
+    const { code, stderr } = await runRig(["run", "askgate", "broken", "1", "5", start]);
+    expect(code).toBe(1);
+    expect(stderr).toContain("YAML Parse error");
+    expect(stderr).toContain("could not be checked: bun failed with the error above");
+    expect(stderr).not.toContain("do not set extensionHandlers.toolCallTimeoutMs");
+    expect(existsSync(path.join(work, "runs", "askgate-facts-broken-1"))).toBe(false);
   }
 );
 
