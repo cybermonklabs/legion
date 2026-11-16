@@ -115,7 +115,7 @@ func TestR7ForkTheParkedGrantReachesTheWholeCopyHeapSlot(t *testing.T) {
 		{"a document at the state cap", maxRoomStateBytes, 200_000, 2},
 	} {
 		cut := cutAnswerWeight(room.state, room.clients, room.structs)
-		parked := parkedAnswerWeight(room.state, room.structs)
+		parked := parkedAnswerWeight(cut, crdt.PendingStats{Items: 1})
 		t.Logf("%s: cut grant %d, parked grant %d (%.1fx), one load slot %d, pool at the calibration %d",
 			room.name, cut, parked, float64(parked)/float64(cut), int64(loadSlotBytes),
 			int64(BoundsForLimit(0).LoadSlots)*loadSlotBytes)
@@ -125,10 +125,39 @@ func TestR7ForkTheParkedGrantReachesTheWholeCopyHeapSlot(t *testing.T) {
 				room.name, BoundsForLimit(0).LoadSlots)
 		}
 	}
-	whole := parkedAnswerWeight(5_000_000, 640_000)
-	if whole != loadSlotBytes {
-		t.Fatalf("a 640,000-struct room parking one struct is granted %d, want the whole slot %d",
-			whole, int64(loadSlotBytes))
+	// The bound the fix gives: a parked room's grant stays within the same factor of what its
+	// own answer allocates as the same room's grant parking nothing. Each room is answered
+	// parking nothing and then parking the finding's one struct, and each grant is held against
+	// what that answer allocates, the fewest bytes of five answers after one that warms what the
+	// answer reuses (answerAllocation): one answer alone read 2,019,832 and 2,305,248 bytes for
+	// the same keystroke room. One parked struct moves the factor by its read-back alone, so it
+	// may move by a tenth at most.
+	step1 := ygsync.EncodeSyncStep1(crdt.New())
+	for _, shape := range []struct {
+		name string
+		doc  func(t *testing.T) *crdt.Doc
+	}{
+		{"a run of 40,000 keystrokes", func(t *testing.T) *crdt.Doc {
+			doc := seededDocumentCopy(t)
+			chainedRun(t, doc, lastCharacter(t, doc), 1_000, 40_000)
+			return doc
+		}},
+		{"640,000 GC structs, under the decode cap", func(t *testing.T) *crdt.Doc { return smallStructsDocument(t, 0, 0, 640_000) }},
+		{"a mebibyte of prose", func(t *testing.T) *crdt.Doc { return residentRoomDocument(t, 1<<20) }},
+	} {
+		doc := shape.doc(t)
+		cutGrant := answerWeight(doc, int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount()))
+		cutBytes := answerAllocation(t, doc, step1)
+		r7ForkParkOneStruct(t, doc)
+		parkedGrant := answerWeight(doc, int64(len(crdt.EncodeStateAsUpdateV1(doc, nil))), int64(doc.StructCount()+doc.PendingStats().Items))
+		parkedBytes := answerAllocation(t, doc, step1)
+		cutFactor, parkedFactor := float64(cutGrant)/float64(cutBytes), float64(parkedGrant)/float64(parkedBytes)
+		what := fmt.Sprintf("%s, %d structs", shape.name, doc.StructCount())
+		t.Logf("%s: parking nothing, grant %d for an answer allocating %d (%.2f of it); parking one struct, grant %d for %d (%.2f of it)",
+			what, cutGrant, cutBytes, cutFactor, parkedGrant, parkedBytes, parkedFactor)
+		if parkedFactor > cutFactor*1.1 {
+			t.Errorf("%s parking one struct is granted %.2f times what its answer allocates, against %.2f parking nothing: the grant prices a path theorem-labs/ygo v1.55.1-theorem.6 does not take",
+				what, parkedFactor, cutFactor)
+		}
 	}
-	_ = fmt.Sprint(whole)
 }

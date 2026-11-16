@@ -49,10 +49,10 @@ import (
 // until its frames are in the browser's write queue (Service.weighStateAnswer): answering a
 // SyncStep1 cuts the whole of what the browser is missing into frames and holds every one of
 // them at once (ygo's sync.EncodeSyncStep2Split), so a room many browsers join at once holds its
-// own state once more per join, and nothing in ygo bounds how many of those run together. A room
-// that parks nothing is cut from its own structs and decodes nothing; a room holding parked
-// structs or parked deletions is cut from its encoded state, which decodes the whole document
-// twice, so each answer takes the weight of the path it takes (answerWeight).
+// own state once more per join, and nothing in ygo bounds how many of those run together. Every
+// room's answer is cut from its own structs and decodes nothing of the document, and what a room
+// parks is read back on its own beside the cut, so each answer takes the cut's weight and what
+// that read-back allocates (answerWeight, parkedAnswerWeight).
 //
 // Every taker takes its bytes before it takes a database connection, so no grant is held behind
 // a connection pool a holder of another grant could fill, and a wait a request's context ends is

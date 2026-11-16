@@ -877,33 +877,34 @@ func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error
 // send the room's state as one frame: it cuts what that browser is missing into frames each
 // small enough for a browser to apply in one task and holds every one of them until they are in
 // the browser's write queue (ygo's sync.EncodeSyncStep2Split), all of it built on the peer's read
-// loop, so a room holds its state once more for each browser it answers. How much more depends
-// on what the room parks. A room that parks nothing is cut from its own structs
-// (crdt.SplitStateAsUpdateV1), which builds the frames and the cut's own record of each client
-// and decodes nothing. A room holding parked structs or parked deletions is cut from its
-// encoded state instead: the encode merges what it parks into the state (withParked) and the
-// cut decodes the merge back (crdt.SplitUpdateV1), so its answer decodes the whole document
-// twice. Measured on a run of a million keystrokes, 1,000,010 structs, over two runs of three
-// answers a path to a browser holding nothing, an answer held 24,071,008 to 25,428,848 bytes
-// above the document cut from its structs, having allocated about 25.7 MB in under 900 objects,
-// and 371,149,976 to 429,891,496 cut from its encoded state, having allocated about 840 MB in
-// six million objects (TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath). Nothing in ygo
-// bounds how many answers run together, so before this hook a reconnect storm on one big room
-// built one per browser side by side, off the pod's load concurrency entirely, while every
-// other whole-document copy in the process queued for it.
+// loop, so a room holds its state once more for each browser it answers. Every room's answer is
+// cut from its own structs (crdt.SplitStateAsUpdateV1), which builds the frames and the cut's own
+// record of each client and decodes nothing, and what a room parks is read back on its own - each
+// parked struct encoded and decoded alone into a document of the cut's own, and each client's
+// parked deletions as one update - and placed after the room's own structs (readParked,
+// theorem-labs/ygo v1.55.1-theorem.6 crdt/split.go:149-183). Measured on a run of a million
+// keystrokes, 1,000,010 structs, an answer to a browser holding nothing held 24,071,008 to
+// 25,428,848 bytes above the document, having allocated about 25.7 MB in under 900 objects
+// (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
+// which this tag carries, a room that parked anything was cut from its encoded state instead,
+// decoding the whole document twice - 371,149,976 to 429,891,496 bytes held and about 840 MB
+// allocated for the same room - and is no longer. Nothing in ygo bounds how many answers run
+// together, so before this hook a reconnect storm on one big room built one per browser side by
+// side, off the pod's load concurrency entirely, while every other whole-document copy in the
+// process queued for it.
 //
 // The grant is read off the room without encoding anything: its tracked state bytes, which the
 // service holds (roomWeighing.roomStateBytes); the structs the answer may have to encode, which
 // ygo counts with the room's parked structs in, since the answer carries those too
-// (websocket.StateAnswerInfo.Structs); and whether the room parks anything, read off its pending
-// queue (parks). All three are read again once the grant is in hand and the grant topped up where
-// the room grew, or parked something, while this answer waited for it, which costs nothing where
-// it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the difference alone):
-// the answer is built after this returns, so a grant sized before a wait is otherwise a grant
-// sized on a room that has since changed. The library decides the path under the document's
-// lock as the cut begins, which no hook can take, so a room that parks something in the instant
-// between the second read and that lock is answered on the old path under the grant of the new
-// one.
+// (websocket.StateAnswerInfo.Structs); and what the room parks, read off its pending queue
+// (crdt.Doc.PendingStats). All three are read again once the grant is in hand and the grant
+// topped up where the room grew, or parked more, while this answer waited for it, which costs
+// nothing where it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the
+// difference alone): the answer is built after this returns, so a grant sized before a wait is
+// otherwise a grant sized on a room that has since changed. The library reads the queue under
+// the document's lock as the cut begins, which no hook can take, so what a room parks in the
+// instant between the second read and that lock is read back under a grant that does not count
+// it.
 //
 // A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
 // memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
@@ -930,21 +931,17 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 }
 
 // answerWeight is what one answer to a browser's SyncStep1 takes of the pod's copy heap, for the
-// room live tracked at stateBytes of state and holding structs structs, by the path ygo's answer
-// takes for that room as it stands (crdt.SplitStateAsUpdateV1, weighStateAnswer): an answer cut
-// from the room's own structs (cutAnswerWeight), or, for a room that parks anything, one cut from
-// its encoded state (parkedAnswerWeight).
+// room live tracked at stateBytes of state and holding structs structs, as ygo's answer is built
+// for that room as it stands (crdt.SplitStateAsUpdateV1, weighStateAnswer): the cut of the room's
+// own structs (cutAnswerWeight), with what reading back what the room parks adds to it
+// (parkedAnswerWeight).
 //
-// Whether the room parks is the library's own test of the path - a struct in its pending queue
-// or a deletion in its pending delete set - read as Doc.PendingStats reports it (parks): the
-// document's read lock and two counters, and, for a room that parks a struct, a slice of the
-// clients its parked structs wait for, sorted. ygo reads the same stats for each answer already,
-// to count the structs it hands this hook.
+// What the room parks is read as Doc.PendingStats reports it: the document's read lock and two
+// counters, and, for a room that parks a struct, a slice of the clients its parked structs wait
+// for, sorted. ygo reads the same stats for each answer already, to count the structs it hands
+// this hook.
 func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
-	if parks(live) {
-		return parkedAnswerWeight(stateBytes, structs)
-	}
-	return cutAnswerWeight(stateBytes, int64(live.ClientCount()), structs)
+	return parkedAnswerWeight(cutAnswerWeight(stateBytes, int64(live.ClientCount()), structs), live.PendingStats())
 }
 
 // cutAnswerWeight is what an answer cut from a room's own structs takes of the pod's copy heap, at
@@ -964,6 +961,25 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // and few clients is therefore priced for the clients it has: a run of a million keystrokes is
 // granted 63,869,984 bytes where it measures 25,428,848 at most, against the 340,003,400 the
 // room's struct count would have charged it.
+//
+// It is a price of what the cut holds at once, as every taker of the pool is priced, and not of
+// what it allocates, which can be several times more: what the cut allocates past what it holds
+// is scratch it drops update by update - each update it packs begins a delete set and a state
+// vector of its own, grows an encoder to the update's size and copies the update out of it - and
+// garbage is the Go memory limit's to bound, which the collector steers the whole heap to, not
+// the pool's. Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, the fewest bytes of five
+// answers against the most live heap a collection marked (liveHeapPeak): the grant covered what
+// each answer of 1,000 structs or more held, 1.06 to 4.21 times over - the smaller rooms read
+// within the 10 KB or so the reading adds in a busy process, where the seeded paragraph read
+// 13,000 bytes against 2,800 to 3,296 in a process of its own - while it fell short of what the
+// answer allocated in every room of small or many-client structs: a run of GC structs of one
+// client by 0.18 to 0.69 of its allocation, from 256 structs to a million (82,698,000 bytes
+// allocated against 16,002,248 granted, 12,046,320 held); rooms of one GC struct a client, and
+// 135 clients of 127, by 0.50 to 0.73, up to a million clients (583,662,504 against 341,412,436,
+// 249,566,496 held); a split-dense run by 0.73 to 0.80, from 102,400 characters to 1,024,000
+// (11,575,360 against 8,405,672, 2,411,016 held); and runs of 1,000 and 4,000 keystrokes by
+// 0.68 and 0.72. Prose, a long paragraph and keystroke runs of 40,000 and more are granted past
+// what they allocate (TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt).
 func cutAnswerWeight(stateBytes, clients, structs int64) int64 {
 	return min(max(stateBytes*answerHeapAStateByte, clients*answerHeapAClient+answerFrameWeight(structs)), loadSlotBytes)
 }
@@ -983,10 +999,10 @@ func answerFrameWeight(structs int64) int64 {
 // (crdt.SplitStateAsUpdateV1). Measured 2026-11-13 and 14 on theorem-labs/ygo v1.55.1-theorem.2
 // at copyMeasurementGCPercent, in two to three runs of three answers a shape to a browser holding
 // nothing, on a two-processor machine other measurements were running on
-// (TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath, run with
+// (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot, run with
 // `DISPATCH_MEASURE_COPY_HEAP=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" go test
 // ./internal/dispatch/docs/ -count=1 -timeout 60m -run
-// TestAStateAnswerHoldsNoMoreHeapThanItsGrantOnEitherPath -v`), over the shapes of few clients:
+// TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot -v`), over the shapes of few clients:
 // the most 7.83 bytes a state byte (a run of 1,024,000 characters with every other one deleted,
 // 83,953,128 bytes above a 10,727,526-byte state, where the same answer's other five held
 // 41,912,680 to 71,945,360), then 4.96 (one paragraph of a mebibyte typed in one transaction),
@@ -1044,23 +1060,82 @@ const answerHeapAnAnswer = 4_096
 // the ids count from 1, so that the first 127 take one. It is set past the most.
 const answerFrameStructs = 16_000
 
-// parkedAnswerWeight is what an answer cut from a room's encoded state takes of the pod's copy
-// heap, the path a room holding parked structs or parked deletions takes: parkedAnswerCopyPercent
-// of a whole copy of the room (copyWeight), at most one slot. It exists only while a room that
-// parks takes that path, and goes with it.
-func parkedAnswerWeight(stateBytes, structs int64) int64 {
-	return min(copyWeight(stateBytes, structs)*parkedAnswerCopyPercent/100, loadSlotBytes)
+// parkedAnswerWeight is cut, what an answer's cut of a room's own structs takes of the pod's copy
+// heap (cutAnswerWeight), with what the answer's read-back of what the room parks adds to it, at
+// most one slot, as every taker is (copyWeight): answerHeapAParkedRead once for a room that parks
+// anything, answerHeapAParkedStruct for each struct in its pending queue and
+// answerHeapAParkedRange for each range of its pending delete set. A room that parks nothing
+// reads nothing back and is weighed on its cut alone.
+//
+// It is priced on what the room parks and on nothing else, because that is all the read-back
+// walks: at theorem-labs/ygo v1.55.1-theorem.6 every room's answer is cut from its own structs,
+// and what it parks is encoded and decoded alone (readParked, crdt/split.go:149-183). The bytes
+// of what it parks are not priced here again: they are in the room's tracked state, which the
+// cut's state term already prices at answerHeapAStateByte, and a parked struct's content costs
+// the answer less than the same content integrated (answerHeapAParkedStruct). The price this
+// replaces was 149 per cent of a whole copy of the room, priced for an answer from the room's
+// encoded state that the tag no longer makes: one 11-byte frame parking one struct multiplied a
+// 40,010-struct room's grant by 15.5, from 2,430,072 bytes to 37,558,325, while its answer
+// allocated 2,020,608 bytes against 2,019,832, and a 640,000-struct room's grant became
+// the whole pool at the calibration (TestR7ForkAParkedRoomsAnswerCostsWhatTheUnparkedRoomsDoes,
+// TestR7ForkTheParkedGrantReachesTheWholeCopyHeapSlot, dispatch://INFRA-179, review 7).
+func parkedAnswerWeight(cut int64, parked crdt.PendingStats) int64 {
+	if parked.Items == 0 && parked.DeleteRanges == 0 {
+		return cut
+	}
+	read := answerHeapAParkedRead + int64(parked.Items)*answerHeapAParkedStruct + int64(parked.DeleteRanges)*answerHeapAParkedRange
+	return min(cut+read, loadSlotBytes)
 }
 
-// parkedAnswerCopyPercent is the most an answer cut from a room's encoded state measured of what a
-// whole copy of the room weighs before copyWeight caps it at a slot, in percent, set past it as
-// answerHeapAStateByte is set: measured as answerHeapAStateByte is, the most 148.56 (a room of a
-// million clients that wrote one struct each, 935,943,064 bytes above the document, where the
-// same answer's other five held 707,863,848 to 799,813,904), then 141.49 (a mebibyte of prose,
-// 73,004,928 bytes, where its other eight held 44,962,144 to 58,715,216), 70.47 (a run of
-// 1,024,000 characters with every other one deleted), 68.24 (a run of a million keystrokes) and
-// 24.43 (one paragraph of a mebibyte typed in one transaction).
-const parkedAnswerCopyPercent = 149
+// answerHeapAParkedStruct is what an answer allocates to read back one struct of a room's pending
+// queue: the struct encoded alone, decoded into the cut's own reader document, and the queue and
+// map entries the cut keeps for its client where the room holds none of that client's structs.
+// It is priced on allocation, which stands above what the read-back holds, rather than on what
+// it holds, as the cut is: what the read-back decodes it keeps until the answer is sent, in the
+// reader document every parked struct is read back into, so its held heap grows with the queue
+// as its allocation does, where the cut's stops at one update's scratch; and its own held heap
+// can be read only beside the cut's, where its allocation is exact on its own.
+//
+// Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, as the allocation of an answer to a
+// browser holding nothing from a room parking n structs, less the same room's answer parking
+// nothing, each the fewest of five answers (TestAParkedRoomsAnswerIsGrantedWhatItsReadBackAllocates,
+// which repeats the shapes below at n of 1, 16 and 1,000), on the seeded paragraph alone and with
+// a run of 40,000 keystrokes, which read the same. The worst shape is a margin record of a client
+// of its own, a struct naming its root and its key and holding a map: 1,865.5 bytes a struct at
+// 16, 1,859.3 at 1,000, 1,751.6 at 10,000 and 1,794.4 at 100,000. Then a GC struct of a client of
+// its own, 1,335 to 1,369.6 up to 1,000 and 1,173 at 200,000; a keystroke behind its run's gap,
+// 758 to 839; and a GC struct behind its run's gap, 696 to 739. A struct's bytes add to that what
+// the state term already charges for them: a parked margin record of 921,600 bytes allocated
+// 4,631,648 where the same record integrated allocated 6,482,200, and a room parking 1,000 map
+// entries of 512-byte keys allocated 4,295,096 in all, under the 4,578,232 its cut is granted.
+//
+// It is set at 2,048, 9.8 per cent past the worst, and the margin is for what one shape does not
+// repeat: the read-back's maps and slices grow by doubling, so the allocation of one shape moved
+// between runs by up to 3.4 per cent (50,000 structs of clients of their own allocated 58,651,600
+// and 60,632,744 bytes), and a size between those measured stands at another point of that
+// doubling. What the read-back holds at once is less than what it allocates: 22 to 51 per cent
+// of it for those shapes at 1,000 and 10,000 structs, read at the live heap (liveHeapPeak, in a
+// process run with GODEBUG gcstoptheworld=1).
+const answerHeapAParkedStruct = 2_048
+
+// answerHeapAParkedRange is what an answer allocates to read back one range of a room's pending
+// delete set: each client's parked ranges encoded and decoded as one update, merged into the delete
+// set the cut writes, and the cut's record of that client's deletions. Measured as
+// answerHeapAParkedStruct is: the worst shape is a range of a client of its own, 568 bytes a range
+// at 2, 756 at 16, 872 at 128, 899.2 at 1,000, 847 at 10,000 and 793 at 100,000; ranges of one
+// client cost 64 to 142 each. The library reports the ranges and not their clients
+// (crdt.PendingStats.DeleteRanges), so each is priced as one of a client of its own. It is set at
+// 1,024, 13.9 per cent past the worst, for the same reason answerHeapAParkedStruct is set past its
+// own; what the read-back holds at once is 11 to 41 per cent of its allocation.
+const answerHeapAParkedRange = 1_024
+
+// answerHeapAParkedRead is what an answer allocates to read anything back at all, beyond what it
+// allocates for each struct and range: the reader document, the maps of parked structs and of
+// runs, and the cut's state vector. Measured as answerHeapAParkedStruct is, one parked struct
+// allocated 2,216 to 3,304 bytes in all (the margin record of a client of its own the most) and
+// one parked range 1,920 to 1,936. It is set at 2,048, so that one struct is priced at 4,096 and
+// one range at 3,072, 24 and 59 per cent past the most each measured.
+const answerHeapAParkedRead = 2_048
 
 // refusedStateAnswer is the close a browser is given whose first sync the pod's copy heap had no
 // room to answer inside the server's wait bound, and the one line that says so: the room, what

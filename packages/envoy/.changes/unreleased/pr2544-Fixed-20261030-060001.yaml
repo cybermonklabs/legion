@@ -14,11 +14,14 @@ body: |-
     editor's own derived writes and for typing, until the document has crept 64 KiB over the bound,
     after which only an update carrying nothing new is taken), or decode more than the 1,200,000
     values one apply may decode; `4413 DOC_NEEDS_REBUILD` when it would carry the room's encoded
-    state past the 16,777,216 bytes one room may hold, or carry the document past the 1,048,576
-    structs ygo decodes in one update - counting the items a delete inside a run splits as well as
-    the structs the update carries, so a delete of one character can no longer leave a stored
-    document that will not load - or when the room's edit-scan total is used up, where the room
-    still takes an apply scanning 64 items or fewer so that typing in place goes on; `4413
+    state past the 16,777,216 bytes one room may hold - each struct it carries charged 48 bytes of
+    them besides its content, so structs that carry no content stop at the cap too - or carry the
+    document past the 1,048,576 structs ygo decodes in one update - counting the items a delete
+    inside a run splits as well as the structs the update carries, so a delete of one character can
+    no longer leave a stored document that will not load - or when the room's edit-scan total is
+    used up, where the room still takes an apply scanning 64 items or fewer so that typing in place
+    goes on, each in a room the rebuild route takes as it stands, and otherwise `DOC_TOO_LARGE`, or
+    `DOC_TOO_TANGLED` for the scan total, since there a smaller edit lands; `4413
     DOC_TOO_TANGLED` when the apply's conflict scans would pass what the room allows that apply,
     400,000 items or what is left of its 1,000,000-item scan total; and `4413 DOC_REBUILT` when the
     browser still holds the edit history a rebuild replaced, which applied would put the old
@@ -52,13 +55,14 @@ body: |-
     and every other update is refused `4503`. What is transient rather than resident is held by one
     pool of bytes, the pod's load concurrency: a whole-document decode, a live write's fork and one
     apply of a browser's update over 2 MiB each take out of it what their own copy costs, at the
-    same two prices, and the answer to one browser's first sync takes what the path ygo answers
-    that room by measured - for a room that parks nothing, 8 bytes a byte of its state, or 340 bytes
-    a client it holds with 4,096 bytes and 88 a struct for the frame of the answer being packed,
-    counted up to the 16,000 structs a frame can hold, whichever is more; and for a room holding an
-    update it cannot place yet, whose answer decodes the whole document twice, 149 per cent of a
-    whole copy. A taker heavier than the whole pool waits for all of it and runs alone rather than
-    being refused, so a stored document always loads and no honest handoff is turned away.
+    same two prices, and the answer to one browser's first sync takes what that answer measured: 8
+    bytes a byte of the room's state, or 340 bytes a client it holds with 4,096 bytes and 88 a
+    struct for the frame of the answer being packed, counted up to the 16,000 structs a frame can
+    hold, whichever is more, and for a room holding updates it cannot place yet, what reading them
+    back beside that allocates: 2,048 bytes, with 2,048 for each struct it holds parked and 1,024
+    for each delete range. A taker heavier than the whole pool waits for all of it and runs alone
+    rather than being refused, so a stored document always loads and no honest handoff is turned
+    away.
 
     What the server holds for one browser's socket is bounded as well, at 70 MiB of frames queued
     for it and not yet written. ygo bounded that queue in frames alone - 512 of them, whatever

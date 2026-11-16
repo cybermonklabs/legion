@@ -1220,7 +1220,38 @@ func TestEveryRefusalOfTheHookCarriesItsOwnCodeAndReason(t *testing.T) {
 			},
 		},
 		{
-			name: "a merge in a room whose scan total is used up", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentNeedsRebuildCloseReason, applies: true,
+			// A used-up room the rebuild route takes, whose history re-scans to the whole total
+			// (tangledHistory), offers the rebuild: it is the one thing that takes the merge
+			// (rebuildTakes, TestAUsedUpRoomStillTakesTypingAndRefusesALargerApplyAsNeedingARebuild).
+			name: "a merge in a room whose history's re-scan has used its scan total up", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentNeedsRebuildCloseReason, applies: true,
+			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
+				state := tangledHistory(t, 2_000, roomScanTotal)
+				room := newDocumentCopy()
+				if err := crdt.ApplyUpdateV1(room, state, nil); err != nil {
+					t.Fatal(err)
+				}
+				rendering, err := renderDocument(room)
+				if err != nil {
+					t.Fatal(err)
+				}
+				service := calibratedService()
+				replica := service.keepReplica(room, nil, loadRendering(rendering), nil)
+				loaded, err := rescan(state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				replica.scans.rescanned(loaded)
+				const typist crdt.ClientID = 5
+				typeOnto(t, service, room, typist, 30)
+				return service, room, scanningFrame(10, crdt.ID{Client: typist}, 3), replica
+			},
+		},
+		{
+			// The same refusal in a used-up room whose state re-scans far from the total is the
+			// tangle's own close: the route would answer the rebuild offer 409 DOCUMENT_LIVE,
+			// and the room's next load re-measures its total from that re-scan (rebuildTakes,
+			// TestAUsedUpRoomTheRouteWouldNotRebuildIsNotOfferedARebuild).
+			name: "a merge in a used-up room the rebuild route would not take", code: contracts.DocumentTooLargeCloseCode, reason: contracts.DocumentTooTangledCloseReason, applies: true,
 			refusal: func(t *testing.T) (*Service, *crdt.Doc, []byte, any) {
 				service, room, replica, _ := tangledRoom(t, tangledTyping)
 				frame := tangledFrame(t, room, tangledTyping)
