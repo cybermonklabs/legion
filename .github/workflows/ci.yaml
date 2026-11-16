@@ -367,11 +367,11 @@ jobs:
       # reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
       # trigger, which would start a run that joins the concurrency group above and cancels the
       # pull request's run in progress.
-      envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter2.outputs.envoy_go || 'false' }}
+      envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go || 'false' }}
       # envoy-go's fast half (the format and generated-code checks, the shell-script tests and
       # the build of the envoy commands), split out so it comes back on every push: no `full-ci`
       # term, only the dispatched one above.
-      envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_go_checks }}
+      envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.envoy_go_checks }}
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_infra_go }}
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
@@ -2588,110 +2588,6 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
-            envoy_go:
-              - *ci_router
-              - '.github/workflows/ci-job-envoy-go.yaml'
-              - *bun_install
-              - *go_workspace
-              # Its unit step tests every package of the envoy module its `grep -Ev` keeps, and
-              # internal/testnats/nats_test.go:741-754, which that step runs, opens every .go file
-              # under packages/envoy but infra's, test files included.
-              - 'packages/envoy/**'
-              # pmdoc's tests run pmdoc/gen, which imports the editor
-              # (internal/dispatch/pmdoc/update_test.go:236-239), whose src/block-pointers.ts
-              # imports @legion/contracts.
-              - 'packages/proof-editor/**'
-              - 'packages/contracts/src/**'
-              # The guide internal/dispatch/processes/counts_in_documents_test.go and
-              # internal/pgmigrate/counts_in_documents_test.go read (their RULES entries in
-              # .github/scripts/ci_job_reads.py), packages the unit step runs: each holds a number
-              # the page states to the constant that decides it (processes.HeartbeatInterval,
-              # processes.LiveWindow, pgmigrate.LockTimeout), so an edit of it alone must start
-              # this job.
-              - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
-              # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
-              # internal/dispatch/docs/approval_carry_test.go:26,
-              # internal/cistore/settlement_fixture_test.go:56.
-              - 'packages/contracts/fixtures/dedupe-keys.json'
-              - 'packages/contracts/fixtures/github-envelopes/**'
-              - 'packages/contracts/fixtures/decision-blocks/**'
-              - 'packages/contracts/fixtures/checks-settlement/**'
-              # The API package's test binary, whose xid window tests the race-impossible step runs
-              # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
-              # (internal/dispatch/api/delivery_live_diff_test.go:1016) and the committed OpenAPI
-              # document (internal/dispatch/api/openapi_test.go:189-190).
-              - 'packages/contracts/fixtures/live/**'
-              - 'packages/contracts/schemas/dispatch-openapi.json'
-              # The daemon's own fixture, the server.started envelope its intake decodes:
-              # internal/dispatch/startup/started_test.go:379 reads it and
-              # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
-              # change to that one file must start this job as well as the daemon's.
-              - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
-              # internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
-              # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
-              # alone must start both jobs, or the side it disagrees with stays green.
-              - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              - '.github/actions/pull-test-images/**'
-              # Its natslive step takes that tag's test list from this script at run time.
-              - '.github/scripts/go-tagged-tests.sh'
-              - '.github/scripts/pg-connection-ceiling.sh'
-              # internal/dispatch/testlimits/testlimits_test.go holds this script's
-              # max_connections to testlimits.ServerConnections.
-              - 'packages/daemon/docker/legion-testpg'
-              # The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
-              # and ./cmd/broker: each runs only what its tag adds, so a change that starts one
-              # must start this job too (check-ci-filters.sh's rule 15).
-              - '.github/workflows/ci-job-dispatch-memory.yaml'
-              - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
-              - '.github/workflows/ci-job-broker-multiprocess.yaml'
-              # The two-build Go step's reads rule 15 holds this job to: its file, and the CLI twobuild_cli_test.go runs.
-              # Rule 15 holds it to that step's listed block too, which packages/contracts/src/** above takes in.
-              - '.github/workflows/ci-job-dispatch-two-builds.yaml'
-              - 'packages/envoy-client/bin/dispatch.ts'
-              - 'packages/envoy-client/src/**'
-              - 'packages/broker-client/**'
-              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
-              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/infra/**/*_test.go'
-              # END generated
-            # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
-            # with the tests of internal/dispatch/architecture/notes and cmd/architecture-check,
-            # whose one run this is (envoy-go's unit step leaves them out), and the
-            # architecture-note check over this repository's own notes through the composite
-            # action .github/actions/architecture-check. gofmt -l . walks every .go file under
-            # packages/envoy, those tests and the scripts they drive live there, and `go build
-            # ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as the
-            # action's build of cmd/architecture-check does.
-            envoy_go_checks:
-              - *ci_router
-              - '.github/workflows/ci-job-envoy-go-checks.yaml'
-              - *bun_install
-              - *go_workspace
-              - 'packages/envoy/**'
-              # `bun run check:go` (packages/contracts/scripts/gen-go.ts) reads contracts' schemas
-              # and sources, and renders pmdoc's generated block schema from
-              # schemas/block-schema.schema.json (its outputs list, the files the generator owns).
-              - 'packages/contracts/scripts/gen-go.ts'
-              - 'packages/contracts/schemas/**'
-              - 'packages/contracts/src/**'
-              # The pmdoc fixture check runs pmdoc/gen, which imports the editor.
-              - 'packages/proof-editor/**'
-              # The web app's display-tree fixture, whose content the fixture step's --check reads
-              # (internal/dispatch/pmdoc/web_fixtures_test.go:40-45) and whose existence
-              # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255) stats
-              # in the same step. envoy-go's unit step skips both tests, so the file is this job's
-              # read alone.
-              - 'packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json'
-              # Its pack step writes each archive's notices, for each target the list names.
-              - 'scripts/go-third-party-notices.sh'
-              - '.github/go-release-targets.json'
-              # The step "Check this repository's architecture notes with the composite action"
-              # runs the action from this checkout: its action.yml and the check.sh beside it.
-              - '.github/actions/architecture-check/action.yml'
-              - '.github/actions/architecture-check/check.sh'
-              # That same step judges the notes at the action's default path.
-              - '.dispatch/architecture/**'
             # The text checks of the three Go modules, the Dispatch API's eight static source
             # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
             # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
@@ -3675,8 +3571,11 @@ jobs:
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
-      # main adds. They share no group with a filter of the other steps but ci_router,
-      # go_workspace, bun_install and legion_command, which this string writes again.
+      # main adds, and so are envoy_go and envoy_go_checks, its fast half, which the second step had
+      # no room for once envoy_go's filter took the two contract paths the API's window tests read,
+      # which its step runs plain, beside main's own growth of that string. They share no group with
+      # a filter of the other steps but ci_router, go_workspace, bun_install and legion_command,
+      # which this string writes again.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter3
         if: github.event_name != 'workflow_dispatch'
@@ -3781,6 +3680,110 @@ jobs:
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
+            envoy_go:
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go.yaml'
+              - *bun_install
+              - *go_workspace
+              # Its unit step tests every package of the envoy module its `grep -Ev` keeps, and
+              # internal/testnats/nats_test.go:741-754, which that step runs, opens every .go file
+              # under packages/envoy but infra's, test files included.
+              - 'packages/envoy/**'
+              # pmdoc's tests run pmdoc/gen, which imports the editor
+              # (internal/dispatch/pmdoc/update_test.go:236-239), whose src/block-pointers.ts
+              # imports @legion/contracts.
+              - 'packages/proof-editor/**'
+              - 'packages/contracts/src/**'
+              # The guide internal/dispatch/processes/counts_in_documents_test.go and
+              # internal/pgmigrate/counts_in_documents_test.go read (their RULES entries in
+              # .github/scripts/ci_job_reads.py), packages the unit step runs: each holds a number
+              # the page states to the constant that decides it (processes.HeartbeatInterval,
+              # processes.LiveWindow, pgmigrate.LockTimeout), so an edit of it alone must start
+              # this job.
+              - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
+              # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
+              # internal/dispatch/docs/approval_carry_test.go:26,
+              # internal/cistore/settlement_fixture_test.go:56.
+              - 'packages/contracts/fixtures/dedupe-keys.json'
+              - 'packages/contracts/fixtures/github-envelopes/**'
+              - 'packages/contracts/fixtures/decision-blocks/**'
+              - 'packages/contracts/fixtures/checks-settlement/**'
+              # The API package's test binary, whose xid window tests the race-impossible step runs
+              # (ci_job_reads.py, RACE_IMPOSSIBLE_SCRIPT): its live-feed fixtures
+              # (internal/dispatch/api/delivery_live_diff_test.go:1016) and the committed OpenAPI
+              # document (internal/dispatch/api/openapi_test.go:189-190).
+              - 'packages/contracts/fixtures/live/**'
+              - 'packages/contracts/schemas/dispatch-openapi.json'
+              # The daemon's own fixture, the server.started envelope its intake decodes:
+              # internal/dispatch/startup/started_test.go:379 reads it and
+              # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
+              # change to that one file must start this job as well as the daemon's.
+              - 'packages/daemon/internal/intake/testdata/dispatch/server-started.json'
+              # internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
+              # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
+              # alone must start both jobs, or the side it disagrees with stays green.
+              - 'packages/contracts/fixtures/go-unicode-isspace.json'
+              - '.github/actions/pull-test-images/**'
+              # Its natslive step takes that tag's test list from this script at run time.
+              - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
+              # internal/dispatch/testlimits/testlimits_test.go holds this script's
+              # max_connections to testlimits.ServerConnections.
+              - 'packages/daemon/docker/legion-testpg'
+              # The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
+              # and ./cmd/broker: each runs only what its tag adds, so a change that starts one
+              # must start this job too (check-ci-filters.sh's rule 15).
+              - '.github/workflows/ci-job-dispatch-memory.yaml'
+              - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
+              - '.github/workflows/ci-job-broker-multiprocess.yaml'
+              # The two-build Go step's reads rule 15 holds this job to: its file, and the CLI twobuild_cli_test.go runs.
+              # Rule 15 holds it to that step's listed block too, which packages/contracts/src/** above takes in.
+              - '.github/workflows/ci-job-dispatch-two-builds.yaml'
+              - 'packages/envoy-client/bin/dispatch.ts'
+              - 'packages/envoy-client/src/**'
+              - 'packages/broker-client/**'
+              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/infra/**/*_test.go'
+              # END generated
+            # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
+            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
+            # with the tests of internal/dispatch/architecture/notes and cmd/architecture-check,
+            # whose one run this is (envoy-go's unit step leaves them out), and the
+            # architecture-note check over this repository's own notes through the composite
+            # action .github/actions/architecture-check. gofmt -l . walks every .go file under
+            # packages/envoy, those tests and the scripts they drive live there, and `go build
+            # ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as the
+            # action's build of cmd/architecture-check does.
+            envoy_go_checks:
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go-checks.yaml'
+              - *bun_install
+              - *go_workspace
+              - 'packages/envoy/**'
+              # `bun run check:go` (packages/contracts/scripts/gen-go.ts) reads contracts' schemas
+              # and sources, and renders pmdoc's generated block schema from
+              # schemas/block-schema.schema.json (its outputs list, the files the generator owns).
+              - 'packages/contracts/scripts/gen-go.ts'
+              - 'packages/contracts/schemas/**'
+              - 'packages/contracts/src/**'
+              # The pmdoc fixture check runs pmdoc/gen, which imports the editor.
+              - 'packages/proof-editor/**'
+              # The web app's display-tree fixture, whose content the fixture step's --check reads
+              # (internal/dispatch/pmdoc/web_fixtures_test.go:40-45) and whose existence
+              # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255) stats
+              # in the same step. envoy-go's unit step skips both tests, so the file is this job's
+              # read alone.
+              - 'packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json'
+              # Its pack step writes each archive's notices, for each target the list names.
+              - 'scripts/go-third-party-notices.sh'
+              - '.github/go-release-targets.json'
+              # The step "Check this repository's architecture notes with the composite action"
+              # runs the action from this checkout: its action.yml and the check.sh beside it.
+              - '.github/actions/architecture-check/action.yml'
+              - '.github/actions/architecture-check/check.sh'
+              # That same step judges the notes at the action's default path.
+              - '.dispatch/architecture/**'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
