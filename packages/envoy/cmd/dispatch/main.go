@@ -50,7 +50,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
-	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -550,6 +549,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The registry GET /metrics serves (api.Deps.Metrics), built whether or not NATS is
+	// configured: the route answers from the moment the server does, and a process with no bus
+	// simply leaves the outbox's counter at zero.
+	met := metrics.New()
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
 		WebDistDir:     webDistDir,
@@ -568,6 +571,7 @@ func main() {
 		App:            appCfg,
 		AgentStream:    agentStream,
 		Files:          fileStore,
+		Metrics:        met.Handler(),
 		Lifetime:       ctx,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
@@ -753,10 +757,6 @@ func main() {
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
-	// The registry /metrics serves (dispatchHandler), built whether or not NATS is configured:
-	// the probe answers from the moment the server does, and a process with no bus simply leaves
-	// the outbox's counter at zero.
-	met := metrics.New()
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -1078,7 +1078,9 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries)
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
+	// The process's two probes stand above the router (routes.Process); /metrics is a row of the
+	// API's route table, which needs a credential (api.Deps.Metrics).
+	handler := routes.Process(routesHandler, healthzHandler(database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}))
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1953,29 +1955,6 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 		extra = append(extra, option)
 	}
 	return extra
-}
-
-// dispatchHandler mounts the three probes the process serves - /healthz, /livez and /metrics -
-// above every dashboard and API route, so each is answered whatever the router is doing. Go's
-// ServeMux prefers the longer pattern, so "GET /healthz", "GET /livez" and "GET /metrics" win
-// over the router's "/", which is also what keeps a scrape of /metrics from falling through to
-// the SPA shell the router answers an unknown path with. /livez answers 204 and touches nothing:
-// it says only that the process answers, for a liveness or startup probe, which must not wait on
-// or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
-// so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-//
-// Each is mounted with what it reads (readclass.Handle). The probes read the process's own
-// health. /metrics reads the deployment's counters, which name no project, issue, person or
-// session (readclass's TestMetricsNameNoProject), and the router reads what each of its routes
-// declares.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers) http.Handler {
-	mux := http.NewServeMux()
-	none := []readclass.Class{readclass.None}
-	readclass.Handle(mux, none, "GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers))
-	readclass.Handle(mux, none, "GET /livez", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	readclass.Handle(mux, []readclass.Class{readclass.Deployment}, "GET /metrics", registry.Handler())
-	readclass.Handle(mux, none, "/", handler)
-	return mux
 }
 
 // issuers are the two OIDC issuers the process discovers in the background, as /healthz reports

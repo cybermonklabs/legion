@@ -195,6 +195,9 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Metrics is the process's metrics registry, which GET /metrics serves (getMetrics); nil, a
+	// test's server, serves an empty one.
+	Metrics http.Handler
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -275,6 +278,9 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Metrics is the process's metrics registry; see Deps.Metrics. cmd/dispatch passes the one
+	// its outbox counts on.
+	Metrics http.Handler
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -360,6 +366,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Metrics:                input.Metrics,
 	}, nil
 }
 

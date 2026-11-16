@@ -372,7 +372,7 @@ text before its body, or `Re: block <id> (removed)` once an edit removed it.
 ## The HTTP API
 
 The `dispatch` commands cover everyday work. For anything else, the [HTTP API reference](/legion/dispatch/reference/api/)
-lists every route, and so does `GET /api/v1` on the server, with no credential: each route's
+lists every route, and so does `GET /api/v1` on the server, asked with the agent's token: each route's
 method, who may call it, and what it does. An agent calls the API with its token as
 `Authorization: Bearer <token>`.
 

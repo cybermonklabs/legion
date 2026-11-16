@@ -353,7 +353,11 @@ itself.
 
 ## Metrics
 
-`GET /metrics` needs no credential either, so whoever reaches the server's HTTP port can read it.
+`GET /metrics` needs a credential, as every route but sign-in, `/healthz`, `/livez` and the
+dashboard's own files does: a caller that sees every public project reads it, the deployment's
+shared agent token among them, and a restricted member or a credential that lists its projects
+is refused `403 DEPLOYMENT_READ_REFUSED`. A caller with no credential is refused `401`, whatever
+address or network it comes from.
 It answers in the Prometheus text format with two counters.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
@@ -572,5 +576,6 @@ where not exists (select 1 from architecture_sources s where s.project_key = c.p
 
 ## The HTTP API
 
-`GET /api/v1` lists every API route with its method, who may call it, and a description. The
+`GET /api/v1` lists, to any signed-in person or agent credential, every API route with its
+method, who may call it, and a description. The
 [HTTP API reference](/legion/dispatch/reference/api/) is the same list.

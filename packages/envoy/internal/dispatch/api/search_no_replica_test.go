@@ -28,7 +28,9 @@ func TestTheBarAddsNoReplicaRoute(t *testing.T) {
 	Register(mux, t.Context(), Deps{AgentTokens: sharedAgentTokens(t, "agent-token")})
 
 	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1", nil))
+	request := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
+	request.Header.Set("Authorization", "Bearer agent-token")
+	mux.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", response.Code, response.Body.String())
 	}

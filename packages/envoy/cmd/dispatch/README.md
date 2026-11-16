@@ -3719,9 +3719,9 @@ The text in it a caller wrote, `method`, `path`, a session's `caller`, `address`
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.
 
 Every route the server answers writes one:
-every `/api/v1` route, the document websocket and the live socket (`/ws/live`), `/auth/*`, the GitHub proxy `/api/github/rest/`, and the 404 an `unmatched` path gets (a known path called with a method its route does not serve is one too).
+every route of the API's table (every `/api/v1` route and `GET /metrics`), the document websocket and the live socket (`/ws/live`), `/auth/*`, the GitHub proxy `/api/github/rest/`, and the 404 an `unmatched` path gets (a known path called with a method its route does not serve is one too).
 The dashboard's own pages and assets write none, so a browser's page loads do not bury the callers.
-`/healthz`, which a load balancer calls every few seconds, `/livez`, which a liveness or startup probe calls, and `/metrics`, which a scraper calls, write none either.
+`/healthz`, which a load balancer calls every few seconds, and `/livez`, which a liveness or startup probe calls, write none either.
 Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
@@ -3729,8 +3729,9 @@ The line is one synchronous write to stderr per request, so a log pipe that bloc
 
 ## Routes
 
-`GET /api/v1` (no credential) is the authoritative list:
-every mounted `/api/v1` route with its `method`, `path`, `auth` (`public`, `any`, `human`, or `bearer`), and `description`, sorted by path then method.
+`GET /api/v1` is the authoritative list, for any signed-in person or agent credential:
+every route of the table, the `/api/v1` routes and `GET /metrics`, with its `method`, `path`, `auth` (`any` or `bearer`), and `description`, sorted by path then method.
+Every route Dispatch serves needs a credential but `GET /auth/start`, `GET /auth/callback`, `/healthz`, `/livez` and the dashboard's own files, and none grants access by the caller's network address or a header naming one (`TestEveryRouteNeedsACredentialButTheNamedOnes`, `TestNoRouteGrantsAccessByNetworkAddress`).
 `envoy-dispatch routes` prints the same body from the table alone, with no database or listener and never a test hook;
 the docs site's HTTP API reference is generated from it.
 `envoy-dispatch openapi` prints the OpenAPI 3.1 document of the same table with its test hooks in, each hook's operation marked `x-test-hook`, from the table, the Go types beside it (`internal/dispatch/api/routes_shapes.go`) and nothing else;
@@ -3738,7 +3739,7 @@ the docs site's HTTP API reference is generated from it.
 The clients' TypeScript types are rendered from that committed document, so a route added to the table reaches them with no type hand-written for it.
 The list below is a summary.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
-/v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
+/v1/issues","hint":"GET /api/v1, with a credential, lists every route"}`, never the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
 it never reads `index.html` or a non-asset path from there.
 A path no build published remains `404 {"error":"not found"}` and any other read failure is a 502 with no cache header.
@@ -3750,9 +3751,9 @@ Production Dispatch uses cookie identity through the sign-in pool.
 
 Each item below names a path with its method and identity, then its purpose.
 
-- `/api/v1` (GET; none)
+- `/api/v1` (GET; cookie, trusted header, or bearer)
 
-  List every `/api/v1` route with its auth and purpose.
+  List every route of the API's table with its auth and purpose.
 
 - `/api/v1/limits` (GET; cookie, trusted header, or bearer)
 
@@ -3848,14 +3849,14 @@ Each item below names a path with its method and identity, then its purpose.
   the events with id greater than `after` (default 0), oldest first, at most `limit` (1–1000, default 1000), each as the issue and document event lists serve it.
   An invalid value is `400 INVALID_QUERY`.
 
-- `/metrics` (GET; none)
+- `/metrics` (GET; cookie, trusted header, or bearer)
 
   The process's metrics in the Prometheus text format:
   `envoy_dispatch_outbox_publish_failures_total{reason}`, one count per destination of an outbox publish attempt that was not reached, `reason` being `denied` (the server refused it under the connection's own publish permissions), `refused` (NATS refuses the envelope or its subject however often it is retried), `unanswered` (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer, for every holder alike) or `failed` (every other failure);
   and `envoy_dispatch_outbox_role_forwards_held_total{holder_state}`, one count per role forward a holder's resolution held pending with nothing sent, `holder_state` being `unresponsive` (the holder is past the live window), `undated` (nothing dates the holder) or `unresolved` (the role claim or the holder's session could not be read).
   A hold is a wait for that session to answer and no failure of the bus, so it is counted there and never under the publish failures an alert watches.
-  It is answered above the router, so it is never the dashboard's shell, and whoever reaches the HTTP port can read it.
-  Nothing scrapes it yet.
+  It is a row of the API's route table, so it is never the dashboard's shell and it needs a credential:
+  its read is of the whole deployment, which an open viewer reads, the deployment's shared agent token included, and a restricted member or a credential that lists projects is `403 DEPLOYMENT_READ_REFUSED`.
 
 - `/api/v1/artifacts/_test/quiesce` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 

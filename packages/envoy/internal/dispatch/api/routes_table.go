@@ -21,8 +21,6 @@ import (
 type routeAuth string
 
 const (
-	// authPublic needs no credential.
-	authPublic routeAuth = "public"
 	// authAny accepts any authenticated caller: a browser cookie or a bearer token. What such a
 	// caller may do there is the route's own scopes' to decide (routeScopes), which a person's
 	// credential holds and a credential the deployment configured holds none of.
@@ -628,8 +626,9 @@ const searchDeclaresNine = "This route declares all nine members and answers exa
 // to mount it (undecidableWrites).
 func (s *server) routes() []apiRoute {
 	rows := []routeRow{
-		{http.MethodGet, "/api/v1", authPublic, "This index: every route with its method, auth, and purpose.", s.getRouteIndex},
-		{http.MethodGet, "/api/v1/schema/blocks", authPublic, "The typed document block schema as JSON.", s.getBlockSchema},
+		{http.MethodGet, "/api/v1", authAny, "This index: every route with its method, auth, and purpose.", s.getRouteIndex},
+		{http.MethodGet, "/api/v1/schema/blocks", authAny, "The typed document block schema as JSON.", s.getBlockSchema},
+		{http.MethodGet, "/metrics", authAny, "The process's Prometheus metrics, for an open viewer; a restricted member or a credential that lists projects is 403 DEPLOYMENT_READ_REFUSED.", s.getMetrics},
 		{http.MethodGet, "/api/v1/limits", authAny, "The bounds a write is held to: how long one block of a body may be and how many blocks a body may hold, how many options an ask may have and how long its question and options are together, how long a body an event carries whole may be, and the bytes a request, a document and a handoff body may hold.", s.getLimits},
 		{http.MethodPost, "/api/v1/markdown/round-trip", authAny, "The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error.", s.postMarkdownRoundTrip},
 		{http.MethodGet, "/api/v1/projects", authAny, "List the projects the caller sees; a private project carries visibility private, and a public one no visibility. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope.", s.listProjects},
@@ -895,7 +894,13 @@ func routeIndexBody(entries []routeIndexEntry) routeIndex {
 	return routeIndex{Docs: routeIndexDocs, Routes: entries}
 }
 
-func (s *server) getRouteIndex(w http.ResponseWriter, _ *http.Request) {
+// getRouteIndex answers the table to any authenticated caller, as every row of it is: no route of
+// Dispatch answers a caller with no credential but sign-in, health and the web app
+// (TestEveryRouteNeedsACredentialButTheNamedOnes), whatever path reached it.
+func (s *server) getRouteIndex(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
 	WriteJSON(w, http.StatusOK, routeIndexBody(s.routeIndex))
 }
 

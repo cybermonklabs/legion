@@ -62,8 +62,8 @@ generated from it. A variable a release stopped reading leaves the table for
 `removedSettings`, beside it, with what replaced it: the table reads it too, and
 `resolveBootConfig` refuses to start while it is set (`refuseRemovedSettings`).
 
-`dispatchHandler` mounts the one `GET /healthz` the process serves on its own
-mux, above the dashboard router. It is a readiness probe and never a liveness
+`routes.Process` mounts the one `GET /healthz` the process serves (`healthzHandler`)
+on its own mux, above the dashboard router. It is a readiness probe and never a liveness
 check: its status is `200` while this process can serve requests and `503`
 while the database does not answer, so a liveness probe on it would restart
 every server process during a database failover. The probe reads the database through
@@ -657,14 +657,19 @@ recorded by any process in `github_rate_limits` (then GitHub is not asked), is
 
 ## Routes
 
-The `/api/v1` routes are one table, `api/routes_table.go` (`routes()`): `Register` mounts it and
-`GET /api/v1` (public) serves it as `{routes: [{method, path, auth, scopes, description}], docs}`
+The routes of the API are one table, `api/routes_table.go` (`routes()`): the `/api/v1` routes and
+`GET /metrics`. `Register` mounts it and `GET /api/v1` serves it to any authenticated caller as
+`{routes: [{method, path, auth, scopes, description}], docs}`
 sorted by path then method, `scopes` left out of a route that needs none. Add a route by adding a
 row — never a `mux.HandleFunc` line — with, for a `GET` row, its entry in `readClasses`
-(`api/read_classes.go`), and bump the pinned count in `api/routes_table_test.go`; a pattern
+(`api/read_classes.go`), and write `api/testdata/routes.txt` again (`go test ./internal/dispatch/api
+-run TestRouteIndexListsEveryRouteSortedByPathThenMethod -args -update`); a pattern
 outside the table is mounted only through `readclass.Handle`, with its read classes. `auth` is
-`public`, `any` (user or bearer) or
-`bearer`; it describes the check the handler makes, the handler still enforces it. The OAuth
+`any` (user or bearer) or
+`bearer`; it describes the check the handler makes, the handler still enforces it. No route needs
+no credential but sign-in, `/healthz`, `/livez` and the dashboard's files, and none trusts the
+caller's network address (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and
+`TestNoRouteGrantsAccessByNetworkAddress`, over the process `routes.Process` builds). The OAuth
 scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
 which `routes()` stamps onto `apiRoute.OAuthScopes`: a positional row literal would make every
 one of the 151 rows carry a sixth value, and most rows need no scope. A name in that map which is
@@ -674,8 +679,9 @@ and session layers, so no handler restates a scope, and `envoy-dispatch routes` 
 each route's `scopes` as `GET /api/v1` does. An unknown path
 under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`), and a known path asked with a
 method its route does not serve, is answered by `routes/router.go` with
-`404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1 lists every
-route"}` before any dashboard lookup; only paths outside those roots fall back to the SPA shell.
+`404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1, with a
+credential, lists every route"}` before any dashboard lookup; only paths outside those roots
+fall back to the SPA shell.
 While a release rolls out, a process of the build before a route answers that route this way, so
 the page and the `dispatch` command send such a request again after 1, 2 and 4 seconds before
 they fail it (README, "Two builds at once"): a route is added freely, and removed only in the
@@ -764,7 +770,7 @@ untouched; a caller that resolves to nobody keeps the route's own `401` (`refuse
 
 | Path | Method | Access | Purpose |
 | --- | --- | --- | --- |
-| `/api/v1` | GET | public | List every `/api/v1` route with method, auth, and purpose. |
+| `/api/v1` | GET | user or bearer | List every route of the API's table with method, auth, and purpose. |
 | `/auth/start` | GET | public | Start Google sign-in at the sign-in issuer (the Cognito pool, or Google for `DISPATCH_SIGNIN_DOMAIN`, with offline access, `prompt=consent` and, as `SignInRule.DomainHint` says, `hd` unless `DISPATCH_SIGNIN_OUTSIDE=1`), back to the callback of the origin the request came to (`publicOrigin`: `DISPATCH_OUTSIDE_ORIGIN` for its host, else `DISPATCH_SERVER_URL`), the sign-in's state in the signed `dispatch_oauth_state` cookie; `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`, `503 SIGNIN_UNAVAILABLE` and no cookie while the issuer is not discovered. |
 | `/auth/callback` | GET | sign-in state | Verify the `dispatch_oauth_state` cookie under the key set (any process completes a sign-in another started; `400` "invalid or expired state" for one missing, tampered, lapsed or naming another state), exchange the issuer's code and sign in the person `SignInRule.Person` admits (`GroupRule`, `DomainRule` or `OutsideRule`): a member of `DISPATCH_SIGNIN_GROUP` named by the email in their pool username (a 403 page naming anyone else), a verified Google account of `DISPATCH_SIGNIN_DOMAIN` named by its `email` (a 403 page with the reason for anyone else), or, with `DISPATCH_SIGNIN_OUTSIDE=1`, a verified Google account outside the domain that a project names directly (`access.Listed`), as a restricted member (a 403 page saying no access list names anyone else outside the domain); record them in `people` with their member kind and the refresh token sealed (and, under a domain, its `sub`, ending the address's sessions when another account held it), and issue the session cookie. `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read (`identity.ErrMembershipUnreadable`); `503 SIGNIN_UNAVAILABLE` while this process has not discovered the issuer; `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie (`issueSession`). |
 | `/auth/logout` | POST | identity | Advance the person's session generation, forget their refresh token, and clear the cookie. Local only: the issuer's own session is left alone. |

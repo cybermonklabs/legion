@@ -1475,7 +1475,7 @@ func TestUnknownReservedPathIsJSONNotFoundWithHint(t *testing.T) {
 				want := map[string]string{
 					"code":  "NOT_FOUND",
 					"error": "no route for GET " + path,
-					"hint":  "GET /api/v1 lists every route",
+					"hint":  "GET /api/v1, with a credential, lists every route",
 				}
 				if !reflect.DeepEqual(body, want) {
 					t.Fatalf("%s body = %v, want %v", path, body, want)
@@ -1517,7 +1517,7 @@ func TestAMethodAKnownPathDoesNotServeIsJSONNoRoute(t *testing.T) {
 		want := map[string]string{
 			"code":  "NOT_FOUND",
 			"error": "no route for " + method + " " + path,
-			"hint":  "GET /api/v1 lists every route",
+			"hint":  "GET /api/v1, with a credential, lists every route",
 		}
 		if !reflect.DeepEqual(body, want) {
 			t.Fatalf("%s %s body = %v, want %v", method, path, body, want)

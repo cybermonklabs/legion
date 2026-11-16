@@ -111,7 +111,10 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit    string
+	BuildCommit string
+	// Metrics is the process's metrics registry, which GET /metrics serves; nil serves an empty
+	// one. See api.DepsInput.
+	Metrics        http.Handler
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -257,6 +260,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		Metrics:                opts.Metrics,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -330,11 +334,18 @@ type router struct {
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
 // (api.RunMaintenanceSweep).
 func New(ctx *AppContext) (http.Handler, api.Background) {
+	handler, _, background := serve(ctx)
+	return handler, background
+}
+
+// serve is New, answering besides the handler the mux every route is mounted on, whose patterns
+// a walk of what the server serves reads (readclass.Patterns).
+func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 	r, mux, background := mount(ctx)
 	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+		return r.enforceCookieOrigin(mux), mux, background
 	}
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), mux, background
 }
 
 // mount builds the router and its mux with every route mounted, and answers the API server's
@@ -698,7 +709,7 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 			api.WriteJSON(w, http.StatusNotFound, map[string]string{
 				"code":  "NOT_FOUND",
 				"error": "no route for " + req.Method + " " + req.URL.Path,
-				"hint":  "GET /api/v1 lists every route",
+				"hint":  "GET /api/v1, with a credential, lists every route",
 			})
 		})(w, req)
 		return

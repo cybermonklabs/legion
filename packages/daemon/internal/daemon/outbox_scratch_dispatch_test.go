@@ -441,7 +441,7 @@ func (d *scratchDispatch) start() {
 		}
 		// Each poll is bounded (pollClient): until Dispatch serves, the held socket queues the
 		// connection unanswered.
-		if response, err := pollClient.Get(d.base + "/api/v1"); err == nil {
+		if response, err := pollClient.Get(d.base + "/healthz"); err == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
 				return true

@@ -587,7 +587,7 @@ start_dispatch() {
     start_process dispatch env -u NATS_NKEY_SEED -u NATS_NKEY_SEED_FILE -u GH_PUBLIC_REPO_PAT "${app_key_unsets[@]}" "$work/envoy-dispatch"
   dispatch_base="http://$bind_host:$port_dispatch"
   await_start dispatch "$dispatch_pid" 60 "the scratch Dispatch server on its port $port_dispatch" \
-    curl -fsS "$dispatch_base/api/v1"
+    curl -fsS "$dispatch_base/healthz"
 }
 
 # ---- the operator's route and the run's own Secret ------------------------------------------------

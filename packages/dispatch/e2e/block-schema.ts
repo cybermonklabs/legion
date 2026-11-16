@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 
 import type { BlockSchema } from "@legion/contracts";
 
-import { baseUrl } from "./api";
+import { baseUrl, e2eAgentToken } from "./api";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 import { sql } from "./psql";
 
@@ -56,10 +56,14 @@ export const builtSchemaVersion: number = (
 export const newerSchemaVersion = builtSchemaVersion + 1;
 
 /** The schema one process serves now, read through `GET /api/v1/schema/blocks`, which answers the
- *  installed value. With `process` the read is pinned to that process of the two-process lane. */
+ *  installed value to any credential, here the harness's agent token. With `process` the read is
+ *  pinned to that process of the two-process lane. */
 export async function installedSchema(process?: DispatchProcess): Promise<BlockSchema> {
   const response = await fetch(new URL("/api/v1/schema/blocks", baseUrl), {
-    headers: process === undefined ? {} : pinnedTo(process),
+    headers: {
+      Authorization: `Bearer ${e2eAgentToken}`,
+      ...(process === undefined ? {} : pinnedTo(process)),
+    },
   });
   if (!response.ok) {
     throw new Error(`GET /api/v1/schema/blocks answered ${response.status}`);

@@ -207,6 +207,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/credential-requests":     reads("the deployment's pending credential requests a signed-in person decides", nil, readclass.Deployment),
 	"GET /api/v1/machine-logins":          reads("the deployment's machine logins, a service's among them", nil, readclass.Deployment),
 	"GET /api/v1/access-groups":           reads("the deployment's access groups, which no project owns", nil, readclass.Deployment),
+	"GET /metrics":                        reads("the process's counters of the whole deployment's work, which name no project, issue, person or session (readclass's TestMetricsNameNoProject)", nil, readclass.Deployment),
 
 	// The membership answer the secrets broker reads.
 	"GET /api/v1/access/projects/{key}": reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
