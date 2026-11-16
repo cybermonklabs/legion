@@ -1548,6 +1548,9 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testwait/*'
+              # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
+              # component compiles that package.
+              - 'packages/envoy/internal/weborigin/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
               - '.github/actions/pull-test-images/**'
