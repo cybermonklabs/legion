@@ -397,10 +397,15 @@ type server struct {
 	// meaning query and 300 ms of wall clock (INFRA-3904).
 	crossProjectWait time.Duration
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
-	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
-	// (the forced create whose check does not answer), so a case's outcome is its own choice
-	// rather than its machine's speed.
+	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it: a
+	// case that reads the gate's verdict gives it a bound of its own (testServerOptions'
+	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
+	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
+	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
+	// until the bound ends it, so the bound and nothing else decides that case.
+	beforeDuplicateRead func(ctx context.Context) error
 	// broadcastResolveBudget overrides the budget a broadcast's recipient resolution runs under;
 	// zero, which every server the deployment builds leaves it, means broadcastResolveTimeout.
 	// Only a test sets it, so a budget that ends before every selected session is read is the

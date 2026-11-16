@@ -137,6 +137,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
+	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
+	// nearCopyVerdictBound, so whether the machine met 500 ms is not what it measures.
+	duplicateBound time.Duration
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -281,6 +285,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.agentWatchInterval != 0 {
 		served.agentWatchInterval = options.agentWatchInterval
 	}
+	served.duplicateBound = options.duplicateBound
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,

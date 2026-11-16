@@ -754,9 +754,11 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // The check is stopped by its own allowance, which the near-copy gate does not share: the gate
 // runs before the write under a bound of its own, the check after it. A lock would stop both,
 // since the gate prices the text's words through the check's own picker, and that case is the
-// third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList).
+// third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList). The gate's
+// bound here is the case's (nearCopyVerdictBound), so the title matches are the gate's verdict
+// and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})
