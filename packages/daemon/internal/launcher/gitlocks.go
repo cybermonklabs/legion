@@ -167,8 +167,9 @@ type gitLockSweep struct {
 }
 
 // serveGitLockSweep is the pod's one sweep of the clone's stale git locks: it builds the sweep
-// (newGitLockSweep), gives it to every role manager, runs its first pass and its clock (serve),
-// and answers the channel serve answers, closed once its ticker has returned.
+// (newGitLockSweep) over the /proc cfg names (Config.GitLockProc, "" for the container's own),
+// gives it to every role manager, runs its first pass and its clock (serve), and answers the
+// channel serve answers, closed once its ticker has returned.
 //
 // The sweep runs only where the launcher is the container's first process (containerInit), as
 // the memory guard does (serveMemoryGuard). A pass keeps a lock that a process holds open and may
@@ -178,7 +179,7 @@ type gitLockSweep struct {
 // another role's git or jj holds. Any other launcher logs one line, sweeps nothing, and answers a
 // channel already closed. No manager then holds a sweep (manager.gitLocks), so a role start
 // learns nothing (learn) and runs its restore over the clone as the clone stands.
-func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{} {
+func serveGitLockSweep(ctx context.Context, cfg Config, managers []*manager) <-chan struct{} {
 	if !containerInit() {
 		managers[0].log.linef("launcher: git lock sweep: off reason=the launcher is pid %d, not the container's first process, so it cannot see every process that may hold a lock",
 			os.Getpid())
@@ -187,6 +188,9 @@ func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{}
 		return done
 	}
 	sweep := newGitLockSweep(managers[0].log.linef)
+	if cfg.GitLockProc != "" {
+		sweep.proc = cfg.GitLockProc
+	}
 	for _, m := range managers {
 		m.gitLocks = sweep
 	}

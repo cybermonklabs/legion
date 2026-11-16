@@ -82,6 +82,12 @@ type Config struct {
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
 	LeakCheckDir string
+	// GitLockProc is the /proc the clone's git lock sweep reads every process's open files from,
+	// to keep a lock a process holds (gitLockSweep.proc); "" is /proc, the container's own, which
+	// is the only one a pod uses. A test names a root of its own (launchFleet): the machine's
+	// /proc holds processes the test knows nothing of, and one git among them whose open files
+	// the test cannot read makes the sweep keep every lock.
+	GitLockProc string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -138,7 +144,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// Only a launcher that is the container's first process sweeps, as only that one runs the
 	// memory guard below, since only it sees every process that may hold a lock; any other logs
 	// a line instead (serveGitLockSweep).
-	locks := serveGitLockSweep(ctx, managers)
+	locks := serveGitLockSweep(ctx, cfg, managers)
 	// The pod's one memory guard, before the test database and any role start, so it watches
 	// both from their first process; only a launcher that is the container's first process runs
 	// one, as only that one runs the reaper above, and any other logs a line instead

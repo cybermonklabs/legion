@@ -353,8 +353,10 @@ func shortGitLockClock(t *testing.T, interval, recheck time.Duration) {
 // sweeps (serveGitLockSweep) and no test of this package runs as PID 1. Such a launcher runs the
 // memory guard too, so the guard is pointed at an empty pod of its own (useGuardPod), whose
 // reading is far below the mark and whose signal ends nothing of the machine's, rather than at
-// this machine's /proc, whose processes the row knows nothing of. It is called before the
-// launcher starts, so its restore runs after the launcher's own cleanup, which waits for Run.
+// this machine's /proc, whose processes the row knows nothing of; the sweep reads the /proc of
+// the row's own that launchFleet gives every fleet's launcher (Config.GitLockProc), for the same
+// reason. It is called before the launcher starts, so its restore runs after the launcher's own
+// cleanup, which waits for Run.
 func useSweepingLauncher(t *testing.T) {
 	t.Helper()
 	useGuardPod(t, newGuardPod(t), nil)

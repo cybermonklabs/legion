@@ -602,7 +602,11 @@ func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 }
 
 // launchFleet is newFleetOf up to every role's hello, which it leaves unacknowledged, for a test
-// whose acknowledgements carry something of their own.
+// whose acknowledgements carry something of their own. Every fleet's launcher is given a /proc of
+// the test's own for its git lock sweep, the test process alone (procRoot), unless cfg names one
+// (Config.GitLockProc): a launcher that sweeps (useSweepingLauncher) and read this machine's
+// /proc would keep every lock while some git it cannot read the open files of runs anywhere on
+// the machine, and the row would fail for a process it knows nothing of.
 func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
 	scratch := namespaceScratch(t)
@@ -642,6 +646,9 @@ func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
 	f.cancel = cancel
 	cfg.Connect, cfg.Sandbox, cfg.PodUID = "tcp://"+listener.Addr().String(), "legion-legion-legion-208", "pod-1"
 	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
+	if cfg.GitLockProc == "" {
+		cfg.GitLockProc = procRoot(t, os.Getpid())
+	}
 	go func() {
 		f.result <- Run(ctx, cfg)
 	}()
