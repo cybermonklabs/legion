@@ -2707,15 +2707,25 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the committed
-            # copies its text checks hold to the texts they copy, so the module's other files -
-            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
+            # every package of this module it imports - the prompts, its .md files and the
+            # committed copies its text checks hold to the texts they copy, so the module's other
+            # files - its .sql and .json - are no input of this job and no pattern here matches them.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
+              # The texts bearer_argument_test.go:58,76 reads for a bearer given to curl as a
+              # header argument: the skills, every package's Markdown and prompts, .github, and
+              # docs/ but its two trees of dated history, which it does not read.
+              - 'skills/**'
+              - 'packages/**/*.md'
+              - 'packages/**/prompts/**'
+              - '.github/**'
+              - 'docs/**'
+              - '!docs/plans/**'
+              - '!docs/superpowers/**'
               # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
               # of the phrase it reads in place of importing internal/workflow (:23-24), and the
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.

@@ -58,16 +58,16 @@ This form sends an empty value, and the API answers as if you had sent no creden
 ```sh
 # wrong
 agent-secrets LEGION_SLACK_BOT_TOKEN -- \
-  curl -sS -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" https://slack.com/api/auth.test
+  sh -c "printf 'Authorization: Bearer %s' \"$LEGION_SLACK_BOT_TOKEN\" | curl -sS -H @- https://slack.com/api/auth.test"
 ```
 
-Your own shell expands `$LEGION_SLACK_BOT_TOKEN` before `agent-secrets` runs, and in your shell that
-name is empty. Measured on 2026-11-04 from a Legion issue pod: Slack answered
-`{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
-a secret behind the airlock — exists only in the environment of the command the client starts, so
-that command must read it itself. Put the command in single quotes, inside
-`sh -c`, where the quotes keep the expansion for the child, and give `curl` the header on standard
-input (`-H @-`), so the value is in no command's arguments:
+Your own shell expands `$LEGION_SLACK_BOT_TOKEN` inside the double quotes before `agent-secrets`
+runs, and in your shell that name is empty. Measured on 2026-11-04 from a Legion issue pod, with
+that same empty value in the header: Slack answered `{"ok":false,"error":"not_authed"}`. What the
+client hands over — the value, or the placeholder of a secret behind the airlock — exists only in
+the environment of the command the client starts, so that command must read it itself. Put the
+command in single quotes, inside `sh -c`, where the quotes keep the expansion for the child, and
+give `curl` the header on standard input (`-H @-`), so the value is in no command's arguments:
 
 ```sh
 # right

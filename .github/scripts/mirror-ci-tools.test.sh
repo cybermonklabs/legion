@@ -171,6 +171,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         return self.rfile.read(length) if length else b""
 
+    def bearer(self, method, path):
+        """Whether the request carries the push token, which the script sends on curl's standard
+        input. One that does not is recorded and refused 401, as the registry refuses it, so every
+        case that reads a request below reads that the bearer reached the registry."""
+        if self.headers.get("Authorization") == "Bearer fixture-token":
+            return True
+        self.record(f"{method} {path} without the bearer")
+        return False
+
     def do_GET(self):
         path, _, query = self.path.partition("?")
         _, path = registry_path(path)
@@ -194,6 +203,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         path, _, _ = self.path.partition("?")
         _, path = registry_path(path)
+        if not self.bearer("HEAD", path):
+            self.answer_head(401, 0)
+            return
         blob = BLOB.match(path)
         if blob:
             digest = blob.group("digest")
@@ -221,6 +233,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, _, _ = self.path.partition("?")
         prefix, path = registry_path(path)
         self.read_body()
+        if not self.bearer("POST", path):
+            self.answer(401, b"no bearer\n")
+            return
         uploads = UPLOADS.match(path)
         if uploads:
             self.record("POST upload")
@@ -238,6 +253,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, _, query = self.path.partition("?")
         _, path = registry_path(path)
         body = self.read_body()
+        if not self.bearer("PUT", path):
+            self.answer(401, b"no bearer\n")
+            return
         upload = UPLOAD.match(path)
         if upload:
             claimed = urllib.parse.parse_qs(query).get("digest", [""])[0]

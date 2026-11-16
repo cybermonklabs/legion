@@ -480,6 +480,14 @@ RULES = {
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
+    # The bearer-argument check reads every text an agent or an operator copies a command from
+    # (dispatch://INFRA-3950): docs/ but its two trees of dated history, which the text_checks
+    # filter leaves out with two `!` patterns, so a new tree under docs/ starts the job too.
+    f"{DAEMON}/internal/textcheck/bearer_argument_test.go": reads(
+        *[(glob, "internal/textcheck/bearer_argument_test.go:58 walks the trees bearerTextRoots names under ../../../.. "
+                 "and :76 reads each file of them that tree's rule keeps")
+          for glob in ("skills/**", "docs/*", "docs/brainstorms/**", "docs/research/**", "docs/site/**",
+                       "docs/solutions/**", ".github/**", "packages/**/*.md", "packages/**/prompts/**")]),
     # main's #4092 read these three pages in internal/prompts's production-check test; that half
     # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).

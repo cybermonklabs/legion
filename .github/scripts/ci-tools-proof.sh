@@ -914,9 +914,10 @@ SH
 # The request is the first argument that starts with http:// or https://, and its authority is
 # the text up to the first /, ? or #, with any user@ before that removed.
 # Of the arguments, only the host of that URL reaches the log: never its path, query, fragment
-# or user, and no other argument. This helper is handed credentials as arguments — -u for a
-# ghcr token, an Authorization header for a blob — and .github/scripts/ci-tools.sh passes them
-# that way exactly so that they reach no log line.
+# or user, and no other argument. This helper is handed a credential as an argument — -u for a
+# ghcr token request — and .github/scripts/ci-tools.sh passes it that way exactly so that it
+# reaches no log line; a blob's Authorization header reaches the real curl on standard input,
+# which this helper leaves to it.
 url=""
 for argument in "$@"; do
   case $argument in

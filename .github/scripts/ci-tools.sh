@@ -772,7 +772,10 @@ ci_tools__fetch_ghcr() {
     printf '%s\n' "$token"
     return "$status"
   fi
-  ci_tools_curl "$file" "$max_time" "$url" -H "Authorization: Bearer $token" || status=$?
+  # The bearer reaches curl on standard input from printf, a shell builtin, so it is in no
+  # process's command line.
+  printf 'Authorization: Bearer %s' "$token" |
+    ci_tools_curl "$file" "$max_time" "$url" -H @- || status=$?
   if [ "$status" -ne 0 ]; then
     ci_tools__curl_report "$status" "$file" "the blob request failed (curl exit $status)"
     return

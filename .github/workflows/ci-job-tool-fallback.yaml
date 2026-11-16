@@ -132,8 +132,10 @@ jobs:
           cold=""
           for row in $rows; do
             url=$(ci_tools_blob_url "$row")
-            status=$(curl -sS -o /dev/null -I -L -w '%{http_code}' \
-              -H "Authorization: Bearer $token" "$url")
+            # The bearer reaches curl on standard input from printf, a shell builtin, so it is
+            # in no process's command line.
+            status=$(printf 'Authorization: Bearer %s' "$token" |
+              curl -sS -o /dev/null -I -L -w '%{http_code}' -H @- "$url")
             echo "$row: $registry answers $status for $url"
             [ "$status" = 200 ] || cold="$cold $row"
           done

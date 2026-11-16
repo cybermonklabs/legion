@@ -54,8 +54,9 @@
 # flags are the ladder ci_tools_curl holds every fetch to, and before that case no assertion
 # here or anywhere else held them to a shape, so an edit of one of them reached a runner unseen.
 # The case prints no recorded argument, whether it passes or fails: this helper is handed a pull
-# token with `-u` and a blob's `Authorization: Bearer …` with `-H`, and it takes both as
-# arguments exactly so that they reach no log line, which a test that printed them would undo.
+# token request's credential with `-u`, as an argument exactly so that it reaches no log line,
+# which a test that printed it would undo. A blob's `Authorization: Bearer …` is no argument: it
+# reaches curl on standard input (`-H @-`), and the ghcr-mirror case below holds it to that.
 #
 # THE MKTEMP ON THESE CASES' PATH: the write-error cases must name the file a fetch writes into,
 # and that file is a mktemp the helper makes under RUNNER_TEMP. Those cases put an mktemp of
@@ -472,7 +473,9 @@ tools:
 YAML
 
 # The origin: a directory server that writes every path it is asked for, served or not, to a log.
-# A case reads that log to say which sources a run went to.
+# A case reads that log to say which sources a run went to. Beside it, in <log>.auth, each path
+# with the Authorization header the request carried, or `none`: the bearer a blob request sends
+# reaches curl on standard input, and this is where a case reads that it reached the origin.
 cat > "$work/origin.py" <<'PY'
 import http.server
 import socketserver
@@ -488,6 +491,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         with open(logfile, "a") as log:
             log.write(self.path + "\n")
+        with open(logfile + ".auth", "a") as log:
+            log.write(self.path + " " + (self.headers.get("Authorization") or "none") + "\n")
         super().do_GET()
 
     def log_message(self, *args):
@@ -599,8 +604,8 @@ RECORDED_TEMPORARY_FILE='<the temporary file this run named>'
 # line, with the tenth replaced by that placeholder. The whole record is held, and so is its
 # length, which is what catches a word appended anywhere, after the URL included: curl reads the
 # last word on --retry-max-time, so one appended word there takes the bound off every fetch this
-# repository makes. It is read inside `is` and never printed: a call carries credentials among
-# its arguments, and the helper passes them that way so that they reach no log line.
+# repository makes. It is read inside `is` and never printed: a token request carries its
+# credential among its arguments, and the helper passes it that way so that it reaches no log line.
 recorded_ladder() {
   local argument number=0
   while IFS= read -r argument; do
@@ -683,6 +688,15 @@ check "asked the package for an anonymous pull token" \
   "$(is "$(asked_for "$log" "/ghcr/token?service=ghcr.io&scope=repository:$REGISTRY_PATH:pull")" true)"
 check "and for the blob the digest names" \
   "$(is "$(asked_for "$log" "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED")" true)"
+check "the blob request carried the pull token as its bearer" \
+  "$(is "$(grep -F "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED " "$log.auth")" \
+    "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED Bearer fixture-token")"
+# The record is of the call that ran last, so it is the blob request's own only while it holds
+# that request's URL: read that first, or the check below could pass on another call's record.
+check "the last call curl was handed is the blob request" \
+  "$(is "$(grep -cxF "$base/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED" "$curl_arguments" || true)" 1)"
+check "and none of its arguments holds the token, which it read on standard input" \
+  "$(is "$(grep -c fixture-token "$curl_arguments" || true)" 0)"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: github-release — the primary serves one byte changed"
