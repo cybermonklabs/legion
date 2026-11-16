@@ -7,9 +7,9 @@ body: |-
     `dashboard_builds.owner_lock_protocol`, each an integer with the constant default 0, so no row
     is rewritten; a pod of this release writes 1 in both, and a pod of an earlier release, which
     serialises writers on the owner's row, leaves 0. An earlier release counts as present while a
-    pod of it has reported within the last 10 minutes, or for 10 minutes after one last started:
-    its boot's dashboard publish, its registration and the return of a lapsed registration each
-    stamp that start, through a trigger. While one is present, a write of this release takes the
+    pod of it has reported within the last 10 minutes, or for an hour after one last started: its
+    boot's dashboard publish, its registration and the return of a lapsed registration each stamp
+    that start, through a trigger. While one is present, a write of this release takes the
     owner's row too (`for no key update`, the Inbox's `for share`, a background pass's
     `skip locked`) right after its advisory lock and before it reads what it decides on, which
     holds a transaction id through that write's reads and costs a guarded read one more round trip.

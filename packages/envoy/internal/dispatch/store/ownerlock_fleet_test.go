@@ -184,25 +184,30 @@ type fleetState struct {
 
 // fleetStates is every fleet state the owner lock tells apart: an earlier build is in the fleet
 // while a process of it has heartbeated within OwnerLockLegacyWindow, or its arrival - its
-// dashboard publish or its registration - stamped the mark within it. A process of it whose
-// heartbeat stopped within the window still counts, where the registry's own live window has
-// long dropped it: a row counts until it is deregistered or pruned.
+// dashboard publish or its registration - stamped the mark within OwnerLockMarkWindow. A process
+// of it whose heartbeat stopped within its window still counts, where the registry's own live
+// window has long dropped it: a row counts until it is deregistered or pruned. A mark older than a
+// row's window and younger than its own still counts.
 var fleetStates = []fleetState{
 	{name: "no process registered", seed: func(*testing.T, *Store) {}},
 	{name: "a live process of this build", seed: func(t *testing.T, s *Store) { registerFleetProcess(t, s, OwnerLockProtocol, 0) }},
 	{name: "a process of an earlier build whose heartbeat stopped within the legacy window", legacy: true, seed: func(t *testing.T, s *Store) {
 		registerFleetProcess(t, s, 0, ProcessLiveWindow+time.Minute)
-		ageLegacyMark(t, s, OwnerLockLegacyWindow+time.Minute)
+		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
 	}},
 	{name: "a process of an earlier build whose heartbeat stopped before the legacy window", seed: func(t *testing.T, s *Store) {
 		registerFleetProcess(t, s, 0, OwnerLockLegacyWindow+time.Minute)
-		ageLegacyMark(t, s, OwnerLockLegacyWindow+time.Minute)
+		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
 	}},
 	{name: "a live process of an earlier build", legacy: true, seed: func(t *testing.T, s *Store) { registerFleetProcess(t, s, 0, 0) }},
-	{name: "an earlier build's dashboard publish within the legacy window", legacy: true, seed: publishAsAnEarlierBuild},
-	{name: "an earlier build's dashboard publish before the legacy window", seed: func(t *testing.T, s *Store) {
+	{name: "an earlier build's dashboard publish just now", legacy: true, seed: publishAsAnEarlierBuild},
+	{name: "an earlier build's dashboard publish older than the legacy window, within the mark's", legacy: true, seed: func(t *testing.T, s *Store) {
 		publishAsAnEarlierBuild(t, s)
 		ageLegacyMark(t, s, OwnerLockLegacyWindow+time.Minute)
+	}},
+	{name: "an earlier build's dashboard publish before the mark's window", seed: func(t *testing.T, s *Store) {
+		publishAsAnEarlierBuild(t, s)
+		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
 	}},
 }
 
@@ -964,7 +969,7 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 		if _, err := s.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
 			t.Fatal(err)
 		}
-		ageLegacyMark(t, s, OwnerLockLegacyWindow+time.Minute)
+		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)
 		time.Sleep(time.Duration(10+rand.IntN(40)) * time.Millisecond)
 	}
 	close(stop)

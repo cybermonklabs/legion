@@ -49,14 +49,27 @@ const (
 // share`) first and holds it for its whole transaction, and never takes the advisory lock.
 const OwnerLockProtocol = 1
 
-// OwnerLockLegacyWindow is how long an earlier build stays in the fleet the owner lock reads
-// (public.owner_lock_fleet): while a server_processes row at owner lock protocol 0 has heartbeated
-// within it, or while the mark its arrival stamped (owner_lock_legacy_mark) is younger than it.
-// It is processes.PruneAge, so a row of an earlier build counts until it is deregistered or
-// pruned, and the mark covers an earlier build's boot from its dashboard publish to its
-// registration, which comes long within it. A variable rather than a constant only so tests can
-// shorten it.
-var OwnerLockLegacyWindow = 10 * time.Minute
+// The two windows of the fleet the owner lock reads (public.owner_lock_fleet): an earlier build is
+// in it while a server_processes row at owner lock protocol 0 has heartbeated within
+// OwnerLockLegacyWindow, or while the mark its last arrival stamped (owner_lock_legacy_mark) is
+// younger than OwnerLockMarkWindow. Variables rather than constants only so tests can shorten them.
+//
+// OwnerLockLegacyWindow is processes.PruneAge, so a row of an earlier build counts until it is
+// deregistered or pruned. A process of an earlier build silent past it - frozen, or cut from the
+// database - has its row pruned and is not in the fleet again until its next heartbeat's admit,
+// whose insert is an arrival. That is the registry's own model: every other decision over the
+// fleet (the signing keys, the embedder, the schema admission) counts a process silent past
+// ProcessLiveWindow as gone.
+//
+// OwnerLockMarkWindow covers an earlier build's boot from its dashboard publish, the arrival its
+// boot makes first, to its registration, which then keeps it in the fleet. Every step of that
+// boot is bounded at 30 to 60 seconds and its admission at 20, but SeedRepoProjects is not, so the
+// mark holds an hour; an earlier build whose boot takes longer than that from its publish to its
+// registration is not in the fleet from the hour's end until it registers.
+var (
+	OwnerLockLegacyWindow = 10 * time.Minute
+	OwnerLockMarkWindow   = time.Hour
+)
 
 // ProcessLiveWindow is how recent a server process's heartbeat must be, by the database's now(),
 // for the process to count as live: three heartbeats (processes.HeartbeatInterval), so one slow or
@@ -137,10 +150,11 @@ type OwnerLocker interface {
 // (docs.projectCopiesLock), and no scan of this module's SQL mistakes one for the other.
 //
 // A read phase's owner lock is one call of public.owner_lock (migration
-// 20261115200014_owner_lock_legacy_gate), $1 OwnerLockNamespace, $2 the owners' lock keys and $3
-// OwnerLockLegacyWindow in seconds. It runs the fleet read first (public.owner_lock_fleet):
-// whether an earlier build is in the fleet, a server_processes row at owner lock protocol 0 that
-// heartbeated within the window or the mark an earlier build's arrival stamped within it. When it
+// 20261115200014_owner_lock_legacy_gate), its arguments ownerLockArgs': $1 OwnerLockNamespace, $2
+// the owners' lock keys, $3 OwnerLockLegacyWindow and $4 OwnerLockMarkWindow in seconds. It runs
+// the fleet read first (public.owner_lock_fleet): whether an earlier build is in the fleet, a
+// server_processes row at owner lock protocol 0 that heartbeated within the one window or the mark
+// an earlier build's arrival stamped within the other. When it
 // finds none it takes the owner lock gate shared (OwnerLockGateNamespace) and reads again under a
 // snapshot of its own, so an arrival that held the gate exclusively and committed while this one
 // waited is read. Then it takes the owners' locks: exclusive or shared, every key once in the
@@ -159,10 +173,16 @@ type OwnerLocker interface {
 // carries no fleet read and takes no gate: the transaction's read phase took both.
 const (
 	ownerLock        = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock`
-	ownersLock       = `select locked_key, legacy_fleet from public.owner_lock('exclusive', $1, $2::text[], $3) as owner_lock`
-	ownersLockShared = `select locked_key, legacy_fleet from public.owner_lock('shared', $1, $2::text[], $3) as owner_lock`
-	ownersTryLock    = `select locked_key, legacy_fleet from public.owner_lock('try', $1, $2::text[], $3) as owner_lock`
+	ownersLock       = `select locked_key, legacy_fleet from public.owner_lock('exclusive', $1, $2::text[], $3, $4) as owner_lock`
+	ownersLockShared = `select locked_key, legacy_fleet from public.owner_lock('shared', $1, $2::text[], $3, $4) as owner_lock`
+	ownersTryLock    = `select locked_key, legacy_fleet from public.owner_lock('try', $1, $2::text[], $3, $4) as owner_lock`
 )
+
+// ownerLockArgs is the arguments of the read phase's owner lock statements above for the lock
+// keys keys.
+func ownerLockArgs(keys []string) []any {
+	return []any{OwnerLockNamespace, keys, OwnerLockLegacyWindow.Seconds(), OwnerLockMarkWindow.Seconds()}
+}
 
 // OwnerLockMode is which owner lock a transaction of this process took, by its fleet read
 // (public.owner_lock_fleet, the owner lock statements above).
@@ -212,7 +232,7 @@ func noteOwnerLockMode(legacy bool) {
 	}
 	if legacy {
 		slog.Info("dispatch: owner locks now take the owner's row too: an earlier build, which serialises on the owner row, is in the fleet (owner_lock_protocol 0)",
-			"was", previous.String(), "mode", mode.String(), "window", OwnerLockLegacyWindow)
+			"was", previous.String(), "mode", mode.String())
 		return
 	}
 	slog.Info("dispatch: owner locks take the advisory lock alone: no earlier build, which serialises on the owner row, is in the fleet",
@@ -387,7 +407,7 @@ func QueueLockOwner(b *WriteBatch, owner Owner) {
 // lockOwnersStatement is the read-phase statement that takes the exclusive locks of owners, at
 // least one, behind the fleet read and the gate (ownersLock), and its arguments.
 func lockOwnersStatement(owners []Owner) (string, []any) {
-	return ownersLock, []any{OwnerLockNamespace, lockKeys(owners), OwnerLockLegacyWindow.Seconds()}
+	return ownersLock, ownerLockArgs(lockKeys(owners))
 }
 
 // lockOwnersFailed is err, the failure of lockOwnersStatement's statement, naming what it locked.
@@ -539,7 +559,7 @@ func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error
 	if len(owners) == 0 {
 		return nil
 	}
-	rows, err := q.Query(ctx, ownersLockShared, OwnerLockNamespace, lockKeys(owners), OwnerLockLegacyWindow.Seconds())
+	rows, err := q.Query(ctx, ownersLockShared, ownerLockArgs(lockKeys(owners))...)
 	if err != nil {
 		return fmt.Errorf("lock owners %v for share: %w", lockKeys(owners), err)
 	}
@@ -578,7 +598,7 @@ func TryLockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) ([]Owner
 		keys[index] = owner.LockKey()
 		byKey[keys[index]] = owner
 	}
-	rows, err := q.Query(ctx, ownersTryLock, OwnerLockNamespace, keys, OwnerLockLegacyWindow.Seconds())
+	rows, err := q.Query(ctx, ownersTryLock, ownerLockArgs(keys)...)
 	if err != nil {
 		return nil, fmt.Errorf("try owner locks: %w", err)
 	}

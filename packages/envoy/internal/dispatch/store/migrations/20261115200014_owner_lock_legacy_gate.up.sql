@@ -31,10 +31,12 @@
 --     So the earlier build's publish or registration waits for every transaction of this build
 --     that holds the gate, and its own transaction holds the gate until it commits.
 --   - owner_lock_fleet, the fleet read: an earlier build is in the fleet while a row at protocol 0
---     has heartbeated within the window or the mark is younger than it, the window being
---     store.OwnerLockLegacyWindow (processes.PruneAge, 10 minutes), passed in by the caller. When
---     it finds none it takes the gate shared and reads again, under a snapshot of its own, so a
---     mark committed while it waited for the gate is read.
+--     has heartbeated within one window, store.OwnerLockLegacyWindow (processes.PruneAge, 10
+--     minutes), so until it is deregistered or pruned, or while the mark is younger than another,
+--     store.OwnerLockMarkWindow (an hour), which covers an earlier build's boot from its publish to
+--     its registration; the caller passes both. When it finds none it takes the gate shared and
+--     reads again, under a snapshot of its own, so a mark committed while it waited for the gate is
+--     read.
 --   - owner_lock, which every read-phase owner lock statement of this build calls: the fleet read,
 --     and then the owners' advisory locks, exclusive, shared or tried, so the gate is always taken
 --     before any owner lock of the transaction. A transaction in the legacy mode takes no gate,
@@ -82,7 +84,8 @@ create trigger server_processes_owner_lock_legacy_arrival before insert on publi
 -- Volatile, as a plpgsql function is unless it says otherwise: under READ COMMITTED each of its
 -- statements reads under a snapshot taken when that statement starts, so the second read sees a
 -- mark the arrival that held the gate committed while the shared lock waited.
-create function public.owner_lock_fleet(legacy_window_secs double precision) returns boolean
+create function public.owner_lock_fleet(legacy_window_secs double precision, mark_window_secs double precision)
+returns boolean
 language plpgsql as $$
 declare
   legacy boolean;
@@ -93,7 +96,7 @@ begin
         and heartbeat_at > pg_catalog.now() - pg_catalog.make_interval(secs => legacy_window_secs))
     or exists (
       select from public.owner_lock_legacy_mark
-      where seen_at > pg_catalog.now() - pg_catalog.make_interval(secs => legacy_window_secs))
+      where seen_at > pg_catalog.now() - pg_catalog.make_interval(secs => mark_window_secs))
   into legacy;
   if legacy then
     return true;
@@ -105,7 +108,7 @@ begin
         and heartbeat_at > pg_catalog.now() - pg_catalog.make_interval(secs => legacy_window_secs))
     or exists (
       select from public.owner_lock_legacy_mark
-      where seen_at > pg_catalog.now() - pg_catalog.make_interval(secs => legacy_window_secs))
+      where seen_at > pg_catalog.now() - pg_catalog.make_interval(secs => mark_window_secs))
   into legacy;
   return legacy;
 end $$;
@@ -115,7 +118,7 @@ end $$;
 -- 'try' tries each key in the order given without waiting and answers a row for each it took.
 -- Every row carries the fleet read.
 create function public.owner_lock(lock_mode text, lock_namespace integer, lock_keys text[],
-    legacy_window_secs double precision)
+    legacy_window_secs double precision, mark_window_secs double precision)
 returns table (locked_key text, legacy_fleet boolean)
 language plpgsql as $$
 declare
@@ -124,7 +127,7 @@ begin
   if lock_mode not in ('exclusive', 'shared', 'try') then
     raise exception 'owner_lock: no lock mode %', lock_mode;
   end if;
-  legacy_fleet := public.owner_lock_fleet(legacy_window_secs);
+  legacy_fleet := public.owner_lock_fleet(legacy_window_secs, mark_window_secs);
   if lock_mode = 'try' then
     for locked_key in
       select listed.lock_key

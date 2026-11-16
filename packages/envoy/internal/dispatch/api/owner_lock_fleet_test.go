@@ -261,7 +261,10 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")
-			mapRouteRepository(t, fixture)
+			if mapped := dispatchRequest(t, fixture.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo",
+				map[string]string{"project": "LOCK"}, "alice"); mapped.Code != http.StatusOK {
+				t.Fatalf("map the repository: status=%d body=%s", mapped.Code, mapped.Body.String())
+			}
 			ctx := context.Background()
 			handler, pid := oneConnectionHandler(t, fixture.deps)
 			pause, err := fixture.database.Pool.Begin(ctx)
