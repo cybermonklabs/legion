@@ -118,12 +118,13 @@ export function deliveryFor(
   };
 }
 
-/** What a relay frame needs of a NATS connection; `nats`'s `NatsConnection` is one. */
-export interface RelayConnection {
+/** What a relay frame needs of a NATS connection, whose requests carry header sets of type `H`;
+ *  `nats`'s `NatsConnection` is one, with `MsgHdrs`. */
+export interface RelayConnection<H extends RelayFrameHeaders = RelayFrameHeaders> {
   request(
     subject: string,
     payload: Uint8Array,
-    options: { readonly timeout: number; readonly headers: RelayFrameHeaders }
+    options: { readonly timeout: number; readonly headers: H }
   ): Promise<{ readonly data: Uint8Array }>;
 }
 
@@ -132,11 +133,14 @@ export interface RelayFrameHeaders {
   set(name: string, value: string): void;
 }
 
-/** One frame of the stand-in stream, as `sendRelayFrame` sends it. */
-export interface RelayFrame {
-  readonly connection: RelayConnection;
+/** One frame of the stand-in stream, as `sendRelayFrame` sends it, on a connection whose requests
+ *  carry the header sets `newHeaders` makes. `H` is read from `newHeaders` alone: a connection
+ *  whose requests take optional headers, as `NatsConnection`'s do, would otherwise add
+ *  `undefined` to it. */
+export interface RelayFrame<H extends RelayFrameHeaders = RelayFrameHeaders> {
+  readonly connection: RelayConnection<NoInfer<H>>;
   /** Makes an empty header set; `nats`'s `headers` is one. */
-  readonly newHeaders: () => RelayFrameHeaders;
+  readonly newHeaders: () => H;
   /** The session the listener relays to, which the deliver subject names. */
   readonly sessionID: string;
   /** The subject the stream stored the message on, which the frame carries. */
@@ -229,7 +233,9 @@ const RELAY_SEND_DEFAULT_MS = 30_000;
  * the answer through it: a caller that awaits a send would otherwise read a frame the session
  * dropped, or one it refused, as a frame it took.
  */
-export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
+export async function sendRelayFrame<H extends RelayFrameHeaders>(
+  frame: RelayFrame<H>
+): Promise<RelayTake> {
   // Read once, so the refusal below names the bound this send actually kept.
   const within = frame.withinMs ?? RELAY_SEND_DEFAULT_MS;
   const deadline = Date.now() + within;

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "ES2024.Promise"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "baseUrl": ".",
@@ -22,14 +22,7 @@
     "skipLibCheck": true
   },
   "include": [
-    "extensions/legion.ts",
-    "extensions/legion.test.ts",
-    "extensions/legion-phase-stall-omp.test.ts",
-    "extensions/legion-role-tools-omp.test.ts",
-    "extensions/legion-background-subagent-omp.test.ts",
-    "extensions/legion-commit-trailers-omp.test.ts",
-    "extensions/legion-session-activity-omp.test.ts",
-    "extensions/legion-stall-watchdog-omp.test.ts",
+    "extensions/*.ts",
     "test/*.ts",
     "../pi-shared/src/omp-host.d.ts",
     "../pi-shared/src/text-modules.d.ts",
