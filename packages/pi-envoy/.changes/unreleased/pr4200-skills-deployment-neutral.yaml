@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  `envoy`, `agent-secrets`, `outside-message`, `plain-words` and `approval-review` hold nothing
+  that is true of only one deployment. `envoy` no longer carries the rule on a message to more
+  than four role topics or its token counts, and `approval-review` loses the report of one
+  measurement round and the profile of one reviewer, and keeps its rules.

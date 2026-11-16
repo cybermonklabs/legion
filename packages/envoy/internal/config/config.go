@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -160,21 +161,14 @@ func parseAllowedHosts(raw string) ([]string, error) {
 }
 
 // HostName is a Host header's or a host entry's name as the listener compares it: the port
-// stripped, the brackets taken off an IPv6 address, ASCII letters lower-cased, and one trailing dot
-// dropped, since DNS reads "name." as "name". Only ASCII is folded, as DNS folds it, so no
-// non-ASCII letter (U+0130 lower-cases to "i") can spell an allowed name.
+// stripped, the brackets taken off an IPv6 address, ASCII letters lower-cased (fold.ASCII), and one
+// trailing dot dropped, since DNS reads "name." as "name". Only ASCII is folded, as DNS folds it,
+// so no non-ASCII letter (U+0130 lower-cases to "i") can spell an allowed name.
 func HostName(host string) string {
 	if name, _, err := net.SplitHostPort(host); err == nil {
 		host = name
 	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		host = host[1 : len(host)-1]
 	}
-	return strings.TrimSuffix(strings.Map(asciiLower, host), ".")
-}
-
-func asciiLower(r rune) rune {
-	if 'A' <= r && r <= 'Z' {
-		return r + 'a' - 'A'
-	}
-	return r
+	return strings.TrimSuffix(fold.ASCII(host), ".")
 }

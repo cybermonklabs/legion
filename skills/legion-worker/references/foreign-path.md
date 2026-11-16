@@ -22,6 +22,6 @@ turn's start", because its `-m` writes your trailers on the commit that holds yo
 metaedit fills the author when the found commit has none: `jj git push` refuses a commit with no
 author. Always `-m`, or your commit has no message of yours.
 The remainder keeps that path, and the push above moves the bookmark's commit alone, so it stays
-out of the branch. Never put the bookmark on the remainder, described or not: measured, that
+out of the branch. Never put the bookmark on the remainder, described or not: that
 pushes the other role's file. Read the first list again, then tell the architect what it held.
 Recover forward (`jj new`, `jj restore <paths>`), never `jj undo`, `jj abandon` or `jj op restore`.

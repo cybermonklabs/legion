@@ -656,13 +656,23 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The four sign-in variables render together or not at all, in the place they always held, so
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
-	// sign in. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
-	// output's own derivation (serverURL) and never a second spelling of it.
+	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
+	// sign-in on. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
+	// output's own derivation (serverURL) and never a second spelling of it, and
+	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
+	// outside input renders byte for byte what it always rendered.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
+		if s.signInOutside {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
+		}
 	}
-	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()), valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
+	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
+	if s.outsideOrigin != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
+	}
+	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
 		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
 	// The proxy renders only in the SOCKS5 mode, and each JetStream number only when it is set,
 	// in the proxy's place in the list, so a deployment that sets neither renders byte for byte

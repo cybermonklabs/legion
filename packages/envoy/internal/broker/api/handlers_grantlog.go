@@ -19,9 +19,13 @@ const (
 	// allocates each answer once. A limit above the cap is held at it rather than refused,
 	// because a review asking for more is asking for the whole period and pages through it
 	// either way, and a refusal would only make it guess the number this constant already
-	// fixes. A thousand events keeps one answer under about a mebibyte, which is small enough
-	// that the broker holds it, marshals it and writes it without a page of its own becoming
-	// the expensive part of the read.
+	// fixes. A thousand decision events keep one answer under about a mebibyte, which is small
+	// enough that the broker holds it, marshals it and writes it without a page of its own
+	// becoming the expensive part of the read. A page of releases is larger: each grant.used
+	// row may record a command of up to 32 arguments of 256 bytes and a call reason of 400
+	// runes (requests.ReleasedMessage), which the row's JSON and this answer's encoder write at
+	// up to six bytes for each byte they hold (a control byte as \u0001, `<` as \u003c), so a
+	// row can reach about 52 KB and a page of a thousand about 52 MB.
 	grantLogLimit = store.MaxGrantLogPage
 	// grantLogSettleTime is how far before now a period's end must be for the period to count as
 	// closed. An audit id comes from a bigserial, which hands it out when the row is inserted
@@ -50,12 +54,14 @@ type grantLogResponse struct {
 // (RFC 3339, half-open), ?after resumes after an audit id and ?limit bounds the page. The caller
 // has read the period whole when a page comes back shorter than its limit.
 //
-// It logs nothing per row and holds no secret. Nothing per row, because the broker already wrote
-// one store.GrantLogMessage line for each decision as it made it, so a line here would say the
-// same thing a second time, once per row of a whole quarter, and drown the log the review's own
-// pipeline keeps. No secret, because a store.GrantLogEvent carries none to hold: every field of
-// it is a name, a login, an id, a state or a decision, and the audit detail it passes through is
-// written with no value in it.
+// It logs nothing per row. Nothing per row, because the broker already wrote one
+// store.GrantLogMessage line for each decision as it made it, so a line here would say the same
+// thing a second time, once per row of a whole quarter, and drown the log the review's own
+// pipeline keeps. It answers each row's audit detail as it is stored, and a grant.used row's
+// detail holds what a session said of its release: the command it starts and the reason its
+// call gave. A release redacts each secret it can name in them (requests.loggedCommand); a
+// secret of no such kind that a session typed into its command is answered as typed, to every
+// account this route admits.
 func (s *server) listGrantLog(w http.ResponseWriter, r *http.Request, _ string) {
 	query := r.URL.Query()
 	since, ok := grantLogBound(w, query.Get("since"), "since")

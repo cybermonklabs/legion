@@ -68,6 +68,43 @@ const (
 // vector holds it.
 var duplicateIssueKeyLexeme = regexp.MustCompile(`^[a-z][a-z0-9_]*-[0-9]+$`)
 
+// duplicateTitleKeyPattern is an issue key as a title writes it, `ACME-431`, in Postgres's
+// regular expression syntax: the server's issue key shape (issueKeyShape) between word bounds.
+const duplicateTitleKeyPattern = `\m` + issueKeyShape + `\M`
+
+// duplicateNamesAnotherIssue is the condition, on a candidate issue `i`, that the new title
+// (the statement's parameter newTitle) names other issues than the candidate is about: both
+// titles name an issue key, and no key the new title names is the candidate's own key or a key
+// the candidate's title names. Two titles that name different issues are about different
+// issues, whatever else they share, so the candidate is no near copy of the new issue. A new
+// title that names the candidate itself is about the candidate, whatever other issue the
+// candidate's title cites: a title that ends "(carries ACME-28)" is a copy of ACME-28.
+//
+// The gate drops every issue-key lexeme from the terms it scores (duplicateKeyLexemes says why),
+// so titles filed from one template, one for each issue they concern, score as copies of each
+// other: "Review ACME-15 against its verification.md" scored 1.0 against "Review ACME-12 against
+// its verification.md". It is a condition of the statement, not a filter on its answer,
+// because the statement answers at most duplicateCandidateLimit candidates: a project with more
+// open issues from one template than that would otherwise crowd a real copy out of the answer.
+//
+// Keys are read from both titles by the same pattern in the same statement, so the two sides
+// cannot disagree on what a key is. The pattern also reads a word that only has the shape of a
+// key, `UTF-8` or `SHA-256`, so a copy that changes only such a word is left out. A key in a
+// spec is left alone: a spec cites the nearest issue it ruled out, which says nothing about what
+// the new issue is.
+func duplicateNamesAnotherIssue(newTitle string) string {
+	return `exists (select 1 from regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g'))
+     and exists (select 1 from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g'))
+     and not exists (
+       select 1
+         from regexp_matches(` + newTitle + `, '` + duplicateTitleKeyPattern + `', 'g') named(key)
+        where named.key[1] = i.key
+           or exists (
+                select 1
+                  from regexp_matches(i.title, '` + duplicateTitleKeyPattern + `', 'g') candidate(key)
+                 where candidate.key = named.key))`
+}
+
 // duplicateGateRollback bounds the gate's own rollback, which runs after the read whatever
 // happened to it. It is not the read's bound: it ends a rollback the database will not take,
 // so the handler is never held by one.
@@ -127,8 +164,11 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 // A candidate's headline marks the words of its title the new text shares: its query is the
 // shared lexemes, as the title rule it replaces built it.
 //
+// A candidate is left out when the new title names other issues than the candidate is about
+// (duplicateNamesAnotherIssue).
+//
 // Parameters: $1 project, $2 the picked lexemes, $3 their idf, $4 the new issue's ancestors,
-// $5 the lowest score to return, $6 the headline options.
+// $5 the lowest score to return, $6 the headline options, $7 the new title.
 var duplicateScoreQuery = `
 with term_weights as (
   select quote_literal(w.lexeme)::tsquery as tq, w.lexeme, w.idf
@@ -159,6 +199,7 @@ select s.key, i.title, i.status, s.shared, s.score,
          to_tsquery('simple', (select string_agg(quote_literal(x), ' | ') from unnest(s.shared_lex) x)), $6) as headline
   from scored s join issues i on i.key = s.key
  where s.score >= $5
+   and not (` + duplicateNamesAnotherIssue("$7") + `)
  order by s.score desc, i.updated_at desc
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
@@ -190,7 +231,9 @@ select s.key, i.title, i.status, s.shared, s.score,
 //
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
-// project.
+// project. It needs no title-key rule of duplicateScoreQuery's kind (duplicateNamesAnotherIssue):
+// a title's lexemes hold each key it names as a compound lexeme (`infra-431`), so two titles that
+// name different keys hold the same lexemes only when each also writes the other's key.
 //
 // Parameters: $1 project, $2 the new title, $3 the new spec as it would be stored, $4 the new
 // issue's ancestors, $5 the headline options.
@@ -371,7 +414,7 @@ func (s *server) readDuplicateCandidates(
 		return scanDuplicateCandidates(rows)
 	}
 	rows, err := tx.Query(ctx, duplicateScoreQuery,
-		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions)
+		project, lexemes, weights, ancestors, floor, duplicateHeadlineOptions, title)
 	if err != nil {
 		return nil, err
 	}

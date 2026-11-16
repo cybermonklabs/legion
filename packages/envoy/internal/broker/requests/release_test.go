@@ -34,15 +34,16 @@ func grantUsedDetails(t *testing.T, m *Machine, grantID string) []map[string]any
 
 // TestEachReleaseWritesOneGrantUsedRowWithItsOwnDetail: both releases of a grant run one loop and
 // write that row through one helper (release.go), so the trail an operator reads cannot gain a
-// row on one path and lose it on the other. Each row is the writer's own: the session's release
-// names every name it handed over and the narrowing it applied, the proxy's names the names
-// behind the airlock alone and marks them as the airlock's.
+// row on one path and lose it on the other. Each row names its grant's reason, and the rest is the
+// writer's own: the session's release names every name it handed over, the command it starts
+// (none here, as a client from before the field sends) and the narrowing it applied, the proxy's
+// names the names behind the airlock alone and marks them as the airlock's.
 func TestEachReleaseWritesOneGrantUsedRowWithItsOwnDetail(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 
-	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
@@ -50,8 +51,8 @@ func TestEachReleaseWritesOneGrantUsedRowWithItsOwnDetail(t *testing.T) {
 	}
 
 	want := []map[string]any{
-		{"names": []any{"AUTO_TOKEN", "SECOND_TOKEN"}},
-		{"names": []any{"AUTO_TOKEN"}, "airlock": true},
+		{"names": []any{"AUTO_TOKEN", "SECOND_TOKEN"}, "reason": "read both", "command": []any{}},
+		{"names": []any{"AUTO_TOKEN"}, "airlock": true, "reason": "read both"},
 	}
 	if details := grantUsedDetails(t, m, grantID); !reflect.DeepEqual(details, want) {
 		t.Fatalf("grant.used details = %v; want %v: one row per release, each with its own detail", details, want)

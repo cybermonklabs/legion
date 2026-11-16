@@ -152,10 +152,10 @@ finding asks roles opened on their own issues while no controller ran:
    reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old ask. Resolve the old ask once it
    carries a `Moved`, `Handed` or `Filed` reply. A clear defect no holder took stays open, and the
    next start takes it again.
-3. List the answered asks still waiting on you, which no `dispatch` command lists:
+3. List the answered asks still waiting on you, which no `dispatch` command lists, in bash:
 
    ```text
-   asks=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
+   asks=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
@@ -175,10 +175,10 @@ finding asks roles opened on their own issues while no controller ran:
 4. List the clear defects nobody took yet: each evidence comment whose first line starts
    `Clear defect from `, with no session reply under it that starts `Handed dispatch://`,
    `Filed dispatch://`, `Not filed:` or `Asked dispatch://` (a role that asked instead, which step
-   2 takes):
+   2 takes), in bash:
 
    ```text
-   notes=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<REPORT KEY>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
+   notes=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<REPORT KEY>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then (. as $all | [.[] | select(.reply_to == null and (.body | startswith("Clear defect from "))) | .id as $id | select([$all[] | select(.reply_to == $id and .author.kind == "session" and (.body | test("^(Handed dispatch://|Filed dispatch://|Not filed:|Asked dispatch://)")))] | length == 0) | {id, body}]) else error("Dispatch did not answer the list") end'
    ```
 

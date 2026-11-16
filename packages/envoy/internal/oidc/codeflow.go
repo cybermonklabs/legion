@@ -336,19 +336,20 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 }
 
 // session verifies the ID token of a token-endpoint answer and returns its claims with the refresh
-// token. A domain-mode flow also reads the Workspace claims from the verified token (Claims.Email,
-// EmailVerified, HostedDomain); Verify, which every other token kind goes through, never does.
+// token. A domain-mode flow also reads the Workspace claims (Claims.Email, EmailVerified,
+// HostedDomain) from the verified token's payload, never from the token's text; Verify, which
+// every other token kind goes through, never reads them.
 func (f *CodeFlow) session(ctx context.Context, issuer *codeFlowIssuer, token *oauth2.Token) (Session, error) {
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
 		return Session{}, errors.New("oidc: the issuer's token response carries no id_token")
 	}
-	claims, err := issuer.verifier.Verify(ctx, raw)
+	verified, claims, err := issuer.verifier.verify(ctx, raw)
 	if err != nil {
 		return Session{}, fmt.Errorf("oidc: ID token rejected (%s): %w", Reason(err), err)
 	}
 	if f.hostedDomain != "" {
-		if err := readWorkspaceClaims(raw, &claims); err != nil {
+		if err := readWorkspaceClaims(verified, &claims); err != nil {
 			return Session{}, fmt.Errorf("oidc: ID token rejected (malformed): %w", err)
 		}
 	}
@@ -364,16 +365,13 @@ type workspaceClaims struct {
 	HostedDomain  json.RawMessage `json:"hd"`
 }
 
-// readWorkspaceClaims reads raw's email, email_verified and hd into claims: email and hd when each
-// is a JSON string, and email_verified as true only for the JSON true or the string "true", Google
-// documenting both. raw is a token Verify accepted, so its payload is a JSON object.
-func readWorkspaceClaims(raw string, claims *Claims) error {
-	payload, err := tokenPayload(raw)
-	if err != nil {
-		return err
-	}
+// readWorkspaceClaims reads token's email, email_verified and hd into claims: email and hd when
+// each is a JSON string, and email_verified as true only for the JSON true or the string "true",
+// Google documenting both. It reads the payload the verified signature covers (token.Claims),
+// which is the only place a claim a person or a caller is admitted on may come from.
+func readWorkspaceClaims(token *gooidc.IDToken, claims *Claims) error {
 	var workspace workspaceClaims
-	if err := json.Unmarshal(payload, &workspace); err != nil {
+	if err := token.Claims(&workspace); err != nil {
 		return fmt.Errorf("payload is not a claim set: %w", err)
 	}
 	claims.Email = jsonString(workspace.Email)

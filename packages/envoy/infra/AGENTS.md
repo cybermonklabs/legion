@@ -113,7 +113,8 @@ versions. Never add the module to the root `go.work`.
   may hold no `"`, `$`, backtick, `\` or line break. A value that holds an nkey seed of any type, in
   any spelling (`bus.HoldsSeed`), is refused where it enters, before anything quotes or renders
   it, with `core.SeedRefusal`, which names its path and never the value: core refuses one in the
-  authorization's names, rule entries and `noAuthUser`, in `Render`'s and `StartScript`'s inputs,
+  authorization's names, rule entries, `noAuthUser` and callout fields (`callout.issuer`,
+  `callout.xkey`, `callout.serviceUser`), in `Render`'s and `StartScript`'s inputs,
   and in the listener's `machineId`, `listenHost` and NATS URLs; a component refuses
   one in its name and its own string inputs: host's listed in `host.stringInputs`, the AWS
   components' every plain string by reflection over their args (`aws.seededPlainInput`), and every
@@ -385,6 +386,24 @@ publish, the agent stream relay, Dispatch creating the redelivery bucket, which 
 then reads and writes, and that Dispatch's own user is refused a publish to a session's frames; its
 negative control removes the delivery durable's filtered create permission and receives that server
 violation alone.
+`core/nats_callout_live_test.go` runs on `testnats.HubImage` alone, the server the hub runs, with
+an auth service in the test answering the server's requests through `github.com/nats-io/jwt/v2`:
+a stream written before the callout reads whole after the container restarts on the rendered
+callout block (the hub keeps its global account), a token client is placed in `$G` and its grant
+holds, a static user listed in `auth_users` reaches no callout and keeps its grant, a wrong token
+and no credential are refused, a session `noAuthUser` is reached with no callout request, and,
+as the control that `auth_users` must be derived, a static user edited out of it is sent to the
+callout and refused.
+`core/nats_callout_timeout_live_test.go`, on the same image, holds the rendered block to its
+answer budget: a nats.go client is admitted when the auth service answers 0.5 s before the
+rendered authorization timeout (nats-server's default 2 s, since the block sets none) and at
+1.5 s. A block that renders a timeout of 3 s or more fails it: the first answer then comes at
+2.5 s or later, after the server's first PING (2 s after the connect, plus up to 20%), which fails
+a nats.go client still waiting on the callout.
+`gcp/clusteredhub_callout_live_test.go` carries the tag too and starts no container: it reloads the
+clustered hub's rendered `auth.conf` on the nats-server v2.15.1 the test binary links in, which
+takes a grant change and refuses any change of the callout's lines, the reason the hub's pods carry
+the `envoy-infra.sjawhar.dev/auth-callout` annotation.
 
 `gcp/clusteredhub_live_test.go` carries the `natslive` tag too, but starts no container and needs
 no Docker: it installs each tool it runs with `go install`, into a temporary `GOBIN` with

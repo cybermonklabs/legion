@@ -78,7 +78,7 @@ func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
 		if err != nil || dec.GrantID == "" {
 			t.Fatalf("ApplyDecision(slot %q) = %+v, %v", slot, dec, err)
 		}
-		release, err := m.Values(ctx, dec.GrantID, id, nil)
+		release, err := m.Values(ctx, dec.GrantID, id, nil, ReleaseCall{})
 		if err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
 			t.Fatalf("Values(slot %q) = %v, %v; want the chain to verify and release", slot, release.Values, err)
 		}

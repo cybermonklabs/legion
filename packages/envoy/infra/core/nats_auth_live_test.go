@@ -65,14 +65,14 @@ func (u liveUsers) render(t *testing.T) string {
 	return text
 }
 
-// connect connects to uri, as the user whose seed is seed when it is not empty, and returns the
-// connection with the channel the server's asynchronous errors arrive on, in the order it sent
-// them.
-func connect(t *testing.T, uri, seed string) (*natsgo.Conn, <-chan error) {
+// connect connects to uri, as the user whose seed is seed when it is not empty, then opts, and
+// returns the connection with the channel the server's asynchronous errors arrive on, in the order
+// it sent them.
+func connect(t *testing.T, uri, seed string, opts ...natsgo.Option) (*natsgo.Conn, <-chan error) {
 	t.Helper()
 	errs := make(chan error, 16)
-	conn, err := testnats.ConnectSeed(t, uri, seed,
-		natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { errs <- err }))
+	conn, err := testnats.ConnectSeed(t, uri, seed, append(opts,
+		natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) { errs <- err }))...)
 	require.NoError(t, err)
 	t.Cleanup(conn.Close)
 	return conn, errs

@@ -7,6 +7,14 @@
 // model. The refusal strings, the order they are reported in, and the string handling are
 // therefore the contract with that model, not style: a change here is a change there. Each
 // string rule below is narrower than the standard library's nearest function, and says why.
+//
+// Its one case fold, of a host name, a header name and the Basic scheme alike, is fold.ASCII,
+// the fold the model makes: A-Z lowered and nothing else. The Unicode folding of
+// strings.ToLower and strings.EqualFold would fold U+212A KELVIN SIGN onto "k", so
+// "githu\u212a.com" would reach the rule for "githuk.com". The proxy port
+// (internal/broker/airlockproxy) folds the CONNECT host, the SNI and the Host header with the
+// same function before the decision compares them, since host matching is sound only while the
+// two folds are one.
 package airlock
 
 import (
@@ -17,6 +25,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // Allow is one method and path prefix a secret may travel on.
@@ -171,13 +181,13 @@ func (r Rules) Digest(name string) string {
 // HostBound reports whether host matches one of hosts: the same name, or a "*.suffix"
 // pattern, which matches one or more labels before the suffix ("*.example.com" matches
 // "a.example.com" and "a.b.example.com", not "example.com"). Both sides are compared after
-// ASCIILower, never strings.EqualFold.
+// fold.ASCII, never strings.EqualFold.
 func HostBound(hosts []string, host string) bool {
 	bound := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
-		bound[ASCIILower(h)] = true
+		bound[fold.ASCII(h)] = true
 	}
-	h := ASCIILower(host)
+	h := fold.ASCII(host)
 	if bound[h] {
 		return true
 	}
@@ -219,7 +229,7 @@ var methodOverrideHeaders = []string{"x-http-method-override", "x-http-method", 
 func hasMethodOverride(r *Request) bool {
 	for _, h := range r.Headers {
 		for _, n := range methodOverrideHeaders {
-			if ASCIILower(h[0]) == n {
+			if fold.ASCII(h[0]) == n {
 				return true
 			}
 		}
@@ -331,7 +341,7 @@ func Rewrite(rules Rules, g Grant, value string, r *Request) *Request {
 	for i, h := range r.Headers {
 		out.Headers[i] = h
 		for _, n := range names {
-			if ASCIILower(h[0]) == ASCIILower(n) {
+			if fold.ASCII(h[0]) == fold.ASCII(n) {
 				out.Headers[i][1] = substitute(g.Placeholder, value, h[1])
 				break
 			}
@@ -373,14 +383,14 @@ func substitute(p, value, v string) string {
 }
 
 // basicPayload decodes the "user:pass" behind a header value of the form "Basic <base64>",
-// the scheme compared with ASCIILower. Three narrow choices, each a place where the handy
+// the scheme compared with fold.ASCII. Three narrow choices, each a place where the handy
 // standard-library call would part from the model:
 //   - the credential is trimmed of spaces and horizontal tabs alone (HTTP's optional
 //     whitespace), not of every Unicode space that strings.TrimSpace takes;
 //   - base64.StdEncoding: the standard alphabet, padding required;
 //   - a payload counts only when it is valid UTF-8, because the model's strings are.
 func basicPayload(v string) (string, bool) {
-	if len(v) <= 6 || ASCIILower(v[:6]) != "basic " {
+	if len(v) <= 6 || fold.ASCII(v[:6]) != "basic " {
 		return "", false
 	}
 	dec, err := base64.StdEncoding.DecodeString(strings.Trim(v[6:], " \t"))
@@ -392,26 +402,4 @@ func basicPayload(v string) (string, bool) {
 		return "", false
 	}
 	return payload, true
-}
-
-// ASCIILower lower-cases A-Z alone. Host names and header names are ASCII tokens, and the
-// Unicode folding of strings.ToLower and strings.EqualFold would fold U+212A KELVIN SIGN
-// onto "k", so "githu\u212a.com" would reach the rule for "githuk.com"; the model folds no
-// such thing.
-//
-// It is exported for the proxy port (internal/broker/airlockproxy), which folds the CONNECT
-// host, the SNI and the Host header this same narrow way before the decision compares them.
-// That package held a byte-for-byte copy of the fold, and host matching is sound only while
-// the two are one function. It is the same fold the model makes, unchanged by being exported,
-// as airlock.Carries is the same function the model calls carries. This package's own
-// comparisons of a host name, a header name and the Basic scheme all go through it, so there
-// is one fold here and not an exported one beside an unexported twin.
-func ASCIILower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if 'A' <= c && c <= 'Z' {
-			b[i] = c + 'a' - 'A'
-		}
-	}
-	return string(b)
 }

@@ -256,10 +256,10 @@ at every run, while the text of `<cause>` can change from one run to the next. T
 admitted and keeps working while you ask ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A comment or a reply from any session counts as yours
 here, because the controller's session id changes when it restarts or is taken over.
 
-1. Look for the ask you opened for this key already. List the root's comments that name an ask:
+1. Look for the ask you opened for this key already. List the root's comments that name an ask, in bash:
 
    ```text
-   notes=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
+   notes=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
    printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
    ```
 

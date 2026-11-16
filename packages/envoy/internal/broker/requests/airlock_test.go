@@ -119,16 +119,16 @@ func TestAChangedAirlockEntryEndsTheGrantsItAffects(t *testing.T) {
 
 	digests["AUTO_TOKEN"] = "entry-two"
 	reloadAirlock(t, m)
-	if release, err := m.Values(t.Context(), *moved.GrantID, enr, nil); err == nil || release.Values != nil {
+	if release, err := m.Values(t.Context(), *moved.GrantID, enr, nil, ReleaseCall{}); err == nil || release.Values != nil {
 		t.Fatalf("Values after the entry changed = %v, %v; want the grant ended", release.Values, err)
 	}
-	if release, err := m.Values(t.Context(), kept.GrantID, enr, nil); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
+	if release, err := m.Values(t.Context(), kept.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
 		t.Fatalf("Values of the grant whose entry did not change = %v, %v; want the value", release.Values, err)
 	}
 
 	digests["AUTO_TOKEN"] = "entry-one"
 	reloadAirlock(t, m)
-	if release, err := m.Values(t.Context(), *moved.GrantID, enr, nil); err == nil || release.Values != nil {
+	if release, err := m.Values(t.Context(), *moved.GrantID, enr, nil, ReleaseCall{}); err == nil || release.Values != nil {
 		t.Fatalf("Values once the entry is back = %v, %v; want the grant to stay ended", release.Values, err)
 	}
 	if by, audits := endedForGood(t, m, *moved.GrantID); by != GrantEndedActor || audits != 1 {
@@ -172,7 +172,7 @@ func TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUn
 	if got := recordedDigests(t, m, pending.ID)["SHARED_KEY"]; got != "entry-two" {
 		t.Fatalf("the approved request records the digest %q; want entry-two, the entry it was decided under", got)
 	}
-	if release, err := m.Values(t.Context(), decided.GrantID, enr, nil); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
+	if release, err := m.Values(t.Context(), decided.GrantID, enr, nil, ReleaseCall{}); err != nil || release.Values["SHARED_KEY"] != "shared-v1" {
 		t.Fatalf("Values of the grant the approval made = %v, %v; want the value: the approval was given under this entry", release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, decided.GrantID); by != "" {
@@ -182,7 +182,7 @@ func TestARequestApprovedAcrossARulesChangeIsReleasedUnderTheEntryItWasDecidedUn
 	// An entry that moves after the decision ends the grant it was decided under.
 	digests["SHARED_KEY"] = "entry-three"
 	reloadAirlock(t, m)
-	if release, err := m.Values(t.Context(), decided.GrantID, enr, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := m.Values(t.Context(), decided.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values after the entry changed = %v, %v; want ErrGrantNotLive and no value", release.Values, err)
 	}
 	if by, audits := endedForGood(t, m, decided.GrantID); by != GrantEndedActor || audits != 1 {
