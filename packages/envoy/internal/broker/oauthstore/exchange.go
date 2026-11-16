@@ -344,26 +344,33 @@ type PodSessionRegistration struct {
 //
 // The write is one transaction that holds the row from its read to its update
 // (writePodSession), so the key it answers it replaced is the key the row held when this write
-// changed it, and a write that waits on another reads the row as that one committed it.
+// changed it, and a write that waits on another reads the row as that one committed it. One
+// insert ... on conflict do update statement keeps the generation rule as well, but the key it
+// can read beside it is the statement's snapshot's, which a concurrent write's commit postdates:
+// two writes changing one row's key at once name the key both started from. The transaction is
+// its own and names read committed rather than taking default_transaction_isolation: two first
+// writes can both read no row, and the second to insert waits on the first's insert and then
+// reads that row in a statement of its own, which only read committed's snapshot per statement
+// sees. Under repeatable read that insert fails to serialize instead (SQLSTATE 40001), as the one
+// statement's update of a row committed after its snapshot does. So a ctx already carrying a
+// transaction, whose level and lifetime the write would not choose, is refused; no caller passes
+// one.
 func (s *Store) RegisterPodSession(ctx context.Context, podUID, session, jkt string, generation int64) (PodSessionRegistration, error) {
-	txCtx, err := s.BeginTX(ctx)
+	if _, joined := TxFrom(ctx); joined {
+		return PodSessionRegistration{}, errors.New("register the pod's session name: the write opens a read-committed transaction of its own, and the context already carries one")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return PodSessionRegistration{}, fmt.Errorf("register the pod's session name: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = s.Rollback(txCtx)
-		}
-	}()
-	stored, err := s.writePodSession(txCtx, podUID, session, jkt, generation)
+	defer func() { _ = tx.Rollback(ctx) }()
+	stored, err := s.writePodSession(WithTx(ctx, tx), podUID, session, jkt, generation)
 	if err == nil {
-		err = s.Commit(txCtx)
+		err = tx.Commit(ctx)
 	}
 	if err != nil {
 		return PodSessionRegistration{}, fmt.Errorf("register the pod's session name: %w", err)
 	}
-	committed = true
 	return stored, nil
 }
 
