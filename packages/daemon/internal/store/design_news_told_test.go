@@ -90,7 +90,9 @@ func (r *toldRig) wantTold(why string, issue string, audience record.DesignAudie
 // newsTask is the reviewer's task carrying news: version 5 of the spec to the child's holder, which
 // took version 3, version 2 of the Verification document to the root's architect, whose row knows
 // no version of it and whose review history could not say which (record.DeliveryHistoryUnread),
-// and the opening to the child's holder.
+// and the opening to the child's holder, under the opening number the child's row holds as tell
+// writes it (0). Its prompt was acknowledged carrying exactly that news, so the delivery holds it as
+// the copy its confirmation raises (supervise.Delivery.Carried).
 func (r *toldRig) newsTask(id string) supervise.Delivery {
 	r.t.Helper()
 	news, err := json.Marshal(record.DeliveryNews{Task: "Review the change.", Items: []record.DeliveryNewsItem{
@@ -103,7 +105,7 @@ func (r *toldRig) newsTask(id string) supervise.Delivery {
 		r.t.Fatal(err)
 	}
 	return supervise.Delivery{ID: id, Task: "Review the change.\n\nThe design gate opened.", Phase: phase.Reviewing,
-		Generation: 1, QueuedAt: r.at, News: news}
+		Generation: 1, QueuedAt: r.at, News: news, Carried: news}
 }
 
 // seedTold is what the two audiences took before the news: the child's holder spec version 3,
@@ -345,4 +347,159 @@ func TestASecondConfirmedWriteRaisesNothingAgain(t *testing.T) {
 		map[record.DesignStep]int{record.DesignStepSpec: 5}, true)
 	r.wantTold("after the confirmed task was written again", toldRoot, record.AudienceArchitect,
 		map[record.DesignStep]int{record.DesignStepSpec: 5, record.DesignStepCriteria: 2}, false)
+}
+
+// The confirmation raises the copy of the news the prompt its turn answers carried
+// (supervise.Delivery.Carried), never the news the delivery holds now: a send since that prompt —
+// a restart's, or a resend Oh My Pi answered busy — rendered the news again and took the opening
+// on, and the turn that starts is the earlier prompt's, which said nothing of it. So the item the
+// prompt carried rises, and the opening stays owed. A delivery whose copy is empty — no prompt of
+// it was ever acknowledged — raises nothing at all.
+func TestAConfirmationRaisesWhatItsPromptCarriedAndNotWhatTheTaskSaysNow(t *testing.T) {
+	r := newToldRig(t)
+	r.seedTold()
+	task := r.newsTask("outbox:7")
+	var withoutOpening record.DeliveryNews
+	if err := json.Unmarshal(task.News, &withoutOpening); err != nil {
+		t.Fatal(err)
+	}
+	withoutOpening.Openings = nil
+	carried, err := json.Marshal(withoutOpening)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task.Carried = carried
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, task); err != nil {
+		t.Fatalf("queue the task: %v", err)
+	}
+	confirmed := task
+	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
+		t.Fatalf("confirm the task: %v", err)
+	}
+	r.wantTold("after a confirmation whose prompt carried no opening", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 5}, true)
+
+	r.seedTold()
+	unacknowledged := r.newsTask("outbox:8")
+	unacknowledged.Carried = nil
+	if err := r.store.RetireDelivery(r.ctx, r.reviewer, confirmed.ID); err != nil {
+		t.Fatalf("retire the first task: %v", err)
+	}
+	r.seedTold()
+	unacknowledged.ConfirmedAt = r.at.Add(2 * time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, unacknowledged); err != nil {
+		t.Fatalf("confirm a task no acknowledged prompt carried: %v", err)
+	}
+	r.wantTold("after a confirmation of a task no acknowledged prompt carried", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 3}, true)
+}
+
+// An opening is named by the number its told row held when it became owed (opening_seq), and a
+// prompt carries that number (record.DeliveryOpening.Seq). The gate closes and opens again before
+// the turn of a prompt that carried the opening: the close and the reopening each move the number,
+// so the confirmation of that prompt clears nothing of the new opening, which stays owed, and the
+// take-back of that confirmation owes nothing the reopening has not owed already. A prompt that
+// carried the opening under the row's own number clears it, and its take-back owes it again.
+func TestAConfirmationClearsOnlyTheOpeningItsPromptCarried(t *testing.T) {
+	r := newToldRig(t)
+	r.seedTold()
+	task := r.newsTask("outbox:7")
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, task); err != nil {
+		t.Fatalf("queue the task: %v", err)
+	}
+	// The gate closes and opens again while the reviewer is still owed news: the close settles the
+	// row's opening, and the reopening owes it a new one.
+	r.exec(`select design_news_opening_settled($1, 'holder', false, null)`, toldChild)
+	r.exec(`select design_news_opening_settled($1, 'holder', true, null)`, toldChild)
+	confirmed := task
+	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
+		t.Fatalf("confirm the task: %v", err)
+	}
+	r.wantTold("after the confirmation of a prompt that carried the earlier opening", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 5}, true)
+
+	// The take-back of that confirmation owes nothing more than the reopening does.
+	r.exec(`select design_news_opening_settled($1, 'holder', false, null)`, toldChild)
+	retaken := task
+	retaken.ID = "outbox:7-1"
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, retaken); err != nil {
+		t.Fatalf("take the confirmation back: %v", err)
+	}
+	r.wantTold("after the take-back of a confirmation of an earlier opening", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 3}, false)
+
+	// A prompt carrying the row's own opening number clears that opening, and its take-back owes
+	// it again.
+	var seq int
+	if err := r.store.Pool().QueryRow(r.ctx, `select opening_seq from design_news_told where issue = $1 and audience = 'holder'`,
+		toldChild).Scan(&seq); err != nil {
+		t.Fatalf("read the child's opening number: %v", err)
+	}
+	r.exec(`select design_news_opening_settled($1, 'holder', true, null)`, toldChild)
+	var current record.DeliveryNews
+	if err := json.Unmarshal(task.News, &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Openings[0].Seq = seq + 1
+	encoded, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retaken.News, retaken.Carried = encoded, encoded
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, retaken); err != nil {
+		t.Fatalf("write the task acknowledged under the current opening: %v", err)
+	}
+	reconfirmed := retaken
+	reconfirmed.ConfirmedAt = r.at.Add(2 * time.Minute)
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, reconfirmed); err != nil {
+		t.Fatalf("confirm the task again: %v", err)
+	}
+	r.wantTold("after the confirmation of a prompt that carried the current opening", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, retaken); err != nil {
+		t.Fatalf("take the confirmation back: %v", err)
+	}
+	r.wantTold("after the take-back of the confirmation of the current opening", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 3}, true)
+}
+
+// A confirmed delivery retired while it still holds the copy of the news its confirmation raised —
+// a newer task took its place while its turn ran, or its turn ended with no result the daemon was
+// waiting on — gives that news back, in the retirement's own transaction: the result of that turn,
+// a provider error among them, now answers a task the claim no longer holds. A confirmed delivery
+// whose turn's result said the turn ran holds no copy any more, and its retirement gives nothing
+// back.
+func TestARetirementOfAConfirmedTaskGivesBackWhatItsTurnHasNotMadeFinal(t *testing.T) {
+	r := newToldRig(t)
+	r.seedTold()
+	confirmed := r.newsTask("outbox:7")
+	confirmed.ConfirmedAt = r.at.Add(time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, confirmed); err != nil {
+		t.Fatalf("confirm the task: %v", err)
+	}
+	r.wantTold("after the confirmation", toldChild, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
+	if err := r.store.RetireDelivery(r.ctx, r.reviewer, confirmed.ID); err != nil {
+		t.Fatalf("retire the task: %v", err)
+	}
+	r.wantTold("after the retirement of a confirmed task still holding its copy", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 3}, true)
+	r.wantTold("after the retirement of a confirmed task still holding its copy", toldRoot, record.AudienceArchitect,
+		map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
+
+	final := r.newsTask("outbox:8")
+	final.ConfirmedAt = r.at.Add(2 * time.Minute)
+	if err := r.store.PutClaimAndDelivery(r.ctx, r.reviewer, final); err != nil {
+		t.Fatalf("confirm the second task: %v", err)
+	}
+	final.Carried = nil
+	if err := r.store.PutDelivery(r.ctx, r.reviewer.Token, final); err != nil {
+		t.Fatalf("make the second task's raise final: %v", err)
+	}
+	if err := r.store.RetireDelivery(r.ctx, r.reviewer, final.ID); err != nil {
+		t.Fatalf("retire the second task: %v", err)
+	}
+	r.wantTold("after the retirement of a confirmed task whose turn's result came", toldChild, record.AudienceHolder,
+		map[record.DesignStep]int{record.DesignStepSpec: 5}, false)
 }

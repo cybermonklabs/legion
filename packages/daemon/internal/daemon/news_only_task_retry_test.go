@@ -27,7 +27,7 @@ func TestARetryOfAFailedClaimHoldingOnlyANewsTaskStillDeliversItsPhaseTask(t *te
 	putOutboxIssue(t, pool, records, issue)
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	kept := supervise.Delivery{ID: "outbox:41", Task: "The approved design of LEGION-208 changed.", Phase: phase.Implementing,
-		Generation: issue.Generation, QueuedAt: time.Now(), News: []byte(`{"task":"","news_only":true}`), NewsOnly: true}
+		Generation: issue.Generation, QueuedAt: time.Now(), News: []byte(`{"task":""}`), NewsOnly: true}
 	machine := heldImplementer(t, sup, issue, kept)
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{},
 		project: "legion", stateDir: t.TempDir()}

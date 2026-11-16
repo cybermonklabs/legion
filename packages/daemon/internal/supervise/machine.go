@@ -1101,6 +1101,12 @@ type Machine struct {
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst.
 	outstanding []string
+	// promptNews is the news of the approved design each prompt in outstanding carried, by its
+	// delivery id, as its acknowledgement reported it (awaitResult, PromptAcked.News): what a
+	// confirmation of that prompt's turn raises (confirmedNews, turnNews). It is read only for an id
+	// still outstanding, and pruned to them at each acknowledgement. Memory only, as outstanding
+	// is: across a restart the delivery's own copy stands for it (Delivery.Carried).
+	promptNews map[string][]byte
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
@@ -1321,9 +1327,16 @@ type Machine struct {
 	turnsEnded atomic.Uint64
 }
 
+// sending is the send in flight (startSend): its delivery id and generation, the news of the
+// approved design its prompt carries (Delivery.News at that send), and whether its goroutine has
+// passed the adoption of the working copy and the identity mint and put the prompt on its way
+// (prompting), which is the only moment from which a turn can be this prompt's (confirmedNews).
+// The goroutine sets the mark, so it is atomic; everything else is the machine's, under its lock.
 type sending struct {
 	id         string
 	generation uint64
+	news       []byte
+	prompting  atomic.Bool
 }
 
 // armed is one scheduled timer: its arming's sequence and delivery, how to cancel it, and when it
@@ -2896,7 +2909,11 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
 // with the process too (cutTurnOf), and so do the marks of the sentences a prompt to it carried
-// (carried): the next process has been sent nothing yet.
+// (carried): the next process has been sent nothing yet. So does the copy of the news of the
+// approved design that a prompt to it carried, on a task no turn confirmed (Delivery.Carried): no
+// turn of that prompt can start any more, so a turn of the next process's own, after a restart, is
+// never taken for it (unsentNews). The copy goes in memory here and reaches the store at the next
+// write of the delivery, which settle makes before the next decision (unsaved).
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -2904,6 +2921,9 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.forgetSend()
 	m.outstanding = nil
+	if p := m.claim.Pending; p != nil && p.ConfirmedAt.IsZero() && len(p.Carried) > 0 {
+		p.Carried, m.unsaved = nil, true
+	}
 	m.held = nil
 	m.staleRelaunch = nil
 	m.busyTurn = false

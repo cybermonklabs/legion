@@ -160,7 +160,7 @@ func (r *newsReconcileRig) told(issue string, audience record.DesignAudience, ve
 // owesOpening records that the opening is owed to issue's audience.
 func (r *newsReconcileRig) owesOpening(issue string, audience record.DesignAudience) {
 	r.t.Helper()
-	r.inTx(func(tx pgx.Tx) error { return r.records.SetOpeningOwed(r.ctx, tx, issue, audience) })
+	r.inTx(func(tx pgx.Tx) error { return r.records.SettleOpening(r.ctx, tx, issue, audience, true) })
 }
 
 // holder records role as the holder of issue's phase at entry 1, and its claim as the record holds
@@ -652,7 +652,7 @@ func TestANewsOnlyStartIsQueuedForALiveReviewer(t *testing.T) {
 	if !strings.Contains(task, "version 5, since version 4, which your phase last took") || !strings.Contains(task, `"Design" changed`) {
 		t.Fatalf("the reviewer's task = %q, want the spec's pair and its change list", task)
 	}
-	if !news.NewsOnly || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
+	if !machine.Claim().Pending.NewsOnly || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
 		t.Fatalf("the reviewer's task carries %+v, want the news-only item of the spec from 4 to 5", news)
 	}
 }
@@ -999,7 +999,7 @@ func TestAPhaseStartIntoReviewingCarriesTheNewsTheTesterNeverTook(t *testing.T) 
 				!strings.Contains(task, "version 5, since version 4, which your phase last took") {
 				t.Fatalf("the reviewer's task = %q, want its own text, a blank line, then the news the tester never took", task)
 			}
-			if news.Task != own || news.NewsOnly || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
+			if news.Task != own || machine.Claim().Pending.NewsOnly || !reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
 				t.Fatalf("the reviewer's task carries %+v, want its own text and the spec from 4 to 5", news)
 			}
 		})

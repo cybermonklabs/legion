@@ -43,6 +43,12 @@ type DesignTold struct {
 	// OpeningOwed says the opening sentence of the gate is owed to the audience: the gate opened
 	// while it was owed news, so its news carries the opening in place of the role message.
 	OpeningOwed bool
+	// Opening is the number of the last settlement of the gate's opening on this row
+	// (Postgres.SettleOpening, CloseOpenings): each opening that became owed to the audience, each
+	// close of the gate and each opened role message the audience was sent takes the next one. An
+	// owed opening is named by it, and a delivery carries the number it rendered the opening under
+	// (DeliveryOpening.Seq), so its confirmation clears that opening and no later one.
+	Opening int
 	// ToldAt is when a write of its versions last touched the row: the baseline or the fill that
 	// wrote it, or the last raise, which sets it whether or not a version rose. A fill of a row
 	// already there keeps it. It is zero for a row that only the owed opening wrote.
@@ -194,12 +200,20 @@ type NewsFacts struct {
 }
 
 // TreeNews is what one tree owes of its approved design: the members whose holder is owed news,
-// in the order the facts list them, what the tree root's architect is owed for the tree, and why
-// each other member is owed nothing (Untold, by the member's key).
+// in the order the facts list them, what the tree root's architect is owed for the tree (the items
+// of Architect, and the opening where ArchitectOpening says so), and why each other member is owed
+// nothing (Untold, by the member's key).
 type TreeNews struct {
-	Members   []MemberNews
-	Architect []NewsItem
-	Untold    map[string]UntoldReason
+	Members          []MemberNews
+	Architect        []NewsItem
+	ArchitectOpening bool
+	Untold           map[string]UntoldReason
+}
+
+// ArchitectOwed says whether the tree root's architect is owed anything: an item, or the opening
+// alone.
+func (n TreeNews) ArchitectOwed() bool {
+	return len(n.Architect) > 0 || n.ArchitectOpening
 }
 
 // Member is what the holder of issue's phase is owed, and whether it is owed anything: the one
@@ -250,7 +264,8 @@ const (
 	UntoldHeldBack UntoldReason = "held-back"
 )
 
-// MemberNews is what the holder of one member's phase is owed.
+// MemberNews is what the holder of one member's phase is owed: the items it has not taken, none
+// where its row owes the opening alone (OwedNews).
 type MemberNews struct {
 	Issue string
 	Phase phase.Phase
@@ -324,6 +339,13 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 // member released after an approval is owed nothing, because its first entry's baseline is that
 // approved version.
 //
+// A member whose holder row owes the opening (DesignTold.OpeningOwed) while the standing gate is
+// open and the tree does not linger is owed that opening, with no item where it is owed none, on
+// the same rule of its own record. The opening became owed because the holder was owed news when
+// the gate opened, and the task that carried that news can be confirmed without it: it carried an
+// earlier opening, which a close and a reopening before its turn replaced. So no role message told
+// this opening, and a task of its own does (MemberNews with no Items).
+//
 // Every member owed nothing is named in Untold with the reason, the first that holds of those
 // UntoldReason lists: what its holder took, then its own record, then the hold of the standing
 // gate or the tree's linger. The hold is read last, so only a member that would be owed news with
@@ -331,8 +353,9 @@ func stepConcerns(step DesignStep, issue, tree string) bool {
 //
 // The root architect's row is owed on its own rule: while the standing gate is open and the tree
 // does not linger, each step the tree is gated on whose approved version is above the version
-// that row took, or whose version that row does not know, whatever its members are owed. So a
-// change to the checks alone on a merged root, which owes no member, still reaches the architect.
+// that row took, or whose version that row does not know, whatever its members are owed, and the
+// opening where the row owes it (ArchitectOpening). So a change to the checks alone on a merged
+// root, which owes no member, still reaches the architect.
 //
 // It is pure, and lives here beside the other rules over the record (Waiting, AtWork), so that
 // the store's upgrade test can call it and the daemon, the outbox and the send all read the one
@@ -369,7 +392,8 @@ func OwedNews(facts NewsFacts) TreeNews {
 			return !stepConcerns(item.Step, member.Key, member.Tree)
 		})
 		other := len(items) < owedAll
-		if reason := untold(member, facts.Merged[member.Key], heldBack, len(items) > 0, other); reason != "" {
+		owes := len(items) > 0 || (!heldBack && holders[member.Key].OpeningOwed)
+		if reason := untold(member, facts.Merged[member.Key], heldBack, owes, other); reason != "" {
 			if news.Untold == nil {
 				news.Untold = map[string]UntoldReason{}
 			}
@@ -380,15 +404,17 @@ func OwedNews(facts NewsFacts) TreeNews {
 	}
 	if !heldBack {
 		news.Architect = owedItems(steps, facts.Gates, architect)
+		news.ArchitectOpening = architect.OpeningOwed
 	}
 	return news
 }
 
 // untold is why OwedNews owes member nothing, the first of the reasons that holds (UntoldReason),
 // or "" where member is owed news: owes says its holder has not taken some approved version that
-// concerns it, and other that it has not taken one that does not. Every phase no role holds is
-// named before the last case (done, admitted, awaiting_person, held), so the role check there only
-// keeps a phase the record never holds from being owed.
+// concerns it, or its row owes the opening while the gate stands open, and other that it has not
+// taken one that does not concern it. Every phase no role holds is named before the last case
+// (done, admitted, awaiting_person, held), so the role check there only keeps a phase the record
+// never holds from being owed.
 func untold(member Issue, merged, heldBack, owes, other bool) UntoldReason {
 	switch {
 	case !owes && other:

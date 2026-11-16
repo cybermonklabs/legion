@@ -1954,11 +1954,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). The news
 			// the task carries travels the same way (supervise.Delivery.News): the task is the
 			// start's own text and the news after it, the send renders that news again from the
-			// record (the daemon's designNews), and the write recording the turn's confirmation is
-			// what raises what it told (the claim store's settleDesignNews). A start queued for news
-			// alone travels marked so (supervise.RequestDeliver.NewsOnly): its task holds no work, so
-			// the machine refuses it behind any task that does, the one a running turn works among
-			// them, and the row waits on its backoff until that turn has ended.
+			// record (the daemon's designNews), and the write recording the turn's confirmation
+			// raises what the prompt of that turn carried (supervise.Delivery.Carried, the claim
+			// store's settleDesignNews). A start queued for news alone travels marked so
+			// (supervise.RequestDeliver.NewsOnly, stored as pending_task_deliveries.news_only): its
+			// task holds no work, so the machine refuses it behind any task that does, the one a
+			// running turn works among them, and the row waits on its backoff until that turn has
+			// ended.
 			kept, err := keptJSON(payload.Kept)
 			if err != nil {
 				return err

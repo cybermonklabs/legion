@@ -3,36 +3,34 @@ package record
 import "time"
 
 // DeliveryNews is what one delivery carries of news of the approved design: the items it tells,
-// whether it carries the gate's opening to each audience it speaks to, and the start's own text
-// the news follows. It travels with the task as encoded JSON (supervise.Delivery.News, opaque to
-// supervise as Kept is) and is persisted with the delivery (pending_task_deliveries.design_news).
+// the gate's opening it carries to each audience it speaks to, and the start's own text the news
+// follows. It travels with the task as encoded JSON (supervise.Delivery.News, opaque to supervise
+// as Kept is) and is persisted with the delivery (pending_task_deliveries.design_news).
 //
 // Three readers take it, each for one thing. The daemon's send (supervise.Deps.DesignNews) reads
 // it at every send: it drops each item and opening that no longer stands, re-keys an item it
 // carried with no earlier version to the version its told row has come to know, and renders the
 // text again from the record, so the text sent is always Task, a blank line, then the news as the
-// record stands at that send. The claim store reads it in SQL, by these JSON names, in the write
-// that records the delivery's confirmation, which raises each item's told version and clears each
-// opening it carried (store's tellDesignNews), and in the write that takes that confirmation back,
-// which puts both back (store's untellDesignNews). So the delivery that carried an item is the one
-// thing that says the audience took it, and a delivery retired unconfirmed tells nothing.
+// record stands at that send. The claim store reads it in SQL, by these JSON names, from the copy
+// the prompt a confirmed turn answers carried (supervise.Delivery.Carried, persisted as
+// pending_task_deliveries.carried_news): the write that records the delivery's confirmation
+// raises each item's told version and clears each opening that copy carried (store's
+// tellDesignNews), and the write that takes that confirmation back, or retires the delivery before
+// its turn's result said the turn ran, puts both back (store's untellDesignNews). So the prompt
+// that carried an item is the one thing that says the audience took it, and a delivery retired
+// unconfirmed tells nothing.
 type DeliveryNews struct {
 	// Task is the start's own text, before any news: the task the start would carry had nothing
 	// been owed. The send renders the news after it, so a phase start whose every item stopped
 	// standing is sent as this text alone. A news-only start may carry none, and is then its news
-	// alone.
+	// alone. Whether the start was queued for the news alone is the delivery's own mark
+	// (supervise.Delivery.NewsOnly, pending_task_deliveries.news_only), never this news's.
 	Task string `json:"task"`
-	// NewsOnly says the start was queued for the news alone (record.SuperviseRequest.News): left
-	// with nothing to say at its send, it is retired rather than sent. It is also the one stored
-	// copy of the delivery's own mark (supervise.Delivery.NewsOnly), which both stores read back
-	// from it in SQL by this name (the claim store's claimSelect, readRoleClaims), so no reader of
-	// a claim's pending task takes a task of news alone for its phase's task.
-	NewsOnly bool `json:"news_only,omitempty"`
 	// Items is each step's approved version the delivery tells, each to one audience of one issue.
 	Items []DeliveryNewsItem `json:"items,omitempty"`
-	// Openings is each audience the delivery carries the gate's opening to: one whose told row
-	// says the opening is owed (DesignTold.OpeningOwed), so its news leads with the gate sentence
-	// in place of the opening's role message.
+	// Openings is each audience the delivery says the gate's state to in place of the opening's
+	// role message: one whose told row owed the opening when the delivery took it on
+	// (DesignTold.OpeningOwed), so its news leads with the gate sentence.
 	Openings []DeliveryOpening `json:"openings,omitempty"`
 }
 
@@ -89,8 +87,19 @@ func (i DeliveryNewsItem) Unread() *DesignHistoryUnread {
 		Reason: i.HistoryUnread.Reason, ReadAt: i.HistoryUnread.ReadAt}
 }
 
-// DeliveryOpening is one audience of one issue a delivery carries the gate's opening to.
+// DeliveryOpening is one audience of one issue a delivery says the gate's state to: the opening its
+// told row owed when the send rendered it, named by the number the row held for it then (Seq,
+// DesignTold.Opening), or, where the gate closed again after the delivery took that opening on,
+// that the gate is closed (Closed). The confirmation of a prompt that carried it clears the opening
+// only where it said opened and the row still holds that number, and the take-back of that
+// confirmation owes it again on the same terms (the claim store's tellDesignNews and
+// untellDesignNews, through the SQL function design_news_opening_settled). A close, a reopening and
+// the opened role message each give the row its next number (Postgres.SettleOpening,
+// CloseOpenings), so no confirmation of an earlier opening clears a later one, and no take-back owes
+// again an opening that something else has told or ended since.
 type DeliveryOpening struct {
 	Issue    string         `json:"issue"`
 	Audience DesignAudience `json:"audience"`
+	Seq      int            `json:"seq"`
+	Closed   bool           `json:"closed,omitempty"`
 }

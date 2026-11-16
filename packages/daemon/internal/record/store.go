@@ -2984,14 +2984,14 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // since the id is what says a delivery is the daemon's own delivery of a relaunch's record, which
 // a reader of a role run reads as no work (supervise.Delivery.Relaunch; workflow's owed and
 // readyWorkerTask). So is whether the task is one of news alone (supervise.Delivery.NewsOnly),
-// read from the news_only member of the news it carries (DeliveryNews.NewsOnly), which is no task
-// of its phase to any reader of a role run (supervise.Delivery.StillWorked, supervise.HoldsWork).
+// read from the delivery's own column (pending_task_deliveries.news_only), which is no task of its
+// phase to any reader of a role run (supervise.Delivery.StillWorked, supervise.HoldsWork).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.delivery_id, ''), coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at,
-		coalesce((d.design_news ->> 'news_only')::boolean, false)
+		coalesce(d.news_only, false)
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)

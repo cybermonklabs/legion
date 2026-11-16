@@ -39,9 +39,10 @@ var _ supervise.Store = (*Store)(nil)
 // on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
 // tellSilentPhaseWorkers).
 //
-// Whether the delivery is a task of news alone (supervise.Delivery.NewsOnly) is read from the
-// news_only member of the news it carries (record.DeliveryNews.NewsOnly), which the start writes:
-// the mark has no column of its own, so no write of a delivery can leave two copies of it unequal.
+// Whether the delivery is a task of news alone (supervise.Delivery.NewsOnly) is the delivery's own
+// column (news_only), written and read beside the news it carries, so no writer of that news can
+// drop the mark. What the prompt a confirmation answers carried of that news
+// (supervise.Delivery.Carried) is read beside both (carried_news, design_news_told.go).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
 	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -60,8 +61,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news,
-	coalesce((d.design_news ->> 'news_only')::boolean, false)
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news, d.carried_news,
+	coalesce(d.news_only, false)
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -595,7 +596,7 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
 // queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
 // The same holds for the news of the approved design the task carries: confirmed, it raises what
-// each audience took; taken back, it puts that back (design_news_told.go).
+// the prompt its turn answers carried; taken back, it puts that back (design_news_told.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
@@ -606,41 +607,42 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // (replacesConfirmed), which no autocommit statement can do. The rows the task names go with it: a
 // delivery still unconfirmed holds them, under this claim and this delivery id, taking each from
 // the start row that claimed it and from whatever id the claim's previous delivery held it under;
-// the write that records the confirmation tells them. So does the news it carries: the write that
-// records the confirmation raises each version it told as taken, and the write that takes the
-// confirmation back lowers it again. All of it is in the caller's transaction, so no row is ever
-// held by a delivery the store does not hold, and no confirmation commits without telling what it
-// confirmed.
+// the write that records the confirmation tells them. So does the news a prompt of it carried
+// (Delivery.Carried): the write that records the confirmation raises each version that prompt
+// told as taken, and the write that takes the confirmation back lowers what the row it replaces
+// says was raised. All of it is in the caller's transaction, so no row is ever held by a delivery
+// the store does not hold, and no confirmation commits without telling what it confirmed.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
-	kept, news := keptDecisions(d.Kept), designNews(d.News)
+	kept, news, carried := keptDecisions(d.Kept), designNews(d.News), designNews(d.Carried)
 	unconfirmed := d.ConfirmedAt.IsZero()
-	// Only a write that carries kept decisions unconfirmed, or news, reads the row it replaces:
-	// every other write has nothing to put back or raise.
-	var replaced bool
-	if unconfirmed && len(kept) > 0 || len(news) > 0 {
+	// Every unconfirmed write reads the row it replaces, since any of them may take a confirmation
+	// back and only that row says what the confirmation raised; a confirmed write reads it only
+	// where it carries a prompt's news to raise. Every other write has nothing to put back or raise.
+	var replaced replacedDelivery
+	if unconfirmed || len(carried) > 0 {
 		var err error
 		if replaced, err = replacesConfirmed(ctx, tx, token); err != nil {
 			return err
 		}
 	}
 	if unconfirmed {
-		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept, replaced); err != nil {
+		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept, replaced.confirmed); err != nil {
 			return err
 		}
 	}
-	if err := settleDesignNews(ctx, tx, token, d, news, replaced); err != nil {
+	if err := settleDesignNews(ctx, tx, token, d, carried, replaced); err != nil {
 		return err
 	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note, design_news)
+		provider_error_retries, provider_error_note, design_news, carried_news, news_only)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb, $23::jsonb, $24)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -651,12 +653,13 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news`,
+		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news,
+		carried_news = excluded.carried_news, news_only = excluded.news_only`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote, news,
+		d.ProviderErrorRetries, d.ProviderErrorNote, news, carried, d.NewsOnly,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -667,21 +670,32 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	return tellKeptDecisions(ctx, tx, token, d.ID)
 }
 
-// replacesConfirmed says whether the row a write of token's delivery is about to replace holds a
-// confirmation, false where there is no row. It is the one read both settlements of a write take
-// their side from (putBackARetakenConfirmation, settleDesignNews), made before the upsert, since
-// afterwards nothing says what the write changed, and it takes that row's own lock, so no write of
-// another transaction lands between the read and the write.
-func replacesConfirmed(ctx context.Context, tx pgx.Tx, token claim.Token) (bool, error) {
-	var confirmed bool
-	switch err := tx.QueryRow(ctx, `select confirmed_at is not null from pending_task_deliveries
-		where claim_token = $1 for update`, string(token)).Scan(&confirmed); {
+// replacedDelivery is what a write of a claim's delivery reads of the row it is about to replace
+// (replacesConfirmed): whether that row holds a confirmation, and what of the news of the approved
+// design that confirmation raised and has not yet been made final (pending_task_deliveries.
+// carried_news, nil for none).
+type replacedDelivery struct {
+	confirmed bool
+	carried   []byte
+}
+
+// replacesConfirmed reads the row a write of token's delivery is about to replace: whether it holds
+// a confirmation, and the news that confirmation raised, the zero value where there is no row. It
+// is the one read both settlements of a write take their side from (putBackARetakenConfirmation,
+// settleDesignNews), made before the upsert, since afterwards nothing says what the write changed,
+// and it takes that row's own lock, so no write of another transaction lands between the read and
+// the write.
+func replacesConfirmed(ctx context.Context, tx pgx.Tx, token claim.Token) (replacedDelivery, error) {
+	var replaced replacedDelivery
+	switch err := tx.QueryRow(ctx, `select confirmed_at is not null, carried_news from pending_task_deliveries
+		where claim_token = $1 for update`, string(token)).Scan(&replaced.confirmed, &replaced.carried); {
 	case errors.Is(err, pgx.ErrNoRows):
-		return false, nil
+		return replacedDelivery{}, nil
 	case err != nil:
-		return false, fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
+		return replacedDelivery{}, fmt.Errorf("read whether the delivery %s holds was confirmed: %w", token, err)
 	}
-	return confirmed, nil
+	replaced.carried = designNews(replaced.carried)
+	return replaced, nil
 }
 
 // PutClaimAndDelivery writes a claim and its pending delivery in one transaction: a confirmation
@@ -704,7 +718,12 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 // ran: a delete that committed without it would leave a daemon crashed in between with a claim
 // that has forgotten the run its worker is still working. What the delivery held is left KEPT in
 // that same transaction: a retired task tells nothing, so each row waits for the next start or
-// catch-up of its own issue's tree to name it.
+// catch-up of its own issue's tree to name it. A confirmed delivery whose turn's result never said
+// the turn ran gives back the news its confirmation raised, in the same transaction
+// (pending_task_deliveries.carried_news, untellDesignNews): a newer task took its place while that
+// turn was still running, or the turn ended with no result this daemon was waiting on, and a
+// provider error that ends it would be dropped as the result of a task the claim no longer holds.
+// The news is owed again, and a later task carries it: told twice, never not at all.
 //
 // A delete that removes no row is refused two ways, because pending_task_deliveries is keyed on
 // the claim: the row holds no delivery at all, or it holds one under another id. The first is
@@ -722,14 +741,16 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 		if err := putClaim(ctx, tx, c); err != nil {
 			return err
 		}
-		tag, err := tx.Exec(ctx,
-			"delete from pending_task_deliveries where claim_token = $1 and delivery_id = $2",
+		var confirmed bool
+		var carried []byte
+		err := tx.QueryRow(ctx,
+			"delete from pending_task_deliveries where claim_token = $1 and delivery_id = $2 returning confirmed_at is not null, carried_news",
 			string(c.Token), deliveryID,
-		)
-		if err != nil {
+		).Scan(&confirmed, &carried)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, err)
 		}
-		if tag.RowsAffected() == 0 {
+		if errors.Is(err, pgx.ErrNoRows) {
 			var stored string
 			switch err := tx.QueryRow(ctx,
 				"select delivery_id from pending_task_deliveries where claim_token = $1",
@@ -742,6 +763,11 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 			default:
 				return fmt.Errorf("retire delivery %s on %s: the row holds delivery %s: %w",
 					deliveryID, c.Token, stored, supervise.ErrOtherDelivery)
+			}
+		}
+		if confirmed {
+			if err := untellDesignNews(ctx, tx, c.Token, deliveryID, designNews(carried)); err != nil {
+				return err
 			}
 		}
 		return releaseKeptDecisions(ctx, tx, c.Token, deliveryID)
@@ -781,7 +807,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		endedWork                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
-		kept, news                  []byte
+		kept, news, carried         []byte
 		newsOnly                    bool
 		retries                     *int64
 		note                        *string
@@ -807,7 +833,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &newsOnly)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news, &carried, &newsOnly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -894,6 +920,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			LastSendError:        *lastSendError,
 			Kept:                 keptDecisions(kept),
 			News:                 designNews(news),
+			Carried:              designNews(carried),
 			NewsOnly:             newsOnly,
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,

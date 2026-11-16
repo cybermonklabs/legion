@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const toldColumns = `issue, audience, versions, opening_owed, told_at`
+const toldColumns = `issue, audience, versions, opening_owed, opening_seq, told_at`
 
 // scanTold reads a design_news_told row in the shape the writers below keep it.
 func scanTold(row scanner) (DesignTold, error) {
@@ -17,7 +17,7 @@ func scanTold(row scanner) (DesignTold, error) {
 	var audience string
 	var versions []byte
 	var at *time.Time
-	if err := row.Scan(&told.Issue, &audience, &versions, &told.OpeningOwed, &at); err != nil {
+	if err := row.Scan(&told.Issue, &audience, &versions, &told.OpeningOwed, &told.Opening, &at); err != nil {
 		return DesignTold{}, err
 	}
 	told.Audience = DesignAudience(audience)
@@ -91,15 +91,33 @@ func (s *Postgres) RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audie
 	return nil
 }
 
-// SetOpeningOwed records that the gate's opening is owed to issue's audience. Setting it on an
-// issue with no row writes one that knows no version. The opening is its one caller (workflow's
-// tellGateMoved). The claim store clears the opening at the confirmation of the delivery that
-// carried it and owes it again where that confirmation is taken back, in SQL, since that package
-// imports no record (the claim store's tellDesignNews and untellDesignNews).
-func (s *Postgres) SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) error {
-	if _, err := tx.Exec(ctx, `insert into design_news_told (issue, audience, opening_owed) values ($1, $2, true)
-		on conflict (issue, audience) do update set opening_owed = true`, issue, string(audience)); err != nil {
-		return fmt.Errorf("record that the opening is owed to %s's %s: %w", issue, audience, err)
+// SettleOpening settles the gate's opening on issue's audience row as the opening reaches it now:
+// owed, where the gate opened while the audience is owed news, so the task that carries that news
+// leads with the opening (writing a row that knows no version where there is none); or not owed,
+// where the opened role message told it. Either way the row takes its next opening number
+// (DesignTold.Opening), so a delivery that carried an earlier opening neither clears this one at
+// its confirmation nor owes it again where that confirmation is taken back. The rule is the SQL
+// function design_news_opening_settled, which every writer of the owed opening calls: this, the
+// close (CloseOpenings), and the claim store's confirmation and its take-back (tellDesignNews,
+// untellDesignNews), which are in a package that imports no record. Its one caller is the
+// opening's own (workflow's tellGateMoved).
+func (s *Postgres) SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error {
+	if _, err := tx.Exec(ctx, `select design_news_opening_settled($1, $2, $3, null)`, issue, string(audience), owed); err != nil {
+		return fmt.Errorf("settle the opening on %s's %s: %w", issue, audience, err)
+	}
+	return nil
+}
+
+// CloseOpenings settles the gate's close on every told row of tree's issues: no audience is owed
+// an opening once the gate has closed, since each holder is told the close and the next opening
+// decides afresh how each is told that one (workflow's openingDelivery). Each row takes its next
+// opening number, as at SettleOpening, through the same function, so a task that carried the
+// opening before the close says closed when it is sent after it, and its confirmation clears
+// nothing of a reopening that follows.
+func (s *Postgres) CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error {
+	if _, err := tx.Exec(ctx, `select design_news_opening_settled(told.issue, told.audience, false, null)
+		from design_news_told told join issues owner on owner.key = told.issue where owner.tree = $1`, tree); err != nil {
+		return fmt.Errorf("settle the close of tree %s's gate on its told rows: %w", tree, err)
 	}
 	return nil
 }

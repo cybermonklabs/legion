@@ -73,7 +73,7 @@ func newNewsRig(t *testing.T) *newsRig {
 				return err
 			}
 		}
-		if err := records.SetOpeningOwed(r.ctx, tx, newsRoot, record.AudienceHolder); err != nil {
+		if err := records.SettleOpening(r.ctx, tx, newsRoot, record.AudienceHolder, true); err != nil {
 			return err
 		}
 		// What changed in the spec from version 3 to 5 is recorded; from 4 to 5 is not yet.
@@ -105,15 +105,29 @@ func (r *newsRig) gate(step record.DesignStep, artifact string, latest, approved
 	})
 }
 
-// send is the daemon's answer for a delivery to issue's claim of role carrying news.
+// send is the daemon's answer for a phase task to issue's claim of role carrying news.
 func (r *newsRig) send(issue string, role claim.Role, news record.DeliveryNews) (string, *record.DeliveryNews) {
+	r.t.Helper()
+	return r.sendAs(issue, role, news, false)
+}
+
+// sendAlone is the daemon's answer for a task queued for news alone (supervise.Delivery.NewsOnly)
+// to issue's claim of role.
+func (r *newsRig) sendAlone(issue string, role claim.Role, news record.DeliveryNews) (string, *record.DeliveryNews) {
+	r.t.Helper()
+	return r.sendAs(issue, role, news, true)
+}
+
+// sendAs is the daemon's answer for a delivery to issue's claim of role carrying news, queued for
+// that news alone where newsOnly says so.
+func (r *newsRig) sendAs(issue string, role claim.Role, news record.DeliveryNews, newsOnly bool) (string, *record.DeliveryNews) {
 	r.t.Helper()
 	encoded, err := json.Marshal(news)
 	if err != nil {
 		r.t.Fatal(err)
 	}
 	c := supervise.Claim{Token: mustClaimToken(r.t, issue, role), Project: "legion", Tree: newsRoot, Issue: issue, Role: role}
-	task, carried, err := r.runtime.designNews(r.ctx, c, supervise.Delivery{ID: "outbox:9", Task: "queued text", News: encoded})
+	task, carried, err := r.runtime.designNews(r.ctx, c, supervise.Delivery{ID: "outbox:9", Task: "queued text", News: encoded, NewsOnly: newsOnly})
 	if err != nil {
 		r.t.Fatalf("the news the task to %s carries: %v", issue, err)
 	}
@@ -176,9 +190,9 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 
 	// The reviewer's holder already took version 5, so a task queued for that news alone is left
 	// with nothing to say.
-	reviewer := record.DeliveryNews{NewsOnly: true,
+	reviewer := record.DeliveryNews{
 		Items: []record.DeliveryNewsItem{newsItem(newsReviewed, record.AudienceHolder, record.DesignStepSpec, "artifact-spec", 3, 5)}}
-	if task, carried := r.send(newsReviewed, claim.RoleReviewer, reviewer); task != "" || carried != nil {
+	if task, carried := r.sendAlone(newsReviewed, claim.RoleReviewer, reviewer); task != "" || carried != nil {
 		t.Fatalf("the reviewer's news-only task = %q carrying %+v, want nothing left to say", task, carried)
 	}
 
@@ -338,10 +352,10 @@ func TestAResendTellsAnItemByTheUnreadHistoryItCarriesUntilItsPairIsRecorded(t *
 func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *testing.T) {
 	r := newNewsRig(t)
 	const ownText = "A person approved a new version of the design of LEGION-500."
-	summary := record.DeliveryNews{Task: ownText, NewsOnly: true,
+	summary := record.DeliveryNews{Task: ownText,
 		Items: []record.DeliveryNewsItem{newsItem(newsRoot, record.AudienceArchitect, record.DesignStepSpec, "artifact-spec", 3, 5)}}
 
-	task, carried := r.send(newsRoot, claim.RoleArchitect, summary)
+	task, carried := r.sendAlone(newsRoot, claim.RoleArchitect, summary)
 
 	for _, want := range []string{
 		ownText + "\n\nA person approved a new version of the design of LEGION-500. What changed",
@@ -356,7 +370,7 @@ func TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend(t *te
 			t.Fatalf("summary = %q, want it to say %q", task, want)
 		}
 	}
-	if carried == nil || len(carried.Items) != 1 || !carried.NewsOnly {
+	if carried == nil || len(carried.Items) != 1 {
 		t.Fatalf("the summary still carries %+v, want its one standing item", carried)
 	}
 }
@@ -375,7 +389,7 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 		return r.records.PutIssue(r.ctx, tx, *tested)
 	})
 
-	task, _ := r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
 	if want := "- LEGION-502, in testing: told nothing: its status takes it out of the workflow."; !strings.Contains(task, want) {
 		t.Fatalf("summary = %q, want it to say %q", task, want)
 	}
@@ -424,15 +438,15 @@ func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
 		return ""
 	}
 
-	task, _ := r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
 	if got, want := line(task), tested+"told nothing: the approved version holds the same text as the one it took, apart from decision blocks."; got != want {
 		t.Fatalf("the tester's line, owed no opening = %q, want %q", got, want)
 	}
 
 	r.inTx(func(tx pgx.Tx) error {
-		return r.records.SetOpeningOwed(r.ctx, tx, newsTested, record.AudienceHolder)
+		return r.records.SettleOpening(r.ctx, tx, newsTested, record.AudienceHolder, true)
 	})
-	task, _ = r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	task, _ = r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
 	if got, want := line(task), tested+"owed version 5 of the spec document, since version 4, which its phase last took; "+
 		"the next start of its tester carries it."; got != want {
 		t.Fatalf("the tester's line, owed the opening = %q, want %q", got, want)
@@ -444,7 +458,7 @@ func summaryOfAMemberOwedNoWork(t *testing.T, changes record.DesignChanges) {
 
 // rootSummary is the root architect's news-only summary of spec version 5, since version 3.
 func rootSummary() record.DeliveryNews {
-	return record.DeliveryNews{Task: "A person approved a new version of the design of LEGION-500.", NewsOnly: true,
+	return record.DeliveryNews{Task: "A person approved a new version of the design of LEGION-500.",
 		Items: []record.DeliveryNewsItem{newsItem(newsRoot, record.AudienceArchitect, record.DesignStepSpec, "artifact-spec", 3, 5)}}
 }
 
@@ -456,7 +470,7 @@ func TestTheRootArchitectsSummarySentAfterTheGateClosedAgainTellsOwedMembersNoth
 	r := newNewsRig(t)
 	r.gate(record.DesignStepSpec, "artifact-spec", 6, 5)
 
-	task, carried := r.send(newsRoot, claim.RoleArchitect, rootSummary())
+	task, carried := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
 
 	const nothingYet = "told nothing yet: the gate closed again before this was sent; what it is owed goes once a person approves " +
 		"the version now with its reviewer."
@@ -496,7 +510,7 @@ func TestALingeringTreesSummaryIsLeftWithNothingToSay(t *testing.T) {
 	root.LingerUntil = &lingers
 	putOutboxIssue(t, r.pool, r.records, *root)
 
-	if task, carried := r.send(newsRoot, claim.RoleArchitect, rootSummary()); task != "" || carried != nil {
+	if task, carried := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary()); task != "" || carried != nil {
 		t.Fatalf("the lingering tree's summary = %q carrying %+v, want nothing left to say", task, carried)
 	}
 }

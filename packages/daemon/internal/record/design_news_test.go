@@ -53,6 +53,12 @@ func architectTook(versions map[DesignStep]int) DesignTold {
 	return DesignTold{Issue: newsRoot, Audience: AudienceArchitect, Versions: versions}
 }
 
+// owingTheOpening is told owing the gate's opening (DesignTold.OpeningOwed).
+func owingTheOpening(told DesignTold) DesignTold {
+	told.OpeningOwed = true
+	return told
+}
+
 // specNews and criteriaNews are the items of a step's document from a told version to the approved
 // one; a nil from is a version the record does not know.
 func specNews(from *int, to int) NewsItem {
@@ -67,9 +73,10 @@ func criteriaNews(from *int, to int) NewsItem {
 // is one of its conditions: the step must be one the tree is gated on, the standing gate open, the
 // approved version above what the holder took or a version the record does not know, the step one
 // that concerns the member, the member in the workflow with a phase someone holds in a tree that
-// does not linger, and its pull request not merged. The root architect's row is weighed on its own
-// rule beside the members'. Each member owed nothing is named with the first reason that holds
-// (UntoldReason), the hold of the gate or the linger last.
+// does not linger, and its pull request not merged. A row that owes the opening while the gate
+// stands open is owed that opening, with no item where it is owed none. The root architect's row is
+// weighed on its own rule beside the members'. Each member owed nothing is named with the first
+// reason that holds (UntoldReason), the hold of the gate or the linger last.
 func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 	specOnly := []DesignStep{DesignStepSpec}
 	child, sibling, third := "LEGION-101", "LEGION-102", "LEGION-103"
@@ -125,6 +132,28 @@ func TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken(t *testing.T) {
 				Told: []DesignTold{architectTook(map[DesignStep]int{DesignStepSpec: 4}), holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 4}),
 					holderTook(child, map[DesignStep]int{DesignStepSpec: 4})}},
 			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldHeldBack, child: UntoldHeldBack}},
+		},
+		{
+			name: "a row owing the opening alone while the gate stands open is owed that opening",
+			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 5, 5)),
+				Members: []Issue{newsMember(newsRoot, phase.Implementing), newsMember(child, phase.Testing)},
+				Told: []DesignTold{owingTheOpening(architectTook(map[DesignStep]int{DesignStepSpec: 5})),
+					holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 5}),
+					owingTheOpening(holderTook(child, map[DesignStep]int{DesignStepSpec: 5}))}},
+			want: TreeNews{
+				Members:          []MemberNews{{Issue: child, Phase: phase.Testing}},
+				ArchitectOpening: true,
+				Untold:           map[string]UntoldReason{newsRoot: UntoldTaken},
+			},
+		},
+		{
+			name: "a row owing the opening is owed nothing while the gate stands closed",
+			facts: NewsFacts{Steps: specOnly, Gates: newsRows(newsGate(DesignStepSpec, 6, 5)),
+				Members: []Issue{newsMember(newsRoot, phase.Implementing), newsMember(child, phase.Testing)},
+				Told: []DesignTold{owingTheOpening(architectTook(map[DesignStep]int{DesignStepSpec: 5})),
+					holderTook(newsRoot, map[DesignStep]int{DesignStepSpec: 5}),
+					owingTheOpening(holderTook(child, map[DesignStep]int{DesignStepSpec: 5}))}},
+			want: TreeNews{Untold: map[string]UntoldReason{newsRoot: UntoldTaken, child: UntoldTaken}},
 		},
 		{
 			name: "the first of two approvals owes nothing",

@@ -13,12 +13,13 @@ import (
 const designNewsVersion = 20261114082752
 
 // 20261114082752 records what each holder of a tree's work took of its approved design
-// (design_news_told), the change sets between two approved versions (design_changes), the
-// questions of a document's review history the reconcile could not answer
-// (design_history_unread), the news a delivery carries (pending_task_deliveries.design_news) and
-// the outbox kind that reconciles them (design_changes), and seeds the told rows from the gates the
-// release before it left, so the upgrade owes nobody news of what the record already shows as
-// taken.
+// (design_news_told, with the number of each settlement of its opening, opening_seq), the change
+// sets between two approved versions (design_changes), the questions of a document's review
+// history the reconcile could not answer (design_history_unread), the news a delivery carries, the
+// copy of it the prompt a confirmation answers carried and whether the task is one of news alone
+// (pending_task_deliveries.design_news, carried_news and news_only), and the outbox kind that
+// reconciles them (design_changes), and seeds the told rows from the gates the release before it
+// left, so the upgrade owes nobody news of what the record already shows as taken.
 //
 // The seed is read on five trees that release can leave: a tree whose spec gate stands open at
 // version 4, with a member at work, a member held from implementing, a member held from admitted, a
@@ -187,8 +188,11 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261114082752(t 
 			t.Fatalf("%s was taken, want an unread history with no reason, or of no version, refused", refused)
 		}
 	}
-	if _, err := store.Pool().Exec(ctx, "select design_news from pending_task_deliveries"); err != nil {
-		t.Fatalf("read the news a delivery carries after the migration: %v", err)
+	if _, err := store.Pool().Exec(ctx, "select design_news, carried_news, news_only from pending_task_deliveries"); err != nil {
+		t.Fatalf("read the news a delivery carries, the copy its prompt carried and its news-only mark after the migration: %v", err)
+	}
+	if _, err := store.Pool().Exec(ctx, "select opening_seq from design_news_told"); err != nil {
+		t.Fatalf("read the told rows' opening numbers after the migration: %v", err)
 	}
 	for _, kind := range []string{
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",

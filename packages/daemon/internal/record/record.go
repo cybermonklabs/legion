@@ -1672,8 +1672,13 @@ type Store interface {
 	// row holds and the version given, writing the row when there is none; a step versions does
 	// not name keeps what the row holds.
 	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
-	// SetOpeningOwed records that the gate's opening is owed to issue's audience.
-	SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience) error
+	// SettleOpening settles the gate's opening on issue's audience row as it reaches the audience
+	// now: owed, for the task that carries its news to lead with, or told by the opened role
+	// message; the row takes its next opening number either way (Postgres.SettleOpening).
+	SettleOpening(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// CloseOpenings settles the gate's close on every told row of tree's issues: none owes an
+	// opening, and each takes its next opening number (Postgres.CloseOpenings).
+	CloseOpenings(ctx context.Context, tx pgx.Tx, tree string) error
 	// FillTold writes each step of versions on issue's audience row where the row knows no
 	// version of that step, and leaves every step it knows as it stands (Postgres.FillTold).
 	FillTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error

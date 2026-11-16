@@ -176,12 +176,14 @@ func TestANewsOnlyTaskARestartRetiresAnswersTheQuestionTheRestartLeft(t *testing
 }
 
 // restoredUnsentNews is a daemon restarted over a ready claim that holds a task carrying news of
-// the approved design that no prompt has carried (Delivery.Prompted false): a task queued while
-// the agent's turn ran, with the daemon stopped before that turn ended. The restart arms its
-// question over the task (askFirst), as over every unconfirmed task it restores. The agent's
-// connection is registered, and the agent is in a turn of its own, an Envoy message's, so it
-// answers a prompt busy.
-func restoredUnsentNews(t *testing.T, answer *designNewsAnswer) *harness {
+// the approved design that no acknowledged prompt carried (Delivery.Carried empty): a task queued
+// while the agent's turn ran, with the daemon stopped before that turn ended, or, where prompted
+// says so, one an earlier daemon's send marked Prompted and never sent, its adoption of the working
+// copy refused (runtime.ErrAdoptRefused) or its identity mint failed
+// (runtime.ErrIdentityUnavailable). The restart arms its question over the task (askFirst), as over
+// every unconfirmed task it restores. The agent's connection is registered, and the agent is in a
+// turn of its own, an Envoy message's, so it answers a prompt busy.
+func restoredUnsentNews(t *testing.T, answer *designNewsAnswer, prompted bool) *harness {
 	t.Helper()
 	restored := queuedClaim()
 	restored.State, restored.Generation = StateReady, 3
@@ -189,7 +191,7 @@ func restoredUnsentNews(t *testing.T, answer *designNewsAnswer) *harness {
 	restored.Locator = &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: testToken, Incarnation: "4242:77",
 		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"}}
 	restored.Pending = &Delivery{ID: "outbox:46", Task: queuedTask, Phase: phase.Reviewing, Generation: 7, QueuedAt: epoch,
-		News: []byte(queuedNews)}
+		News: []byte(queuedNews), Prompted: prompted}
 	h := newBareHarness(t)
 	h.deps.DesignNews = answer.answer
 	if err := h.store.PutClaim(h.ctx, restored); err != nil {
@@ -205,28 +207,37 @@ func restoredUnsentNews(t *testing.T, answer *designNewsAnswer) *harness {
 	return h
 }
 
-// After a restart, a task carrying news that no prompt carried is never confirmed by a turn the
-// agent started by itself. Its confirmation records the news as taken, and the agent never read
-// it. So the question the restart left (askFirst) never takes the agent's turn for the task's, at
-// either place it could: the send the ready makes, where the agent says it is in a turn, and a
-// turn's start seen before anything was sent. The task stays unconfirmed and is sent: the send
-// the busy agent refuses records the claim working for the agent's own turn, and the end of that
-// turn sends the task again, so the turn that starts on it confirms it.
+// After a restart, a task carrying news that no acknowledged prompt carried is never confirmed by a
+// turn the agent started by itself. Its confirmation records the news as taken, and the agent never
+// read it. So the question the restart left (askFirst) never takes the agent's turn for the task's,
+// at either place it could: the send the ready makes, where the agent says it is in a turn, and a
+// turn's start seen before anything was sent. That holds for a task an earlier daemon's send marked
+// Prompted before its adoption or identity mint failed, which sent nothing. The task stays
+// unconfirmed and is sent: the send the busy agent refuses records the claim working for the
+// agent's own turn, and the end of that turn sends the task again, so the turn that starts on it
+// confirms it.
 func TestARestartNeverConfirmsANewsTaskNoPromptCarriedByATurnOfTheAgentsOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// first is what reaches the restored claim first, and refused the prompts it leads to.
 		first   Event
 		refused int
+		// prompted is whether an earlier daemon's send marked the task Prompted and failed before
+		// its prompt went out.
+		prompted bool
 	}{
 		{name: "the ready's send finds the agent in a turn of its own",
 			first: RequestReady{Claim: testToken, Generation: 3, Session: session}, refused: 1},
 		{name: "a turn of the agent's own starts before anything is sent",
 			first: StreamTurnStart{Claim: testToken}},
+		{name: "the ready's send finds the agent in a turn of its own, after a send whose adoption failed",
+			first: RequestReady{Claim: testToken, Generation: 3, Session: session}, refused: 1, prompted: true},
+		{name: "a turn of the agent's own starts after a send whose adoption failed",
+			first: StreamTurnStart{Claim: testToken}, prompted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			answer := &designNewsAnswer{task: queuedTask, news: []byte(queuedNews)}
-			h := restoredUnsentNews(t, answer)
+			h := restoredUnsentNews(t, answer, tc.prompted)
 
 			h.must(tc.first)
 
@@ -299,8 +310,9 @@ func TestATaskCarryingNoNewsIsNeverPutToDesignNews(t *testing.T) {
 }
 
 // newsOnlyNews is what a start queued for the news alone carries (record.DeliveryNews, encoded
-// JSON): no text of the start's own, two items, and the mark that says it was queued for its news.
-const newsOnlyNews = `{"task":"","news_only":true,` +
+// JSON): no text of the start's own, and two items. That it was queued for its news is the
+// request's own mark (RequestDeliver.NewsOnly), never the news's.
+const newsOnlyNews = `{"task":"",` +
 	`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5},` +
 	`{"issue":"LEGION-209","audience":"holder","step":"decisions","artifact":"artifact-decisions","from":1,"to":2}]}`
 
@@ -327,9 +339,9 @@ func newsCarryingStarts() []newsCarryingStart {
 		{
 			name: "a news-only start",
 			start: RequestDeliver{Claim: testToken, Task: "The approved design of LEGION-208 changed for LEGION-209.", ID: "outbox:46", Row: 46,
-				Phase: phase.Reviewing, Generation: 7, News: []byte(newsOnlyNews)},
+				Phase: phase.Reviewing, Generation: 7, News: []byte(newsOnlyNews), NewsOnly: true},
 			movedTask: "The approved spec of LEGION-208 changed for LEGION-209.",
-			movedNews: `{"task":"","news_only":true,` +
+			movedNews: `{"task":"",` +
 				`"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`,
 		},
 	}

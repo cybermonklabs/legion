@@ -98,7 +98,8 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 // A root the record no longer holds owes nothing, and the row finishes. So does a tree owed
 // nothing at the first step, with no lock taken: every write that leaves news owed queues a
 // reconcile of its own (record.QueueDesignNews), and this row, running, does not stand in for it
-// (record.Store.DesignNewsPending).
+// (record.Store.DesignNewsPending). A tree owed an opening alone (record.OwedNews) reads nothing
+// of Dispatch and goes straight to the settling.
 func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error {
 	if r.dispatch == nil {
 		return errors.New("design_changes executor has no Dispatch client")
@@ -121,7 +122,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 		return nil
 	}
 	items := owedNewsItems(owed, root.Tree)
-	if len(items) == 0 {
+	if len(owed.Members) == 0 && !owed.ArchitectOwed() {
 		return nil
 	}
 	baselines, historyErr := r.resolveBaselines(ctx, row, items)
@@ -460,7 +461,10 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 //     start;
 //   - the tree root's architect row is settled the same way, and its news goes by the root
 //     architect's news-only start, which also carries the holder form of each member in accepting
-//     the root architect owns.
+//     the root architect owns;
+//   - a row that owes the opening alone, while the gate stands open (record.OwedNews: a task
+//     confirmed carrying an earlier opening, which a close and a reopening before its turn
+//     replaced), is sent the same way: its task leads with the opening and says nothing more.
 //
 // A tree that lingers, a member out of the workflow, one that merged, or one whose phase has no
 // holder is owed nothing (record.OwedNews), so nothing is queued for it. Each start reads again,
@@ -506,7 +510,7 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			}
 			sendTo = append(sendTo, toldKey{news.Issue, record.AudienceHolder})
 		}
-		if len(owed.Architect) > 0 {
+		if owed.ArchitectOwed() {
 			settlement, versions := settlementOf(owed.Architect, recorded, record.ToldRow(facts.Told, root.Key, record.AudienceArchitect).OpeningOwed)
 			switch settlement {
 			case settleRaise:
@@ -592,7 +596,7 @@ type startNews struct {
 // (record.DeliveryNews.Task), a blank line, then the news; a start that carries nothing delivers
 // its own text.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
-	carried := record.DeliveryNews{Task: payload.Task, NewsOnly: payload.News}
+	carried := record.DeliveryNews{Task: payload.Task}
 	var sent newsAtSend
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
@@ -639,8 +643,8 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 			items = append(items, record.DeliveryNewsItem{Issue: key, Audience: audience, Step: item.Step, Artifact: item.ArtifactID,
 				From: item.From, To: item.To})
 		}
-		if open && record.ToldRow(facts.Told, key, audience).OpeningOwed {
-			openings = append(openings, record.DeliveryOpening{Issue: key, Audience: audience})
+		if told := record.ToldRow(facts.Told, key, audience); open && told.OpeningOwed {
+			openings = append(openings, record.DeliveryOpening{Issue: key, Audience: audience, Seq: told.Opening})
 		}
 	}
 	root := record.Issue{Key: issue.Tree, Tree: issue.Tree, Project: issue.Project}
@@ -650,7 +654,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 		}
 	}
 	claims := newNewsClaims(root, facts.Members)
-	if holder, held := claims.rootArchitect(); held && holder.token == token && len(owed.Architect) > 0 {
+	if holder, held := claims.rootArchitect(); held && holder.token == token && owed.ArchitectOwed() {
 		tell(root.Key, record.AudienceArchitect, owed.Architect)
 	}
 	for _, news := range owed.Members {
@@ -724,7 +728,7 @@ func (w *workflowRuntime) queueOwedDesignNews(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if news := record.OwedNews(facts); len(news.Members) > 0 || len(news.Architect) > 0 {
+			if news := record.OwedNews(facts); len(news.Members) > 0 || news.ArchitectOwed() {
 				owed = append(owed, root)
 			}
 		}

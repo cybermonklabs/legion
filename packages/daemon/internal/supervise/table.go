@@ -126,11 +126,15 @@ type StreamLateRefusal struct {
 	ConnSequence uint64
 }
 
-// PromptAcked is a send's prompt acknowledged, posted by the send's own goroutine.
+// PromptAcked is a send's prompt acknowledged, posted by the send's own goroutine. News is the
+// news of the approved design that prompt carried (Delivery.News as the send rendered it), which
+// the acknowledgement records as what a confirmation of that prompt's turn raises
+// (Delivery.Carried, acked).
 type PromptAcked struct {
 	Claim      claim.Token
 	Generation uint64
 	DeliveryID string
+	News       []byte
 }
 
 // PromptRefused is a send's prompt refused, or lost to the transport, posted by the send's own
@@ -1356,11 +1360,23 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // result settles it (fence, promptResulted).
 // It tells nothing of what the prompt carried, as confirm states, and so writes the delivery
 // alone, as for every other prompt.
-func acked(m *Machine, ctx context.Context, _ Event) error {
+//
+// It does record what the prompt carried of news of the approved design (PromptAcked.News), with
+// the prompt (awaitResult), and as the copy the task's confirmation raises (Delivery.Carried): the
+// news of the first prompt still outstanding, whose turn is the session's next (turnNews). The
+// acknowledgement is the one word that the send's adoption of the working copy and its identity
+// mint went through and that the agent took the prompt, so a send refused at either, or answered
+// busy, records none, and a task no prompt of which was acknowledged stays one the question a
+// restart leaves never takes a turn of the agent's own for (unsentNews). The copy is written with
+// the delivery, so a restart reads what the prompt it may find running carried.
+func acked(m *Machine, ctx context.Context, ev Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
-	m.awaitResult(p.ID)
+	m.awaitResult(p.ID, ev.(PromptAcked).News)
 	m.markRead(p)
+	if p.ConfirmedAt.IsZero() {
+		p.Carried = m.turnNews()
+	}
 	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	return m.putPending(ctx)
 }
@@ -1369,11 +1385,12 @@ func acked(m *Machine, ctx context.Context, _ Event) error {
 // agent_start can land before the answer to the prompt that caused it, and that start has already
 // confirmed the delivery (turnStarted). The mark and the wait for a turn are that turn's to need,
 // and it has started — but the prompt itself is still outstanding, and which of the turns that
-// follow is its own is still a question only its result answers, so it is recorded here too.
-// Nothing else moves, and nothing is written.
-func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
+// follow is its own is still a question only its result answers, so it is recorded here too, with
+// the news it carried. The copy the confirmation raised stays as that confirmation fixed it
+// (confirmedNews). Nothing else moves, and nothing is written.
+func ackedInTurn(m *Machine, _ context.Context, ev Event) error {
 	m.helloDuringSend = false
-	m.awaitResult(m.claim.Pending.ID)
+	m.awaitResult(m.claim.Pending.ID, ev.(PromptAcked).News)
 	return nil
 }
 
@@ -1387,7 +1404,12 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // very turn whose start, with this send in flight, confirmed the task, so it stays the task's.
 // A confirmation that goes takes back what it told (moveTelling, confirm): the turn that confirmed
 // the task was another's, so the agent never read the sentence the task's prompt carried, and the
-// next prompt carries it again.
+// next prompt carries it again. The news of the approved design it raised goes back with it: the
+// copy goes (Delivery.Carried), and the store puts back what the row it replaces holds. A refused
+// send writes no copy of its own news, since only an acknowledgement does (acked): a task whose
+// every send was refused here — its adoption refused, its identity not minted, its prompt answered
+// busy — is one no acknowledged prompt carried, which no turn of the agent's own confirms across a
+// restart (unsentNews).
 //
 // Which failures cost budget is decided here, and this doc is where the split is stated.
 // Charged are the two answers the far side gave about this very workspace: a refused prompt and a
@@ -1457,7 +1479,9 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	p := m.claim.Pending
 	untold := false
 	if !m.awaitsResult() {
-		p.ConfirmedAt = time.Time{}
+		// No acknowledged prompt of the task is left, so no copy of its news stands, and the
+		// write below puts back what a confirmation taken back raised (Delivery.Carried).
+		p.ConfirmedAt, p.Carried = time.Time{}, nil
 		untold = m.moveTelling(p.ID, "")
 	}
 	p.SendFailures++
@@ -1723,10 +1747,12 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // its root had no architect to hear it, so a turn of the agent's own is not that task's. Confirmed
 // by it, the task would tell the person's decisions it names — the confirmation is their telling —
 // to an architect nobody prompted, and be retired unsent when that turn ended. A task carrying
-// news of the approved design that no prompt carried (unsentNews) is the other: its confirmation
-// records the news as taken, so a turn the agent started by itself, an Envoy message's while the
-// daemon was down, would record news nobody read. Only a send of this machine's own or a prompt it
-// waits for a turn on makes such a turn that task's.
+// news of the approved design that no acknowledged prompt carried (unsentNews) is the other: its
+// confirmation records the news as taken, so a turn the agent started by itself, an Envoy
+// message's while the daemon was down, would record news nobody read — a task whose adoption or
+// identity mint failed before any prompt went among them. Only a send of this machine's own or a
+// prompt it waits for a turn on makes such a turn that task's, and its confirmation raises what
+// that prompt carried (confirmedNews).
 //
 // A prompt of the task acknowledged and still outstanding (Machine.outstanding) makes the turn the
 // task's however late it starts, past the wait for it (noTurn) and past any busy answer to a
@@ -2120,6 +2146,15 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // turn runs when the end found the result still outstanding (afterTurn): settle first, so the
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
 // beat its turn's end leaves both to that end.
+//
+// A result that says the turn ran with no provider error makes final what the task's confirmation
+// raised of news of the approved design: the copy goes (Delivery.Carried), so the retirement that
+// follows gives nothing back. Until then the copy is what a take-back or a retirement puts back
+// (the claim store's RetireDelivery), so a task a newer one replaced while its turn still ran, or
+// whose turn ended in a provider error that the fence then dropped as stale, owes its news again.
+// A task this result confirms is confirmed with the news its own prompt carried
+// (Machine.promptNews), or, for a prompt this daemon did not see acknowledged, the copy the task
+// holds.
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2144,6 +2179,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return m.promptFailed(ctx, why, taskRead)
 	}
+	ran, acknowledged := m.promptNews[r.DeliveryID], m.outstandingPrompt(r.DeliveryID)
 	m.outstanding = nil
 	if r.Error != "" {
 		return m.providerErrored(ctx, r)
@@ -2161,7 +2197,16 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		// — and yet Oh My Pi ran one for it: the agent did read the task.
 		m.log.Info("supervise: the task's prompt ran a turn the daemon never matched to it; confirming it from the result",
 			"delivery", r.DeliveryID)
-		if err := m.confirm(ctx); err != nil {
+		if !acknowledged {
+			ran = p.Carried
+		}
+		if err := m.confirmCarrying(ctx, ran); err != nil {
+			return err
+		}
+	}
+	if p := m.claim.Pending; len(p.Carried) > 0 {
+		p.Carried = nil
+		if err := m.putPending(ctx); err != nil {
 			return err
 		}
 	}

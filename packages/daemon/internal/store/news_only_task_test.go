@@ -11,11 +11,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Whether a delivery is a task of news alone (supervise.Delivery.NewsOnly) has no column of its
-// own: it is the news_only member of the news the delivery carries (record.DeliveryNews.NewsOnly),
-// which the start writes. Both readers of a claim's pending task read it back from there — the
-// claim store's restore (claimSelect) and a role run's (record's readRoleClaims) — so a task of
-// news alone is restored marked so, and a phase task carrying news is not.
+// Whether a delivery is a task of news alone (supervise.Delivery.NewsOnly) is a column of the
+// delivery's own (pending_task_deliveries.news_only), written and read beside the news it carries
+// and never inside it. The news here is built by a writer that sets no mark of any kind — the news
+// a send renders again, or any later writer of record.DeliveryNews — so the mark can only come back
+// from the column. Both readers of a claim's pending task read it back — the claim store's restore
+// (claimSelect) and a role run's (record's readRoleClaims) — so a task of news alone restored after
+// a restart is still no task of its phase to the two rules every reader of a pending task asks
+// (supervise.Delivery.StillWorked, supervise.HoldsWork), and a phase task carrying the same news
+// is that phase's task.
 func TestATaskOfNewsAloneIsReadBackMarkedSoByBothReadersOfAClaimsTask(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -27,7 +31,7 @@ func TestATaskOfNewsAloneIsReadBackMarkedSoByBothReadersOfAClaimsTask(t *testing
 		t.Run(tc.name, func(t *testing.T) {
 			r := newToldRig(t)
 			task := r.newsTask("outbox:7")
-			news, err := json.Marshal(record.DeliveryNews{NewsOnly: tc.newsOnly, Items: []record.DeliveryNewsItem{
+			news, err := json.Marshal(record.DeliveryNews{Items: []record.DeliveryNewsItem{
 				{Issue: toldChild, Audience: record.AudienceHolder, Step: record.DesignStepSpec, Artifact: "artifact-spec", From: new(3), To: 5}}})
 			if err != nil {
 				t.Fatal(err)
@@ -50,6 +54,13 @@ func TestATaskOfNewsAloneIsReadBackMarkedSoByBothReadersOfAClaimsTask(t *testing
 			if restored == nil || restored.NewsOnly != tc.newsOnly {
 				t.Fatalf("the claim store restored %+v, want the task with NewsOnly %t", restored, tc.newsOnly)
 			}
+			phaseTask := !tc.newsOnly
+			if worked := restored.StillWorked(task.Generation, task.Phase, supervise.StateReady); worked != phaseTask {
+				t.Fatalf("the restored task is still worked as its phase's task %t, want %t", worked, phaseTask)
+			}
+			if holds := supervise.HoldsWork(restored); holds != phaseTask {
+				t.Fatalf("the restored task holds work %t, want %t", holds, phaseTask)
+			}
 			var held map[claim.Token]*record.RoleClaim
 			if err := pgx.BeginFunc(r.ctx, r.store.Pool(), func(tx pgx.Tx) error {
 				var err error
@@ -58,8 +69,12 @@ func TestATaskOfNewsAloneIsReadBackMarkedSoByBothReadersOfAClaimsTask(t *testing
 			}); err != nil {
 				t.Fatalf("read the role claim: %v", err)
 			}
-			if run := held[r.reviewer.Token]; run == nil || run.Pending == nil || run.Pending.NewsOnly != tc.newsOnly {
+			run := held[r.reviewer.Token]
+			if run == nil || run.Pending == nil || run.Pending.NewsOnly != tc.newsOnly {
 				t.Fatalf("the role run read %+v, want its pending task with NewsOnly %t", run, tc.newsOnly)
+			}
+			if holds := supervise.HoldsWork(run.Pending); holds != phaseTask {
+				t.Fatalf("the role run's pending task holds work %t, want %t", holds, phaseTask)
 			}
 		})
 	}

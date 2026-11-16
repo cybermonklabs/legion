@@ -39,13 +39,17 @@ import (
 //     confirmation raises the member's holder row, which records what the session holding its
 //     phase took. So an architect's task does not tell a member that its architect signed off
 //     while the task waited: the member's next holder is told it;
-//   - an opening stands while the told row of its audience still owes it. A row that owes the
-//     opening while the gate stands open is told it by every task that speaks to that row, whether
-//     or not the start carried it. The gate can close and open again while a task waits, and
-//     the opening then finds the holder owed news, so no role message tells it (workflow's
-//     openingDelivery), and the reconcile queues no news-only start beside the task the holder has
-//     not taken (holdsUntakenTask). The task is then the one delivery of that opening, and its
-//     confirmation clears it;
+//   - an opening stands while the told row of its audience still owes it and the standing gate is
+//     open, under the opening number that row holds now (record.DesignTold.Opening), which the
+//     task carries with it (record.DeliveryOpening.Seq). A row that owes the opening while the gate
+//     stands open is told it by every task that speaks to that row, whether or not the start
+//     carried it. The gate can close and open again while a task waits, and the opening then
+//     finds the holder owed news, so no role message tells it (workflow's openingDelivery), and
+//     the reconcile queues no news-only start beside the task the holder has not taken
+//     (holdsUntakenTask). The task is then the one delivery of that opening, and the confirmation
+//     of the prompt that carried it clears it, and no earlier or later one. A task that carried an
+//     opening and is sent after a later version closed the gate again says the gate is closed, and
+//     carries the opening marked closed (record.DeliveryOpening.Closed), which clears nothing;
 //   - an item that names its pair (From) is told with that pair's change set, and is dropped as well
 //     where none is recorded yet: nothing else can say what changed, and the item stays owed for a
 //     later start, or the reconcile, to carry;
@@ -63,12 +67,14 @@ import (
 //
 // The task text is the start's own text (record.DeliveryNews.Task), a blank line, and the news. A
 // phase start whose news is all dropped is sent as its own text alone, carrying no news; a task
-// queued for its news alone with nothing left to say — no item standing, and no opening owed while
-// the gate stands open — answers "", which the machine retires rather than sends. A task whose news
-// all stands as it is carried is answered with the bytes it carries, so a send of a task the record
-// has not moved under writes nothing; one whose items the send dropped, re-keyed or told by another
-// state than they carry, or whose openings it dropped or took on, is answered with its news encoded
-// again, so its confirmation and any later send read what this send told.
+// queued for its news alone (supervise.Delivery.NewsOnly) with nothing left to say — no item
+// standing, and no opening owed while the gate stands open — answers "", which the machine retires
+// rather than sends. A task whose news all stands as it is carried is answered with the bytes it
+// carries, so a send of a task the record has not moved under writes nothing; one whose items the
+// send dropped, re-keyed or told by another state than they carry, or whose openings it dropped,
+// took on, numbered anew or said closed, is answered with its news encoded again, so any later send
+// reads what this send told, and so does the copy this prompt's acknowledgement records
+// (supervise.Delivery.Carried), which is what the confirmation of this prompt's turn raises.
 //
 // An item dropped from the text and the delivery queues one design_changes row for its tree
 // (record.QueueDesignNews): the item no longer stands, or the record could not tell it yet, and
@@ -100,7 +106,7 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 			return "", nil, fmt.Errorf("queue the reconcile of the news the task held for %s dropped: %w", c.Token, err)
 		}
 	}
-	if carried.NewsOnly && !sent.says {
+	if d.NewsOnly && !sent.says {
 		return "", nil, nil
 	}
 	task := paragraphs(carried.Task, sent.text)
@@ -118,13 +124,13 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 }
 
 // newsAtSend is what a delivery's news says at its send: the text that follows the start's own
-// (text), what of the news still stands (kept, which keeps the start's own text and whether it is
-// a news-only start), whether any of it is worth a task of its own (says): an item that stands,
-// or an opening owed while the gate stands open, whether it keeps the news otherwise than it was
-// carried (rewritten: an item re-keyed to the version its told row has come to know, or with its
-// unread review history taken on or let go, carriedChange, or an opening the delivery did not
-// carry, or one it carried and no longer tells), and the tree of each item it dropped (dropped),
-// each once, whose reconcile the send queues.
+// (text), what of the news still stands (kept, which keeps the start's own text), whether any of
+// it is worth a task of its own (says): an item that stands, or an opening owed while the gate
+// stands open, whether it keeps the news otherwise than it was carried (rewritten: an item
+// re-keyed to the version its told row has come to know, or with its unread review history taken
+// on or let go, carriedChange, or an opening the delivery did not carry, one it carried and no
+// longer tells, one it carries under another opening number, or one it now says is closed), and
+// the tree of each item it dropped (dropped), each once, whose reconcile the send queues.
 type newsAtSend struct {
 	text      string
 	kept      record.DeliveryNews
@@ -134,12 +140,12 @@ type newsAtSend struct {
 }
 
 // newsListener is one audience of one issue a delivery speaks to: the items it tells that
-// audience, by their place in the delivery's news, and whether it carries it the opening.
+// audience, by their place in the delivery's news, and the opening it carries it, nil for none.
 type newsListener struct {
 	issue    string
 	audience record.DesignAudience
 	items    []int
-	opening  bool
+	opening  *record.DeliveryOpening
 }
 
 // listenersOf is each audience of each issue news speaks to, in the order the news first names it.
@@ -160,7 +166,7 @@ func listenersOf(news record.DeliveryNews) []*newsListener {
 		listener.items = append(listener.items, i)
 	}
 	for _, opening := range news.Openings {
-		find(opening.Issue, opening.Audience).opening = true
+		find(opening.Issue, opening.Audience).opening = &opening
 	}
 	return listeners
 }
@@ -178,15 +184,15 @@ type newsTree struct {
 }
 
 // newsListened is one listener as the record stands at the send: its issue's record and tree, its
-// told row, the items of it that stand, whether its opening stands, and, for the tree root's
-// architect, the members its summary names.
+// told row, the items of it that stand, the opening the send says to it (nil for none), and, for
+// the tree root's architect, the members its summary names.
 type newsListened struct {
 	listener *newsListener
 	issue    record.Issue
 	tree     *newsTree
 	told     record.DesignTold
 	items    []int
-	opening  bool
+	opening  *record.DeliveryOpening
 	members  []memberDraft
 }
 
@@ -200,8 +206,7 @@ type newsListened struct {
 // tells it. Every item dropped for that reason or any other names its tree among the dropped, for
 // the reconcile its caller queues. An item that stands is decided on what the delivery carries
 // (rekeyed, carriedChange); the summary's members are read as a start reads the record
-// (memberDraft.told). A listener whose told row owes the opening while the standing gate is open
-// is told the opening whether the delivery carried it or not.
+// (memberDraft.told). The gate's state is said to a listener as openingAtSend decides.
 func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
 	carried record.DeliveryNews, now func() time.Time) (newsAtSend, error) {
 	trees := map[string]*newsTree{}
@@ -252,9 +257,7 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 				asks.add(issue.Tree, items[i].NewsItem())
 			}
 		}
-		// An opening the delivery carries stands while its row owes it, and is said as the gate
-		// stands now; one it does not carry is taken on while its row owes it and the gate is open.
-		heard.opening = heard.told.OpeningOwed && (listener.opening || tree.open)
+		heard.opening = openingAtSend(listener, heard.told, tree.open)
 		if listener.audience == record.AudienceArchitect && claim.IsTreeRoot(issue.Key, issue.Tree) {
 			if heard.members, err = readTreeMembers(ctx, tx, records, steps, tree.claims); err != nil {
 				return newsAtSend{}, err
@@ -269,12 +272,12 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	if err != nil {
 		return newsAtSend{}, err
 	}
-	sent := newsAtSend{kept: record.DeliveryNews{Task: carried.Task, NewsOnly: carried.NewsOnly}}
+	sent := newsAtSend{kept: record.DeliveryNews{Task: carried.Task}}
 	keep := map[int]bool{}
 	var texts []string
 	for _, heard := range listened {
 		news := workflow.News{Audience: heard.listener.audience, Tree: heard.issue.Tree, Issue: heard.issue.Key,
-			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening}
+			Phase: heard.issue.Phase, Steps: steps, Gates: heard.tree.gates, OpeningOwed: heard.opening != nil}
 		for _, i := range heard.items {
 			change, kept, ok := recorded.carriedChange(items[i])
 			if !ok {
@@ -287,14 +290,14 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 		for _, member := range heard.members {
 			news.Members = append(news.Members, member.told(recorded))
 		}
-		if heard.opening {
-			sent.kept.Openings = append(sent.kept.Openings, record.DeliveryOpening{Issue: heard.listener.issue, Audience: heard.listener.audience})
+		if heard.opening != nil {
+			sent.kept.Openings = append(sent.kept.Openings, *heard.opening)
 		}
-		sent.rewritten = sent.rewritten || heard.opening != heard.listener.opening
-		if len(news.Items) == 0 && !heard.opening {
+		sent.rewritten = sent.rewritten || !sameOpening(heard.opening, heard.listener.opening)
+		if len(news.Items) == 0 && heard.opening == nil {
 			continue
 		}
-		sent.says = sent.says || len(news.Items) > 0 || (heard.opening && heard.tree.open)
+		sent.says = sent.says || len(news.Items) > 0 || (heard.opening != nil && !heard.opening.Closed)
 		texts = append(texts, workflow.RenderNews(news))
 	}
 	for i, item := range items {
@@ -312,6 +315,41 @@ func readNewsAtSend(ctx context.Context, tx pgx.Tx, records record.Store, steps 
 	}
 	sent.text = paragraphs(texts...)
 	return sent, nil
+}
+
+// openingAtSend is the gate's state a send says to listener, whose told row is told, while the
+// standing gate is open or not, as the opening the send carries (nil for none):
+//
+//   - while the gate stands open and the row owes the opening, the opening, under the number the
+//     row holds for it now (record.DesignTold.Opening), whether or not the delivery carried it: the
+//     gate can close and open again while the task waits, and the opening that the reopening owes
+//     is a new one, which only a prompt carrying its number tells (the claim store's
+//     tellDesignNews clears no other);
+//   - while the gate stands closed and the delivery carried an opening, the close: a task composed
+//     while the gate stood open and sent after a later version closed it says closed (RenderNews),
+//     and carries the opening marked closed, which the confirmation clears nothing for;
+//   - otherwise nothing: the row owes no opening, so the opened role message or a confirmation
+//     told it, or the gate is closed and the delivery carried none.
+func openingAtSend(listener *newsListener, told record.DesignTold, open bool) *record.DeliveryOpening {
+	switch {
+	case open && told.OpeningOwed:
+		return &record.DeliveryOpening{Issue: listener.issue, Audience: listener.audience, Seq: told.Opening}
+	case !open && listener.opening != nil:
+		closed := *listener.opening
+		closed.Closed = true
+		return &closed
+	}
+	return nil
+}
+
+// sameOpening says whether two openings a delivery carries, each nil for none, are the same: the
+// same audience told the same opening, opened or closed, so a send that says it as carried writes
+// the news back unchanged.
+func sameOpening(a, b *record.DeliveryOpening) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // readNewsTree is the tree whose root is root, gated on steps as the deployment names them, read

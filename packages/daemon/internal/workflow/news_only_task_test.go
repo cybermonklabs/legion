@@ -24,7 +24,7 @@ func TestAPendingTaskOfNewsAloneIsNoTaskOfItsPhase(t *testing.T) {
 	phaseTask := supervise.Delivery{ID: "outbox:3", Task: "implement the plan", Generation: silent.issue.Generation,
 		Phase: silent.issue.Phase, Entry: 2, QueuedAt: silentNow.Add(-3 * time.Hour)}
 	newsTask := supervise.Delivery{ID: "outbox:4", Task: "The approved design changed.", Generation: silent.issue.Generation,
-		Phase: silent.issue.Phase, QueuedAt: silentNow.Add(-3 * time.Hour), News: []byte(`{"task":"","news_only":true}`), NewsOnly: true}
+		Phase: silent.issue.Phase, QueuedAt: silentNow.Add(-3 * time.Hour), News: []byte(`{"task":""}`), NewsOnly: true}
 	for _, tc := range []struct {
 		name    string
 		pending supervise.Delivery

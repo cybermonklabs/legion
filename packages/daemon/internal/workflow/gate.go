@@ -976,9 +976,19 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // The closed message is sent to each of them alike. The opening is decided for each of them by
 // openingDelivery, over what the tree owes of its approved design as this transaction leaves the
 // record (record.OwedNews): a holder owed news is sent no message, and its told row records the
-// opening as owed (record.Store.SetOpeningOwed), so the task that carries its news leads with the
-// opening; every other holder is sent the opened message, which says as well that nothing its
-// issue holds changed since the version its phase took. So each holder is told the opening once.
+// opening as owed, so the task that carries its news leads with the opening; every other holder is
+// sent the opened message, which says as well that nothing its issue holds changed since the
+// version its phase took. So each holder is told the opening once.
+//
+// Each of those deliveries settles the told row's owed opening here, in the transaction that moves
+// the gate, through the one rule every writer of the owed opening calls (the SQL function
+// design_news_opening_settled, through record.Store.SettleOpening and CloseOpenings): the opening a
+// holder owed news is owed (owed), the opening the opened message told (not owed), and the close,
+// which settles every told row of the tree, linger or not, since the closed message is the last
+// word on any opening before it. Each moves the row's opening number, so a task that carried an
+// earlier opening never clears a later one at its confirmation, and an opened message never leaves
+// a holder owed an opening it was told: a later version that changes decision blocks alone then
+// sends that holder nothing (the daemon's settlementOf).
 //
 // A holder whose message token cannot be built is logged and skipped, and the rest are told. The
 // gate's state is the record this transaction writes; a message is what the record is worth
@@ -990,6 +1000,11 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
+	}
+	if !open {
+		if err := e.store.CloseOpenings(ctx, tx, root.Tree); err != nil {
+			return err
+		}
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
 		return err
@@ -1041,10 +1056,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 			audience = record.AudienceArchitect
 		}
 		way := openingDelivery(owed, facts.Told, to.issue, audience, opened, step, version)
+		if err := e.store.SettleOpening(ctx, tx, to.issue, audience, way.byNews); err != nil {
+			return err
+		}
 		if way.byNews {
-			if err := e.store.SetOpeningOwed(ctx, tx, to.issue, audience); err != nil {
-				return err
-			}
 			byNews++
 			continue
 		}
@@ -1095,7 +1110,7 @@ func openingDelivery(owed record.TreeNews, told []record.DesignTold, issue strin
 	took, known := record.ToldRow(told, issue, audience).Took(step)
 	if audience == record.AudienceArchitect {
 		switch {
-		case len(owed.Architect) > 0:
+		case owed.ArchitectOwed():
 			return openingWay{byNews: true}
 		case known && took >= version:
 			return openingWay{message: fmt.Sprintf("%s Nothing the tree holds changed since version %d, which you took.", opened, took)}

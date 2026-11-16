@@ -19,8 +19,9 @@ import (
 // whose row holds no approval is left out, a version the record does not know. What a holder took
 // then only rises: a raise takes the greater of each step's two versions, fills a step the row did
 // not know and keeps a step the raise does not name. The owed opening is set apart from the
-// versions, and setting it on an issue with no row writes one that knows no version. What clears
-// it is a confirmation's own write in the claim store (its design_news_told tests).
+// versions, and owing it to an issue with no row writes one that knows no version. What clears it
+// is the opened role message, a close, or a confirmation's own write in the claim store (its
+// design_news_told tests).
 func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -77,8 +78,8 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	}
 
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.SetOpeningOwed(ctx, tx, child.Key, AudienceHolder))
-		must(t, records.SetOpeningOwed(ctx, tx, sibling.Key, AudienceHolder))
+		must(t, records.SettleOpening(ctx, tx, child.Key, AudienceHolder, true))
+		must(t, records.SettleOpening(ctx, tx, sibling.Key, AudienceHolder, true))
 	})
 	if got := toldOf(child.Key, AudienceHolder); !got.OpeningOwed || got.Versions[DesignStepSpec] != 3 {
 		t.Fatalf("%s's row once the opening is owed = %+v, want the opening owed and its versions kept", child.Key, got)
@@ -86,6 +87,69 @@ func TestToldRowsTakeOneBaselineAndOnlyRise(t *testing.T) {
 	if got := toldOf(sibling.Key, AudienceHolder); !got.OpeningOwed || len(got.Versions) != 0 || !got.ToldAt.IsZero() {
 		t.Fatalf("%s's row once the opening is owed = %+v, want a row that owes the opening and knows no version", sibling.Key, got)
 	}
+}
+
+// Each settlement of the gate's opening on a told row gives the row its next opening number
+// (DesignTold.Opening), through the one SQL function every writer of the owed opening calls: an
+// opening owed to a holder owed news, the opened role message, and the close, which settles every
+// row of the tree and no other tree's. So an opening is named by the number its row held when it
+// became owed, and a close and a reopening owe one under a new number. A role message to an
+// audience with no row writes none, since nothing is owed to it.
+func TestEachSettlementOfTheOpeningMovesItsNumber(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-320")
+	child := issueFixture("LEGION-321")
+	child.Tree = root.Key
+	other := issueFixture("LEGION-330")
+	inTx(t, st, func(tx pgx.Tx) {
+		for _, issue := range []Issue{root, child, other} {
+			must(t, records.PutIssue(ctx, tx, issue))
+		}
+	})
+	read := func() map[string]DesignTold {
+		t.Helper()
+		rows := map[string]DesignTold{}
+		inTx(t, st, func(tx pgx.Tx) {
+			for _, tree := range []string{root.Key, other.Key} {
+				told, err := records.TreeTold(ctx, tx, tree)
+				must(t, err)
+				for _, row := range told {
+					rows[row.Issue+"/"+string(row.Audience)] = row
+				}
+			}
+		})
+		return rows
+	}
+	want := func(when string, key string, owed bool, opening int) {
+		t.Helper()
+		got, held := read()[key]
+		if !held || got.OpeningOwed != owed || got.Opening != opening {
+			t.Fatalf("%s: %s's row = %+v (held %t), want the opening owed %t under number %d", when, key, got, held, owed, opening)
+		}
+	}
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.SettleOpening(ctx, tx, child.Key, AudienceHolder, true))
+		must(t, records.SettleOpening(ctx, tx, root.Key, AudienceArchitect, false))
+		must(t, records.SettleOpening(ctx, tx, other.Key, AudienceHolder, true))
+	})
+	want("at the first opening", child.Key+"/holder", true, 1)
+	want("at the first opening", other.Key+"/holder", true, 1)
+	if row, held := read()[root.Key+"/architect"]; held {
+		t.Fatalf("the architect told by the opened message holds a row %+v, want none: nothing is owed to it", row)
+	}
+
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.CloseOpenings(ctx, tx, root.Key)) })
+	want("at the close", child.Key+"/holder", false, 2)
+	want("at the close of another tree", other.Key+"/holder", true, 1)
+
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.SettleOpening(ctx, tx, child.Key, AudienceHolder, true)) })
+	want("at the reopening", child.Key+"/holder", true, 3)
+
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.SettleOpening(ctx, tx, child.Key, AudienceHolder, false)) })
+	want("at an opened message", child.Key+"/holder", false, 4)
 }
 
 // A version the record does not know is resolved into the told row once, and a fill never moves a
@@ -102,7 +166,7 @@ func TestAFillWritesOnlyTheVersionsTheToldRowDoesNotKnow(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, root))
 		must(t, records.RaiseTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 4}, at))
-		must(t, records.SetOpeningOwed(ctx, tx, root.Key, AudienceHolder))
+		must(t, records.SettleOpening(ctx, tx, root.Key, AudienceHolder, true))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceHolder, map[DesignStep]int{DesignStepSpec: 2, DesignStepCriteria: 1}, at.Add(time.Hour)))
 		must(t, records.FillTold(ctx, tx, root.Key, AudienceArchitect, map[DesignStep]int{DesignStepSpec: 3}, at.Add(time.Hour)))
 		var err error
@@ -111,7 +175,7 @@ func TestAFillWritesOnlyTheVersionsTheToldRowDoesNotKnow(t *testing.T) {
 	})
 	want := []DesignTold{
 		{Issue: root.Key, Audience: AudienceArchitect, Versions: map[DesignStep]int{DesignStepSpec: 3}, ToldAt: at.Add(time.Hour)},
-		{Issue: root.Key, Audience: AudienceHolder, Versions: map[DesignStep]int{DesignStepSpec: 4, DesignStepCriteria: 1}, OpeningOwed: true, ToldAt: at},
+		{Issue: root.Key, Audience: AudienceHolder, Versions: map[DesignStep]int{DesignStepSpec: 4, DesignStepCriteria: 1}, OpeningOwed: true, Opening: 1, ToldAt: at},
 	}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("the told rows after the fills = %+v, want %+v: the known spec kept at 4, the unknown criteria filled at 1, the opening still owed, and the architect's row written", rows, want)

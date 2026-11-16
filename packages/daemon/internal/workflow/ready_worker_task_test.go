@@ -136,10 +136,11 @@ func TestAReadyWorkerWithOnlyANewsOnlyStartQueuedIsGivenItsPhaseTask(t *testing.
 }
 
 // A tester whose claim becomes ready holding only a task of news of the approved design alone —
-// the news-only start's delivery, which the record marks in the news it carries ("news_only") —
-// holds no work of its phase: the task names the phase and the run so that it is dropped once the
-// issue leaves the phase, and asks the worker only to read what changed. So it is queued its
-// phase's resume task, as a claim holding nothing is, rather than left with the news alone.
+// the news-only start's delivery, which the record marks in its own column
+// (pending_task_deliveries.news_only) — holds no work of its phase: the task names the phase and
+// the run so that it is dropped once the issue leaves the phase, and asks the worker only to read
+// what changed. So it is queued its phase's resume task, as a claim holding nothing is, rather than
+// left with the news alone.
 func TestAReadyWorkerHoldingOnlyANewsTaskIsGivenItsPhaseTask(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
@@ -147,8 +148,8 @@ func TestAReadyWorkerHoldingOnlyANewsTaskIsGivenItsPhaseTask(t *testing.T) {
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
 	token := seedPhaseWorker(t, pool, "LEGION-209", claim.RoleTester, "")
 	if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation,
-		queued_at, design_news) values ($1, 'outbox:7', 'The approved design changed.', 'testing', 1, now(),
-		'{"task":"","news_only":true,"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":4}]}')`,
+		queued_at, design_news, news_only) values ($1, 'outbox:7', 'The approved design changed.', 'testing', 1, now(),
+		'{"task":"","items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":4}]}', true)`,
 		string(token)); err != nil {
 		t.Fatalf("seed the tester's news task: %v", err)
 	}
