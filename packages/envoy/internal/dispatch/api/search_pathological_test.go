@@ -24,13 +24,16 @@ import (
 // the work. On one machine at a load of 140 to 218, a ladder that timed the replacement below in
 // this process's CPU time failed 2 of 100 runs, and passed 3 more only on a retry. Each write is
 // held to its linear-size control instead (costsNoMoreThanItsParts): one write of a size, timed
-// between sixteen writes of a sixteenth of it each, the same input split among them. Work linear in
-// the input makes the one write cost no more than the sixteen, whatever the load does to the
-// request's own cost or to the work, since the sixteen do the same work and pay that cost sixteen
-// times; work quadratic in the input makes it cost about sixteen times as much. The search indexing
-// and the block walk below are work no allocation counts: Postgres does the one, and ygo's walk
-// allocates nothing, so either defect, put back, left this process's allocations per save as they
-// were and multiplied its time.
+// between its parts, sixteen writes of a sixteenth of it each (eight for the replacement below),
+// the same input split among them. Work linear in the input makes the one write cost no more than
+// its parts, whatever the load does to the request's own cost or to the work, since the parts do
+// the same work and pay that cost once each; work quadratic in the input makes it cost about as
+// many times as much as there are parts. Each side is read at its least over several samples
+// (splitTimes): the load and a stall only ever add time, so a stalled part or a slowed whole write
+// moves the verdict only when it reached every sample. The search indexing and the block walk
+// below are work no allocation counts: Postgres does the one, and ygo's walk allocates nothing, so
+// either defect, put back, left this process's allocations per save as they were and multiplied
+// its time.
 //
 // Each pathological run is a code block's text. Written as paragraph text, the larger runs make
 // more elements than one write may (TestUploadRefusesADocumentTooLargeToStore); the document stores
@@ -151,15 +154,18 @@ const (
 // TestASplitRefusesQuadraticWork holds costsNoMoreThanItsParts's measure and verdict (splitTimes,
 // splitVerdict) to what they are for, with costs computed rather than timed: linear work with a
 // request's own cost passes, and so does linear work one of whose whole writes stalls; quadratic
-// work fails, and so does the weakest defect this file's checks measured, put back - pmdoc writing
-// each replaced block at its own index, whose quadratic walk sits beside the replacement's linear
-// work in the whole and in each part.
+// work fails, and so does quadratic work one of whose parts stalls as long as the whole write
+// takes, which the sample of least whole against its own parts passed, and so does the weakest
+// defect this file's checks measured, put back - pmdoc writing each replaced block at its own
+// index, whose quadratic walk sits beside the replacement's linear work in the whole and in each
+// part.
 func TestASplitRefusesQuadraticWork(t *testing.T) {
 	const size = replacedBlocks * len(replacedTo)
 	// The fixed replacement's whole took 0.49 s: a request's own cost and the work linear in it.
 	linear := func(n int) time.Duration {
 		return 20*time.Millisecond + time.Duration(n)*470*time.Millisecond/time.Duration(size)
 	}
+	quadratic := func(n int) time.Duration { return time.Duration(n) * time.Duration(n) }
 	stalls := 0
 	for _, test := range []struct {
 		name    string
@@ -174,7 +180,14 @@ func TestASplitRefusesQuadraticWork(t *testing.T) {
 			}
 			return linear(n)
 		}, false},
-		{"quadratic work", func(n int) time.Duration { return time.Duration(n) * time.Duration(n) }, true},
+		{"quadratic work", quadratic, true},
+		{"quadratic work one of whose parts stalls as long as the whole write takes", func(n int) time.Duration {
+			if n == size/replacedParts && stalls == 0 {
+				stalls++
+				return quadratic(size)
+			}
+			return quadratic(n)
+		}, true},
 		// The replacement with pmdoc's walk put back took 10.7 s for the whole: the fixed code's
 		// 0.49 s and a walk of 10.2 s growing as the square of the blocks (the comment above
 		// TestSavingAPathologicalBodyIsBounded's replacement has the measurement).
@@ -184,6 +197,7 @@ func TestASplitRefusesQuadraticWork(t *testing.T) {
 		}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			stalls = 0
 			whole, parts := splitTimes(size, replacedParts, test.cost)
 			if err := splitVerdict(test.name, size, replacedParts, whole, parts); (err != nil) != test.refused {
 				t.Fatalf("verdict on %s (%s against %s for its parts) = %v, want refused %t", test.name, whole, parts, err, test.refused)
@@ -202,14 +216,16 @@ const splitParts = 16
 // eight or sixteen, less the linear work both sides share.
 const splitAllowance = 2
 
-// sampleCount is how many times splitTimes times the whole write between its parts, and so how many
-// samples a load that slows the whole write but not the parts around it has to reach before the
-// verdict reads it as growth. With the replacement's process and its Postgres on one CPU that
-// three busy loops took in bursts of 0.2 to 2 s, 9 of 120 samples of the fixed replacement were
-// over splitAllowance, so three samples would all be over it about once in 2,400 runs, and five
-// about once in 400,000. At this machine's own load of 138 to 252, the replacement's verdict was at
-// most 0.97 in 120 runs of three samples.
-const sampleCount = 5
+// sampleCount is how many times splitTimes times the whole write and its parts, and so how many
+// whole writes a load that slows the whole write but not the parts has to reach before the verdict
+// reads it as growth, and how many samples' parts a stall has to reach before it can hide growth.
+// With the replacement's process and its Postgres on one CPU that three busy loops took in bursts
+// of 0.2 to 2 s, 9 of 120 samples of the fixed replacement had a whole over splitAllowance times
+// its own parts; groups drawn from those samples put the least whole over splitAllowance times
+// the least parts about once in 3,900 groups of five, once in 20,000 of six and once in 77,000 of
+// seven. At this machine's own load of 165 to 308, seven samples put the replacement's verdict at
+// 0.82 to 0.99 over 10 runs, and every other write's at 0.84 or less; the test took 46 to 55 s.
+const sampleCount = 7
 
 // costsNoMoreThanItsParts holds a write of size to its linear-size control: timed(size), one write
 // of the whole input, against split calls of timed(size/split), each a write of its own, timed
@@ -226,11 +242,12 @@ func costsNoMoreThanItsParts(t *testing.T, what string, size, split int, timed f
 }
 
 // splitTimes takes sampleCount samples, each the whole write of size timed between two halves of
-// its split parts, and returns the sample whose whole took the least against its parts. The parts
-// come first, so the first request's warm-up counts against them. A change in the machine's load
-// reaches the whole and the parts written just before and after it alike, and a stall during one
-// whole write moves only its own sample, so only a load that slows every whole write and spares the
-// parts around each one is read as growth.
+// its split parts, and returns the least whole and the least parts total over the samples. The
+// machine's load, a stall and a request's warm-up only ever add to a time, so each least is the
+// sample of its side that they reached least: a whole write slowed, or a part stalled, in some of
+// the samples leaves another sample's least in its place, and only a load that slows every whole
+// write and spares some sample's parts is read as growth. Writing the parts in halves around each
+// whole measures both sides over the same stretch of the run, whose load changes as it goes.
 func splitTimes(size, split int, timed func(size int) time.Duration) (whole, parts time.Duration) {
 	for sample := range sampleCount {
 		var each time.Duration
@@ -241,8 +258,11 @@ func splitTimes(size, split int, timed func(size int) time.Duration) (whole, par
 		for range split - split/2 {
 			each += timed(size / split)
 		}
-		if sample == 0 || float64(one)/float64(each) < float64(whole)/float64(parts) {
-			whole, parts = one, each
+		if sample == 0 || one < whole {
+			whole = one
+		}
+		if sample == 0 || each < parts {
+			parts = each
 		}
 	}
 	return whole, parts
