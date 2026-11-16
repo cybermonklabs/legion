@@ -532,6 +532,21 @@ func (c *operatorMachine) argv() []string {
 	return strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
 }
 
+// systemPrompt is the prompt Oh My Pi was started with: the contents of the file its one
+// --append-system-prompt value names, as Oh My Pi reads a value with no newline.
+func (c *operatorMachine) systemPrompt() string {
+	c.t.Helper()
+	argv := c.argv()
+	if len(argv) != 3 || argv[0] != "--append-system-prompt" {
+		c.t.Fatalf("Oh My Pi's argv = %q, want --append-system-prompt <file> and the start word", argv)
+	}
+	prompt, err := os.ReadFile(argv[1])
+	if err != nil {
+		c.t.Fatalf("read the prompt file Oh My Pi was started with: %v", err)
+	}
+	return string(prompt)
+}
+
 func (c *operatorMachine) env() map[string]string {
 	c.t.Helper()
 	return readEnv(c.t, filepath.Join(c.record, "env"))
@@ -800,10 +815,9 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 			if code, _, errb := c.run(); code != 0 {
 				t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 			}
-			argv := c.argv()
 			want := "\n\n" + tc.line + " The project's repositories are acme/widgets.\n\n"
-			if len(argv) != 3 || !strings.Contains(argv[1], want) {
-				t.Fatalf("Oh My Pi's argv = %q; want the system prompt to carry %q", argv, want)
+			if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+				t.Fatalf("Oh My Pi's system prompt = %q; want it to carry %q", prompt, want)
 			}
 		})
 	}
@@ -821,10 +835,9 @@ func TestControllerStartsAddressingGainsTheProjectsRepositories(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	argv := c.argv()
 	want := "\n\nDesign gate steps: none. The project's repositories are acme/widgets, sjawhar/legion-smoke.\n\n"
-	if len(argv) != 3 || !strings.Contains(argv[1], want) {
-		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 
@@ -871,10 +884,9 @@ func TestControllerStartLaunchesWithEveryRepositoryRefused(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	argv := c.argv()
 	want := "The daemon maps no repository to this project now: acme/widgets (the review App is not installed on acme/widgets).\n\n"
-	if len(argv) != 3 || !strings.Contains(argv[1], want) {
-		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 
@@ -887,10 +899,9 @@ func TestControllerStartLaunchesWithNoRepositoryMappedOrRefused(t *testing.T) {
 	if code, _, errb := c.run(); code != 0 {
 		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
 	}
-	argv := c.argv()
 	want := "The daemon maps no repository to this project now.\n\n"
-	if len(argv) != 3 || !strings.Contains(argv[1], want) {
-		t.Fatalf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if prompt := c.systemPrompt(); !strings.Contains(prompt, want) {
+		t.Fatalf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 }
 
