@@ -53,7 +53,12 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 //
 //   - referenced_by_count, the edges that point at the ask. An inbound backlink is counted on
 //     the write that makes it, which is another issue's comment, message or document, and that
-//     write moves that issue's sequence and no sequence of this one. It can be stale.
+//     write moves that issue's sequence and no sequence of this one. It can be stale. The count
+//     is also read as the acting person (refs.QueueBacklinkCounts, which drops an edge whose
+//     source that person may not see), while this key names no person, so the kept bytes carry
+//     the count the reader that filled them was given. Every node Dispatch writes today is
+//     visible to everyone who may read its project (refs/visibility.go), so the two readings
+//     are one; a node kind reserved for its author would have to be named in this key.
 //   - The part ids of the options and the answer, and the ask's part revision, from ask_blocks.
 //     Every write of an ask indexes its parts in the transaction that appends the ask's event
 //     (refs.IndexAskPartsCounted, in asks.go, ask_transitions.go, issue_ask_lifecycle.go and
@@ -75,7 +80,8 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	options, err := parseEventListOptions(r)
@@ -97,7 +103,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if s.listAnswers.answer(w, key) {
 		return
 	}
-	events, err := s.readEvents(r.Context(), issueOwner(r.PathValue("key")), options)
+	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -175,7 +181,8 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -194,7 +201,7 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	events, err := s.readEventsAfterID(r.Context(), after, through, limit)
+	events, err := s.readEventsAfterID(r.Context(), who, after, through, limit)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -250,7 +257,7 @@ type eventListOptions struct {
 	limit      int
 }
 
-func (s *server) readEvents(ctx context.Context, owner owner, options eventListOptions) ([]model.Event, error) {
+func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, options eventListOptions) ([]model.Event, error) {
 	var predicate, ownerValue string
 	switch {
 	case owner.IssueKey != nil:
@@ -261,24 +268,24 @@ func (s *server) readEvents(ctx context.Context, owner owner, options eventListO
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
-		return s.readEventRows(ctx, eventSelect+`
+		return s.readEventRows(ctx, who, eventSelect+`
 			where `+predicate+` and e.id = any($2)
 			order by e.seq asc
 		`, ownerValue, options.ids)
 	}
 	if options.descending {
 		if options.hasBefore {
-			return s.readEventRows(ctx, eventSelect+`
+			return s.readEventRows(ctx, who, eventSelect+`
 				where `+predicate+` and e.seq < $2
 				order by e.seq desc limit $3
 			`, ownerValue, options.before, options.limit)
 		}
-		return s.readEventRows(ctx, eventSelect+`
+		return s.readEventRows(ctx, who, eventSelect+`
 			where `+predicate+`
 			order by e.seq desc limit $2
 		`, ownerValue, options.limit)
 	}
-	return s.readEventRows(ctx, eventSelect+`
+	return s.readEventRows(ctx, who, eventSelect+`
 		where `+predicate+` and e.seq > $2
 		order by e.seq asc limit $3
 	`, ownerValue, options.after, options.limit)
@@ -288,8 +295,8 @@ func (s *server) readEvents(ctx context.Context, owner owner, options eventListO
 // events whose ids are in (after, through]. Ids are not commit order, so a reader that moves its
 // cursor to a page's last row passes a through at or below the safe horizon (events.Horizon),
 // where every event is final: no lower id the page skipped can commit later.
-func (s *server) readEventsAfterID(ctx context.Context, after, through int64, limit int) ([]model.Event, error) {
-	return s.readEventRows(ctx, eventSelect+`
+func (s *server) readEventsAfterID(ctx context.Context, who model.Actor, after, through int64, limit int) ([]model.Event, error) {
+	return s.readEventRows(ctx, who, eventSelect+`
 		where e.id > $1 and e.id <= $2
 		order by e.id asc limit $3
 	`, after, through, limit)
@@ -355,7 +362,7 @@ func (s *server) eventFeedHead(ctx context.Context) (int64, error) {
 	return 0, ErrEventHeadUnproven
 }
 
-func (s *server) readEventRows(ctx context.Context, query string, arguments ...any) ([]model.Event, error) {
+func (s *server) readEventRows(ctx context.Context, who model.Actor, query string, arguments ...any) ([]model.Event, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
@@ -388,7 +395,7 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if err := s.attachAskEventFields(ctx, events); err != nil {
+	if err := s.attachAskEventFields(ctx, who, events); err != nil {
 		return nil, err
 	}
 	return events, nil
@@ -407,7 +414,7 @@ type decodedAskEventPayload struct {
 // is the ask's fact now, not the write's. Ask payloads are decoded because those fields are
 // added, and an ask.answered payload's selected lists are read as model.AskAnswer reads them
 // (normalizeAnsweredSelected); every other payload passes through as the database returned it.
-func (s *server) attachAskEventFields(ctx context.Context, events []model.Event) error {
+func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, events []model.Event) error {
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
@@ -444,7 +451,7 @@ func (s *server) attachAskEventFields(ctx context.Context, events []model.Event)
 	for index := range asks {
 		askPointers[index] = &asks[index]
 	}
-	if err := loadAskDetails(ctx, s.deps.Store.Pool, askPointers); err != nil {
+	if err := loadAskDetails(ctx, s.deps.Store.Pool, who, askPointers); err != nil {
 		return err
 	}
 	for index := range payloads {

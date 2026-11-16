@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -112,6 +113,16 @@ type Deps struct {
 	// verifier stays non-nil while its issuer is undiscovered, so such a bearer
 	// is answered 503 then, never taken for a personal token.
 	OIDC ServiceTokenVerifier
+	// OIDCAccounts are the Kubernetes service-account subjects this deployment admits
+	// (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS), each `system:serviceaccount:<namespace>:<name>`. A
+	// verified token of any other subject is refused 401 SERVICE_ACCOUNT_NOT_ADMITTED before any
+	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
+	// and audience, as a deployment that names none always did.
+	OIDCAccounts []string
+	// AccessAccounts are the service-account subjects that may read the membership answer (GET
+	// /api/v1/access/projects/{key} and GET /api/v1/access/person; cmd/dispatch:
+	// DISPATCH_ACCESS_ACCOUNTS). Every other caller is 403 ACCESS_ACCOUNT_REQUIRED there.
+	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
@@ -216,6 +227,10 @@ type DepsInput struct {
 	App           *auth.AppConfig
 	GitHubAPIBase string
 	OIDC          ServiceTokenVerifier
+	// OIDCAccounts and AccessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts; cmd/dispatch
+	// has checked each subject's form and that every access account is also admitted.
+	OIDCAccounts   []string
+	AccessAccounts []string
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
 	BrokerTokens *brokertoken.Verifier
@@ -321,6 +336,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
 		OIDC:                   input.OIDC,
+		OIDCAccounts:           input.OIDCAccounts,
+		AccessAccounts:         input.AccessAccounts,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentSecrets:           agentSecretsClient,
@@ -390,6 +407,13 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
 	// duplicateBound overrides the bound the near-copy gate's read runs under; zero, which every
 	// server the deployment builds leaves it, means duplicateGateTimeout. Only a test sets it
 	// (the forced create whose check does not answer), so a case's outcome is its own choice
@@ -1020,7 +1044,11 @@ var (
 // an operator the token was verified and refused rather than simply unknown. A
 // token the verifier could not judge because its issuer has not been discovered
 // is a 503 OIDC_ISSUER_UNAVAILABLE, never a 401: the caller retries rather than
-// reads its token as refused.
+// reads its token as refused. A verified token of an account the deployment does not
+// name (Deps.OIDCAccounts) is 401 SERVICE_ACCOUNT_NOT_ADMITTED: optionalActor is the
+// one caller resolution of every route, both sockets and every write, so the refusal
+// comes before any handler reads or writes a row. A deployment that names no account
+// admits every verified one, as it did before the list existed.
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
@@ -1037,7 +1065,12 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "OIDC_TOKEN_INVALID",
 			"service-account token rejected (%s)", reason)
 	}
+	// The subject is verified, so the access-log line names it whether or not it is admitted.
 	accesslog.Note(r.Context(), accesslog.KindService, claims.Subject)
+	if len(s.deps.OIDCAccounts) > 0 && !slices.Contains(s.deps.OIDCAccounts, claims.Subject) {
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "SERVICE_ACCOUNT_NOT_ADMITTED",
+			"the service account %s is not one this deployment admits (DISPATCH_OIDC_ACCOUNTS)", claims.Subject)
+	}
 	// A credential that holds no scope, not the absence of one: a pod's projected token proves a
 	// workload and no person, so it acts as nobody.
 	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil
@@ -1087,6 +1120,26 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
+		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person; the actor's kind and id are
+		// left as they were, so every stored author, every event and every reader keeps the
+		// shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for and no act, because an actor that merely claims a session proves nothing
+		// about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session: authenticated.ID,
+				Scopes:  authenticated.Credential.Scopes,
+			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -299,8 +300,12 @@ type broadcastRecovery struct {
 // own exclusions, under the send's own 201 - answered at once, as the send was, while
 // sendOwedBroadcastRecipients puts every recipient it still owes on its way behind the answer.
 func (s *server) replayBroadcast(w http.ResponseWriter, r *http.Request, point broadcastRecovery, _ []byte) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	ctx := r.Context()
-	read, err := s.readBroadcast(ctx, point.BroadcastID, wantsDisplayTrees(r))
+	read, err := s.readBroadcast(ctx, who, point.BroadcastID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -471,11 +476,18 @@ func (s *server) writeBroadcast(
 	sent.Recipients = make([]broadcastRecipient, 0, len(recipients))
 	for position, recipient := range recipients {
 		target := "session:" + recipient.sessionID
+		// Each copy's node goes in before its row, between the sender and the recipient, the
+		// parties of the thread the copy opens; what that write states waits for its event.
+		messageID := uuid.NewString()
+		messageNode, err := writeMessageNode(ctx, tx, messageID, nil, nil, actor, &target)
+		if err != nil {
+			return broadcastRead{}, nil, err
+		}
 		message, err := scanMessage(tx.QueryRow(ctx, `
-			insert into messages (issue_key, author, body, target, broadcast_id, broadcast_position)
-			values (null, $1, $2, $3, $4, $5)
+			insert into messages (id, issue_key, author, body, target, broadcast_id, broadcast_position)
+			values ($1, null, $2, $3, $4, $5, $6)
 			returning `+messageColumns+`
-		`, author, body, target, sent.ID, position))
+		`, messageID, author, body, target, sent.ID, position))
 		if err != nil {
 			return broadcastRead{}, nil, err
 		}
@@ -497,6 +509,9 @@ func (s *server) writeBroadcast(
 		}
 		event, err := s.appendEvent(ctx, tx, messageEvent(message, "message.created", actor, payload))
 		if err != nil {
+			return broadcastRead{}, nil, err
+		}
+		if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
 			return broadcastRead{}, nil, err
 		}
 		events = append(events, event)
@@ -684,7 +699,8 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 // `urn:uuid:<uuid>` on the uuid column, and the raw value would answer 500 where the canonical
 // one answers this route's own 404.
 func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.actingPerson(w, r); !ok {
+	who, ok := s.actingPerson(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -692,7 +708,7 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
 		return
 	}
-	read, err := s.readBroadcast(r.Context(), id, wantsDisplayTrees(r))
+	read, err := s.readBroadcast(r.Context(), who, id, wantsDisplayTrees(r))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "BROADCAST_NOT_FOUND", http.StatusNotFound, "broadcast not found")
 		return
@@ -705,8 +721,8 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 // readBroadcast reads one broadcast with every recipient's state, as GET /api/v1/broadcasts/{id}
-// answers it; an unknown id is pgx.ErrNoRows.
-func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broadcastRead, error) {
+// answers it to who; an unknown id is pgx.ErrNoRows.
+func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, trees bool) (broadcastRead, error) {
 	var read broadcastRead
 	var author []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
@@ -722,7 +738,7 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 	// rest of the request.
 	reader := s.readDisplayTrees(ctx, trees)
 	read.attachTrees(reader)
-	recipients, err := s.loadBroadcastRecipients(ctx, read.ID, reader)
+	recipients, err := s.loadBroadcastRecipients(ctx, who, read.ID, reader)
 	if err != nil {
 		return broadcastRead{}, err
 	}
@@ -732,11 +748,11 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 }
 
 // loadBroadcastRecipients reads every message the broadcast sent in the sender's requested
-// order. Messages created before positions existed, or by an old server during a rolling deploy,
-// have no position; their request order was never stored, so they retain the created_at and id
-// fallback order. created_at cannot order one current broadcast because all of its rows share
-// the one transaction's now().
-func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
+// order, each reply's block read for who. Messages created before positions existed, or by an
+// old server during a rolling deploy, have no position; their request order was never stored, so
+// they retain the created_at and id fallback order. created_at cannot order one current broadcast
+// because all of its rows share the one transaction's now().
+func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+messageColumns+`
 		from messages
@@ -771,7 +787,7 @@ func (s *server) loadBroadcastRecipients(ctx context.Context, broadcastID string
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, messages, replies); err != nil {
+	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, messages, replies); err != nil {
 		return nil, err
 	}
 	recipients := make([]broadcastRecipient, len(messages))

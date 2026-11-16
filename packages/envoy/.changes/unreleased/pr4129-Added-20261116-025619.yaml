@@ -1,0 +1,5 @@
+kind: Added
+body: Every issue, document, ask, message, comment and document block now names the project it belongs to, or, for something no project owns, the people and sessions it is between; `envoy-dispatch backfill-graph-store` fills this in for older rows, and `envoy-dispatch census --store` reports any row still missing it.
+time: 2026-11-16T02:56:19.177615092Z
+custom:
+    Issue: pr4129

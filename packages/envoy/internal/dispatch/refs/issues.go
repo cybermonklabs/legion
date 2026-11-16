@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // IssueDepthCap is the most links an issue may sit below its root: a create or reparent that
@@ -27,6 +29,11 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // server's one recursive ancestor walk: an issue event's ancestors (api's issueAncestors), a
 // reparent's cycle refusal (api's validateIssueParent, which reads it from the proposed parent)
 // and a block pointer's ancestor rule (docs' refuseBlockPointers) are all this query.
+//
+// It binds no visibility predicate and takes no acting person, because it lists no issue to a
+// reader: every caller is a rule of a write - those three, the near-copy gate's exclusion of the
+// new issue's chain and the scope a result's check resolves in - and a rule that skipped an issue
+// it may not see would let a cycle through that issue, or route an event short of its root.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -55,7 +62,10 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 // This is the server's one recursive descendant walk over whole subtrees: api's coverage read is
 // this query. api's issueChildrenStatement is a different read — one row per direct child, with
 // a rollup over that child's own subtree — and stays its own.
-func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
+//
+// It answers for who: an issue who may not see is not in the answer, and the walk does not pass
+// below it, so neither it nor the issues it holds are reached through it (VisibleKind).
+func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
 	descendants := []string{}
 	if key == "" {
 		return descendants, nil
@@ -63,13 +73,14 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 	if err := q.QueryRow(ctx, `
 		with recursive descendants as (
 			select c.key, 1 as depth from issues c where c.parent_key = $1
+			  and `+VisibleKind("issue", "c.key", "$3")+`
 			union
 			select c.key, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
-			where d.depth < $2
+			where d.depth < $2 and `+VisibleKind("issue", "c.key", "$3")+`
 		)
 		select coalesce(array_agg(key order by key), '{}') from descendants
-	`, key, IssueDepthCap).Scan(&descendants); err != nil {
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&descendants); err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}
 	return descendants, nil

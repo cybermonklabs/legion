@@ -279,6 +279,22 @@ export const projectDefaultAssigneesQuery = () =>
     queryFn: () => api.listProjectDefaultAssignees(),
   });
 
+/** Who may see one project and who changes that (`GET /projects/{key}/access`), read by its
+ *  Access tab and refreshed by the `project.access_changed` its writes append. */
+export const projectAccessQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["project-access", project],
+    queryFn: () => api.getProjectAccess(project),
+  });
+
+/** Every group an access list can name, read by Settings → Groups and the Access tab's group
+ *  picker, and refreshed by the `access_group.changed` each group write appends. */
+export const accessGroupsQuery = () =>
+  queryOptions({
+    queryKey: ["access-groups"],
+    queryFn: () => api.listAccessGroups(),
+  });
+
 /** The mutation key every board move on `project` carries; `projectIssuesQuery` waits on it. */
 export const boardMoveMutationKey = (project: string): readonly unknown[] => [
   "board-move",
@@ -474,3 +490,16 @@ export const deliverySettingsQuery = () =>
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
   });
+
+/** Where the next page of an offset-paged list starts, for an infinite query's
+ *  `getNextPageParam`: after the rows this page answered, and nowhere once those reach the
+ *  total the answer carries. `GET /api/v1/me/answers` and `GET /api/v1/people/{login}/nodes`
+ *  both answer that shape (api.myAnswersQuery), so both pages read their next page from here. */
+export const nextOffsetPage = (last: {
+  offset: number;
+  rows?: readonly unknown[] | null;
+  total: number;
+}): number | undefined => {
+  const read = last.offset + (last.rows ?? []).length;
+  return read < last.total ? read : undefined;
+};

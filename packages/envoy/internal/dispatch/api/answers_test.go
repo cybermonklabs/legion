@@ -265,3 +265,33 @@ func TestListMyAnswersMarksAChangedAnswerAsNoLongerCurrent(t *testing.T) {
 		t.Fatalf("earlier answer row = %#v, want replaced Ship", earlier)
 	}
 }
+
+// TestListMyAnswersListsAReplyStoredUnderAMixedCaseLogin holds the answers list to the one
+// canonicalisation of who a person is (R14): a reply a person wrote in an ask's thread is theirs
+// however the row spells their login, as user_threads_login reads a stored author and
+// model.CanonicalLogin the caller. A row written before sign-in lower-cased every login holds
+// the spelling the identity gave, so the reply is stored here under "Alice " and listed for
+// alice; a comparison of the raw id would leave it out.
+func TestListMyAnswersListsAReplyStoredUnderAMixedCaseLogin(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Mixed-case reply", "A spec")
+	ask := createAnswerListAsk(t, handler, issue.Key, "Mixed-case question")
+	replied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]string{
+		"ask_id": ask.ID,
+		"body":   "Alice's reply, stored under her login as she first spelled it.",
+	}, "alice")
+	if replied.Code != http.StatusCreated {
+		t.Fatalf("write ask reply: status=%d body=%s", replied.Code, replied.Body.String())
+	}
+	reply := decodeBody[model.Comment](t, replied)
+	if _, err := database.Pool.Exec(context.Background(),
+		`update comments set author = jsonb_set(author, '{id}', '"Alice "') where id = $1`, reply.ID); err != nil {
+		t.Fatalf("store the reply under a mixed-case login: %v", err)
+	}
+
+	answers := getMyAnswers(t, handler, "alice", "")
+	if answers.Total != 1 || len(answers.Rows) != 1 || answers.Rows[0].Kind != "reply" ||
+		answers.Rows[0].Reply == nil || answers.Rows[0].Reply.ID != reply.ID {
+		t.Fatalf("alice's answers = %#v, want her one reply %s, stored under \"Alice \"", answers, reply.ID)
+	}
+}

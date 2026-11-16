@@ -120,10 +120,10 @@ func insertDocumentBlock(t *testing.T, tx pgx.Tx, artifactID, blockID, nodeID st
 	}
 }
 
-// closureStatementRows runs statement and answers its rows in the order it gave them.
-func closureStatementRows(t *testing.T, database *store.Store, statement, issueKey string) []closureRow {
+// closureStatementRows runs statement with args and answers its rows in the order it gave them.
+func closureStatementRows(t *testing.T, database *store.Store, statement string, args ...any) []closureRow {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, issueKey)
+	rows, err := database.Pool.Query(context.Background(), statement, args...)
 	if err != nil {
 		t.Fatalf("run the closure statement: %v", err)
 	}
@@ -145,14 +145,16 @@ func closureStatementRows(t *testing.T, database *store.Store, statement, issueK
 // The closure answers, row for row and in the same order, what main's statement answered over
 // the same data, and Closure reduces main's rows to the members and the truncation flag it
 // reports: a block its document still holds reaches that document, one no version holds reaches
-// nothing, and the tenth document of the chain is the ninth hop that is reported truncated.
+// nothing, and the tenth document of the chain is the ninth hop that is reported truncated. It
+// reads as somebody who proves no author, and no node of this data is reserved for one, so the
+// predicates it binds leave every row main answered.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newClosureFixture(t)
 	want := closureStatementRows(t, fixture.database, mainClosureQuery, "CORE-1")
 	if len(want) < 9 {
 		t.Fatalf("main's closure answered %d rows, too few for the comparison to decide anything: %v", len(want), want)
 	}
-	if got := closureStatementRows(t, fixture.database, closureQuery, "CORE-1"); !reflect.DeepEqual(got, want) {
+	if got := closureStatementRows(t, fixture.database, closureQuery(), "CORE-1", VisibilityArg(model.Actor{})); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the closure answered\n%v\nwant main's rows\n%v", got, want)
 	}
 
@@ -176,7 +178,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 	if !wantTruncated {
 		t.Fatal("main's closure reached no ninth hop, so the fixture decides nothing about truncation")
 	}
-	members, truncated, err := Closure(context.Background(), fixture.database.Pool, "CORE-1")
+	members, truncated, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery, "CORE-1").Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+closureQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
 		t.Fatalf("explain the closure: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)

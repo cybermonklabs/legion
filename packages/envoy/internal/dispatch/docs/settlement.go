@@ -10,6 +10,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -772,8 +773,19 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		if err := st.appendEvents(ctx, []model.Event{versionEvent}); err != nil {
 			return settleDone, st.abandon(err)
 		}
+		// What this settlement's block index stated waits for that event: its id is the cause
+		// every node and tuple of the pass carries, and it exists only now
+		// (graphstore.Caused). st.published's last entry is the event just appended.
+		if err := graphstore.Caused(ctx, tx, result.blocks, st.published[len(st.published)-1].ID); err != nil {
+			return settleDone, st.abandon(err)
+		}
 	}
 	if err := st.appendEvents(ctx, st.reconciliation.events); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	// The follows of the asks this settlement opened wait for those asks' ask.opened events, which
+	// are among st.published now; causeFollows finds each by the ask its payload names.
+	if err := st.reconciliation.causeFollows(ctx, tx, st.published); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the

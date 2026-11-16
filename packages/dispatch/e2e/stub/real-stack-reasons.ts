@@ -139,6 +139,8 @@ export const realStackReasons: Record<string, string> = {
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "graph-store.e2e.ts":
+    "both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered",
   "handoffs.e2e.ts": "needs the live frame",
   "heavy-bodies.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other",
@@ -236,6 +238,8 @@ export const realStackReasons: Record<string, string> = {
     "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-access-ui.e2e.ts":
+    "the owner check, the email check and a group's existence are the server's to refuse, each write is read back after a reload, and giving the project away moves the owner check to another person",
   "project-default-assignee.e2e.ts":
     "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",

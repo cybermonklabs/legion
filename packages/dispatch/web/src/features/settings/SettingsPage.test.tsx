@@ -25,6 +25,7 @@ function stubUnrelatedQueries() {
   return {
     getDeliverySettings: spyOn(api, "getDeliverySettings").mockResolvedValue(null),
     getSignIns: spyOn(api, "getSignIns").mockResolvedValue({ signins: [] }),
+    listAccessGroups: spyOn(api, "listAccessGroups").mockResolvedValue([]),
     listAgentTokens: spyOn(api, "listAgentTokens").mockResolvedValue([]),
     listArchitectureSources: spyOn(api, "listArchitectureSources").mockResolvedValue([]),
     listProjectDefaultAssignees: spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]),
@@ -231,6 +232,29 @@ test("a grant with no expiry says it ends when its session ends", async () => {
     cleanup();
     getCredentialPending.mockRestore();
     getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// Groups are made and kept in Settings, beside the projects whose Access tabs name them.
+test("lists every group under Groups, right after Projects", async () => {
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listAccessGroups.mockResolvedValue([
+    { members: ["carol@example.com"], name: "crew", owner: "alice" },
+  ]);
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+
+  try {
+    renderPage();
+
+    expect(await screen.findByRole("cell", { name: "crew" })).toBeDefined();
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(headings.slice(0, 2)).toEqual(["Projects", "Groups"]);
+  } finally {
+    cleanup();
+    getCredentialPending.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }

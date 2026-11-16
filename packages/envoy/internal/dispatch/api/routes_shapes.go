@@ -301,7 +301,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -475,6 +478,14 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
+// accessPersonQuery is the query of the two membership-answer reads, GET
+// /api/v1/access/projects/{key} and GET /api/v1/access/person.
+type accessPersonQuery struct {
+	// Person is the email whose member kind, and for a project whether they see it, the answer
+	// reads; the project read takes none and answers the project alone.
+	Person string `query:"person"`
+}
+
 // --- the shapes ------------------------------------------------------------------------------
 
 // routeShapes is the shape of every row of the table with its test hooks in, by
@@ -562,6 +573,17 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
 	},
+	"GET /api/v1/projects/{key}/access":                   {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PATCH /api/v1/projects/{key}/access":                 {Status: http.StatusOK, Response: model.ProjectAccess{}, Request: projectAccessInput{}},
+	"PUT /api/v1/projects/{key}/access/people/{email}":    {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"DELETE /api/v1/projects/{key}/access/people/{email}": {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"PUT /api/v1/projects/{key}/access/groups/{name}":     {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {Status: http.StatusOK, Response: model.ProjectAccess{}},
+	"GET /api/v1/access-groups":                           {Status: http.StatusOK, Response: []model.AccessGroup{}},
+	"PUT /api/v1/access-groups/{name}":                    {Status: http.StatusOK, Response: model.AccessGroup{}, Request: accessGroupInput{}},
+	"DELETE /api/v1/access-groups/{name}":                 {Status: http.StatusNoContent},
+	"GET /api/v1/access/projects/{key}":                   {Status: http.StatusOK, Response: model.AccessAnswer{}, Params: accessPersonQuery{}},
+	"GET /api/v1/access/person":                           {Status: http.StatusOK, Response: model.PersonAnswer{}, Params: accessPersonQuery{}},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
@@ -717,6 +739,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {

@@ -103,7 +103,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	comment.ResolvedBy = nil
 	comment.ResolvedAt = nil
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -238,7 +238,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -428,7 +428,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		comment.ResolvedAt = timestampPtr(&resolvedAt)
 	}
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

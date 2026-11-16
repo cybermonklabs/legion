@@ -75,6 +75,11 @@ type testServerOptions struct {
 	// oidc is the service-account token verifier; nil is the unconfigured
 	// deployment, whose bearer handling is untouched by that feature.
 	oidc ServiceTokenVerifier
+	// oidcAccounts and accessAccounts are Deps.OIDCAccounts and Deps.AccessAccounts: the
+	// service-account subjects the deployment admits, and those that read the membership answer.
+	// Nil is the deployment that names none.
+	oidcAccounts   []string
+	accessAccounts []string
 	// brokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme. It is built from the test's own database, as the persistence seam below
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
@@ -257,6 +262,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		OIDC:                   options.oidc,
+		OIDCAccounts:           options.oidcAccounts,
+		AccessAccounts:         options.accessAccounts,
 		BrokerTokens:           brokerTokens,
 		AgentStream:            options.agentStream,
 		Embedder:               options.embedder,

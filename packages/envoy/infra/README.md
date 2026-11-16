@@ -603,15 +603,16 @@ runs `envoy-dispatch` beside the Cloud SQL Auth Proxy native sidecar; the front 
 that the component declares itself; and `<hostname>-listener`, which runs `envoy-listener` alone.
 Tailscale Serve on the front door is the tailnet ingress on port 443, and proxies to the app's
 ClusterIP Service on port 8766, which also serves Dispatch's API in-cluster to the namespaces
-`allowedNamespaces` names; a NetworkPolicy refuses every other namespace. The front door's SOCKS5
-Service on port 1055, which only a deployment without `natsInCluster` has, and the listener's
-Service on port 9020 are reachable only from the workloads their own policies name: the app and
-the listener may dial the proxy, and the app alone may dial the listener. The front door is built
-only where the tailnet inputs are set: with that whole group unset the component builds none, and
-Dispatch is then reached at the app's own Service inside the cluster, by the namespaces
-`allowedNamespaces` names alone (the sandbox, below). With `clusterOnly` it deploys the cluster,
-its VPC and Cloud NAT alone and none of the rest. The table below says which resources each of
-those is, the sandbox in the paragraph under it.
+`allowedNamespaces` names and to the pods of its own namespace whose app `allowedApps` names; a
+NetworkPolicy refuses every other namespace and pod. The front door's SOCKS5 Service on port 1055,
+which only a deployment without `natsInCluster` has, and the listener's Service on port 9020 are
+reachable only from the workloads their own policies name: the app and the listener may dial the
+proxy, and the app alone may dial the listener. The front door is built only where the tailnet
+inputs are set: with that whole group unset the component builds none, and Dispatch is then reached
+at the app's own Service inside the cluster, by the namespaces `allowedNamespaces` names and the
+apps `allowedApps` names alone (the sandbox, below). With `clusterOnly` it deploys the cluster, its
+VPC and Cloud NAT alone and none of the rest. The table below says which resources each of those
+is, the sandbox in the paragraph under it.
 
 | Resource | Purpose | With `clusterOnly` |
 | --- | --- | --- |
@@ -623,7 +624,7 @@ those is, the sandbox in the paragraph under it.
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
-| Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
+| Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces`, the `allowedApps` (one rule each) and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
 | Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
@@ -648,9 +649,9 @@ The sandbox builds every resource of that table except the front door's: no Tail
 no `<hostname>-tailnet-auth-key` or `<hostname>-tailnet-tls` Secret, neither the Role nor the
 RoleBinding `<hostname>-tailnet-tls`, and no `<hostname>-serve` ConfigMap. Two Deployments
 remain, the app and the listener, each with its Service, its NetworkPolicy and the budget its own
-input turns on, and the app's policy admits the `allowedNamespaces` alone. The Secret
-`<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
-alone, since the mode takes no sign-in input.
+input turns on, and the app's policy admits the `allowedNamespaces` and the `allowedApps` alone.
+The Secret `<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and
+`DISPATCH_SIGNING_KEY` alone, since the mode takes no sign-in input.
 
 ### Inputs
 
@@ -695,6 +696,13 @@ for a cluster that already exists: on a first apply the component creates the cl
 program can have made the namespace yet. `allowedNamespaces`, empty by default, each a DNS label,
 names the in-cluster namespaces the NetworkPolicy admits on port 8766.
 
+`allowedApps`, empty by default, names apps by their pods' `app` label: the app's NetworkPolicy
+admits, on port 8766, the pods of the component's own namespace that wear `app=<name>`, one rule
+per app beside the `allowedNamespaces` rule (after it, before the front door's). The secrets
+broker, `envoy-broker` in production, runs in Dispatch's own namespace, which an
+`allowedNamespaces` entry would open to every pod. A pod of another namespace wearing the label is
+not admitted by it.
+
 `clusterOnly`, `false` by default, builds the cluster alone: the VPC, its subnetwork, the router,
 Cloud NAT and the Autopilot cluster, and nothing else. It registers no private services access
 range and no peering, no Cloud SQL instance, database or user, no generated password, no Secret
@@ -718,11 +726,12 @@ does not build, and every sign-in input, since browser sign-in needs a redirect 
 provider takes and an in-cluster `http://` address is not one. The `url` output and the app's
 `DISPATCH_SERVER_URL` are then `http://<hostname>.<namespace>.svc.cluster.local:8766`, the app's
 own ClusterIP Service, which terminates no TLS, so Dispatch is reached inside its own cluster
-alone, by the pods of the namespaces `allowedNamespaces` names, with the agent tokens its API
-takes. Its app gets no `DISPATCH_SIGNIN_*` setting, so nobody signs in through a browser and every
-request that needs a person answers `401 NO_IDENTITY`, one carrying a `dsession` cookie minted
-while a stack ran sign-in included: the deployment's own `DISPATCH_SIGNING_KEY` still verifies that
-cookie for its thirty days, and no membership check is left behind it. A sandbox stack pins an
+alone, by the pods of the namespaces `allowedNamespaces` names and of the apps `allowedApps` names,
+with the agent tokens its API takes. Its app gets no `DISPATCH_SIGNIN_*` setting, so nobody signs
+in through a browser and every request that needs a person answers `401 NO_IDENTITY`, one carrying
+a `dsession` cookie minted while a stack ran sign-in included: the deployment's own
+`DISPATCH_SIGNING_KEY` still verifies that cookie for its thirty days, and no membership check is
+left behind it. A sandbox stack pins an
 `envoyImage` built from a cybermonklabs/legion `main` commit at or after this change: `envoy-dispatch` in
 an older image exits 1 when it is given no `DISPATCH_SIGNIN_*` setting, so the app's pods never
 start.
@@ -1045,10 +1054,35 @@ to boot holding one of the pair alone, so the component renders both or neither,
 Dispatch with its own pod's token. Turning it on opens Dispatch to every workload that can get a
 token for that audience under that issuer — such a caller reaches every one of Dispatch's
 `authAny` routes as a service actor, the writes among them (an issue's create and status, a
-message), and that actor holds no scope and has a subject Dispatch does not check against any
-list, so the audience is the whole of the bound. Pick one no other workload of the cluster asks the
-kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
-behaves today: neither variable renders and no token is verified.
+message), and that actor holds no scope, so with `oidcAccounts` unset Dispatch admits whatever
+subject the token names and the audience is the whole of the bound. Pick one no other workload of
+the cluster asks the kubelet for, set `oidcAccounts` to the accounts that call, and leave
+`oidcAudience` unset where no caller needs it, which is how Dispatch behaves today: neither
+variable renders and no token is verified.
+
+`oidcAccounts` (plain, a list) narrows that verifier to the Kubernetes service accounts it names,
+each as the subject `system:serviceaccount:<namespace>:<name>`: it renders
+`DISPATCH_OIDC_ACCOUNTS`, the subjects comma-joined in the order given, and Dispatch then refuses a
+token of the issuer and the audience whose subject the list does not name. Unset or empty, nothing
+renders and Dispatch admits every account of the issuer and the audience, as it did before the
+input existed. It is refused without `oidcAudience`, as `oidcIssuer` is.
+
+`accessAccounts` (plain, a list) names the service-account subjects that may read Dispatch's
+membership answer, `GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`: it renders
+`DISPATCH_ACCESS_ACCOUNTS`, comma-joined. Production sets
+`system:serviceaccount:dispatch:envoy-broker`, the secrets broker. Dispatch requires each subject
+to be in a non-empty `oidcAccounts` too and refuses to boot otherwise. Unset or empty, nothing
+renders and no account reads the answer. It is refused without `oidcAudience`, as `oidcIssuer` is.
+
+`projectOwnerFallback` (plain) renders `DISPATCH_PROJECT_OWNER_FALLBACK`: the lowercase email of a
+full member, whom Dispatch makes, at boot, the owner of every project the migration left without
+one. Unset, nothing renders.
+
+`privateProjects`, `false` by default, renders `DISPATCH_PRIVATE_PROJECTS=1` when it is `true`,
+which turns on Dispatch's private projects; `false` or unset renders nothing, so the pod is the one
+it always was. Set it `true` only with an `envoyImage` whose `envoy-dispatch` reads the setting: a
+binary that does not know it ignores it, so the stack would say projects are private while that
+binary never makes them so.
 
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
@@ -1135,7 +1169,7 @@ negative `signingKeyGenerations` entry, which names no resource, or a repeated o
 render the same key twice and which the server refuses at its boot, missing inputs, and nkey
 seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
-`oidcIssuer` with no `oidcAudience`, an
+`oidcIssuer`, `oidcAccounts` or `accessAccounts` with no `oidcAudience`, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the
 others (each missing input named), an `appId` that is not digits or is 0, an
 `appPrivateKeySecretName` that is not a DNS subdomain, an `appPrivateKeySecretKey` outside

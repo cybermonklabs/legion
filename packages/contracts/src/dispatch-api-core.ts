@@ -242,6 +242,9 @@ export const ProjectSchema = z
      *  a person. */
     gated_steps: z.array(z.enum(GATED_STEPS)).optional(),
     created_at: z.string(),
+    /** `private` for a private project, and absent for a public one, so a deployment where every
+     *  project is public carries the project as it always did. */
+    visibility: z.literal("private").optional(),
   })
   .readonly();
 
@@ -363,3 +366,44 @@ export const PriorityUpdatedEventPayloadSchema = z
   .readonly();
 
 export type PriorityUpdatedEventPayload = z.output<typeof PriorityUpdatedEventPayloadSchema>;
+
+/** `project.access_changed`: one write of a project's owner, visibility, access list or Slack
+ *  channels committed. It carries the project's access as that write left it, which change it
+ *  was, and the person (by lowercase email) or group it added or removed. It is owned by the
+ *  project and wakes nobody; every reader that resolved what its caller may see resolves it
+ *  again. */
+export const ProjectAccessChangedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    owner: z.string(),
+    visibility: z.enum(["public", "private"]),
+    people: z.array(z.string()),
+    groups: z.array(z.string()),
+    /** The Slack channel ids the project's credentials may post to, at most 16, sorted, and []
+     *  for none. */
+    slack_channels: z.array(z.string()),
+    change: z.enum([
+      "owner",
+      "visibility",
+      "person_added",
+      "person_removed",
+      "group_added",
+      "group_removed",
+      "slack_channels",
+    ]),
+    principal: z.string().optional(),
+  })
+  .readonly();
+
+export type ProjectAccessChangedEventPayload = z.output<
+  typeof ProjectAccessChangedEventPayloadSchema
+>;
+
+/** `access_group.changed`: one group was made, had its members or owner written, or was deleted.
+ *  A group belongs to no project, so the event names no owner (`issue_key` null, `project` empty),
+ *  wakes nobody and the outbox publishes it on no subject. */
+export const AccessGroupChangedEventPayloadSchema = z
+  .strictObject({ name: z.string(), change: z.enum(["created", "updated", "deleted"]) })
+  .readonly();
+
+export type AccessGroupChangedEventPayload = z.output<typeof AccessGroupChangedEventPayloadSchema>;

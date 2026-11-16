@@ -15,7 +15,8 @@ const (
 	myAnswersMaxLimit     = 200
 )
 
-// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers always returns.
+// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each always return.
 func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
 	query := r.URL.Query()
 	limit = myAnswersDefaultLimit
@@ -57,7 +58,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			union all
 			select c.created_at, 'reply', c.ask_id::text, null, c.id, c.body, null
 			from comments c
-			where c.ask_id is not null and c.author->>'kind' = 'user' and c.author->>'id' = $1
+			where c.ask_id is not null and c.author->>'kind' = 'user' and user_threads_login(c.author->>'id') = $1
 		)
 		select m.at, m.kind, m.ask_id, m.answer, m.reply_id, m.body, m.event_id, `+askItemRefExpression+` as ref,
 		       a.question, a.kind, a.state, a.edited_at,

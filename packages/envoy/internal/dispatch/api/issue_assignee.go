@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -130,9 +131,12 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 // whoamiUser is the body GET /api/v1/whoami answers a person at a browser.
 type whoamiUser struct {
 	// Always "user": whoami writes this body for a person at a browser alone.
-	Kind   string   `json:"kind" enum:"user"`
-	Login  string   `json:"login"`
-	Scopes []string `json:"scopes"`
+	Kind  string `json:"kind" enum:"user"`
+	Login string `json:"login"`
+	// MemberKind is "restricted" for a restricted member and absent for everyone else, so a full
+	// member's answer is the one it always was.
+	MemberKind string   `json:"member_kind,omitempty" enum:"restricted"`
+	Scopes     []string `json:"scopes"`
 }
 
 // whoamiAgent is the body GET /api/v1/whoami answers every credential that is not a person's
@@ -140,12 +144,15 @@ type whoamiUser struct {
 type whoamiAgent struct {
 	// Always "agent": whoami writes this body for every credential that is not a person's
 	// browser session, the personal token holding the person scope included.
-	Kind    string   `json:"kind" enum:"agent"`
-	Owner   *string  `json:"owner"`
-	Project *string  `json:"project"`
-	Scopes  []string `json:"scopes"`
-	Service *string  `json:"service"`
-	Session *string  `json:"session"`
+	Kind  string  `json:"kind" enum:"agent"`
+	Owner *string `json:"owner"`
+	// MemberKind is "restricted" when the person the credential acts for is a restricted member,
+	// and absent otherwise.
+	MemberKind string   `json:"member_kind,omitempty" enum:"restricted"`
+	Project    *string  `json:"project"`
+	Scopes     []string `json:"scopes"`
+	Service    *string  `json:"service"`
+	Session    *string  `json:"session"`
 }
 
 // whoami tells any authenticated caller who the server takes it for: a human by login, or an
@@ -170,8 +177,19 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	scopes := whoamiScopes(actor.Credential)
+	person := actor.ID
+	if !human {
+		person = ""
+		if actor.Owner != nil {
+			person = *actor.Owner
+		}
+	}
+	memberKind, ok := s.whoamiMemberKind(w, r, person)
+	if !ok {
+		return
+	}
 	if human {
-		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, Scopes: scopes})
+		WriteJSON(w, http.StatusOK, whoamiUser{Kind: "user", Login: actor.ID, MemberKind: memberKind, Scopes: scopes})
 		return
 	}
 	var owner *string
@@ -183,13 +201,32 @@ func (s *server) whoami(w http.ResponseWriter, r *http.Request) {
 		session = &actor.ID
 	}
 	WriteJSON(w, http.StatusOK, whoamiAgent{
-		Kind:    "agent",
-		Owner:   owner,
-		Project: actor.Project,
-		Scopes:  scopes,
-		Service: actor.Service,
-		Session: session,
+		Kind:       "agent",
+		Owner:      owner,
+		MemberKind: memberKind,
+		Project:    actor.Project,
+		Scopes:     scopes,
+		Service:    actor.Service,
+		Session:    session,
 	})
+}
+
+// whoamiMemberKind is whoami's member_kind for person: "restricted" for a restricted member, and
+// "" for everyone else and for no person, never "full", which would change every full member's
+// answer. A kind it cannot read is 503 IDENTITY_UNAVAILABLE, never an answer without it.
+func (s *server) whoamiMemberKind(w http.ResponseWriter, r *http.Request, person string) (string, bool) {
+	if person == "" || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return "", true
+	}
+	kind, err := access.MemberKind(r.Context(), s.deps.Store.Pool, person)
+	if err != nil {
+		writeError(w, "IDENTITY_UNAVAILABLE", http.StatusServiceUnavailable, "the person's member kind could not be read")
+		return "", false
+	}
+	if kind == model.MemberRestricted {
+		return model.MemberAnswerRestricted, true
+	}
+	return "", true
 }
 
 // whoamiScopes is the scopes a credential holds as whoami answers them: an empty array for a

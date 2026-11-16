@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -361,6 +362,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	issueRank := rank.Between(lastRank, "")
 
+	// The issue's node and its spec's node go in before the two rows, in one write that takes
+	// them in the store's order, each in the issue's project; what that write states waits for
+	// the issue.created event below (graphstore.Caused).
+	createdAt := time.Now().UTC()
+	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{
+		graphstore.IssueNode(key, input.Project, actor, createdAt),
+		graphstore.ArtifactNode(graphstore.ArtifactRefKey(key, input.Project, "", "spec"), input.Project, "", actor, createdAt),
+	}, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if _, err := tx.Exec(r.Context(), `
 		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -458,7 +471,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -488,6 +501,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "artifact", artifactID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the spec's block index stated waits for the issue's own event: it is the cause every
+	// node and tuple of that pass carries (graphstore.Caused).
+	if err := graphstore.Caused(r.Context(), tx, specBlocks, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, issueNodes, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

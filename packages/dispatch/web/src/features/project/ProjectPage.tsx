@@ -29,13 +29,15 @@ import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
+import { ProjectAccessPanel } from "./ProjectAccessPanel";
 
-type ProjectTab = "architecture" | "issues" | "documents";
+type ProjectTab = "architecture" | "issues" | "documents" | "access";
 
 const architectureTab: TabDefinition<ProjectTab> = { id: "architecture", label: "Architecture" };
 const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "issues", label: "Issues" },
   { id: "documents", label: "Documents" },
+  { id: "access", label: "Access" },
 ];
 
 type IssueView = "list" | "board";
@@ -283,6 +285,15 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "documents" ? <DocumentList project={route.project} /> : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "access"}
+        aria-labelledby="project-access-tab"
+        hidden={activeTab !== "access"}
+        id="project-access-panel"
+        role="tabpanel"
+      >
+        {activeTab === "access" ? <ProjectAccessPanel project={route.project} /> : null}
       </div>
     </section>
   );

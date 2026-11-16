@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -490,6 +492,12 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (agentArtifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -518,6 +526,14 @@ func (s *server) storeArtifact(
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
+			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{graphstore.ArtifactNode(
+				refKey, deref(project), deref(session), actor, time.Now().UTC())}, nil)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
 			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
@@ -587,6 +603,10 @@ func (s *server) storeArtifact(
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload appends below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
 	var movedEvents []model.Event
 	if kind == "doc" {
 		if created {
@@ -615,7 +635,7 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -693,6 +713,9 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	published := movedEvents
+	// The cause the block index's facts carry: the event this upload appends, or the sentinel
+	// where its owner records none of its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(eventType, actor, payload))
 		if err != nil {
@@ -705,7 +728,16 @@ func (s *server) storeArtifact(
 				return
 			}
 		}
+		blockCause = event.ID
 		published = append(published, event)
+	}
+	if err := graphstore.Caused(r.Context(), tx, indexedBlocks, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, documentNode, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its transaction as the edit
 	// route reads it: an upload to an existing document always writes a version, so a
@@ -1088,7 +1120,9 @@ func deref(value *string) string {
 
 // commitArtifactVersionEvent appends the artifact.version event of a version the transaction wrote
 // and stamps the document's new mention edges with it (refs.Stamp), after the append so stamping
-// never touches sequence allocation.
+// never touches sequence allocation. It then appends what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before
+// the event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1107,6 +1141,9 @@ func (s *server) commitArtifactVersionEvent(
 		return model.Event{}, err
 	}
 	if err := refs.Stamp(ctx, tx, "artifact", artifactID, event.ID); err != nil {
+		return model.Event{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, written.Blocks, event.ID); err != nil {
 		return model.Event{}, err
 	}
 	return event, nil

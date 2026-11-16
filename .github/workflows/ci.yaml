@@ -510,6 +510,7 @@ jobs:
               - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/dispatch/access/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -534,6 +535,10 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapi/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/graphcensus/*'
+              # cmd/dispatch's erase subcommand runs through internal/dispatch/grapherase.
+              - 'packages/envoy/internal/dispatch/grapherase/*'
+              - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -1623,6 +1628,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/docs/docstest/*'
               - 'packages/envoy/internal/dispatch/duty/*'
               - 'packages/envoy/internal/dispatch/events/*'
+              - 'packages/envoy/internal/dispatch/graphcensus/*'
+              - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -1633,10 +1640,14 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/**'
               # docs/block_pointer_links_test.go imports pmdoc/pmdoctest.
               - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'
+              # docs/schema_switch_socket_test.go installs a store schema through pmdoc/schemanodes.
+              - 'packages/envoy/internal/dispatch/pmdoc/schemanodes/*'
               # internal/dispatch/docs reads the live server processes' schema numbers
               # (schema_admission.go).
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/refs/*'
+              # docs/graph_edges_cutover_test.go announces builds through internal/dispatch/startup.
+              - 'packages/envoy/internal/dispatch/startup/*'
               - 'packages/envoy/internal/dispatch/store/*'
               - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
               # internal/dispatch/store embeds every migration.
@@ -1743,6 +1754,7 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/testdata/**'
               - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/internal/dispatch/access/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -1770,6 +1782,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/files/*'
               - 'packages/envoy/internal/dispatch/githubapp/*'
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/graphcensus/*'
+              - 'packages/envoy/internal/dispatch/graphstore/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'

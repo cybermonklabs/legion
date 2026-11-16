@@ -17,8 +17,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -27,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -43,8 +47,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -80,6 +86,17 @@ type bootConfig struct {
 	AgentTokens    *auth.SharedAgentTokens
 	RepoProjects   string
 	DefaultProject string
+	// OIDCAccounts and AccessAccounts are DISPATCH_OIDC_ACCOUNTS and DISPATCH_ACCESS_ACCOUNTS: the
+	// Kubernetes service-account subjects whose tokens the API admits (none named admits every
+	// account of the issuer and audience), and those of them that read the membership answer.
+	// resolveBootConfig has held each to the subject's form, refused either without
+	// DISPATCH_OIDC_AUDIENCE, and refused an access account a non-empty admitted list leaves out.
+	OIDCAccounts   []string
+	AccessAccounts []string
+	// ProjectOwnerFallback is DISPATCH_PROJECT_OWNER_FALLBACK, a lowercase email: the full member
+	// the boot makes the owner of every project with no owner (store.EnsureProjectOwners); empty
+	// gives none, and the boot then refuses to serve while a project has no owner.
+	ProjectOwnerFallback string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
 	// words carries, and the session that issue is routed to and its first message is sent to.
@@ -347,6 +364,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A type is a node of the store, and the schema this process validates writes against and
+	// serves to an editor is built from those nodes (migration 20261109051232). The first
+	// install is here, beside the migration run: a process serving on a schema that is not the
+	// store's would hold documents to types the deployment has moved on from, so a failure
+	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
+	// own, started beside the other woken loops below.
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		slog.Error("dispatch: install the block schema from the store", "error", err)
+		os.Exit(1)
+	}
+
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
 	// documents stored before that. It runs here, in committed batches, rather than as migration
@@ -380,6 +408,13 @@ func main() {
 
 	if err := validateDefaultProject(ctx, database, boot.DefaultProject); err != nil {
 		slog.Error("dispatch: validate default project", "error", err)
+		os.Exit(1)
+	}
+	// Every project has an owner (INFRA-3862): a project the access migration left with none is
+	// given to DISPATCH_PROJECT_OWNER_FALLBACK's full member, and while one still has none the boot
+	// refuses, naming each and both repairs, as an unknown default project refuses it.
+	if err := store.EnsureProjectOwners(store.WithTransactionTracking(ctx), database.Pool, boot.ProjectOwnerFallback); err != nil {
+		slog.Error("dispatch: give every project an owner", "error", err)
 		os.Exit(1)
 	}
 
@@ -774,11 +809,34 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
+	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
+	schemaWake := schemanodes.RegisterWake(listenerHub)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// The block schema the store holds, read again each time a supertag write announces itself.
+	// A read that fails, and a value the install refuses, leaves the installed schema in place
+	// and is read again; a store a newer build migrated is installed at this build's own
+	// version (pmdoc.Install). A read that moved the schema this process serves first writes the
+	// numbers it serves now into its registry row, which every process's socket admission reads,
+	// and then closes its document sockets, so each editor connects again and its admission
+	// decides against the schema installed now, rather than writing against types this process
+	// no longer holds. The registration is made further down, once this process holds its
+	// listener, so the installer reaches it through registered.
+	var registered atomic.Pointer[processes.Registration]
+	go (&schemanodes.Installer{
+		Store: database.Pool,
+		Wake:  schemaWake,
+		OnSwitch: func() {
+			if registration := registered.Load(); registration != nil {
+				refreshRegistrySchema(ctx, registration)
+			}
+			documentService.CloseDocumentSockets()
+		},
+	}).Run(ctx)
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in
@@ -958,12 +1016,15 @@ func main() {
 	// server process comes to serve one build (startup.Announcer), and /healthz reports the latest
 	// announcement's commit as fleet_commit. It runs once this process is registered, below
 	// (joinRegistry, registry.go). A process without NATS announces into the database and leaves
-	// the publish to a process whose bus answers.
+	// the publish to a process whose bus answers. It announces only the commit it registers under,
+	// with the relation kinds this build writes as tuples, the list graph_edges' tuple arm renders.
 	var announcements startup.Publisher
 	if natsClient != nil {
 		announcements = natsClient
 	}
-	announcer := startup.New(startup.Deps{Pool: database.Pool, Publisher: announcements})
+	announcer := startup.New(startup.Deps{
+		Pool: database.Pool, Publisher: announcements, Commit: buildCommit, TupleKinds: refs.TupleKinds,
+	})
 
 	routesHandler, background := routes.New(appCtx)
 	// exitAfterIntakes ends a process that started its intakes and will not serve: it stops them,
@@ -1036,6 +1097,11 @@ func main() {
 		slog.Error("dispatch: register this server process", "error", err)
 		exitAfterIntakes()
 	}
+	// From here a reinstall that moves the schema refreshes this row before it closes the
+	// document sockets; the refresh after it covers a reinstall that came after the registration
+	// read the numbers and before the installer could reach the registration.
+	registered.Store(registration)
+	refreshRegistrySchema(ctx, registration)
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
@@ -1178,9 +1244,15 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot := bootConfig{
-		DatabaseURL:        strings.TrimSpace(env.get("DATABASE_URL")),
-		RepoProjects:       strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
-		DefaultProject:     strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
+		DatabaseURL:    strings.TrimSpace(env.get("DATABASE_URL")),
+		RepoProjects:   strings.TrimSpace(env.get("DISPATCH_REPO_PROJECTS")),
+		DefaultProject: strings.TrimSpace(env.get("DISPATCH_DEFAULT_PROJECT")),
+
+		// Checked once the issuer and audience are read (checkAccessSettings).
+		OIDCAccounts:         commaList(env, "DISPATCH_OIDC_ACCOUNTS"),
+		AccessAccounts:       commaList(env, "DISPATCH_ACCESS_ACCOUNTS"),
+		ProjectOwnerFallback: strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
+
 		NewIssueLabel:      strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:    strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
 		GitHubAPIBase:      strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
@@ -1327,6 +1399,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err != nil {
 		return bootConfig{}, err
 	}
+	if err := checkAccessSettings(boot); err != nil {
+		return bootConfig{}, err
+	}
 
 	agentSecretsURL := strings.TrimSuffix(strings.TrimSpace(env.get("DISPATCH_AGENT_SECRETS_URL")), "/")
 	if agentSecretsURL != "" {
@@ -1360,7 +1435,72 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 		boot.DevSignIn = true
 	}
+	if boot.OIDCAudience != "" && len(boot.OIDCAccounts) == 0 {
+		slog.Warn("dispatch: DISPATCH_OIDC_ACCOUNTS is unset, so every service account whose token the issuer signs for the audience is admitted; list the accounts that call Dispatch to admit only them",
+			"issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+	}
 	return boot, nil
+}
+
+// commaList is the comma-separated list the setting name holds, each entry trimmed; a value blank
+// once trimmed is no list at all. An empty entry stays in the list for its reader to refuse by
+// position, as NATS_URLS and DISPATCH_REPO_PROJECTS refuse one.
+func commaList(env settingValues, name string) []string {
+	value := strings.TrimSpace(env.get(name))
+	if value == "" {
+		return nil
+	}
+	entries := strings.Split(value, ",")
+	for index, entry := range entries {
+		entries[index] = strings.TrimSpace(entry)
+	}
+	return entries
+}
+
+// serviceAccountSubject is a Kubernetes service account's subject as its projected token carries
+// it: the namespace a DNS label, the name a DNS subdomain, the form the secrets broker holds its own
+// service-account settings to (internal/broker/config, serviceAccountPattern).
+var serviceAccountSubject = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
+
+// checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
+// accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
+// would configure nothing, and each entry is a service account's subject. An account that reads
+// the membership answer must be one the deployment admits, which every account is while
+// DISPATCH_OIDC_ACCOUNTS names none. The owner fallback is a person as Dispatch stores one, a
+// lowercase email; the refusal does not repeat it, as DISPATCH_SIGNIN_DOMAIN's does not.
+func checkAccessSettings(boot bootConfig) error {
+	for _, list := range []struct {
+		name     string
+		accounts []string
+	}{
+		{"DISPATCH_OIDC_ACCOUNTS", boot.OIDCAccounts},
+		{"DISPATCH_ACCESS_ACCOUNTS", boot.AccessAccounts},
+	} {
+		if len(list.accounts) > 0 && boot.OIDCAudience == "" {
+			return fmt.Errorf("%s is set but DISPATCH_OIDC_AUDIENCE is not: it names accounts of the service-account verifier the audience turns on, so without one it would configure nothing", list.name)
+		}
+		for index, account := range list.accounts {
+			if account == "" {
+				return fmt.Errorf("%s entry %d of %d is empty", list.name, index+1, len(list.accounts))
+			}
+			if !serviceAccountSubject.MatchString(account) {
+				return fmt.Errorf("%s entry %d of %d is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>", list.name, index+1, len(list.accounts))
+			}
+		}
+	}
+	if len(boot.OIDCAccounts) > 0 {
+		for _, account := range boot.AccessAccounts {
+			if !slices.Contains(boot.OIDCAccounts, account) {
+				return fmt.Errorf("DISPATCH_ACCESS_ACCOUNTS names %s, which DISPATCH_OIDC_ACCOUNTS does not admit: an account that reads the membership answer must be one the deployment admits", account)
+			}
+		}
+	}
+	if fallback := boot.ProjectOwnerFallback; fallback != "" {
+		if login, err := access.PersonPrincipal(fallback); err != nil || login != fallback {
+			return fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
+		}
+	}
+	return nil
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -1672,6 +1812,8 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.SignInRule = signInRule(boot)
 	built.AgentTokens = boot.AgentTokens
 	built.DefaultProject = boot.DefaultProject
+	built.OIDCAccounts = boot.OIDCAccounts
+	built.AccessAccounts = boot.AccessAccounts
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
 	built.InsecureCookie = boot.InsecureCookie
@@ -1841,7 +1983,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
 // while Postgres answers on the health pool's own connection, and 503 while it does not; `ok` says
-// the same. Nothing here waits on the shared pool, and each probe bounds its own wait
+// the same. The store's block schema never decides it: a store a newer build migrated is installed
+// at this build's own version (pmdoc.Install), and the process keeps serving, so a release that
+// ships a type migration takes no process of the previous build out of service. Nothing
+// here waits on the shared pool, and each probe bounds its own wait
 // (store.healthProbeTimeout, files.healthTimeout), which records why a probe that answers late is
 // as bad as one that never answers. The database and file-store probes run side by side: each
 // takes up to two seconds, and one after the other they would take four, past the three-second

@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -88,6 +89,31 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The person the call acts for, if any, owns what it creates, and a restricted member creates
+	// no project: the refusal comes before anything is checked or written.
+	creator, acts := actorPerson(actor)
+	if acts {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, creator)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind == model.MemberRestricted {
+			writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot create a project")
+			return
+		}
+	}
+	// No person: the owner is left to the insert, which gives a project with none its default
+	// assignee (projects_owner_from_default).
+	var owner *string
+	if acts {
+		owner = new(model.CanonicalLogin(creator))
+	}
 	input.Key = strings.TrimSpace(input.Key)
 	input.Name = strings.TrimSpace(input.Name)
 	if !projectKeyPattern.MatchString(input.Key) {
@@ -148,9 +174,9 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
-		insert into projects (key, name, default_assignee) values ($1, $2, $3)
+		insert into projects (key, name, default_assignee, owner) values ($1, $2, $3, $4)
 		returning key, name, gated_steps, default_assignee, created_at
-	`, input.Key, input.Name, projectDefault).Scan(
+	`, input.Key, input.Name, projectDefault, owner).Scan(
 		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")

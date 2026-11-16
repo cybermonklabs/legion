@@ -9,6 +9,7 @@ import { graphNode } from "./__tests__/graph-fixture";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
+import { wholeText } from "./__tests__/whole-text";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import type { AuthenticatedUser } from "./api/types";
@@ -65,7 +66,7 @@ test("signing out shows the sign-in page without a reload and ends the event fee
   );
 
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const socket = sockets.latest();
     act(() => socket.open());
     const { sub } = socket.subscribed("events");
@@ -171,7 +172,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
   );
   const otherTab = new BroadcastChannel("dispatch-sign-in");
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     const refused = aliceWrite(queryClient, attempts, true);
@@ -187,7 +188,7 @@ test("a sign-in from another tab drops every write of the person before, stops i
 
     login = "bob";
     act(() => otherTab.postMessage("bob"));
-    await screen.findByText("Signed in as bob");
+    await screen.findByText(wholeText("Signed in as bob"));
     await waitFor(() => expect(writesOf(queryClient).rows()).toEqual([]));
     expect(await out).toBeInstanceOf(SendStoppedError);
     expect(keptWrites()).toEqual([]);
@@ -250,7 +251,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
   const rereadWhoAmI = () =>
     act(() => void queryClient.invalidateQueries({ queryKey: ["whoami"] }));
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const keys: string[] = [];
     let up = false;
     const out = writesOf(queryClient).run({
@@ -294,7 +295,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
     signedIn = true;
     up = true;
     await rereadWhoAmI();
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     expect(await out).toEqual({ key: "CORE-1" });
     expect(new Set(keys).size).toBe(1);
     expect(writesOf(queryClient).rows()).toMatchObject([
@@ -372,7 +373,7 @@ test("signing out asks first, then drops every write here and tells every other 
     return leaving.defaultPrevented;
   };
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
@@ -386,7 +387,7 @@ test("signing out asks first, then drops every write here and tells every other 
       "Sign out and discard 2 unsent changes?\n\n• CORE-1 set to done\n• CORE-2 set to done",
     ]);
     expect(logout).not.toHaveBeenCalled();
-    expect(screen.getByText("Signed in as alice")).toBeTruthy();
+    expect(screen.getByText(wholeText("Signed in as alice"))).toBeTruthy();
     expect(writesOf(queryClient).rows()).toHaveLength(2);
     expect(keptWrites()).toHaveLength(2);
 
@@ -466,7 +467,7 @@ test("a sign-out in another tab drops that person's writes here", async () => {
     </MemoryRouter>
   );
   try {
-    await screen.findByText("Signed in as alice");
+    await screen.findByText(wholeText("Signed in as alice"));
     const attempts: string[] = [];
     const out = aliceWrite(queryClient, attempts);
     void aliceWrite(queryClient, attempts, true);
@@ -997,7 +998,7 @@ async function renderSignedIn(whoAmI: () => Promise<AuthenticatedUser>) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  await screen.findByText("Signed in as alice");
+  await screen.findByText(wholeText("Signed in as alice"));
   return () => {
     view.unmount();
     liveSocketFor(queryClient).close();

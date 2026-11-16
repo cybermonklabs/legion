@@ -173,6 +173,50 @@ func TestTheFleetColumnsRoundTripThroughRegisterAndLive(t *testing.T) {
 	want("the row written again after a prune", liveProcess(t, database, registration.ID))
 }
 
+// A refresh writes the schema numbers the process serves now into its row, where every process's
+// socket admission reads them, and a row written again after a prune carries the refreshed numbers
+// rather than the ones the process registered with. A refresh to the numbers it last wrote writes
+// nothing: the process's own record of its row is what it compares with, not the row.
+func TestARefreshWritesTheSchemaNumbersTheProcessServesNow(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	ctx := context.Background()
+	registration, err := Register(ctx, database.Pool, Instance{
+		Commit: "c1", SigningKeys: fingerprints(t, "K0"), SchemaVersion: 3, SchemaCreatable: 3,
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
+	numbers := func(what string, version, creatable int) {
+		t.Helper()
+		if got := liveProcess(t, database, registration.ID); got.SchemaVersion != version || got.SchemaCreatable != creatable {
+			t.Errorf("%s holds schema version %d and creatable %d, want %d and %d", what, got.SchemaVersion, got.SchemaCreatable, version, creatable)
+		}
+	}
+
+	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
+		t.Fatalf("refresh the schema numbers: %v", err)
+	}
+	numbers("the row after a refresh to version 4", 4, 3)
+
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned after a refresh")
+	numbers("the row written again after a prune", 4, 3)
+
+	// A refresh to the numbers it last wrote writes nothing, so a row changed behind the
+	// registration keeps what it was changed to.
+	underRegistryLock(t, database, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, `update server_processes set schema_version = 9 where instance = $1`, registration.ID); err != nil {
+			t.Fatalf("change the row behind the registration: %v", err)
+		}
+	})
+	if err := registration.RefreshSchema(ctx, func() (int, int) { return 4, 3 }); err != nil {
+		t.Fatalf("refresh the schema numbers again: %v", err)
+	}
+	numbers("the row a refresh to the numbers it last wrote leaves alone", 9, 3)
+}
+
 // A row written by a build that predates the fleet columns carries none of them, so each holds its
 // default: it reads as a process that predates them, with no schema numbers, no embedder identity
 // and no file store.

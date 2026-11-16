@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -563,7 +564,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	// The coverage is read before the transaction opens, and a read that fails leaves the
 	// request recorded all the same (approvalCoverage).
-	coverage, coverageUnread, err := s.approvalCoverage(r.Context(), pool, r.PathValue("id"))
+	coverage, coverageUnread, err := s.approvalCoverage(r.Context(), pool, actor, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -777,14 +778,24 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	// The request's node goes in before its row, in the project of the document it is asked on,
+	// which the issue that owns the request is in too (an issue's document carries its issue's
+	// project); what that write states waits for the ask.opened event below. The document is read
+	// already, so its project costs no round trip of its own.
+	project, parties := artifact.Project, []string(nil)
+	if project == "" && artifact.SessionID != nil {
+		parties = []string{graphstore.PartySession(*artifact.SessionID)}
+	}
+	askNode, err := graphstore.WriteUncaused(ctx, tx,
+		[]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, time.Now().UTC())}, nil)
+	if err != nil {
+		return nil, model.Event{}, err
+	}
 	if err := tx.QueryRow(ctx, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval)
 		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7)
 		returning created_at
 	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval).Scan(&ask.CreatedAt); err != nil {
-		return nil, model.Event{}, err
-	}
-	if err := asks.FollowAuthor(ctx, tx, ask.ID, actor); err != nil {
 		return nil, model.Event{}, err
 	}
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
@@ -807,6 +818,17 @@ func (s *server) openApprovalAsk(
 		return nil, model.Event{}, err
 	}
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+		return nil, model.Event{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, askNode, event.ID); err != nil {
+		return nil, model.Event{}, err
+	}
+	// The requester follows the request it opened, once the ask.opened that records it is
+	// appended, so a session requester's node is caused by that event in the follow's own
+	// statement and the request pays no second statement to move it there. Nothing before the
+	// event reads the follower row: its payload's logins are the thread's (events.ThreadLogins),
+	// and the outbox reads the followers after the commit.
+	if _, err := asks.FollowAuthor(ctx, tx, ask.ID, actor, ask.CreatedAt, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
 	ask.OpenedEventID = &event.ID
@@ -870,7 +892,15 @@ func (s *server) renewApprovalAsk(
 		}
 		events = append(events, handedBack)
 	}
-	if err := asks.FollowAuthor(ctx, tx, open.ID, actor); err != nil {
+	// The requester follows the request again. Its events are appended by now, so a session
+	// requester's node is caused by the last of them; a retry appends none, and the node it
+	// makes, if the store holds none yet, stays at the sentinel.
+	cause, at := graphstore.NoEvent, open.CreatedAt
+	if len(events) > 0 {
+		last := events[len(events)-1]
+		cause, at = last.ID, last.CreatedAt
+	}
+	if _, err := asks.FollowAuthor(ctx, tx, open.ID, actor, at, cause); err != nil {
 		return nil, err
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {

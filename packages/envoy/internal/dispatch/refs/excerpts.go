@@ -129,12 +129,20 @@ func RecordExcerpts(ctx context.Context, q Queryer, fromID string, version int, 
 // reconciliation does once, in the first pass each process runs. Every build since 0092 records
 // its excerpts in each version write, so no build a deploy replaces leaves one now.
 // It reads refs through refs_to alone.
-func StoredExcerpts(ctx context.Context, q Queryer, toKind, toID string) (map[string]model.GraphExcerpt, error) {
+//
+// It answers for who: a citing document who may not see stores no excerpt here, and nor does a
+// mention whose excerpt is a block who may not see, so its text is never answered and the route
+// shows the document's name as it does for a mention with no excerpt. The citing document is
+// read by its uuid through artifacts' primary key, since the store keys it by ref_key.
+func StoredExcerpts(ctx context.Context, q Queryer, who model.Actor, toKind, toID string) (map[string]model.GraphExcerpt, error) {
 	rows, err := q.Query(ctx, `
-		select from_id, coalesce(excerpt_block_id, ''), excerpt_text from refs
-		where to_kind = $1 and to_id = $2 and from_kind = 'artifact'
-		  and excerpt_text is not null and excerpt_version is not null
-	`, toKind, toID)
+		select r.from_id, coalesce(r.excerpt_block_id, ''), r.excerpt_text from refs r
+		join artifacts a on a.id = r.from_id::uuid
+		where r.to_kind = $1 and r.to_id = $2 and r.from_kind = 'artifact'
+		  and r.excerpt_text is not null and r.excerpt_version is not null
+		  and `+VisibleKind("artifact", "a.ref_key", "$3")+`
+		  and `+VisibleKind("block", `a.ref_key || '#' || r.excerpt_block_id`, "$3")+`
+	`, toKind, toID, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read reference excerpts: %w", err)
 	}

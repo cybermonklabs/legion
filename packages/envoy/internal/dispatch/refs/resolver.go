@@ -127,13 +127,15 @@ func (r *Reader) Issues(keys []string) (map[string]bool, error) {
 // QuestionMap), loaded at most once per reader and not at all unless a body holds a `#`
 // candidate, which is when text.Mentions asks. A source that belongs to no document - a direct
 // message, a reply whose thread names none - has no question, and a text on an issue but on no
-// document resolves against the issue's spec, which ScopeOf answers with.
+// document resolves against the issue's spec, which ScopeOf answers with. Both are read for no
+// person (scopeOf, questionMap): the index answers no reader, and the edge a `#id` makes is one
+// of its own source, which every read of the graph holds to the predicates of both its ends.
 func (r *Reader) Questions() (map[string]text.Ref, error) {
 	if r.asked {
 		return r.questions, nil
 	}
 	r.asked = true
-	document, err := ScopeOf(r.ctx, r.q, r.kind, r.id)
+	document, err := scopeOf(r.ctx, r.q, nil, r.kind, r.id)
 	if err != nil {
 		r.failed("read the document a text belongs to", err)
 		return nil, nil
@@ -141,7 +143,7 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 	if document == "" {
 		return nil, nil
 	}
-	questions, err := QuestionMap(r.ctx, r.q, document)
+	questions, err := questionMap(r.ctx, r.q, nil, document)
 	if err != nil {
 		r.failed("read the question blocks a text's `#id` names", err)
 		return nil, nil
@@ -151,8 +153,9 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 }
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference
-// itself names and not across the whole kind (ResolvePrefix, as the zero Viewer: the index writes
-// the graph every authenticated caller reads, so it reads no direct message's first line). A
+// itself names and not across the whole kind (resolvePrefix, for no person and as the zero
+// Viewer: the index writes the graph every authenticated caller reads, so it reads no direct
+// message's first line, and every read of an edge it writes binds the predicates of both ends). A
 // prefix that names nothing, one two items or more carry, and one whose owner no Scope holds are
 // all left out of the answer, which leaves the mention as the text wrote it.
 func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
@@ -185,7 +188,7 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 // resolveItem is the whole id key names, "" where it names nothing or two items or more. An error
 // is a failure reaching the database alone.
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
-	candidate, err := ResolvePrefix(r.ctx, r.q, key.kind, key.scope, key.prefix, Viewer{})
+	candidate, err := resolvePrefix(r.ctx, r.q, nil, key.kind, key.scope, key.prefix, Viewer{})
 	switch {
 	case err == nil:
 		return candidate.ID, nil

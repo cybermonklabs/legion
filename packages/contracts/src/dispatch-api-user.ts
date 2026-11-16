@@ -11,6 +11,10 @@ import type { WhoamiAgent, WhoamiUser } from "./dispatch-api.generated";
 export interface AuthenticatedUser {
   readonly kind: "user";
   readonly login: string;
+  /** Present only for a restricted member: a person signed in from outside the sign-in domain
+   *  because a project's access list names them. Absent for everyone else, so a full member's
+   *  answer is the one it always was. */
+  readonly member_kind?: "restricted";
   /** The decimal id at or below which every event is final (committed or rolled back for good)
    *  when Dispatch answered. Every read the page makes after this answer holds every event at or
    *  below it, so the event feed resumes from it on its first

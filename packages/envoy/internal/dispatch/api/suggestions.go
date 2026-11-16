@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -783,6 +784,12 @@ func (s *server) relatedSearch(
 	if len(excluded) > 0 {
 		query, args = statement.excluding, append(args, excluded)
 	}
+	// The acting credential, last of the parameters each statement declares. The check runs off
+	// the write that triggered it, on a context of its own and with no credential of that
+	// writer's to hand, so it reads as one that proves no author (graphstore.ProvesAuthor): a
+	// node reserved for its author is suggested to nobody, which is the answer that can mislead
+	// no reader.
+	args = append(args, refs.VisibilityArg(model.Actor{}))
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return model.SearchResponse{}, err

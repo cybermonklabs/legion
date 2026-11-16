@@ -45,8 +45,8 @@ func TestEditorNodeAndMarkNamesMatchTheGoLists(t *testing.T) {
 	if len(editor.Nodes) == 0 || len(editor.Marks) == 0 {
 		t.Fatal("schema/editor-node-names.json lists no nodes or no marks: run `bun run gen` in gen/")
 	}
-	requireSameNames(t, "node", editor.Nodes, active.nodes, editorNodeDifferences)
-	requireSameNames(t, "mark", editor.Marks, active.marks, editorMarkDifferences)
+	requireSameNames(t, "node", editor.Nodes, active.Load().nodes, editorNodeDifferences)
+	requireSameNames(t, "mark", editor.Marks, active.Load().marks, editorMarkDifferences)
 }
 
 // requireSameNames fails t for a name editor or own holds alone that declared does not explain,

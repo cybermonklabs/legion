@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -136,10 +137,11 @@ func insertPrefixBlockText(t *testing.T, tx pgx.Tx, artifactID, blockID string, 
 	}
 }
 
-// resolvedPrefix is the candidate prefix names, failing the test when it names none or several.
+// resolvedPrefix is the candidate prefix names, failing the test when it names none or several. It
+// reads as somebody who proves no author, who reads every item these fixtures write.
 func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix string, viewer Viewer) Candidate {
 	t.Helper()
-	candidate, err := ResolvePrefix(context.Background(), tx, kind, scope, prefix, viewer)
+	candidate, err := ResolvePrefix(context.Background(), tx, model.Actor{}, kind, scope, prefix, viewer)
 	if err != nil {
 		t.Fatalf("resolve the %s prefix %q in %#v: %v", kind, prefix, scope, err)
 	}
@@ -149,7 +151,7 @@ func resolvedPrefix(t *testing.T, tx pgx.Tx, kind string, scope Scope, prefix st
 // requireNoPrefixMatch fails the test unless prefix names nothing, the one no-match signal.
 func requireNoPrefixMatch(t *testing.T, q Queryer, kind string, scope Scope, prefix string, viewer Viewer) {
 	t.Helper()
-	candidate, err := ResolvePrefix(context.Background(), q, kind, scope, prefix, viewer)
+	candidate, err := ResolvePrefix(context.Background(), q, model.Actor{}, kind, scope, prefix, viewer)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("the %s prefix %q in %#v = %#v, %v; want pgx.ErrNoRows", kind, prefix, scope, candidate, err)
 	}
@@ -187,7 +189,7 @@ func TestResolvePrefixRefusesAnAmbiguousPrefixWithItsCandidates(t *testing.T) {
 	const second = "4c9f3e12-3b60-4c4d-9e5f-70819a2b3c9f"
 	insertPrefixComment(t, tx, second, "CORE-1", "The second body.")
 	insertPrefixComment(t, tx, first, "CORE-1", "The first body.")
-	_, err := ResolvePrefix(context.Background(), tx, "comment", Scope{}, "4c9f3e12", Viewer{Human: true})
+	_, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "comment", Scope{}, "4c9f3e12", Viewer{Human: true})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) {
 		t.Fatalf("two comments under one prefix = %v, want ErrPrefixAmbiguous", err)
@@ -222,7 +224,7 @@ func TestResolvePrefixLooksWithinTheOwnerAlone(t *testing.T) {
 	if got := resolvedPrefix(t, tx, "comment", Scope{IssueKey: "CORE-1"}, "7a000000", Viewer{Human: true}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the comment of CORE-1 = %#v, want %#v", got, want)
 	}
-	_, err := ResolvePrefix(context.Background(), tx, "comment", Scope{}, "7a000000", Viewer{Human: true})
+	_, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "comment", Scope{}, "7a000000", Viewer{Human: true})
 	var ambiguous *ErrPrefixAmbiguous
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("the same prefix across both issues = %v, want both listed", err)
@@ -344,7 +346,7 @@ func TestResolvePrefixNamesTheBlockWrittenExactlyAsThePrefix(t *testing.T) {
 		}
 	}
 	var ambiguous *ErrPrefixAmbiguous
-	candidate, err := ResolvePrefix(context.Background(), tx, "block", Scope{Document: spec}, "DEADbeef", Viewer{Human: true})
+	candidate, err := ResolvePrefix(context.Background(), tx, model.Actor{}, "block", Scope{Document: spec}, "DEADbeef", Viewer{Human: true})
 	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
 		t.Fatalf("the block prefix %q = %#v, %v; want both blocks listed", "DEADbeef", candidate, err)
 	}

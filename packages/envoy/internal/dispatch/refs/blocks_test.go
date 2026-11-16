@@ -105,7 +105,7 @@ func windowFixture(t *testing.T) pgx.Tx {
 func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index %s: %v", what, err)
 	}
 	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {

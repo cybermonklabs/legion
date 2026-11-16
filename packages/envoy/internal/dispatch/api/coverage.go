@@ -37,7 +37,8 @@ const (
 // What each requirement of the issue's spec lacks. An issue with no spec, or a spec that marks
 // no requirements, answers no requirements and the single gap line.
 func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	issueKey := r.PathValue("key")
@@ -45,7 +46,7 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, issueKey)
+	coverage, err := s.issueCoverage(r.Context(), s.deps.Store.Pool, who, issueKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -53,10 +54,11 @@ func (s *server) getIssueCoverage(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, coverage)
 }
 
-// issueCoverage reads the issue's requirements and what serves each. The documents' blocks are
-// read from the block index (document_blocks and block_refs), which every accepted write leaves
-// in step with the document it wrote; the requirements' order and words come from the live spec.
-func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) (model.IssueCoverage, error) {
+// issueCoverage reads the issue's requirements and what serves each, for who: an issue below it
+// who may not see serves nothing here (refs.IssueDescendants). The documents' blocks are read
+// from the block index (document_blocks and block_refs), which every accepted write leaves in
+// step with the document it wrote; the requirements' order and words come from the live spec.
+func (s *server) issueCoverage(ctx context.Context, q queryer, who model.Actor, issueKey string) (model.IssueCoverage, error) {
 	coverage := model.IssueCoverage{Issue: issueKey, Requirements: []model.RequirementCoverage{}, Gaps: []string{}}
 	err := q.QueryRow(ctx, `
 		select coalesce((select a.id::text from artifacts a where a.issue_key = $1 and a.is_primary), ''),
@@ -77,7 +79,7 @@ func (s *server) issueCoverage(ctx context.Context, q queryer, issueKey string) 
 		coverage.Gaps = []string{noRequirementsGap}
 		return coverage, nil
 	}
-	descendants, err := refs.IssueDescendants(ctx, q, issueKey)
+	descendants, err := refs.IssueDescendants(ctx, q, who, issueKey)
 	if err != nil {
 		return model.IssueCoverage{}, err
 	}
@@ -190,8 +192,9 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 }
 
 // approvalCoverage is the coverage an approval request's answer carries for the document id
-// names, and whether that coverage could not be read. The gaps are the issue's, when that
-// document is the issue's spec (isSpecDocument), and none for any other document.
+// names, read for who, the requester, and whether that coverage could not be read. The gaps are
+// the issue's, when that document is the issue's spec (isSpecDocument), and none for any other
+// document.
 //
 // It is read before the request opens its transaction. Reading it folds the issue's live spec,
 // which for a document no room holds is a cold read bounded by a minute (docs/read_cache.go),
@@ -204,7 +207,7 @@ func servingBlockCounts(ctx context.Context, q queryer, specArtifactID string, i
 // recorded as it was before the answer carried any coverage at all, and unread says the answer
 // could not count the gaps rather than that it found none. Reading the document itself is the
 // request's error, as it is inside the transaction.
-func (s *server) approvalCoverage(ctx context.Context, q queryer, id string) (gaps []string, unread bool, err error) {
+func (s *server) approvalCoverage(ctx context.Context, q queryer, who model.Actor, id string) (gaps []string, unread bool, err error) {
 	artifact, err := s.loadArtifact(ctx, q, id)
 	if err != nil {
 		return nil, false, err
@@ -212,7 +215,7 @@ func (s *server) approvalCoverage(ctx context.Context, q queryer, id string) (ga
 	if !isSpecDocument(artifact) {
 		return []string{}, false, nil
 	}
-	coverage, err := s.issueCoverage(ctx, q, *artifact.IssueKey)
+	coverage, err := s.issueCoverage(ctx, q, who, *artifact.IssueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the coverage an approval request reports", "artifact", artifact.ID, "error", err)
 		return []string{}, true, nil

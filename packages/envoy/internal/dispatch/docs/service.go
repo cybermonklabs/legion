@@ -262,6 +262,11 @@ type Service struct {
 	// that version's own event. Nil outside tests; tests return an error from it to force the
 	// settlement to abandon after its version write, before its commit.
 	afterSettleVersionWrite func(room string) error
+	// afterBlockIndexWrite runs inside the block-index tick's transaction once that tick has
+	// written one document's node, its tuples and its projection rows, and before its commit.
+	// Nil outside tests; tests return an error from it to kill that transaction and find that
+	// none of the three survived it.
+	afterBlockIndexWrite func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.
@@ -350,6 +355,11 @@ type Service struct {
 	// loads the document's tree (loadTree). Nil outside tests; tests use it to close the issue
 	// while the socket loads.
 	afterSocketIssueRead func(room string)
+	// afterSocketAdmitted runs in a document socket's admission (ServeHTTP) once its admission has
+	// read the document and decided it, and before the socket is held where the schema switch
+	// closes it (holdDocumentSocket). Nil outside tests; tests run a switch there, the gap the
+	// count of switches covers (schemaSwitches).
+	afterSocketAdmitted func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
 	// to ygo. Nil outside tests; tests use it to hold two cold sockets of one room until both have
@@ -449,6 +459,15 @@ type Service struct {
 	roomSlots     roomSlots
 	residentRooms atomic.Int64
 	connections   atomic.Int64
+	// documentSockets holds the close of every document socket this process is serving, keyed by
+	// the record the socket holds (holdDocumentSocket): the schema switch closes them all
+	// (CloseDocumentSockets), and each socket forgets its own as it ends.
+	documentSockets sync.Map
+	// schemaSwitches counts the schema switches this process has run (CloseDocumentSockets). A
+	// socket's admission reads it before it reads the document and again once the socket is
+	// held, so a switch between the two, whose close found nothing to close, closes the socket
+	// all the same (ServeHTTP).
+	schemaSwitches atomic.Uint64
 	// residentBytes is the encoded bytes the loads ygo holds took, each load's own history and
 	// every update the room it left behind has committed since (residentLoad), for the room
 	// figures: loaded state only. The bytes a commit parks after the load - structs and deletions

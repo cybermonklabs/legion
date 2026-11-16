@@ -305,6 +305,45 @@ test("unknown project shows the not-found view", async () => {
   }
 });
 
+// Who may see a project is its own tab, beside Issues and Documents, at /access: the tab reads the
+// project's access and the groups its picker offers, and is the owner's to change.
+test("the Access tab, at /access, shows the project's owner and the people and groups its list names", async () => {
+  const user = userEvent.setup();
+  const getProjectAccess = spyOn(api, "getProjectAccess").mockResolvedValue({
+    groups: ["crew"],
+    owner: "alice",
+    people: ["carol@example.com"],
+    project: "CORE",
+    slack_channels: [],
+    visibility: "public",
+  });
+  const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([
+    { members: [], name: "crew", owner: "alice" },
+  ]);
+  const page = renderPage("/projects/CORE/issues");
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(screen.queryByRole("tabpanel", { name: "Access" })).not.toBeInTheDocument();
+    expect(getProjectAccess).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("tab", { name: "Access" }));
+    expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/access");
+    expect(screen.getByRole("tab", { name: "Access" })).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel", { name: "Access" });
+    expect(await within(panel).findByTestId("access-owner")).toHaveTextContent("alice (you)");
+    expect(within(panel).getByRole("list", { name: "People" })).toHaveTextContent(
+      "carol@example.com"
+    );
+    expect(getProjectAccess).toHaveBeenCalledWith("CORE");
+    // The List / Board control belongs to Issues only.
+    expect(screen.queryByRole("button", { name: "Board" })).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+    getProjectAccess.mockRestore();
+    listAccessGroups.mockRestore();
+  }
+});
+
 test("keeps the issue view preference separate for each signed-in user", async () => {
   const aliceStorageKey = "dispatch.project.issue-view:alice";
   const bobStorageKey = "dispatch.project.issue-view:bob";

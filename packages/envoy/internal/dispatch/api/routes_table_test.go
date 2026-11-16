@@ -380,6 +380,7 @@ func routeProbePath(pattern string) string {
 		{"{id}", "00000000-0000-0000-0000-000000000001"},
 		{"{session_id}", "s1"},
 		{"{block_id}", "b1"},
+		{"{login}", "alice"},
 		{"{owner}", "owner"},
 		{"{repo}", "repo"},
 		{"{slug}", "spec"},
@@ -555,6 +556,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 		"GET /api/v1/users",
+		// A person's own page is no older row either: it reads what one person wrote and what
+		// reached them, so a credential that proves no person has no business on it.
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
@@ -623,6 +627,19 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The scope edit is the one route that was no row at all before INFRA-1017: it is the
 		// person's own, as the mint and the revoke beside it are.
 		"PATCH /api/v1/me/agent-tokens/{id}",
+		// Who may see a project, and the groups an access list names, are this change's own rows
+		// (INFRA-3862). Each names or acts as a person — the project's owner, the group's owner,
+		// the people a list names — which Dispatch takes from the credential and never from the
+		// request, so a credential the deployment configured is nobody to change them.
+		"GET /api/v1/projects/{key}/access",
+		"PATCH /api/v1/projects/{key}/access",
+		"PUT /api/v1/projects/{key}/access/people/{email}",
+		"DELETE /api/v1/projects/{key}/access/people/{email}",
+		"PUT /api/v1/projects/{key}/access/groups/{name}",
+		"DELETE /api/v1/projects/{key}/access/groups/{name}",
+		"GET /api/v1/access-groups",
+		"PUT /api/v1/access-groups/{name}",
+		"DELETE /api/v1/access-groups/{name}",
 	}
 	for _, name := range browserOnly {
 		scopes, named := routeScopes[name]

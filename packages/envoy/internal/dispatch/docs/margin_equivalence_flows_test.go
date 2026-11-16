@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -273,8 +274,12 @@ func (r *flowRun) accept() error {
 	})
 }
 
-// comparableVersion is result without the clock its row took from the database.
+// comparableVersion is result without the clock its row took from the database, and without the
+// facts its block index stated: those are addressed by the document's own ref_key and dated its
+// own version's time, so two documents never state them alike, and they are no part of what the
+// two flows must agree on.
 func comparableVersion(result VersionResult) VersionResult {
 	result.Version.CreatedAt = time.Time{}
+	result.Blocks = graphstore.Uncaused{}
 	return result
 }

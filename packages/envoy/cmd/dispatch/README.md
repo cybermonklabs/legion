@@ -155,6 +155,8 @@ Dispatch resolves every external issue through the stored mapping, then falls ba
 An unmapped external repository without a default project is rejected.
 An issue created through the default also gets a `repo:owner/name` label.
 
+Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
+
 Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
 it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
@@ -173,6 +175,13 @@ Half the pair refuses to boot, naming the missing variable; neither leaves beare
 A verified caller acts as the `session` it names in the request body, and every actor it writes carries `service`, the token's verified subject (`system:serviceaccount:<namespace>:<name>`)
 — set from the token, never from the body.
 A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; it is never retried as a personal token.
+
+`DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
+a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route and on the live socket.
+Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's own account in production;
+every other caller is `403 ACCESS_ACCOUNT_REQUIRED` there.
+The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -964,7 +973,8 @@ What the two processes share, and what each keeps to itself:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
 
 - `server.started` names the build every live process serves, once each time that build changes.
-  A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
+  A process that finds every live process serving one stamped, non-empty commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, with `tuple_kinds` the relation kinds its build writes as tuples of the node and tuple store (`refs.TupleKinds`, the kinds `graph_edges`' tuple arm renders);
+  a process whose heartbeat lapsed is no live process, so the fleet it reads can agree on another build's commit, and it inserts nothing for that commit, which it would otherwise name with its own build's kinds;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
   Each process looks every 5 seconds, and an advisory lock keeps two from inserting or publishing at once.
   So a roll announces nothing until its last old process is gone, a restart of every process on one commit announces nothing, and a rollback to an earlier commit announces it again.
@@ -1347,6 +1357,16 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   A settings change reaches a running intake without a restart, and neither intake reads the row per message or on a timer;
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
+
+- The block schema is one value per process, built from the store's type nodes (`schemanodes.Installer`), installed at boot beside the migration run and again when a supertag or attribute node changes:
+  the triggers of migration `20261109051232` notify `dispatch_block_schema`.
+  A type is data, so a type added by a migration reaches a running server without a restart;
+  a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value either of `installSchema`'s two checks refuses.
+  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
+  Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
+  A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
+  A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
+  The subcommands that parse or write documents (`backfill-block-ids`, `backfill-anchor-blocks`, `backfill-graph-store`, `rebuild-refs`, `erase`) install the store's schema too, after their migration run, so they hold documents to the store's types and not to the file this binary embeds.
 
 The two leased woken loops take their lease with no period.
 A process that finds it held tries again
@@ -1888,6 +1908,8 @@ Its census answers `0` for the same reasons.
 Migration `0135_server_processes` creates two tables:
 `server_processes`, the registry of live server processes, and `server_build_announcements`, each build the fleet has announced as `server.started` (Running more than one process, above).
 It reads, locks and rewrites nothing that exists, and the release before it neither reads nor writes either table, so that release runs over the new schema unchanged and the census answers `0`.
+Migration `20261115051200_server_build_announcements_tuple_kinds` later adds `tuple_kinds` to `server_build_announcements`, a nullable `text[]` with no default: the relation kinds the announced build writes as tuples, from which the release that deletes an old arm of `graph_edges` reads whether the release a rollback would reach answers that arm's kinds from the store too.
+A row a build of an earlier release inserts names only `commit` and lists no kinds, which is true of it; the column rewrites no row, the release before it never reads it, and its census answers `0`.
 
 Migration `0136_dashboard_assets` creates `dashboard_builds`, `dashboard_assets` and `dashboard_build_assets`, where every server process publishes its dashboard build's assets at boot and from which it answers a page of another build that asks it for that build's chunks (`internal/dispatch/dashboard`).
 It creates tables and touches no row; its census answers `0`.
@@ -2457,6 +2479,57 @@ that one-release gap is the author's to reason about, and the two-build test (Tw
 The five-second `pgmigrate.LockTimeout` also bites harder under a rolling update than under `Recreate`, which stops the previous pods before the new one boots:
 while a deployment rolls, the old build's connections are still open and still holding locks on the tables the migration wants, so a migration that applies cleanly against an idle database can fail the new pod's boot.
 
+### Giving a project to another owner
+
+Every project has one owner, the full member who changes its access list and whether it is public or private (`projects.owner`).
+The owner gives the project to another full member from the project's Access tab, at any time.
+An operator gives any project to another full member with the database credential alone, with no server running if need be:
+
+```sh
+envoy-dispatch project-owner <KEY> <email>
+```
+
+It reads `DATABASE_URL`, as every other subcommand does, and makes the change in one transaction that appends `project.access_changed` naming the new owner, written by the actor `{"kind": "system", "id": "envoy-dispatch project-owner"}` (`access.SetOwner`).
+Who owned the project before, and whether that person is still a member, makes no difference.
+It exits 0 once the change commits;
+2 for a key no project holds, for an email that is not a full member's (a restricted member, or a login nobody has signed in with), and for arguments that are not exactly a key and an email, writing nothing;
+and 1 when the database cannot be opened or written.
+No write clears an owner: an update that would is refused with `check_violation` (`23514`, the trigger `projects_owner_kept`).
+
+Migration `20261116015736_project_access` gives each project its default assignee as owner where that person has signed in, and every project created after it takes its default assignee as owner as it is inserted (`projects_owner_from_default`).
+A project whose default assignee had never signed in when the migration ran keeps no owner, and the boot refuses to serve while any project has none, naming each one, its default assignee and both repairs (`store.EnsureProjectOwners`, run right after `DISPATCH_DEFAULT_PROJECT`'s check):
+set `DISPATCH_PROJECT_OWNER_FALLBACK` to the lowercase email of a full member who has signed in, and the next boot makes that person the owner of every such project;
+or give each one an owner with the command above.
+The migration's census answers `0`, because a census that counts refuses the deploy and these projects are repaired after it.
+So read them before the deploy, on the release still serving, with the query `20261116015736_project_access.census.sql`'s header gives:
+
+```sql
+select key, default_assignee from projects p
+where not exists (select 1 from people where email = p.default_assignee);
+```
+
+When it names any project, set `DISPATCH_PROJECT_OWNER_FALLBACK` for the deploy.
+
+### Filling the sessions' projects
+
+`session_projects` records which projects each agent session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
+From migration `20261116015736_project_access` on, every event append records the pair of its session and its project in the event's own transaction, only where no row holds that pair yet (`events.Broker.AppendAll`);
+the table has no unique key, on purpose, as the migration's header says.
+The events written before that are covered once, by:
+
+```sh
+envoy-dispatch backfill-session-projects
+```
+
+Run it after the deploy that carries the live insert, so every event is covered by the one or the other.
+It reads `DATABASE_URL`, then `events` in id order, 10,000 at a time, one statement each, and records the pair the live insert would have recorded:
+for an event whose actor is a session (`actor->>'kind'` is `session` and `actor->>'id'` is not empty; a personal token's actor has an empty one), the session and the event's project, which is its own `project_key`, else its issue's for an issue's event, else its document's for a document's event.
+A person's event, and an event of no project, records nothing.
+The project is the one the issue or document is in when the fill reads it.
+A pair a row already holds is not written again, so a second run writes no pair, and a run interrupted anywhere is run again from the start.
+Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
+It exits 0 then, and 1 when the database cannot be opened or written.
+
 ### Pre-deploy census
 
 `envoy-dispatch census` is run before a new image goes out, with the service's `DATABASE_URL` and under the service's own database credentials, and it is a gate:
@@ -2817,6 +2890,173 @@ the advice about an earlier migration creating a missing name is given only for 
 The census writes nothing.
 An argument `envoy-dispatch` does not know is refused with exit 2, never served, so an image that predates a subcommand cannot boot and migrate when a deployment asks it for one.
 
+### The node and tuple store census
+
+`envoy-dispatch census --store` is the other census: the node and tuple store (`store/migrations/20261109013400_graph_store.up.sql`) held against the tables that project it (`20261109022248_graph_projections.up.sql`), rather than the pending migrations held against the database.
+It reads `DATABASE_URL` like every other subcommand, migrates nothing, writes nothing, and keeps the same exit convention: 0 when nothing refuses, 1 when the report refuses, 2 when the census could not be taken.
+It is one `repeatable read, read only` transaction on a connection of its own, so everything it reports is one snapshot.
+
+For each projected kind it counts the live nodes (a node whose `state` is `live`) against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
+a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a live node no row projects.
+The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
+a row that names its node is answered from the tuples by `graph_edges`, `refs.Edges` and `refs.BacklinkCounts`, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
+A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
+A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
+The kinds are:
+
+- `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds a table projects, whose counts the report prints.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is every live block node that states a link now other than its `in_document` and `part_of`, whether a row names it or not, and every row of a block is held, as the set of links that block's rows name, against every such link its node states now, so a link with no tuple, a tuple with no row and a link out of a block no `block_refs` row names are all read.
+  A block whose address is past the store's address bound (`graphstore.MaxAddressBytes`, which `refs.MaxBlockNodeBytes` is), and a `block_refs` row whose far end is past it, are no node and no tuple of the store by design, and both sides leave those rows out.
+
+- `person`, `session`, `role` and a role's page, which no table projects.
+  Their row side is the actors and sessions the projected tables and the delivery records name: the people and sessions `comments.author` names as `graphstore.AuthorOf` reads an actor, the sessions `comment_deliveries` and `message_deliveries` recorded reaching, and the roles `comment_deliveries.target`, `messages.target` and `issues.route` address now, with one page per role.
+  A role's row side also holds every role an event of the log ever addressed: the `route` of every `issue.created`, `issue.updated` and `issue.closed` event, the `target` of every `message.created` and `message.answered` event, and the `target` of each mention a `comment.created` event names.
+  A node is history and never goes, so an issue routed to one role and then re-routed to another still owes the first its node and its page, and the census reads the route history the events hold rather than only the current route.
+  The publisher writes a role's node and its page from those same fields of each event it publishes, whether or not it routed anything to the role: a route an agent's write sets, which wakes nobody, a targeted message's role, which no route reaches, and a role a comment mentions on an issue routed elsewhere.
+  The census reads that row side once a run, in one scan of `events`, and binds the names into every statement that reads the role and page rows; `backfill-graph-store` reads the same definition.
+  A session's own page is no part of this census.
+
+  An address past the store's bound is no part of the store on purpose: a role name longer than the bound is no node and no page, a comment anchored to or owned by a document whose `ref_key` is longer states no such tuple, and a session named past it is no node either.
+  The census leaves each such address out of both comparisons and counts it as a class of its own, reporting the count as `addresses_past_bound` on the kind's line rather than as a difference, in both directions.
+
+- The project of every node (dispatch://INFRA-3862): `issue`, `artifact`, `ask`, `message`, `comment` and `block`, the kinds whose node names the project a read of it is limited by (`graphstore.Node`'s `Project`), or, for an object no project owns, the parties it is between (`Parties`).
+  Each row of those kinds is held to what its node must carry, by the rule its writer follows (`graphcensus.scopedRows`): an issue's project; a document's project, or its conversation's session for a conversation's file; an ask's and a comment's issue's project, else its document's, else that document's conversation; a message's issue's project, or, on no issue, the parties of its thread's root (`graphstore.ThreadParties`: who wrote the root, and the session it was sent to); a block's document's.
+  It prints one line per kind, `census: project kind=<kind> rows=<n> missing=<n> differs=<n> unscoped=<n>`: a row whose node the store does not hold, a row whose node names another project or other parties than the row's, and a row whose node names neither.
+  Any count of the three refuses the census, and the first rows of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read).
+  An address past the store's bound is left out, as its writer leaves it out of the store.
+
+It passes only when it checked more than zero rows of every kind it covers and found zero differences in both directions.
+A total over the kinds is no such proof: two empty sides of one kind agree, so a kind that checked no row prints `census: store kind=<kind> checked no row` and the verdict refuses naming it.
+A database the store does not exist in yet holds no kind to read: the census prints `census: store absent` and refuses, since it read nothing.
+
+Two writes can state one fact twice by design and nothing reads wrong for it — a tuple at the `source_event` sentinel is outside both repeat keys, and the backfill writes every fact it cannot date from a row's own event at that sentinel — so the census counts nodes and projection rows, never tuples.
+
+`envoy-dispatch census --store --sizing` adds the growth pass after that census, each line a driver can look for by its leading fields:
+the write rate by kind over the last 28 days of `events`; the row count and total relation size of every table this branch's migrations touch; the tuples and nodes one write of each kind states, with how many such writes the window holds; the rows a day that puts in `graph_tuples` and in `graph_nodes`; the bytes a row each is measured at; and where each reaches in a year against `pgmigrate.CensusTableLimit`.
+The kinds are the terms R4 states for all five children of dispatch://INFRA-1098, each printed on a `census: sizing tuples-a-write ` line and a `census: sizing share ` line that names the child that moves it, its writes inside the window and its share of the tuples a day:
+a comment's node and two base attributes, and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; dispatch://INFRA-1253's text and rank values; and dispatch://INFRA-1152's message deliveries, read marks, clears, dismissals and snoozes.
+Each is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and the growth pass alone decides the exit.
+No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
+It last prints the block-index reconciliation's backlog on two `census: sizing backlog ` lines, because a loop that falls behind fails nothing and nobody would otherwise see it:
+`owed_documents=` is how many documents are owed a block index (`document_block_versions.version` null), and `oldest_owed_at=` is when the oldest of those debts was incurred, with `oldest_owed_age_seconds=` beside it and `against=` naming the time that age is measured to.
+No column dates a debt, so a debt is dated by the write that owed it — the `created_at` of the latest markdown version the document holds, or the document's own `created_at` where it holds no version — and the line says so under `dated_by=`.
+The age is measured against the newest write the database recorded (the `created_at` of its highest `events` id) and not against `now()`, so two runs print one age; a database that recorded no event prints `none` and an age of zero.
+It exits non-zero when that projection puts either store table past the limit inside a year, and when a table this branch's migrations alter is already at or above it.
+A backlog refuses nothing: how large a backlog is too large depends on the write rate the lines above it carry, and the driver that watches it decides.
+Every figure comes from a count or from a timestamp the database already holds, so two runs over one unchanged database print the same output.
+A store table holding fewer than ten thousand rows is too small to measure a bytes-a-row from, and the projection uses 783 bytes a row instead, measured for dispatch://INFRA-1149 (1,050,010 tuples at a `pg_total_relation_size` of 822,673,408 bytes on PostgreSQL 18.6, table, seven indexes and TOAST);
+the output says so on the line that uses it.
+`--sizing` without `--store` is a usage error: it is that census's growth pass and not a census of its own.
+
+### Backfilling the node and tuple store
+
+`envoy-dispatch backfill-graph-store` writes the nodes and tuples of the comments, document blocks and block references written before the store existed — every row of the three projected tables that names no node, since migration `20261109022248` added the columns and filled none of them.
+It walks each kind in batches, writing a batch's nodes, its tuples and the projection columns that name them in one transaction, so a row and its node commit together or not at all, exactly as a live write does.
+It appends no event of its own, and a fact whose row's own event cannot be found carries the store's sentinel (`source_event` 0) as its cause:
+a comment's own event is the `comment.created` that stored it, a block's is the event that recorded the version its row was written at, and a block reference's is its `source_seq`, which is that event's id already.
+Each tuple takes its row's own `created_at` as its time and its row's own `source_seq` as its `legacy_source_seq`, so a backfilled edge is dated and sequenced exactly as the `graph_edges` arm it replaces dates and sequences it.
+Once every row of a kind the store can hold names its node, the run reports that kind `complete=true`, which is the moment the arm of `graph_edges` over that kind's table answers nothing.
+
+It then gives every role the census's row side names, in a row now or in an event, and that has no node its node, its page and the page's `part_of` the role, as the publisher writes them for the events it publishes: the publisher writes none for an event it published before it wrote roles, so without this pass every role an older database names is a census difference.
+The input is the census's own role row side, so the roles the pass gives a node are exactly the roles the census holds to one; each role's node is caused by the first event that named it, or by the sentinel for a role only a row names, and a role that already holds both nodes is left alone.
+The report counts them on its `kind=role` line, and `remaining=` is how many roles the census names still lack a node or a page.
+
+It then writes the node of every issue, document, ask and message written before its kind's writer wrote one (dispatch://INFRA-3862), and gives every comment and block node written before a node named its project that project, or its conversation's party.
+Each pass walks only the rows its marker does not mark - the node itself for an issue, a document, an ask and a message, whose rows name no node in a column of their own, and the node's own `project_key` and `parties` for a comment and a block - and writes the marker in the transaction that states the facts, so a second run writes nothing.
+A node is dated at its row's own `created_at` and made by its row's own author; a filled project is stated at the node's own `made_at`, by its `made_by`, under its cause (`graphstore.FillScopes`); and the fill of a block's project takes its document's revision fence first, as every writer of a block's node does.
+The report prints a `kind=` line for each of `issue`, `artifact`, `ask`, `message`, `comment_project` and `block_project`; `envoy-dispatch census --store` then reads `missing=0 differs=0 unscoped=0` for every project-owned kind.
+
+A block's parent is the one fact it does not write.
+The parent is the nesting of the rendered version, which no column of `document_blocks` holds, so the run marks each document it touched owed a block index — `document_block_versions.version` to null, the mark `rebuild-refs` sets — and the reconciliation states the `part_of` tuple and writes `parent_block_id`, which is that column's one writer.
+The batch that names a document's block nodes writes that mark in its own transaction, so a run stopped after any batch leaves every document of its committed batches owed (`TestABackfillKilledAfterOneBatchLeavesThatBatchsDocumentsOwed`).
+So `census --store` reads a difference on every backfilled block until that reconciliation has drained the mark, at twenty documents a tick;
+`TestTheBlockParentCensusReachesZeroAfterTheBackfill` is that whole route end to end.
+
+It is no repair.
+Its input is each row's own content: it never reads one side of a projection to write the other, so a row whose node is already written is left alone and a kind whose rows disagree with the store is for the census to report.
+It is safe to run again at any time, after a rollback as well: every pass walks only the rows that name no node, names their nodes in the transaction that writes their tuples, and reads no row that names one, its guards included.
+The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
+So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
+It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
+
+### Erasing a node
+
+`envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
+It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
+It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
+It refuses a `role`, a `page` and a `session` the same way: a node of that kind holds no text anybody wrote, so no erasure is owed for it, and the event log keeps addressing it, so deleting it leaves the census a difference no erase can close.
+
+It changes only the rows that derive from the node, and what derives from a node is fixed by the node, never by a search for its bytes.
+Those rows are the node's tuples on both sides, its row, its projection rows (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, its own embedding rows and window state, and the events about it.
+A block derives more: the whole text it held at every version (`document_block_texts`, read whole and never as its 480-rune excerpt), the excerpts cut from it, and its own document's versions, editing state, search rows and windows.
+A comment has no document of its own, so its erase ends no version and replaces no history.
+A row anywhere else that holds the same bytes derives from another node and is that node's text: a comment reading `Yes` leaves every other issue's spec and every other person's event that says `Yes` as it is.
+The run lists each such row, by its table, its key and the address a reader knows it by, and changes nothing in it; an operator erases that node by a run of its own.
+
+It removes, in one transaction: the tuples out of the node and into it, its row, its projection rows and the rows that cannot exist without them, its block's texts, the versions of its own document whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
+It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document, its issue and its version.
+
+It rewrites, with a marker naming the node and the `graph_erasures` record where the bytes were, what derives from the node and may not go:
+
+- **The blocks that hold the erased block** (`document_block_texts.text` and `document_blocks.excerpt` of each block up its `parent_block_id` chain whose text quotes it): each projects a block node of its own, and a live node no row projects is a difference `census --store` reads.
+  An excerpt is cut again from the rewritten text the way the indexer cuts it, and `text_sha256` is left where it is, since it is the digest the indexer compares a later version's block against.
+- **The excerpt a mention of the document shows** (`refs.excerpt_text`) where it was cut from the erased block or one holding it: it is cleared and marked owed, so the reconciliation cuts it again from the latest version left.
+- **The events about the node** (`events.payload`): a comment's own events, whose payload is the comment or names it as `comment_id`, and a block's document events (`artifact.*`, `block.*`).
+  The log is append-only, so the row stays with its id, its time and its actor, and the bytes go from inside its JSON string values alone: a key is never touched, so an erase of `kind` leaves every `"kind"` key and redacts a body reading `kind`.
+- **The live editing state** of a block's document (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`), the ygo history its room loads from.
+  A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited: the erase renders the live text, replaces each erased text in it with the marker, and replaces the whole history with one fresh update of that text, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
+  The change is announced, so a room any server holds of the document finds its history replaced, closes and reloads.
+  It writes no version: the document reads as its live text, ahead of whatever version the erase left it.
+  What that costs is what a rebuild costs: the edits before the erase, the anchor marks and margin records a seed parsed from markdown does not carry, and the keystrokes of an editor open on it that were not yet stored.
+  A history that does not load, a tree outside the schema, and a redaction that drops an open ask block refuse the erase, naming the document.
+  The match is byte for byte on markdown: where the live text holds the erased bytes but its markdown spells them otherwise - an escaped `*` or `_`, for one - the seed would keep them, so the run lists the document as **not redacted** and refuses, removing nothing.
+- **The search rows** standing on a version that went: `document_search` is written again from the latest version left, by touching its `search` so `20261101182454`'s trigger writes the row, and an issue whose spec lost a version has its own `search` written again by the statement `20261105145243`'s trigger runs.
+- **The term statistics** (`search_term_stats`, `search_term_totals`) of every project whose items moved are counted again in full as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+- **The embedding store** (`embeddings`, with `embedding_window_states`): the node's own rows and window state go, and for a block the windows of its document whose `covers` name it or whose snapshot holds its text, its document's whole-text row and, where the document is a spec, the issue's row; each such issue's row is written again by the statement migration `0140`'s trigger runs, and the document is marked owed its windows (`document_block_versions.windows_owed_at`) where a version with markdown is left.
+- **The stored display trees** (`text_trees`), keyed by the SHA-256 of a whole text: the row of every text the erase removes or rewrites goes - the node's own texts, each deleted version's markdown, the texts of the blocks holding it, each event-payload string the redaction rewrites and its document's live text.
+  A read that began before the commit stores the trees it read on a goroutine of its own, bounded by `api.StoreTreesTimeout` (30 seconds), so the command waits that bound out after the commit and deletes the same keys once more, counting what it found on a `text_trees swept after the commit: <n>` line.
+  The keys are held in the command's memory alone, since each is the digest of an erased text, so a sweep that fails cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
+
+It refuses, removing nothing, while a live row of another node states something about this one, and names each so an operator erases or edits it first.
+A reply whose `reply_to` names an erased comment points at its projection through a nullable reference; a block inside an erased block states `part_of` into it and names it in `parent_block_id`; a block citing it states `mentions` or a pointer into it and holds a `block_refs` row; a comment states `authored_by` into its author.
+The erase deletes the tuples into the node, so such a row would go on stating a fact the store no longer holds, which `census --store` reads as a difference; refusing it keeps the census at zero after every erase that runs.
+
+It removes nothing until an operator has read what it would.
+Run with `--node` alone, it reads every row it would delete, rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no writer, prints that listing - each version and review with its document, its issue and its version, each event row with its id, each row it leaves with its table and key - with its SHA-256 on a `listing digest:` line, and exits 1.
+Run with `--confirm <digest>`, it takes its locks, reads the listing again in its own transaction under them, and erases only when that listing has the digest it was given; a listing that changed since is refused with both digests, exit 1, and nothing is removed.
+The listing's search for the rows it leaves reads every text, jsonb, bytea and tsvector column of every table, so a store a later build adds is listed without anyone naming it; it reads them under the confirmed run's locks, so a write to the node's issue or document waits for that search.
+Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
+
+It takes its locks in the store's lock order, written down on `markInboxReadThreads` (`internal/dispatch/api/inbox_read.go`): the owner rows first, then the node's row, then the node's own projection rows `for update` (its `comments`, `document_blocks` and `block_refs` rows, table by table and by key), then everything else.
+Taking those rows before it writes anything is what orders it against the block index tick's window arm, which holds a comment's row `for no key update` and no owner row while it writes that comment's windows: the erase waits at the row before it has deleted a window, rather than deleting the windows first and meeting the arm in a deadlock.
+The owner rows are the node's own - a comment's issue, or the owner of the document it is on - and a block's document's: the document's issue, or the document's own row when no issue owns it.
+It takes no owner row of a row it leaves, since it writes none of them.
+It takes each once, in the order of their owner keys (`artifact:<id>` before `issue:<key>`), through `events.LockOwnerRows`; a person, a session, a role or a page has no owner row, and the run starts at its node.
+Which owners those are is read before they are locked, so it is read again under them, and a write that meanwhile moved the node under an owner the run had not taken makes it roll back and start again rather than take that owner after the node's row; after three tries it removes nothing and exits 2, naming each such owner.
+
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the document whose history it replaced and what that cost, the projects whose term statistics it counted again and the listing's digest, with who ran it (the database role, the account and the host) and when.
+That row holds no erased text and none of the rows the run left, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
+Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
+A node the store does not hold is exit 2, naming it.
+`e2e/acceptance/graph-erase.sh` erases a comment and then a block of a document, each by its digest, and searches every column of every table of the database for the erased bytes, with a control row planted in the same search, marking each hit as derived from the node or not: a derived hit after the erase fails it, and so does any change to the rows it planted for other nodes holding the same bytes.
+
+### The view over the store
+
+Migration `20261109215947_graph_edges_tuples` re-states `graph_edges` with one arm over the current tuples and a `node_kind is null` test on each of the four arms whose relations the store now writes.
+The new arm takes, for each `(from_kind, from_id, kind, to_kind, to_id)`, the newest tuple, which is an edge only while that newest one asserts, with `to_kind <> 'value'` so no attribute's value is an edge.
+It renders a block's `in_document` as the `part_of` to its document the view has always answered, a block's `mentions` and its pointer kinds, and a comment's `anchored_to` and `owned_by`, the list `refs.TupleKinds` holds and the announcer writes into `server_build_announcements.tuple_kinds`;
+the tuple's `at` is the row's `created_at` and its `legacy_source_seq` the row's `source_seq`.
+No other kind the store writes is an edge of this view — `authored_by`, `delivered_to`, `held_by`, the alias tuples, `attribute_of`, and a session's or a page's `part_of` — and a `part_of` whose source is a block is left out too, since the view has no block-to-block row and a top-level block would otherwise be rendered twice.
+
+Each row decides which arm answers it: each of the four old arms answers only the rows of its own table whose `node_kind` is null, and the tuple arm answers an edge of those kinds only while the projection row that names it carries its node — the `document_blocks` row of the block for `in_document`, the `block_refs` row of the pair for a pointer or a mention, and the `comments` row of the comment for `anchored_to` and `owned_by`.
+One transaction writes both sides of a row — the writer that states a row's tuples names its node on the row — so the view answers each row exactly once, at every point of the backfill and not only at its end, and a row a previous release wrote during a roll, a row written after a rollback and a block past `refs.MaxBlockNodeBytes` each keep their answer from the old arm.
+The join is what keeps a rollback whole, since a build of the previous release retracts nothing in the store: a row it deletes leaves its tuple standing and answers from neither arm, and a row it deletes and writes again with no node answers once, from its old arm.
+The arm also answers no row for a node whose current `state` is `gone`, the test the backfill's pointer guard takes too, and a pointer a version dropped is retracted in the same statement that deletes its `block_refs` row.
+`refs.BacklinkCounts` moves the same four arms the same way, each reading its own table for the rows that name no node and the tuples, through the same join, for the rest, so a count and the list behind it cannot disagree.
+A pointer's allowed targets come from the attribute node once the store answers it (`block_pointer_targets`), read as `pmdoc/schemanodes.Read` installs the schema: through the current `attribute_of` tuple and from a live attribute node, so a change to an attribute's `targets` reaches every link of that attribute with no pass over documents nobody edits.
+`TestGraphEdgesLosesEveryArmOverAMovedKind` reads the arm list back out of the catalogue and reads the whole view, the previous release's view over the same rows and each arm on its own before the backfill, after it, beside rows a previous release wrote and after a rollback that deletes and rewrites rows, with every backlink count and the store census beside them.
+
 ## Stored-order check
 
 `envoy-dispatch stored-order [--artifact <uuid>]... [--since <RFC 3339 time>]` reads, and never writes, whether each document's stored history replays: folding its `doc_updates` rows in version order must give every row's `content_changed` (measured against the render the rows before it fold to, true when either side does not render) and every version's markdown at its `doc_update_version`, and no row may be stored ahead of one it depends on.
@@ -2853,7 +3093,7 @@ migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `so
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
-A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeLoaders`, `refs/graph.go`, names the kinds it knows).
+A row whose other end is a node kind the running build does not know (a newer build's, read during a rolling deploy) is left out of every list and every count that build serves (`nodeRegistry`, `refs/graph.go`, names the kinds it knows).
 The migration refuses to run when an ask or comment anchor carries a non-uuid `artifact_id`.
 
 Each block of a document is a node of the graph too (migration `0121`; `packages/envoy/AGENTS.md`, "References form one graph").
