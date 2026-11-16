@@ -945,12 +945,14 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 //     must leave alone instead of clearing the predecessor its claim is then weighed against.
 //   - if_not_registered_after names the moment the delete belongs to, in unix milliseconds, and
 //     the registration is removed only while it was last written at or before it. It is the
-//     Legion daemon's clean stop of a role whose agent process a probe judged gone
-//     (dispatch://INFRA-392): the very decision that asks for the stop relaunches the claim under
-//     the same session id, so a stop that lands after the relaunch has registered must leave that
-//     live registration alone. A value that is not a positive whole number of milliseconds is a
-//     400, since a caller that names a condition and has it silently dropped would delete exactly
-//     what it asked to keep.
+//     Legion daemon's clean stop of a role whose agent process has ended (dispatch://INFRA-392):
+//     a death a probe judged, whose moment is the probe's, or a suspension whose stop ended a live
+//     process, whose moment is when that stop returned. A relaunch of the claim registers the
+//     same session id again, in the very decision that asks for a death's stop or at a later
+//     wake or resume of a suspended claim, so a stop that lands after the relaunch has registered
+//     must leave that live registration alone. A value that is not a positive whole number of
+//     milliseconds is a 400, since a caller that names a condition and has it silently dropped
+//     would delete exactly what it asked to keep.
 //
 // A request naming either condition answers {"deleted":true} for a registration that is gone and
 // {"deleted":false} with a reason for one that stayed, both 200: the caller has nothing to retry

@@ -25,9 +25,9 @@ import (
 // queueForUnknownSession builds the subject from the attempt's session (attemptSessionID), and
 // for a record the registry calls gone that is the id the listener answered rather than the one
 // the message's target names (resolveDeliveryTarget). So the attempt's session must be the very
-// id of the target's parsed session route, and an attempt naming any other session is not
-// queued: the subject is always that of the session the validated route names, never one an
-// answer put in its place.
+// id of the target's parsed session route, and an attempt naming any other session, or none, is
+// not queued: a session route's id is never empty (model.ParseRoute), and the subject is always
+// that of the session the validated route names, never one an answer put in its place.
 //
 // A role target keeps its failure: a role whose holder is gone names no session to queue for,
 // and a role's message does not belong on the subject of a session that held the role once. A
@@ -36,8 +36,7 @@ import (
 func (s *server) mayQueueForUnknownSession(
 	message model.Message, pending pendingMessageDelivery, connectedOnly bool, failure string,
 ) bool {
-	if s.deps.AgentPublisher == nil || connectedOnly || pending.resolved.attemptSessionID == "" ||
-		!strings.HasPrefix(failure, noLiveSessionPrefix) {
+	if s.deps.AgentPublisher == nil || connectedOnly || !strings.HasPrefix(failure, noLiveSessionPrefix) {
 		return false
 	}
 	route, err := model.ParseRoute(messageTarget(message.Target))
