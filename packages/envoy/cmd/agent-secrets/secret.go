@@ -209,9 +209,10 @@ var disableCoreDumps = sync.OnceValue(preventCoreDumps)
 var readHidden = readHiddenAtTerminal
 
 // onSignalDeath, while set, runs once just before a hang-up, an interrupt, a quit or a termination
-// ends the form by that signal (endBySignal). Create sets it from the moment the store made the
-// secret until that secret holds its value or the discard has run (pendingCreate.interrupted), so
-// a signal in that stretch deletes the empty secret rather than leaving it; nil otherwise.
+// ends the form by that signal (endBySignal). Create sets it from before it asks the store to make
+// the secret until that secret holds its value or the discard has run (pendingCreate.watch,
+// pendingCreate.interrupted), so a signal in that stretch deletes the empty secret rather than
+// leaving it, and says what the create left; nil otherwise.
 var onSignalDeath func()
 
 // errMoreThanOneLine is readHidden's answer when more input followed the first line at the prompt,

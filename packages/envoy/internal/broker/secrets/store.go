@@ -94,8 +94,10 @@ type Listing struct {
 	Unfilled bool
 }
 
-// CreateLabel is the label (on Secret Manager; a tag on Secrets Manager) `agent-secrets secret
-// create` puts on a secret it makes before its value, set to a random value of that create's own.
-// The broker reads only whether a secret carries it, never its value, and never as a tag the
-// policy weighs: on Secret Manager it is a label, which no listing's Tags carries.
+// CreateLabel is the label `agent-secrets secret create` puts on a Secret Manager secret it makes
+// before its value, set to a random value of that create's own. The broker reads only whether a
+// secret carries it, never its value, and never as a tag the policy weighs: on Secret Manager it is
+// a label, which no listing's Tags carries. On Secrets Manager no create writes it, since a create
+// there makes the secret with its value; the AWS store reads a tag of that name the same way
+// (aws.go, unfilled), which only another writer, such as the local store a test fills, can set.
 const CreateLabel = "agent-secrets-create"

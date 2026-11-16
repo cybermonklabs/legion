@@ -962,7 +962,7 @@ func promptStopSignal(sig os.Signal) bool {
 
 // raiseSignal ends the process by sig at its kernel default, and reports that it sent it: SIGQUIT
 // at the kernel's action rather than Go's goroutine dump, core dumps disabled first, since the
-// process may hold a cloud credential, and a value it read. endBySignal exits with sig's shell
+// process may hold a cloud credential, and a value it read. exitBySignal exits with sig's shell
 // status should the process outlive it.
 func raiseSignal(sig os.Signal) bool {
 	s, ok := sig.(syscall.Signal)

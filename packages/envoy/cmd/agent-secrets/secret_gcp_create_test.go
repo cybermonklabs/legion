@@ -440,11 +440,11 @@ var createLabelValue = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // TestGCPSecretCreateEndedBySignalWhileReadingDeletesTheEmptySecret: while a create reads the
 // value, onSignalDeath is set, and a hang-up, an interrupt, a quit or a termination runs it before
-// it ends the form by that signal (endBySignal; secret_job_linux_test.go runs that in a real
-// process, at the prompt and with the value piped in). Here the read runs it as that signal would:
-// it deletes the empty secret the create made, once, so the form ends having stored nothing; where
-// the store refuses that delete too, it says so on stderr, naming the secret that stays and the
-// command that clears it. Once the create returns, nothing is left set.
+// it ends the form by that signal (endBySignal; in a real process, secret_create_signal_linux_test.go
+// runs that with the value piped in, and secret_job_linux_test.go at the prompt). Here the read
+// runs it as that signal would: it deletes the empty secret the create made, once, so the form ends
+// having stored nothing; where the store refuses that delete too, it says so on stderr, naming the
+// secret that stays and the command that clears it. Once the create returns, nothing is left set.
 func TestGCPSecretCreateEndedBySignalWhileReadingDeletesTheEmptySecret(t *testing.T) {
 	for _, refuseDelete := range []bool{false, true} {
 		t.Run(fmt.Sprintf("delete refused=%t", refuseDelete), func(t *testing.T) {
