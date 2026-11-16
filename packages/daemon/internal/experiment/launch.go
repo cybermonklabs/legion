@@ -90,7 +90,8 @@ func (l Launch) Keys(tree, issue string) []string {
 // A launch of a role the experiment's `roles` leaves out runs in no arm of it, whatever its unit
 // drew (config.Experiment.Reaches): the unit keeps its row and the arm it was drawn into, and only
 // the roles the experiment names load that arm's overlays and instructions, so the roles it leaves
-// out judge every unit on the deployment's own settings.
+// out judge every unit with none of this experiment's files, while each other experiment that
+// reaches them gives them its own arm as before.
 //
 // No mode is read: the mode decides which new units are drawn, and a unit already drawn into an
 // arm keeps that arm's files whatever the mode is now.

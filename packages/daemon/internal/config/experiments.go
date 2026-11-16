@@ -71,11 +71,12 @@ type Experiment struct {
 	// that names no unit is ExperimentTree.
 	Unit ExperimentUnit
 	// Roles is `roles`, the Legion issue roles whose launches load this experiment's arms, in the
-	// file's order. A launch of a role the list leaves out runs in no arm of this experiment,
-	// while its unit keeps the arm it was drawn into, so an experiment can leave the roles that
-	// judge the work (the reviewer, the tester, the architect who signs a merge off) on the
-	// deployment's own settings, and read their verdicts as its outcome. Nil where the block
-	// names none, which is every issue role, as before the key existed (Reaches).
+	// file's order. A launch of a role the list leaves out loads none of this experiment's
+	// overlays or instructions, while its unit keeps the arm it was drawn into; the operator's and
+	// the role's own overlays, and other experiments' arms that reach the role, still apply. So an
+	// experiment can leave the roles that judge the work (the reviewer, the tester, the architect
+	// who signs a merge off) out of its arms, and read their verdicts as its outcome. Nil where
+	// the block names none, which is every issue role, as before the key existed (Reaches).
 	Roles []claim.Role
 	// OnVariant is `on_variant`: the variant mode on gives every unit, which that mode requires,
 	// and which the other two modes may leave out. It is empty, or the name of a variant of this
