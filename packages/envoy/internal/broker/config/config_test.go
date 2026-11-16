@@ -908,14 +908,20 @@ func TestVMServicesNeedTheGoogleAudience(t *testing.T) {
 	}
 }
 
+// TestGoogleAPIAccountsAndVMServicesAreIndependent pins that either kind of Google caller, a
+// google: entry in BROKER_API_ACCOUNTS or a BROKER_VM_SERVICES entry, is enough for the Google
+// audience and needs it, and that an audience with neither, a Kubernetes API caller being no
+// Google caller, is refused at boot naming the audience and both ways to give it a caller.
 func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
+	const noGoogleCaller = "BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES"
 	for _, row := range []struct {
-		name                    string
-		api, audience, services bool
-		wantError               string
+		name                                string
+		api, kubernetes, audience, services bool
+		wantError                           string
 	}{
 		{name: "neither caller"},
-		{name: "audience only", audience: true},
+		{name: "audience only", audience: true, wantError: noGoogleCaller},
+		{name: "audience with only a Kubernetes API caller", kubernetes: true, audience: true, wantError: noGoogleCaller},
 		{name: "API caller without audience", api: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
 		{name: "VM caller without audience", services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
 		{name: "both callers without audience", api: true, services: true, wantError: "BROKER_GOOGLE_OIDC_AUDIENCE"},
@@ -925,6 +931,10 @@ func TestGoogleAPIAccountsAndVMServicesAreIndependent(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			e := validEnv()
+			if row.kubernetes {
+				e = withK8sIssuer()
+				e["BROKER_API_ACCOUNTS"] = "dispatch=system:serviceaccount:example-ns:example-dispatch"
+			}
 			if row.api {
 				e["BROKER_API_ACCOUNTS"] = "listener=google:" + exampleListenerAccount
 			}

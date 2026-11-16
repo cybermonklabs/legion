@@ -403,8 +403,10 @@ type Config struct {
 	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
 	// both for a caller listed in BROKER_API_ACCOUNTS and at the RFC 8693 token exchange, where
 	// it is a subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
-	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. API callers need
-	// no VM service. The exchange accepts only accounts listed in BROKER_VM_SERVICES, and
+	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs a Google
+	// caller, a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES, since
+	// with neither no token for it could ever be accepted; API callers need no VM service. The
+	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
 	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
 	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
 	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS and BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
@@ -1554,6 +1556,11 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.GoogleAPIAccounts) > 0 && cfg.GoogleOIDCAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Google service account, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its caller's Google identity token must carry")
+	}
+	// The audience is for a Google caller of either kind, and needs one: with neither, the broker
+	// would read Google's keys at boot and then accept no Google identity token at all.
+	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 {
+		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES; with neither, no Google identity token for that audience could ever be accepted")
 	}
 	githubIssuer, githubAudience, err := oidc.ConfigFromEnv(getenv, "BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE")
 	if err != nil {

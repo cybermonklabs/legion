@@ -284,7 +284,9 @@ account as a VM service. The remaining fleet settings are optional, subject to t
   issuer is Google's, `https://accounts.google.com`, unless `BROKER_GOOGLE_OIDC_ISSUER` names a
   stand-in for a dev stack; the broker reads its keys at startup only when the audience is set,
   and then logs one `google machine identity` line naming the issuer, the audience and the machine
-  services. Unset, the broker reads and logs nothing about Google and takes no such token.
+  services. Unset, the broker reads and logs nothing about Google and takes no such token. Set, it
+  needs a Google caller, or the broker refuses to start: a `google:` entry in
+  `BROKER_API_ACCOUNTS` or a VM service in `BROKER_VM_SERVICES`.
 - `BROKER_VM_SERVICES`: whitespace-separated `<service>=<service account email>` entries. Use a
   dedicated user-managed account for each fleet: the broker refuses a project's default Compute
   Engine or App Engine account, which every workload in the project runs as by default. Without a
@@ -350,8 +352,9 @@ the `aud` of the ID tokens it mints for it; set it to the same client id the mac
 needs, is the Workspace domain the person's `hd` claim must name, so a person outside it signs in
 nowhere. The issuer of both the person's token and the machine's is `BROKER_GOOGLE_OIDC_ISSUER`,
 `https://accounts.google.com` unless a dev stack names a stand-in, and the audience setting needs
-`BROKER_GOOGLE_OIDC_AUDIENCE`, whose machines are the boxes a person may sign in on. Unset, the
-broker accepts no person's sign-in and refuses either token type by name.
+`BROKER_GOOGLE_OIDC_AUDIENCE` and a VM service in `BROKER_VM_SERVICES`, whose machines are the
+boxes a person may sign in on. Unset, the broker accepts no person's sign-in and refuses either
+token type by name.
 
 Each machine holds a launcher credential of its own, keyed by the machine and the key its proof
 presented: `<account>@<project>/<zone>/<instance id>#<key thumbprint>` for a token minted on a
