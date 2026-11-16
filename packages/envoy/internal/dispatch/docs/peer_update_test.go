@@ -865,16 +865,27 @@ const (
 //
 // Each frame carries what one apply may integrate into the room as it stands, which the fill
 // asks the hook's own allowance for rather than writing the figure again: the structs' half of
-// what the decode cap leaves above the room, the other half being the splits'
-// (peerApplyAllowance). So a fill near the cap halves its way in - a frame of the whole
-// headroom is refused DOC_NEEDS_REBUILD, since the apply that carried it could still cut what
-// the other half is kept for - and its last frames are a struct or two each.
+// what the decode cap leaves above the room, which buys half as many structs as that half holds
+// items, the other half being the splits' (peerApplyAllowance, capShares). So a fill near the
+// cap quarters its way in - a frame of the whole headroom is refused DOC_NEEDS_REBUILD, since
+// each struct of it could park and cost the stored state two items, and the apply that carried
+// it could still cut what the splits' half is kept for - and the last items of a fill to the
+// cap itself, which no browser may carry, go in through the room.
 func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
 	t.Helper()
 	for client := uint64(gcFillClient); structCeiling(room) < uint64(count); client++ {
 		held := structCeiling(room)
 		allowed := peerApplyAllowance(0, 0, 0, held, false, peerPressure{}).budget.Structs
 		n := min(count-int(held), gcFillFrameStructs, allowed)
+		if n == 0 {
+			// A fill to the cap itself ends here: the structs' share buys half the items of
+			// the headroom's half, so a room within four items of the cap takes no struct
+			// from any browser, each of which could park and cost its state two (capShares).
+			// The last items go in through the room itself, as the backlog fixture's whole
+			// fill does (fillRoomToStructs).
+			fillRoomToStructs(t, room, count)
+			break
+		}
 		if err, called := weighInto(service, room, gcFrameFrom(client, n)); err != nil || !called {
 			t.Fatalf("a frame of %d GC structs into a room of %d structs was answered %v (applied %t), want it admitted",
 				n, held, err, called)
@@ -1382,12 +1393,13 @@ func TestEveryRefusalThatClosesABrowserLogsWhyItRefusedIt(t *testing.T) {
 // A browser cannot take its room's own state past the decode cap: ygo decodes at most
 // maxUpdateItems structs in one update, and a room's whole state is one update to the next load
 // that reads it, so a room whose state held more could never be loaded again. The apply's
-// allowance of structs is the structs' half of what is left of the cap above the structs the
-// room's next load meets (structCeiling, peerApplyAllowance), so a frame that would take the
-// room one struct past the cap is refused and taken back out whole, and so is the frame that
-// would take it to the cap exactly: the other half of the headroom is the splits', which the
-// same apply could still make and which no count of what it carries would see. A frame within
-// the structs' half is admitted. A delete-only frame that cuts no item the room holds
+// allowance of structs is the structs' half of what is left of the cap above what the room's
+// next load meets, which buys half as many structs as that half holds items, since a struct
+// that parks costs the stored state two (storedCeiling, capShares), so a frame that would take
+// the room one struct past the cap is refused and taken back out whole, and so is the frame
+// that would take it to the cap exactly: the other half of the headroom is the splits', which
+// the same apply could still make and which no count of what it carries would see. A frame
+// within the structs' share is admitted. A delete-only frame that cuts no item the room holds
 // integrates nothing and splits nothing, and is admitted at the cap.
 //
 // The close is 4413 DOC_NEEDS_REBUILD and not the document's own DOC_TOO_LARGE: a room at the
@@ -1409,15 +1421,23 @@ func TestAnUpdateThatWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 			refused: true,
 		},
 		{
-			name:    "GC structs to the cap, which leaves the splits' half nothing",
+			name:    "GC structs to the cap, which leaves the splits' share nothing",
 			update:  func(held int) []byte { return gcFrameFrom(7, maxUpdateItems-held) },
 			refused: true,
 		},
 		{
-			name: "GC structs to what the structs' half of the headroom allows",
+			name: "GC structs one past what the structs' share of the headroom allows",
 			update: func(held int) []byte {
 				headroom := maxUpdateItems - held
-				return gcFrameFrom(7, headroom-headroom/2)
+				return gcFrameFrom(7, (headroom-headroom/2)/2+1)
+			},
+			refused: true,
+		},
+		{
+			name: "GC structs to what the structs' share of the headroom allows",
+			update: func(held int) []byte {
+				headroom := maxUpdateItems - held
+				return gcFrameFrom(7, (headroom-headroom/2)/2)
 			},
 		},
 		{
@@ -1901,11 +1921,11 @@ func (f v1Frame) done() []byte { return slices.Clone(f.Bytes()) }
 // its next load, and nothing refused the update that caused it. A person broke a document by
 // deleting one character inside a word.
 //
-// The allowance now bounds an apply's splits by a figure of their own, the splits' half of the
-// decode cap's headroom (peerApplyAllowance), so the delete is refused with the close that
-// offers the rebuild and the room is left at the cap, byte for byte as it was. A delete of
-// whole items, which cuts nothing, is still admitted at the cap, so a document that has reached
-// it can still be trimmed.
+// The allowance now bounds an apply's splits by a figure of their own, the splits' share of the
+// decode cap's headroom and what the state cap leaves (peerApplyAllowance), so the delete is
+// refused with the close that offers the rebuild and the room is left at the cap, byte for byte
+// as it was. A delete of whole items, which cuts nothing, is still admitted at the cap, so a
+// document that has reached it can still be trimmed.
 func TestADeleteWhoseSplitsWouldTakeTheRoomPastTheDecodeCapIsRefused(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
 	defer runtime.KeepAlive(replica)
@@ -2110,8 +2130,8 @@ func TestABrowsersUpdateCarryingAnEmbedIsRefused(t *testing.T) {
 // instead: a queue that holds something, holds no fewer than the fewest this room has seen since
 // it was last empty, and a drain whose splits - one for each parked struct and two for each
 // parked delete range, which cuts the items its two edges fall in - are more than the apply
-// that fills the gap may make, which is the splits' half of what the decode cap leaves above
-// the room (refusedStuckBacklog, peerApplyAllowance).
+// that fills the gap may make, which is the splits' share of what the decode cap leaves above
+// what the room's stored state carries (refusedStuckBacklog, capShares).
 //
 // The same standing queue in a room with headroom refuses nothing, which is what the third test
 // is for: there the drain cannot be refused for its splits at all, so a queue that is not
@@ -2329,15 +2349,28 @@ func TestACountAtItsAllowanceIsAdmittedAndOnlyOnePastItNamesThatRule(t *testing.
 			rule:    ruleByteBound, reason: contracts.DocumentTooLargeCloseReason,
 		},
 		{
-			// The split count is read last, after the bytes, and names the rule that set the
-			// structs, since the two divide one headroom (peerApplyAllowance).
-			name: "the splits past their field, with the structs and bytes at theirs, names the structs' rule",
+			// The split count is read last, after the bytes, and names the rule that set
+			// Split: the decode cap, whose headroom the splits spend beside the structs
+			// (peerApplyAllowance).
+			name: "the splits past their field, with the structs and bytes at theirs, names the splits' rule",
 			allowance: peerAllowance{
 				budget:  crdt.ApplyBudget{Decoded: maxDecodedValuesPerApply, Structs: 4, Bytes: 10, Split: 2},
-				structs: ruleDecodeCap, bytes: ruleByteBound,
+				structs: ruleDecodeCap, bytes: ruleByteBound, splits: ruleDecodeCap,
 			},
 			refused: crdt.RefusedUpdateError{Structs: 4, Bytes: 10, Split: 3},
 			rule:    ruleDecodeCap, reason: contracts.DocumentNeedsRebuildCloseReason,
+		},
+		{
+			// Split has a rule of its own because the state cap can set it where the bytes a
+			// split adds are what the room has no room for, and then the refusal names the
+			// state cap and not the decode cap that set the structs (bytesOfStateASplit).
+			name: "the splits past a field the state cap set name the state cap, not the structs' rule",
+			allowance: peerAllowance{
+				budget:  crdt.ApplyBudget{Decoded: maxDecodedValuesPerApply, Structs: 4, Bytes: 10, Split: 2},
+				structs: ruleDecodeCap, bytes: ruleStateCap, splits: ruleStateCap,
+			},
+			refused: crdt.RefusedUpdateError{Structs: 4, Bytes: 10, Split: 3},
+			rule:    ruleStateCap, reason: contracts.DocumentNeedsRebuildCloseReason,
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

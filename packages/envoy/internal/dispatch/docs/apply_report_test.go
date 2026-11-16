@@ -190,27 +190,27 @@ func weighOneUpdate(t *testing.T, room *typedResidentRoom, update []byte) crdt.A
 
 // The cap the hook holds a room to is the decode cap, and what a load decodes is the room's
 // encoded state, which carries the pending queue beside the store (withParked,
-// crdt/update.go:268-296). The hook now asks that cap of the structs the room reports holding,
-// where it asked it of a ceiling that counted each parked struct twice over, for a skip over
-// the gap it waits behind (structCeiling): this is what the weaker counting leaves, driven at
-// the sizes that tell the two apart.
+// crdt/update.go:268-296). The hook asks that cap of what that state carries: the structs the
+// room reports holding, each parked struct again for the skip it waits behind, and each parked
+// delete range (storedCeiling). This drives that counting at the sizes it is for.
 //
-// Frames of 300,000 GC structs, each parked behind a gap of its own client. Two are admitted -
-// 300,010 structs after the first, leaving headroom for 374,283 - where the doubled ceiling
-// admitted one and refused the second at headroom 0. Measured here: the room is then left
-// holding 10 structs in its store and 600,000 parked, its stored state is 1,200,262 bytes, and
-// that state still decodes under the cap, because the merge that builds it writes one skip
-// over each gap and not one over each parked struct - the structs of a client's contiguous
-// clocks travel as one group. The third frame is refused DOC_NEEDS_REBUILD by the room's
-// stalled queue (refusedStuckBacklog) before the cap is reached at all.
+// Frames of 200,000 GC structs, each parked behind a gap of its own client. The first is
+// admitted and leaves the room's ceiling at 400,010, so the second, 200,000 against a structs'
+// share of 162,141, is refused DOC_NEEDS_REBUILD and the room's stored state still decodes.
+// The ceiling stands above what this shape's state carries - 200,011 items, because the merge
+// that builds it writes one skip over each gap and not one over each parked struct, the
+// structs of a client's contiguous clocks travelling as one group - and it is the bound all
+// the same, since a frame can park each of its structs behind a gap of its own and make the
+// state carry both (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap). Counting the
+// margin away was what let two such frames leave a state that no longer decodes.
 //
-// So the room a browser can park its way into is still one that loads, which is what review
-// 6's finding 2 asks for (TestR6Finding2ParkedStructsEscapeTheDecodeCap holds the same rule at
-// the cap itself). What the doubling bought over this is a margin, not the bound.
+// So the room a browser can park its way into is one that loads, which is what review 6's
+// finding 2 asks for (TestR6Finding2ParkedStructsEscapeTheDecodeCap holds the same rule at the
+// cap itself).
 func TestAParkedBacklogTheHookAdmitsLeavesTheRoomsStateDecodable(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
-	const perFrame = 300_000
+	const perFrame = 200_000
 	admitted := 0
 	for client := uint64(8_200_001); client <= 8_200_004; client++ {
 		err, called := weighInto(service, room, parkedGCFrame(client, perFrame))
