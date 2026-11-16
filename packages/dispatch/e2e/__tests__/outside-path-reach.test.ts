@@ -11,9 +11,10 @@
 
 import { describe, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
+import type { TCPSocketListener } from "bun";
 import {
   bash,
   blackhole,
@@ -304,22 +305,41 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
-  // The fake curl stamps each probe of the target with bash's EPOCHREALTIME, which bash 5 has.
-  const realtime =
-    Bun.spawnSync([bash, "-c", 'printf %s "$EPOCHREALTIME"']).stdout.toString() !== "";
-  if (!realtime)
-    console.warn("Skipped the spread-rounds row: this host's bash has no EPOCHREALTIME.");
-
   // A tunnel that lost its first handshake packet stays down until WireGuard sends it again, after
   // its RekeyTimeout of 5 s plus up to 334 ms; probes started together would all fall inside that.
-  row(withoutTools || !realtime)(
+  // The hub's port refuses until 3.5 s after the first probe of it, and its listener then stamps
+  // each connect with this process's own clock, so the row needs nothing of the shell's and runs
+  // on any bash. The fake curl marks the first probe with a builtin, which a watch here sees. The
+  // 3.5 s is on the real clock on purpose: the script is another process, timed by its own sleep,
+  // so no fake timer here can stand in for it.
+  row(withoutTools)(
     "starts its five rounds 6 s apart, so a path down for the first 3.5 s cannot hide a target",
     async () => {
       const origin = fakeDispatch();
-      const holding = holdingTarget();
       const stamps = join(scratch, `stamps-${randomUUID()}`);
       mkdirSync(stamps);
-      const port = holding.port;
+      const port = await closedPort();
+      const connects: number[] = [];
+      let first: number | undefined;
+      let hub: TCPSocketListener | undefined;
+      const up = () => {
+        hub = Bun.listen({
+          hostname: "127.0.0.1",
+          port,
+          socket: {
+            open(socket) {
+              connects.push(performance.now());
+              socket.write("INFO {}\r\n");
+            },
+            data() {},
+          },
+        });
+      };
+      const watcher = watch(stamps, (_, name) => {
+        if (name !== "first" || first !== undefined) return;
+        first = performance.now();
+        setTimeout(up, 3500);
+      });
       try {
         const run = await drive(
           {
@@ -328,15 +348,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           },
           {
             path: pathWithCurl(
-              `case "$*" in *telnet://127.0.0.1:${port}\\ *|*telnet://127.0.0.1:${port})\n` +
-                `  now=\${EPOCHREALTIME//[.,]/}\n` +
-                `  echo "$now" >>${stamps}/starts\n` +
-                `  ( set -o noclobber; echo "$now" >${stamps}/first ) 2>/dev/null\n` +
-                `  first=$(<${stamps}/first)\n` +
-                `  if [ $(( now - \${first:-$now} )) -lt 3500000 ]; then\n` +
-                "    printf '0.000020 0.000000'; exit 28\n" +
-                "  fi ;;\n" +
-                "esac"
+              `case "$*" in *telnet://127.0.0.1:${port}) : >>${stamps}/first ;; esac`
             ),
           }
         );
@@ -349,13 +361,14 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
-        const starts = readFileSync(join(stamps, "starts"), "utf8").trim().split("\n").map(Number);
-        expect(starts.length).toBe(5);
-        const gaps = starts.slice(1).map((start, at) => (start - (starts[at] ?? 0)) / 1e6);
+        expect(connects.length).toBe(4);
+        const starts = [first ?? 0, ...connects];
+        const gaps = starts.slice(1).map((start, at) => (start - (starts[at] ?? 0)) / 1000);
         expect(gaps.map((gap) => gap >= 5.8)).toEqual([true, true, true, true]);
       } finally {
+        watcher.close();
         origin.stop(true);
-        holding.stop(true);
+        hub?.stop(true);
       }
     }
   );
