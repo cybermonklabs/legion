@@ -388,12 +388,7 @@ func awaitingAcceptance(ctx context.Context, tx pgx.Tx, store record.Store, issu
 	if err != nil {
 		return nil, err
 	}
-	tree := make(map[string]record.Issue, len(members))
-	for _, member := range members {
-		if claim.IsIssueKey(member.Key) {
-			tree[member.Key] = member
-		}
-	}
+	tree := record.TreeByKey(members)
 	runs, err := record.ArchitectRuns(ctx, store, tx, project, tree)
 	if err != nil {
 		return nil, err

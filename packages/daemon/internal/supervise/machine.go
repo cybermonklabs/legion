@@ -568,8 +568,9 @@ func (c Claim) RuleMayResume() bool {
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
 // idle issue pod, so the claim keeps its session, its phase and its pending task, and the next
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
-// the wakes, the notice routing, the stranded report, a release the store cancelled — reads it
-// here rather than spelling the pair out again.
+// the wakes, the notice routing and a reader in a transaction (both through record.HoldsRole), the
+// stranded report, a release the store cancelled — reads it here rather than spelling the pair out
+// again.
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
 }

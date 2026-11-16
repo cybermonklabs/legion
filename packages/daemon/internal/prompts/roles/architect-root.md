@@ -28,10 +28,10 @@ workers'.
 Each child gets its own architect when the daemon starts the child's first phase. That architect
 owns its child from then on: it decomposes the child, files the child's own children under the
 child, reviews their specs and signs the child off. So file every child you create under the root
-alone, never below a child. You hear a child's `child-status` and `child-closed` notices, and a
-`worker-died` when its architect fails (`skill://legion-architect`, section 2). Review every
-version of each child's spec and of its Verification document before the child's work goes on
-with that version, since no person reads a child's spec
+alone, never below a child. You hear a child's `child-status` and `child-closed` notices, and its
+architect's `worker-died` and `worker-stalled` notices (`skill://legion-architect`, section 2).
+Review every version of each child's spec and of its Verification document before the child's
+work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
 architect sends you each decision only a person can make, and you ask it on the root.
 

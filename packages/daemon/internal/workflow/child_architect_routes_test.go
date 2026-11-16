@@ -49,7 +49,7 @@ func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
 		{"its architect working", supervise.StateWorking, phase.Testing, "testing", child, []claim.Role{claim.RoleTester, claim.RoleImplementer}},
 		{"its architect working, in accepting", supervise.StateWorking, phase.Accepting, "needs_review", child, []claim.Role{claim.RoleImplementer}},
 		{"its architect failed", supervise.StateFailed, phase.Testing, "testing", root, []claim.Role{claim.RoleTester, claim.RoleImplementer}},
-		{"no architect of its own", "", phase.Testing, "testing", root, []claim.Role{claim.RoleTester, claim.RoleImplementer}},
+		{"its architect never started", "", phase.Testing, "testing", root, []claim.Role{claim.RoleTester, claim.RoleImplementer}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

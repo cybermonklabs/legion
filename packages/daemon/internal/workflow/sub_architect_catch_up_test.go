@@ -186,7 +186,7 @@ func TestARootsCatchUpNamesOnlyTheAcceptancesItsArchitectOwns(t *testing.T) {
 		{name: "its architect failed", state: supervise.StateFailed, rootReason: awaiting(root, "LEGION-2"), childReason: child},
 		{name: "its architect retired", state: supervise.StateRetired, rootReason: awaiting(root, "LEGION-2"), childReason: child},
 		{name: "its architect suspended with it", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon, rootReason: awaiting(root, "LEGION-2"), childReason: child},
-		{name: "no architect of its own", rootReason: awaiting(root, "LEGION-2"), childReason: child},
+		{name: "its architect never started", rootReason: awaiting(root, "LEGION-2"), childReason: child},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

@@ -460,8 +460,8 @@ func (s *server) documentOfIssue(w http.ResponseWriter, r *http.Request, artifac
 // are another architect's, and are refused ISSUE_NOT_OWNED. That is judged before the status, so a
 // sub-architect that names the running root or a running sibling is told the issue is not its own,
 // not that it already runs; a chain that never reaches the tree is outside it, whoever asks. The
-// tree root's architect owns every issue of its tree, and its answers keep their order: the status,
-// then the tree.
+// tree root's architect owns every issue of its tree, and its answers come in this order: the
+// status, then the tree.
 //
 // A child already todo is neither: todo is what this call writes, so it needs no write. It is
 // accepted, which is what makes the architect's retry of a wave Dispatch failed part way through
@@ -1460,8 +1460,8 @@ func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, gran
 }
 
 // notUnder refuses grant's sub-architect op on key, an issue of its tree that is not under the
-// grant's own issue (architectOwnsUnder, releasableChild), with the 403 architectOwns gives,
-// naming op.
+// grant's own issue (architectOwnsUnder, releasableChild), with architectOwns' status and code
+// (403 ISSUE_NOT_OWNED), naming op, in a message of its own.
 func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
 	writeFailure(w, http.StatusForbidden, "ISSUE_NOT_OWNED", fmt.Sprintf("%s of %s is refused: the architect of %s takes it only on an issue under %s", op, key, grant.Issue, grant.Issue))
 }
@@ -1592,8 +1592,8 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 // architect's grant, and an issue of its tree that the architect owns for op (architectOwnsUnder)
 // other than the tree root, which leaves the workflow only with the whole tree. Ownership is judged
 // first, so a sub-architect that names an issue not under its own is told only that, whatever the
-// issue's run. The tree root's architect owns every issue of its tree, so it gets the same answers
-// as before, CHILD_REQUIRED for the root included.
+// issue's run. The tree root's architect owns every issue of its tree, so it gets each route's
+// answers, CHILD_REQUIRED for the root included.
 func (s *server) childOfTree(w http.ResponseWriter, r *http.Request, op string) (record.Issue, bool) {
 	var req ChildRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"issue", req.Issue}) {

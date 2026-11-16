@@ -164,7 +164,7 @@ func TestAChildsNextPhaseStartRestartsItsFailedArchitect(t *testing.T) {
 			{name: "its architect suspended with it", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 			{name: "its architect released by the idle rule", state: supervise.StateSuspended, by: supervise.SuspendedByReleased},
 			{name: "its architect retired", state: supervise.StateRetired},
-			{name: "no architect of its own"},
+			{name: "its architect never started"},
 		} {
 			t.Run(move.name+", "+tc.name, func(t *testing.T) {
 				pool := migratedPool(t)

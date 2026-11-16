@@ -63,15 +63,15 @@ func TestAFailedSubArchitectIsRetriedWithFreshBudgetsAtTheChildsNextPhaseStart(t
 	}
 
 	rig.apply("planner-session-lost", intake.SessionLost{Issue: doorChild, Role: claim.RolePlanner, Detail: "the session file is gone"})
+	if starts := rig.architectStarts(doorChild); starts != 0 {
+		t.Fatalf("the child holds %d architect starts before its next phase start, want none: nothing but a phase start revives its architect", starts)
+	}
 	rig.drain()
 	if root := rig.noticesTo(doorRoot); !holdsNotice(root, "session-lost", claim.RolePlanner) {
 		t.Fatalf("the root's architect was published %+v, want the child's later notice while its architect is down", root)
 	}
 	if child := rig.noticesTo(doorChild); holdsNotice(child, "session-lost", claim.RolePlanner) {
 		t.Fatalf("the child's own failed architect was published %+v, want the child's later notice to go above it", child)
-	}
-	if starts := rig.architectStarts(doorChild); starts != 0 {
-		t.Fatalf("the child holds %d architect starts before its next phase start, want none: nothing but a phase start revives its architect", starts)
 	}
 	if again := machine.Claim(); again.State != supervise.StateFailed {
 		t.Fatalf("the child's architect before its child's next phase start = %s, want still failed", again.State)

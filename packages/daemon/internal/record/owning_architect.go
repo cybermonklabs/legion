@@ -10,11 +10,19 @@ import (
 )
 
 // OwningArchitect is the architect claim that owns a notice of kind, about role's claim, on issue:
-// the nearest issue at or above it, through its parents, whose architect claim holds its role
-// (runs), else the tree root, whose architect is the tree's own claim. The daemon starts a child's
-// architect with the child's first phase, and starts a failed one again at the child's next phase
-// start. While a child's architect does not hold its role — it failed or retired, or the workflow
-// suspended it when the child left — the child's notices go on up to the architect above it.
+// the claim of the issue the owner walk ends at (OwningIssue). It fails when that issue's key, or
+// project, makes no claim token.
+func OwningArchitect(project string, tree map[string]Issue, issue Issue, kind NoticeKind, role claim.Role, runs func(claim.Token) bool) (claim.Token, error) {
+	return claim.NewToken(project, OwningIssue(project, tree, issue, kind, role, runs), claim.RoleArchitect)
+}
+
+// OwningIssue is the key of the issue whose architect owns a notice of kind, about role's claim,
+// on issue: the nearest issue at or above it, through its parents, whose architect claim holds its
+// role (runs), else the tree root (issue.Tree), whose architect is the tree's own claim. The daemon
+// starts a child's architect with the child's first phase, and starts a failed one again at the
+// child's next phase start. While a child's architect does not hold its role — it failed or
+// retired, or the workflow suspended it when the child left — the child's notices go on up to the
+// architect above it.
 //
 // Two notices start the walk at the issue's parent instead. A child's close or status change: the
 // child's own architect is suspended with it (workflow's leave), and the architect above it
@@ -22,59 +30,73 @@ import (
 // architect of an issue that is not its tree's root (role is claim.RoleArchitect): the notice is
 // about that architect, so the architect above it must hear it. A failed claim is passed over by
 // the walk anyway, but a stalled one still holds its role and would be told of its own stall, so
-// such a notice on an issue with no parent goes to the tree root.
+// such a notice on an issue with no parent goes to the tree root. A walk that starts at the parent
+// never comes back to the issue itself: a record whose parents loop back to it ends the walk at the
+// tree root.
 //
 // The walk stays inside the issue's tree: admission records a Dispatch re-parent as it comes and
 // leaves the issue's tree as it was (admit's recordObservation), except a root that never ran,
 // which joins its parent's live tree (workflow/adopt.go), so a parent that is not an issue of
 // tree — not recorded, or recorded in another tree — ends the walk at the tree root.
 //
-// project is the claim project token (claim.ProjectToken), and tree is the tree's issues by key.
-// runs is the reader's own view of whether an architect's claim holds its role: the daemon's
-// outbox reads the machine's live view, which also knows a stop in flight, and a reader in a
-// transaction reads the claims the store records (ArchitectRuns).
-func OwningArchitect(project string, tree map[string]Issue, issue Issue, kind NoticeKind, role claim.Role, runs func(claim.Token) bool) (claim.Token, error) {
-	root := func() (claim.Token, error) { return claim.NewToken(project, issue.Tree, claim.RoleArchitect) }
+// project is the claim project token (claim.ProjectToken), and tree is the tree's issues by key
+// (TreeByKey). runs is the reader's own view of whether an architect's claim holds its role: the
+// daemon's outbox reads the machine's live view, which also knows a stop in flight, and a reader
+// in a transaction reads the claims the store records (ArchitectRuns). An issue the walk meets
+// whose key, or project, makes no claim token ends the walk there, since it has no claim to ask
+// runs about; OwningArchitect then fails on it.
+func OwningIssue(project string, tree map[string]Issue, issue Issue, kind NoticeKind, role claim.Role, runs func(claim.Token) bool) string {
 	current := issue
+	seen := map[string]bool{}
 	aboutItsArchitect := role == claim.RoleArchitect && (kind == "worker-died" || kind == "worker-stalled")
 	if aboutItsArchitect || kind == "child-closed" || kind == "child-status" {
 		if issue.Parent != nil && !claim.IsTreeRoot(issue.Key, issue.Tree) {
 			parent, ok := tree[*issue.Parent]
 			if !ok {
-				return root()
+				return issue.Tree
 			}
+			seen[issue.Key] = true
 			current = parent
 		} else if aboutItsArchitect {
-			return root()
+			return issue.Tree
 		}
 	}
-	seen := map[string]bool{}
 	for {
 		if claim.IsTreeRoot(current.Key, current.Tree) {
-			return root()
+			return issue.Tree
 		}
 		token, err := claim.NewToken(project, current.Key, claim.RoleArchitect)
-		if err != nil {
-			return "", err
-		}
-		if runs(token) {
-			return token, nil
+		if err != nil || runs(token) {
+			return current.Key
 		}
 		seen[current.Key] = true
 		if current.Parent == nil || seen[*current.Parent] {
-			return root()
+			return issue.Tree
 		}
 		parent, ok := tree[*current.Parent]
 		if !ok {
-			return root()
+			return issue.Tree
 		}
 		current = parent
 	}
 }
 
+// TreeByKey is the tree the owner walk reads (OwningIssue, ArchitectRuns): members, the issues of
+// one tree, by key, but for an issue whose key makes no claim token. Such an issue has no
+// architect and owns nothing, so a walk that meets it ends at the tree root.
+func TreeByKey(members []Issue) map[string]Issue {
+	tree := make(map[string]Issue, len(members))
+	for _, member := range members {
+		if claim.IsIssueKey(member.Key) {
+			tree[member.Key] = member
+		}
+	}
+	return tree
+}
+
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
 // daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
-// unless the suspension is the idle release's (supervise.SuspendedByReleased). A released claim
+// unless the suspension is the idle release's (supervise.Claim's Released). A released claim
 // keeps its session, its phase and its task, and the next wake for its role resumes it, so what it
 // owns is still its own; any other suspension stops the claim until a rule or an operator starts
 // it again. Were a released architect to lose its role here, a notice for it would walk up to the
@@ -88,7 +110,7 @@ func HoldsRole(state supervise.ClaimState, by supervise.SuspendSource) bool {
 	case "", supervise.StateFailed, supervise.StateRetired:
 		return false
 	case supervise.StateSuspended:
-		return by == supervise.SuspendedByReleased
+		return supervise.Claim{State: state, SuspendedBy: by}.Released()
 	}
 	return true
 }

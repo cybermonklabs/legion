@@ -1678,7 +1678,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 		return err
 	}
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
 			return err
 		}
 	}

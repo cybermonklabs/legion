@@ -84,6 +84,11 @@ const (
 	subArchitectCap = 6
 	// subArchitectGate is the root's approved design document, which lets its children start.
 	subArchitectGate = "7d2e4f6a-8b1c-4e3d-9a5f-0c2b4d6e8f1a"
+	// subArchitectOwnership is the sentence every child-status notice of a child's start ends
+	// with (workflow.ChildStartedNotice): the child's own architect owns it from then on, so the
+	// architect told hears only what goes above that architect.
+	subArchitectOwnership = "Its own architect starts with it and owns it from now on: its decomposition, its children and " +
+		"its acceptance. You hear its child-status and child-closed notices, and a worker-died when its architect fails"
 )
 
 // subArchitectLive is one run of the proof: the booted daemon, the one live tree it runs, the
@@ -193,7 +198,8 @@ func (r *subArchitectLive) seed() {
 // release: T's architect releases C and S, two triage children Dispatch shows under T, with its
 // own grant. Each starts planning on a slot of its own with an architect claim of its own, which
 // its first phase start starts. C's architect, once ready, is told in a catch-up on its own topic,
-// naming C alone, and the daemon logs that publish; T's architect hears that C started.
+// naming C alone, and the daemon logs that publish with the catch-up's generation, its launch and
+// its one issue; T's architect hears that C started and that C's own architect owns it from now on.
 func (r *subArchitectLive) releaseStep() {
 	t := r.t
 	c, s := r.child, r.sibling
@@ -220,10 +226,17 @@ func (r *subArchitectLive) releaseStep() {
 	told := r.waitCatchUp(c, r.childArchitect.launch)
 	r.catchUpNames(c, told, c)
 	r.catchUpOnItsOwnTopicAlone(c)
-	r.loggedPublish("catch-up", c, r.token(c, claim.RoleArchitect))
+	line := r.loggedPublish("catch-up", c, r.token(c, claim.RoleArchitect))
+	want := fmt.Sprintf("generation=%d launch=%d issues=1", told.CatchUp.Generation, r.childArchitect.launch)
+	if got := fmt.Sprintf("generation=%v launch=%v issues=%v", line.Attrs["generation"], line.Attrs["launch"], line.Attrs["issues"]); got != want {
+		t.Fatalf("the daemon's line for %s's catch-up names %s, want %s", c, got, want)
+	}
 	started := r.waitTold(r.tree, "the child-status notice that "+c+" started", func(n record.Notice) bool {
 		return n.Kind == "child-status" && strings.HasPrefix(n.Reason, c+" starts planning under "+r.tree)
 	})
+	if !strings.HasSuffix(started.Reason, ". "+subArchitectOwnership) {
+		t.Fatalf("%s's architect was told that %s started as %q, want it to end %q", r.tree, c, started.Reason, subArchitectOwnership)
+	}
 	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, started.Reason)
 }
 
@@ -261,8 +274,8 @@ func (r *subArchitectLive) grandchildStep() {
 }
 
 // ownership: C's architect's park_child of S, its sibling, and of T, the root, are each answered
-// 403 ISSUE_NOT_OWNED with nothing written to Dispatch; its park_child of G, under its own issue,
-// is answered 200 and parks G.
+// 403 ISSUE_NOT_OWNED, in a message naming the issue and C, with nothing written to Dispatch; its
+// park_child of G, under its own issue, is answered 200 and parks G.
 func (r *subArchitectLive) ownershipStep() {
 	t := r.t
 	for _, key := range []string{r.sibling, r.tree} {
@@ -270,6 +283,9 @@ func (r *subArchitectLive) ownershipStep() {
 		status, failure := r.childOp("park", r.childArchitect, key)
 		if status != http.StatusForbidden || failure.Code != "ISSUE_NOT_OWNED" {
 			t.Fatalf("park_child of %s by %s's architect = %d %s %s, want 403 ISSUE_NOT_OWNED", key, r.child, status, failure.Code, failure.Error)
+		}
+		if !strings.Contains(failure.Error, key) || !strings.Contains(failure.Error, r.child) {
+			t.Fatalf("the refusal of %s's park by %s's architect says %q, want it to name %s and %s", key, r.child, failure.Error, key, r.child)
 		}
 		if wrote := r.board.writes()[writes:]; len(wrote) != 0 {
 			t.Fatalf("the refused park of %s wrote %+v to Dispatch, want nothing", key, wrote)
@@ -304,8 +320,9 @@ func (r *subArchitectLive) todoStep() {
 }
 
 // blocker: E, a person's todo under T, is held by its blocked_by link to B, which Legion does not
-// work and which stands in progress: E waits admitted with no architect. Once a person closes B,
-// E starts planning with an architect of its own, and T's architect is told why it started.
+// work and which stands in progress: E waits admitted with no architect, its why blocked on B.
+// Once a person closes B, E starts planning with an architect of its own, and T's architect is
+// told that it started because every issue it waited on, B, is done.
 func (r *subArchitectLive) blockerStep() {
 	t := r.t
 	b, e := r.blocker, r.heldChild
@@ -313,7 +330,9 @@ func (r *subArchitectLive) blockerStep() {
 	r.note("drove %s in progress with no parent and no Legion label: an issue.updated envelope, which the daemon took", b)
 	r.publishIssue(e, "todo", r.tree, []string{b}, false)
 	r.note("drove a person's move of %s to todo under %s, blocked_by %s: an issue.updated envelope", e, r.tree, b)
-	held := r.waitFor(e+" recorded and admitted", e, func(got api.Issue) bool { return got.Phase == phase.Admitted })
+	held := r.waitFor(e+" recorded and admitted, blocked on "+b, e, func(got api.Issue) bool {
+		return got.Phase == phase.Admitted && got.Why != nil && got.Why.State == api.WhyBlocked && strings.Contains(got.Why.Reason, b)
+	})
 	architect := r.token(e, claim.RoleArchitect)
 	deadline := time.Now().Add(liveSettle)
 	for time.Now().Before(deadline) {
@@ -322,17 +341,17 @@ func (r *subArchitectLive) blockerStep() {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	why := "none"
-	if held.Why != nil {
-		why = fmt.Sprintf("%s — %s", held.Why.State, held.Why.Reason)
-	}
-	r.note("read back over %s: %s stays %s with no architect entry and no launch of %s; why: %s", liveSettle, e, phase.Admitted, architect, why)
+	r.note("read back over %s: %s stays %s with no architect entry and no launch of %s; why: %s — %s",
+		liveSettle, e, phase.Admitted, architect, held.Why.State, held.Why.Reason)
 	r.publishIssue(b, "done", "", nil, false)
 	r.note("drove a person's close of %s: an issue.updated envelope, status done", b)
 	r.startsWithItsArchitect(e)
 	told := r.waitTold(r.tree, "the child-status notice that "+e+" started", func(n record.Notice) bool {
 		return n.Kind == "child-status" && strings.HasPrefix(n.Reason, e+" starts planning under "+r.tree)
 	})
+	if want := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", e, r.tree, b); !strings.HasPrefix(told.Reason, want) {
+		t.Fatalf("%s's architect was told that %s started as %q, want it to begin %q", r.tree, e, told.Reason, want)
+	}
 	r.note("read back: a child-status notice on %s's architect topic — %s", r.tree, told.Reason)
 }
 
@@ -396,7 +415,7 @@ func (r *subArchitectLive) failureStep() {
 	}
 	r.note("read back: the planner relaunched fresh (launch %d, empty resume file %q); its session-lost notice on %s's architect topic, none on %s's — %s",
 		fresh.Generation, fresh.ResumeSessionFile, r.tree, c, firstLine(lost.Reason))
-	if launches := r.launchesSince(architect, mark); len(launches) != 0 {
+	if launches := launchesSince(r.rt.Runtime, architect, mark); len(launches) != 0 {
 		t.Fatalf("%s's architect was launched %v before its child's next phase start, want nothing", c, launches)
 	}
 	if again := r.d.claim(architect); again.State != string(supervise.StateFailed) {
@@ -415,7 +434,7 @@ func (r *subArchitectLive) failureStep() {
 	r.note("drove POST /legion/v1/handoff/complete of %s's planner naming its plan record %s: 200", c, handoff)
 	r.waitFor(c+" in implementing", c, func(got api.Issue) bool { return got.Phase == phase.Implementing })
 	relaunch := r.launchSince(architect, mark)
-	launches := r.launchesSince(architect, mark)
+	launches := launchesSince(r.rt.Runtime, architect, mark)
 	if len(launches) != 1 || launches[0].Method != "Resume" || relaunch.ResumeSessionFile != booted.SessionFile {
 		t.Fatalf("the move into implementing launched %s %+v, want one resume of its session file %s", architect, launches, booted.SessionFile)
 	}
@@ -482,7 +501,7 @@ func (r *subArchitectLive) rerunStep() {
 		return planning(got) && got.Generation > started.Generation && got.Architect != nil
 	})
 	resume := r.launchSince(architect, mark)
-	launches := r.launchesSince(architect, mark)
+	launches := launchesSince(r.rt.Runtime, architect, mark)
 	if len(launches) != 1 || launches[0].Method != "Resume" || resume.ResumeSessionFile != before.SessionFile {
 		t.Fatalf("the rerun launched %s %+v, want one resume of its session file %s", architect, launches, before.SessionFile)
 	}
@@ -510,21 +529,7 @@ func (r *subArchitectLive) token(issue string, role claim.Role) claim.Token {
 
 // launched says whether the fake runtime was asked to launch token's claim.
 func (r *subArchitectLive) launched(token claim.Token) bool {
-	return len(r.launchesSince(token, 0)) > 0
-}
-
-// launchesSince is every launch of token's process the fake runtime was asked for among the calls
-// after its first since: a Spawn, which starts a fresh session, or a Resume, which continues the
-// session its spec names. A relaunch the failure step refuses never reaches the fake, so it is
-// not among them.
-func (r *subArchitectLive) launchesSince(token claim.Token, since int) []fake.Call {
-	var launches []fake.Call
-	for _, call := range r.rt.Calls()[since:] {
-		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
-			launches = append(launches, call)
-		}
-	}
-	return launches
+	return len(launchesSince(r.rt.Runtime, token, 0)) > 0
 }
 
 // launchSince waits for a launch of token among the fake runtime's calls after its first since,
@@ -533,7 +538,7 @@ func (r *subArchitectLive) launchSince(token claim.Token, since int) runtime.Spa
 	r.t.Helper()
 	var spec runtime.SpawnSpec
 	testwait.Eventually(r.t, "a launch of "+string(token), func() bool {
-		launches := r.launchesSince(token, since)
+		launches := launchesSince(r.rt.Runtime, token, since)
 		if len(launches) == 0 {
 			return false
 		}
@@ -661,7 +666,9 @@ func (r *subArchitectLive) catchUpNames(key string, told record.Notice, want ...
 
 // catchUpOnItsOwnTopicAlone requires every catch-up the listener took that lists key first to be
 // on key's architect topic: a child's catch-up goes to the architect of its own issue and to no
-// other.
+// other. The release step reads it while C's architect holds its role, when the owner walk from C
+// ends at that same architect, so it cannot tell that rule (D6) from the walk:
+// TestASubArchitectsCatchUpGoesToItAlone holds the rule for a catch-up whose architect has stopped.
 func (r *subArchitectLive) catchUpOnItsOwnTopicAlone(key string) {
 	r.t.Helper()
 	own := notify.RoleTopicPrefix + string(r.token(key, claim.RoleArchitect))
@@ -682,8 +689,8 @@ func (r *subArchitectLive) catchUpOnItsOwnTopicAlone(key string) {
 }
 
 // loggedPublish requires the daemon's own `outbox notice published` line for the notice of kind
-// on issue that reached architect, and prints its fields.
-func (r *subArchitectLive) loggedPublish(kind, issue string, architect claim.Token) {
+// on issue that reached architect, prints its fields, and answers it.
+func (r *subArchitectLive) loggedPublish(kind, issue string, architect claim.Token) loggedRecord {
 	r.t.Helper()
 	var line *loggedRecord
 	testwait.Eventually(r.t, fmt.Sprintf("the daemon's line for the %s of %s published to %s", kind, issue, architect), func() bool {
@@ -704,6 +711,7 @@ func (r *subArchitectLive) loggedPublish(kind, issue string, architect claim.Tok
 		}
 	}
 	r.note("read back: the daemon logged %q %s", line.Message, strings.Join(fields, " "))
+	return *line
 }
 
 // waitProcessedEvent waits for the daemon's processed_events row of the envelope eventID, which

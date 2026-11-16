@@ -11,13 +11,15 @@ import (
 // A worker-died or a worker-stalled about a child's architect is about the architect the walk from
 // the child would reach, so it starts at the child's parent: the running architect above the child
 // hears it — the parent's, else the nearest running one above that, else the root's. The child's
-// architect never hears it itself, which a stalled claim would, since it still holds its role. The
-// same notices about a phase worker of the child go to the child's own running architect, which is
-// the one that acts on its worker, and a root architect's own wake goes to the root's claim, as
-// every notice of the root does. The runs are the outbox's own (holdsRole), so deliverNotice, its
-// fence (earlierNoticeFor) and the ready's release (releaseWaiting) all pick this architect.
+// architect never hears it itself, which a stalled claim would, since it still holds its role, not
+// even when the record's parents loop back to the child: that walk ends at the root. The same
+// notices about a phase worker of the child go to the child's own running architect, which is the
+// one that acts on its worker, and a root architect's own wake goes to the root's claim, as every
+// notice of the root does. The runs are the outbox's own (holdsRole), so deliverNotice, its fence
+// (earlierNoticeFor) and the ready's release (releaseWaiting) all pick this architect.
 func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 	root, parent, child, grandchild, orphan, stray, unrecorded := "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5", "LEGION-6", "LEGION-77"
+	looped, loop := "LEGION-8", "LEGION-9"
 	tree := map[string]record.Issue{
 		root:       {Key: root, Tree: root},
 		parent:     {Key: parent, Tree: root, Parent: &root},
@@ -25,6 +27,8 @@ func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 		grandchild: {Key: grandchild, Tree: root, Parent: &child},
 		orphan:     {Key: orphan, Tree: root},
 		stray:      {Key: stray, Tree: root, Parent: &unrecorded},
+		looped:     {Key: looped, Tree: root, Parent: &loop},
+		loop:       {Key: loop, Tree: root, Parent: &looped},
 	}
 	working, failed := supervise.StateWorking, supervise.StateFailed
 	for _, tc := range []struct {
@@ -51,6 +55,8 @@ func TestAWakeAboutAnArchitectReachesTheArchitectAboveIt(t *testing.T) {
 			states: map[string]supervise.ClaimState{orphan: working}, owner: root},
 		{name: "a sub-architect's stall under a parent that is not recorded", issue: stray, kind: "worker-stalled", role: claim.RoleArchitect,
 			states: map[string]supervise.ClaimState{stray: working}, owner: root},
+		{name: "a sub-architect's stall whose parent's parent is itself", issue: looped, kind: "worker-stalled", role: claim.RoleArchitect,
+			states: map[string]supervise.ClaimState{looped: working, loop: failed}, owner: root},
 		{name: "a planner's death on the child", issue: child, kind: "worker-died", role: claim.RolePlanner,
 			states: map[string]supervise.ClaimState{parent: working, child: working}, owner: child},
 		{name: "an implementer's death on the child", issue: child, kind: "worker-died", role: claim.RoleImplementer,

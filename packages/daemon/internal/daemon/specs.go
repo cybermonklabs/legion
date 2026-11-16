@@ -274,12 +274,7 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		if err != nil {
 			return err
 		}
-		tree := make(map[string]record.Issue, len(members))
-		for _, member := range members {
-			if claim.IsIssueKey(member.Key) {
-				tree[member.Key] = member
-			}
-		}
+		tree := record.TreeByKey(members)
 		runs, err := record.ArchitectRuns(ctx, w.records, tx, project, tree)
 		if err != nil {
 			return err

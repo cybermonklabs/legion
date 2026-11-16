@@ -522,11 +522,19 @@ func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 			return nil
 		}
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a child's phase start starts its failed architect again", "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase)
 	return nil
+}
+
+// childArchitectStart is the plain start of a child's own architect, issue's: the start admission
+// gives a root's architect, with no phase, task, entry, slot mark or kept decisions. The child's
+// first phase start queues it (gateOpened), and so does its next phase start while the claim has
+// failed (reviveArchitect).
+func childArchitectStart(issue record.Issue) record.SuperviseRequest {
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the

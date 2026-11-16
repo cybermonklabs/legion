@@ -47,14 +47,13 @@
 //
 // The seed is one tree with one child, so that the daemon starts three real panes of three
 // different kinds: the tree's root architect, the planner of the same issue, which stands in
-// planning, and the architect of the child, which stands in planning too. This is the first run
-// of a real plugin under a sub-architect's claim. Each architect's claim carries no task, as an
-// architect's start leaves none; the planner's carries the task its phase's start left pending,
-// because a start writes the relaunch and the task together (workflow's StartOrOwe) and a slotted
-// worker holding no task at all is the state admission repairs (internal/admit/admit.go's
-// resumeSlottedWorkers), which would deliver a task of its own instead. The child has no
-// planner's claim and no phases row, so that repair owes it nothing and starts no fourth pane:
-// the planner this proof reads is the root's.
+// planning, and the architect of the child, which stands in planning too. Each architect's claim
+// carries no task, as an architect's start leaves none; the planner's carries the task its phase's
+// start left pending, because a start writes the relaunch and the task together (workflow's
+// StartOrOwe) and a slotted worker holding no task at all is the state admission repairs
+// (internal/admit/admit.go's resumeSlottedWorkers), which would deliver a task of its own instead.
+// The child has no planner's claim and no phases row, so that repair owes it nothing and starts no
+// fourth pane: the planner this proof reads is the root's.
 //
 // This proof writes no role prompt file of its own, which is the one thing its seed does
 // differently from its two siblings' (seed). An operator's prompt file below the state directory

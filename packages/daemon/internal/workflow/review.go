@@ -315,11 +315,11 @@ func (e *Engine) tellChecks(ctx context.Context, tx pgx.Tx, pr *record.PullReque
 }
 
 // owningArchitect is the key of the issue whose architect owns issue now: the end of the owner
-// walk from issue (record.OwningArchitect), as the outbox routes a notice of issue's phase, over
-// the architect claims of issue's tree this transaction reads (record.ArchitectRuns). That is
-// issue's own architect while its claim holds its role, else the nearest one above it whose claim
-// does, else the tree root's. A tree root, and an issue whose key makes no claim token, which no
-// walk passes through (awaitingAcceptance), are the tree root's without a read.
+// walk from issue (record.OwningIssue), as the outbox routes a notice of issue's phase, over the
+// architect claims of issue's tree this transaction reads (record.ArchitectRuns). That is issue's
+// own architect while its claim holds its role, else the nearest one above it whose claim does,
+// else the tree root's. A tree root, and an issue whose key makes no claim token, which no walk
+// passes through (awaitingAcceptance), are the tree root's without a read.
 func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) (string, error) {
 	if claim.IsTreeRoot(issue.Key, issue.Tree) || !claim.IsIssueKey(issue.Key) {
 		return issue.Tree, nil
@@ -332,26 +332,12 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return "", err
 	}
-	tree := make(map[string]record.Issue, len(members))
-	for _, member := range members {
-		if claim.IsIssueKey(member.Key) {
-			tree[member.Key] = member
-		}
-	}
+	tree := record.TreeByKey(members)
 	runs, err := record.ArchitectRuns(ctx, e.store, tx, project, tree)
 	if err != nil {
 		return "", err
 	}
-	owner, err := record.OwningArchitect(project, tree, issue, "phase-finished", RoleFor(issue.Phase), runs)
-	if err != nil {
-		return "", err
-	}
-	for key := range tree {
-		if token, err := claim.NewToken(project, key, claim.RoleArchitect); err == nil && token == owner {
-			return key, nil
-		}
-	}
-	return issue.Tree, nil
+	return record.OwningIssue(project, tree, issue, "phase-finished", RoleFor(issue.Phase), runs), nil
 }
 
 // answerSkew bounds how far GitHub's clock, which stamps a review's submission, and the daemon's,

@@ -78,9 +78,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		t.Fatalf("gate = latest %d approved %v, want version 4 open", latest, approved)
 	}
 
-	// Every row the registration left, with no start passed over: in this package every start
-	// carries a task — the architect's (awaiting_reconcile.go), the wake's (wake.go) and every
-	// phase start through StartOrOwe — and the task-less starts admission brings back beside a
+	// Every row the registration left, with no start passed over. In this package a phase worker's
+	// start carries its task (every phase start through StartOrOwe), as do the architect's
+	// (awaiting_reconcile.go) and the wake's (wake.go); a child's own architect's plain start carries
+	// none (gateOpened, reviveArchitect), and the task-less starts admission brings back beside a
 	// phase worker are written in internal/admit, never here.
 	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
 	if err != nil {

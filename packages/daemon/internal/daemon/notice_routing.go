@@ -110,7 +110,7 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 	if route, ok := routes[recorded.Tree]; ok {
 		return route.issues[key], route, nil
 	}
-	route := noticeRoute{issues: map[string]record.Issue{}}
+	var route noticeRoute
 	if route.project, err = claim.ProjectToken(recorded.Project); err != nil {
 		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: %w", errNoticeUnroutable, err)
 	}
@@ -118,11 +118,7 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 	if err != nil {
 		return record.Issue{}, noticeRoute{}, err
 	}
-	for _, member := range members {
-		if claim.IsIssueKey(member.Key) {
-			route.issues[member.Key] = member
-		}
-	}
+	route.issues = record.TreeByKey(members)
 	var ok bool
 	if route.root, ok = route.issues[recorded.Tree]; !ok {
 		return record.Issue{}, noticeRoute{}, fmt.Errorf("%w: the root %s of %s is not recorded", errNoticeUnroutable, recorded.Tree, key)
@@ -184,12 +180,6 @@ func noticeArchitect(project string, tree map[string]record.Issue, issue record.
 // Stopping) — a suspension, a failure, a release. The routing reads it, so no notice is routed to
 // a sub-architect whose session is being stopped; it goes on up the tree, as it will once the stop
 // returns.
-//
-// A released claim is the one suspended claim that keeps its role. Its pod was released while it
-// was idle and its session, its phase and its task are all as it left them: the notice is still
-// its owner's, and the wake is what brings the owner back for it (outbox.wakeForDelivery). Were
-// it to lose its role here, a notice for a released sub-architect would walk up to the architect
-// above it, which owns neither the issue nor the answer.
 func holdsRole(held supervise.ClaimView) bool {
 	return record.HoldsRole(held.State, held.SuspendedBy) && !held.Stopping
 }

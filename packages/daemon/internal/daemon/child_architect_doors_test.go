@@ -191,7 +191,8 @@ func (r *childArchitectRig) machine(issue string, role claim.Role) *supervise.Ma
 	return machine
 }
 
-// architectStarts is the number of starts of issue's architect the outbox holds, run or not.
+// architectStarts is the number of starts of issue's architect still queued in the outbox. A row
+// is deleted once it runs, so a check that a fact queued no start reads this before the next drain.
 func (r *childArchitectRig) architectStarts(issue string) int {
 	r.t.Helper()
 	var starts int
@@ -309,12 +310,12 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 			Title: doorBlocker, Rank: "Z"})
 		rig.apply("held-child-todo", intake.DispatchIssue{Key: doorChild, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
 			Title: doorChild, Parent: doorRoot, Rank: "V", Blockers: []string{doorBlocker}})
+		if starts := rig.architectStarts(doorChild); starts != 0 {
+			t.Fatalf("the held child's entry queued %d architect starts, want none until its first phase starts", starts)
+		}
 		rig.drain()
 		if got := readIssue(t, rig.pool, doorChild); got.Phase != phase.Admitted {
 			t.Fatalf("the held child stands at %s while %s works, want admitted", got.Phase, doorBlocker)
-		}
-		if starts := rig.architectStarts(doorChild); starts != 0 {
-			t.Fatalf("the held child's entry queued %d architect starts, want none until its first phase starts", starts)
 		}
 		if _, found := rig.sup.Machine(mustClaimToken(t, doorChild, claim.RoleArchitect)); found {
 			t.Fatal("the held child has an architect claim while it waits, want none until its first phase starts")
