@@ -6268,7 +6268,8 @@ The subject token's own kind decides those claims (`packages/envoy/internal/brok
 A pod's token needs an entry for its service account, which gives the project and the person and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
 A read entry for the account (`BROKER_EXCHANGE_READ_ACCOUNTS`, `<service account>=<service>=<session>`) gives a service and a fixed session in their place.
 The token it mints holds the scope `read` and the project scope `none`, names that service and that session, and names no person and no project.
-That token reads the architecture of every project: no setting holds a read entry to some projects.
+That token reads the architecture of every project that has an architecture source: each source's repository, branch and last sync error, and every issue of the project, icebox and closed ones included, with its key, title, status, priority, parent and external links.
+No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
 The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` with `invalid_scope`, under every entry.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
