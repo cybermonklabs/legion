@@ -33,8 +33,9 @@ var newGuest = memoryguard.NewGuest
 // the drain's end up to one poll and one reapNamespace pass late, and then sends kill(-1, SIGKILL)
 // (runRoleShim, roleinit_linux.go). That lands milliseconds past the drain; the rest of the second
 // is a margin for role-init running late under the memory pressure that raises the counter. A
-// wider bound costs only kills of that role left unnamed in a burst that starts within it after
-// the departure, never a wrong name (memoryguard.Guest).
+// wider bound costs kills of that role left unnamed in a burst that starts within it after the
+// departure, and a wrong name only within the guest watch's first limit, where another role's
+// process shows another sender's SIGKILL in that wait (memoryguard.Guest).
 const guestSessionDrain = roleNamespaceDrain + time.Second
 
 // containerInit is whether this launcher is its container's first process, PID 1 of the
@@ -172,8 +173,8 @@ const (
 // each role-init, its shim, and every direct child of the shim: the agent (a Claude Code role's
 // bridge), and the shim's other children, which no place in the tree tells from it (the secrets
 // renewer, the working copy's adoption, the CodeGraph warm-up). That superset of the agent costs
-// only kills left unnamed, never a wrong name (memoryguard.Guest). Nothing below the agent is
-// one: an Oh My Pi helper can end alone.
+// kills left unnamed, and a wrong name only within the guest watch's first limit
+// (memoryguard.Guest). Nothing below the agent is one: an Oh My Pi helper can end alone.
 //
 // It keeps nothing a scan changes: each role-init is read under its manager's lock and the
 // launcher's own children under the pid guard's lock, at each scan, so the guard's loop and its
