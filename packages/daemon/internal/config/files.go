@@ -13,9 +13,28 @@ import (
 // under the state directory.
 const DeploymentInstructionsFile = "deployment-instructions.md"
 
-// MemoryInstructionsFile is the copy of the project's memory instructions every memory-group
-// pane's prompt reads, under the state directory.
+// ExperimentsDir is the directory under the state directory holding the copies of every declared
+// variant's instructions, a directory per experiment: a launch's prompt reads the copy of each
+// arm its unit was drawn into. It is a directory per experiment rather than one flat
+// `<experiment>-<variant>.md` because no name may hold `/` while both may hold `-`
+// (config.experimentNamePattern), so a flat name would let two pairs collide.
+const ExperimentsDir = "experiments"
+
+// MemoryInstructionsFile is the copy of the `memory` block's instructions every role of a
+// memory-group tree's prompt reads, under the state directory: the name it has had since before
+// any experiment was declared, which the block's arm keeps (Variant.MemoryBlock).
 const MemoryInstructionsFile = "memory-instructions.md"
+
+// VariantInstructionsFile is the copy of one declared variant's instructions file under the state
+// directory: `<stateDir>/memory-instructions.md` for the arm the `memory` block declares
+// (Variant.MemoryBlock), and `<stateDir>/experiments/<experiment>/<variant>.md` for an arm of the
+// `experiments` key.
+func VariantInstructionsFile(stateDir, experiment string, variant Variant) string {
+	if variant.MemoryBlock {
+		return filepath.Join(stateDir, MemoryInstructionsFile)
+	}
+	return filepath.Join(stateDir, ExperimentsDir, experiment, variant.Name+".md")
+}
 
 // ReadSecretPointer is the trimmed contents of the file a pointer key names — `variable` is the
 // key as the operator wrote it (`envoy_token_file`, `operator_token_file`), so the refusal reads
@@ -158,10 +177,13 @@ func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (st
 }
 
 // ReadMemoryInstructions is the project's memory instructions file
-// (`projects.<KEY>.memory.instructions`), refused naming the operator's path when it is missing,
-// unreadable, or blank: a configured file with nothing in it is a misconfiguration, not an empty
-// fragment. It writes nothing, so boot reads it with every other refusal before it writes
-// anything.
+// (`projects.<KEY>.memory.instructions`, the memory arm of the experiment the block is), refused
+// naming the operator's path when it is missing, unreadable, or blank: a configured file with
+// nothing in it is a misconfiguration, not an empty fragment. It writes nothing, so boot reads it
+// with every other refusal before it writes anything. It refuses in the block's own words rather
+// than ReadVariantInstructions', since the documentation quotes them and the block is refused in
+// no new way; an arm of `experiments.memory`, which is the `experiments` key's, is read by
+// ReadVariantInstructions as every arm of that key is.
 func ReadMemoryInstructions(instructionsPath string) ([]byte, error) {
 	contents, err := os.ReadFile(instructionsPath)
 	if err != nil {
@@ -169,6 +191,23 @@ func ReadMemoryInstructions(instructionsPath string) ([]byte, error) {
 	}
 	if strings.TrimSpace(string(contents)) == "" {
 		return nil, fmt.Errorf("memory instructions file %s is empty", instructionsPath)
+	}
+	return contents, nil
+}
+
+// ReadVariantInstructions is one declared variant's instructions file
+// (`projects.<KEY>.experiments.<name>.variants[].instructions`), refused naming the operator's
+// path, with the experiment and the arm that name it, when it is missing, unreadable, or blank: a
+// configured key with nothing to append is a misconfiguration, not an empty fragment. It writes
+// nothing, so boot reads every variant's file with every other refusal before it writes anything.
+// The `memory` block's own `instructions` is read by ReadMemoryInstructions instead.
+func ReadVariantInstructions(experiment, variant, instructionsPath string) ([]byte, error) {
+	contents, err := os.ReadFile(instructionsPath)
+	if err != nil {
+		return nil, fmt.Errorf("instructions file %s of experiment %s variant %s could not be read: %w", instructionsPath, experiment, variant, err)
+	}
+	if strings.TrimSpace(string(contents)) == "" {
+		return nil, fmt.Errorf("instructions file %s of experiment %s variant %s is empty", instructionsPath, experiment, variant)
 	}
 	return contents, nil
 }
@@ -191,18 +230,28 @@ func ReadHookPrompt(hook, promptPath string) (string, error) {
 	return words, nil
 }
 
-// WriteMemoryInstructions writes the copy of contents ReadMemoryInstructions answered: boot reads
-// the file with every other refusal before it writes anything, and writes this copy once, before
-// the first pane opens. The two are separate, where the deployment's own has a Materialize pair
-// as well, because only boot writes a memory copy and boot refuses before it writes.
-func WriteMemoryInstructions(contents []byte, stateDir, legionID string) (string, error) {
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
+// WriteVariantInstructions writes the copy of contents ReadVariantInstructions answered (or, for
+// the `memory` block's arm, ReadMemoryInstructions), one per variant that names a file, at
+// VariantInstructionsFile: boot reads every such file with every other refusal before it writes
+// anything, and writes these copies once, before the first pane opens. The reads and the write
+// are separate, where the deployment's own has a Materialize pair as well, because only boot
+// writes a variant's copy and boot refuses before it writes. The path is no answer of its own: a
+// reader of the copy builds it with VariantInstructionsFile, as a launch's arms do
+// (experiment.Launch). The copy is headed `# Memory instructions (<legionID>)` for the block's
+// arm, as the block's copy was before any experiment was declared, and
+// `# <experiment>/<variant> instructions (<legionID>)` for an arm of the `experiments` key.
+func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment string, variant Variant) error {
+	target := VariantInstructionsFile(stateDir, experiment, variant)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return fmt.Errorf("create state directory %s: %w", filepath.Dir(target), err)
 	}
-	target := filepath.Join(stateDir, MemoryInstructionsFile)
-	body := fmt.Sprintf("# Memory instructions (%s)\n\n%s", legionID, contents)
+	header := fmt.Sprintf("# %s/%s instructions (%s)", experiment, variant.Name, legionID)
+	if variant.MemoryBlock {
+		header = fmt.Sprintf("# Memory instructions (%s)", legionID)
+	}
+	body := header + "\n\n" + string(contents)
 	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", target, err)
+		return fmt.Errorf("write %s: %w", target, err)
 	}
-	return target, nil
+	return nil
 }

@@ -44,7 +44,7 @@ import {
   type ResolvedArtifact,
   stringArg,
 } from "./context";
-import { approvalLine, liveBlocks } from "./document-targets";
+import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
 import { dispatchAnswered } from "./failures";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
@@ -445,8 +445,20 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       ? []
       : declinedAskLines(edited.advice, resolved.issue.key, linkBase);
   const adviceLines = await otherAdviceLines(() =>
-    renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {})
+    renderAdvice(input.tool, resolvedTopic(resolved).label, edited.advice, {
+      isPlan: documentPlaysPlan(resolved.artifact),
+    })
   );
+  // What the edit wrote, as the server read it back off the tree it wrote: the markdown of
+  // each block it added, changed or moved, and a line for each one it removed or emptied, so
+  // `Applied 2 ops` no longer reads the same whether the edit wrote a list or a paragraph of
+  // dashes. A batch that changed nothing carries none, and an older server omits the field,
+  // which reads as it always did. It is printed under the decision-block lines, since up to
+  // 2000 bytes of markdown between the first line and them would break the promise the tool
+  // description makes of them: that they come after the result's first line
+  // (packages/contracts/src/dispatch-tools.ts).
+  const written = edited.written;
+  const writtenLines = written === undefined || written === "" ? [] : [written];
   // The token of the document this edit produced, rendered as dispatch_doc_read renders it:
   // the next guarded edit passes it as `precondition.document` with no read in between. A
   // Dispatch server predating it returns none, and the result reads as it always did.
@@ -456,6 +468,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
       ...checkLines,
       ...declinedLines,
+      ...writtenLines,
       ...tokenTrailer,
       ...adviceLines,
     ].join("\n"),
@@ -550,7 +563,7 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   const threadsResult = await threadsResultPromise;
   if (threadsResult.status === "rejected") throw threadsResult.reason;
   const threads = threadsResult.value;
-  const approval = approvalLine(resolved.artifact);
+  const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
   const trailer = [
     ...("token" in document && document.token !== undefined
       ? [`Document token: ${document.token}`]
@@ -952,6 +965,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
     artifactOwner.kind === "project" ? documentTopic(result.artifact) : issueTopic(issue());
   const adviceLines = renderAdvice(input.tool, uploadOwner.label, result.advice, {
     isPrimarySpec: result.artifact.primary || result.artifact.name === "spec.md",
+    isPlan: documentPlaysPlan(result.artifact),
   });
   return {
     text: [

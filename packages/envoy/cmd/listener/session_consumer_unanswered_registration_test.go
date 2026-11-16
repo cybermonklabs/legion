@@ -72,6 +72,11 @@ func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRo
 	const added = "notifications.dispatch.issue.ENTRYFAILADD.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", followed))
 
+	// swapSessionBucket swaps the handle of a stopped watcher. A live one goes on applying the
+	// bucket to the cache, and that apply reads the field the swap writes: the race detector
+	// reported it (CI run 43724869797).
+	rig.harness.sessions.StopWatch()
+
 	// The entry write of the registration below fails, and a writer that sets no consumer filter
 	// stores the session's row in the window between that registration's row and its entry,
 	// which is the window the repair after the entry covers for a registration that is answered.
@@ -120,6 +125,8 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite
 	// The entry write of the registration below fails, which is the exit that answers no
 	// registration and settles the filter on its way out. Nothing is stored in the window before
 	// that write here: the row this settle is outrun by lands under the settle itself.
+	// The watcher stops before the swap, as in the row above.
+	rig.harness.sessions.StopWatch()
 	swapSessionBucket(t, rig.harness.sessions, func(kv nats.KeyValue) nats.KeyValue {
 		return refusingEntryKV{KeyValue: kv, before: func() {}}
 	})
@@ -172,6 +179,8 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 	// The registration on the other listener, answered 200 for a topic of its own, stored in the
 	// window between this registration's row and the session entry whose write fails: the settle
 	// that follows that failure reads the bucket after it.
+	// The session cache's watcher stops before the swap too, as in the first row of this file.
+	rig.harness.sessions.StopWatch()
 	var stored sync.Once
 	swapSessionBucket(t, rig.harness.sessions, func(kv nats.KeyValue) nats.KeyValue {
 		return refusingEntryKV{KeyValue: kv, before: func() {

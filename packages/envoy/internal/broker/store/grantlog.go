@@ -218,10 +218,10 @@ func ReadGrantLog(ctx context.Context, pool *pgxpool.Pool, q GrantLogQuery) ([]G
 }
 
 // GrantLogMessage opens the one line the broker logs, at INFO, for each request decision and each
-// grant end (LogGrantEvent). The deployment's log pipeline collects it and keeps it, so that the
-// decisions of a period can be read without the database, and so it does not change — as
-// policy.RefusedMessage and requests.MintFailedMessage do not, for the alarms that filter on
-// them.
+// grant end (LogGrantEvent). A deployment's log pipeline can collect it and keep it, so that the
+// decisions of a period can be read without the database, and so its text changes only with the
+// operate guide that documents it, as policy.RefusedMessage's and requests.MintFailedMessage's
+// do: a reader of the broker's log filters on each.
 const GrantLogMessage = "broker: grant log"
 
 // LogGrantEvent writes ev as the broker's one grant-log line: the event's own fields, each as its

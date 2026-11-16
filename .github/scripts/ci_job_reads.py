@@ -299,6 +299,10 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:269-270 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:782,855")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:161")),
+    f"{DAEMON}/internal/prompts/prompts_test.go": reads(
+        ("AGENTS.md", "internal/prompts/prompts_test.go:785 ../../../.."),
+        ("scripts/e2e/README.md", "internal/prompts/prompts_test.go:785 ../../../.."),
+        ("docs/site/src/content/docs/legion/concepts.md", "internal/prompts/prompts_test.go:785 ../../../..")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:260"),
         ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:578")),
@@ -316,12 +320,20 @@ RULES = {
     f"{DAEMON}/internal/testpg/file_copy_test.go": reads(
         (f"{DAEMON}/**", "internal/testpg/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     # --- envoy
+    f"{ENVOY}/cmd/agent-secrets/modules_test.go": [
+        run(ENVOY, ["./cmd/agent-secrets"], "cmd/agent-secrets/modules_test.go:179 cmdtest.BuildCommand . CGO_ENABLED=0 GOOS=darwin",
+            mode="build", env={"CGO_ENABLED": "0", "GOOS": "darwin"}),
+        run(ENVOY, ["./cmd/broker"], "cmd/agent-secrets/modules_test.go:188 cmdtest.BuildCommand . in ../broker CGO_ENABLED=0 GOOS=linux",
+            mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"})],
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
-    f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:344 sslrootcert=../../docker/rds-global-bundle.pem")),
+    f"{ENVOY}/cmd/broker-refgen/recorder_test.go": [
+        Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/recorder_test.go:383 checkRefusalWrites(repo root) parses it")
+        for d in ("internal/broker/api", "internal/broker/approval", "internal/broker/airlockproxy")],
+    f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:348 sslrootcert=../../docker/rds-global-bundle.pem")),
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
-    f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:289")),
+    f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:501")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:695")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
@@ -339,7 +351,7 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
-    f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:573")),
+    f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "internal/broker/config/config_test.go:1332")),
     f"{ENVOY}/internal/broker/oauth/claims_doc_test.go": reads(("docs/kubernetes.md", "internal/broker/oauth/claims_doc_test.go:161")),
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:56")),
     f"{ENVOY}/internal/contracts/dedupe_test.go": reads((f"{FIX}/dedupe-keys.json", "internal/contracts/dedupe_test.go:14")),
@@ -1018,21 +1030,23 @@ GATES = [
         # the shared envoy_client_dep read would declare a read this job does not make.
         (ENVOY_CLIENT_SRC, "docs/site/generators/dispatch-tools.ts:12 imports ../../../packages/envoy-client/src/dispatch-command.ts"),
         ("skills/**", "docs/site/generators/legion-skills.ts:11-17 reads skills/*/SKILL.md"),
-        ("deploy/kubernetes/**", "docs/site/generators/legion-config.sh:28-32 renders every tracked deploy/kubernetes *.example/*.yml/*.yaml"),
+        ("deploy/kubernetes/**", "docs/site/generators/legion-config.ts's exampleFiles lists every tracked deploy/kubernetes *.example/*.yml/*.yaml and its renderExamples reads each whole"),
         ("scripts/third-party-notices.ts", "docs/site/astro.config.mjs:15; packages/dispatch/web/vite.config.ts:11"),
         (".github/scripts/check-private-names.sh", at_docs("Check the built site has no private name, internal host, or tailnet host")),
-        (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts:112 sources, checked by generators/lib/markdown.ts:46-49"),
-        (f"{ENVOY}/cmd/dispatch/settings.go", "docs/site/generators/dispatch-config.ts:65 sources, checked by generators/lib/markdown.ts:46-49"),
+        (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
+        (f"{ENVOY}/cmd/dispatch/settings.go", "docs/site/generators/dispatch-config.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
+        (f"{DAEMON}/internal/config/keytable.go", "docs/site/generators/legion-config.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds the server's port through it"),
-        # broker-refgen (docs/site/generators/broker-reference.sh:14) parses these at run time.
-        (f"{ENVOY}/internal/broker/api/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:15,173)"),
+        # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time.
+        (f"{ENVOY}/internal/broker/api/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:17,226)"),
         (f"{ENVOY}/internal/broker/config/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/config.go:11,36)"),
         (f"{ENVOY}/cmd/broker/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/config.go:12,40)"),
         (f"{ENVOY}/internal/broker/helper/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:16, codes.go:15)"),
         (f"{ENVOY}/cmd/agent-secrets/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:17, codes.go:68)"),
-        (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:34,664)"),
+        (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:34,668)"),
+        (f"{ENVOY}/internal/broker/airlockproxy/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/recorder.go:13,77)"),
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE) + biome(at_docs("Lint the docs site"))
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF),
 
@@ -1138,8 +1152,8 @@ GATES = [
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1061,2738, legion-role-claim.test.ts:12, src/daemon-api-version.test.ts:14"),
-        (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:768-770"),
-        (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:776,874"),
+        (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:847-848"),
+        (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:854,966,968"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:96 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:51"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:14 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),

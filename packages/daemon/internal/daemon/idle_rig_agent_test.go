@@ -324,10 +324,11 @@ func TestIdleRigRoleProcess(t *testing.T) {
 	os.Exit(0)
 }
 
-// The subjects, header and replies of a session's own delivery, which the role process reads
+// The subjects, headers and replies of a session's own delivery, which the role process reads
 // and answers as a plugin in consumer mode does. They are packages/envoy's: bus.DeliverSubject
 // and contracts.AgentSubject build the two subjects, cmd/listener/session_relay.go names the
-// header and the replies, and cmd/listener/session_delivery.go the mode the registration
+// frame header and the replies, internal/bus/stream.go the probe header
+// (bus.ConnectionProbeHeader), and cmd/listener/session_delivery.go the mode the registration
 // answers. The rig writes them out because they are another module's, and an Envoy that renamed
 // one would be a contract change this rig has to be told about.
 const (
@@ -336,6 +337,10 @@ const (
 	idleRigDeliverSubjectPrefix = "notifications.envoy.deliver."
 	// idleRigStreamSeqHeader is a relay frame's stream sequence, in decimal.
 	idleRigStreamSeqHeader = "Envoy-Stream-Seq"
+	// idleRigProbeHeader, "1", with no body, is the listener's connection probe on the relay
+	// subject (bus.ConnectionProbeHeader): the send route asks with it whether the session still
+	// subscribes the subject. It is no frame, and is answered done before anything is decoded.
+	idleRigProbeHeader = "Envoy-Probe"
 	// idleRigRelayReceived is the answer that the frame decoded, before any work of the
 	// session's; idleRigRelayDone is the answer that it was written, which acknowledges the
 	// message to the consumer.
@@ -584,8 +589,15 @@ func (p *idleRigRoleProcess) openDelivery() error {
 // frame decodes, records the message with the rig, and only then answers `done`, which is what
 // acknowledges the message to the consumer. A frame whose stream sequence this process has
 // already recorded — the relay sends again what it saw no reply to — is acknowledged and not
-// recorded twice.
+// recorded twice. The listener's connection probe is no frame: it is answered `done`, as a
+// plugin answers it before it decodes anything, and recorded nowhere.
 func (p *idleRigRoleProcess) relayed(msg *nats.Msg) {
+	if msg.Header.Get(idleRigProbeHeader) == "1" {
+		if msg.Reply != "" {
+			p.reply(msg, idleRigRelayDone)
+		}
+		return
+	}
 	var item idleRigEnvelope
 	if err := json.Unmarshal(msg.Data, &item); err != nil {
 		fmt.Fprintf(os.Stderr, "idle rig role process: decode a frame for %s: %v\n", p.session, err)

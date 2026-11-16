@@ -123,12 +123,15 @@ func (f relayedFrame) listener() string {
 
 // sessionStandIn takes a session's relay frames on a NATS connection of its own, as a plugin in
 // consumer mode does, and answers each at once with the replies answer names for it, unless it is
-// silent.
+// silent. A message carrying the connection probe's header (bus.ConnectionProbeHeader) is no frame:
+// it is answered done before anything is decoded, as the plugins' shared consumer delivery
+// answers it, unless the stand-in is silent, and counted in probed rather than collected.
 type sessionStandIn struct {
 	t      *testing.T
 	conn   *natsgo.Conn
 	frames chan relayedFrame
 	silent atomic.Bool
+	probed atomic.Int32
 }
 
 // answerDone answers a frame received and done at once: the session wrote it.
@@ -136,9 +139,25 @@ func answerDone(relayedFrame) []string { return []string{relayReplyReceived, rel
 
 func startSessionStandIn(t *testing.T, url, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
 	t.Helper()
-	standIn := &sessionStandIn{t: t, conn: testnats.Connect(t, url), frames: make(chan relayedFrame, 256)}
+	return startSessionStandInOn(t, testnats.Connect(t, url), sessionID, answer)
+}
+
+// startSessionStandInOn is startSessionStandIn on a connection the test opened itself: one through
+// a proxy it can cut, or one a server whose users are granted authenticates.
+func startSessionStandInOn(t *testing.T, conn *natsgo.Conn, sessionID string, answer func(relayedFrame) []string) *sessionStandIn {
+	t.Helper()
+	standIn := &sessionStandIn{t: t, conn: conn, frames: make(chan relayedFrame, 256)}
 	t.Cleanup(standIn.conn.Close)
 	if _, err := standIn.conn.Subscribe(bus.DeliverSubject(sessionID), func(msg *natsgo.Msg) {
+		if msg.Header.Get(bus.ConnectionProbeHeader) == "1" {
+			standIn.probed.Add(1)
+			if !standIn.silent.Load() {
+				if err := msg.Respond([]byte(relayReplyDone)); err != nil {
+					t.Errorf("answer the connection probe of %s: %v", sessionID, err)
+				}
+			}
+			return
+		}
 		frame := relayedFrame{msg: msg, arrived: time.Now()}
 		if err := json.Unmarshal(msg.Data, &frame.item); err != nil {
 			t.Errorf("decode a frame for %s: %v", sessionID, err)
@@ -916,7 +935,7 @@ func TestSessionConsumerOwnershipMovesWithTheSessionToOneRelayer(t *testing.T) {
 // observeConsumers opens the test's own view of the session consumers on uri.
 func observeConsumers(t *testing.T, uri string) *bus.SessionConsumers {
 	t.Helper()
-	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0)
+	consumers, err := bus.ConnectSessionConsumers([]string{uri}, 0, nil)
 	if err != nil {
 		t.Fatalf("connect the test's view of the session consumers: %v", err)
 	}
@@ -1104,7 +1123,7 @@ accounts {
 }
 `
 	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
-	uri = strings.Replace(uri, "nats://", "nats://listener:listener@", 1)
+	uri = asListenerUser(t, uri)
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumers-refused")
 	listener.WaitExit(t, "its start")

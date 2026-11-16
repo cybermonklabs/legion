@@ -65,7 +65,7 @@ const schemas: Record<string, z.ZodType> = {
   // daemon's own controller (`controller: daemon`) holds its claim on no issue.
   "state-controller-claim.json": LegionStateResponse,
   // Written by internal/api's TestStateLastPauseGolden: the state of a project that runs after a
-  // pause has ended, which carries `lastPause` and no `paused` (contract 143). state.json is the
+  // pause has ended, which carries `lastPause` and no `paused` (contract 153). state.json is the
   // state of a paused project and carries the other key.
   "state-last-pause.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
@@ -101,7 +101,7 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The project pause (contract 143), each written from what the route itself answers
+  // The project pause (contract 153), each written from what the route itself answers
   // (internal/api's TestPauseRouteGoldens): the pause a pause began, the pause a resume ended
   // with how many held rows it let out, and every refusal. A blank reason is the plain refusal;
   // the others name something beside the sentence: the setting that turns the pause off (none
@@ -665,6 +665,77 @@ test("the state golden carries each issue's tree memory draw", () => {
   drawn.memoryDrawMode = "off";
   drawn.memoryDrawnAt = "the morning";
   expect(parses()).toBeFalse();
+});
+
+// Contract 141: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
+// the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
+// the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
+// an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
+// carries no key at all, as does every issue of the body served a caller before 141, so the
+// field is optional; a daemon before this contract sent none, and its state must still parse.
+test("the state golden carries the experiments each issue was drawn for", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, Record<string, unknown>>;
+  };
+  const issueOf = (key: string) => {
+    const issue = state.issues[key];
+    if (issue === undefined) {
+      throw new Error(`state fixture lacks ${key}`);
+    }
+    return issue;
+  };
+  const drawn = issueOf("LEGION-208");
+  expect(drawn.assignments).toEqual([
+    {
+      experiment: "memory",
+      variant: "memory",
+      mode: "random",
+      drawnAt: "2026-09-20T11:04:05Z",
+    },
+    {
+      experiment: "plan-length",
+      variant: "short",
+      mode: "random",
+      drawnAt: "2026-09-21T18:42:11Z",
+    },
+  ]);
+  // The issue experiment's arm is the issue's own: the child of that tree stands in the other.
+  expect((issueOf("LEGION-209").assignments as Record<string, unknown>[])[1]?.variant).toBe("long");
+  // The hand-over's answer: an arm and a mode, both empty, and no instant at all.
+  expect(issueOf("LEGION-210").assignments).toEqual([
+    { experiment: "plan-length", variant: "", mode: "" },
+  ]);
+  // An issue no experiment has reached carries no key.
+  expect(issueOf("LEGION-211").assignments).toBeUndefined();
+
+  const parses = () => LegionStateResponse.safeParse(state).success;
+  expect(parses()).toBeTrue();
+
+  // A state from a daemon before contract 141, and one served to a pod below it.
+  const held = drawn.assignments;
+  delete drawn.assignments;
+  expect(parses()).toBeTrue();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
+
+  // A row naming no experiment, a variant that is no string, and a draw time that is no time.
+  drawn.assignments = [{ experiment: "", variant: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: 1, mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [
+    { experiment: "memory", variant: "memory", mode: "random", drawnAt: "the morning" },
+  ];
+  expect(parses()).toBeFalse();
+  // A row that leaves out `variant` or `mode`: both ride the wire whatever they hold, the empty
+  // string included, so a row without one is no row this daemon writes.
+  drawn.assignments = [{ experiment: "memory", mode: "random" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = [{ experiment: "memory", variant: "memory" }];
+  expect(parses()).toBeFalse();
+  drawn.assignments = held;
+  expect(parses()).toBeTrue();
 });
 
 // The state golden carries LEGION-207, closed by its merge, with its production check open: the
@@ -1792,7 +1863,7 @@ test("the release records carry a release, a resume and a hold", () => {
   expect(LegionReleaseRecordsResponse.safeParse(nulled).success).toBeFalse();
 });
 
-// A wake a project pause held (contract 143): the golden's third resume carries the pause that
+// A wake a project pause held (contract 153): the golden's third resume carries the pause that
 // held it and pairs with no release, so a reader of these records counts it apart from the wakes
 // of released pods. A wake no pause held carries no `pause` at all, and a `pause` that is no
 // pause's id is refused.
@@ -2138,13 +2209,13 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The project's pause (contract 143). state.json is the state of a paused project: it names the
+// The project's pause (contract 153). state.json is the state of a paused project: it names the
 // pause that stands, who paused, the claim whose stop the pause still waits on and the two rows
 // it holds, one for a claim and one that names none. state-last-pause.json is the state of a
 // project that runs after a pause has ended: it names that pause with when and by whom it was
 // ended. A state carries one of the two at most, and neither key is required: the daemon writes
 // none before the project's first pause, and the route strips both for a caller in a pod whose
-// plugin is older than 143 (`api.stateFor`, `withoutPause`). What is refused is a pause by
+// plugin is older than 153 (`api.stateFor`, `withoutPause`). What is refused is a pause by
 // nobody the daemon records, a controller's with no session, a pause with no reason or without
 // one of its lists, and a last pause with no end.
 test("the state goldens carry the pause that stands and the last pause, and both keys may be absent", () => {
@@ -2232,7 +2303,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
   }
 });
 
-// What the pause routes answer (contract 143). A pause answers the pause it began, which names
+// What the pause routes answer (contract 153). A pause answers the pause it began, which names
 // no end. A resume answers the pause it ended, with who ended it, and how many held rows it let
 // out; a body that names no end is no resume's answer. Each refusal names what its code names
 // beside its sentence, and nothing else: the setting that turns the pause off, the pause that

@@ -661,6 +661,18 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 141): the name the
+ * project declares the experiment under, the arm the draw gave the unit, the mode in force at
+ * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
+ * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
+ * daemon adds must be read rather than refuse the whole state. */
+const legionAssignment = z.object({
+  experiment: nonEmptyString,
+  variant: z.string(),
+  mode: z.string(),
+  drawnAt: timestamp.optional(),
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -740,11 +752,16 @@ const legionIssue = z.object({
    * takes it as optional. */
   mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
-   * memory overlays and instructions, `none` for one that runs without them, with the project's
-   * `memory.mode` in force when the group was drawn and the instant of that draw. The three are
-   * absent together while nothing has drawn for the tree — a tree first opened before the setting
-   * existed — and every issue of a tree carries its root's, since the draw is made once, on the
-   * root, when the tree's lifecycle row is first created (contract 49). */
+   * memory overlays and instructions, `none` for one that runs without them, with the mode in
+   * force when the group was drawn and the instant of that draw. The three are the answer of the
+   * experiment named `memory` in `assignments` below, read only where that row records a draw
+   * and spelled out as this key has read it since contract 49: the arm `memory` is the group
+   * `memory` and every other arm — the control `none` and the empty arm an experiment at mode
+   * off draws — is `none`. They are absent together while no `memory` answer applies to the
+   * issue — a tree first opened before the setting existed — and while its only `memory` answer
+   * records no draw, which is a hand-over settling the tree at no arm and which answered none
+   * of the three before contract 141 as well. Every issue of a tree carries its tree's, since
+   * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
@@ -772,6 +789,20 @@ const legionIssue = z.object({
    * over, which is why the bound here is `nonnegative` and no ceiling. */
   treeMovedAt: timestamp.optional(),
   quietHours: z.number().nonnegative().optional(),
+  /** Every experiment answer that applies to the issue (contract 141): its tree's, for an
+   * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
+   * order the project's file declares the experiments. That is the `memory` block's experiment
+   * first (`settings.projects.<KEY>.memory`, which every project declares, at mode `off` where its
+   * file writes no block), unless `settings.projects.<KEY>.experiments` names `memory` itself;
+   * then the experiments `settings.projects.<KEY>.experiments` names, in its order; then any
+   * experiment the file no longer names, in the order of their names. `variant` and `mode` ride
+   * whatever they hold, the empty string included, and `drawnAt` is absent where the row holds
+   * no instant: that row — no arm, no mode, no instant — is a hand-over settling a unit at no arm
+   * for an experiment the tree it left held no row for, which is how a reader tells a unit
+   * settled at no arm from a unit never drawn, which carries no row at all. The key is absent
+   * from an issue no experiment holds an answer for, and from every issue of the body the route
+   * serves a caller before 141, so a reader takes it as optional. */
+  assignments: z.array(legionAssignment).optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
@@ -1009,7 +1040,7 @@ const legionConsumerLag = z.object({
   unavailable: nonEmptyString.optional(),
 });
 
-/** `api.PauseActorView` — who paused the project or ended its pause (contract 143): the
+/** `api.PauseActorView` — who paused the project or ended its pause (contract 153): the
  * controller, with the session it acted from, or the operator, who acts from none. The daemon's
  * store holds these two shapes and no other (`project_pauses_by_session` and
  * `project_pauses_ended_by_session` in its migration `20261115194357_project_pause`), so a
@@ -1027,7 +1058,7 @@ const pauseFields = {
   reason: nonEmptyString,
 };
 
-/** `api.PauseView` — one pause of the project (contract 143): its id, `since`, when it began,
+/** `api.PauseView` — one pause of the project (contract 153): its id, `since`, when it began,
  * `by`, who paused, `reason`, why, and, once a resume has ended it, `endedAt` and `endedBy`, when
  * and by whom. A pause answers this shape for the pause it began, and a refusal that names the
  * pause that stands carries it; both are of a pause no resume has ended, so neither names an
@@ -1069,7 +1100,7 @@ const legionPauseHeldRow = z.object({
   waitedSeconds: z.number().int().nonnegative(),
 });
 
-/** `api.PausedView` — the project's open pause as the state shows it (contract 143): the pause,
+/** `api.PausedView` — the project's open pause as the state shows it (contract 153): the pause,
  * `waitsOn`, the claims whose stop it still waits on, and `held`, every row it holds. The rows
  * are listed under the pause because the pause is the reason each one waits. Both lists are
  * never null. */
@@ -1116,10 +1147,10 @@ const legionPaused = z.object({
  * the shapes `internal/projection` answers before the route marks them carry none either.
  * `paused` is the project's open pause, with the claims whose stop it still waits on and the rows
  * it holds, and `lastPause` is its newest ended pause, with when and by whom it was ended
- * (contract 143). The daemon writes each only where there is one: `paused` while the project is
+ * (contract 153). The daemon writes each only where there is one: `paused` while the project is
  * paused and `lastPause` while it runs after a pause has ended, so a state carries one of them at
  * most, and neither before the project's first pause. Both are optional for that reason, and for
- * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 143,
+ * the one `wakesWaiting` is optional for: the route strips both for a caller in a pod below 153,
  * and for that caller alone (`api.stateFor`, `withoutPause`), so a reader in such a pod learns
  * nothing of the pause from a state that carries neither. */
 export const LegionStateResponse = z.object({
@@ -1309,7 +1340,7 @@ const legionReleaseRecord = z.object({
  * no release row is recorded for it), the role it was for, what woke it, when the wake reached the
  * daemon, and `podReadyAt` and `firstTurnAt`, each absent until it is observed. `stuck` is a wake
  * that went ten minutes with no turn of the woken role. `pause` is the project pause that held
- * the wake (contract 143), absent on a wake no pause held: a held wake pairs with no release, so
+ * the wake (contract 153), absent on a wake no pause held: a held wake pairs with no release, so
  * its `release` is 0, and its time to the first turn measures the pause, so a reader of these
  * records counts it apart (`releaseRecords` in `packages/pi-shared/src/legion-phase-ops.ts`). */
 const legionResumeRecord = z.object({

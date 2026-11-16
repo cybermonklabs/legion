@@ -262,9 +262,22 @@ func (s *Server) brokerCallBound() time.Duration {
 //     the transport held a connection for it, written or not, since HTTP/2's round trip can
 //     return for an ended context before its write of the request ends. It is a known failure
 //     when the context ended before the transport held a connection.
-//   - The op waits past B + 1 s on a lock that is held across an HTTP request and does not watch
-//     the op's context (a sign-in's trade, a login in progress, a refresh of the machine login
-//     that clearOnInvalid waits for): the timer ends the wait, and the answer is unknown.
+//   - The op waits on a lock the helper holds across an HTTP request of its own work: the box's
+//     sign-in while it trades (brokerclient.SignInAuthority, Current and Refused), or a refresh
+//     of the machine login that clearOnInvalid's drop waits for (Broker.credMu). Each of these
+//     waits only while the op's context lives (ctxlock.Mutex.LockContext), so it ends at B, the
+//     op returns, and its result is the answer: a known failure (ENROLL_FAILED, UNENROLL_FAILED),
+//     since the op made nothing. Behind the sign-in, whose wait says it timed out, the op had sent
+//     the broker nothing, or, for an enroll, the broker had refused its first request under the
+//     person's credential (401 LAUNCHER_INVALID, Broker.enrollAs); behind a refresh, the broker
+//     refused it, and the drop returns that 401 as it came.
+//   - A login waits for a login already in progress on Broker.loginMu, a sync.Mutex. The login
+//     that holds it sends one request while it does, its device authorization, under its own
+//     op's context (contextClient), and its poll never takes loginMu, so it unlocks by the end of
+//     its own bound; a login waiting behind an earlier one gets loginMu before its own bound
+//     ends, unless a later login takes it first (a sync.Mutex keeps no order), and then the timer
+//     answers it. The timer is the backstop for an op that waits on something that does not
+//     watch its context: it ends the wait, and the answer is unknown.
 //   - The op runs local code only (signing a proof, reading the operator file): its result is the
 //     answer, at once.
 //   - The helper is stopping (ctx ends): the op's context ends with it, and then as above; Serve

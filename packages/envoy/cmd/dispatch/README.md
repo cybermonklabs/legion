@@ -285,6 +285,8 @@ So redelivering a delivery that did reach the stream adds nothing to the stream.
   No sweep sends GitHub anything until the time GitHub gave (`Retry-After`, or `x-ratelimit-reset` when no requests remain), and at least one minute, doubling while limits follow one another, up to 64 minutes.
   Both live in `github_rate_limits` (migration `0160`), judged by the database's clock:
   GitHub's own wait under the App's scope, `app`, which every process's App calls obey (Running more than one process, below), and the doubling under the sweep's own, `redelivery`, so a limit met on redelivery requests never holds token mints and installation lookups past GitHub's wait.
+  A wait longer than an hour is read as an hour, never as no wait, and a negative `Retry-After` as none (`internal/serverwait`):
+  an hour is GitHub's own longest wait, since it counts its primary rate limits per hour, and a longer one would hold every App call of every process for as long, while one cut to an hour costs at most one more request that GitHub answers with a fresh wait.
   Each sweep reads both again right before every request it sends, so one limit stops every sweeper at its next request;
   a request already sent when another sweeper records a limit is not recalled.
   A sweep that finishes clear of a passed backoff deletes it, unless another sweep struck it meanwhile.
@@ -827,6 +829,20 @@ the earlier build's broadcast send reads and writes the table `0141` drops, so e
 A tab opened before the deploy needs a reload:
 `GET /api/v1/events` is gone, so it shows `Live updates unavailable`, and its broadcast body still carries `idempotency_key`, which this release refuses by name (`400 INVALID_JSON`, "idempotency_key is the Idempotency-Key header, not a body member"), so that tab sends no broadcast until it reloads.
 
+**The release that stores a message for a stopped session (INFRA-626) rolls, so for the length of the update an earlier server and a new server both take a model or thinking switch.**
+A switch is the live view's one-line `/model <value>` or `/effort <value>` message, and a new server sends it with `connected_only` whatever its request says when it is a person's own Send or Aside, not one an agent wrote for them, on no issue and no broadcast's copy, the shape the session runs as its own turn (`isSessionSwitch`, `api/messages.go`), so a stopped session refuses it and its attempt records `the session is stopped`:
+stored for a stopped session, the line would change that session's model at an unknown later time.
+Every other message whose body is such a line - an issue message, a mention, a broadcast copy, a BTW, a session's message, one an agent wrote for its person - reaches the session as a card and changes no model, so a new server queues it for a stopped session like any other message.
+A tab opened before the deploy sends the switch without `connected_only`, and a new server holds it to a running session by that rule all the same, so that tab needs no reload for it.
+An earlier server that takes the same switch, until the update ends or for good after a rollback, sends it as that release always did:
+its registry read does not find a session the listener knows only by its record, so it fails that attempt `no live session`, and it sends the switch to a session whose registry entry still stands, for which the listener stores it if that session's process has gone, as it did before this release.
+A tab opened after the deploy sends `connected_only`, which an earlier server refuses as an unknown field (`400 INVALID_JSON`, from `decodeJSON`'s `DisallowUnknownFields`), and the page drops the switch, shows that refusal and sends nothing.
+The person presses again: a press that reaches a new server goes through, and every press does once the update ends.
+After a rollback no press goes through until the deployment moves forward again, and reloading the tab onto the earlier build's page sends the switch the earlier way.
+An earlier server's delivery sweep resumes an attempt without the flag, since that build does not read the column, so it can send a switch attempt a new server left pending the way the earlier release sends one (above).
+That takes a new server killed mid-send, whose drain therefore never settles the attempt, while an earlier server still serves, in a rolling update or a rollback.
+The earlier server's sweep can then send that attempt once its claim lapses, one to two minutes after the kill (`model.DeliveryClaimLapse`, and the sweep's one pass a minute), unless a new server's sweep takes it first and sends it with the flag.
+
 What the two processes share, and what each keeps to itself:
 
 - One process publishes the events outbox at a time.
@@ -905,7 +921,8 @@ What the two processes share, and what each keeps to itself:
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
   A row per lease and period is what keeps two builds whose interval for one loop differs from each running on every tick after the other's pass: the processes at one period make one pass per period between them, whatever the processes at another period do.
-  The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
+
+- The two leased woken loops, the reference excerpts and the edit notices, take their lease with no period:
   a process that finds it held tries again until a pass of its own runs, since the other process's pass may have read before the change that woke this one.
   The suggestion outcome sweep takes no lease at all:
   each of its pages holds the `suggestion_outcome_cursor` row `for update`, which serialises two processes by itself (Background loops, below).
@@ -1173,6 +1190,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
   settlement writes no version of it and leaves an approval to carry over to a build that reads it; and the excerpt reconciliation leaves its mentions owed.
   A renderer change (the markdown a tree renders as) and a reference-grammar change (what a body's references parse as) are reader-first too:
   a build whose renderer writes an unchanged document differently writes no new version of it, and a rewrite of a body keeps the reference edges to node kinds this build does not know.
+
+- **Stored documents: the document socket, and ygo's encoding.**
   A page's document socket is writable by the whole fleet's numbers (`internal/dispatch/docs/socket_admission.go`, `authorize`):
   each process registers V, the schema version it reads, and R, the highest `since` among the elements it may create, in `server_processes` (migration `20261101030537_server_processes_schema`).
   A page presents its own V and R as `schema_version` and `schema_creatable`, and is writable on an open issue when its R is at most every live process's V and at most the highest R among the live processes, and its V is at least every live process's R and the highest `since` among the elements the document holds; otherwise it is read-only.
@@ -1937,16 +1956,39 @@ the release before this one reads `ask.answered`, `comment.created`, `message.cr
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `events`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
-Migration `0147_message_deliveries_session_created` creates `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window.
+Migration `0147_message_deliveries_session_created` created `message_deliveries_session_created` on `message_deliveries (session_id, created_at desc) include (message_id)` where `state` is `sent`, for the same route's read of the session's sent message deliveries created since an hour before its window, and `20261114081436_drop_message_deliveries_session_created` drops it:
+the route reads queued deliveries too now and takes that window through `message_deliveries_session_taken` (`20261114081435`, below) instead.
 `message_deliveries_session` (`0051`) keys `session_id` alone, so through it that read fetched the session's whole delivery history and filtered it by time:
 a long-lived session that receives every broadcast copy read all of its deliveries on every model request.
-The new index holds only the read's sent rows and carries the one column it returns, so the read is an index-only scan of the window's range, and a cached generic plan, which knows neither the session nor the window, chooses it too:
+`0147`'s index held only the read's sent rows and carried the one column it returned, so the read was an index-only scan of the window's range, and a cached generic plan, which knows neither the session nor the window, chose it too:
 costed as a plain `(session_id, created_at desc)` index it came within a percent of `0051`, which the generic plan kept.
 `0051` stays for the conversation window, which reads every delivery a session ever received.
 On the seeded database above, with one session given 60,003 sent deliveries (1,019 since an hour before its window), the read of them went from 58,984 rows fetched and discarded (798 buffers, 20-22 ms) to an index-only scan of the 1,019 (11 buffers, 0.3-0.4 ms), in the custom and the generic plan alike;
 the index built in 0.34-0.52 s over three runs on 110,003 deliveries.
-A plain `create index` inside the runner's transaction, it holds `SHARE` on `message_deliveries` while it builds: writes to it wait, reads do not.
+A plain `create index` inside the runner's transaction, it held `SHARE` on `message_deliveries` while it built: writes to it waited, reads did not.
 Its census answers `0`.
+
+Migration `20261114081434_delivery_queued_state` adds the fourth delivery attempt state, `queued`: the Envoy listener took the message and stored it for a session it knows and that is not running, which reads it when it runs again.
+It drops `comment_deliveries_state_check` (`0039`) and `message_deliveries_state_check` (`0046`) without `cascade` and adds each back `not valid` with `queued` beside `pending`, `sent` and `failed`, so no stored row is read:
+no row can fail a check wider than the one it was written under.
+It adds `message_deliveries.connected_only`, a nullable `text` column with no default whose one other value is `connected_only` (its own check, also `not valid`), set on every attempt of a message whose request asked the listener for a session that is running now:
+attempt 1 records the request's `connected_only`, and every later attempt of the message inherits attempt 1's value.
+No row records the switch rule: every send of a person's own Send or Aside, not one an agent wrote for them, on no issue, no broadcast's copy, whose body is one `/model <value>` or `/effort <value>` line asks it whatever its row holds (`isSessionSwitch`, `deliverMessageResuming`), so a switch an earlier release stored with no flag is held to a running session on its Retry, Use Aside instead or resume too, and every other message, a BTW and an agent's message for its person among them, is queued.
+The release before this one writes only `pending`, `sent` and `failed` and never names the column, so the two builds run against the widened schema at once.
+Each statement is one of the census's catalog-only `alter table` forms, so the census exempts the migration from its table size limit at any size, and each takes `ACCESS EXCLUSIVE` on its table for its catalog write alone.
+Its census answers `0`: it refuses and rewrites no row.
+Rolling back past it is an image rollback alone while no row carries `queued`; once one does, the checks have to be widened again by hand before an earlier set is restored.
+
+Migration `20261114081435_message_deliveries_session_taken` creates `message_deliveries_session_taken` on `message_deliveries (session_id, created_at desc) include (message_id, state)` where `state` is `sent` or `queued`, and `20261114081436_drop_message_deliveries_session_created` drops `0147`'s index behind it.
+The answers route reads a session's queued message deliveries beside its sent ones, so its read names two states and `0147`'s `sent`-only index cannot serve it at all.
+The index carries `state` beside `message_id` because Postgres drops an index predicate's clause from a scan only where the query's clause and the predicate imply each other, so over two states it keeps the read's own `state in ('sent', 'queued')` as a filter, which an uncarried column would turn into a heap read of every row the scan found.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`):
+`message_deliveries` grows with every message and broadcast copy Dispatch sends, and a plain build holds `SHARE` on it, which blocks every write, for as long as one read of the table takes.
+The drop lands in the same release because a read of `sent` alone implies the two-state predicate:
+the release before this one reads `state = 'sent'`, and the wider index carries every column that read returns, so the planner reads it index-only through the wider index for as long as that build keeps serving requests.
+`drop index` takes `ACCESS EXCLUSIVE` on `message_deliveries` for the instant it unlinks the index, inside the runner's transaction, and it reads no row of the table.
+Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
+A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
 Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
@@ -3590,7 +3632,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   What people wrote that Dispatch delivered to one session, newest first:
   each ask's current answer (`replaced` when it changed an earlier one), each decline of an ask (a question a person closed without answering it), each comment at its current body (`edited_at` when edited) and each message, once however it arrived:
-  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent message deliveries, and its sent comment deliveries (mentions).
+  a person's `ask.answered`, `comment.created`, `message.created`, `message.answered` or `ask.resolved` event whose `published_destinations` hold the session's own topic, of which the list takes the declines alone, its sent or queued message deliveries, and its sent or queued comment deliveries (mentions).
   Never an agent's or the system's words, any other resolution of an ask or its hand-back, or a delivery to a `role:` route.
   Each item carries its `relation`, the `ask` and its question where it answers, declines or replies in one, and its `owner`, `ref` and `href`.
   A decline is the kind `declined` under the relation `declined_your_ask`, and it carries both parts apart:
@@ -3780,11 +3822,12 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/going/catalogue` (GET; cookie, trusted header, or bearer)
 
-  The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents already operate Dispatch with (`packages/contracts/src/dispatch-tools.ts`).
+  The one it leaves out is `dispatch_review`, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations on the graph must never propose one.
   Each action carries `action` (the tool's own name, such as `dispatch_issue`), its `description` (the tool spec's own, whole and unchanged, which is what a model chooses on), the `routes` it writes, each a `method` and a `pattern` of this table, the `relations` its verbs write (each a structural edge kind or a `block[]` attribute of a typed block), its `request` (the tool's own argument schema) and an `example` call that schema accepts.
   Twenty actions is under the count where a model's choice falls apart, so the catalogue is read whole: it takes no query and serves no page.
   A tool naming a row this table does not hold, a row the table does not class as a write, a placeholder no argument of the tool fills, or a relation in neither edge family makes the server refuse to mount the table.
-  A write no tool performs is named by the catalogue's own test instead, since it is work still to do rather than an error.
+  A write no catalogue action performs is named by the catalogue's own test instead: most are work still to do rather than an error, and the review route is kept out on purpose.
 
 - `/api/v1/projects/{key}/related?title=&text=&exclude_issue=&exclude_issues=&keywords_only=` (GET, POST; cookie, trusted header, or bearer)
 
@@ -4089,6 +4132,11 @@ Each item below names a path with its method and identity, then its purpose.
     `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
 
+  - `currency` is a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it beside each result and read none of the fields above (`api/results_currency.go`).
+    It is `current` where `commit_stands` is `at_basis`, `check_words_moved` is false and no retraction stands, and `older` where `commit_stands` is `other_commit` or it is `at_basis` and `check_words_moved` is true.
+    It is left out everywhere else, where those clients print "unknown": a commit Dispatch cannot place, a retracted result at its basis under the check's words now, and every result of a read that names `?at=`.
+    It is derived from those fields alone, with no read of its own, and it is removed once no client older than pi-envoy 17.1.0 is in use.
+
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
 
   - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
@@ -4235,11 +4283,15 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/artifacts/{id}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read a document version or download a blob.
+  Read a document version as JSON, or download any version.
   `{id}` must be a UUID.
   A file whose bytes are in the bucket is `502 FILE_STORE_UNAVAILABLE` when the bucket does not answer, `503` on a server with no bucket configured.
-  A file or image version, whoever owns it, is served with `Cache-Control: private, max-age=31536000, immutable` beside its `ETag` (the bytes' sha256), since a version's bytes never change and the route is authenticated;
-  a document version, and every error, carries no cache header.
+  A file or image version, whoever owns it, is served as `Content-Disposition: attachment` under the artifact's stored name, with `-v<number>` before the name's last `.` for a version older than the latest (`report-v2.pdf`; `Makefile-v1` and `.env-v1` for a name with no `.` after its first character), so a saved file is not named after the version number its address ends in.
+  It carries `Cache-Control: private, max-age=31536000, immutable` beside its `ETag` (the bytes' sha256), since a version's bytes never change and the route is authenticated;
+  a document version read without `?download=true`, and every error, carries no cache header.
+  `?download=true` is the download address, which the web app's Download links use (exactly `true`; any other value answers as without it):
+  every kind answers there `Content-Disposition: attachment` under that name and `Cache-Control: private, no-cache`, so a browser asks again before it uses a copy it holds and saves under the name of the moment, an older version's `-v<number>` included once a newer version arrives.
+  A document version answers there its Markdown, the text the JSON's `markdown` field holds, rather than the JSON, as `text/markdown; charset=utf-8`, its name given `.md` first when it ends in neither `.md` nor `.markdown`, whatever their case (`Launch notes-v1.md`).
 
 - `/api/v1/artifacts/{id}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4263,7 +4315,7 @@ Each item below names a path with its method and identity, then its purpose.
   With `include_verification` it asks for the issue's Verification document (`role` `verification`) in the same request, each document at its own current settled version, and the answer records the human's review on each;
   an issue with no Verification document is `409 NO_VERIFICATION_DOCUMENT`, and one whose Verification document has no settled version is `409 NO_VERSION`.
   The flag is for the issue's spec alone: on any other document it is `409 NOT_SPEC_DOCUMENT`.
-  A document whose role is `plan` is `409 PLAN_APPROVED_BY_REVIEW`: a plan is approved by its plan review, never by a person.
+  A closed issue's document is `409 ISSUE_CLOSED`, before any other 409; an issue's plan is `409 PLAN_APPROVED_BY_REVIEW`, as its plan review approves it, and a project `plan.md` is no plan.
   The question is `Approve <name> (version <N>)?`, or `Approve <name> (version <N>) and <name> (version <N>)?` for a request naming two documents, followed by the optional `summary` (blank is `400 SUMMARY_INPUT`;
   past the ask cap at the longest version a request can reach, ten digits, is `400 CAP_EXCEEDED` naming `summary`).
   A request on a document a human approved earlier names that approval in `ask.approval.approved` (`{version, at, by}`);
@@ -4286,7 +4338,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Record a plan review's approval of a plan version: `{version}`, the version the review read.
   It writes an `approved` review of kind `plan_review` and emits `artifact.approved`, so every read of the document shows it approved and a later version makes it stale, as a spec's approval goes stale.
-  It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec included — a document whose `role` is `plan`, or one a rolling deploy left with no role whose slug is `plan-md`, is the plan — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
+  It is `409 NOT_PLAN_DOCUMENT` on any document that is not the issue's plan, the issue's spec and a project document named `plan.md` included — an issue document whose `role` is `plan`, or an issue document a rolling deploy left with no role whose slug is `plan-md`, is the plan — `409 NO_VERSION` on a plan with no settled version, and `400 INVALID_REVIEW` for a version the plan does not have.
   No person is ever asked to approve a plan, which is why `/api/v1/artifacts/{id}/approval-requests` refuses one.
   A review Dispatch carries to a later version keeps the `kind` of the review it carries, so a plan version restored to the text its plan review approved is still `plan_review` and no carry ever records a plan's approval as a person's.
 
@@ -4319,7 +4371,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an issue artifact version or download its blob, as `/api/v1/artifacts/{id}/versions/{n}` does.
+  Read an issue artifact version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
 
 - `/api/v1/issues/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4347,7 +4399,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Read an unlinked project document version or download its blob, as `/api/v1/artifacts/{id}/versions/{n}` does.
+  Read an unlinked project document version or download it, as `/api/v1/artifacts/{id}/versions/{n}` does, `?download=true` included.
 
 - `/api/v1/projects/{key}/artifacts/{slug}/versions` (POST; cookie, trusted header, or bearer)
 
@@ -4382,7 +4434,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/agents/{session_id}/artifacts/{slug}/versions/{n}` (GET; cookie, trusted header, or bearer)
 
-  Download one version of an agent's conversation's file or image, as `/api/v1/artifacts/{id}/versions/{n}` does, with its cache header.
+  Download one version of an agent's conversation's file or image, as `/api/v1/artifacts/{id}/versions/{n}` does:
+  its bytes under the file's name, `-v<number>` included for an older version, with `Cache-Control: private, max-age=31536000, immutable`, or `Cache-Control: private, no-cache` with `?download=true`.
+  A conversation holds no document, so no version here answers Markdown.
 
 - `/...` (GET; none)
 

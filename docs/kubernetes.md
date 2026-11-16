@@ -1688,6 +1688,27 @@ The earlier release never mounts a claim of this release's in any case:
 it names its claims `tree-legion-<project>-<root issue>-architect` (`TreeClaimName` in `names.go` at `legion-v10.0.0`), where this release gives an issue pod a disk of its own named `<pod>-issue`, and the controller's Sandbox and the repository caches' are left to the earlier release's sweep, which deletes them with their volumes:
 the controller's working root and the caches' clones, which hold no issue's work.
 
+#### Rolling back below the release that guards an issue pod's memory
+
+The release that added the memory guard in an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)) is the one whose `packages/daemon/internal/api/version.go` carries the entry for `dispatch://INFRA-3557`.
+Name it by that entry rather than by its contract number, which a forward merge can move before the change merges.
+A rollback below it has one step of its own, and one effect on the pods that still run.
+
+**`runtime.kubernetes.memory_guard` must come out of `legion.yaml` first.**
+An earlier loader knows no such key and refuses the file by name (`unknown key runtime.kubernetes.memory_guard`), so its daemon does not start while the block stands.
+Take the block out before the earlier image is pinned, and `legion start --check-config` on the earlier image reads the file clean.
+A file that never set the block needs nothing.
+
+**A pod of this release's worker image runs with the guard off under an earlier daemon.**
+No launch replaces a running pod for an image change alone ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), so the pods this release made go on running after the earlier daemon starts.
+Each of their launchers starts its guard at the defaults, and the earlier daemon's answer to each hello carries no `memoryGuard` member, which the guard reads as "off" (`launcher: memory guard: off: the daemon's acknowledgement carries no settings`).
+From that answer on the guard ends nothing, and the launcher sends no `launcher_memory_kill` frame on that connection, since that daemon would close the connection on a frame it does not know: a report waiting then is dropped with a line.
+Such a pod is bounded by the kernel's stop of the whole container alone, as every pod was before this release, until a launch replaces it with a pod of the earlier image.
+
+**Nothing in the database needs a statement.**
+This release adds no store migration.
+The note a kill sends is a `role_message` outbox row (`record.RoleMessage`), a kind the release before it already decodes, so a note still queued at the rollback is delivered as any other role message.
+
 ### Cutting over to the pod-owned disk
 
 This section is for a deployment already running issue pods of the release before this one (`legion-v10.1.0` to `legion-v10.2.x`), where each issue's Sandbox owned an `issue` volume claim that outlived its pods.
@@ -2295,7 +2316,7 @@ A caller in a pod whose claims record a contract below 49 is served the state wi
 Store migration 20261104073148_issue_memory_group adds the three columns they are read from to `issues` — `memory_group`, `memory_draw_mode` and `memory_drawn_at` — written once, when the tree's lifecycle row is first created, and backfilled for no row.
 Store migration 20261104153554_issue_memory_carried adds `memory_carried` beside them, the hand-over's own answer about a root handed over out of another tree, which no caller of the state reads.
 It backfills the hand-overs the release before it recorded: a row whose `handed_over_from` names a tree that holds a `tree_lifecycles` row of the project's normalized token, and that carries no draw of its own, is marked carried.
-Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer `record.Store.CarryMemory` writes at a hand-over made from now on.
+Those old trees ran with no memory, the setting having not existed then, so the mark is written and no group with it, which is the answer the hand-over wrote from then on: `record.Store.CarryMemory` until daemon API contract 141, and `record.Store.CarryAssignments` since, which settles the child at no variant (contract 141, below).
 A child handed over out of a tree nothing ever opened keeps the column's default, false, and is drawn at its own first open like any other new tree.
 
 To roll this release back to contract 48, put `legion.yaml` back without `projects.<KEY>.memory`, which the earlier release refuses as a key it does not know, and re-pin it.
@@ -2388,6 +2409,50 @@ two supervise starts carrying `entry`, one of them `resendEntry` beside it, a su
 The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the nine `NOTICE`s with their `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and the same `COMMIT`; both exited 0.
 After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
 Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
+
+**Each issue's experiment assignments in the state (daemon API contract 141).**
+A release at contract 141 carries, on every issue of `GET /legion/v1/state`, `assignments`:
+one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
+first the `memory` block's experiment, `settings.projects.<KEY>.memory`, which every project declares — at mode `off` where its file writes no block — unless `settings.projects.<KEY>.experiments` names `memory` itself;
+then the experiments `settings.projects.<KEY>.experiments` names, in its order;
+then any experiment the file no longer names, in the order of their names.
+An issue carries its tree's answer for an experiment whose unit is the tree, and its own answer for one whose unit is the issue.
+`variant` and `mode` ride whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
+that row — no arm, no mode, no instant — is a hand-over settling a child at no arm for an experiment the tree it left held no row for, which is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
+The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 141 is served.
+The three memory fields of contract 49 answer exactly as they did and no reader of them changes:
+they are now read off the answer of the experiment named `memory`, whichever spelling declared it, and only where that row records a draw.
+`settings.projects.<KEY>.experiments` is a key new in this release, and every project carries it: `[]` for a project whose file declares no experiment under that key.
+Store migration 20261111045636_experiment_assignments adds the table those answers are rows of, `experiment_assignments`, keyed by the issue key and the experiment name, written once and never updated, and back-fills it from the four `issues.memory_*` columns:
+every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its mode, its instant and its mark verbatim and its group as the variant, but for one normalisation: a group drawn under mode `off`, which that column holds as the word `none`, becomes the empty variant.
+The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
+
+To roll this release back to contract 137, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
+There is no SQL to run and no table to drop:
+the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
+A `legion` of this release kept through the rollback reads the rolled-back daemon's `memory` line as the earlier release's own `legion state` prints it: that daemon serves no `assignments`, so the line counts every issue whose `memoryGroup` is set, by that group and its `memoryDrawMode` (`experimentLines` in `packages/daemon/cmd/legion/main.go`).
+What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
+The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.20.0`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+it changes arms all the same.
+That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
+its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
+The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
+The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
+The earlier release writes `issues.memory_*` in a second place, the hand-over, and that costs the children handed over out of those trees too.
+Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.20.0`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
+A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
+it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
+Rolling forward does not undo that for a child whose own tree the earlier release opened during the window, and does for one whose own tree no release has opened yet.
+The back-fill does not run again, so neither child holds an assignment row.
+The child whose tree the earlier release opened has a lifecycle row that stands, so this release never draws it either:
+it comes back in no arm, whatever arm the tree it left was drawn into, and the copy by hand below gives it only the settled row, which is no variant too.
+The child whose tree no release has opened is drawn by this release at its first open after the roll forward (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`), as any new tree is, unless the copy by hand below reaches it first:
+that copy takes the child's carried mark too and writes it the settled row, at no variant, and the draw at its first open then writes nothing over that row.
+Rolling forward again costs the window the earlier release ran for.
+A tree it drew in that window has its answer in `issues.memory_*` alone, and the back-fill runs once, at the first deploy of the migration, and not a second time:
+this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
+Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
+Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
 ### Contract discipline
 
@@ -2544,6 +2609,8 @@ runtime:
     skills_repository: <owner>/<name>   # optional: the Oh My Pi plugin marketplace every issue pod's roles install their skills from, cloned in an init container of the pod's own (below)
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
+    memory_guard:               # optional: the memory guard in each issue pod's launcher (The memory guard in an issue pod, below)
+      issue_pods: { enabled: true, act_percent: 85, floor_percent: 10, wait_seconds: 5, interval_milliseconds: 100 }   # the defaults
 bind: <the daemon host's own address, or 0.0.0.0 once advertise_host names one>
 advertise_host: <optional: a stable Service name, e.g. legion-daemon-<project>.<namespace>.svc, every pod dials instead of bind, at worker_stream_port>
 worker_stream_port: <the port advertise_host or bind serves it on>
@@ -2694,6 +2761,11 @@ an operator who knows the root volume raises `ephemeral_storage_request` so the 
 - a `repository_cache` that is not a mapping, or names a member but `volume`, `refresh_minutes`, `retain_hours` and `resources`;
   a `volume` that is not a positive Kubernetes quantity;
   a `refresh_minutes` or `retain_hours` that is not a positive integer; its `resources` take a reservation's six members and nothing else;
+
+- a `memory_guard` that is not a mapping, or names a member but `issue_pods` (`controller_pod` among them, which this release does not read);
+  an `issue_pods` that is not a mapping, or names a member but `enabled`, `act_percent`, `floor_percent`, `wait_seconds` and `interval_milliseconds`;
+  an `enabled` that is not `true` or `false` (`runtime.kubernetes.memory_guard.issue_pods.enabled must be true or false`);
+  a number that is not an integer, or one outside its range, 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds` (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`);
 
 - `gateway`, removed with LEGION-270: a pod's model route is the operator's `pod`;
 
@@ -3109,6 +3181,10 @@ So a role's rows read `unchecked` from its ready until its first idle measuremen
 A check that fails, throws or runs past its budget is a failing row carrying the reason, never a stopped session, and the daemon normalises what arrives (a live row the session left out reads `not
 reported by this session`, a name the table has no live row for is dropped, a detail is one line with every credential it quotes redacted, cut at 1024 bytes) and never refuses a ready for what it reports.
 The state route answers without authentication, so the extension cleans each detail the same way before it sends it, and the daemon cleans a report it reads back from the store at boot too.
+The cleaning covers the fixed list of shapes in `packages/contracts/fixtures/capability-redaction.json` and nothing else:
+after a `Bearer` or an API-key label the word up to the next whitespace or quote is masked, whatever its shape, except a trailing run of backslashes, closing brackets and `,;:.!?`, which stays outside the word where only whitespace, a quote or the line's end follows it;
+such a run that any other character follows is masked with the word;
+a secret that no named pattern marks, such as a positional argument (`mysql -p hunter2`, `curl -u user:pw`), is not masked.
 A boot's ready and the ready after a regained Envoy role carry no report at all, and the controller measures nothing and sends none.
 Each row's check, and the fact a passing one reports:
 
@@ -3249,11 +3325,14 @@ architect, planner, implementer, tester, reviewer, merger):
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
    As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
+   As that PID 1 it also runs the pod's memory guard: when the pod's anonymous memory nears the container's limit, the guard ends the largest process that is neither Legion's own nor an agent's own, before the kernel stops the whole container and every role's turn with it ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)).
+   Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
+   A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
 
-5. As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+5. As well as the roles, the launcher, as the container's PID 1 alone (item 4), sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
    The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.WorkspaceOf`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
    the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
@@ -3417,6 +3496,11 @@ Dispatch can verify a projected token minted for its own audience (`DISPATCH_OID
 The operator's own pod volumes are outside this statement: the operator controls them.
 An operator-launched controller can differ:
 `legion controller start` points `DISPATCH_TOKEN_FILE` at the controller file's own `dispatch_token_file` (`controllerEnvironment`, `packages/daemon/cmd/legion/controller.go`), so it presents the token that file holds, which need not be the daemon's; under `dispatch_token_broker: true` in its place, the session is handed no bearer at all and trades this machine's identity at the broker for a DPoP-bound token of its own, and the start drops an inherited `DISPATCH_TOKEN` and `DISPATCH_TOKEN_FILE`, which it would otherwise present instead.
+Under either setting the start also sets `PERSON_SIGNIN_TRADE=off` in the controller's environment (`controllerPersonTradeVar`).
+The TypeScript client (`packages/broker-client`, which pi-envoy, pi-legion, claude-envoy and the `dispatch` command use) then trades this machine's identity for the controller's own Dispatch credential under `dispatch_token_broker`, and for its Envoy credential where no bearer names one, even where the operator ran `agent-secrets login` on the machine, so no credential the controller trades at the broker acts in its operator's name.
+A bearer the controller is given is presented as it is at main: the token `dispatch_token_file` names, and an Envoy bearer from the operator's environment (`ENVOY_TOKEN`, `ENVOY_TOKEN_FILE`) or from the `envoy.json` under the HOME the controller keeps (`envoy.token`), each of which resolves before the broker route.
+That client alone reads the setting, and its name lies outside `AGENT_SECRETS_*` because `agent-secrets NAME -- <cmd>` strips that prefix's variables from its child but for a few (`sessionIdentityVars`, `packages/envoy/cmd/agent-secrets/main.go`), so a `dispatch` command the controller runs under `agent-secrets NAME --` keeps it.
+The setting does not change the controller's own `agent-secrets` secret reads: they are signed exactly as they would be without it.
 What the broker can already issue is [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue).
 `dispatch://INFRA-267` is where Legion's pods and its daemon get tokens of their own, and `dispatch://INFRA-264` is where Dispatch accepts one.
 
@@ -4583,6 +4667,234 @@ an init container at 11Gi is refused, `Max ephemeral-storage requested by init c
 The init containers carrying the pod's reservation add nothing against that cap, so a GKE deployment sets `issue: {ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi}`:
 the issue pod's whole 10Gi, shared by its six roles.
 
+### The memory guard in an issue pod
+
+An issue pod's six roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
+a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
+The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL` the largest process that is neither Legion's own nor an agent's own, and the daemon tells that process's role why, on the role's own topic.
+The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
+The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
+
+Measured on 2026-11-14 in gVisor test pods with memory limits of 4, 8 and 19 GiB, in the tester's `wc-gvisor` result at `bebc420b` (dispatch://INFRA-3557, from the Jobs of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md):
+with the guard off, the kernel stopped the sandbox when `AnonPages` was 95.5% to 99.4% of the limit;
+with the guard on at the defaults, each growing process — 64 MiB every 0.25 s, 256 MiB every 0.25 s, shared anonymous memory, a memfd written and never mapped, and a grower beside an unwritten 16 GiB memfd or with about 1 MiB of arguments — was ended when the reading was 85.0% to 90.0% of the limit, 8.8 to 14.7 ms after the guard's first reading at the mark, and the pod went on.
+The earlier runs of those Jobs, recorded in the same issue's `wc-gvisor` results, put the kernel's lowest kill point at 95.4% (the tester's run at `bde5a751`) and took up to 36.9 ms to decide (the implementer's 8 GiB run of shared anonymous memory at `d6f81bbf`).
+
+**Where it runs.**
+Only a launcher that is its container's first process, PID 1, runs the guard: the `legion launcher` of an issue pod's `roles` container ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+Only that process sees every process of the container, and every process that no `role-init` holds is its own; the rules below rest on both.
+A launcher started any other way writes one `off` line and runs no guard.
+The launcher of the controller's pod runs none either.
+
+**What it reads.**
+Each interval, `interval_milliseconds` (100 ms by default), the guard reads two files: `AnonPages` of `/proc/meminfo`, the pod's anonymous memory, which is its reading, and the cgroup's `memory.limit_in_bytes`, the container's limit.
+Each of the two reads took 0.025 to 0.044 ms at the median in the read-cost Job of dispatch://INFRA-3557/artifact/wc-gvisor-jobs-md (`infra-3557-19g-readcost-fbf6z`, 2026-11-14).
+The guard never acts on the cgroup's counter, `memory.usage_in_bytes`, because the counter also counts the pages of the files a process maps, which the kernel can take back:
+in the tester's `wc-gvisor` result at `bebc420b` a file mapped and read raised the counter to 97.2% to 105.4% of the limit, and an LMDB map larger than the limit raised it to 107.4% to 134.9%, while `AnonPages` stayed under 11% and the guard ended neither process.
+One read of the counter took about 18 ms at the median in a running INFRA issue pod of six roles, measured on 2026-11-14, and 0.04 ms in that read-cost Job, so the guard reads it every 5 seconds for its hourly line and once at each kill, and never each interval.
+Where `AnonPages` or the limit cannot be read, where the limit reads as no limit (2^62 bytes or more), where the system has no `pidfd_open`, through which the guard ends a process, or where the guard cannot list the processes of `/proc`, the guard writes one `off` line and does nothing more while the launcher runs.
+
+**What it ends.**
+At or above the mark, `act_percent` of the limit (85 by default), the guard lists every process of the container and finds the ones it may end (below).
+The list leaves out a zombie or a dead process, state `Z` or `X` in its `stat`, whose `status` counts one thread or none:
+it holds no memory, and under gVisor its `exe` link answers `EACCES`, which would otherwise count it unread.
+A process in either state whose other threads still run is one whose main thread alone has exited, and the guard reads it as a live process ("What it does not do", below).
+It measures each process it may end from its `/proc/<pid>/smaps`: the sum of its `Anonymous:` lines, plus the resident size (`Rss:`) of each of its shared maps of memory-backed files, which are `/dev/zero (deleted)` (shared anonymous memory), `/memfd:…`, `/dev/shm/…` and `/SYSV…` (`smapsSize`, `proc.go`).
+Shared anonymous memory and a memfd raise `AnonPages` while their pages read 0 in `Anonymous:`, so without the second term a process that grows that way would not be seen.
+It also adds each memfd the process holds open by a file descriptor and has not mapped shared, at its size as `stat` reads it through that descriptor or the pod's `Shmem` reading at the decision, whichever is less (`heldMemfdBytes`, `proc.go`):
+ending the process frees that memfd's pages too, and no line of its smaps shows them.
+`Shmem`, the pages of the pod's memory filesystems and memfds, bounds those pages where the size does not: an unwritten memfd made large with `ftruncate` has its size and no pages, and under gVisor neither its size nor its block count shows its pages, so in an 8 GiB gVisor pod on 2026-11-14 the holder of an unwritten 16 GiB memfd, counted at that size, was ended first and freed nothing, and the kernel stopped the sandbox.
+A memfd counts once: one that a process the guard measures maps shared counts through that map's `Rss:` alone, and one that several of them hold by a descriptor counts for the largest of them by its smaps.
+A map of a file on disk adds nothing, which is why a process that maps a database is not ended for its map.
+A region that several processes map counts in each of them, since gVisor gives no `Pss` that would divide it.
+The guard acts only when the processes it may end hold at least `floor_percent` of the limit between them (10 by default): below that, the memory is mostly in processes it may not end, and ending one of the rest frees too little to matter.
+It then holds the largest through a pidfd, reads that process's start time again, and sends `SIGKILL` only when the start time is the one the scan read, so a pid that another process took after the scan is never signalled.
+Nor is a process that exited by itself after the scan, whether its parent has reaped it yet or not: its pidfd reads it as exited, and the guard writes no `ended` line and sends no report for it, since an exited process that is not reaped keeps its start time, and a kill of it answers no error.
+Of two processes of the same size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
+A process whose `stat`, `exe`, `ns/pid` or `smaps` the guard cannot read is not ended, is counted apart, and is logged once.
+When such a read fails, the guard reads the process's `stat` again first: a process that has ended meanwhile (gone, its pid taken by another, or now an exited zombie) is left out with no line, since under gVisor a read of a process that has just exited answers `EACCES` rather than `ENOENT`.
+A kill that fails, for a reason other than the end of the process, is logged once, that process counts as unread for as long as it lives, and the next reading ends the next largest.
+
+**After a kill: the rise rule.**
+After a kill the guard takes a reading each interval.
+The reading has fallen when it is below the reading at the kill by any amount, or when it is below the mark.
+When it has fallen and is still at or above the mark, the guard ends the next largest process once the killed one has exited or once the wait has passed, `wait_seconds` (5 by default).
+So a pool of forked workers, which share their parent's pages and each count them whole (`make -j`, `lake build`), is ended one worker at a time while the reading stays at the mark, rather than left for the kernel to stop the whole sandbox.
+When the wait passes and a kill has not lowered the reading at all, or when no process may be ended, the guard gives the rise up with a `stopped for this rise` line, which a stop that repeats writes at most once a minute ("The lines", below), and ends nothing more for that rise:
+it acts again only after the reading has gone below the mark.
+
+**What it protects, and why.**
+The guard never ends a process whose end would cost a role its turn, or cost every role theirs: ending an agent ends that role's turn, and ending a command the agent ran does not.
+The launcher knows each protected process by its place in the process tree first, and by its executable and its arguments second, so a program that copies a name (an `omp` or a `worker-shim` that a command starts) is not protected (`podClassifier`).
+Outside every role it protects:
+
+- the launcher itself, which serves every role;
+
+- each process the launcher runs for a step of its own (the test database's start script, and the jj and git of a workspace restore, which its `pidGuard` holds), with every process under it;
+
+- the test database's server, the launcher's direct child whose executable is `postgres` and whose working directory is the test database's data directory, with every backend under it:
+  ending one backend makes the server end and restart every backend, which stops every role's test database at once ([A test database in the pod](#a-test-database-in-the-pod)).
+
+In each role it protects:
+
+- the role's `role-init`, the init of the role's namespaces, and not the processes under it;
+
+- the role's shim, the oldest direct child of that `role-init` that is the launcher's own executable run as `worker-shim`;
+
+- every direct child of the shim: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer, the jj of the working copy's adoption and the CodeGraph warm-up;
+
+- Oh My Pi's helpers, each reached from the agent through a chain of helpers:
+  a process that runs the agent's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of Oh My Pi's JavaScript eval tool, which runs the code the agent writes, and whose parent is the agent or another such helper.
+  A helper starts helpers of its own: in an issue pod on 2026-11-14 the agent's `__omp_worker_daemon_broker` was the parent of `__omp_worker_lsp_mux`, which runs `gopls`;
+
+- for a role that runs Claude Code, `claude`, the child of `legion claude-bridge`, and Claude Code's MCP server, the child of `claude` whose first argument ends with `/claude-envoy/dist/envoy-channel.js`.
+
+Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, and a shell that `kubectl exec` started with what it runs.
+A process is a role's when that role's `role-init` is its ancestor by the parent chain, and otherwise when it shares that `role-init`'s PID namespace; any other process is no role's, `role=none` in a line.
+The ancestor comes first because a process can make a PID namespace of its own inside a role, as a sandboxed Chromium does.
+
+**The settings.**
+
+```yaml
+runtime:
+  kubernetes:
+    memory_guard:
+      issue_pods:
+        enabled: true
+        act_percent: 85
+        floor_percent: 10
+        wait_seconds: 5
+        interval_milliseconds: 100
+```
+
+Those are the defaults, and the guard is on under `runtime: kubernetes` wherever the file says nothing.
+The ranges are 50 to 95 for `act_percent`, 1 to 50 for `floor_percent`, 1 to 60 for `wait_seconds` and 50 to 5000 for `interval_milliseconds`, and the loader refuses a value outside its range by its whole key (`runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95`).
+`issue_pods` is the one member this release reads: the mapping is keyed by the kind of pod so that dispatch://INFRA-3531 can add the controller's pod beside it, and until then the loader refuses `controller_pod` as it refuses any other unknown key.
+The launcher checks the settings against the same ranges on its own side, and settings outside them change nothing and write one `settings refused` line.
+
+The daemon hands the settings to the guard on its answer to each role's hello (`memoryGuard` in `launcher_hello_ack`), so a change reaches a running pod at its next connection, which every daemon restart gives it, and replaces no pod.
+The guard takes the settings of the newest answer of any role, and writes one `settings` line when they change.
+Before the first answer it runs at the defaults, so the pod is guarded while the daemon is away.
+Under `enabled: false` the daemon's answer carries no settings, the same answer a daemon built before the guard gives: the guard turns off with one line, and a later answer that carries settings turns it on again.
+Off, the guard still takes its readings and writes its hourly lines, and it ends nothing.
+A dropped connection leaves the settings in force.
+
+**The lines.**
+Every line of the guard starts `launcher: memory guard: ` in the `roles` container's log and carries `key=value` fields (`packages/daemon/internal/memoryguard/lines.go`):
+sizes in bytes, times in RFC 3339 UTC, `wait` and `interval` as Go durations (`5s`, `100ms`), and a process's name last and in quotes.
+A line names a process by the base name of its executable, the target of its `/proc/<pid>/exe` link, or by its `comm`, the name in its `stat`, where that link cannot be read (`processName`).
+Each character of the name that does not print is escaped (`\n`, `\x1b`, `\u202e`), and the name is cut to 256 bytes with `…` where it was cut.
+No line prints an argument of a process, because an argument is text the process chose, and it may hold a credential that no masking rule names, such as a positional password.
+The role that started the process already has its arguments.
+The guard's own lines carry no role prefix, since it watches every role's processes and the launcher's together, and `role=none` names a process of no role.
+
+```text
+launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> interval=<d> limit=<bytes> reading=<bytes>
+launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
+launcher: memory guard: off: the daemon's acknowledgement carries no settings
+launcher: memory guard: settings refused: <why>; nothing changes
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> executable="<name>"
+launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n>
+launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
+launcher: memory guard: off reason=<why>
+launcher: memory guard: unread pid=<pid> reason=<why>
+launcher: memory guard: kill failed pid=<pid> reason=<why>
+```
+
+`started` comes once, with the first reading, and `settings` once for each change of the settings.
+`ended` comes once for each kill: `counter` is the cgroup's counter at the kill and `shmem` the pod's `Shmem` of `/proc/meminfo`, the pages of its memory filesystems and memfds.
+`stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
+`endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
+`protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
+A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, or that only a descriptor of a protected or unread process holds, such as a memfd it has not mapped, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
+A stop that repeats
+— the rise given up, the reading below the mark and back above it, the rise given up again —
+writes this line at most once a minute by the guard's clock, and leaves the stops in between out of the log:
+the next line written carries in `left_out` how many stops it left out since the line before it, and `left_out=0` when it left out none.
+The sizes of the protected and unread processes, and after a kill that freed nothing the scan they are counted from, are read only for a line written, so a reading that keeps crossing the mark does not read them at every crossing;
+the process scan and the smaps of the processes the guard may end still run at every crossing, since they decide whether it acts.
+`hour` comes once an hour from the guard's start, with the highest and lowest readings and counters of that hour, the time of the highest reading, and the largest process the guard saw, protected processes included.
+The guard measures that largest process again, in a goroutine of its own that delays no reading, each time a new high of the hour is at least 1% of the limit above the high it last measured at.
+`off reason=` turns the guard off while the launcher runs, for one of the reasons in "What it reads" above, and a launcher that is not its container's first process writes it as `off reason=the launcher is pid <n>, not the container's first process, …`.
+`unread` comes once for each process the guard could not read, and `kill failed` once for each process a kill failed on.
+Read a pod's hourly lines with `kubectl logs <pod> -c roles | grep '^launcher: memory guard: hour '`.
+
+The launcher writes three lines of its own about the reports below, each behind the role's `<role>: ` prefix:
+
+```text
+<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=32 reports already wait for a connection, the most a role keeps
+<role>: launcher: memory guard: report dropped sequence=<n> pid=<pid> reason=this connection's acknowledgement carries no memory guard settings, so the daemon behind it may not know the report
+<role>: launcher: memory guard: report unsent sequence=<n> pid=<pid> reason=<why>; the next connection carries it
+```
+
+**The report and the note.**
+For each process of a role that it ends, the guard gives a report to that role's part of the launcher, which sends it to the daemon as one `launcher_memory_kill` frame on the role's connection:
+the guard's own id, its count of kills, the pid, the process's name as its lines give it (`executable`, at most 256 bytes and no argument), the process's size, the reading, the counter and the limit.
+The launcher sends a report only on a connection whose answer carried settings, since a daemon built before the guard closes a connection on a frame it does not know, and it drops a report waiting for any other connection with a line.
+Up to 32 reports wait while the role has no connection, and a 33rd drops the oldest with a line, or the next oldest while the oldest is being written.
+A process of no role has its `ended` line and no report.
+The daemon applies each report once, under the event id `memory-guard-kill:<guard>:<sequence>`, so a report sent twice tells the role once.
+It credits the report to the issue, the role and the pod that the connection authenticated as, and never to anything the report says.
+It then queues one message to that role's topic, `notifications.role.<role token>` (`memoryGuardNote`, `packages/daemon/internal/workflow/engine.go`), with the sizes in binary units (`3.13 GiB`).
+The message names the process as the lines do, by its executable's base name or its `comm`, escaped and cut, and prints no argument, since an argument may hold a credential that no masking rule names, and the role that started the process already has its arguments:
+
+```text
+The launcher's memory guard stopped one of your processes with SIGKILL because the pod was near its memory limit: `<name>` (pid <pid>) held <size> of anonymous memory while the pod's anonymous memory read <reading> of its <limit> limit. The pod's other processes and your session go on. Heavy work — a build, a whole test suite, anything that needs much memory — runs where your deployment's instructions say, not in this pod: read skill://legion-worker/references/tools.md before you run it again.
+```
+
+A note can be lost in each of these cases, and in each the `ended` line stays in the container's log:
+
+- The launcher dropped the report, with one of its lines above:
+  32 reports already waited, or the connection's answer carried no settings.
+
+- The launcher wrote the report on a connection that the daemon then replaced:
+  the launcher counts a report as sent once it is written, and does not send it again.
+
+- The daemon dropped the report, with a warning in its own log, and kept the connection open:
+  a report that fails the frame's own checks, one from a launcher of no issue, and a valid report it could not record, because its store write failed or the bounded time it gives each report ran out.
+  The launcher counted the report as sent once it was written, so it does not send it again.
+
+- The workflow dropped the report, with a line in the daemon's log, because the daemon records no such issue.
+
+- The role's session held no topic when the outbox row ran, so the message was not delivered:
+  the outbox finishes the row with one log line (`roleMessage`, `packages/daemon/internal/daemon/outbox.go`).
+
+**What it does not do.**
+
+- It does not end memory that Oh My Pi holds in its own process, its embedded shell engine's included: that process is a role's agent, which the guard never ends.
+
+- It does not free the pages of the pod's memory filesystems (tmpfs): `AnonPages` counts them and no kill frees them, so they show in a `stopped for this rise` line as `unheld`.
+
+- It does not count a deleted file in `/dev/shm` that a process holds open by a descriptor and has not mapped shared.
+  Its pages raise `Shmem` and `AnonPages`, no smaps line shows them, and of a process's descriptors the guard reads only those that hold a memfd, so that memory shows in a `stopped for this rise` line as `unheld`.
+
+- It does not tell the pages of one held memfd from another's.
+  Where a process holds a written memfd and an unwritten one, or two processes hold different ones, each counts up to the whole `Shmem` reading, so their sizes may together count the same pages more than once.
+  The guard can then end a holder whose end frees less than its size said.
+
+- It does not act again while memory it may not end holds the pod above the mark, or after a kill that lowered the reading by nothing within the wait.
+  When the processes it may end hold less than the floor, it writes `reason=nothing to end`; when a kill freed nothing, `reason=not fallen`.
+  Either way it waits for the reading to fall below the mark, a process that grows in that wait is not ended, and the kernel can still stop the sandbox in that wait.
+  A reading that keeps crossing the mark has at most one such line a minute, with the stops left out counted in `left_out`, and a crossing at which the processes it may end hold the floor is still acted on at once.
+
+- It does not stop a fill faster than its margin.
+  Between the mark and the point where the kernel stops the sandbox, measured at 95.5% to 99.4% of the limit in the tester's result at `bebc420b` and as low as 95.4% in an earlier run (above), the guard must take a reading at or above the mark and end the process.
+  A process that crosses that margin inside one interval and the scan after it is not stopped in time: the container ends `OOMKilled` and every role's turn ends with it, as before the guard.
+  A reading can also come late: in one gVisor test run at 8 GiB, of shared anonymous growth on 2026-11-14 (the tester's at `8c24499c`), the longest gap between two readings was 1082 ms, where the longest gap of any growth run was 115.8 ms in the tester's result at `bebc420b` and 228.9 ms in the implementer's result at that head;
+  the kill still came at 85.23% of the limit, below every kill point measured in those results (95.4% and above).
+
+- It does not bound the reads of a decision by what a process holds.
+  Each decision walks the descriptors of every process the guard may end, to find the memfds they hold, at about 12.5 µs a descriptor in a gVisor pod (measured on 2026-11-14), so a process holding 20,000 descriptors adds about 250 ms to a decision, the one after a kill included.
+  It reads each such process's `smaps` whole as well, and under gVisor `vm.max_map_count` reads 2147483647, so the kernel's mapping limit does not bound that read either.
+  What it does bound is a process's arguments: it reads at most their first 4 KiB, more than the rules of "What it protects, and why" read of them, and prints none of them.
+
+- It does not see the memory of a process whose main thread alone has exited.
+  Such a process reads `Z` in its `stat` while its other threads run on and hold all of its memory, and the guard reads it as a live process ("What it ends", above).
+  On Linux, though, its `exe` and its `smaps`, read through the exited main thread, answer nothing, so the guard counts it as ended or as unread and never ends it.
+
+- It does not run in the controller's pod: a guard there is the work of dispatch://INFRA-3531.
+
 ### The disk dies with its pod
 
 An issue pod's disk is the pod's own: a generic ephemeral volume declared in its pod template (`issuePod.disk`, `podkind.go`), whose claim Kubernetes creates when the pod starts and deletes when the pod goes.
@@ -5038,6 +5350,7 @@ The daemon probes a pod by reading it and consulting the worker stream's live re
   — one role's process exiting is that role's **dead (gone)** alone, and changes nothing for its siblings.
   The `roles` container terminated (its PID 1 exited, `OOMKilled`, an eviction) ends every role of the issue:
   each is **dead (gone)**, its detail naming the container's reason and exit code and quoting that role's own last 20 `<role>: ` lines of the container's log, then the container's last 20 unprefixed lines (`roleLog`, `observe.go`).
+  The launcher's memory guard ends one process near the limit so that the container does not end `OOMKilled` ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and it never ends a role's `role-init`, shim or agent, so a role whose command it ended stays **alive** by these rules and is told of the kill on its role topic.
   No status at all for the container → **unknown**.
   A connected launcher reporting a child of the recorded generation for the role is **alive**, even when Kubernetes still shows the container's previous instance terminated for a moment after a restart:
   that one answer is asked first, and it alone outranks the terminated status.
@@ -5648,6 +5961,10 @@ each issue's pod (every role of it alike) and the image probe's.
   a deployment that turns fallback on only for some roles, as here, reports the row open, and records that with `capabilities.decided.model-fallback: "<reason>"`.
 
 - **`projects.<KEY>.memory`** gives every role of a tree the project opens the same Oh My Pi overlays and the same block of prompt text, or gives it none, by one draw made for the whole tree.
+  The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon reads it as an experiment of unit `tree` whose arms are `memory`, carrying the block's `config_files` and `instructions`, and `none`, carrying neither, at equal weight, with `on_variant: memory`.
+  A project writes the block **or** `experiments.memory`, never both:
+  the two are one experiment spelled twice, and a project that writes both is refused (`projects.<KEY>.memory and projects.<KEY>.experiments.memory are one experiment written twice: …`).
+  The block itself is accepted and refused in no new way — every rule below is the rule it has always had — so a file that passed before passes now, unchanged.
   `mode` is `off`, `on` or `random`: `off` gives no tree a memory group and is what a project with no `memory` block gets, `on` gives every new tree one, and `random` draws a fair coin (`crypto/rand`) for each new tree.
   `config_files` are the overlays a memory-group tree's roles name, absolute paths in the operator's mounts as `role_config_files`' are, and at least one is required while the mode is not `off`.
   `instructions` is optional, and is one markdown file on the daemon's own disk rather than in a mount:
@@ -5706,7 +6023,94 @@ each issue's pod (every role of it alike) and the image probe's.
   a tree already drawn into the memory group names them, which is why the mount check and the readability check hold at `off` too.
   A project with no block at all is the pod every deployment built before the block existed.
   Every issue of `GET /legion/v1/state` carries its tree's `memoryGroup` (`memory` or `none`), `memoryDrawMode` and `memoryDrawnAt`, the three absent together while nothing has drawn for the tree (daemon API contract 49);
-  `settings` carries the project's block; and `legion state` prints one `memory:` line counting the issues drawn under each group and mode, naming no issue, since the state names no tree and a handed-over tree carries its old tree's draw verbatim.
+  `settings` carries the project's block;
+  and `legion state` prints one line per declared experiment, the `memory` line among them, counting the issues that hold each arm and naming no issue.
+  It counts issues because every issue of the state carries each answer that applies to it, its tree's for a tree experiment and its own for an issue experiment, so one count serves either kind.
+  A count of trees would fit a tree experiment alone, and even there it would not count draws:
+  a child handed over as a tree of its own takes its old tree's draw verbatim, the draw time included, so two trees hold one draw.
+
+- **`projects.<KEY>.experiments`** declares the experiments the project draws its trees and its issues into, as a mapping of an experiment's name to its block, read and kept in the file's order.
+  An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it once:
+  every draw records it.
+  `mode` is `off`, `on` or `random`: `off` draws for no unit and is what a block with no mode gets, `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their weights (`crypto/rand`).
+  `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the same arm, or `issue`, which draws for each issue of the project on its own.
+  `variants` are the arms it compares, and a mode other than `off` needs at least two of them, since a draw among one arm measures nothing.
+  Each arm takes a `name` (the same characters, named once in its experiment), a `weight` (a whole number above zero, `1` where the arm names none), `config_files`, the Oh My Pi overlays a role of a unit drawn into it names, and `instructions`, one markdown file on the daemon's own disk.
+  Neither file key is required:
+  the arm that names no file at all is the control the others are measured against.
+
+  ```yaml
+  # plan-length.yml: kubectl -n legion create configmap legion-operator-experiments --from-file=plan-length.yml
+  runtime:
+    kubernetes:
+      pod:
+        volumes:
+          - {name: operator-experiments, config_map: {name: legion-operator-experiments}}
+        volume_mounts:
+          - {volume: operator-experiments, mount_path: /etc/legion-experiments}
+  projects:
+    WIDGETS:
+      experiments:
+        plan-length:
+          mode: random
+          unit: issue
+          variants:
+            - {name: long, weight: 1, config_files: [/etc/legion-experiments/plan-length.yml]}
+            - {name: control, weight: 1}
+  ```
+
+  (beside the block's other volumes and mounts).
+
+- **The draw is the unit's, and is made once.**
+  A tree experiment is drawn when the tree's lifecycle row is first created, on both paths that open a tree — admission's own and the operator's `POST /legion/v1/operator/claims` — and is recorded against the tree's root key.
+  An issue experiment is drawn when the daemon first records the issue, root or child, and is recorded against that issue's own key.
+  Each answer is one row of `experiment_assignments` carrying the arm, the mode in force at the draw and the instant, written once and never updated.
+  A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its finished root hands over as a tree of its own is settled at the hand-over with the answers of the tree it leaves:
+  for each experiment of unit `tree` that tree held a row for, that row's arm, mode and instant verbatim, marked carried, and no arm at all for each experiment that tree held no tree row for and the child holds no row of its own for, which is an answer and is never drawn for later.
+  A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
+  An operator's spawn whose tree has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
+  The launch follows the record, not the mode:
+  a unit the daemon drew into an arm keeps that arm's overlays and its instructions while the project's file still names the arm, whatever the mode is now, so moving a mode to `off` stops new draws and takes nothing from a unit already running.
+  A unit whose recorded arm the file no longer names runs as a unit in no experiment does, and its row stays, so naming the arm again gives the unit the arm it was drawn into.
+
+- **What a role of a drawn unit is given.**
+  Its `PI_CONFIG_FILES` is the `pod.env` value, then its own files (`role_config_files`), then the `config_files` of each arm its unit was drawn into, in the order the project's file declares the experiments, which outrank both.
+  Its one `--append-system-prompt` value ends with each such arm's `instructions`, in that same order, after the deployment's own.
+  The daemon reads every declared arm's `instructions` at boot, refuses a file it cannot read or that holds nothing, and keeps its own copy under the state directory, so no pod reads the operator's file.
+  The controller is in no experiment whatever the modes say, since a unit is a tree or an issue and the controller runs in neither.
+  An arm's overlays take part in everything `role_config_files` takes part in:
+  the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files`), the image probe's per-role value, the pod drift, and what a kept pod's role is told.
+
+- **The pod-replacement cost of a newly declared overlay file.**
+  An overlay file feeds pod drift, so the day a project declares an experiment whose arm names `config_files`, every live issue pod of the deployment has drifted and is replaced.
+  Nothing can avoid it:
+  a pod's volumes and mounts are fixed when the pod is created, and a role cannot read a file its pod does not mount.
+  It is every issue pod, and not the drawn units' pods alone, because any unit may be drawn into any arm;
+  the controller's pod is never replaced for it, since the controller runs in no experiment.
+  The drift is reported `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files <file>`, naming the key the operator wrote, and it is handled as an overlay of `role_config_files` is ("Rolling it out" above):
+  the daemon opens an update round on each drifted pod, which asks each role of that issue, on the role's own Envoy topic, to push its work and answer `ready_for_update`, and replaces the pod once every role has answered and no turn runs, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered, so a turn still running at the bound ends with the pod;
+  a pod no round covers is replaced by the first launch into it.
+  Replacing an issue pod takes its disk with it ([The disk dies with its pod](#the-disk-dies-with-its-pod)), and a role mid-turn at the boot's re-adoption is reported `StaleAddress` and relaunched at once, uncharged, so that turn is lost.
+  So turn an experiment on knowing the cost:
+  declare an arm that names files when no role of an affected issue is mid-turn and every role has pushed.
+  An arm that names no file costs nothing, since nothing new is mounted for it — which is a second reason the control arm names none.
+
+- **The kept-pod degrade: a unit in neither arm.**
+  A launch into a pod the daemon keeps builds that role's `PI_CONFIG_FILES` from the overlays the pod holds, not from the configuration as it now reads, and that list can be shorter than the configuration names.
+  It has to be:
+  Oh My Pi refuses to start on an entry that is not there, so a role started against a file its pod does not mount would never register, and never answer the round that is to replace that pod.
+  So a pod built before an arm's mount existed starts its role without that arm's files, and a unit recorded in that arm runs in **neither** arm:
+  not the control, which names no file, and not the arm it was drawn into, whose file it cannot read.
+  The launch logs one line for it, naming the issue, the role, the experiment and the arm, with the files it dropped:
+  `sandbox runtime: the pod this launch keeps was built before this variant's overlays were mounted; its role starts without them, in neither arm, until the update round replaces the pod`.
+  Nothing else says that the generation ran outside the arm its record names, so an analysis reads those lines and counts such a unit out of its exposure.
+
+- **Where an arm shows.**
+  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 141, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
+  `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes neither the `memory` block nor `experiments.memory` declares it at mode `off`, and one that writes `experiments.memory` declares it at that key's own mode — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
+  `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.
+  The documentation site's configuration reference page is generated from that output.
 
 - **`runtime.kubernetes.agent_secrets`** enrolls every pod the daemon runs with the secrets broker (the broker design's pod-enrollment plan), so an agent in a pod runs `agent-secrets <SECRET> -- <command>` and gets only that pod generation's grants.
   `url` is the broker's base URL (https, or http to a loopback address;
@@ -6329,7 +6733,7 @@ In order, and keeping nothing until the daemon has answered, the command:
 
 6. runs Oh My Pi interactive in the foreground (`omp_launch_prefix` and `omp_invocation`, one joined `--append-system-prompt` holding the controller prompt, the daemon's `Design gate steps:` line, the project's repositories sentence and the deployment instructions, then the one positional word `/legion-controller-start`, no `--resume`, no `--mode rpc`) with the controller's environment (`LEGION_CONTROLLER=1`, `LEGION_ROLE=controller`, `LEGION_DAEMON_URL`, `LEGION_PROJECT`, `LEGION_STATE_DIR`, `LEGION_CONTROLLER_START_MESSAGE` (Oh My Pi runs the positional word once its startup is over and its TUI listens, and pi-legion's command of that name claims the controller and sends the message as the session's first turn, which the operator sees, can type during and can interrupt with Esc;
    it sends it once the controller is registered, right before the role claim and the live wake subscription, so the controller's first turn runs its start procedure deterministically, with nothing typed, rather than racing a card or a wake for the session's one first-turn slot
-   — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED_FILE` (the controller is pane-side, and never gets the daemon's seed) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
+   — LEGION-392), its grant and secret files, `LEGION_GH_OWNERS_DIR` naming `<state_dir>/gh` (the bundle step 5 wrote), `GH_CONFIG_DIR` its default owner's directory (the bundle's root, empty, when the daemon has no GitHub App), `LEGION_GH_PATH` the real gh, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` emptied, so nothing inherited outranks the files, the Envoy and Dispatch endpoints, `PERSON_SIGNIN_TRADE=off` (the controller's own broker credentials trade this machine, never its operator's sign-in), and `NATS_NKEY_SEED_FILE` naming `nats_nkey_seed_file` when the file sets it) on top of the operator's own environment, less `NATS_DAEMON_NKEY_SEED` and `NATS_DAEMON_NKEY_SEED_FILE` (the controller is pane-side, and never gets the daemon's seed) and less `LEGION_BOOT_TOKEN` and `LEGION_BOOT_TOKEN_FILE` (a start from inside a Legion pane inherits that pane's, and the plugin takes a controller carrying one for a daemon-launched controller), and exits with Oh My Pi's exit code.
 
 A refusal before the secret is written removes the directories made for the probe, so the state directory is as it was.
 
