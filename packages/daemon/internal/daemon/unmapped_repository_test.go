@@ -396,8 +396,12 @@ func TestLettingARepositoryGoTellsTheArchitectOfTheChildrenNothingWillRecord(t *
 // names a child whose parent the daemon does not record with that parent to release first, as the
 // recovery's own notice does: release_children files a todo child under its parent's unread
 // repository when the parent is what waits, and the child is recorded only under a recorded
-// parent. Before, every let-go notice said no todo issue named the repository, false where one
-// did, and told such a child, todo all along, to be released again once it is todo.
+// parent. It names a child on a repository the mapping now leaves out with that refusal, which
+// is what stops it: for a missing App, with the step refuseChild's own notice gives, and for a
+// read GitHub did not answer, with the mapping's own recovery, which records it. Before, every
+// let-go notice said no todo issue named the repository, false where one did, and told a child
+// that was todo all along to be released again once it is todo, which did nothing while its
+// parent was unrecorded or its repository was refused.
 func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testing.T) {
 	const tree, parent, child = "LEGION-985", "LEGION-986", "LEGION-987"
 	noTodo := "the daemon no longer waits for GitHub to answer for " + unmappedRepo + ", because no todo issue labelled for Legion or under a parent names it now"
@@ -407,9 +411,12 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 		name string
 		why  letGoWhy
 		// shown is what Dispatch shows of the child, and of its parent where the wait names one
-		// other than the tree's recorded root (parent).
-		shown  []dispatch.Issue
-		parent string
+		// other than the tree's recorded root (parent). mapped is how Dispatch's mapping, once
+		// read, answers for the repository: "" names it not at all, "missing" leaves it out for
+		// a role App not installed on it, and "unread" leaves it out for a read GitHub did not
+		// answer.
+		shown          []dispatch.Issue
+		parent, mapped string
 		// opening and line are what the notice must say, and never what it must not.
 		opening, line, never string
 	}{
@@ -423,12 +430,35 @@ func TestALetGoNoticeSaysWhyTheRepositoryWasLetGoAndWhatToReleaseFirst(t *testin
 			shown:   []dispatch.Issue{issue(parent, unmappedRepo, "backlog", false, tree, 1), issue(child, "acme/widgets", "todo", false, parent, 1)},
 			opening: noTodo, line: child + " (todo in Dispatch now, and its parent " + parent + " is not recorded: release " + parent + " first, then " + child + ")",
 			never: "release it again once it is todo"},
+		{name: "a todo child on a repository the mapping now leaves out for a missing App", why: letGoAnsweredElsewhere, parent: tree, mapped: "missing",
+			shown:   []dispatch.Issue{issue(child, unmappedRepo, "todo", false, tree, 1)},
+			opening: elsewhere, line: child + " (todo in Dispatch now, and the daemon records no issue on " + unmappedRepo + ": the review App is not installed on " + unmappedRepo + "; install the App on it, or set a repository both Legion Apps are installed on, then release " + child + " again)",
+			never: "release it again once it is todo"},
+		{name: "a todo child on a repository the mapping leaves out for a read GitHub did not answer", why: letGoAnsweredElsewhere, parent: tree, mapped: "unread",
+			shown:   []dispatch.Issue{issue(child, unmappedRepo, "todo", false, tree, 1)},
+			opening: elsewhere, line: child + " (todo in Dispatch now; Dispatch's mapping leaves " + unmappedRepo + " out for now: the implement App's installation on " + unmappedRepo + " could not be read",
+			never: "release it again once it is todo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			w, client, _, _ := unmappedRig(t, &installations{})
+			w, client, installs, _ := unmappedRig(t, &installations{})
 			liveRoot(t, w, client, tree)
 			client.show(tc.shown...)
+			if tc.mapped != "" {
+				client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true}, dispatch.RepoProject{Repo: "zeta/tools", Project: "LEGION"},
+					dispatch.RepoProject{Repo: unmappedRepo, Project: "LEGION"})
+				if tc.mapped == "missing" {
+					installs.setMissing(true, "review "+unmappedRepo)
+				} else {
+					installs.setFailing(errors.New("GitHub answered 502"), "implement "+unmappedRepo)
+				}
+				if err := w.refreshMapping(ctx); err != nil {
+					t.Fatalf("read the mapping that names %s: %v", unmappedRepo, err)
+				}
+				if held := w.repositories.lookup(unmappedRepo); held.source != fromMapping || held.refusal == "" || held.unread != (tc.mapped == "unread") {
+					t.Fatalf("lookup(%s) = %+v once the mapping names it, want it left out (%s)", unmappedRepo, held, tc.mapped)
+				}
+			}
 			listing, err := client.ListIssues(ctx, "LEGION", nil)
 			if err != nil {
 				t.Fatal(err)

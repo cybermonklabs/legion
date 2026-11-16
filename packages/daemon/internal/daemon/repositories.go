@@ -2144,8 +2144,12 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 // with that parent instead, as tellReleaseWaits names it: a release_children files a child under
 // its parent's unread repository when the parent is what waits (enterOnUnreadRepository), and the
 // child, todo all along, is recorded only under a recorded parent, so the step is the parent's
-// release first. A child no wait is left for is told nothing, and so is a repository whose waits
-// are empty.
+// release first. A child on a repository Dispatch's mapping now leaves out is named with that
+// refusal, which is what stops it: a release does nothing while it stands. Left out for good — a
+// role App not installed — the step is the one refuseChild's own notice gives, the App installed
+// or another repository set; left out for now, for a read GitHub did not answer, the mapping's own
+// recovery records it once GitHub answers. A child no wait is left for is told nothing, and so is
+// a repository whose waits are empty.
 //
 // It is the pair of tellReleaseWaits and not a second telling of its kind: the two share one
 // body, which decides which children are still unrecorded, reads each one's parent and writes one
@@ -2155,6 +2159,9 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, listing []dispatch.IssueSummary) error {
 	repos := map[letGoWhy][]string{}
 	waits := map[letGoWhy]map[string]releaseWait{}
+	// childRepo is the repository each child's wait was filed under, whose answer now names what
+	// stops the child.
+	childRepo := map[string]string{}
 	for _, gone := range dropped {
 		if len(gone.waits) == 0 {
 			continue
@@ -2164,6 +2171,9 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 			waits[gone.why] = map[string]releaseWait{}
 		}
 		maps.Copy(waits[gone.why], gone.waits)
+		for child := range gone.waits {
+			childRepo[child] = gone.repo
+		}
 	}
 	if len(waits) == 0 {
 		return nil
@@ -2189,6 +2199,15 @@ func (w *workflowRuntime) tellLetGoWaits(ctx context.Context, dropped []letGo, l
 		}
 		if !parentRecorded {
 			return fmt.Sprintf("%s (%s in Dispatch now, and %s)", child, status, releaseParentFirst(child, wait))
+		}
+		repo := childRepo[child]
+		switch answer := w.repositories.lookup(repo); {
+		case answer.source == fromMapping && answer.refusal != "" && answer.unread:
+			return fmt.Sprintf("%s (%s in Dispatch now; Dispatch's mapping leaves %s out for now: %s; the daemon recovers the issues on it once GitHub answers, and records %s then if it is todo)",
+				child, status, repo, answer.refusal, child)
+		case answer.source == fromMapping && answer.refusal != "":
+			return fmt.Sprintf("%s (%s in Dispatch now, and the daemon records no issue on %s: %s; install the App on it, or set a repository both Legion Apps are installed on, then release %s again)",
+				child, status, repo, answer.refusal, child)
 		}
 		return fmt.Sprintf("%s (%s in Dispatch now: release it again once it is todo)", child, status)
 	})

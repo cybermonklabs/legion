@@ -1881,6 +1881,67 @@ func TestARecoveryHeldPastItsBoundTellsItsReleaseWaitsOnce(t *testing.T) {
 	}
 }
 
+// A repository a pass would let go while the recovery's listing is held is put back, its release
+// waits untold, only until the hold has lasted recoveryHoldBound: then its architect is told, the
+// hold still standing, on the one clock the recovery's own waits are told on. Put back for as long
+// as the hold stood, a hold that never releases kept those waits untold, and the repository listed
+// again on the backoff, for the life of the daemon.
+func TestALetGoHeldPastItsBoundTellsItsReleaseWaits(t *testing.T) {
+	h := newHeldRecovery(t, 40*time.Millisecond, 300*time.Millisecond)
+	const let, stranger = "LEGION-1903", "stranger/tools"
+	before := h.notices(t)
+	// The paused consumer falls behind the stream, so a recovery's listing holds a key it shows
+	// behind: LEGION-1903, below.
+	h.behind(t, heldParent)
+	h.client.show(issue(let, stranger, "backlog", false, heldTree, 1))
+	// What a preparation GitHub failed for and a release that left LEGION-1903 to the recovery
+	// leave, written in one step so that no pass lets the repository go between the two: no
+	// mapping names stranger/tools and no todo issue is left on it, so a pass lets it go.
+	h.w.recoveringMu.Lock()
+	if h.w.unread == nil {
+		h.w.unread = map[string]string{}
+	}
+	h.w.unread[stranger] = "the implement App's installation on stranger/tools could not be read: GitHub answered 502; Legion reads it again"
+	if h.w.releaseWaits == nil {
+		h.w.releaseWaits = map[string]map[string]releaseWait{}
+	}
+	h.w.releaseWaits[stranger] = map[string]releaseWait{let: {tree: heldTree, parent: heldTree}}
+	h.w.recoveringMu.Unlock()
+	started := time.Now()
+	h.w.requestMappingRead()
+
+	letGo := func() []string {
+		var told []string
+		for _, notice := range treeNotices(t, h.w, heldTree)[before:] {
+			if strings.Contains(notice, "the daemon no longer waits for GitHub to answer for "+stranger) {
+				told = append(told, notice)
+			}
+		}
+		return told
+	}
+	if !within(10*time.Second, func() bool { return len(letGo()) != 0 }) {
+		t.Fatalf("%s's architect was not told of %s while the hold stood (held %t, unread %q), want it told once the hold outlasted %s",
+			heldTree, let, h.admission.Held(), h.w.unreadReasons(), recoveryHoldBound)
+	}
+	waited := time.Since(started)
+	if !h.admission.Held() {
+		t.Fatal("the hold released before the let-go was told, want it told while the hold stands")
+	}
+	if waited < recoveryHoldBound {
+		t.Fatalf("the let-go was told after %s, want it put back while the hold lasted less than %s", waited, recoveryHoldBound)
+	}
+	if notices := letGo(); len(notices) != 1 || !strings.Contains(notices[0], let+" (backlog in Dispatch now: release it again once it is todo)") {
+		t.Fatalf("let-go notices = %q, want one naming %s", notices, let)
+	}
+	h.w.recoveringMu.Lock()
+	left := len(h.w.releaseWaits[stranger])
+	marker, unread := h.w.unread[stranger]
+	h.w.recoveringMu.Unlock()
+	if left != 0 || unread {
+		t.Fatalf("%d release waits and a marker %q are left on %s, want both gone with the telling", left, marker, stranger)
+	}
+}
+
 // heldRecovery is a rig whose unread zeta/tools left the child C, under P (todo on acme/widgets,
 // never recorded, its event never sent), of the live tree T to the recovery. The boot's hold
 // poller runs throughout; the Dispatch consumer runs only between consume and pause, so an event
