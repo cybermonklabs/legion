@@ -254,7 +254,7 @@ func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.
 			},
 		}
 	})
-	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, "stored-app-key"))
+	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
 	if status, body := s.req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread APP_KEY = %d %s", status, body)
 	}
