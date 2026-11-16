@@ -786,9 +786,9 @@ const heldContract = 98
 const processReadContract = 104
 
 // quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
-// time to the state (version.go's 111): `treeMovedAt`, the newest movement the daemon has seen
-// anywhere in that tree, and `quietHours`, how long it has been still. A plugin below it is
-// served every issue without the two keys (withoutQuietTime): one built before
+// time to the state (contract 111 in version.go): `treeMovedAt`, the newest movement the daemon
+// has seen anywhere in that tree, and `quietHours`, how long it has been still. A plugin below
+// it is served every issue without the two keys (withoutQuietTime): one built before
 // sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
 // key it does not name, and one built after strips the keys instead, so the strip is what keeps
 // the pair from a caller that did not ask for it rather than what keeps such a caller reading at
