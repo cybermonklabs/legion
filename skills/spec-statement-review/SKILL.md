@@ -22,10 +22,11 @@ You judge what no program decides, and nothing else, so that one rule never gets
 
 2. Read the change request with `dispatch doc-read --issue <KEY> --artifact <document>`.
    A statement is a `:::requirement{#<id>}` block or an entry line ``- **<statement>** `<id>` · under: …``, with `-`, `*` or `+`.
-   Its node is its id, and with no id it is `requirement <n>` or `check <n>`, by its place among blocks of its type.
+   Its node is its id.
    A check is a `:::check{#<id> …}` block: its text is the claim, `run` is the procedure, and `serves` names its statements.
    The terms of the request are the lines under its heading `Terms`, at any level, that start with `-`, `*` or `+`, then `**<term>**: <definition>`.
-   Nothing in a code fence is a statement, a check or a term.
+   A heading with other text, such as `**Terms**`, `Terms:` or `terms`, is not that heading, so its lines define nothing.
+   Nothing in a code fence or in a quote, a line that starts with `>`, is a statement, a check, a term or a heading.
    Then run `dispatch read --issue <KEY>`, which lists the documents of the issue.
    When they include `verification.md`, run `dispatch spec-form` and `dispatch doc-read` with `--artifact verification.md` too.
 

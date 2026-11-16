@@ -19,11 +19,22 @@
  * server. A fixture that declares findings tests that the reviewer leaves them to Dispatch: a
  * finding of the reviewer at one of those texts fails the run.
  *
+ * The agent reads the change request's own text and nothing else that tells its answer. In each
+ * run each fixture gets an opaque handle, its place in a shuffle that a seed of the run decides.
+ * Its issue's key and title, and its agent's directory, name the handle and never the fixture's
+ * id, and each root's title names only its place. The ids, and the roots' own names in
+ * expected.json, stay in this command and in --out, and no agent's directory is in --out. Before
+ * the stack starts, and again with the stack's address, the command refuses a run where a place
+ * that an agent reads holds a word of its fixture's id, of a kind that the fixture plants or of
+ * its kind, or its root's own name: the titles of its issue and its root, the names of the
+ * documents, its working directory, each environment variable, each file beside its working
+ * directory, the branch of the checkout and the prompt.
+ *
  * Each agent is `omp` with a profile and a home of its own, as scripts/approval-eval/fresh-agent.ts
- * spawns it, with the tools read and bash. Its PATH starts with a `dispatch` script that runs this
- * checkout's CLI against the server. The prompt names only the skill, the issue and the document,
- * so the agent runs `dispatch spec-form` and `dispatch doc-read` itself, as the skill tells a
- * reviewer to.
+ * spawns it, with the tools read and bash. Its PATH is its own `dispatch` script, which runs this
+ * checkout's CLI against the server, and then the system's directories. The prompt names only the
+ * skill, the issue and the document, so the agent runs `dispatch spec-form` and `dispatch
+ * doc-read` itself, as the skill tells a reviewer to.
  *
  * A run passes when the answer names exactly the planted items of its fixture and the
  * transcript holds a `dispatch spec-form` call. An answer with a `NOT REVIEWED:` line, or with a
@@ -35,9 +46,18 @@
  * an --out that is no directory or is not empty, a stack that does not start, or any other error
  * before every run has its verdict.
  */
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   type DispatchStack,
@@ -89,7 +109,11 @@ export interface PlantedItem extends Item {
   readonly kind: Kind;
 }
 
-/** A root of The Spec, with the text of its terms.md. */
+/**
+ * A root of The Spec, with the text of its terms.md. `title` is this command's own name of the
+ * root, which says what its list holds; it never reaches an agent, which reads only the root's
+ * place.
+ */
 export interface Root {
   readonly name: string;
   readonly key: string;
@@ -160,6 +184,12 @@ const ROOT_SPEC =
 const UNREACHABLE_DISPATCH = "http://127.0.0.1:1";
 /** The skill's line for a failed first command, as its step 2 writes it. */
 const FAILED_SPEC_FORM = /^dispatch spec-form\b.* failed: \S/;
+/** The system's directories of commands, which follow an agent's own `dispatch` in its PATH. */
+const SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin";
+/** The names of the documents that the seed writes, as `dispatch read` lists them. */
+const SPEC_DOCUMENT = "spec.md";
+const VERIFICATION_DOCUMENT = "verification.md";
+const TERMS_DOCUMENT = "terms.md";
 
 const EXIT_PASSES = 0;
 const EXIT_FAILS = 1;
@@ -167,6 +197,8 @@ const EXIT_CANNOT_RUN = 2;
 
 const FINDING_LINE = /^FINDING (\S+) (\S+) (.+?): (.+)$/;
 const NOT_REVIEWED = "NOT REVIEWED:";
+/** A verdict's word, which no line holds after its own opening: `FINDING`, `NO FINDING` or `NOT REVIEWED`. */
+const VERDICT_WORD = /\b(?:FINDING|NOT REVIEWED)\b/;
 
 function isKind(value: string): value is Kind {
   return (KINDS as readonly string[]).includes(value);
@@ -177,7 +209,9 @@ function isKind(value: string): value is Kind {
  * skill says to print it "and stop", so beside any other line it is an answer of two verdicts, or
  * of a verdict and prose, and unreadable. The skill says "no other text", so any other line, a
  * `FINDING` line out of the form, and `NO FINDING` beside a finding make the answer unreadable,
- * and so does an answer with neither a `FINDING` nor a `NO FINDING` line.
+ * and so does an answer with neither a `FINDING` nor a `NO FINDING` line. The answer holds one
+ * verdict in any layout: a verdict's word after the opening of a `FINDING` or a `NOT REVIEWED:`
+ * line is a second verdict on that line, and makes the answer unreadable too.
  */
 export function parseFindings(text: string): Answer {
   const lines = text
@@ -186,12 +220,19 @@ export function parseFindings(text: string): Answer {
     .filter((line) => line !== "");
   const notReviewed = lines.find((line) => line.startsWith(NOT_REVIEWED));
   if (notReviewed !== undefined) {
-    return lines.length === 1
-      ? { verdict: "not-reviewed", reason: notReviewed.slice(NOT_REVIEWED.length).trim() }
-      : {
+    const reason = notReviewed.slice(NOT_REVIEWED.length).trim();
+    if (lines.length > 1) {
+      return {
+        verdict: "unreadable",
+        reason: `a NOT REVIEWED line beside another line: ${notReviewed}`,
+      };
+    }
+    return VERDICT_WORD.test(reason)
+      ? {
           verdict: "unreadable",
-          reason: `a NOT REVIEWED line beside another line: ${notReviewed}`,
-        };
+          reason: `a second verdict on the NOT REVIEWED line: ${notReviewed}`,
+        }
+      : { verdict: "not-reviewed", reason };
   }
   const findings: Finding[] = [];
   let none = false;
@@ -204,6 +245,9 @@ export function parseFindings(text: string): Answer {
     const [, kind = "", node = "", subject = "", sentence = ""] = match ?? [];
     if (match === null || !isKind(kind)) {
       return { verdict: "unreadable", reason: `a line out of the skill's form: ${line}` };
+    }
+    if (VERDICT_WORD.test(line.slice("FINDING".length))) {
+      return { verdict: "unreadable", reason: `a second verdict on a FINDING line: ${line}` };
     }
     findings.push({ kind, node, subject: subject === "-" ? null : subject, sentence });
   }
@@ -373,6 +417,216 @@ export function withIssueKey(markdown: string, key: string): string {
   return markdown.replaceAll(ISSUE_PLACEHOLDER, key);
 }
 
+/** A generator of numbers in [0, 1) that its seed decides (mulberry32): one seed, one sequence. */
+function generator(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let mixed = Math.imul(state ^ (state >>> 15), state | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+/**
+ * The opaque handle of each fixture of one run: its place, from 1, in a shuffle of the ids that
+ * the seed decides. An agent reads its fixture's handle, never its id.
+ */
+export function handlesOf(ids: readonly string[], seed: number): Map<string, number> {
+  const order = [...ids];
+  const next = generator(seed);
+  for (let last = order.length - 1; last > 0; last -= 1) {
+    const other = Math.floor(next() * (last + 1));
+    [order[last], order[other]] = [order[other], order[last]];
+  }
+  return new Map(order.map((id, place) => [id, place + 1]));
+}
+
+/** One agent of a run: its fixture, its handle, and what the command gives it. */
+export interface Agent {
+  readonly fixture: Fixture;
+  readonly handle: number;
+  /** The key of its fixture's issue, which the seed of the server gives in the order of handles. */
+  readonly issue: string;
+  readonly title: string;
+  readonly directory: string;
+  readonly home: string;
+  readonly bin: string;
+  readonly work: string;
+  readonly state: string;
+  readonly session: string;
+  readonly prompt: string;
+}
+
+/**
+ * The agents of one run, in the order of their handles. An agent's directory is
+ * <agents>/<handle>, and its issue's title is a plain sentence with the handle in it, as a real
+ * change request can have.
+ */
+export function layoutOf(
+  plan: Plan,
+  fixtures: readonly Fixture[],
+  seed: number,
+  agents: string,
+  skill: string
+): Agent[] {
+  const handles = handlesOf(
+    fixtures.map((fixture) => fixture.id),
+    seed
+  );
+  return fixtures
+    .map((fixture) => {
+      const handle = handles.get(fixture.id) ?? 0;
+      const issue = `${PROJECT}-${plan.roots.length + handle}`;
+      const directory = join(agents, String(handle));
+      return {
+        fixture,
+        handle,
+        issue,
+        title: `Request ${handle} proposes statements for The Spec`,
+        directory,
+        home: join(directory, "home"),
+        bin: join(directory, "bin"),
+        work: join(directory, "work"),
+        state: join(directory, "dispatch-state"),
+        session: crypto.randomUUID(),
+        prompt: `You review a change request. Read ${skill} and follow it for issue ${issue}, document ${SPEC_DOCUMENT}.`,
+      };
+    })
+    .sort((one, other) => one.handle - other.handle);
+}
+
+/** The title of the root at a place of expected.json, from 1, which names only the place. */
+function rootTitle(place: number): string {
+  return `Part ${place} of The Spec`;
+}
+
+function rootOf(plan: Plan, fixture: Fixture): Root {
+  const root = plan.roots.find((one) => one.name === fixture.root);
+  if (root === undefined) throw new Error(`expected.json holds no root ${fixture.root}`);
+  return root;
+}
+
+/** The text of an agent's `dispatch`, which runs this checkout's CLI with this command's bun. */
+export function dispatchShim(bun: string, entry: string): string {
+  return `#!/bin/sh\nexec '${bun}' '${entry}' "$@"\n`;
+}
+
+/**
+ * The environment of an agent: its own home and state, a PATH of its own `dispatch` and the
+ * system's directories, the stack's address and token, and the caller's TMPDIR and the two
+ * variables that reach the model gateway. The caller's PATH stays out: it names the caller's own
+ * tools, which can hold any word. Before the stack starts, `stack` is null, and only a fixture
+ * whose reviewer cannot see has its DISPATCH_URL.
+ */
+export function environmentOf(
+  agent: Agent,
+  stack: { readonly url: string; readonly token: string } | null,
+  caller: Readonly<Record<string, string | undefined>>
+): Record<string, string> {
+  const environment: Record<string, string> = {
+    HOME: agent.home,
+    PATH: `${agent.bin}:${SYSTEM_PATH}`,
+    DISPATCH_HOST: "omp",
+    DISPATCH_SESSION_ID: agent.session,
+    DISPATCH_STATE_DIR: agent.state,
+  };
+  if (agent.fixture.expect === "not-reviewed") environment.DISPATCH_URL = UNREACHABLE_DISPATCH;
+  else if (stack !== null) environment.DISPATCH_URL = stack.url;
+  if (stack !== null) environment.DISPATCH_TOKEN = stack.token;
+  for (const name of ["TMPDIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]) {
+    const value = caller[name];
+    if (value !== undefined) environment[name] = value;
+  }
+  return environment;
+}
+
+/** What one agent reads apart from the change request's own text, place by place. */
+export interface Places {
+  readonly title: string;
+  readonly rootTitle: string;
+  /** The names of its issue's documents and of its root's terms.md. */
+  readonly documents: readonly string[];
+  readonly workingDirectory: string;
+  readonly environment: Readonly<Record<string, string>>;
+  /** Each path beside its working directory, from its own directory: a file's text, or "". */
+  readonly filesBeside: Readonly<Record<string, string>>;
+  /** The branch of the checkout whose skill the prompt names, or null where it has none. */
+  readonly branch: string | null;
+  readonly prompt: string;
+}
+
+export function placesOf(
+  agent: Agent,
+  plan: Plan,
+  environment: Readonly<Record<string, string>>,
+  filesBeside: Readonly<Record<string, string>>,
+  branch: string | null
+): Places {
+  return {
+    title: agent.title,
+    rootTitle: rootTitle(plan.roots.indexOf(rootOf(plan, agent.fixture)) + 1),
+    documents: [
+      SPEC_DOCUMENT,
+      ...(agent.fixture.verificationText === undefined ? [] : [VERIFICATION_DOCUMENT]),
+      TERMS_DOCUMENT,
+    ],
+    workingDirectory: agent.work,
+    environment,
+    filesBeside,
+    branch,
+    prompt: agent.prompt,
+  };
+}
+
+/** The words of a text: its runs of letters, in lower case. */
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().match(/\p{L}+/gu) ?? [];
+}
+
+/**
+ * Each place of a fixture's agent that would tell it the fixture's answer: a place with a word
+ * that starts with a word of the fixture's id, of a kind that it plants or of its kind, or with
+ * its root's own name in expected.json. The kind `review` is left out: every prompt names that
+ * task, so it tells no answer. A problem names an environment variable and never its value, which
+ * can be a credential.
+ */
+export function leaks(fixture: Fixture, root: Root, places: Places): string[] {
+  const kind = fixture.expect === "review" ? [] : [fixture.expect];
+  const telling = [
+    ...new Set([fixture.id, ...fixture.planted.map((item) => item.kind), ...kind].flatMap(wordsOf)),
+  ];
+  const own = root.title.toLowerCase();
+  const read: (readonly [string, string])[] = [
+    ["its issue's title", places.title],
+    ["its root's title", places.rootTitle],
+    ...places.documents.map((name) => [`the name of the document ${name}`, name] as const),
+    ["its working directory", places.workingDirectory],
+    ...Object.entries(places.environment).map(
+      ([name, value]) => [`the variable ${name}`, `${name}=${value}`] as const
+    ),
+    ...Object.entries(places.filesBeside).map(
+      ([path, text]) =>
+        [`the file ${path} beside its working directory`, `${path}\n${text}`] as const
+    ),
+    ...(places.branch === null ? [] : [["the branch of the checkout", places.branch] as const]),
+    ["its prompt", places.prompt],
+  ];
+  const problems: string[] = [];
+  for (const [where, text] of read) {
+    const words = wordsOf(text);
+    for (const word of telling) {
+      if (words.some((one) => one.startsWith(word))) {
+        problems.push(`${fixture.id}: ${where} holds "${word}"`);
+      }
+    }
+    if (text.toLowerCase().includes(own)) {
+      problems.push(`${fixture.id}: ${where} holds the name of its root in expected.json`);
+    }
+  }
+  return problems;
+}
+
 /** A fixture's `expect` in expected.json, `review` where it gives none. */
 function expectOf(id: string, value: string | undefined): Fixture["expect"] {
   if (value === undefined || value === "review") return "review";
@@ -506,23 +760,20 @@ interface Seeded {
 }
 
 /**
- * The project, the roots with their approved terms, and one child issue for each fixture. Keys
- * come in order on the stack's own database, so the fixture's issue gets the key that its spec
- * names in place of `@ISSUE@`, and the seed refuses a key that is not that one.
+ * The project, the roots with their approved terms, and one child issue for each agent's fixture.
+ * Keys come in order on the stack's own database, and the agents come in the order of their
+ * handles, so each issue gets the key of its agent, which its spec names in place of `@ISSUE@`;
+ * the seed refuses a key that is not that one. A root's title names only its place.
  */
-async function seed(
-  stack: DispatchStack,
-  plan: Plan,
-  fixtures: readonly Fixture[]
-): Promise<Seeded[]> {
+async function seed(stack: DispatchStack, plan: Plan, agents: readonly Agent[]): Promise<Seeded[]> {
   await call(stack, "POST", "/api/v1/projects", { key: PROJECT, name: PROJECT }, "person");
   const rootKeys = new Map<string, string>();
-  for (const root of plan.roots) {
+  for (const [index, root] of plan.roots.entries()) {
     const issue = await call<{ key: string }>(
       stack,
       "POST",
       "/api/v1/issues",
-      { project: PROJECT, title: root.title, force: true, spec: ROOT_SPEC },
+      { project: PROJECT, title: rootTitle(index + 1), force: true, spec: ROOT_SPEC },
       "person"
     );
     if (issue.key !== root.key) {
@@ -534,7 +785,7 @@ async function seed(
       stack,
       "POST",
       `/api/v1/issues/${issue.key}/artifacts`,
-      { name: "terms.md", content: root.termsText },
+      { name: TERMS_DOCUMENT, content: root.termsText },
       "person"
     );
     await call(
@@ -547,15 +798,14 @@ async function seed(
     rootKeys.set(root.name, issue.key);
   }
   const seeded: Seeded[] = [];
-  for (const [index, fixture] of fixtures.entries()) {
-    const key = `${PROJECT}-${plan.roots.length + index + 1}`;
+  for (const { fixture, issue: key, title } of agents) {
     const issue = await call<{ key: string; primary_artifact_id: string }>(
       stack,
       "POST",
       "/api/v1/issues",
       {
         project: PROJECT,
-        title: fixture.id,
+        title,
         parent: rootKeys.get(fixture.root),
         force: true,
         spec: withIssueKey(fixture.specText, key),
@@ -576,16 +826,21 @@ async function seed(
         "agent"
       );
     }
-    const documents: SeededDocument[] = [{ name: "spec.md", artifact: issue.primary_artifact_id }];
+    const documents: SeededDocument[] = [
+      { name: SPEC_DOCUMENT, artifact: issue.primary_artifact_id },
+    ];
     if (fixture.verificationText !== undefined) {
       const verification = await call<{ artifact: { id: string } }>(
         stack,
         "POST",
         `/api/v1/issues/${issue.key}/artifacts`,
-        { name: "verification.md", content: withIssueKey(fixture.verificationText, issue.key) },
+        {
+          name: VERIFICATION_DOCUMENT,
+          content: withIssueKey(fixture.verificationText, issue.key),
+        },
         "person"
       );
-      documents.push({ name: "verification.md", artifact: verification.artifact.id });
+      documents.push({ name: VERIFICATION_DOCUMENT, artifact: verification.artifact.id });
     }
     seeded.push({ fixture, issue: issue.key, documents });
   }
@@ -663,53 +918,98 @@ interface Run {
   readonly code: number;
 }
 
+/** Makes an agent's directories, its omp profile and its `dispatch`, before the guard reads them. */
+async function writeAgent(agent: Agent, models: string | null): Promise<void> {
+  const profile = join(agent.home, ".omp", "profiles", PROFILE, "agent");
+  for (const path of [profile, agent.bin, agent.work, agent.state]) {
+    await mkdir(path, { recursive: true });
+  }
+  await writeFile(join(profile, "config.yml"), "skills:\n  customDirectories: []\n", "utf8");
+  if (models !== null) await copyFile(models, join(profile, "models.yml"));
+  const dispatch = join(agent.bin, "dispatch");
+  await writeFile(dispatch, dispatchShim(process.execPath, DISPATCH_ENTRY), "utf8");
+  await chmod(dispatch, 0o755);
+}
+
 /**
- * One fresh agent on one fixture: its own home, profile, state and working directory, a PATH that
- * starts with this checkout's `dispatch`, and the gateway variables of the caller.
+ * What an agent finds beside its working directory: the entries of the directory of its run's
+ * agents, of its own directory and of each directory in it, with the text of each file there.
+ * Deeper, its home holds omp's profile, whose path omp fixes and which is the same for every
+ * fixture.
+ */
+async function besideOf(agent: Agent): Promise<Record<string, string>> {
+  const found: Record<string, string> = {};
+  for (const name of await readdir(dirname(agent.directory))) found[`../${name}`] = "";
+  const entries = (await readdir(agent.directory, { withFileTypes: true })).map(
+    (entry) => [entry.name, entry] as const
+  );
+  for (const [, entry] of [...entries]) {
+    if (!entry.isDirectory()) continue;
+    for (const inner of await readdir(join(agent.directory, entry.name), { withFileTypes: true })) {
+      entries.push([join(entry.name, inner.name), inner]);
+    }
+  }
+  for (const [path, entry] of entries) {
+    found[path] = entry.isFile() ? await readFile(join(agent.directory, path), "utf8") : "";
+  }
+  return found;
+}
+
+/** The branch of the checkout at repo, or null where git finds no checkout or no branch there. */
+function branchOf(repo: string): string | null {
+  try {
+    const result = Bun.spawnSync({
+      cmd: ["git", "-C", repo, "branch", "--show-current"],
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const name = result.success ? result.stdout.toString().trim() : "";
+    return name === "" ? null : name;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Refuses the run when a place that an agent reads would tell it its fixture's answer, so that a
+ * run measures the skill and not a hint.
+ */
+async function refuseLeaks(
+  plan: Plan,
+  agents: readonly Agent[],
+  stack: DispatchStack | null,
+  branch: string | null
+): Promise<void> {
+  const problems: string[] = [];
+  for (const agent of agents) {
+    const environment = environmentOf(agent, stack, process.env);
+    const places = placesOf(agent, plan, environment, await besideOf(agent), branch);
+    problems.push(...leaks(agent.fixture, rootOf(plan, agent.fixture), places));
+  }
+  if (problems.length > 0) {
+    throw new CannotRunError(
+      `the command refuses the run: what an agent reads names its fixture's answer\n${problems.join("\n")}`
+    );
+  }
+}
+
+/**
+ * One fresh agent on one fixture, in the directory that writeAgent made, with the environment of
+ * environmentOf. Its transcript and its stderr go to records, which is in --out.
  */
 async function review(
   flags: Flags,
   stack: DispatchStack,
-  seeded: Seeded,
-  directory: string,
-  models: string | null
+  agent: Agent,
+  records: string
 ): Promise<Run> {
-  const home = join(directory, "home");
-  const agent = join(home, ".omp", "profiles", PROFILE, "agent");
-  const bin = join(directory, "bin");
-  const work = join(directory, "work");
-  const state = join(directory, "dispatch-state");
-  for (const path of [agent, bin, work, state]) await mkdir(path, { recursive: true });
-  await writeFile(join(agent, "config.yml"), "skills:\n  customDirectories: []\n", "utf8");
-  if (models !== null) await copyFile(models, join(agent, "models.yml"));
-  const dispatch = join(bin, "dispatch");
-  await writeFile(
-    dispatch,
-    `#!/bin/sh\nexec '${process.execPath}' '${DISPATCH_ENTRY}' "$@"\n`,
-    "utf8"
-  );
-  await chmod(dispatch, 0o755);
-  const env: Record<string, string> = {
-    HOME: home,
-    PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-    DISPATCH_URL: seeded.fixture.expect === "not-reviewed" ? UNREACHABLE_DISPATCH : stack.url,
-    DISPATCH_TOKEN: stack.token,
-    DISPATCH_HOST: "omp",
-    DISPATCH_SESSION_ID: crypto.randomUUID(),
-    DISPATCH_STATE_DIR: state,
-  };
-  for (const name of ["TMPDIR", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]) {
-    const value = process.env[name];
-    if (value !== undefined) env[name] = value;
-  }
-  const prompt = `You review a change request. Read ${SKILL} and follow it for issue ${seeded.issue}, document spec.md.`;
   const child = Bun.spawn({
     cmd: [
       flags.omp,
       "--profile",
       PROFILE,
       "--cwd",
-      work,
+      agent.work,
       "--model",
       flags.model,
       "--tools",
@@ -723,10 +1023,10 @@ async function review(
       "--mode",
       "json",
       "-p",
-      prompt,
+      agent.prompt,
     ],
-    cwd: work,
-    env,
+    cwd: agent.work,
+    env: environmentOf(agent, stack, process.env),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -737,8 +1037,9 @@ async function review(
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  await writeFile(join(directory, "events.jsonl"), stdout, "utf8");
-  await writeFile(join(directory, "stderr.txt"), stderr, "utf8");
+  await mkdir(records, { recursive: true });
+  await writeFile(join(records, "events.jsonl"), stdout, "utf8");
+  await writeFile(join(records, "stderr.txt"), stderr, "utf8");
   return { ...answerOf(stdout), stdout, code };
 }
 
@@ -770,48 +1071,63 @@ async function evaluate(flags: Flags): Promise<number> {
   const out = flags.out ?? (await mkdtemp(join(tmpdir(), "spec-review-eval-")));
   await mkdir(out, { recursive: true });
   const models = await modelsFileOf(flags.omp);
+  const branch = branchOf(REPO);
+  const firstSeed = crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
   const results: string[] = [];
   let failed = 0;
   for (let run = 1; run <= flags.runs; run += 1) {
-    const stackDirectory = join(out, `run-${run}`, "stack");
-    await mkdir(stackDirectory, { recursive: true });
-    const stack = await startDispatchStack({
-      work: stackDirectory,
-      env: { DISPATCH_SPEC_ROOTS: plan.roots.map((root) => root.key).join(",") },
-    });
+    const shuffle = (firstSeed + run) >>> 0;
+    // Outside --out, whose path and whose other entries name the fixtures.
+    const agentsDirectory = await mkdtemp(join(tmpdir(), "x"));
     try {
-      const seeded = await seed(stack, plan, fixtures);
-      await checkForm(stack, seeded);
-      for (const one of seeded) {
-        const directory = join(out, `run-${run}`, one.fixture.id);
-        const answer = await review(flags, stack, one, directory, models);
-        const comparison = compareFindings(one.fixture, parseFindings(answer.text));
-        const problems = [
-          ...(answer.code === 0 ? [] : [`the agent exited ${answer.code}`]),
-          ...comparison.problems,
-          ...(specFormCalled(answer.stdout)
-            ? []
-            : ["the transcript holds no dispatch spec-form call"]),
-        ];
-        const pass = problems.length === 0;
-        if (!pass) failed += 1;
-        const line = `${pass ? "PASS" : "FAIL"} run ${run} ${one.fixture.id} (${one.issue}, ${answer.model ?? "no model"})${pass ? "" : `: ${problems.join("; ")}`}`;
-        console.log(line);
-        console.log(answer.text.replace(/^/gm, "    "));
-        results.push(
-          JSON.stringify({
-            run,
-            fixture: one.fixture.id,
-            issue: one.issue,
-            model: answer.model,
-            pass,
-            problems,
-            answer: answer.text,
-          })
-        );
+      const agents = layoutOf(plan, fixtures, shuffle, agentsDirectory, SKILL);
+      for (const agent of agents) await writeAgent(agent, models);
+      await refuseLeaks(plan, agents, null, branch);
+      const stackDirectory = join(out, `run-${run}`, "stack");
+      await mkdir(stackDirectory, { recursive: true });
+      const stack = await startDispatchStack({
+        work: stackDirectory,
+        env: { DISPATCH_SPEC_ROOTS: plan.roots.map((root) => root.key).join(",") },
+      });
+      try {
+        await refuseLeaks(plan, agents, stack, branch);
+        await checkForm(stack, await seed(stack, plan, agents));
+        for (const fixture of fixtures) {
+          const agent = agents.find((one) => one.fixture === fixture);
+          if (agent === undefined) throw new Error(`no agent of ${fixture.id}`);
+          const answer = await review(flags, stack, agent, join(out, `run-${run}`, fixture.id));
+          const comparison = compareFindings(fixture, parseFindings(answer.text));
+          const problems = [
+            ...(answer.code === 0 ? [] : [`the agent exited ${answer.code}`]),
+            ...comparison.problems,
+            ...(specFormCalled(answer.stdout)
+              ? []
+              : ["the transcript holds no dispatch spec-form call"]),
+          ];
+          const pass = problems.length === 0;
+          if (!pass) failed += 1;
+          const line = `${pass ? "PASS" : "FAIL"} run ${run} ${fixture.id} (${agent.issue}, ${answer.model ?? "no model"})${pass ? "" : `: ${problems.join("; ")}`}`;
+          console.log(line);
+          console.log(answer.text.replace(/^/gm, "    "));
+          results.push(
+            JSON.stringify({
+              run,
+              seed: shuffle,
+              handle: agent.handle,
+              fixture: fixture.id,
+              issue: agent.issue,
+              model: answer.model,
+              pass,
+              problems,
+              answer: answer.text,
+            })
+          );
+        }
+      } finally {
+        await stack.stop();
       }
     } finally {
-      await stack.stop();
+      await rm(agentsDirectory, { recursive: true, force: true });
     }
   }
   await writeFile(join(out, "results.jsonl"), `${results.join("\n")}\n`, "utf8");
