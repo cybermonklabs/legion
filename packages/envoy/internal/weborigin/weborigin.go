@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/net/idna"
 )
 
 var (
@@ -50,8 +52,8 @@ func Parse(raw string) (*url.URL, error) {
 		if len(label) > 63 || !labelRule.MatchString(label) {
 			return nil, fmt.Errorf("host label %q is not a lowercase DNS label", label)
 		}
-		if len(label) >= 4 && label[2:4] == "--" {
-			return nil, fmt.Errorf("host label %q has \"--\" as its third and fourth characters, a reserved label (RFC 5890 section 2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS", label)
+		if err := ReservedLabel(label); err != nil {
+			return nil, err
 		}
 	}
 	if numericLabelRule.MatchString(labels[len(labels)-1]) && !ipv4Rule.MatchString(host) {
@@ -71,4 +73,20 @@ func Parse(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("must be written as a browser writes this origin, %s: a lowercase scheme and no default port", canonical)
 	}
 	return &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}, nil
+}
+
+// ReservedLabel reports a host label no public certificate authority issues for: one with "--" as
+// its third and fourth characters, which RFC 5891 section 4.2.3.1 reserves, unless it is a valid
+// internationalised A-label, which a certificate authority does issue for. A valid A-label is one
+// the IDNA lookup profile decodes and encodes back to itself, so xn--bcher-kva (bücher) passes
+// while xn--a, whose Punycode decodes to nothing valid, and ab--cd, which is no A-label at all,
+// do not. nil means the label is one a certificate can carry.
+func ReservedLabel(label string) error {
+	if len(label) < 4 || label[2:4] != "--" {
+		return nil
+	}
+	if ascii, err := idna.Lookup.ToASCII(label); err == nil && ascii == label {
+		return nil
+	}
+	return fmt.Errorf("host label %q has \"--\" as its third and fourth characters and is no valid internationalised (xn--) label, a reserved form (RFC 5891 section 4.2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS", label)
 }

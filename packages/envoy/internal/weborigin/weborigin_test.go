@@ -23,6 +23,10 @@ func TestParseTakesAnOriginWrittenAsABrowserWritesIt(t *testing.T) {
 		"https://1outside.example.com":                        "https://1outside.example.com",
 		"https://" + strings.Repeat("a", 63) + ".example.com": "https://" + strings.Repeat("a", 63) + ".example.com",
 		"https://single":                                      "https://single",
+		// A valid internationalised A-label is one a public certificate authority issues for, so
+		// the reserved-label rule lets it through (ReservedLabel).
+		"https://xn--bcher-kva.example.com": "https://xn--bcher-kva.example.com",
+		"https://xn--p1ai.example.com":      "https://xn--p1ai.example.com",
 	} {
 		t.Run(raw, func(t *testing.T) {
 			u, err := weborigin.Parse(raw)
@@ -41,8 +45,8 @@ func TestParseTakesAnOriginWrittenAsABrowserWritesIt(t *testing.T) {
 func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 	const notOrigin = "must be an absolute http or https URL with no path, user, query or fragment, as an origin is (not echoed)"
 	reserved := func(label string) string {
-		return `host label "` + label + `" has "--" as its third and fourth characters, a reserved label (RFC 5890 section 2.3.1) ` +
-			"that no public certificate authority issues for, so the origin could serve no HTTPS"
+		return `host label "` + label + `" has "--" as its third and fourth characters and is no valid internationalised (xn--) label, ` +
+			"a reserved form (RFC 5891 section 4.2.3.1) that no public certificate authority issues for, so the origin could serve no HTTPS"
 	}
 	notLabel := func(label string) string { return `host label "` + label + `" is not a lowercase DNS label` }
 	notCanonical := func(canonical string) string {
@@ -74,7 +78,8 @@ func TestParseRefusesWhatIsNoBrowsersOrigin(t *testing.T) {
 		{"https://ab--cd.example.com", reserved("ab--cd")},
 		{"https://outside.ab--cd.com", reserved("ab--cd")},
 		{"https://xn--a.example.com", reserved("xn--a")},
-		{"https://xn--bcher-kva.example.com", reserved("xn--bcher-kva")},
+		// "xn--" ends in a hyphen, so the DNS label rule refuses it before the reserved-label one.
+		{"https://xn--.example.com", notLabel("xn--")},
 		// The review's table: each of these resolved and rendered as written at 5cbf7456a0.
 		{"https://dispatch-outside.example.com:443", notCanonical("https://dispatch-outside.example.com")},
 		{"http://dispatch-outside.example.com:80", notCanonical("http://dispatch-outside.example.com")},

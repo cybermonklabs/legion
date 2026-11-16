@@ -734,8 +734,9 @@ is reached at: an `https` origin written as a browser writes it, with a lowercas
 `:443`, a port (if any) of 1 to 65535 with no leading zero, and no path, user, query or fragment
 (a trailing slash is trimmed). Its host is not the front door's `<hostname>.<tailnetDnsName>`,
 ends in a number only if it is an IPv4 address in its canonical form, and has every label a
-lowercase DNS label without `--` as its third and fourth characters, a reserved form (RFC 5890
-section 2.3.1) no public certificate authority issues for. Dispatch compares the `Origin` a
+lowercase DNS label that, where `--` is its third and fourth characters, is a valid
+internationalised (`xn--`) label: no public certificate authority issues for any other label of
+that reserved form (RFC 5891 section 4.2.3.1). Dispatch compares the `Origin` a
 browser sends with it as a string, so another spelling of the same origin is refused rather than
 rewritten. It renders `DISPATCH_OUTSIDE_ORIGIN=<outsideOrigin>` on the app's container, right
 after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and forwards it to the
@@ -1165,8 +1166,9 @@ seeds in its own name and in plain inputs before it registers a resource; it
 refuses an `agentSecretsUrl` or an `agentSecretsAudience` whose partner input is missing, an
 `oidcIssuer` with no `oidcAudience`, an `outsideOrigin` that is not an `https` origin written as
 a browser writes it (with no path, user, query or fragment, no `:443` and a port of 1 to 65535
-with no leading zero), has a host label that is not a lowercase DNS label or has `--` as its
-third and fourth characters, has a host ending in a number that is no canonical IPv4 address,
+with no leading zero), has a host label that is not a lowercase DNS label or that has `--` as its
+third and fourth characters without being a valid internationalised (`xn--`) label, has a host
+ending in a number that is no canonical IPv4 address,
 has the front door's host or comes without the tailnet inputs, a `signInOutside` without the
 sign-in inputs, an
 `appClientId`, `appId`, `appPrivateKeySecretName` or `appPrivateKeySecretKey` set without the

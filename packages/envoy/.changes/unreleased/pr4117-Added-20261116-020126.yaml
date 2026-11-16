@@ -5,8 +5,9 @@ body: |-
   come in by: an `https` origin written as a browser writes it (a lowercase scheme, no `:443`, a
   port of 1 to 65535 with no leading zero, and no path, user, query or fragment), whose host is
   not the front door's, ends in a number only as a canonical IPv4 address, and has no label with
-  `--` as its third and fourth characters, a reserved form no public certificate authority issues
-  for. Another spelling of the same origin is refused rather than rewritten, since Dispatch
+  `--` as its third and fourth characters that is not a valid internationalised (`xn--`) label, a
+  reserved form no public certificate authority issues for. Another spelling of the same origin
+  is refused rather than rewritten, since Dispatch
   compares a browser's `Origin` with it as a string. It renders `DISPATCH_OUTSIDE_ORIGIN` on the
   app's container right after `DISPATCH_SERVER_URL`, and needs the tailnet inputs.
   `signInOutside: true` renders `DISPATCH_SIGNIN_OUTSIDE=1` right after `DISPATCH_SIGNIN_DOMAIN`;

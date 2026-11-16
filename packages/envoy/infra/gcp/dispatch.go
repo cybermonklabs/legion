@@ -178,9 +178,10 @@ type DispatchArgs struct {
 	// OutsideOrigin is a second origin Dispatch is reached at, by people from outside the
 	// company: an https origin written as a browser writes it (a lowercase scheme, no :443, no
 	// path, user, query or fragment; a trailing slash is trimmed), whose host is not the front
-	// door's and whose every host label is a lowercase DNS label without "--" as its third and
-	// fourth characters, a reserved form (RFC 5890 section 2.3.1) no public certificate authority
-	// issues for. It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves that origin
+	// door's and whose every host label is a lowercase DNS label that, where "--" is its third and
+	// fourth characters, is a valid internationalised (xn--) label, since no public certificate
+	// authority issues for any other label of that reserved form (RFC 5891 section 4.2.3.1).
+	// It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves that origin
 	// and forwards it to the app is the deployment's, and the app's NetworkPolicy admits an
 	// in-cluster one only through allowedNamespaces. It needs the tailnet inputs: without them the
 	// component builds the sandbox, whose own origin is an in-cluster http:// address where browser
