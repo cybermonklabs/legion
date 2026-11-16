@@ -352,11 +352,28 @@ type RequestResult struct {
 }
 
 // createRequestBody is POST /v1/requests's exact shape in the broker's HTTP API: a signed
-// request object plus an optional, unsigned session_id (wake-only). The v8 top-level
+// request object plus two optional, unsigned fields, session_id (wake-only) and github_app, the
+// narrowing this request's grant will be released with. The v8 top-level
 // "secrets"/"reason"/"issue" fields are gone — they live inside the signed request object instead.
+// github_app is left out when the run asks for no narrowing, so such a run sends the body it
+// always sent; it narrows nothing by itself, the release being what applies a narrowing, and the
+// broker checks it before it asks a person to approve the request.
 type createRequestBody struct {
-	Request   string  `json:"request"`
-	SessionID *string `json:"session_id"`
+	Request   string           `json:"request"`
+	SessionID *string          `json:"session_id"`
+	GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
+}
+
+// brokerTookNoNarrowing reports whether err is a broker from before POST /v1/requests took a
+// github_app field: its readJSON refuses an unknown field with 400 INVALID_REQUEST, and refuses
+// it before the request machine runs, so nothing was written and the signed request object's jti
+// is unspent. Every refusal of the narrowing itself has a code of its own (INVALID_NARROWING,
+// NARROWING_NOT_APPLICABLE, NARROWING_OWNER_NOT_LISTED, NARROWING_BEHIND_AIRLOCK,
+// NARROWING_REFUSED), and a request object the broker would not take is REQUEST_INVALID, so none
+// of them reads as an older broker and none is sent again.
+func brokerTookNoNarrowing(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_REQUEST"
 }
 
 // CreateRequest builds and signs a credential-request object carrying one
@@ -365,7 +382,14 @@ type createRequestBody struct {
 // URL), then calls POST /v1/requests with that object nested in the body and the outer call still
 // authenticated with a session Proof header. It returns both the decoded result and the exact raw
 // response bytes, for --json's "print the response body verbatim" requirement.
-func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string) (RequestResult, []byte, error) {
+//
+// narrowing is the narrowing the release will ask for, sent as github_app so the broker refuses a
+// narrowing it cannot serve before anybody is asked to approve the request; nil sends no such
+// field. A broker from before that field refuses the whole body (brokerTookNoNarrowing) without
+// reading the request object, so the same signed object is sent once more without the field and
+// that second call's own result and raw bytes are what this answers. Once only: a second refusal
+// is about something else, which sending it again cannot mend.
+func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, []byte, error) {
 	requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
 	if err != nil {
 		return RequestResult{}, nil, fmt.Errorf("sign request object: %w", err)
@@ -374,11 +398,21 @@ func (c *client) CreateRequest(ctx context.Context, signer Signer, names []strin
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
-	body, err := json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
+	result, raw, err := c.postRequest(ctx, signer, createRequestBody{Request: requestObject, SessionID: sessionIDPtr, GitHubApp: narrowing})
+	if narrowing == nil || !brokerTookNoNarrowing(err) {
+		return result, raw, err
+	}
+	return c.postRequest(ctx, signer, createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
+}
+
+// postRequest is one POST /v1/requests with body as it stands, answering the decoded result and
+// the exact bytes the broker sent.
+func (c *client) postRequest(ctx context.Context, signer Signer, body createRequestBody) (RequestResult, []byte, error) {
+	encoded, err := json.Marshal(body)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests", body)
+	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests", encoded)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
@@ -451,6 +485,8 @@ func (c *client) CancelRequest(ctx context.Context, signer Signer, id string) er
 
 // GitHubNarrowing is POST /v1/grants/{id}/values's github_app object: one release's narrowing of
 // its GitHub App tokens, as the request names it and as the answer names what the broker applied.
+// POST /v1/requests takes the same object, where it says which narrowing the release will ask
+// for, so the broker checks it before a person is asked to approve the request.
 type GitHubNarrowing struct {
 	Owner        string   `json:"owner"`
 	Repositories []string `json:"repositories,omitempty"`
@@ -499,23 +535,36 @@ type AirlockName struct {
 	Hosts []string `json:"hosts"`
 }
 
+// releaseCall is what this client says of one release to the broker, which logs it with the
+// grant's reason and decides nothing by it: the command the release starts, nil for none, and
+// the reason this call gave, "" for none. That reason can differ from the grant's, since a call
+// that asks again for names its session holds a live grant of gets that grant back. The exec form
+// sends the command as record.ClipCommand leaves it, the 32 arguments of at most 256 bytes the
+// broker records, so no command takes the body past the broker's 1 MiB cap and fails a release
+// that would have succeeded without it.
+type releaseCall struct {
+	Command []string `json:"command,omitempty"`
+	Reason  string   `json:"reason,omitempty"`
+}
+
+// says reports whether call names anything, which is what puts it in a release's body.
+func (call releaseCall) says() bool { return len(call.Command) > 0 || call.Reason != "" }
+
 // GrantValues releases grantID's values, asking the broker to narrow its GitHub App tokens when
-// narrowing is not nil; nil sends no body, the release as the grant holds it.
-func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing) (GrantValues, error) {
+// narrowing is not nil, and naming what call says of the release; with neither it sends no body,
+// the release as the grant holds it. A broker from before the command or the reason field
+// refuses a body holding it, 400 INVALID_NARROWING naming the unknown field, and releases nothing
+// (callRefused), so the same release is sent once more without either: a newer client releases
+// from an older broker as before, only unlogged. This stays: a client can meet an older broker
+// on every future independent rollout.
+func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (GrantValues, error) {
 	if err := pathID("a grant id", grantID); err != nil {
 		return GrantValues{}, err
 	}
-	var body []byte
-	if narrowing != nil {
-		encoded, err := json.Marshal(struct {
-			GitHubApp *GitHubNarrowing `json:"github_app"`
-		}{narrowing})
-		if err != nil {
-			return GrantValues{}, fmt.Errorf("encode the narrowing: %w", err)
-		}
-		body = encoded
+	raw, err := c.release(ctx, signer, grantID, narrowing, call)
+	if call.says() && callRefused(err) {
+		raw, err = c.release(ctx, signer, grantID, narrowing, releaseCall{})
 	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
 	if err != nil {
 		return GrantValues{}, err
 	}
@@ -524,6 +573,33 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 		return GrantValues{}, fmt.Errorf("decode grant values: %w", err)
 	}
 	return values, nil
+}
+
+// release is one POST /v1/grants/{id}/values, its body holding narrowing and what call says
+// where each is given, and no body when none is.
+func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) ([]byte, error) {
+	var body []byte
+	if narrowing != nil || call.says() {
+		encoded, err := json.Marshal(struct {
+			GitHubApp *GitHubNarrowing `json:"github_app,omitempty"`
+			releaseCall
+		}{narrowing, call})
+		if err != nil {
+			return nil, fmt.Errorf("encode the release: %w", err)
+		}
+		body = encoded
+	}
+	return c.doProof(ctx, signer, http.MethodPost, "/v1/grants/"+grantID+"/values", body)
+}
+
+// callRefused reports whether err is a broker from before the command or the reason field
+// refusing a release for holding one: its body reader answers 400 INVALID_NARROWING, the release
+// route's code for a body it cannot read, with the JSON decoder's own words for a field it does
+// not declare, before anything is released.
+func callRefused(err error) bool {
+	var refusal *apiError
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
+		(strings.Contains(refusal.Message, `unknown field "command"`) || strings.Contains(refusal.Message, `unknown field "reason"`))
 }
 
 func (c *client) RevokeGrant(ctx context.Context, signer Signer, grantID string) error {

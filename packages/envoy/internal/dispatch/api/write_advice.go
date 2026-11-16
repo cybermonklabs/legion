@@ -66,7 +66,7 @@ type writeAdvice struct {
 	// editBlocks is set by a document edit; nil omits its field.
 	*editBlocks
 	// SupersededApproval is set by a document write that stored a version replacing the one a
-	// person had approved; nil (omitted) everywhere else.
+	// person or a plan review had approved; nil (omitted) everywhere else.
 	SupersededApproval *supersededApproval `json:"superseded_approval,omitempty"`
 	// MovedApprovalRequest is set by a document write that took an open approval request back
 	// from the person it waits on; nil (omitted) everywhere else.
@@ -461,11 +461,15 @@ type decisionBlockCheck struct {
 }
 
 // supersededApproval is what a document write reports when the version it stored replaced the
-// version a person had approved: that approval is now stale, and nothing but a person's review of
-// the new version restores it. Every write that supersedes an approval is reported, whatever the
-// document is: the approval it made stale is a fact about that document and nothing else. The
-// writer is the only one who can be told in time, and only the write that superseded the approval
-// is told: a write on a document whose approval was already stale closed nothing.
+// version a person or a plan review had approved: that approval is now stale, and nothing but a
+// new approval of the new version restores it. A person's review restores the approval of a
+// document that is not a plan; a plan's comes back through a plan review recorded with
+// `dispatch plan-approve`, since Dispatch refuses a request for a person's approval of any plan
+// (requestArtifactApproval, PLAN_APPROVED_BY_REVIEW), whoever approved it. Every write that
+// supersedes an approval is reported, whatever the document is: the approval it made stale is a
+// fact about that document and nothing else. The writer is the only one who can be told in time,
+// and only the write that superseded the approval is told: a write on a document whose approval
+// was already stale closed nothing.
 //
 // Whether a Legion design gate was among the things that approval held open is what DesignGates
 // answers. Dispatch keeps, issue by issue, which document each gated step records (design_gates,
@@ -474,7 +478,7 @@ type decisionBlockCheck struct {
 // list of gated steps names the row's step (supersededApprovalGates). Where nothing is left,
 // this write closed no gate anyone here knows of.
 type supersededApproval struct {
-	// ApprovedVersion is the version a person approved, the one this write superseded.
+	// ApprovedVersion is the version that approval pinned, the one this write superseded.
 	ApprovedVersion int `json:"approved_version"`
 	// Version is the version this write stored.
 	Version int `json:"version"`
@@ -656,8 +660,9 @@ type movedApprovalDocument struct {
 // (docs.MoveApprovalAsk) and the approval carry, so it reads the state the write left and not
 // the state it found.
 //
-// The rule is docs.ApprovalAwaitsHandBack, the same one the quiet move and the SQL approvalMoved
-// (ask_rows.go) apply, asked here of the request as this write left it.
+// The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
+// the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
+// write left it.
 //
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write

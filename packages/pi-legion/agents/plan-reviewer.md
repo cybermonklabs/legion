@@ -43,6 +43,10 @@ it out without getting stuck? You find blockers, not improvements.
    covers. Where a spec's own parts disagree on the scope of the goal, that is the owner's to
    settle: reject, and say so. Never "approve when in doubt" here: doubt is a rejection that
    says what is unclear.
+7. **Tests named before code.** Each requirement clause has a test row, and a requirement of one
+   of the four kinds in the reference the caller carries, `legion-worker/references/plan-tests.md`,
+   has its inventory test, fixtures, state table or list of readers and writers before any task
+   that writes code. A clause with no row, or a kind with no list, is a rejection that names it.
 
 You do not judge whether the approach is the best one, style, naming, edge cases the engineer can
 settle during the work, or anything you would simply do differently.
@@ -52,7 +56,7 @@ settle during the work, or anything you would simply do differently.
 Approve when in doubt. A plan that is mostly clear is good enough. Reject only for a blocker: a
 reference that does not exist or does not hold what the plan says (read to confirm), a task with
 nowhere to start, a contradiction, a requirement no task serves, a check no task makes pass, a
-check marked `after_merge` that could run before the merge, or check 6.
+check marked `after_merge` that could run before the merge, check 6, or check 7.
 
 A rejection names at most three blocking issues, the most severe first. Each gives:
 
