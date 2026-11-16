@@ -28,11 +28,12 @@ func OwningArchitect(project string, tree map[string]Issue, issue Issue, kind No
 // child's own architect is suspended with it (workflow's leave), and the architect above it
 // decides what the rest of the tree does. And a worker-died or a worker-stalled about the
 // architect of an issue that is not its tree's root (role is claim.RoleArchitect): the notice is
-// about that architect, so the architect above it must hear it. A failed claim is passed over by
-// the walk anyway, but a stalled one still holds its role and would be told of its own stall, so
-// such a notice on an issue with no parent goes to the tree root. A walk that starts at the parent
-// never comes back to the issue itself: a record whose parents loop back to it ends the walk at the
-// tree root.
+// about that architect, so the architect above it must hear it. Either notice on an issue with no
+// parent goes to the tree root, never to the issue's own architect: a failed claim is passed over
+// by the walk anyway, but a stalled one still holds its role and would be told of its own stall,
+// and the outbox can publish a child's close or status change while the child's own architect
+// still holds its role, before its suspension lands. A walk that starts at the parent never comes
+// back to the issue itself: a record whose parents loop back to it ends the walk at the tree root.
 //
 // The walk stays inside the issue's tree: admission records a Dispatch re-parent as it comes and
 // leaves the issue's tree as it was (admit's recordObservation), except a root that never ran,
@@ -50,16 +51,15 @@ func OwningIssue(project string, tree map[string]Issue, issue Issue, kind Notice
 	seen := map[string]bool{}
 	aboutItsArchitect := role == claim.RoleArchitect && (kind == "worker-died" || kind == "worker-stalled")
 	if aboutItsArchitect || kind == "child-closed" || kind == "child-status" {
-		if issue.Parent != nil && !claim.IsTreeRoot(issue.Key, issue.Tree) {
-			parent, ok := tree[*issue.Parent]
-			if !ok {
-				return issue.Tree
-			}
-			seen[issue.Key] = true
-			current = parent
-		} else if aboutItsArchitect {
+		if issue.Parent == nil || claim.IsTreeRoot(issue.Key, issue.Tree) {
 			return issue.Tree
 		}
+		parent, ok := tree[*issue.Parent]
+		if !ok {
+			return issue.Tree
+		}
+		seen[issue.Key] = true
+		current = parent
 	}
 	for {
 		if claim.IsTreeRoot(current.Key, current.Tree) {
