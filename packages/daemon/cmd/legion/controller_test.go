@@ -978,13 +978,16 @@ func TestControllerStartsAddressingNamesNeitherARenameAliasNorAnOwnerItsGhHoldsN
 		}
 	}
 
+	// The prompt rides a file since #4190, so the sentence is read from the file Oh My Pi was
+	// given rather than from argv, which holds its path.
 	argv := c.argv()
 	if len(argv) != 3 {
 		t.Fatalf("Oh My Pi's argv = %q, want three words", argv)
 	}
+	prompt := c.systemPrompt()
 	want := "\n\nDesign gate steps: none. Your role's GitHub App is installed on the owner cybermonklabs, and its token reaches every repository of that owner.\n\n"
-	if !strings.Contains(argv[1], want) {
-		t.Errorf("Oh My Pi's argv = %q; want it to contain %q", argv, want)
+	if !strings.Contains(prompt, want) {
+		t.Errorf("Oh My Pi's system prompt = %q; want it to contain %q", prompt, want)
 	}
 	// The negative controls: the sentence each source alone would have written is not the
 	// controller's, and each of them names the owner the other half is false of.
@@ -1000,7 +1003,7 @@ func TestControllerStartsAddressingNamesNeitherARenameAliasNorAnOwnerItsGhHoldsN
 		if !strings.Contains(sentence, control.names) {
 			t.Fatalf("the sentence built from %s is %q, want it to name %s: the control proves nothing otherwise", control.source, sentence, control.names)
 		}
-		if strings.Contains(argv[1], sentence) {
+		if strings.Contains(prompt, sentence) {
 			t.Errorf("the controller's prompt carries %q, the sentence built from %s, which names %s", sentence, control.source, control.names)
 		}
 	}
