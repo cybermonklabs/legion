@@ -187,7 +187,7 @@ export function fitOutput(
  * elsewhere); an empty variable counts as unset. With `DISPATCH_HOST` unset,
  * `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash and hook process it runs, is
  * host `claude`: a Claude Code subagent's Bash can lack what the bridge's `SessionStart` hook
- * writes to `CLAUDE_ENV_FILE` (anthropics/claude-code#46696).
+ * writes to `CLAUDE_ENV_FILE` (Claude Code issue 46696).
  *
  * The envoy.json it reads is the one its session's plugin chose: with `DISPATCH_HOST` set, the file
  * `ENVOY_CONFIG_FILE` names (each plugin sets the two together), else its host's own rule
