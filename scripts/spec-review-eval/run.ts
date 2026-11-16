@@ -63,6 +63,7 @@ import {
   type DispatchStack,
   startDispatchStack,
 } from "../../packages/envoy-client/test/dispatch-stack";
+import { newSeed, randomStream } from "../approval-eval/corpus-io";
 import { answerOf } from "../approval-eval/fresh-agent";
 
 /** The seven kinds of the skill's output form, in the order the skill prints them. */
@@ -428,24 +429,13 @@ export function withIssueKey(markdown: string, key: string): string {
   return markdown.replaceAll(ISSUE_PLACEHOLDER, key);
 }
 
-/** A generator of numbers in [0, 1) that its seed decides (mulberry32): one seed, one sequence. */
-function generator(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let mixed = Math.imul(state ^ (state >>> 15), state | 1);
-    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
-    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
 /**
  * The opaque handle of each fixture of one run: its place, from 1, in a shuffle of the ids that
  * the seed decides. An agent reads its fixture's handle, never its id.
  */
 export function handlesOf(ids: readonly string[], seed: number): Map<string, number> {
   const order = [...ids];
-  const next = generator(seed);
+  const next = randomStream(seed);
   for (let last = order.length - 1; last > 0; last -= 1) {
     const other = Math.floor(next() * (last + 1));
     [order[last], order[other]] = [order[other], order[last]];
@@ -766,7 +756,6 @@ interface SeededDocument {
 
 interface Seeded {
   readonly fixture: Fixture;
-  readonly issue: string;
   readonly documents: readonly SeededDocument[];
 }
 
@@ -853,7 +842,7 @@ async function seed(stack: DispatchStack, plan: Plan, agents: readonly Agent[]):
       );
       documents.push({ name: VERIFICATION_DOCUMENT, artifact: verification.artifact.id });
     }
-    seeded.push({ fixture, issue: issue.key, documents });
+    seeded.push({ fixture, documents });
   }
   return seeded;
 }
@@ -870,7 +859,7 @@ export function formProblems(fixture: Fixture, document: string, read: FormRead)
       `${where} is out of scope (${read.scope}), so DISPATCH_SPEC_ROOTS did not reach the server`,
     ];
   }
-  const declared = document === "spec.md" ? fixture.form : [];
+  const declared = document === SPEC_DOCUMENT ? fixture.form : [];
   const found = read.findings ?? [];
   return [
     ...declared
@@ -1083,7 +1072,7 @@ async function evaluate(flags: Flags): Promise<number> {
   await mkdir(out, { recursive: true });
   const models = await modelsFileOf(flags.omp);
   const branch = branchOf(REPO);
-  const firstSeed = crypto.getRandomValues(new Uint32Array(1))[0] ?? 0;
+  const firstSeed = newSeed();
   const results: string[] = [];
   let failed = 0;
   for (let run = 1; run <= flags.runs; run += 1) {
