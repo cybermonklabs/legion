@@ -1284,10 +1284,12 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // bearerSessionActor and actingPerson both refuse, 403 ACTOR_SESSION_MISMATCH, rather than a
 // write recorded as a session the caller merely asked for.
 //
-// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
-// whose input struct does not declare one is a 400, and four of the mutating rows a person's
-// scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
-// so there is nothing for a body to name, and its body actor is ignored here as it always was.
+// Only those routes read it: decodeJSON ignores a member the route's input does not declare (it
+// logs the member and decodes the rest), so a body actor on a route whose input struct does not
+// declare one is dropped and the caller's credential alone decides the act, and four of the
+// mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor names
+// no agent (act is nil), so there is nothing for a body to name, and its body actor is ignored
+// here as it always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
