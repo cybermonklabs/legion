@@ -13,10 +13,11 @@ limit. Near that limit the launcher's memory guard, where the deployment runs it
 default), stops, with SIGKILL, the largest process that is neither Legion's own nor an agent's own,
 which in practice is a command an agent ran: a build, a test binary, a Python or JavaScript kernel.
 It then tells that process's role why, in a message on the role's topic. In a pod that runs in a
-microVM, the pod's own kernel stops such a command in place of the guard, and the role is told the
-same way. The command fails and the turn goes on. In a gVisor pod, a command that fills the memory
-faster than the guard can stop it still takes the pod past its limit, and that ends every role's
-turn, not only yours.
+microVM, the pod's own kernel stops such a command in place of the guard where each of the pod's
+requests equals its limit, and the role is told the same way; in a pod that requests less, it can
+stop an agent instead. The command fails and the turn goes on. In a gVisor pod, a command that
+fills the memory faster than the guard can stop it still takes the pod past its limit, and that
+ends every role's turn, not only yours.
 
 In the pod you compile and test the packages your change touches, build the program a check of
 your issue drives (`go build ./cmd/legion`), vet the module you changed (`go vet -tags e2e ./...`,
