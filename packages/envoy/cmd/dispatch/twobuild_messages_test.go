@@ -340,8 +340,15 @@ func (h handOver) replayed(number int) bool {
 
 // publishAcrossStop publishes a merged pull request for each of numbers while holder delivers from
 // the events durable, stops holder gracefully once ten of them are handled, and waits for standby to
-// take the durable over and for every one of numbers to be handled. It returns that hand-over: its
-// time is after holder's process exited, so every handling holder did is before it.
+// take both delivery durables over and for every one of numbers to be handled. It returns that
+// hand-over: its time is after holder's process exited, so every handling holder did is before it.
+//
+// Nothing reads a durable from holder's stop until standby has bound it. A take-over of this
+// tree's deletes the durable and creates it again (delivery.takeOverConfig), so between those two
+// calls the durable does not exist, and standby can be in that gap as holder's process exits:
+// holder lets go of its hold before it exits, and standby's next poll takes the hold and the
+// durable. Every release from legion-envoy-v30.21.0 on takes the durables over that way, so the
+// gap comes in both hand-overs. The window is therefore read while holder still delivers.
 func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamContext, fake *pullRequestFake, numbers []int, holder, standby *dispatchProcess) handOver {
 	t.Helper()
 	handledOf := func() int {
@@ -367,16 +374,21 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	standbyBound := boundLines(standby, bus.DispatchDeliveryDurable)
+	standbyBound := make(map[string]int, len(deliveryDurables))
+	for _, durable := range deliveryDurables {
+		standbyBound[durable] = boundLines(standby, durable)
+	}
 	before := deliverSubjectOf(t, js, bus.DispatchDeliveryDurable)
+	window := readBusSettings(t, js).Consumers[bus.DispatchDeliveryDurable].MaxAckPending
 	stop(t, holder)
 	over := handOver{
 		stopping: builds.buildName(holder), taking: builds.buildName(standby), at: time.Now(),
-		sequences: sequences,
-		window:    readBusSettings(t, js).Consumers[bus.DispatchDeliveryDurable].MaxAckPending,
+		sequences: sequences, window: window,
 	}
 	t.Logf("stopped the %s with %d of %d pull requests handled", over.stopping, handledOf(), len(numbers))
-	waitForBound(t, standby, over.taking, bus.DispatchDeliveryDurable, standbyBound, 60*time.Second)
+	for _, durable := range deliveryDurables {
+		waitForBound(t, standby, over.taking, durable, standbyBound[durable], 60*time.Second)
+	}
 	// Read once the take-over has bound the durable: a take-over that created it again delivers
 	// from the sequence it created it at, and one that bound the durable as it stands -- which
 	// leaves the deliver subject it had -- delivers nothing again.
@@ -481,8 +493,11 @@ func pullRequestNumbers(first, count int) []int {
 // The delivery durables' filter, ack wait, ack bound and generation, and the stream's age,
 // duplicate window, subjects and replicas, stay as they are across two settings polls with both
 // builds running, and across a restart of each build in turn. While a process of the previous
-// build, which holds no hold, delivers from the durable, a restarted process of this tree
-// stands by rather than take the durable from it.
+// build delivers from the durable, a restarted process of this tree stands by rather than take
+// the durable from it. From legion-envoy-v30.21.0 on, the previous build holds the durable's
+// hold, and the restarted process stands by because takeHold refuses a live hold. A build before
+// holds, such as the first-rollout build, delivers under no hold, and the restarted process
+// stands by because it finds the durable bound to a subject no hold recorded (boundElsewhere).
 func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	builds := newTwoBuilds(t)
 	seedPullRequestSettings(t, builds)
@@ -540,9 +555,10 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	half := pullRequestMessages / 2
 	currentHandOver := publishAcrossStop(t, builds, js, fake, pullRequestNumbers(1001, half), builds.current(), builds.previous())
 
-	// This tree, stopped above, comes back while the previous build delivers from the durable
-	// under no hold, as every build before holds does: it stands by and never takes the binding
-	// from it.
+	// This tree, stopped above, comes back while the previous build delivers from the durable: it
+	// stands by and never takes the binding from it. A previous build from legion-envoy-v30.21.0 on
+	// holds the durable's hold, which takeHold refuses while it is live; a build before holds
+	// delivers under no hold, and the restarted build finds the durable bound elsewhere.
 	binding := consumerBinding(t, js, bus.DispatchDeliveryDurable)
 	builds.startCurrent(t, currentEnv)
 	time.Sleep(standbyWindow)

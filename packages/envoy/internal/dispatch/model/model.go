@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
@@ -54,9 +55,9 @@ func (a *ActorAct) Holds(scope string) bool {
 	return a == nil || slices.Contains(a.Scopes, scope)
 }
 
-// Credential is the request's credential as optionalActor resolved it: the scopes it holds, and
-// the agent it names. A pointer, so Actor stays comparable with ==, which this package's callers
-// and its tests rely on.
+// Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
+// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
+// which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	Scopes []string
@@ -66,6 +67,15 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
+	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// one the secrets broker minted from a read entry, naming a service and a session and no
+	// person and no project. Dispatch serves it on the routes its read list names
+	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
+	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
+	// Scopes: those are what a route can require of a credential, and read meets no route's
+	// requirement; it narrows what this credential may call rather than widening it. False for
+	// every other credential.
+	ReadOnly bool
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -148,10 +158,11 @@ func sameActorName(left, right *string) bool {
 	return *left == *right
 }
 
-// CanonicalLogin is the stored form of a person's email: trimmed and lowercased, the form the
-// identity implementations name a person by and the people table holds.
+// CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
+// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// the people table holds.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -913,8 +924,10 @@ type WriteSuggestion struct {
 // it. LikelyDuplicate is the closest open issue of an unforced create whose near-copy score
 // reached the nudge bar but not the refusal's: a field of its own, because every released client
 // prints each TitleMatches entry as something the filer forced past. NearCopyCheck is set, to
-// why, exactly when the near-copy check before the create did not answer, so a filer knows the
-// create went in unchecked; it is absent on every other write, which runs no such check.
+// why, exactly when the near-copy check before the create made no check that could stop it: its
+// read did not answer, or it found a near copy whose refusal could not be recorded, which it then
+// names; so a filer knows the create went in unchecked. It is absent on every other write, which
+// runs no such check.
 // Related is always an array, never null.
 //
 // OtherProjects rides beside Related, never inside it: a write that asks a person a question -
@@ -979,6 +992,64 @@ type RelatedCheckTiming struct {
 	P95       *int `json:"p95"`
 	Max       *int `json:"max"`
 	Over300MS int  `json:"over_300ms"`
+}
+
+// NearCopyCheck is one row of near_copy_checks: one answer the near-copy gate gave an issue
+// create. Outcome is refused (the gate refused it and nothing was written: every 409
+// POSSIBLE_DUPLICATE has this row, written before the answer; so does a refusal whose row landed
+// unseen when the create let in past it then failed), forced (written past a refusal with
+// `force`), nudged (written, its closest open issue named as a likely duplicate), passed (written
+// with nothing named, forced or not) or not_made (the gate made no check that could stop the
+// create, and it went in unchecked), and Reason says why a check was not made: bound (the read ran
+// out of its bound or its request went away), failed (the read failed) or unrecorded (the read
+// found a near copy, but the row of its refusal could not be confirmed, so it refused nothing);
+// null for every other outcome. Force is whether the create asked for `force`.
+//
+// Spec is the spec as sent, held for a refused create alone, which has no issue to hold it ("" for
+// one that sent none); it is absent from a page (NearCopyChecksPage) and from every other row.
+// SpecSHA256 is the spec's sha256 in hex on every row. Issue is the issue the create wrote, null
+// for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
+// five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
+// the bars the build read them against, and BuildCommit is the legion commit it was built from,
+// null for a build nothing stamped.
+type NearCopyCheck struct {
+	ID          string                   `json:"id"`
+	CreatedAt   time.Time                `json:"created_at"`
+	Project     string                   `json:"project"`
+	ActorKind   string                   `json:"actor_kind"`
+	ActorID     string                   `json:"actor_id"`
+	Outcome     string                   `json:"outcome" enum:"refused,forced,nudged,passed,not_made"`
+	Reason      *string                  `json:"reason" enum:"bound,failed,unrecorded"`
+	Force       bool                     `json:"force"`
+	Title       string                   `json:"title"`
+	Spec        *string                  `json:"spec,omitempty"`
+	SpecSHA256  string                   `json:"spec_sha256"`
+	Parent      *string                  `json:"parent"`
+	Issue       *string                  `json:"issue"`
+	Candidates  []NearCopyCheckCandidate `json:"candidates"`
+	RefuseScore float64                  `json:"refuse_score"`
+	NudgeScore  float64                  `json:"nudge_score"`
+	BuildCommit *string                  `json:"build_commit"`
+}
+
+// NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
+// read and the title the issue held at that moment.
+type NearCopyCheckCandidate struct {
+	Key   string  `json:"key"`
+	Title string  `json:"title"`
+	Score float64 `json:"score"`
+}
+
+// NearCopyChecksPage is GET /api/v1/near-copy-checks: one project's near-copy gate answers
+// recorded within [From, To), oldest first, at most the page's limit. Project, From and To echo
+// the query, From and To null when not given. NextAfter is the id to pass as ?after= for the
+// next page, null when this page holds the last row the window selects.
+type NearCopyChecksPage struct {
+	Project   string          `json:"project"`
+	From      *time.Time      `json:"from"`
+	To        *time.Time      `json:"to"`
+	Checks    []NearCopyCheck `json:"checks"`
+	NextAfter *string         `json:"next_after"`
 }
 
 // IssueChild is a child item embedded in an issue detail response. The subtree counts

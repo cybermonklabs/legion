@@ -1,0 +1,2 @@
+kind: Fixed
+body: 'The agent-secrets skill checks a JSON value''s shape by its key paths and the length of each leaf, never by printing a leaf, takes a credential out of a JSON value inside the command that uses it, and names no deployment''s secret.'

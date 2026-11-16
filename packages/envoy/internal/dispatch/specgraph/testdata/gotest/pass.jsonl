@@ -1,0 +1,13 @@
+{"Time":"2026-11-16T08:14:11.525708615Z","Action":"start","Package":"example.com/acme/gotest/pass"}
+{"Time":"2026-11-16T08:14:11.547701646Z","Action":"run","Package":"example.com/acme/gotest/pass","Test":"TestA"}
+{"Time":"2026-11-16T08:14:11.547818333Z","Action":"output","Package":"example.com/acme/gotest/pass","Test":"TestA","Output":"=== RUN   TestA\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:11.547891393Z","Action":"output","Package":"example.com/acme/gotest/pass","Test":"TestA","Output":"    pass_test.go:6: the claim is kept\n"}
+{"Time":"2026-11-16T08:14:11.54790247Z","Action":"output","Package":"example.com/acme/gotest/pass","Test":"TestA","Output":"--- PASS: TestA (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:11.547906377Z","Action":"pass","Package":"example.com/acme/gotest/pass","Test":"TestA","Elapsed":0}
+{"Time":"2026-11-16T08:14:11.547916275Z","Action":"run","Package":"example.com/acme/gotest/pass","Test":"TestAB"}
+{"Time":"2026-11-16T08:14:11.547918401Z","Action":"output","Package":"example.com/acme/gotest/pass","Test":"TestAB","Output":"=== RUN   TestAB\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:11.547926149Z","Action":"output","Package":"example.com/acme/gotest/pass","Test":"TestAB","Output":"--- PASS: TestAB (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:11.547928697Z","Action":"pass","Package":"example.com/acme/gotest/pass","Test":"TestAB","Elapsed":0}
+{"Time":"2026-11-16T08:14:11.547931184Z","Action":"output","Package":"example.com/acme/gotest/pass","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T08:14:11.55498193Z","Action":"output","Package":"example.com/acme/gotest/pass","Output":"ok  \texample.com/acme/gotest/pass\t0.029s\n"}
+{"Time":"2026-11-16T08:14:11.555027975Z","Action":"pass","Package":"example.com/acme/gotest/pass","Elapsed":0.029}

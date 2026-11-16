@@ -51,6 +51,14 @@ func TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask(t *testing.
 			wantCode:  "PHASE_NOT_RESTARTED",
 		},
 		{
+			// Admitted is the architect's own phase (phase.RoleFor), which no phase worker works.
+			name:      "the architect's own phase, admitted",
+			issue:     record.Issue{Phase: phase.Admitted},
+			role:      claim.RolePlanner,
+			wantPhase: phase.Admitted,
+			wantCode:  "PHASE_NOT_RESTARTED",
+		},
+		{
 			name:      "an issue that left the workflow",
 			issue:     record.Issue{Phase: phase.Done, Status: "done"},
 			role:      claim.RoleImplementer,

@@ -35,18 +35,22 @@ import (
 // What is compared: the names the extract lists, against the keys decide writes into an exchange
 // session's extra claims, which is where this provider's opaque tokens carry them. The code's side
 // is collected by calling decide for each kind of subject token — a pod's, whose entry gives the
-// named project scope, a machine access token's, whose scope is the person's, and a machine's
-// Google identity token, whose entry names a service — and taking the union, since `project` is
-// written under one scope and deleted under the other. So a claim a new scope or a new decision
-// adds is a claim this fails until the list names it. The one claim no decision writes, the
-// launcher credential a machine's exchange mints (machineCredential, which runs after decide
-// because the credential does not exist until the request's key is bound), is added to that union
-// by name; what proves it is written is the live exchange in cmd/broker.
+// named project scope, a pod's of a read entry, whose project scope is none, a machine access
+// token's, whose scope is the person's, and a machine's Google identity token, whose entry names a
+// service — and taking the union, since `machine` is written for one kind of trade and deleted for
+// the others. So a claim a new scope or a new decision adds is a claim this fails until the list
+// names it. The OAuth scope a decision grants is a claim too, though decide grants it on the
+// request rather than writing it into the extras: `scope`, which an introspection answers from the
+// granted scopes and a read entry's token alone carries (writeProjectScope), joins the union when
+// any decision granted one. The one claim no decision writes, the launcher credential a machine's
+// exchange mints (machineCredential, which runs after decide because the credential does not
+// exist until the request's key is bound), is added to that union by name; what proves it is
+// written is the live exchange in cmd/broker.
 //
 // What this cannot do: it compares two sets of names, and nothing more. It does not read a bullet's
 // meaning, so a claim whose description is stale, wrong, or swapped with its neighbour's passes
 // here; it does not know the order the list is written in; it says nothing about the claims an
-// introspection answer adds around them (`exp`, `client_id`, `jkt`); and the union is over the two
+// introspection answer adds around them (`exp`, `client_id`, `jkt`); and the union is over the
 // subject kinds it calls decide with, so a claim only a workflow run's token could carry would be
 // missed. A reader still owns all of that. What it does own is the two sets drifting apart while
 // each side looks right on its own.
@@ -55,11 +59,14 @@ import (
 // it is about and needs no declared read of its own.
 const claimsExtractFile = "claims_doc_extract.txt"
 
-// The listed identity and the two subject tokens decide is asked to decide on here. The account
+// The listed identities and the subject tokens decide is asked to decide on here. The account
 // entry fixes no session, so the request names one, and the pod token carries the audience the
-// configured issuer accepts and the pod binding Set.Pod requires.
+// configured issuer accepts and the pod binding Set.Pod requires. The read entry fixes the very
+// session every request here names, so the one request form serves its pod too.
 const (
 	claimsPodAccount   = "system:serviceaccount:example-ns:example-worker"
+	claimsReadAccount  = "system:serviceaccount:example-ns:example-reader"
+	claimsReadService  = "example-reader"
 	claimsPodUID       = "11111111-2222-3333-4444-555555555555"
 	claimsPerson       = "ada@example.com"
 	claimsProject      = "ACME"
@@ -67,6 +74,10 @@ const (
 	claimsIssuer       = "https://kubernetes.example/cluster"
 	claimsAudience     = "https://broker.example"
 	claimsCredentialID = "machine-credential-1"
+	// claimsScope is RFC 7662's name for the scope an introspection answers
+	// (oauthwire.Introspection.Scope), which the library keeps as the granted scopes rather than
+	// as an extra claim.
+	claimsScope = "scope"
 	// The Google half: the issuer a machine's identity token comes from, the audience it must
 	// carry, and the account an entry lists for a fleet that names no person.
 	claimsGoogleIssuer   = "https://accounts.google.example"
@@ -80,8 +91,8 @@ const (
 )
 
 // The claims claims_doc_extract.txt lists are exactly the claims an exchanged token carries. Both
-// sides are read: the extract's names, and the keys decide writes for the two project scopes a
-// token can be issued under.
+// sides are read: the extract's names, and the keys decide writes for the three project scopes a
+// token can be issued under, with the scope it grants.
 func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
 	documented := extractedClaims(t)
 	issued := issuedClaims(t)
@@ -97,15 +108,20 @@ func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
 }
 
 // issuedClaims are the claim names an exchanged token carries, sorted: the keys decide writes onto
-// an exchange session over each kind of subject token and each project scope, and the launcher
-// credential a machine's exchange adds after decide has run. A scope that wrote a claim nothing
-// documents, or stopped writing one the list still carries, lands in this set.
+// an exchange session over each kind of subject token and each project scope, `scope` once any
+// decision grants an OAuth scope, and the launcher credential a machine's exchange adds after
+// decide has run. A scope that wrote a claim nothing documents, or stopped writing one the list
+// still carries, lands in this set.
 func issuedClaims(t *testing.T) []string {
 	t.Helper()
 	policy, err := exchange.NewSet([]exchange.AccountEntry{{
 		Account: claimsPodAccount,
 		Project: claimsProject,
 		Person:  claimsPerson,
+	}}, []exchange.ReadEntry{{
+		Account: claimsReadAccount,
+		Service: claimsReadService,
+		Session: claimsSessionName,
 	}}, nil, []exchange.GoogleEntry{{Account: claimsGoogleAccount, Service: claimsGoogleService}}, claimsSignInDomain)
 	if err != nil {
 		t.Fatalf("exchange.NewSet: %v", err)
@@ -129,6 +145,13 @@ func issuedClaims(t *testing.T) []string {
 		tokenType: oauthwire.SubjectTokenTypeKubernetes,
 		token: map[string]any{
 			"sub":           claimsPodAccount,
+			"aud":           claimsAudience,
+			"kubernetes.io": map[string]any{"pod": map[string]any{"uid": claimsPodUID}},
+		},
+	}, {
+		tokenType: oauthwire.SubjectTokenTypeKubernetes,
+		token: map[string]any{
+			"sub":           claimsReadAccount,
 			"aud":           claimsAudience,
 			"kubernetes.io": map[string]any{"pod": map[string]any{"uid": claimsPodUID}},
 		},
@@ -187,6 +210,9 @@ func issuedClaims(t *testing.T) []string {
 		}
 		for name := range session.Extra {
 			issued[name] = true
+		}
+		if len(request.GetGrantedScopes()) > 0 {
+			issued[claimsScope] = true
 		}
 	}
 	// The launcher credential a machine's exchange answers with, written onto the session by

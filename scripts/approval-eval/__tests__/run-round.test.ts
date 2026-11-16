@@ -14,6 +14,7 @@ import {
   assertSameCases,
   type CaseEvidence,
   inSeedOrder,
+  ProbeError,
   promptOf,
   type RoundDeps,
   type RoundPlan,
@@ -179,7 +180,11 @@ interface Fake extends RoundDeps {
   clock: number;
 }
 
-/** A round's world, with the clock the caller moves and the answer the caller chooses. */
+/**
+ * A round's world, with the clock the caller moves and the answer the caller chooses. An answer
+ * says the asked model served it, as the gateway's answers do, unless the caller's answer names
+ * another.
+ */
 function fake(
   answerOf: (ask: { model: string; user: string }, at: number) => ModelAnswer,
   stepMs = 0
@@ -197,7 +202,10 @@ function fake(
         user: ask.prompt.user,
       });
       deps.clock += stepMs;
-      return answerOf({ model: ask.model, user: ask.prompt.user }, deps.asks.length - 1);
+      return {
+        servedModel: ask.model,
+        ...answerOf({ model: ask.model, user: ask.prompt.user }, deps.asks.length - 1),
+      };
     },
     askJev: async (ask: JevAsk) => {
       deps.asks.push({
@@ -207,7 +215,10 @@ function fake(
         user: ask.state,
       });
       deps.clock += stepMs;
-      return answerOf({ model: ask.model, user: ask.state }, deps.asks.length - 1);
+      return {
+        servedModel: ask.model,
+        ...answerOf({ model: ask.model, user: ask.state }, deps.asks.length - 1),
+      };
     },
     now: () => deps.clock,
     log: (line: string) => {
@@ -502,6 +513,7 @@ describe("the rows file", () => {
       arm: "bare-opus",
       recipe: "bare",
       model: "a-model",
+      servedModel: "a-model",
       endpoint: "claude",
       caseId,
       slice: "report",
@@ -585,5 +597,97 @@ describe("the rows file", () => {
       "case-0",
       "case-1",
     ]);
+  });
+
+  test("a resume asks again a row no served model is recorded for, or another model served", async () => {
+    const round = await scratch();
+    const { servedModel: _, ...unrecorded } = judgementRow("case-0", 0, null);
+    const jev = { endpoint: "jev", model: "jev-latest" };
+    const lines = [
+      JSON.stringify(unrecorded),
+      JSON.stringify({ ...judgementRow("case-1", 0, null), servedModel: "claude-fable-5-2" }),
+      JSON.stringify({ ...judgementRow("case-2", 0, null), servedModel: null }),
+      JSON.stringify(judgementRow("case-3", 0, null)),
+      JSON.stringify({ ...judgementRow("case-4", 0, null), ...jev, servedModel: "jev-2026-11" }),
+      JSON.stringify({ ...judgementRow("case-5", 0, null), ...jev, servedModel: null }),
+    ];
+    await writeFile(rowsPath(round), `${lines.join("\n")}\n`, "utf8");
+    const store = await RowStore.open(round);
+    const answered = [0, 1, 2, 3, 4, 5].map((at) =>
+      store.answered(`bare-opus\u0000case-${at}\u00000`)
+    );
+    expect(answered).toEqual([false, false, false, true, true, false]);
+  });
+});
+
+describe("an answer the round cannot tie to its arm's model", () => {
+  // A gateway arm whose answers come from another model, a Jev arm whose answers name none, and
+  // a gateway arm answered as asked, which is the one arm whose verdicts count.
+  const arms: Arm[] = [
+    ...ARMS_UNDER_TEST,
+    {
+      name: "bare-three",
+      recipe: "bare",
+      model: "fake-claude-ok",
+      endpoint: "claude",
+      slices: ["fit"],
+    },
+  ];
+  const servedBy = (ask: { model: string }): ModelAnswer => ({
+    ...answer(["Approve"]),
+    servedModel:
+      ask.model === "fake-claude"
+        ? "claude-fable-5-2"
+        : ask.model === "fake-jev"
+          ? undefined
+          : ask.model,
+  });
+
+  test("is written as the model fault, and the round counts it as not answered", async () => {
+    const out = await scratch();
+    const result = await runRound(planOf(out, { arms }), fake(servedBy));
+    const rows = await rowsOf(out);
+    const byArm = (name: string) => rows.filter((row) => row.arm === name);
+    expect(byArm("bare-one").map((row) => row.fault)).toEqual(Array(15).fill("model"));
+    expect(byArm("bare-one")[0]?.faultDetail).toBe(
+      "asked fake-claude, and the answer came from claude-fable-5-2"
+    );
+    expect(byArm("many-shot-two")[0]).toMatchObject({
+      fault: "model",
+      faultDetail: "asked fake-jev, and the answer names no model",
+      servedModel: null,
+      verdict: ["Approve"],
+    });
+    expect(byArm("bare-three").every((row) => row.fault === null)).toBe(true);
+    const summary = await summaryOf(out);
+    expect(summary.judgements).toMatchObject({ planned: 45, answered: 15, left: 30 });
+    expect(summary.faults.byKind.model?.count).toBe(30);
+    expect(result.exitCode).not.toBe(0);
+  });
+
+  test("stops the round at its probe, naming the model fault", async () => {
+    for (const arm of ARMS_UNDER_TEST) {
+      const out = await scratch();
+      const probed = runRound(planOf(out, { arms: [arm], probeOnly: true }), fake(servedBy));
+      await expect(probed).rejects.toThrow(ProbeError);
+      await expect(probed).rejects.toThrow(
+        `the ${arm.endpoint} probe on ${arm.name} failed with the model fault`
+      );
+    }
+  });
+
+  test("keeps the fault an answer came with, which names no served model either", async () => {
+    // A call that failed names no model, as `askClaude` returns it: its row keeps the fault the
+    // call gave, and is not turned into the model fault.
+    const out = await scratch();
+    const failed = (): ModelAnswer => ({
+      ...answer([], "status", "503 the endpoint was out"),
+      servedModel: undefined,
+    });
+    await runRound(planOf(out), fake(failed));
+    const rows = await rowsOf(out);
+    expect(rows).toHaveLength(30);
+    expect(rows.every((row) => row.fault === "status")).toBe(true);
+    expect(rows[0]?.faultDetail).toBe("503 the endpoint was out");
   });
 });

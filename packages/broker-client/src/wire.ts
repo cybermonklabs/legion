@@ -14,7 +14,7 @@ export const GRANT_TYPE_TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token
 /** The OAuth client every caller of the exchange asks as (`oauthwire.ExchangeClientID`). */
 export const EXCHANGE_CLIENT_ID = "dispatch-token-exchange";
 
-/** The broker's own form parameter: the session name the minted token writes under. RFC 8693 has
+/** The broker's own form parameter: the session name the minted token carries. RFC 8693 has
  *  none, and an entry that fixes no session requires it. */
 export const FORM_SESSION = "session";
 
@@ -27,6 +27,12 @@ export const FORM_LAUNCHER_CREDENTIAL = "launcher_credential";
 
 /** The one value of {@link FORM_LAUNCHER_CREDENTIAL} that declines the credential. */
 export const FORM_LAUNCHER_CREDENTIAL_DECLINED = "false";
+
+/** The broker's third form parameter: the projects the minted token names, project keys
+ *  separated by one space, sorted and each once (`oauthwire.FormProjects`). Only a trade that acts
+ *  as its person sends it, and the broker names only projects that person may see; absent is no
+ *  projects. */
+export const FORM_PROJECTS = "projects";
 
 /** The `subject_token_type` a pod presents its projected Kubernetes service-account token under. */
 export const SUBJECT_TOKEN_TYPE_KUBERNETES =

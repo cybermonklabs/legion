@@ -36,15 +36,11 @@ import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { sqlAt } from "../psql";
+import { masked, rowLimit, runBounded } from "./bounded-subprocess";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
 const localInstancePath = join(dispatchPackage, "e2e/local-instance.ts");
-
-/** One spawn of the driver, which refuses or fails before it starts anything. */
-const driverTimeout = 30_000;
-/** A spawn of the driver between the creation and the drop of a scratch database. */
-const scratchTimeout = 60_000;
 
 /** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
  *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
@@ -124,13 +120,19 @@ async function withScratchDatabase(
 }
 
 const fakeBunDirectories = temporaryDirectories("replace-blocks-fake-bun");
+/** A directory for the fixture log the failed-start row hands `tail`, one per row. */
+const logDirectories = temporaryDirectories("replace-blocks-log");
 
 /** The driver run from the package root with `databaseUrl`, LEGION_TEST_PG_DSN as this run has it
- *  where it has one, and no other Dispatch, Envoy or libpq variable, so what it does is the guard's
- *  own. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as the
- *  instance's output, and exits 1, so a string the guard lets through starts nothing. `started` is
- *  whether that `bun` ran. */
+ *  where it has one, `label` as DISPATCH_E2E_CASE, and no other Dispatch, Envoy or libpq variable,
+ *  so what it does is the guard's own. The driver never reads DISPATCH_E2E_CASE, and its scrub
+ *  unsets it with every other DISPATCH_ variable: the runs differ only in DATABASE_URL, which the
+ *  cost line names without its value, so `label`, one per case, is what tells their cost lines
+ *  apart. A `bun` of the row's own stands first on PATH: it leaves a marker file, prints `log` as
+ *  the instance's output, and exits 1, so a string the guard lets through starts nothing.
+ *  `started` is whether that `bun` ran. */
 async function drive(
+  label: string,
   databaseUrl: string,
   log = ""
 ): Promise<{ code: number; stdout: string; stderr: string; started: boolean }> {
@@ -145,25 +147,33 @@ async function drive(
       mode: 0o755,
     }
   );
-  const child = Bun.spawn(["bash", "e2e/acceptance/replace-blocks.sh"], {
+  const { code, stdout, stderr } = await runBounded({
+    argv: ["bash", "e2e/acceptance/replace-blocks.sh"],
+    bound: "short",
     cwd: dispatchPackage,
     env: {
       DATABASE_URL: databaseUrl,
+      DISPATCH_E2E_CASE: label,
       HOME: process.env.HOME ?? "",
       PATH: `${bin}:${process.env.PATH ?? ""}`,
       ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       ...(exportedServer === "" ? {} : { LEGION_TEST_PG_DSN: exportedServer }),
     },
-    stderr: "pipe",
-    stdin: "ignore",
-    stdout: "pipe",
+    from: import.meta.url,
   });
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
   return { code, stdout, stderr, started: existsSync(marker) };
+}
+
+/** What a row's failure says of a driver that ended, whatever its exit code: that code and its
+ *  whole stderr. A driver its short bound stopped never reaches here: `runBounded` throws before
+ *  `drive` returns, and the row fails with that message, which names the child, the bound and the
+ *  time waited. Each refusal of the driver's writes its reason on its stderr, naming the variable
+ *  or the command it refused, so the failure says which refusal fired, or that none did. The
+ *  stderr is read through `masked`, as a cost line's command is: a run that wrote a connection
+ *  string there would otherwise carry its password into the failure, and the run's output reaches
+ *  whatever log keeps it. */
+function driverSaid({ code, stderr }: { code: number; stderr: string }): string {
+  return ` The driver exited ${code}, and its stderr read:\n${masked(stderr) || "(nothing)"}`;
 }
 
 /** The reason the driver's `unread_dsn` gives for a DATABASE_URL psql got no answer through. */
@@ -183,27 +193,31 @@ function sharedReason(database: string): string {
  *  the string reaches no database and the run refuses it as unread. Asked here with psql and the
  *  flags the driver's read gives it, rather than assumed. */
 async function sharedDatabaseRefusal(url: string): Promise<string> {
-  const asked = Bun.spawn(["psql", "-XAtqw", `--dbname=${url}`, "-c", "select 1"], {
-    stderr: "ignore",
-    stdout: "pipe",
+  const asked = await runBounded({
+    argv: ["psql", "-XAtqw", `--dbname=${url}`, "-c", "select 1"],
+    bound: "short",
+    from: import.meta.url,
   });
-  return (await asked.exited) === 0
+  return asked.code === 0
     ? sharedReason(decodeURIComponent(sharedServer().database))
     : unreadReason;
 }
 
-/** A refusal row: the driver exits 2, the fake `bun` never ran, stderr gives `reason`, one of the
- *  guard's own two (unreadReason, sharedReason), and stderr holds none of `secrets`. The reason is
- *  what makes the refusal the guard's: the driver's require_commands also exits 2 and starts
- *  nothing when a command the driver needs is not on PATH, and a row that asserted the rest alone
- *  would pass without the guard running. Where stderr gives another reason, the row's failure
- *  shows the first line of stderr in its place. */
+/** A refusal row: the driver, run under `label` (`drive`), exits 2, the fake `bun` never ran,
+ *  stderr gives `reason`, one of the guard's own two (unreadReason, sharedReason), and stderr holds
+ *  none of `secrets`. The reason is what makes the refusal the guard's: the driver's
+ *  require_commands also exits 2 and starts nothing when a command the driver needs is not on
+ *  PATH, and a row that asserted the rest alone would pass without the guard running. Where stderr
+ *  gives another reason, the row's failure shows the first line of stderr in its place, and its
+ *  message the exit code and the whole stderr (`driverSaid`). */
 async function expectRefusal(
+  label: string,
   databaseUrl: string,
   reason: string,
   secrets: readonly string[]
 ): Promise<void> {
-  const { code, stderr, started } = await drive(databaseUrl);
+  const run = await drive(label, databaseUrl);
+  const { code, stderr, started } = run;
   expect(
     {
       code,
@@ -213,47 +227,56 @@ async function expectRefusal(
     },
     "The refusal is not the guard's, wrote part of the connection string to stderr, or the " +
       "guard let the string through to `bun run dispatch:local`. A refusal of the guard's names " +
-      "what is wrong and prints no part of the connection string."
+      "what is wrong and prints no part of the connection string." +
+      driverSaid(run)
   ).toEqual({ code: 2, reason, printed: [], started: false });
 }
 
-for (const { shape, databaseUrl, secret } of [
+for (const { label, shape, databaseUrl, secret } of [
   {
+    label: "keyword",
     shape: "the keyword form",
     databaseUrl: "host=127.0.0.1 port=5433 password=sekrit dbname=mine",
     secret: "sekrit",
   },
   {
+    label: "keyword-quoted",
     shape: "the keyword form with a single-quoted password",
     databaseUrl: "host=127.0.0.1 password='se kr it' dbname=mine",
     secret: "se kr it",
   },
   {
+    label: "url-slash",
     shape: "a password holding a slash, as a base64 one does",
     databaseUrl: withPassword("abc/def+ghi", "mine"),
     secret: "abc/def+ghi",
   },
   {
+    label: "url-question-mark",
     shape: "a password holding a question mark",
     databaseUrl: withPassword("abc?def", "mine"),
     secret: "abc?def",
   },
   {
+    label: "url-at-sign",
     shape: "a password holding a raw at sign",
     databaseUrl: withPassword("ab@cd", "?db%6Eame=mine"),
     secret: "ab@cd",
   },
   {
+    label: "parameter-capital",
     shape: "a password parameter spelled with a capital letter",
     databaseUrl: "postgres://127.0.0.1:5433/?Password=sekrit&db%6Eame=mine",
     secret: "sekrit",
   },
   {
+    label: "parameter-escaped-capital",
     shape: "a password parameter whose name escapes a capital letter",
     databaseUrl: "postgres://127.0.0.1:5433/?pass%57ord=sekrit&db%6Eame=mine",
     secret: "sekrit",
   },
   {
+    label: "keyword-capitals",
     shape: "the keyword form with the keyword in capitals",
     databaseUrl: "host=127.0.0.1 PASSWORD=sekrit dbname=mine",
     secret: "sekrit",
@@ -262,9 +285,10 @@ for (const { shape, databaseUrl, secret } of [
   test.skipIf(withoutPsql)(
     `a refusal writes no password to stderr: ${shape}`,
     async () => {
-      await expectRefusal(databaseUrl, unreadReason, [secret]);
+      await expectRefusal(label, databaseUrl, unreadReason, [secret]);
     },
-    driverTimeout
+    // The driver, a bounded child under the short bound.
+    rowLimit("short")
   );
 }
 
@@ -274,9 +298,10 @@ test.skipIf(withoutPsql)(
     // A person who meant user:password and left the host out: libpq reads `qq` as the port,
     // refuses it as no integer, and connects nowhere, so the guard refuses what it could not read.
     const afterScheme = "zz-unparseable:qq";
-    await expectRefusal(`postgres://${afterScheme}`, unreadReason, [afterScheme]);
+    await expectRefusal("unparseable", `postgres://${afterScheme}`, unreadReason, [afterScheme]);
   },
-  driverTimeout
+  // The driver, a bounded child under the short bound.
+  rowLimit("short")
 );
 
 test.skipIf(!live)(
@@ -284,9 +309,11 @@ test.skipIf(!live)(
   async () => {
     const shared = sharedServer();
     const url = withPassword("sekrit", `?db%6Eame=${shared.database}`, shared.authority);
-    await expectRefusal(url, await sharedDatabaseRefusal(url), ["sekrit"]);
+    await expectRefusal("shared-percent-escape", url, await sharedDatabaseRefusal(url), ["sekrit"]);
   },
-  driverTimeout
+  // The psql that asks whether the server takes the password, then the driver, each a bounded
+  // child under the short bound.
+  rowLimit("short", "short")
 );
 
 test.skipIf(!live)(
@@ -300,16 +327,23 @@ test.skipIf(!live)(
     const hidden = "x?a=b&dbname=mine&";
     const shared = sharedServer();
     const url = withPassword(hidden, shared.database, shared.authority);
-    await expectRefusal(url, await sharedDatabaseRefusal(url), [hidden, "a=b", "dbname=mine"]);
+    await expectRefusal("shared-hidden-dbname", url, await sharedDatabaseRefusal(url), [
+      hidden,
+      "a=b",
+      "dbname=mine",
+    ]);
   },
-  driverTimeout
+  // The psql that asks whether the server takes the password, then the driver, each a bounded
+  // child under the short bound.
+  rowLimit("short", "short")
 );
 
 test.skipIf(!live)(
   "a scratch database on the shared server is let through to the start",
   async () => {
     await withScratchDatabase(async (scratch) => {
-      const { code, stdout, started } = await drive(scratch.url);
+      const run = await drive("scratch-let-through", scratch.url);
+      const { code, stdout, started } = run;
       expect(
         {
           code,
@@ -319,11 +353,15 @@ test.skipIf(!live)(
           started,
         },
         "The guard refused a database of the run's own on the shared server, or the start line " +
-          "does not name the database the server answered."
+          "does not name the database the server answered." +
+          driverSaid(run)
       ).toEqual({ code: 1, starting: true, started: true });
     });
   },
-  scratchTimeout
+  // The driver, a bounded child under the short bound. The scratch database's create and drop go
+  // through `sqlAt`, the psql edge no bound reaches, inside the 30 000 ms the limit adds for the
+  // row's own work.
+  rowLimit("short")
 );
 
 /** The log a start leaves when the driver's read misses the signed-in line and the instance then
@@ -373,13 +411,20 @@ test.skipIf(!live)(
       // The control: the last ten lines of that log, as a plain tail reads them, hold the URL, so
       // a row that finds none of it in stderr has seen the leak it guards against and not a log
       // too short to carry it.
-      const tail = Bun.spawn(["tail", "-n", "10"], { stdin: new Blob([log]), stdout: "pipe" });
+      const logFile = join(logDirectories(), "instance.log");
+      writeFileSync(logFile, log);
+      const tail = await runBounded({
+        argv: ["tail", "-n", "10", logFile],
+        bound: "short",
+        from: import.meta.url,
+      });
       expect(
-        (await new Response(tail.stdout).text()).includes(scratch.url),
+        tail.stdout.includes(scratch.url),
         "The fixture log's last ten lines do not hold DATABASE_URL, so this row cannot see a leak."
       ).toBe(true);
 
-      const { code, stderr, started } = await drive(scratch.url, log);
+      const run = await drive("failed-start", scratch.url, log);
+      const { code, stderr, started } = run;
       expect(
         {
           code,
@@ -389,9 +434,13 @@ test.skipIf(!live)(
           printedHandOver: handOver.filter((line) => stderr.includes(line.trim())),
         },
         "The failed start printed the instance's hand-over message, which holds DATABASE_URL " +
-          "whole. Print the log only up to that message."
+          "whole. Print the log only up to that message." +
+          driverSaid(run)
       ).toEqual({ code: 1, started: true, stopped: true, printedUrl: false, printedHandOver: [] });
     });
   },
-  scratchTimeout
+  // Two bounded children one after the other, `tail` then the driver, each under the short
+  // bound. The scratch database's create and drop go through `sqlAt`, the psql edge no bound
+  // reaches, inside the 30 000 ms the limit adds for the row's own work.
+  rowLimit("short", "short")
 );

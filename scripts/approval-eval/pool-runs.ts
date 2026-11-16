@@ -429,25 +429,28 @@ async function sha256Of(path: string): Promise<string | null> {
 }
 
 /**
- * One run's answer rows as outcomes, by case and then by arm, read through `heldAnswers`: the
- * owner of that reading, so the last row of each arm and case wins here exactly as it does in
- * the run's own resume.
+ * One run's held answer rows, as `heldAnswers` reads them (the owner of that reading, so the
+ * last row of each arm and case wins here exactly as it does in the run's own resume), as
+ * outcomes by case and then by arm.
  */
-function outcomesOf(rows: readonly AnswerRow[]): Map<string, Partial<Record<ArmName, boolean>>> {
-  const held = new Map<string, Partial<Record<ArmName, boolean>>>();
-  for (const row of heldAnswers(rows).values()) {
-    const outcome = held.get(row.caseId) ?? {};
-    held.set(row.caseId, outcome);
+function outcomesOf(held: Iterable<AnswerRow>): Map<string, Partial<Record<ArmName, boolean>>> {
+  const outcomes = new Map<string, Partial<Record<ArmName, boolean>>>();
+  for (const row of held) {
+    const outcome = outcomes.get(row.caseId) ?? {};
+    outcomes.set(row.caseId, outcome);
     // A faulted row is never an agreement, which is how a single run's own reading counts it.
     outcome[row.arm] = row.fault === null && row.agreed === true;
   }
-  return held;
+  return outcomes;
 }
 
 /**
  * One run read back: one outcome per case and arm, the last row of each winning, as the run's
  * own resume reads them. A case only one arm answered is refused rather than dropped: a run
- * missing half a pair is a run whose difference is read over cases it never paired.
+ * missing half a pair is a run whose difference is read over cases it never paired. A run whose
+ * held rows carry the `model` fault is refused too: such a row is a verdict no record ties to
+ * the measured model, as every row written before rows recorded the agent's own model is, and
+ * pooling it as a non-agreement would print a measured zero for a run that measured nothing.
  */
 export async function readRun(directory: string, shape: Shape): Promise<RunOutcomes> {
   const path = answersPath(directory, shape);
@@ -458,7 +461,19 @@ export async function readRun(directory: string, shape: Shape): Promise<RunOutco
         `--neighbours ${shape}`
     );
   }
-  const held = outcomesOf(rows);
+  const heldRows = [...heldAnswers(rows).values()];
+  const unmodelled = heldRows.filter((row) => row.fault === "model");
+  if (unmodelled.length > 0) {
+    const caseIds = [...new Set(unmodelled.map((row) => row.caseId))].sort();
+    throw new PoolError(
+      `${path} holds ${counted(unmodelled.length, "answer")} of the model fault, on ` +
+        `${counted(caseIds.length, "case")} (${named(caseIds)}): no record ties those verdicts ` +
+        "to the measured model, so the run is not pooled; to ask them again, run fresh-agent.ts " +
+        "with --answers resume on a copy of the run directory, since a resume rewrites its " +
+        "answers and its copy of the skill"
+    );
+  }
+  const held = outcomesOf(heldRows);
   const cases = new Map<string, ArmOutcome>();
   const half: string[] = [];
   for (const [caseId, outcome] of [...held].sort(([one], [two]) => one.localeCompare(two))) {

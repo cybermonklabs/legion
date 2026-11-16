@@ -146,9 +146,11 @@ Options:
                           it every case is asked of the model again.
   --scorer-records <file> Required under a read of the reserve, and refused without one; may be
                           given more than once. A record of what a live scorer read: every id
-                          it names counts as an ask the scorer read (item 6 c).
+                          it names counts as an ask the scorer read (item 6 c). A file that names
+                          no id is refused.
   --round-sessions <file> Required under a read of the reserve, and refused without one. The ids
-                          of the sessions of the round that makes the claim (item 6 d).
+                          of the sessions of the round that makes the claim (item 6 d). A file
+                          that names no id is refused.
 
 Exit status: 0 when the draw was written, 2 when it could not run.`;
 
@@ -950,6 +952,16 @@ async function draw(flags: Flags): Promise<number> {
     `the rule's calls  ${asked} asked, ${cached} from the cache, ` +
       `${holds.length - asked - cached} settled by the issue's facts`
   );
+  // Which model each answer of the rule says served it, over every case it read: admitted, held
+  // and unreadable alike, and whether or not a cache was kept.
+  const servedModels: Record<string, number> = {};
+  for (const hold of holds) {
+    const name = hold.source === "issue-facts" ? "the issue's facts" : (hold.servedModel ?? "none");
+    servedModels[name] = (servedModels[name] ?? 0) + 1;
+  }
+  for (const [name, count] of Object.entries(servedModels).sort()) {
+    console.log(`  served by ${name.padEnd(30)}${count}`);
+  }
   console.log(
     `the rule's tokens ${holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0)} read, ` +
       `${holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0)} written`
@@ -1020,6 +1032,13 @@ async function draw(flags: Flags): Promise<number> {
       cached,
       inputTokens: holds.reduce((total, one) => total + (one.inputTokens ?? 0), 0),
       outputTokens: holds.reduce((total, one) => total + (one.outputTokens ?? 0), 0),
+      servedModels,
+      // One line per case the rule read, so each answer's served model is kept with the draw.
+      answers: rendered.cases.map((one) => ({
+        caseId: one.row.caseId,
+        source: one.hold.source,
+        servedModel: one.hold.servedModel,
+      })),
       renderingCheck: renderingCheckOf(rendered.checks, DRAW_GUARD),
     },
     excluded: {

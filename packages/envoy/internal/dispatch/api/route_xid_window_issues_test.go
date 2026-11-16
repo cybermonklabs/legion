@@ -3,6 +3,8 @@
 package api
 
 import (
+	"cmp"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,8 +15,9 @@ import (
 
 // issueRouteXidWindows is the rows of the route window table (route_xid_window_test.go) for the
 // routes that write an issue or a project: the reopen, the design gates, the project's settings,
-// the handoff, the claim's release, and the creates and patches that name a repository, an
-// advances relation or a blocker in another project.
+// the handoff, the claim's release, the creates and patches that name a repository, an advances
+// relation or a blocker in another project, and the create of a near copy the gate's refusal of
+// which could not be recorded.
 var issueRouteXidWindows = []routeXidWindowCase{
 	// The reopen's document work - the withdrawn asks read back, their blocks and copies written
 	// open into the spec (prepareRestoration, docs.WriteIssueAskStates), the mark of the documents
@@ -79,6 +82,19 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(11,
 			"the create's inline steering writes - the project's next number, the mapping's key-share lock, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
+	},
+	// A near copy whose refusal's near_copy_checks row could not be written goes in unchecked
+	// (nearCopyOutcome.unrecorded) and writes its own row in its transaction (recordInTx,
+	// writeNearCopyCheck): one inline write more, after its first write and so after the owner
+	// lock it takes in its read phase, where its spec's seed, task count and reference index, all
+	// of the harness's size, and its write advice run. The refusal's own write, which errs, is a
+	// statement of its own before the transaction opens (recordNearCopyRefusal), and holds no
+	// transaction id of the create's.
+	{
+		name: "the issue create of a near copy whose refusal was not recorded", route: "POST /api/v1/issues past an unrecorded refusal (createIssue, writeNearCopyCheck)",
+		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(11,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, its blocked_by links and its artifact row - "+
+				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch and its COMMIT"),
 	},
 	// A patch stating a relation to a priority decides the revision rule on the issue it read
 	// under its owner lock (refuseAdvancesRevision) and writes the relation after the row's own
@@ -214,6 +230,45 @@ func readyIssueCreateNamingRepository(t *testing.T, base routeFixture) lockedIte
 			}
 			if created := decodeBody[model.Issue](t, answer); created.Repo == nil || *created.Repo != "owner/repo" {
 				t.Fatalf("the created issue's repo = %v, want owner/repo", created.Repo)
+			}
+		})
+}
+
+// readyIssueCreateUnrecordedNearCopy drives POST /api/v1/issues by a session filing a near copy of
+// the fixture's issue - its title and its spec, of the harness's size - while near_copy_checks
+// refuses every refused row (a trigger, as putUnseenRefusal's), so the gate's refusal cannot be
+// recorded and the create goes in unchecked, its own row written in its transaction
+// (nearCopyOutcome.unrecorded, writeNearCopyCheck).
+func readyIssueCreateUnrecordedNearCopy(t *testing.T, base routeFixture) lockedItemWrite {
+	t.Helper()
+	const title = "Create of a near copy whose refusal was not recorded"
+	fixture := base.issue(t, title)
+	for _, statement := range []string{
+		`create function near_copy_checks_lose_refusal() returns trigger language plpgsql as $$
+		begin raise exception 'the refusal''s row was not written'; end $$`,
+		`create trigger near_copy_checks_lose_refusal before insert on near_copy_checks
+		  for each row when (new.outcome = 'refused') execute function near_copy_checks_lose_refusal()`,
+	} {
+		if _, err := fixture.database.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("make the refusal's write err: %v", err)
+		}
+	}
+	spec := cmp.Or(base.spec, "A spec.\n")
+	return fixture.routeWrite(t, "the near copy let in unchecked and its near_copy_checks row",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "LOCK", "title": title, "spec": spec, "actor": sessionActor(),
+			})
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated {
+				t.Fatalf("create the near copy: status=%d body=%s", answer.Code, answer.Body.String())
+			}
+			created := decodeBody[model.Issue](t, answer)
+			if rows := fixture.rowCount(t, `
+				select count(*) from near_copy_checks
+				 where issue_key = $1 and outcome = 'not_made' and reason = 'unrecorded'`, created.Key); rows != 1 {
+				t.Fatalf("near_copy_checks holds %d unrecorded rows naming %s, want the one its transaction wrote", rows, created.Key)
 			}
 		})
 }

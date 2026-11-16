@@ -12,14 +12,14 @@ import (
 )
 
 // An nkey's text is RFC 4648 base32, unpadded, of its prefix, its ed25519 bytes and a
-// CRC-16/XMODEM checksum, little-endian. IsUserPublicKey and UserSeedPublicKey take a value only
+// CRC-16/XMODEM checksum, little-endian. isPublicKey and UserSeedPublicKey take a value only
 // as nkeys writes it. nkeys' own decoder reads more: it skips line breaks, takes a key of any
 // length and masks a public key's prefix byte.
 
 const (
-	// publicKeyLength is a user public key's decoded length: the prefix byte, the 32 bytes of the
-	// ed25519 public key and the checksum. Its 56 characters hold exactly these 35 bytes, so a key
-	// has one spelling.
+	// publicKeyLength is a public key's decoded length: the prefix byte, the 32 bytes of the key
+	// (ed25519, or X25519 for a curve key) and the checksum. Its 56 characters hold exactly these
+	// 35 bytes, so a key has one spelling.
 	publicKeyLength = 1 + 32 + 2
 	// seedLength is a user seed's decoded length: two prefix bytes, the 32 bytes of the ed25519
 	// seed and the checksum.
@@ -28,9 +28,13 @@ const (
 
 // IsUserPublicKey reports whether key is a user public key: 56 base32 characters whose 35 bytes are
 // the user prefix byte, the key and a valid checksum.
-func IsUserPublicKey(key string) bool {
+func IsUserPublicKey(key string) bool { return isPublicKey(key, nkeys.PrefixByteUser) }
+
+// isPublicKey reports whether key is a public key of the type prefix names (user, account, curve):
+// 56 base32 characters whose 35 bytes are that prefix byte, the key and a valid checksum.
+func isPublicKey(key string, prefix nkeys.PrefixByte) bool {
 	raw, ok := decodeBase32([]byte(key))
-	return ok && len(raw) == publicKeyLength && raw[0] == byte(nkeys.PrefixByteUser) && checksumMatches(raw)
+	return ok && len(raw) == publicKeyLength && raw[0] == byte(prefix) && checksumMatches(raw)
 }
 
 // UserSeedPublicKey returns the public key of value, which must be a user seed spelled exactly as
