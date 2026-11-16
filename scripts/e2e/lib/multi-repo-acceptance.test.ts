@@ -319,6 +319,11 @@ describe("an interrupted run cleans up and actually stops", () => {
 });
 
 describe("raw evidence is named per observation, never overwritten by a later one", () => {
+  // This test runs the observer twice, so it takes two runs of bash, curl and jq: 0.14 to 1.25 s
+  // in 15 passing runs of ci.yaml's test job read on 2026-11-16, and more than 5 s, Bun's default
+  // bound, on a slower runner (run 43825137066, where this file's other tests that read the
+  // daemon's state ran 3 to 7 times slower too). It takes the 30 s bound that
+  // app-logins.test.ts gives its own script runs.
   test("children's state.raw survives a later, different observation's own state read", async () => {
     const { server: daemonServer, setBody } = mutableDaemonStub(
       makeStateBody({
@@ -384,7 +389,7 @@ describe("raw evidence is named per observation, never overwritten by a later on
     expect(readFileSync(join(evidence, "negative-no-repo-state.raw"), "utf8")).not.toBe(
       childrenStateBefore
     );
-  });
+  }, 30_000);
 
   // A state read made fresh per child could judge an early child against
   // one read and a later child against a different one the daemon moved to meanwhile, while the
