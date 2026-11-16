@@ -15,7 +15,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +47,11 @@ var (
 	ErrInvalidSlot     = errors.New("a slot is only for a pod enrollment and must match ^[a-z][a-z0-9-]{0,62}$")
 	ErrNoCredential    = errors.New("no such machine login")
 	ErrNotApprover     = errors.New("only the person who approved a person's machine login may revoke it")
+	// ErrInvalidClaim refuses a claim stated on an enrollment that is not a pod's, a claim that
+	// does not match ^[a-z][a-z0-9-]{0,127}$, and a claim from a pod enrolling itself, which may
+	// state no more of whose it is than it may state a session name (ErrPodSelfEnrollNoSession
+	// says why). Nothing is written.
+	ErrInvalidClaim = errors.New("a claim is only for a pod a launcher enrols and must match ^[a-z][a-z0-9-]{0,127}$")
 	// ErrNotEnrollingCredential refuses a revoke of an enrollment that carries no operator — a
 	// pod's, or a machine's own session — by any launcher credential but the one that enrolled
 	// it (Revoke).
@@ -144,10 +151,20 @@ type Enrollment struct {
 	Subject      *string
 	LeaseExpires time.Time
 	Existing     bool // true when Create returned an already-live enrollment for the same key
+	// Claim is what a pod's launcher states the pod runs for, kept as enrollments.claim: for the
+	// Legion daemon, the role claim token (legion-<project>-<issue>-<role>), which every role
+	// generation and every replacement pod of that role states again. "" states none. It is only
+	// for a pod a launcher enrols (ErrInvalidClaim), and it is what a pod's owner is read from
+	// (ownerKey).
+	Claim string
 	// carry is the principal the enrollment belongs to, as enrollments.carry_principal records
 	// it: Create works it out from what the caller proved (carryPrincipal) and nothing reads it
 	// back off this struct, so it is the package's own and never a caller's to state.
 	carry *string
+	// owner is the principal a request this enrollment makes belongs to, as enrollments.owner
+	// records it (ownerKey): Create works it out from what the caller proved and from the claim a
+	// launcher stated, so, like carry, it is never a caller's to state.
+	owner *string
 }
 
 type PodClaims struct {
@@ -595,9 +612,18 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // holds is ErrSessionHeld, the whole enrollment refused and nothing written. An enrollment that
 // names no session, and one whose caller proved no principal, bind nothing and are refused
 // nothing.
+//
+// Every enrollment also records whose its requests are (ownerKey): the person its credential
+// carries, the claim its launcher stated for a pod, or the machine. Any enrollment of the same
+// owner reads and cancels a request of another (requests.Machine.OwnerOf), and the next pod of a
+// claim takes what a dormant pod of that claim left (adopt). A claim is only for a pod a launcher
+// enrols, in the shape a claim token takes (ErrInvalidClaim).
 func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (Enrollment, error) {
 	if in.Slot != "" && (in.Kind != "pod" || !record.ValidSlot(in.Slot)) {
 		return Enrollment{}, ErrInvalidSlot
+	}
+	if in.Claim != "" && (in.Kind != "pod" || !claimPattern.MatchString(in.Claim)) {
+		return Enrollment{}, ErrInvalidClaim
 	}
 	if in.Operator != nil && (cred.Operator == nil || record.CanonicalLogin(*in.Operator) != *cred.Operator) {
 		return Enrollment{}, ErrOperatorMismatch
@@ -626,8 +652,10 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		in.Subject = &claims.Subject
 	}
 	// The other half of the pair a grant follows, read from what the caller has just proved and
-	// written beside the session's name in the insert below (carryPrincipal).
+	// written beside the session's name in the insert below (carryPrincipal), and whose the
+	// enrollment's requests are (ownerKey).
 	in.carry = carryPrincipal(cred, in)
+	in.owner = ownerKey(cred, in)
 	in.ID = uuid.New()
 	in.LeaseExpires = time.Now().Add(s.Lease)
 
@@ -672,9 +700,9 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 	// pod_token_renewed_at starts null on every row, a pod's included: the first renewal carrying
 	// the pod's token sets it, and from then on Renew refuses a token-less renewal from every live
 	// enrollment naming that pod UID (podTokenRatcheted).
-	_, err = tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, slot, operator, thumbprint, session_id, carry_principal, subject, launcher_credential_id, lease_expires_at)
-		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		in.ID, in.Kind, in.RuntimeID, in.Slot, in.Operator, in.Thumbprint, in.SessionID, in.carry, in.Subject, cred.ID, in.LeaseExpires)
+	_, err = tx.Exec(ctx, `insert into enrollments (id, kind, runtime_id, slot, operator, thumbprint, session_id, carry_principal, subject, launcher_credential_id, lease_expires_at, claim, owner)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		in.ID, in.Kind, in.RuntimeID, in.Slot, in.Operator, in.Thumbprint, in.SessionID, in.carry, in.Subject, cred.ID, in.LeaseExpires, nullable(in.Claim), in.owner)
 	if store.IsUniqueViolation(err) {
 		// The failed insert aborted tx, which still holds its pooled connection. Release it before
 		// recovery asks the pool for one: holding one connection while waiting for a second is how
@@ -691,8 +719,8 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 		return Enrollment{}, false, err
 	}
 	if _, err := tx.Exec(ctx, `insert into audit (kind, enrollment_id, actor, detail) values ('enrollment.created',$1,$2,
-		jsonb_strip_nulls(jsonb_build_object('kind',$3::text,'runtime_id',$4::text,'thumbprint',$5::text,'slot',nullif($6::text,''))))`,
-		in.ID, record.LauncherActor(cred.ID.String()), in.Kind, in.RuntimeID, in.Thumbprint, in.Slot); err != nil {
+		jsonb_strip_nulls(jsonb_build_object('kind',$3::text,'runtime_id',$4::text,'thumbprint',$5::text,'slot',nullif($6::text,''),'claim',nullif($7::text,''))))`,
+		in.ID, record.LauncherActor(cred.ID.String()), in.Kind, in.RuntimeID, in.Thumbprint, in.Slot, in.Claim); err != nil {
 		return Enrollment{}, false, err
 	}
 	if err := adopt(ctx, tx, in, record.LauncherActor(cred.ID.String())); err != nil {
@@ -776,6 +804,53 @@ func carryPrincipal(cred Credential, in Enrollment) *string {
 	return nil
 }
 
+// claimPattern is the shape a claim takes (ErrInvalidClaim): a Legion claim token,
+// legion-<project>-<issue>-<role>, fits it, and nothing that could read as another kind of owner
+// does, since it holds no slash and no colon.
+var claimPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,127}$`)
+
+// claimOwnerPrefix opens every owner ownerKey reads from a claim: the one kind of owner adopt moves
+// grants by (adopt's claim rule), and the predicate of the partial index that serves it
+// (migration 0032).
+const claimOwnerPrefix = "claim:"
+
+// ownerKey is whose the requests an enrollment makes are, which the insert writes into
+// enrollments.owner: any enrollment with the same owner reads and cancels them
+// (requests.Machine.OwnerOf), and the next pod of a claim takes what a dormant pod of that claim
+// left (adopt). It is read from what the caller has already proved and from the claim a launcher
+// stated, which is the launcher's word as the session name it gives each pod is
+// (podUnderTokenLogin), and from nothing else:
+//
+//   - an enrollment under a credential that carries an operator — a person's own box, and that
+//     person's sign-in on a machine — is that person's (exchange.PersonPrincipal), whichever box
+//     or session it is;
+//   - a pod its launcher states a claim for is that claim's within the launcher's own service,
+//     claim:<service>/<claim>, so a claim token is one owner however many generations and pods
+//     it runs in, and the same token stated by another service's launcher is another owner;
+//   - a machine's own session is that machine's, machine:<service>/<subject>, the subject its
+//     credential proved naming one machine and its key (exchange.MachineSubject), so two machines
+//     of one fleet are two owners;
+//   - a pod that states no claim is its own pod's, machine:<service>/<pod uid>.
+//
+// Anything else, and every row from before migration 0032, records none, and a request of an
+// enrollment with no owner is that enrollment's alone. Unlike carryPrincipal, an owner needs no
+// session name: a person's request is the person's whether or not their session named itself.
+func ownerKey(cred Credential, in Enrollment) *string {
+	switch {
+	case cred.Operator != nil:
+		return nullable(exchange.PersonPrincipal(*cred.Operator))
+	case cred.Service == nil:
+		return nil
+	case in.Kind == "pod" && in.Claim != "":
+		return new(claimOwnerPrefix + *cred.Service + "/" + in.Claim)
+	case in.Kind == "pod":
+		return new("machine:" + *cred.Service + "/" + in.RuntimeID)
+	case machineCredential(cred):
+		return new("machine:" + *cred.Service + "/" + *cred.Subject)
+	}
+	return nil
+}
+
 // holdsForItsSession is the one SQL text for "enrollment e still holds something for its
 // session": a live grant, or a request nobody has answered yet. Three statements read it, and
 // they must read it identically — endEnrollment's probe, which decides whether an end leaves the
@@ -807,7 +882,9 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 
 // adopt moves what every predecessor of this enrollment's (carry_principal, session_id) holds to
 // the enrollment createAttempt has just inserted, inside that same transaction, revoking none of
-// it. Both kinds of enrollment adopt, a session's and a pod's.
+// it, and then what a dormant enrollment of the same claim still holds. Both kinds of enrollment
+// adopt by the session rule, a session's and a pod's; only a pod a launcher stated a claim for
+// adopts by the claim rule.
 //
 // A predecessor is another enrollment of the same pair, and the rule has two parts, because what
 // a grant may follow and what a withhold must follow are not the same thing:
@@ -837,6 +914,21 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // An enrollment of the pair that holds neither is no predecessor and is left exactly as it is,
 // which is what keeps a second live session of one name from being ended by its neighbour's
 // enrolment.
+//
+// The claim rule is the one move by owner (ownerKey), and it is narrower than the session rule on
+// purpose. A Legion role's next pod comes up under a session of its own — a fresh session, a
+// replaced pod — so the session rule cannot follow it, and the role's grants and pending requests
+// would wait on a session that never comes back until the carry sweep revoked them
+// (the gap this change closes). So an enrollment whose owner is a claim also takes everything a
+// dormant enrollment of the same claim still holds (holdsForItsSession on a row whose box has
+// ended): its grants and its requests, and not its withheld names, which bind a session name
+// rather than whoever runs it (the second part above). A live enrollment of the claim keeps what
+// it holds, as a live predecessor of the session rule's would not: it is a process of the role
+// still running, and this is no end of it. A person's and a machine's grants move by the session
+// rule alone, so a session that resumes gets its own grant back even after another session of
+// the same person enrolled first, and that other session, which reads and cancels the request
+// (requests.Machine.OwnerOf), never takes the grant. A row both rules find is the session
+// rule's.
 //
 // What moves is the rows keyed by the predecessor: grants.enrollment_id and
 // requests.enrollment_id from a predecessor of the first part, withheld_secrets.enrollment_id
@@ -868,36 +960,55 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // Locks, in the order this transaction takes them: the launcher credential's row (for share,
 // taken by createAttempt before anything else), then the session name's own row
 // (bindSessionName), then the enrollments rows, then the grant,
-// request and withheld rows under them. The predecessors are taken for update, in id order, so
-// no end, revoke or sweep moves what they hold while it is moving, and two concurrent adoptions
-// of one pair cannot hold each other's first row. That is the order every other writer of these
-// tables takes them in — endCredential takes the credential, then its enrollments in id order;
-// Revoke, EndLapsed and EndCarried take an enrollment before the grants and requests under it;
-// and this package's enrollment-then-request writers take the enrollment first too (ApplyDecision
-// says so itself) — so none of them can deadlock with this one.
+// request and withheld rows under them. The predecessors of both rules are taken for update in one
+// statement, in id order, so no end, revoke or sweep moves what they hold while it is moving, and
+// two concurrent adoptions of one pair or one claim cannot hold each other's first row. That is
+// the order every other writer of these tables takes them in — endCredential takes the
+// credential, then its enrollments in id order; Revoke, EndLapsed and EndCarried take an
+// enrollment before the grants and requests under it; and this package's
+// enrollment-then-request writers take the enrollment first too (ApplyDecision says so itself) —
+// so none of them can deadlock with this one.
 func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
-	if in.carry == nil {
+	claim := in.owner
+	if claim != nil && !strings.HasPrefix(*claim, claimOwnerPrefix) {
+		claim = nil
+	}
+	if in.carry == nil && claim == nil {
 		return nil
 	}
-	// Both parts of the predecessor rule in one statement, over the pair. The second column says
-	// which part a row matched by: a row the carry left something on gives up its grants and
-	// requests as well as its withheld names, and a row that matched the withheld clause alone
-	// gives up the names.
-	rows, err := tx.Query(ctx, `select e.id, e.dormant_since is not null, `+carriesForItsSession+`
+	// Every predecessor of both rules in one statement. An enrollment that carries nothing sends
+	// a null pair, and one whose owner is no claim a null owner: a comparison with a null is never
+	// true, so that rule's arm finds no row. The third column says which rule a row is the session
+	// rule's, and the fourth whether the carry left something on it: a session-rule row the carry
+	// left something on gives up its grants and requests as well as its withheld names, one that
+	// matched the withheld clause alone gives up the names, and a claim-rule row gives up its
+	// grants and requests. The claim arm spells the partial index's own predicate, which is what
+	// lets it read enrollments_claim_owner_dormant (migration 0032).
+	rows, err := tx.Query(ctx, `select e.id, e.dormant_since is not null,
+			coalesce(e.carry_principal=$1 and e.session_id=$2, false),
+			coalesce(e.carry_principal=$1 and e.session_id=$2, false) and `+carriesForItsSession+`
 		from enrollments e
-		where e.carry_principal=$1 and e.session_id=$2 and e.id <> $3
-			and (`+carriesForItsSession+`
-				or exists (select 1 from withheld_secrets w where w.enrollment_id=e.id))
-		order by e.id for update of e`, *in.carry, *in.SessionID, in.ID)
+		where e.id <> $3
+			and ((e.carry_principal=$1 and e.session_id=$2
+					and (`+carriesForItsSession+`
+						or exists (select 1 from withheld_secrets w where w.enrollment_id=e.id)))
+				or (e.owner=$4 and e.owner like '`+claimOwnerPrefix+`%' and e.dormant_since is not null
+					and (`+holdsForItsSession+`)))
+		order by e.id for update of e`, in.carry, in.SessionID, in.ID, claim)
 	if err != nil {
 		return err
 	}
 	type predecessor struct {
 		ID      uuid.UUID
 		Dormant bool
-		// Carries is the first part of the rule: the carry left a live grant or a pending request
-		// on this row, so its grants and requests move beside its withheld names. False is a row
-		// matched by the withheld clause alone, which gives up its names and keeps the rest.
+		// Session is the session rule: the row is of this enrollment's own pair. False is a row
+		// the claim rule alone found, a dormant enrollment of the same claim, which gives up its
+		// grants and requests and keeps its withheld names.
+		Session bool
+		// Carries is the session rule's first part: the carry left a live grant or a pending
+		// request on this row, so its grants and requests move beside its withheld names. False on
+		// a session-rule row is one matched by the withheld clause alone, which gives up its names
+		// and keeps the rest.
 		Carries bool
 	}
 	predecessors, err := pgx.CollectRows(rows, pgx.RowToStructByPos[predecessor])
@@ -905,8 +1016,12 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 		return err
 	}
 	for _, from := range predecessors {
-		var grants, requests int64
-		if from.Carries {
+		rule := "session"
+		if !from.Session {
+			rule = "claim"
+		}
+		var grants, requests, withheld int64
+		if from.Carries || !from.Session {
 			// One statement per table, each writing its own trail: every grant that moves gets its
 			// row, so the insert's own count is how many grants moved.
 			movedGrants, err := tx.Exec(ctx, `with moved as (
@@ -924,16 +1039,19 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 			}
 			grants, requests = movedGrants.RowsAffected(), movedRequests.RowsAffected()
 		}
-		// The delete and the insert are one statement over one snapshot, so a name the successor
-		// already holds leaves the predecessor's row deleted and the successor's as it was: the
-		// withhold is kept once, from when it was first made.
-		withheld, err := tx.Exec(ctx, `with moved as (
-				delete from withheld_secrets where enrollment_id=$1 returning name, created_at
-			)
-			insert into withheld_secrets (enrollment_id, name, created_at)
-			select $2, name, created_at from moved on conflict do nothing`, from.ID, in.ID)
-		if err != nil {
-			return err
+		if from.Session {
+			// The delete and the insert are one statement over one snapshot, so a name the
+			// successor already holds leaves the predecessor's row deleted and the successor's as
+			// it was: the withhold is kept once, from when it was first made.
+			moved, err := tx.Exec(ctx, `with moved as (
+					delete from withheld_secrets where enrollment_id=$1 returning name, created_at
+				)
+				insert into withheld_secrets (enrollment_id, name, created_at)
+				select $2, name, created_at from moved on conflict do nothing`, from.ID, in.ID)
+			if err != nil {
+				return err
+			}
+			withheld = moved.RowsAffected()
 		}
 		if from.Dormant {
 			if _, err := tx.Exec(ctx, `update enrollments set dormant_since=null where id=$1`, from.ID); err != nil {
@@ -941,9 +1059,9 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 			}
 		}
 		if _, err := tx.Exec(ctx, `insert into audit (kind, enrollment_id, actor, detail) values ('enrollment.adopted',$1,$2,
-			jsonb_build_object('from',$3::uuid,'to',$1::uuid,'dormant',$4::boolean,
+			jsonb_build_object('from',$3::uuid,'to',$1::uuid,'dormant',$4::boolean,'rule',$8::text,
 				'grants',$5::bigint,'requests',$6::bigint,'withheld_secrets',$7::bigint))`,
-			in.ID, actor, from.ID, from.Dormant, grants, requests, withheld.RowsAffected()); err != nil {
+			in.ID, actor, from.ID, from.Dormant, grants, requests, withheld, rule); err != nil {
 			return err
 		}
 	}
@@ -1476,22 +1594,25 @@ func authorized(cred Credential, kind string, operator *string) bool {
 //     pod of the account. A login from a token
 //     bound to no pod has no pod of its own and so enrols none of them.
 //     Such an enrolment also states no session name (ErrPodSelfEnrollNoSession, whose own doc
-//     says why). The pod UID is read first, so a request with both faults — another pod of the
-//     account, under a session name — is ErrPodSelfEnrollOnly.
+//     says why), and no claim either (ErrInvalidClaim), for the same reason: a claim it picked
+//     for itself would make it a sibling pod's owner (ownerKey), reading that sibling's requests
+//     and taking what it left (adopt). The pod UID is read first, so a request with both faults —
+//     another pod of the account, under a session name — is ErrPodSelfEnrollOnly.
 //
 //   - a pod of an account BROKER_SERVICES binds to the login's own service, which is the
 //     deployment saying that service launches those pods. That is how the Legion daemon enrols
 //     its workers, and it is the same fact requests.Machine reads to decide an enrolled pod is
 //     that service's, so nothing new has to be configured for a deployment that already serves a
-//     service's secrets to its pods. It states a session name as before: the launcher names the
-//     session each pod it starts runs, and that name is the launcher's own to give.
+//     service's secrets to its pods. It states a session name and a claim as before: the
+//     launcher names the session each pod it starts runs, and what it runs for, and both are
+//     the launcher's own to give.
 //
 // A credential a person approved — a person's own machine login, or a service's login approved
 // through a machine-login code, neither of which carries a subject — keeps that person's approval
 // as its authorization and is not held to either rule.
 //
-// It reads two fields of the enrollment, its runtime id and its session name, and takes the
-// enrollment itself rather than the two values, so no caller can pair one request's pod UID
+// It reads three fields of the enrollment, its runtime id, its session name and its claim, and
+// takes the enrollment itself rather than the values, so no caller can pair one request's pod UID
 // with another's session name.
 func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrollment) error {
 	if cred.Operator != nil || cred.Subject == nil {
@@ -1503,6 +1624,9 @@ func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrol
 		}
 		if in.SessionID != nil && *in.SessionID != "" {
 			return ErrPodSelfEnrollNoSession
+		}
+		if in.Claim != "" {
+			return fmt.Errorf("%w: a pod enrolling itself states no claim", ErrInvalidClaim)
 		}
 		return nil
 	}

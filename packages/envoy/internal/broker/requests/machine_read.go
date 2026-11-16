@@ -739,10 +739,31 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	return r, rows.Err()
 }
 
+// OwnerOf is whose request requestID is: the owner the enrollment it hangs off now records
+// (enrollments.owner, enroll's ownerKey), or 'enrollment:<id>' for an enrollment that records
+// none, which no other enrollment's owner can spell. A caller may read and cancel the request
+// when its own enrollment answers the same (EnrollmentOwner), so a request is any enrollment's of
+// the person, the Legion claim or the machine that made it, and an enrollment with no owner's
+// alone. It reads the request's enrollment as it stands, which an adoption rewrites, so a request
+// that moved with its session belongs to whoever it moved to.
 func (m *Machine) OwnerOf(ctx context.Context, requestID string) (string, error) {
 	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select enrollment_id from requests where id=$1`, requestID).Scan(&owner)
+	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID).Scan(&owner)
 	return owner, err
+}
+
+// EnrollmentOwner is OwnerOf for an enrollment: the owner it records, or 'enrollment:<id>'. A
+// caller's proof names a live enrollment, so pgx.ErrNoRows means it ended under the call.
+func (m *Machine) EnrollmentOwner(ctx context.Context, enrollmentID string) (string, error) {
+	var owner string
+	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&owner)
+	return owner, err
+}
+
+// ownerOf is the one SQL text for whose requests the enrollment aliased alias makes are, which
+// OwnerOf, EnrollmentOwner and Cancel compare.
+func ownerOf(alias string) string {
+	return `coalesce(` + alias + `.owner, 'enrollment:' || ` + alias + `.id::text)`
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the

@@ -25,7 +25,7 @@ func TestAFreshLaunchEnrollsAtRegistrationWithTheSession(t *testing.T) {
 		t.Fatalf("enrollments %+v, want one at registration", enrollments)
 	}
 	loc := h.locator()
-	want := PodEnrollment{PodUID: loc.Incarnation, Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session}
+	want := PodEnrollment{PodUID: loc.Incarnation, Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session, Claim: string(testToken)}
 	if enrollments[0] != want {
 		t.Fatalf("enrolled %+v, want %+v", enrollments[0], want)
 	}
@@ -52,7 +52,7 @@ func TestAnIssuePodProcessEnrollsWithItsPodUIDAndRoleSlot(t *testing.T) {
 	h.helloWithIdentity()
 	h.register()
 	enrollments := broker.enrolled()
-	want := PodEnrollment{PodUID: "pod-uid-9", Slot: "implementer-g1", Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session}
+	want := PodEnrollment{PodUID: "pod-uid-9", Slot: "implementer-g1", Thumbprint: testIdentity.Thumbprint, PodToken: testIdentity.PodToken, Session: session, Claim: string(testToken)}
 	if len(enrollments) != 1 || enrollments[0] != want {
 		t.Fatalf("enrolled %+v, want %+v", enrollments, want)
 	}

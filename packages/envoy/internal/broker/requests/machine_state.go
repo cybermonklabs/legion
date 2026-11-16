@@ -909,9 +909,11 @@ func lockPendingNames(ctx context.Context, tx pgx.Tx, enrollmentID string, sorte
 // Cancel ends a still-pending request the requesting session no longer wants, writing the
 // transition, its audit row, and — when the request has a credential-request record — the
 // record's cancelled event, all in one transaction (store.EndPendingRequests).
-// The owner check compares the caller against the requests row's own enrollment_id, which an
-// adoption rewrites, so the moved session cancels the request that moved with it and the box it
-// moved off is ErrNotYours.
+// The owner check compares the caller's owner with the owner of the enrollment the request hangs
+// off now (ownerOf, as OwnerOf reads it), which an adoption rewrites: any enrollment of the same
+// person, Legion claim or machine cancels it, and an enrollment that records no owner cancels its
+// own requests alone, so the moved session cancels the request that moved with it and a box it
+// moved off that records no owner is ErrNotYours.
 func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -919,10 +921,15 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 	}
 	defer tx.Rollback(ctx)
 	var owner, state string
-	if err := tx.QueryRow(ctx, `select enrollment_id, state from requests where id=$1 for update`, id).Scan(&owner, &state); err != nil {
+	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+`, r.state from requests r join enrollments e on e.id = r.enrollment_id
+		where r.id=$1 for update of r`, id).Scan(&owner, &state); err != nil {
 		return err
 	}
-	if owner != enrollmentID {
+	var caller string
+	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&caller); err != nil {
+		return err
+	}
+	if owner != caller {
 		return ErrNotYours
 	}
 	if state != "pending" {

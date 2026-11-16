@@ -205,3 +205,36 @@ func TestContractOnlyTheListedAccountWithALiveTokenLogsIn(t *testing.T) {
 		t.Fatalf("Login once the account is unlisted = %v, want ACCOUNT_NOT_LISTED", err)
 	}
 }
+
+// TestContractAPodEnrollmentStatesItsClaim: the real broker reads the claim the daemon sends under
+// the name the daemon sends it, and files the pod under that claim of the daemon's service, so the
+// claim's next pod reads the requests this one makes. A field the broker did not declare would be
+// refused, retried without it, and leave the row with no owner.
+func TestContractAPodEnrollmentStatesItsClaim(t *testing.T) {
+	rig := newBrokerRig(t)
+	ctx := context.Background()
+	c := &Client{URL: rig.URL, TokenFile: daemonTokenFile(t, rig, brokertest.DaemonAccount, time.Hour)}
+	if _, err := c.Login(ctx); err != nil {
+		t.Fatal(err)
+	}
+	const claim = "legion-infra-infra-2653-planner"
+	enrolled, err := c.Enroll(ctx, PodEnrollment{PodUID: "pod-uid-1", Thumbprint: "tp-1", PodToken: rig.MintPodToken(t, "pod-uid-1"), Session: "planner-session-1", Claim: claim})
+	if err != nil {
+		t.Fatalf("Enroll with a claim: %v", err)
+	}
+	var owner, stated *string
+	if err := rig.Store.Pool.QueryRow(ctx, `select owner, claim from enrollments where id=$1`, enrolled.ID).Scan(&owner, &stated); err != nil {
+		t.Fatal(err)
+	}
+	if owner == nil || *owner != "claim:"+launcherService+"/"+claim || stated == nil || *stated != claim {
+		t.Fatalf("the enrollment records owner %v and claim %v, want claim:%s/%s and %s", deref(owner), deref(stated), launcherService, claim, claim)
+	}
+}
+
+// deref is *s, or "<null>" for nil.
+func deref(s *string) string {
+	if s == nil {
+		return "<null>"
+	}
+	return *s
+}

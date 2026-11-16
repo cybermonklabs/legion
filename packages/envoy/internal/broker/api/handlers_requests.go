@@ -395,6 +395,9 @@ type airlockName struct {
 	Hosts []string `json:"hosts"`
 }
 
+// readRequest answers one request to any enrollment of the principal that made it: the same
+// person, the same Legion claim, the same machine (requests.Machine.OwnerOf), and a request of an
+// enrollment that records no owner to that enrollment alone. Everyone else is 403 NOT_YOURS.
 func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	ctx := r.Context()
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
@@ -410,7 +413,12 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeInternal(w, "read request owner", err)
 		return
 	}
-	if owner != enrollmentID {
+	caller, err := s.deps.Machine.EnrollmentOwner(ctx, enrollmentID)
+	if err != nil {
+		writeInternal(w, "read the caller's owner", err)
+		return
+	}
+	if owner != caller {
 		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
 		return
 	}
