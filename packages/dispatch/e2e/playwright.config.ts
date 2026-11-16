@@ -318,6 +318,17 @@ const readersPlaceRows =
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
+// What `chromium`, `iphone`, `webkit` and `firefox` below ignore: specs that a project or a mode
+// of their own runs.
+const parallelIgnore = [
+  plainHttpSpecs,
+  multiprocessSpecs,
+  clockSpecPattern,
+  visualSpecs,
+  stubSpecs,
+  outsideSignInSpecs,
+];
+
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
   // The desktop half of the pair: every row of the suite except the two kinds this project is
@@ -325,27 +336,13 @@ const parallelProjects = [
   // `delivery-live.e2e.ts` that `webkit-iphone` owns has none either.
   {
     name: "chromium",
-    testIgnore: [
-      plainHttpSpecs,
-      multiprocessSpecs,
-      clockSpecPattern,
-      visualSpecs,
-      stubSpecs,
-      outsideSignInSpecs,
-    ],
+    testIgnore: parallelIgnore,
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [
-      plainHttpSpecs,
-      multiprocessSpecs,
-      clockSpecPattern,
-      visualSpecs,
-      stubSpecs,
-      outsideSignInSpecs,
-    ],
+    testIgnore: parallelIgnore,
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -397,14 +394,7 @@ const parallelProjects = [
   // that name it.
   {
     name: "webkit",
-    testIgnore: [
-      plainHttpSpecs,
-      multiprocessSpecs,
-      clockSpecPattern,
-      visualSpecs,
-      stubSpecs,
-      outsideSignInSpecs,
-    ],
+    testIgnore: parallelIgnore,
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -471,14 +461,7 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [
-      plainHttpSpecs,
-      multiprocessSpecs,
-      clockSpecPattern,
-      visualSpecs,
-      stubSpecs,
-      outsideSignInSpecs,
-    ],
+    testIgnore: parallelIgnore,
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
