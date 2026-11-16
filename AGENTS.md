@@ -826,9 +826,9 @@ Each item below names a task and where its code is, then notes on it.
   Never run `changie init`, `batch` or `merge`, which rewrite `CHANGELOG.md`.
   An open pull request that added an entry under the old `## [Unreleased]` heading (now `## Before changelog fragments`) moves the entry into a fragment the next time it merges main
 
-- **Behaviour changes add to The Spec**
-  — When your pull request changes what the software does, add a statement for each changed behaviour to The Spec.
-  Its first part says how: dispatch://INFRA-3577/artifact/the-spec-md.
+- **Read The Spec at the start of an issue, and add to it with each pull request**
+  — When you start an issue, read the statements of its components in The Spec, and say in your design which of them your work changes.
+  When your pull request changes what the software does, add a statement for each changed behaviour, as the first part of The Spec says: dispatch://INFRA-3577/artifact/the-spec-md.
 
 - **Deploys come only from main** — everything a deployment runs is built from a commit on `main`:
   a release made by a release workflow running on `refs/heads/main` (the `legion` binary from `release.yaml`, the worker image from `worker-image.yaml`, the Envoy image and its listener release from `release-envoy-listener.yaml`, the `envoy-infra` Pulumi plugin from `release-envoy-infra.yaml`, and the three npm plugins — `@sjawhar/pi-envoy`, `@sjawhar/pi-legion` and `@sjawhar/claude-envoy` — from `release.yaml`'s `*_build` jobs and its one `publish` job, which run only on main).
