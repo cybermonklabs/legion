@@ -5151,7 +5151,9 @@ The wakes are these:
   The daemon sets `keep: false` on each of its publishes but two, a phase-ended message and a hook prompt, which it publishes with `keep: true`.
   Its informational role messages to a released role (`outbox.roleMessage`, above) are neither published nor sent again, so they wake nothing and no next try reaches the role.
   Its other messages to a role (a notice, a phase-ended message, a hook prompt, a merge-queue removal message) wake a released role themselves before they publish (`wakeForDelivery`, the first bullet).
-  A phase-ended message and a hook prompt are then published while the woken session has not claimed its role yet, so Envoy keeps each of them for that session; a listener that keeps nothing for a role whose holder is not live answers them `404`, and their outbox rows end with them undelivered;
+  While the wake pacing holds such a resume for its turn, the claim reads `launching` with no process, and each of these messages waits for that turn rather than publishing, because a kept copy's hour runs from its publish and can end before the pod starts.
+  A phase-ended message and a hook prompt are then published once the resume has launched, while the woken session has not claimed its role yet, so Envoy keeps each of them for that session.
+  A listener before #4079 keeps nothing for a claim whose holder is not live and answers them `404`: their outbox rows end with them undelivered when that holder is `gone`, and retry while it is `unresponsive`;
 
 - a message sent to the agent subject of a released session: an Envoy direct message, a person's answer, comment or message that a Dispatch claim routes to that session, or a person's targeted message that Dispatch queued on that subject itself because no store of the listener's held the session;
 

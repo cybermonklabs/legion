@@ -203,12 +203,24 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // for (deliverResuming); these four publish to a live session instead, so the row's own retry is
 // what waits for the pod, and this is what makes the pod come back for it to find.
 //
-// It answers whether the claim was released and a resume of it is under way. The role's one open
-// resume is what makes the wake one wake however often the row retries, so a notice that backs
-// off for ten minutes resumes the claim once. A claim of an issue that has left the workflow, or
-// whose tree lingers, is not woken: that pod is a close's to stop. An outbox with no supervisor —
-// a test's, which supervises nothing — wakes nothing: there is no machine to read a claim's state
-// from.
+// It answers whether the row must wait for a launch of the claim: a released claim, which it
+// resumes here, and a claim whose launch the wake pacing has parked over no process, which is
+// what that resume leaves while it waits for its turn. The pacing does not exempt the resume
+// (supervise's exemptWake lets only an operator's requests through), so over a wave it can wait
+// more than an hour, the machine holding the claim launching with no process and its view naming
+// the waiting wake (supervise's parkWake, ClaimView.WakeWaiting). The row waits through that park
+// because a phase-ended message or a hook prompt published then would be kept for the listener's
+// one hour from that publish, which can end before the pod starts. So a waiting wake that starts
+// a process (supervise.StartsProcess) over a claim that records no process holds the row until
+// its turn runs the launch, whichever launch it is. A relaunch parked over a process the claim
+// still records holds nothing: the machine keeps that claim's state, and its live session can
+// take the publish now.
+//
+// The role's one open resume is what makes the wake one wake however often the row retries, so a
+// notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
+// the workflow, or whose tree lingers, is not woken: that pod is a close's to stop. An outbox
+// with no supervisor — a test's, which supervises nothing — wakes nothing: there is no machine to
+// read a claim's state from.
 //
 // The claim is read from the machine's View, which never waits on the decision in flight: a
 // machine holds its lock through the runtime call its decision makes, so a read that waited
@@ -224,7 +236,9 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	}
 	held := machine.View()
 	if !held.Released() {
-		return false, nil
+		parked := held.State == supervise.StateLaunching && held.Locator == nil &&
+			held.WakeWaiting != nil && supervise.StartsProcess(held.WakeWaiting.Kind)
+		return parked, nil
 	}
 	issue, err := r.issue(ctx, held.Issue)
 	if err != nil {

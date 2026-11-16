@@ -131,8 +131,9 @@ func TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic(t *testing.T) {
 // A role topic with no live holder is the ordinary state before a session claims it, and the role's
 // next task from the daemon names its phase anyway: the row ends with one log line rather than
 // waiting as an architect's notice waits, and the implementer's start goes on all the same. The
-// listener here is one without the kept lane (holderPublisher's default), which refuses the kept
-// publish with its 404, so nothing keeps the message, and the row ends even so.
+// listener here is a listener before #4079 meeting a claim whose holder is gone (holderPublisher
+// without keeps), which refuses the kept publish with its 404, so nothing keeps the message, and
+// the row ends even so.
 func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 	ctx := context.Background()
 	publisher := &holderPublisher{}
@@ -173,6 +174,15 @@ func TestAPhaseEndedMessageNobodyHoldsEndsAndTheStartGoesOn(t *testing.T) {
 func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
 	keptAcrossTheWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+}
+
+// A phase-ended message to a released role waits out the resume the wake pacing parks, as a hook
+// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): no attempt publishes while
+// the wake waits for its turn, and the attempt after the turn has launched the resume publishes
+// the message with keep, once, and ends the row.
+func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	keptAfterTheParkedWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
 }
 
 // The three answers of the confirmed publish route are other failures, and keep the ordinary retry:

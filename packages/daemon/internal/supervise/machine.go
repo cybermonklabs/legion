@@ -610,10 +610,12 @@ type ClaimView struct {
 	SendInFlight bool
 	// WakeWaiting is the wake the pacing holds over this claim until its turn (reserveWake), nil
 	// while none waits. It travels on the published view rather than behind the machine's lock
-	// because the one reader of it is a reader of every claim — the state route, through the
-	// daemon's supervision (api.State.WakesWaiting) — and such a reader must never wait on the
-	// decision in flight, which is the whole reason View exists. That reader takes it through
-	// Machine.WaitingWake, which copies no claim.
+	// because none of its readers may wait on the decision in flight, which is the whole reason
+	// View exists: the state route, a reader of every claim, takes it through
+	// Machine.WaitingWake, which copies no claim (the daemon's supervision,
+	// api.State.WakesWaiting); the operator API's recoveries read it to refuse a claim whose
+	// launch waits (api's relaunchWaits); and the daemon's delivery wake reads it to hold a row
+	// while a launch waits over no process (internal/daemon's wakeForDelivery).
 	WakeWaiting *WakeWaiting
 }
 
