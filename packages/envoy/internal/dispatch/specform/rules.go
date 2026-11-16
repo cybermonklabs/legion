@@ -56,10 +56,14 @@ type broken struct {
 
 // breaks is each rule of R49 that text breaks, once for each detail: the form rules for the
 // kinds that are prose of The Spec, then the four reference rules for every kind. A line under
-// Terms that is no term line (Kind line) breaks the one rule term-line, and no other.
+// Terms that is no term line (Kind line) breaks the one rule term-line, and a heading that reads
+// as Terms in another form (Kind heading) the one rule terms-heading, and no other.
 func breaks(c Context, people map[string]bool, text Text) []broken {
-	if text.Kind == KindLine {
+	switch text.Kind {
+	case KindLine:
 		return []broken{{ruleTermLine, termLineDetail}}
+	case KindHeading:
+		return []broken{{ruleTermsHeading, termsHeadingDetail}}
 	}
 	line := oneLine(text.Body)
 	var found []broken

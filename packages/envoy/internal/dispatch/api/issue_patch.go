@@ -525,8 +525,22 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A reparent that brings covered documents under a root of The Spec, or takes them out, changes
+	// the order of the root's list of terms (spec_form.go, joinOrders). It takes the lock of the
+	// list it joins before its event, whose id then orders the arrival among the list's approvals.
+	var arrival specTermArrival
+	if parentChanged {
+		if arrival, err = s.specTermArrivalOf(r.Context(), tx, key, before.Parent, after.Parent); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(key).event(eventType, actor, payload))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := arrival.record(r.Context(), tx, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

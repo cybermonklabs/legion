@@ -62,7 +62,9 @@ func (e *extraction) add(node string, kind Kind, body string) {
 // under a heading Terms are Terms, counted as Kind definition. Each other line under that heading
 // that is not blank and not a heading is a text of Kind line, named by the line in quotes: a term
 // line has one form, "- **<term>**: <definition>", and a line in any other form is a break of the
-// form, not a term. Each text's Where is "<document> version <n>".
+// form, not a term. A heading that reads as Terms in another form (readsAsTerms) is a text of Kind
+// heading, named by its line in quotes, and no Terms part: the heading Terms has one form too.
+// Each text's Where is "<document> version <n>".
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
 		return Extracted{}, fmt.Errorf("%s version %d is not valid UTF-8", document, version)
@@ -126,6 +128,10 @@ func ExtractDocument(document string, version int, markdown string) (Extracted, 
 				termsLevel = level
 				continue
 			}
+			if readsAsTerms(match[2]) {
+				e.add(fmt.Sprintf("%q", trimmed), KindHeading, trimmed)
+				continue
+			}
 			if component := componentHeading.FindStringSubmatch(match[2]); component != nil {
 				e.add(component[2], KindName, component[1])
 				if paragraph := paragraphAfter(lines, index); paragraph != "" {
@@ -166,6 +172,18 @@ func fenceMarker(trimmed string) string {
 		}
 	}
 	return ""
+}
+
+// emphasisMarks removes the marks of markdown emphasis from a heading's text.
+var emphasisMarks = strings.NewReplacer("*", "", "_", "")
+
+// readsAsTerms reports whether the text of a heading other than "Terms" reads as Terms: the word
+// terms in any case, after the marks of emphasis and one last colon are taken away. Another word,
+// such as Glossary, or Terms in a longer text, does not.
+func readsAsTerms(text string) bool {
+	text = strings.TrimSpace(emphasisMarks.Replace(text))
+	text = strings.TrimSpace(strings.TrimSuffix(text, ":"))
+	return strings.EqualFold(text, "terms")
 }
 
 func colonCount(line string) int {

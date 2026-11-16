@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -239,5 +240,58 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 	want := []Finding{finding(prose, "term-line", detail), finding(drift, "term-line", detail)}
 	if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
 		t.Fatalf("Check =\n%#v\nwant\n%#v", findings, want)
+	}
+}
+
+// A heading that a reader reads as Terms is not dropped in silence. Under "## terms", "## TERMS",
+// "## **Terms**" and "## Terms:" the definitions would never join the list. Either fix passes this
+// test: read the heading as Terms, or make the heading a finding. The control: "## Terms" reads the
+// term.
+func TestATermsHeadingInAnotherFormIsNotDroppedInSilence(t *testing.T) {
+	body := "\n\n- **heartbeat**: A pulse of a pump.\n"
+	extracted, err := ExtractDocument("spec.md", 1, "# Spec\n\n## Terms"+body)
+	if err != nil || len(extracted.Terms) != 1 {
+		t.Fatalf("control, ## Terms: ExtractDocument = %#v, %v, want the one term heartbeat", extracted.Terms, err)
+	}
+	for _, heading := range []string{"## terms", "## TERMS", "## **Terms**", "## Terms:"} {
+		extracted, err := ExtractDocument("spec.md", 1, "# Spec\n\n"+heading+body)
+		if err != nil {
+			t.Fatalf("ExtractDocument under %q: %v", heading, err)
+		}
+		if len(extracted.Terms) == 0 && len(Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})) == 0 {
+			t.Errorf("under %q the extractor read no term and Check found nothing, so the definition is dropped in silence", heading)
+		}
+	}
+}
+
+// A heading whose text is Terms in another case, with emphasis marks or with a last colon is a
+// text of Kind heading, named by the line in quotes, and Check gives it one finding of rule
+// terms-heading, whose detail shows the one form. One form is the decision, so the lines under it
+// are no Terms part: they are neither terms nor lines. The controls: the one form at another level
+// is a Terms heading, and another word, or Terms in a longer text, is no rule's.
+func TestATermsHeadingInAnotherFormIsAFinding(t *testing.T) {
+	detail := `it is no Terms heading, and a Terms heading has the form "## Terms" at any level`
+	for _, heading := range []string{"## terms", "## TERMS", "## **Terms**", "## Terms:", "### __terms__ :", "# *Terms*:"} {
+		got, err := ExtractDocument("spec.md", 12, "# Spec\n\n"+heading+"\n\n- **heartbeat**: A pulse of a pump.\nEach term has one definition.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := Text{Node: fmt.Sprintf("%q", heading), Kind: KindHeading, Body: heading, Where: where}
+		if !reflect.DeepEqual(got.Texts, []Text{text}) || len(got.Terms) != 0 || got.Counts[KindHeading] != 1 {
+			t.Errorf("under %q: Texts = %#v, Terms = %#v, Counts = %v; want the one heading text and no term", heading, got.Texts, got.Terms, got.Counts)
+			continue
+		}
+		if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, []Finding{finding(text, "terms-heading", detail)}) {
+			t.Errorf("Check under %q = %#v, want one terms-heading finding", heading, findings)
+		}
+	}
+	for _, heading := range []string{"# Terms", "#### Terms", "## Glossary", "## Definitions", "## Terms of use", "## The terms"} {
+		got, err := ExtractDocument("spec.md", 12, "# Spec\n\n"+heading+"\n\n- **heartbeat**: A pulse of a pump.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 || got.Counts[KindHeading] != 0 {
+			t.Errorf("control %q: Check = %#v, Counts = %v, want no finding and no heading text", heading, findings, got.Counts)
+		}
 	}
 }

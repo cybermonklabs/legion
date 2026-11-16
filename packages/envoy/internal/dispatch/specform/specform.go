@@ -20,7 +20,8 @@ const (
 	KindName           Kind = "name"            // a component's or interface's name; reference rules only
 	KindPurpose        Kind = "purpose"
 	KindDefinition     Kind = "definition"
-	KindLine           Kind = "line" // a line under a heading Terms that is no term line; the rule term-line only
+	KindLine           Kind = "line"    // a line under a heading Terms that is no term line; the rule term-line only
+	KindHeading        Kind = "heading" // a heading that reads as Terms in another form; the rule terms-heading only
 )
 
 // kinds is every Kind that ExtractDocument counts in each document, in the order a count of them

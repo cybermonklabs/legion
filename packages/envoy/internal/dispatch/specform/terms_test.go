@@ -1,6 +1,9 @@
 package specform
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // listedSession is the definition of session that the list of the root holds.
 var listedSession = Term{
@@ -139,5 +142,59 @@ func TestTermNamesCompareInTheCompatibilityForm(t *testing.T) {
 	plural := Term{Name: "\ufb01les", Definition: "The uploads of a person.", Where: where}
 	if got := Check(planted(), Input{Proposed: []Term{plural}, List: []Term{file}}); len(got) != 0 {
 		t.Fatalf("Check of a plural = %#v, want no finding", got)
+	}
+}
+
+// Two names that a person reads as one name are one term. A zero-width space, a soft hyphen or a
+// word joiner inside a name shows nothing, and Greek in capitals ends a word with Σ where lower
+// case writes ς. The control: a plural is another term.
+func TestTermNamesThatReadAsOneNameAreOneTerm(t *testing.T) {
+	cases := []struct{ listed, proposed string }{
+		{"heartbeat", "heart\u200bbeat"},
+		{"heartbeat", "heart\u00adbeat"},
+		{"heartbeat", "heart\u2060beat"},
+		{"\u03bb\u03cc\u03b3\u03bf\u03c2", "\u039b\u038c\u0393\u039f\u03a3"},
+	}
+	for _, c := range cases {
+		listed := Term{Name: c.listed, Definition: "The first meaning of this name.", Where: "spec.md version 1 of ACME-61"}
+		proposed := Term{Name: c.proposed, Definition: "Another meaning of this name.", Where: where}
+		got := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}})
+		refused := false
+		for _, f := range got {
+			if f.Rule == ruleTermSecondDefinition && strings.HasPrefix(f.Detail, "spec.md version 1 of ACME-61 already defines") {
+				refused = true
+			}
+		}
+		if !refused {
+			t.Errorf("Check of %q (%+q) against the listed %q = %#v, want term-second-definition", c.proposed, c.proposed, c.listed, got)
+		}
+	}
+	plural := Term{Name: "heartbeats", Definition: "The signals of many sessions.", Where: where}
+	listed := Term{Name: "heartbeat", Definition: "The first meaning of this name.", Where: "spec.md version 1 of ACME-61"}
+	if got := Check(planted(), Input{Proposed: []Term{plural}, List: []Term{listed}}); len(got) != 0 {
+		t.Fatalf("control, a plural: Check = %#v, want no finding", got)
+	}
+}
+
+// TermKey is the caseless form of an identifier (NFKC_Casefold): the compatibility form, full case
+// folding, no default-ignorable character, and each run of spaces as one space. The controls: a
+// plural, and a space where the other name has none, are other names.
+func TestTermKeyIsTheCaselessFormOfAnIdentifier(t *testing.T) {
+	for _, same := range [][2]string{
+		{"heartbeat", "heart\u034fbeat"},                                     // a combining grapheme joiner
+		{"heartbeat", "heart\ufe0fbeat"},                                     // a variation selector
+		{"heartbeat", "heart\u200dbeat"},                                     // a zero-width joiner
+		{"stra\u00dfe", "STRASSE"},                                           // full folding makes ß two letters
+		{"\u03c3\u03bf\u03c6\u03af\u03b1", "\u03a3\u039f\u03a6\u038a\u0391"}, // capitals and an accent
+		{" Work  Unit ", "work unit"},
+	} {
+		if got, want := TermKey(same[0]), TermKey(same[1]); got != want {
+			t.Errorf("TermKey(%+q) = %+q and TermKey(%+q) = %+q, want one name", same[0], got, same[1], want)
+		}
+	}
+	for _, other := range [][2]string{{"heartbeat", "heartbeats"}, {"heartbeat", "heart beat"}} {
+		if TermKey(other[0]) == TermKey(other[1]) {
+			t.Errorf("TermKey(%q) = TermKey(%q), want two names", other[0], other[1])
+		}
 	}
 }

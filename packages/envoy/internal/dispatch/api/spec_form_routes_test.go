@@ -1343,9 +1343,10 @@ func TestTheRootsTermsMdComesFirstInTheList(t *testing.T) {
 }
 
 // Of two documents under the root that define one term, the list holds the definition of the one
-// that a person approved first, and keeps it when that document changes its definition. The read
-// of the other document names that definition, and its next approval request is refused.
-func TestTheListHoldsTheDefinitionApprovedFirst(t *testing.T) {
+// that joined the list first, here at its approval under the root, before the other moved in, and
+// keeps it when that document changes its definition. The read of the other document names that
+// definition, and its next approval request is refused.
+func TestTheListHoldsTheDefinitionThatJoinedFirst(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	first := createFormIssue(t, tree.handler, tree.root, "Defines lease first", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, first.PrimaryArtifactID)
@@ -1376,9 +1377,10 @@ func TestTheListHoldsTheDefinitionApprovedFirst(t *testing.T) {
 }
 
 // A spec and its Verification document that a person approved in one answer, outside the root,
-// each define lease. After the move under the root, the list holds the definition of the document
-// that Dispatch created first, the spec, and the read of the Verification document names it.
-func TestTwoDocumentsApprovedAtOneTimeKeepTheOrderOfTheirCreation(t *testing.T) {
+// each define lease. The move under the root brings both in at one event, and the list holds the
+// definition of the document whose first approval came first, the spec, which the answer names
+// first; the read of the Verification document names it.
+func TestTwoDocumentsThatJoinAtOneMoveKeepTheOrderOfTheirApprovals(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.outside, "Defines lease twice", specWithTerms(termLine("lease", leaseDefinition)))
 	verification := uploadFormDocument(t, tree.handler, issue.Key, "verification.md",
@@ -1422,4 +1424,174 @@ func TestEveryApprovalRouteRefusesALineUnderTermsThatIsNoTermLine(t *testing.T) 
 	}
 	requireFormRefusal(t, "request of terms.md", requestFormApproval(t, tree.handler, terms.ID, nil),
 		specform.ActRequest, []string{findingLine(finding)}, finding)
+}
+
+// listedOf is the one definition of term that the read of artifactID lists, and how many it lists.
+func listedOf(t *testing.T, handler http.Handler, artifactID, term string) (specFormTerm, int) {
+	t.Helper()
+	var found specFormTerm
+	count := 0
+	for _, listed := range specFormReadOf(t, handler, artifactID).Terms {
+		if listed.Term == term {
+			found = listed
+			count++
+		}
+	}
+	return found, count
+}
+
+// moveUnder is alice's move of issue under parent; false when Dispatch refuses it.
+func moveUnder(t *testing.T, tree specFormTree, issue, parent string) bool {
+	t.Helper()
+	return dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"parent": parent}, "alice").Code == http.StatusOK
+}
+
+// v-terms: "A change to a definition waits for the approval of the person." A move under the root
+// changes no definition that the list holds. The list holds the definition of lease that the
+// person approved under the root; then an issue that the person approved earlier, outside the
+// root, with another definition of lease, moves under the root. Either Dispatch refuses the move,
+// or the list keeps the definition it held. The control: before the move, the list holds the
+// definition approved under the root.
+func TestAMoveUnderTheRootChangesNoDefinitionOfTheList(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	earlier := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside the root, first", specWithTerms(termLine("lease", otherLease)))
+	approveFormDocument(t, tree.handler, earlier.PrimaryArtifactID)
+	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease under the root", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
+	want := specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: listed.Key}
+	if got, count := listedOf(t, tree.handler, listed.PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("control, before the move: the list holds lease %d times, as %#v; want once, as %#v", count, got, want)
+	}
+	if !moveUnder(t, tree, earlier.Key, tree.root) {
+		return // Dispatch refused the move: the list keeps its definition.
+	}
+	if got, count := listedOf(t, tree.handler, listed.PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("after the move of %s under %s, the list holds lease %d times, as %#v; want the definition it held, %#v", earlier.Key, tree.root, count, got, want)
+	}
+}
+
+// The same with two moves: of two issues approved outside the root that define one new term, the
+// one approved later moves in first, and the list holds its definition; then the one approved
+// first moves in. The second move changes no definition that the list holds.
+func TestTheSecondMoveUnderTheRootChangesNoDefinitionOfTheList(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	first := createFormIssue(t, tree.handler, tree.outside, "Defines lease, approved first", specWithTerms(termLine("lease", otherLease)))
+	approveFormDocument(t, tree.handler, first.PrimaryArtifactID)
+	later := createFormIssue(t, tree.handler, tree.outside, "Defines lease, approved later", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, later.PrimaryArtifactID)
+	if !moveUnder(t, tree, later.Key, tree.root) {
+		t.Fatalf("move %s under %s: refused, want 200 (a move of a new term)", later.Key, tree.root)
+	}
+	want := specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: later.Key}
+	if got, count := listedOf(t, tree.handler, later.PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("control, after the first move: the list holds lease %d times, as %#v; want once, as %#v", count, got, want)
+	}
+	if !moveUnder(t, tree, first.Key, tree.root) {
+		return
+	}
+	if got, count := listedOf(t, tree.handler, later.PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("after the move of %s under %s, the list holds lease %d times, as %#v; want the definition it held, %#v", first.Key, tree.root, count, got, want)
+	}
+}
+
+// An approval and a move at one time: an issue under the root waits on the person with a new
+// term, and an issue that the person approved outside the root, with another definition of that
+// term, moves in at the same moment. The list holds the term once. When the person's approval
+// passed, the list holds the definition that the person approved; when it was refused, the
+// definition that moved in first.
+func TestAnApprovalAndAMoveAtOneTimeLeaveTheApprovedDefinition(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	const rounds = 8
+	displaced := 0
+	for round := range rounds {
+		term := fmt.Sprintf("orbit%d", round)
+		outside := createFormIssue(t, tree.handler, tree.outside, "Defines "+term+" outside the root", specWithTerms(termLine(term, "The path of one moon around one planet.")))
+		approveFormDocument(t, tree.handler, outside.PrimaryArtifactID)
+		inside := createFormIssue(t, tree.handler, tree.root, "Defines "+term+" under the root", specWithTerms(termLine(term, "The route that one agent takes through its work.")))
+		requireFormRequestOpened(t, requestFormApproval(t, tree.handler, inside.PrimaryArtifactID, nil))
+		var wg sync.WaitGroup
+		var approved, moved *httptest.ResponseRecorder
+		wg.Go(func() { approved = reviewFormDocument(t, tree.handler, inside.PrimaryArtifactID, "approved", "") })
+		wg.Go(func() {
+			moved = dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+outside.Key, map[string]any{"parent": tree.root}, "alice")
+		})
+		wg.Wait()
+		if moved.Code != http.StatusOK {
+			t.Fatalf("round %d: move %s under %s: status=%d body=%s, want 200", round, outside.Key, tree.root, moved.Code, moved.Body.String())
+		}
+		listed, count := listedOf(t, tree.handler, inside.PrimaryArtifactID, term)
+		if count != 1 {
+			t.Fatalf("round %d: the list holds %s %d times, want 1", round, term, count)
+		}
+		switch {
+		case approved.Code == http.StatusCreated && listed.Issue != inside.Key:
+			displaced++
+			t.Errorf("round %d: the approval of %s passed (201), and the list holds %s from %s, which moved in at the same time", round, inside.Key, term, listed.Issue)
+		case approved.Code == http.StatusConflict && strings.Contains(approved.Body.String(), `"code":"SPEC_FORM"`) && listed.Issue != outside.Key:
+			t.Errorf("round %d: the approval of %s was refused, and the list holds %s from %s, want %s", round, inside.Key, term, listed.Issue, outside.Key)
+		case approved.Code != http.StatusCreated && approved.Code != http.StatusConflict:
+			t.Fatalf("round %d: approve %s: status=%d body=%s, want 201 or 409 SPEC_FORM", round, inside.Key, approved.Code, approved.Body.String())
+		}
+	}
+	if displaced > 0 {
+		t.Fatalf("%d of %d rounds took an approved definition away with a move", displaced, rounds)
+	}
+}
+
+// A move inside the root is no arrival: the issue that the list keeps a term from moves from one
+// level under the root to another, and the list keeps its definition, though a definition that
+// arrived after it waits under the root.
+func TestAMoveInsideTheRootChangesNoDefinitionOfTheList(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	first := createFormIssue(t, tree.handler, tree.root, "The first level", "# Level\n\nThe first level.\n")
+	second := createFormIssue(t, tree.handler, tree.root, "The second level", "# Level\n\nThe second level.\n")
+	keeper := createFormIssue(t, tree.handler, first.Key, "Defines lease under the first level", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, keeper.PrimaryArtifactID)
+	arrived := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside the root", specWithTerms(termLine("lease", otherLease)))
+	approveFormDocument(t, tree.handler, arrived.PrimaryArtifactID)
+	reparentFormIssue(t, tree.handler, arrived.Key, tree.root)
+	want := specFormTerm{Term: "lease", Definition: leaseDefinition, Document: "spec.md", Version: 1, Issue: keeper.Key}
+	if got, count := listedOf(t, tree.handler, keeper.PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("control, before the move inside the root: the list holds lease %d times, as %#v; want once, as %#v", count, got, want)
+	}
+	reparentFormIssue(t, tree.handler, keeper.Key, second.Key)
+	if got, count := listedOf(t, tree.handler, keeper.PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("after the move of %s from %s to %s, the list holds lease %d times, as %#v; want %#v", keeper.Key, first.Key, second.Key, count, got, want)
+	}
+}
+
+// A move changes the tree and no text. When the issue that the list keeps a term from moves out
+// of the root, the list holds the definition that joined it next, which the person approved too:
+// of two definitions that moved in after the keeper, the one that moved in first. Its own read
+// then names no finding, and the read of the last one names it.
+func TestWhenTheKeeperMovesOutTheListHoldsTheDefinitionThatJoinedNext(t *testing.T) {
+	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+	keeper := createFormIssue(t, tree.handler, tree.root, "Defines lease under the root", specWithTerms(termLine("lease", leaseDefinition)))
+	approveFormDocument(t, tree.handler, keeper.PrimaryArtifactID)
+	const thirdLease = "The hold that one session keeps on one work unit."
+	var arrivals []formIssue
+	for _, definition := range []string{otherLease, thirdLease} {
+		arrived := createFormIssue(t, tree.handler, tree.outside, "Defines lease outside the root: "+definition, specWithTerms(termLine("lease", definition)))
+		approveFormDocument(t, tree.handler, arrived.PrimaryArtifactID)
+		arrivals = append(arrivals, arrived)
+	}
+	// The one approved last moves in first.
+	reparentFormIssue(t, tree.handler, arrivals[1].Key, tree.root)
+	reparentFormIssue(t, tree.handler, arrivals[0].Key, tree.root)
+	if got, count := listedOf(t, tree.handler, keeper.PrimaryArtifactID, "lease"); count != 1 || got.Issue != keeper.Key {
+		t.Fatalf("control, before the keeper moves out: the list holds lease %d times, as %#v; want once, from %s", count, got, keeper.Key)
+	}
+	reparentFormIssue(t, tree.handler, keeper.Key, tree.outside)
+	want := specFormTerm{Term: "lease", Definition: thirdLease, Document: "spec.md", Version: 1, Issue: arrivals[1].Key}
+	if got, count := listedOf(t, tree.handler, arrivals[0].PrimaryArtifactID, "lease"); count != 1 || got != want {
+		t.Fatalf("after the keeper moved out, the list holds lease %d times, as %#v; want the definition that joined next, %#v", count, got, want)
+	}
+	if read := specFormReadOf(t, tree.handler, arrivals[1].PrimaryArtifactID); len(read.Findings) != 0 {
+		t.Fatalf("the read of %s, which the list now keeps lease from = findings %#v, want none", arrivals[1].Key, read.Findings)
+	}
+	finding := definitionFinding("spec.md", arrivals[0].PrimaryArtifactID, 1, "lease", otherLease, "term-second-definition",
+		alreadyDefines("spec.md version 1 of "+arrivals[1].Key))
+	if read := specFormReadOf(t, tree.handler, arrivals[0].PrimaryArtifactID); !reflect.DeepEqual(read.Findings, []specFormFinding{finding}) {
+		t.Fatalf("the read of %s = findings %#v, want %#v", arrivals[0].Key, read.Findings, []specFormFinding{finding})
+	}
 }
