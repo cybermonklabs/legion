@@ -619,7 +619,8 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 // waiting on the claim's holder or on a contended answer (claimHeldWait, claimContendedWait),
 // which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
 // start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
-// tree or of the child ends rather than an operator.
+// tree or of the child ends rather than an operator, and then for the branch row a re-admission
+// queued for the child (startRoot), whose own failures that row logs.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -1791,17 +1792,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// One start waits on its backoff rather than finishing: the first start of a child's own
 			// architect that finds no claim (childArchitectFirstStart), for as long as its tree
 			// lingers or its root waits in the line for the tree to be opened again
-			// (record.QueuedRoot). Re-admission brings back a member's own architect only where it
+			// (record.QueuedRoot), and then until the branch row the re-admission queued for the
+			// child has finished. Re-admission brings back a member's own architect only where it
 			// holds a claim, so that start finished here is one nothing queues again, and the child
 			// would run to its close with no architect of its own.
 			first := !found && childArchitectFirstStart(issue, payload)
-			root, queued, err := r.startRoot(ctx, issue, first)
+			root, waitsFor, err := r.startRoot(ctx, issue, first)
 			if err != nil {
 				return err
 			}
-			if first && root != nil && (root.Lingers() || queued) {
-				return routineWaiting{err: wait.Errorf("the first start of the own architect of %s waits for the tree of %s to run again",
-					issue.Key, root.Key)}
+			if waitsFor != "" {
+				return routineWaiting{err: wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor)}
 			}
 			if root != nil && root.Lingers() {
 				r.log.Info("outbox start of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
@@ -2170,13 +2171,15 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 //
 // Such a start waits on the row's backoff, where every other start of a member of a tree that
 // lingers finishes without acting, for as long as the tree lingers (record.Issue.Lingers) or its
-// root waits in the line for the tree to be opened again (record.QueuedRoot). Finishing it would
-// leave the child with no architect of its own for the rest of its run, because nothing queues the
-// start again: a re-admission brings back a member's own architect only where it holds a claim
-// (admit's startMidPhaseMembers), and the child's later phase starts revive only a claim that
-// failed (workflow's reviveArchitect). The child's notices would go to the architect above it
-// (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps only for a child
-// started before that change (plan D9), and this child's first phase start did queue the start.
+// root waits in the line for the tree to be opened again (record.QueuedRoot), and then for as long
+// as a branch row of the child is still queued, which the re-admission queues newer than this start
+// (startRoot). Finishing it would leave the child with no architect of its own for the rest of its
+// run, because nothing queues the start again: a re-admission brings back a member's own architect
+// only where it holds a claim (admit's startMidPhaseMembers), and the child's later phase starts
+// revive only a claim that failed (workflow's reviveArchitect). The child's notices would go to the
+// architect above it (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps
+// only for a child started before that change (plan D9), and this child's first phase start did
+// queue the start.
 //
 // The linger is read as Lingers reads it, a deadline armed, and not as one still running at the
 // moment (record.Lingering), since a tree can run again after its deadline: a root past it is
@@ -2187,14 +2190,14 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // in the line is read beside it because a re-admission clears the linger at once (admit's
 // readmit) while the tree is opened only by the promotion that gives the root its slot.
 //
-// So the row ends in one of three ways: the tree runs again, and the start creates and spawns the
-// claim as every first start of a child's architect does; the child is handed over, adopted into
-// a live tree or taken as a root of its own, each of which moves it to a later generation, and
-// supervise's generation fence finishes the start; or the child leaves the workflow, and the fence
-// on its own status finishes it. Its one cost is a parked tree that is never re-admitted: the row
-// retries at the backoff's 64-second cap for as long as it stands, two reads each try (the child
-// and its root), and only a child whose tree left the workflow between its first phase start and
-// that start's run ever has such a row.
+// So the row ends in one of three ways: the tree runs again and the child's branch row finishes,
+// and the start creates and spawns the claim as every first start of a child's architect does; the
+// child is handed over, adopted into a live tree or taken as a root of its own, each of which moves
+// it to a later generation, and supervise's generation fence finishes the start; or the child
+// leaves the workflow, and the fence on its own status finishes it. Its one cost is a parked tree
+// that is never re-admitted: the row retries at the backoff's 64-second cap for as long as it
+// stands, two reads each try (the child and its root), and only a child whose tree left the
+// workflow between its first phase start and that start's run ever has such a row.
 func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
 	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == ""
 }
@@ -2310,30 +2313,50 @@ func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, e
 	return root, nil
 }
 
-// startRoot is root for a start, and with it, when queued asks, whether that root waits in the
-// line for its tree to be opened (record.QueuedRoot, under the design-gate steps the project
-// gates): read in one transaction with its design gate, so the rule judges one state of the two.
-// Only the first start of a child's own architect that found no claim asks it
-// (childArchitectFirstStart), once per try, and the gate is not read of a root that lingers, which
-// that start waits for whatever the gate says.
-func (r *outbox) startRoot(ctx context.Context, issue record.Issue, queued bool) (*record.Issue, bool, error) {
+// startRoot is root for a start and, when first asks, what the first start of a child's own
+// architect that found no claim (childArchitectFirstStart) still waits for, "" for nothing: the
+// tree of root to run again, while root lingers or waits in the line for its tree to be opened
+// (record.QueuedRoot, under the design-gate steps the project gates); then the branch of issue,
+// while a branch row of it is still in the outbox (record.Store.BranchQueued). The ordering rule
+// holds a start behind an older branch row of its issue alone (record's outboxInOrder), and a
+// re-admission queues the child's branch row again, newer than this start, which may have waited
+// out the whole linger: so the wait on the row keeps the order the child's first phase start
+// queued the two in (workflow's gateOpened), and no role of the issue starts before its branch
+// exists. It is all read in one read-only repeatable-read transaction, so the rule judges one state
+// of the root, its gate and the outbox, once per try and for that start alone: the gate is not read
+// of a root that lingers, nor the branch row of a tree that does not run.
+func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (*record.Issue, string, error) {
 	var root *record.Issue
-	waits := false
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	waitsFor := ""
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !queued || root.Lingers() {
+		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !first {
 			return err
 		}
-		rows, err := r.records.GatesOf(ctx, tx, root.Key)
+		waits := root.Lingers()
+		if !waits {
+			rows, err := r.records.GatesOf(ctx, tx, root.Key)
+			if err != nil {
+				return err
+			}
+			waits = record.QueuedRoot(*root, record.TreeGate{Steps: r.gatedSteps, Rows: rows})
+		}
+		if waits {
+			waitsFor = fmt.Sprintf("the tree of %s to run again", root.Key)
+			return nil
+		}
+		branch, err := r.records.BranchQueued(ctx, tx, issue.Key)
 		if err != nil {
 			return err
 		}
-		waits = record.QueuedRoot(*root, record.TreeGate{Steps: r.gatedSteps, Rows: rows})
+		if branch {
+			waitsFor = fmt.Sprintf("the branch of %s, which a row of the outbox has still to create", issue.Key)
+		}
 		return nil
 	}); err != nil {
-		return nil, false, fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
+		return nil, "", fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
 	}
-	return root, waits, nil
+	return root, waitsFor, nil
 }
 
 // stopWithoutMachine is a stop row — a suspend or an issue close — that finds no machine for its

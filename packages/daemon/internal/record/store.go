@@ -2737,6 +2737,20 @@ func (s *Postgres) NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds [
 	return *next, true, nil
 }
 
+// BranchQueued says whether the outbox still holds an issue_branch row of issue — due, running or
+// backing off — so the branch that row creates may not exist on GitHub yet. The ordering rule
+// (outboxInOrder) holds a start behind an older branch row of its issue; this is the read for a
+// start older than the branch row it must wait for (the outbox's first start of a child's own
+// architect, which can outlast a re-admission that queues the child's branch row again).
+func (s *Postgres) BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var queued bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2)`,
+		issue, string(OutboxKindIssueBranch)).Scan(&queued); err != nil {
+		return false, fmt.Errorf("read whether %s's branch row is still queued: %w", issue, err)
+	}
+	return queued, nil
+}
+
 // UnfinishedLanes is every lane of project's issues with a row still in the outbox — due, running,
 // backing off or held — by issue then lane: the lanes the runner needs an executor for. The kinds
 // left are read and sorted into lanes here (LaneOf), rather than mapped in SQL, so laneKinds stays
