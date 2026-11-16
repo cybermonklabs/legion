@@ -1263,9 +1263,10 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // issue then ends where its event would have ended had the repository been served: a labelled
 // root admitted or queued, a child of a live tree recorded under it (parents first), and a
 // person's issue left as it is. A listing the consumer may still be behind is held as the boot's
-// is (admission's pending), and released by pollHoldRelease. Then each tree's architect is told,
-// once, of every child its release_children left unrecorded on one of them that is still
-// unrecorded (tellReleaseWaits). While the listing stays held, that telling waits, but for
+// is (admission's pending), and released by pollHoldRelease. Then the architects are told, once,
+// of every child a release_children left unrecorded on one of them that is still unrecorded: each
+// child's architect is the one that owns its parent when the record holds that parent in the tree,
+// else the tree's (tellReleaseWaits). While the listing stays held, that telling waits, but for
 // recoveryHoldBound at most: a hold that outlasts it (the consumer stuck below the stream's last
 // position, an event that fails at every delivery, say) is told the waits still unrecorded then,
 // once, and the full recovery still runs when the hold releases. The clock starts when a run first
@@ -1371,8 +1372,8 @@ func (w *workflowRuntime) noteUnread(key, resolved string) {
 }
 
 // awaitRecovery is api.Options.AwaitRecovery: child, released in tree under parent, is left
-// unrecorded while repo is unread, and the recovery of repo tells tree's architect if it is still
-// unrecorded then.
+// unrecorded while repo is unread, and the recovery of repo tells an architect if it is still
+// unrecorded then (tellReleaseWaits).
 func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) {
 	repo = strings.ToLower(repo)
 	w.recoveringMu.Lock()
@@ -1386,14 +1387,19 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) {
 	w.releaseWaits[repo][child] = releaseWait{tree: tree, parent: parent}
 }
 
-// tellReleaseWaits tells each tree's architect, in one child-release-stalled notice, which of waits
-// the recovery of repos left unrecorded, each with whether its parent is recorded now: what to
-// release again. A child recorded since is told nothing; its record's own notices carry it.
+// tellReleaseWaits tells the architects of the children of waits the recovery of repos left
+// unrecorded what to release again, each child with whether its parent is recorded now: one
+// child-release-stalled notice for each issue a child's notice is queued on, which is its parent
+// when the record holds that parent in the child's tree, and else the tree root. The owner walk
+// takes a notice on the parent to the architect that owns the parent, which is the architect that
+// releases the parent's children; a parent the record does not hold, or holds in another tree, has
+// no architect of this tree, so the child is the tree's architect's to release. A child recorded
+// since is told nothing; its record's own notices carry it.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
 	if len(waits) == 0 {
 		return nil
 	}
-	byTree := map[string][]string{}
+	byIssue := map[string][]string{}
 	for _, child := range slices.Sorted(maps.Keys(waits)) {
 		wait := waits[child]
 		recorded, err := w.recordOf(ctx, child)
@@ -1408,21 +1414,25 @@ func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, 
 			return err
 		}
 		line := fmt.Sprintf("%s (its parent %s is recorded now: release %s again)", child, wait.parent, child)
-		if parent == nil {
+		on := wait.tree
+		switch {
+		case parent == nil:
 			line = fmt.Sprintf("%s (its parent %s is not recorded: release %s first, then %s)", child, wait.parent, wait.parent, child)
+		case parent.Tree == wait.tree:
+			on = parent.Key
 		}
-		byTree[wait.tree] = append(byTree[wait.tree], line)
+		byIssue[on] = append(byIssue[on], line)
 	}
-	if len(byTree) == 0 {
+	if len(byIssue) == 0 {
 		return nil
 	}
 	now := time.Now().UTC()
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		for _, tree := range slices.Sorted(maps.Keys(byTree)) {
-			row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-				"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children your release_children released while it was unread are still not recorded: %s",
-				strings.Join(repos, ", "), strings.Join(byTree[tree], "; "))}, now)
+		for _, issue := range slices.Sorted(maps.Keys(byIssue)) {
+			row, err := record.NewOutboxRow(issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
+				"GitHub answered for %s again (its App installation read, or its default-branch read past GitHub's rate limit), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded: %s",
+				strings.Join(repos, ", "), strings.Join(byIssue[issue], "; "))}, now)
 			if err != nil {
 				return err
 			}

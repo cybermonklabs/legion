@@ -164,9 +164,10 @@ type workflowRuntime struct {
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
-	// release_children left unrecorded on it (awaitRecovery), whose tree's architect the recovery
-	// tells of each it did not record; recoveryHeldSince is when a recovery's listing was first
-	// found held with waits to tell (zero for none), so a hold past recoveryHoldBound tells them.
+	// release_children left unrecorded on it (awaitRecovery), whose architect the recovery tells
+	// of each it did not record (tellReleaseWaits); recoveryHeldSince is when a recovery's listing
+	// was first found held with waits to tell (zero for none), so a hold past recoveryHoldBound
+	// tells them.
 	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
 	// a test sees each wait through it.
 	repositories      *repositories

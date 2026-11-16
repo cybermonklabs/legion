@@ -76,12 +76,12 @@ const setRepositoryHint = "the issue header's Repository picker, or dispatch iss
 // RefuseRecording says on the Dispatch issue key why Legion did not record it: its repository,
 // resolved, resolves to none or to one Legion does not serve (refused). It says it once per
 // resolution (record.RepoNote), so a repeated event of the issue says nothing again, and reports
-// whether it said it now. A child's refusal is also told to its tree's architect (refuseChild). An
-// Unread resolution says nothing, to the issue or to an architect: the daemon recovers the issue
-// from Dispatch's listing once GitHub answers for its repository, with nothing for anyone to move,
-// and it is noted for that recovery (Config.NoteUnread), so an issue whose resolution moves off
-// the repository meanwhile (its parent's repository, or the project's default, changed) is still
-// recovered.
+// whether it said it now. A child's refusal is also told to the architect that owns its parent
+// (refuseChild). An Unread resolution says nothing, to the issue or to an architect: the daemon
+// recovers the issue from Dispatch's listing once GitHub answers for its repository, with nothing
+// for anyone to move, and it is noted for that recovery (Config.NoteUnread), so an issue whose
+// resolution moves off the repository meanwhile (its parent's repository, or the project's
+// default, changed) is still recovered.
 func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved string, refused Resolution) (bool, error) {
 	if refused.Unread {
 		if note := e.cfg.NoteUnread; note != nil {
@@ -130,14 +130,28 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 	return true, e.store.PutRepoNote(ctx, tx, record.RepoNote{Issue: key, ResolvedRepo: resolved, Note: note, PostedAt: e.now()})
 }
 
-// refuseChild says on a child, and to its tree's architect, why the child was not recorded under
-// the tree: its repository resolves to none or to one Legion does not serve.
-func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, resolved string, refused Resolution) error {
+// refuseChild says on a child, and to the architect that owns its Dispatch parent, why the child
+// was not recorded under root's tree: its repository resolves to none or to one Legion does not
+// serve. The notice is queued on that parent when the record holds it in root's tree, so the
+// owner walk takes it to the parent's own architect while that claim holds its role, the one that
+// releases the parent's children, and on up the tree once it does not; a parent the record does
+// not hold in the tree has no architect of it, and the notice goes on root, the tree's architect.
+func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, parent, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
 		return err
 	}
+	on := root.Key
+	if parent != "" {
+		recorded, err := e.store.Issue(ctx, tx, parent)
+		if err != nil {
+			return err
+		}
+		if recorded != nil && recorded.Tree == root.Key {
+			on = recorded.Key
+		}
+	}
 	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
-	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
+	return e.notice(ctx, tx, on, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
 }

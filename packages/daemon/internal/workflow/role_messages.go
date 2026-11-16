@@ -7,9 +7,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// roleRecipient is one role a message is addressed to: issue, whose role it is - a tree
-// architect's is its tree's root - role, and row, the issue whose outbox the message is written
-// to, which differs from issue only for the architect of another issue's tree.
+// roleRecipient is one role a message is addressed to: issue, whose role it is - an architect's is
+// the issue it is the architect of, its tree's root for the tree's own - role, and row, the issue
+// whose outbox the message is written to, which differs from issue only for an architect told of
+// an issue below its own.
 type roleRecipient struct {
 	issue string
 	role  claim.Role

@@ -538,18 +538,19 @@ const (
 // would, recorded under the live tree and started once its gate is open, and a live event of it
 // from before the read stops at the sequence fence. The view applies only while the child stays
 // unrecorded (intake.DispatchIssue.Observed): an event that recorded it meanwhile has the record
-// carried on by the child's own events, each with its actor. A child already recorded in tree —
-// by the earlier attempt of a wave this call retries, or by the release's adoption of a root that
-// queued in admission (adoptReleasedChildren) — has had that observation. One recorded in any
-// other tree is not tree's, and is answered CHILD_IN_OTHER_TREE; the adoption leaves none.
+// carried on by the child's own events, each with its actor. A child already recorded in the
+// grant's tree — by the earlier attempt of a wave this call retries, or by the release's adoption
+// of a root that queued in admission (adoptReleasedChildren) — has had that observation. One
+// recorded in any other tree is not that tree's, and is answered CHILD_IN_OTHER_TREE; the adoption
+// leaves none.
 //
 // The workflow records a child only under a recorded parent. A parent this same wave writes todo is
 // recorded by its own write first (waveRelease, releaseOrder); one outside the wave, or one the
 // record could not take, may still be unrecorded. A child the observation did not record is
 // answered CHILD_NOT_RECORDED, retryable: each attempt is its own fact (requestFactID), so the
 // retry applies the observation again once the parent is recorded. Its durable retry record bounds
-// attempts with exponential backoff; after the limit, it queues one notice to the tree architect
-// instead of asking an architect to retry forever.
+// attempts with exponential backoff; after the limit, it queues one notice to the architect that
+// released the child (scheduleChildReleaseRetry) instead of asking an architect to retry forever.
 //
 // A child the apply did not record while it, or an unrecorded issue of its parent chain up to the
 // first recorded one, resolves to a repository left out because GitHub did not answer its read of
@@ -568,14 +569,14 @@ const (
 // (the child pending), and ok is false only when the answer was written (a read failed).
 // CHILD_NOT_RECORDED's few quick retries would run out in seconds of an outage and say the parent
 // never reached the daemon, and an error would leave the rest of the wave unreleased.
-func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, read issueReader, todoNow func(string) bool) (string, bool) {
+func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, read issueReader, todoNow func(string) bool) (string, bool) {
 	recorded, err := s.recordedIssue(r.Context(), child.Key)
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", fmt.Sprintf("could not read the record of %s", child.Key))
 		return "", false
 	}
-	if recorded != nil && recorded.Tree != tree {
-		refusal := intake.ChildInOtherTree(child.Key, recorded.Tree, tree)
+	if recorded != nil && recorded.Tree != grant.Tree {
+		refusal := intake.ChildInOtherTree(child.Key, recorded.Tree, grant.Tree)
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return "", false
 	}
@@ -609,12 +610,12 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree str
 	}
 	parent := observed.Parent
 	if s.unread != nil {
-		repo, ok, handled := s.enterOnUnreadRepository(w, r, tree, child, observed.ResolvedRepo, read, todoNow)
+		repo, ok, handled := s.enterOnUnreadRepository(w, r, grant, child, observed.ResolvedRepo, read, todoNow)
 		if handled {
 			return repo, ok
 		}
 	}
-	return "", s.scheduleChildReleaseRetry(w, r, tree, child, parent)
+	return "", s.scheduleChildReleaseRetry(w, r, grant, child, parent)
 }
 
 // enterOnUnreadRepository is enterTodoChild's answer for a todo child its apply did not record,
@@ -622,7 +623,7 @@ func (s *server) enterTodoChild(w http.ResponseWriter, r *http.Request, tree str
 // is on is not its to answer. It walks the chain up from the child's parent to the first recorded
 // issue, reading each from Dispatch (read), and answers as enterTodoChild says: the unread
 // repository, and whether the wave goes on (false once a read failed and its answer is written).
-func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, resolved string, read issueReader, todoNow func(string) bool) (repo string, ok, handled bool) {
+func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, resolved string, read issueReader, todoNow func(string) bool) (repo string, ok, handled bool) {
 	if s.unread(resolved) {
 		repo = resolved
 	}
@@ -666,28 +667,32 @@ func (s *server) enterOnUnreadRepository(w http.ResponseWriter, r *http.Request,
 	// still unrecorded when the repository's recovery has run is named then (tellReleaseWaits).
 	if stop == nil {
 		s.log.Info("api: release_children's todo child waits for GitHub to answer its repository's installation or default-branch read; the daemon records it then",
-			"issue", child.Key, "tree", tree, "repo", repo)
+			"issue", child.Key, "tree", grant.Tree, "repo", repo)
 		if !s.clearChildReleaseRetry(w, r, child.Key) {
 			return "", false, true
 		}
-		return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, ""), true
+		return repo, s.tellReleaseWait(w, r, grant, child.Key, parent, repo, ""), true
 	}
 	blocker := *stop
 	if !s.clearChildReleaseRetry(w, r, child.Key) {
 		return "", false, true
 	}
-	return repo, s.tellReleaseWait(w, r, tree, child.Key, parent, repo, fmt.Sprintf(
+	return repo, s.tellReleaseWait(w, r, grant, child.Key, parent, repo, fmt.Sprintf(
 		"%s is todo but not recorded: the daemon records a child only under a recorded parent, and %s, on its parent chain, is %s and not recorded, so the recovery of %s (left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit) will not record %s either. Release %s first, then release %s again.",
 		child.Key, blocker.Key, blocker.Status, repo, child.Key, blocker.Key, child.Key)), true
 }
 
-// tellReleaseWait leaves child, released in tree under parent, to the recovery of the unread
-// repo (Options.AwaitRecovery), which tells the architect if it is still unrecorded then, and,
-// when reason is given, tells the architect at once in a child-release-stalled notice. It reports
-// whether the wave goes on: false once the notice's write failed and its answer is written.
-func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree, child, parent, repo, reason string) bool {
+// tellReleaseWait leaves child, released in grant's tree under parent, to the recovery of the
+// unread repo (Options.AwaitRecovery), which tells an architect if it is still unrecorded then,
+// and, when reason is given, tells the architect that released it at once in a
+// child-release-stalled notice. The notice answers that architect's own release, so it is queued
+// on that architect's own issue (grant.Issue): the owner walk takes it to that architect while it
+// holds its role, and on up the tree once it does not, where a notice queued on the tree root
+// would reach the root's architect even for a sub-architect's release. It reports whether the
+// wave goes on: false once the notice's write failed and its answer is written.
+func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, grant credential.Grant, child, parent, repo, reason string) bool {
 	if s.await != nil {
-		s.await(repo, tree, child, parent)
+		s.await(repo, grant.Tree, child, parent)
 	}
 	if reason == "" {
 		return true
@@ -696,7 +701,7 @@ func (s *server) tellReleaseWait(w http.ResponseWriter, r *http.Request, tree, c
 	// daemon's projectRecords, intake.OnCommit), as ApplyFact does for a fact's rows.
 	scoped, committed := intake.WithCommitHooks(r.Context())
 	if err := pgx.BeginFunc(scoped, s.pool, func(tx pgx.Tx) error {
-		row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
+		row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: reason}, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -738,7 +743,12 @@ func (s *server) clearChildReleaseRetry(w http.ResponseWriter, r *http.Request, 
 	return true
 }
 
-func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Request, tree string, child dispatch.Issue, parent string) bool {
+// scheduleChildReleaseRetry answers a todo child the release could not record because its parent
+// has not reached the daemon: CHILD_NOT_RECORDED with the backoff before the next attempt, the
+// backoff itself while one runs, and after maxChildReleaseAttempts CHILD_RELEASE_STALLED, with one
+// child-release-stalled notice queued on the releasing architect's own issue (grant.Issue), as
+// tellReleaseWait queues its own.
+func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Request, grant credential.Grant, child dispatch.Issue, parent string) bool {
 	now := time.Now().UTC()
 	var retry record.ReleaseRetry
 	var exhausted, backoff bool
@@ -766,7 +776,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 		retry.NextAt = now.Add(childReleaseBackoff << (retry.Attempts - 1))
 		retry.Exhausted = retry.Attempts >= maxChildReleaseAttempts
 		if retry.Exhausted {
-			row, err := record.NewOutboxRow(tree, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
+			row, err := record.NewOutboxRow(grant.Issue, record.Notice{Kind: "child-release-stalled", Role: claim.RoleArchitect,
 				Reason: fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d releases; inspect the tree before trying again", child.Key, parent, retry.Attempts)}, now)
 			if err != nil {
 				return err
@@ -783,7 +793,7 @@ func (s *server) scheduleChildReleaseRetry(w http.ResponseWriter, r *http.Reques
 	}
 	committed()
 	if exhausted {
-		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; the tree architect was notified", child.Key, parent, retry.Attempts))
+		writeFailure(w, http.StatusConflict, "CHILD_RELEASE_STALLED", fmt.Sprintf("%s is todo but its parent %s has not reached the daemon after %d attempts; the architect of %s was notified", child.Key, parent, retry.Attempts, grant.Issue))
 		return false
 	}
 	if backoff {
@@ -1000,7 +1010,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 	for _, child := range ordered {
 		switch {
 		case !child.write:
-			repo, ok := s.enterTodoChild(w, r, grant.Tree, child.view, read, todoNow)
+			repo, ok := s.enterTodoChild(w, r, grant, child.view, read, todoNow)
 			if !ok {
 				return
 			}
@@ -1011,7 +1021,7 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			if above, repo := pendingAncestor(child.view, byKey, pending); above != "" {
 				pending[child.view.Key] = repo
 				parent := intake.ObservedIssue(child.view).Parent
-				if !s.tellReleaseWait(w, r, grant.Tree, child.view.Key, parent, repo, fmt.Sprintf(
+				if !s.tellReleaseWait(w, r, grant, child.view.Key, parent, repo, fmt.Sprintf(
 					"%s was not written todo: it is under %s, which is not recorded, and the daemon records a child only under a recorded parent; %s is left out for now because GitHub did not answer its App installation read, or its default-branch read past GitHub's rate limit. Release %s again once %s is recorded; the daemon tells you when it recovers %s.",
 					child.view.Key, above, repo, child.view.Key, above, repo)) {
 					return

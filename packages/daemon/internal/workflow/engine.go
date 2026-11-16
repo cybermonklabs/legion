@@ -622,7 +622,7 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 
 // recordChild records an unrecorded todo child under root's live tree on the repository its event
 // resolves to, or, when that is none or one Legion does not serve, records nothing and says why on
-// the child and to the tree's architect.
+// the child and to the architect that owns its parent (refuseChild).
 //
 // The daemon holds no record of this child, so this entry is the one moment the issue-unit
 // experiments the project declares are drawn for it (drawExperiments), in the transaction that
@@ -635,7 +635,7 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	if resolution.Refusal != "" {
-		return e.refuseChild(ctx, tx, root, fact.Key, fact.ResolvedRepo, resolution)
+		return e.refuseChild(ctx, tx, root, fact.Key, fact.Parent, fact.ResolvedRepo, resolution)
 	}
 	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
 		return err

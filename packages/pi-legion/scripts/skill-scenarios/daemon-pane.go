@@ -241,13 +241,15 @@ func systemPromptArgument(req paneRequest, token claim.Token) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	addressing, err := daemon.AddressingFragment(req.Project, supervise.Claim{
-		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
-	}, repository, rigDefaultBranch, api.RepositoriesView{
-		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
-	})
+	// The rig's pane is on its tree's root, so the architect that owns its issue is the tree's.
+	architect, err := claim.NewToken(req.Project, req.Issue, claim.RoleArchitect)
 	if err != nil {
 		return "", err
 	}
+	addressing := daemon.AddressingFragment(req.Project, supervise.Claim{
+		Token: token, Project: req.Project, Tree: req.Issue, Issue: req.Issue, Role: role, Generation: 1,
+	}, architect, repository, rigDefaultBranch, api.RepositoriesView{
+		Mapped: []api.MappedRepositoryView{{Repo: rigRepository, Default: true}},
+	})
 	return omplaunch.SystemPromptArgument(runtime.PromptParts{RolePromptPaths: parts.RolePromptPaths, Addressing: addressing}), nil
 }
