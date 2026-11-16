@@ -188,7 +188,6 @@ test("a canonical-origin URL read on the outside origin names the issue", () => 
     // An origin this Dispatch does not answer at names nothing.
     expect(referenceRouteFromHref("https://evil.test/issues/CORE-1")).toBeUndefined();
   } finally {
-    setDispatchOrigins([]);
     testWindow.happyDOM.setURL(pageBefore);
   }
 });

@@ -19,7 +19,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  setDispatchOrigins([]);
   testWindow.happyDOM.setURL(pageBefore);
 });
 
