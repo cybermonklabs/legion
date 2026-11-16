@@ -27,29 +27,18 @@ func captureRecords(t *testing.T) *logtest.Recorder {
 	return capture
 }
 
-// releasedRecords are the attributes of each ReleasedMessage record capture holds, in the order
-// they were written, as the broker's handler receives them: a test reads the values the release
-// logged rather than one handler's rendering of them, since the broker's own handler
-// (logging.NewCloudHandler) writes JSON and no test's does.
+// releasedRecords are the attributes of each ReleasedMessage line capture holds (loggedLines),
+// each checked to be at INFO: a test reads the values the release logged rather than one
+// handler's rendering of them, since the broker's own handler (logging.NewCloudHandler) writes
+// JSON and no test's does.
 func releasedRecords(t *testing.T, capture *logtest.Recorder) []map[string]any {
 	t.Helper()
 	var records []map[string]any
-	for _, r := range capture.Records() {
-		if r.Message != ReleasedMessage {
-			continue
+	for _, line := range loggedLines(t, capture, ReleasedMessage) {
+		if line.level != slog.LevelInfo {
+			t.Errorf("%q was logged at %s, want INFO", ReleasedMessage, line.level)
 		}
-		if r.Level != slog.LevelInfo {
-			t.Errorf("%q was logged at %s, want INFO", ReleasedMessage, r.Level)
-		}
-		attrs := map[string]any{}
-		r.Attrs(func(a slog.Attr) bool {
-			if _, twice := attrs[a.Key]; twice {
-				t.Fatalf("the release record carries %q twice", a.Key)
-			}
-			attrs[a.Key] = a.Value.Any()
-			return true
-		})
-		records = append(records, attrs)
+		records = append(records, line.attrs)
 	}
 	return records
 }

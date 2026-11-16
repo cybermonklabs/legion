@@ -166,7 +166,7 @@ func (m Model) Ask(ctx context.Context, data Data) (Verdict, agentloop.Usage, st
 	}
 	if answer.Verdict != Approve && answer.Verdict != Refer {
 		return Verdict{Word: Refer}, result.Usage, record.Sanitize(string(result.Value), maxRawAnswer),
-			fmt.Errorf("the model answered the verdict %q, which is neither approve nor refer", clampRunes(answer.Verdict, 20))
+			fmt.Errorf("the model answered the verdict %q, which is neither approve nor refer", record.ClampRunes(answer.Verdict, 20))
 	}
 	return Verdict{Word: answer.Verdict, Reason: record.Sanitize(answer.Reason, maxReasonRunes)}, result.Usage, "", nil
 }

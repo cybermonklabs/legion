@@ -23,7 +23,9 @@ const (
 	// enough that the broker holds it, marshals it and writes it without a page of its own
 	// becoming the expensive part of the read. A page of releases is larger: each grant.used
 	// row may record a command of up to 32 arguments of 256 bytes and a call reason of 400
-	// runes (requests.ReleasedMessage), so a page of them can reach about ten mebibytes.
+	// runes (requests.ReleasedMessage), which the row's JSON and this answer's encoder write at
+	// up to six bytes for each byte they hold (a control byte as \u0001, `<` as \u003c), so a
+	// row can reach about 52 KB and a page of a thousand about 52 MB.
 	grantLogLimit = store.MaxGrantLogPage
 	// grantLogSettleTime is how far before now a period's end must be for the period to count as
 	// closed. An audit id comes from a bigserial, which hands it out when the row is inserted

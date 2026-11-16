@@ -295,23 +295,28 @@ func ReasonRefuses(r rune) bool {
 }
 
 // Sanitize is s with every rune ReasonRefuses dropped and what is left cut to its first limit
-// runes: the reason rules applied to text that is already in hand, where validateReason would
-// refuse it.
+// runes by ClampRunes: the reason rules applied to text that is already in hand, where
+// validateReason would refuse it.
 func Sanitize(s string, limit int) string {
-	cleaned := strings.Map(func(r rune) rune {
+	return ClampRunes(strings.Map(func(r rune) rune {
 		if ReasonRefuses(r) {
 			return -1
 		}
 		return r
-	}, s)
+	}, s), limit)
+}
+
+// ClampRunes is s cut to at most n runes. It cuts on a rune boundary, so what it answers is
+// still the UTF-8 the caller handed it, and it walks s once without allocating.
+func ClampRunes(s string, n int) string {
 	count := 0
-	for i := range cleaned {
-		if count == limit {
-			return cleaned[:i]
+	for i := range s {
+		if count == n {
+			return s[:i]
 		}
 		count++
 	}
-	return cleaned
+	return s
 }
 
 // MaxCommandArguments and MaxCommandArgumentBytes bound the command a release of a grant records
@@ -324,16 +329,26 @@ const (
 	MaxCommandArgumentBytes = 256
 )
 
-// ClipArgument is arg cut to its first MaxCommandArgumentBytes bytes on a character's boundary.
+// ClipArgument is arg cut to its first MaxCommandArgumentBytes bytes on a character's boundary:
+// it backs up over the continuation bytes of the one character the cut would split, and over no
+// more than a character holds, so a run of stray continuation bytes does not pull the cut back.
+// What it answers from a longer argument therefore always ReachesTheCut.
 func ClipArgument(arg string) string {
 	if len(arg) <= MaxCommandArgumentBytes {
 		return arg
 	}
 	cut := MaxCommandArgumentBytes
-	for cut > 0 && !utf8.RuneStart(arg[cut]) {
+	for back := 0; back < utf8.UTFMax-1 && !utf8.RuneStart(arg[cut]); back++ {
 		cut--
 	}
 	return arg[:cut]
+}
+
+// ReachesTheCut reports whether arg is as long as an argument ClipArgument cut, so that its end
+// may be where a secret was cut through: the rule a release's redaction applies to such an end
+// (requests.redactArgument).
+func ReachesTheCut(arg string) bool {
+	return len(arg) > MaxCommandArgumentBytes-utf8.UTFMax
 }
 
 // ClipCommand is command's first MaxCommandArguments arguments, each cut by ClipArgument: what a

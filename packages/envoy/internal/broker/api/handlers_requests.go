@@ -212,10 +212,12 @@ type grantValuesBody struct {
 	// narrows this release alone: the grant's next release without it is owner-wide.
 	GitHubApp *githubNarrowing `json:"github_app"`
 	// Optional: the command this release starts, as its argument vector. The broker logs it with
-	// the grant's reason, at most 32 arguments of at most 256 bytes each, and every value the
-	// release hands out replaced by `[redacted]`. It decides nothing about the release. A broker
-	// from before this field refuses a body that holds it, as INVALID_NARROWING naming the
-	// unknown field, and releases nothing.
+	// the grant's reason: its first 32 arguments, each cut to 256 bytes, with `[redacted]` in place
+	// of each value of 8 bytes or more that the release hands out, each string of 8 bytes or more
+	// in a stored JSON value, and each credential of a well-known shape. Any other secret in it is
+	// logged as sent. It decides nothing about the release. A broker from before this field
+	// refuses a body that holds it, as INVALID_NARROWING naming the unknown field, and releases
+	// nothing.
 	Command []string `json:"command"`
 	// Optional: the reason this call of the session gave, which can differ from the reason of the
 	// request the grant came of when the call got a live grant back. The broker logs it beside the

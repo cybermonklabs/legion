@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
 // shaped joins parts into one fixture credential. Each fixture is written in pieces so no line of
@@ -17,9 +18,10 @@ func shaped(parts ...string) string { return strings.Join(parts, "") }
 // TestACommandHoldingAKnownCredentialShapeIsRedacted: a release redacts a credential of a
 // well-known shape wherever it came from — a token an earlier release minted, a key the session
 // read from somewhere else — since the values this release handed out are not the only ones a
-// command can hold: GitHub tokens, AWS access key ids, Google OAuth access tokens, Slack tokens
-// and a PEM private key. A shape the client's cut ran through at the argument's end is redacted
-// too. Text that only begins like one of them, away from the cut, is left as written.
+// command can hold: GitHub tokens, AWS access key ids, Google OAuth access tokens, Slack tokens of
+// every xox prefix and a PEM private key. A shape the client's cut ran through at the argument's
+// end is redacted too. Text that only begins like one of them, away from the cut, is left as
+// written.
 func TestACommandHoldingAKnownCredentialShapeIsRedacted(t *testing.T) {
 	classic := shaped("gh", "p_", strings.Repeat("NotASecret", 4)[:36])
 	installation := shaped("gh", "s_", strings.Repeat("NotASecret", 4)[:36])
@@ -28,6 +30,9 @@ func TestACommandHoldingAKnownCredentialShapeIsRedacted(t *testing.T) {
 	sessionKey := shaped("AS", "IA", "NOTASECRET111111")
 	google := shaped("ya", "29.", "NotASecret-token_0")
 	slack := shaped("xo", "xb-", "0000-NotASecret")
+	slackRefresh := shaped("xo", "xe-", "1-NotASecret0000")
+	slackClient := shaped("xo", "xc-", "NotASecret-0000")
+	slackCookie := shaped("xo", "xd-", "NotASecret0000")
 	pem := shaped("-----BEGIN ", "RSA PRIVATE KEY-----\n", "NotASecret\n", "-----END RSA PRIVATE KEY-----")
 	pemCut := shaped("-----BEGIN ", "PRIVATE KEY-----\n", "NotASecret")
 	for _, row := range []struct {
@@ -39,7 +44,10 @@ func TestACommandHoldingAKnownCredentialShapeIsRedacted(t *testing.T) {
 		{"a fine-grained GitHub token", []string{"gh", "--token=" + fineGrained}, []string{"gh", "--token=[redacted]"}},
 		{"AWS access key ids", []string{"env", "AWS_ACCESS_KEY_ID=" + accessKey, "OTHER=" + sessionKey}, []string{"env", "AWS_ACCESS_KEY_ID=[redacted]", "OTHER=[redacted]"}},
 		{"a Google access token", []string{"curl", "-H", "Authorization: Bearer " + google}, []string{"curl", "-H", "Authorization: Bearer [redacted]"}},
-		{"a Slack token", []string{"slack", "--token", slack}, []string{"slack", "--token", "[redacted]"}},
+		{"a Slack bot token", []string{"slack", "--token", slack}, []string{"slack", "--token", "[redacted]"}},
+		{"a Slack refresh token", []string{"slack", "--refresh", slackRefresh}, []string{"slack", "--refresh", "[redacted]"}},
+		{"a Slack client token and cookie", []string{"curl", "-H", "Authorization: Bearer " + slackClient, "-b", "d=" + slackCookie},
+			[]string{"curl", "-H", "Authorization: Bearer [redacted]", "-b", "d=[redacted]"}},
 		{"a PEM private key", []string{"sh", "-c", "key=" + pem + " tail"}, []string{"sh", "-c", "key=[redacted] tail"}},
 		{"a PEM private key the cut ran through", []string{"printf", pemCut}, []string{"printf", "[redacted]"}},
 		{"a GitHub token the cut ran through", []string{"echo", strings.Repeat("a", 250) + classic[:6]}, []string{"echo", strings.Repeat("a", 250) + "[redac"}},
@@ -89,6 +97,29 @@ func TestAHandedOutValueIsRedactedOnceAndOnlyWhenLongEnough(t *testing.T) {
 				t.Errorf("logged %q, want %q", got, row.want)
 			}
 		})
+	}
+}
+
+// TestALargeCommandCostsTheRedactionNoMoreThanItRecords: a session writes its own body, up to the
+// broker's 1 MiB cap, and the redaction runs on every release of it. The redaction is handed each
+// argument already cut to the 256 bytes a release records, never the whole argument, so a command
+// of 40 arguments of 32 KiB costs it no more than one of 32 arguments of 256 bytes; the rule at
+// the cut catches a value that crosses byte 256. The bytes the redaction is handed are counted,
+// which no machine's speed changes.
+func TestALargeCommandCostsTheRedactionNoMoreThanItRecords(t *testing.T) {
+	const value = "v7c1e9a2-stored-0123456789abcdef"
+	command := repeated(40, strings.Repeat("a", 32<<10))
+	command[1] = strings.Repeat("a", 250) + value + strings.Repeat("b", 32<<10)
+	scanned := 0
+	got := redactCommand(command, []string{value}, func(arg string, values []string) string {
+		scanned += len(arg)
+		return redactArgument(arg, values)
+	})
+	if limit := record.MaxCommandArguments * record.MaxCommandArgumentBytes; scanned > limit {
+		t.Errorf("the redaction was handed %d bytes of a %d-byte command, want at most %d: what a release records", scanned, 40*(32<<10), limit)
+	}
+	if len(got) != record.MaxCommandArguments || got[0] != strings.Repeat("a", 256) || got[1] != strings.Repeat("a", 250)+"[redac" {
+		t.Errorf("logged %d arguments, the first two %d and %d bytes; want 32, 256 a's, then 250 a's and the marker's start", len(got), len(got[0]), len(got[1]))
 	}
 }
 
