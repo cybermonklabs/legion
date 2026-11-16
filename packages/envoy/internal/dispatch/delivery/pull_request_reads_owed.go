@@ -6,23 +6,33 @@ package delivery
 // would otherwise leave its pull request with no head for good: the reconcile reads only rows
 // that exist, a merged or closed row is never read again, and the read-through runs only for a
 // result's commit. The row holds which pull request changed, why its read is owed, how often the
-// reconcile has read it and when it was last owed, and nothing an envelope says: no head, no
-// state, no issue.
+// reconcile has read it, when it was last owed and its revision, and nothing an envelope says: no
+// head, no state, no issue.
 //
 // Three writers record one. Intake.deliver records a failure at each delivery of an envelope whose
 // head write failed, so that one refused write at one moment is never the only record, and
 // acknowledges it at the delivery cap (headWriteMaxDeliveries), which a GitHub outage of about five
 // minutes reaches, and a rate limit after thirty of its waits; a later delivery that writes the
-// head deletes what the earlier ones owed (settleOwedReadsBefore). recordPullRequestHead records a
+// head deletes what the earlier ones owed (settleOwedRead). recordPullRequestHead records a
 // refusal for GitHub's refusal of a read, a pull request it does not know or a repository the App
 // cannot read, since GitHub's answer to a read made a moment after its own webhook may not know
 // the pull request yet. And upsertHeadRow records a failure in the same statement as a write of
-// GitHub's answer that replaces a row no read of GitHub wrote whose time is later than the answer's:
-// during a roll the release before stores GitHub's newer answer from an envelope, and a slower read
-// of this build can land an older answer after it, so GitHub is read again. An envelope leaves the
-// intake with no record of its pull request only where no delivery of the cap could write one.
-// Every other way an envelope leaves the intake unacknowledged keeps it with NATS: a stop hands it
-// back (Intake.deliver), and a hold that has lapsed leaves it outstanding for the next holder.
+// GitHub's answer that replaces a row no read of GitHub wrote whose time is later than the answer's,
+// or a row of the same GitHub second with other facts: during a roll the release before stores
+// GitHub's newer answer from an envelope, and a slower read of this build can land an older answer
+// after it, and two answers of one second say nothing of which is the newer, so GitHub is read
+// again. An envelope leaves the intake with no record of its pull request only where no delivery
+// of the cap could write one. Every other way an envelope leaves the intake unacknowledged keeps
+// it with NATS: a stop hands it back (Intake.deliver), and a hold that has lapsed leaves it
+// outstanding for the next holder.
+//
+// No time decides which owed read a read answers. Each owe gives the row a new revision, a value
+// of the table's own sequence, and a read deletes the row only at the revision it read before it
+// read GitHub (settleOwedRead): the owes that row recorded were made before the read began, so the
+// read's answer covers them, and an owe made after that moment, by any transaction and whatever
+// any clock says, gave the row another revision and stays for the next read. owed_at is when the
+// read was last owed: the order a pass reads the rows in and the moment a refusal becomes final,
+// a schedule and nothing more.
 //
 // The reconcile's head pass reads the owed pull requests from GitHub before the stored rows
 // (Reconcile.readOwedPullRequests): first the failures, at most PullRequestHeadBatch of them, then
@@ -54,8 +64,12 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -94,13 +108,42 @@ const owedReadRefusalFinalAfter = ReconcileInterval
 // own deadline may be the very failure of that delivery.
 const owedReadWriteTimeout = 5 * time.Second
 
+// owedRevisionReadTimeout bounds the intake's read of the revision of a pull request's owed read
+// (owedRevision), which a healthy database answers in milliseconds. It is how long a head read
+// waits for that table before it goes on with no revision, so a session that holds the table
+// locked, as a migration of it would, holds no head read and no acknowledgement at the cap.
+const owedRevisionReadTimeout = time.Second
+
+// owedRevision is the revision of the read repoFull's pull request number is owed as a read of
+// GitHub begins, nil where none is owed: the one row that read's answer covers and may delete
+// (settleOwedRead). Where the read fails or runs past owedRevisionReadTimeout, it answers nil with
+// one log line, so the read deletes nothing: the record stays, and the reconcile's next pass reads
+// the pull request once more and settles it. That costs one read, and loses no owe.
+func owedRevision(ctx context.Context, pool *store.Pool, repoFull string, number int) *int64 {
+	bounded, cancel := context.WithTimeout(ctx, owedRevisionReadTimeout)
+	defer cancel()
+	var revision int64
+	err := pool.QueryRow(bounded, `
+		select revision from pull_request_reads_owed where repo = $1 and number = $2
+	`, repoFull, number).Scan(&revision)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		slog.Warn("dispatch delivery: read the revision of the read a pull request is owed; this read deletes no owed read, and the reconcile reads the pull request once more",
+			"repo", repoFull, "number", number, "error", err)
+		return nil
+	}
+	return &revision
+}
+
 // owePullRequestRead records that the pull request number of the repository given changed, that
 // no read of GitHub has answered for that change, and why (reason). given is canonicalised first
-// (refs.CanonicalRepo), so one pull request is owed under one name. Recording it again moves its
-// time to now and its reason to the latest read's: the latest event is the one a later read must
-// answer for, and a read the reconcile began before it settles nothing (recordOwedReadOutcome).
-// It keeps the count of the reconcile's reads, so publishing the same envelope again moves no
-// row ahead of the rows that have been read as often.
+// (refs.CanonicalRepo), so one pull request is owed under one name. Recording it again gives the
+// row a new revision, moves its time to now and its reason to the latest read's: the latest event
+// is the one a later read must answer for, and a read that read the row's revision before this
+// owe settles nothing (settleOwedRead). It keeps the count of the reconcile's reads, so publishing
+// the same envelope again moves no row ahead of the rows that have been read as often.
 func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, number int, reason owedReason) error {
 	repoFull, err := refs.CanonicalRepo(ctx, pool, given)
 	if err != nil {
@@ -111,43 +154,42 @@ func owePullRequestRead(ctx context.Context, pool *store.Pool, given string, num
 	}
 	if _, err := pool.Exec(ctx, `
 		insert into pull_request_reads_owed (repo, number, reason) values ($1, $2, $3)
-		on conflict (repo, number) do update set reason = excluded.reason, owed_at = excluded.owed_at
+		on conflict (repo, number) do update
+			set reason = excluded.reason, owed_at = excluded.owed_at, revision = excluded.revision
 	`, repoFull, number, reason); err != nil {
 		return fmt.Errorf("record the read %s#%d is owed: %w", repoFull, number, err)
 	}
 	return nil
 }
 
-// owedReadSettleMargin is how much earlier than the database's clock at the start of its own read
-// the intake's delete of an owed read draws its line (settleOwedReadsBefore): a record a delivery
-// of the same envelope wrote is at least headWriteRedeliverAfter older, and the margin keeps a
-// record whose transaction began just before the read, since owed_at is its transaction's start
-// (now()), such as one the trigger pull_request_heads_older_read made in another writer's upsert.
-const owedReadSettleMargin = time.Second
-
-// settleOwedReadsBefore deletes the read repoFull's pull request number was owed before a read
-// of GitHub that began at readFrom, the database's own clock then (headReadCovers), now that the
-// intake wrote that read's answer. The line is readFrom less owedReadSettleMargin, so no clock of
-// this process is compared with the database's, and no wait for the delete's own connection
-// moves it: a record owed after the read began, the one this read's own upsert owes through the
-// trigger pull_request_heads_older_read included, stays for the reconcile.
-func settleOwedReadsBefore(ctx context.Context, pool *store.Pool, repoFull string, number int, readFrom time.Time) error {
-	if _, err := pool.Exec(ctx, `
+// settleOwedRead deletes the read repoFull's pull request number is owed where the row's revision
+// is still revision, the one a read took before it read GitHub (owedRevision,
+// listOwedPullRequestReads), and answers whether it deleted the row. That read's answer covers
+// every owe that row recorded, and every owe made since gave the row another revision
+// (owePullRequestRead, the trigger pull_request_heads_older_read), so its record stays for the next
+// read. A refusal (refused) deletes the row only once the pull request has been owed
+// owedReadRefusalFinalAfter, by the database's own clock: GitHub's refusal of a read made a moment
+// after its own webhook may be GitHub catching up.
+func settleOwedRead(ctx context.Context, pool *store.Pool, repoFull string, number int, revision int64, refused bool) (bool, error) {
+	tag, err := pool.Exec(ctx, `
 		delete from pull_request_reads_owed
-		where repo = $1 and number = $2 and owed_at < $3
-	`, repoFull, number, readFrom.Add(-owedReadSettleMargin)); err != nil {
-		return fmt.Errorf("settle the read %s#%d was owed: %w", repoFull, number, err)
+		where repo = $1 and number = $2 and revision = $3
+		  and (not $4::boolean or owed_at < now() - make_interval(secs => $5))
+	`, repoFull, number, revision, refused, owedReadRefusalFinalAfter.Seconds())
+	if err != nil {
+		return false, fmt.Errorf("settle the read %s#%d is owed: %w", repoFull, number, err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
-// owedRead is one pull request owed a read: its repository, its number, why, and when the read
-// was last owed.
+// owedRead is one pull request owed a read: its repository, its number, why, when the read was
+// last owed, and the row's revision then.
 type owedRead struct {
-	Repo   string
-	Number int
-	Reason owedReason
-	OwedAt time.Time
+	Repo     string
+	Number   int
+	Reason   owedReason
+	OwedAt   time.Time
+	Revision int64
 }
 
 // listOwedPullRequestReads is at most limit pull requests owed a read for reason, the row the
@@ -156,7 +198,7 @@ type owedRead struct {
 // order, so the cost is the limit's rows and not the table's.
 func listOwedPullRequestReads(ctx context.Context, pool *store.Pool, reason owedReason, limit int) ([]owedRead, error) {
 	rows, err := pool.Query(ctx, `
-		select repo, number, reason, owed_at from pull_request_reads_owed
+		select repo, number, reason, owed_at, revision from pull_request_reads_owed
 		where reason = $1
 		order by reads, owed_at, repo, number
 		limit $2
@@ -168,7 +210,7 @@ func listOwedPullRequestReads(ctx context.Context, pool *store.Pool, reason owed
 	var owed []owedRead
 	for rows.Next() {
 		var read owedRead
-		if err := rows.Scan(&read.Repo, &read.Number, &read.Reason, &read.OwedAt); err != nil {
+		if err := rows.Scan(&read.Repo, &read.Number, &read.Reason, &read.OwedAt, &read.Revision); err != nil {
 			return nil, fmt.Errorf("list the pull requests owed a read (%s): %w", reason, err)
 		}
 		owed = append(owed, read)
@@ -195,20 +237,15 @@ const (
 // refusal deletes it once the pull request has been owed owedReadRefusalFinalAfter. Any other
 // outcome counts the read and moves the row to the kind the read gave, so a failure GitHub now
 // refuses becomes a refusal and a refusal GitHub now fails becomes a failure. Every statement names
-// the time it read, so an event owed again while the reconcile read GitHub keeps its record, as
-// that event recorded it, for the next pass. Both times are the database's own clock.
+// the revision the list read (settleOwedRead), so an event owed again while the reconcile read
+// GitHub keeps its record, as that event recorded it, for the next pass. The count is no owe and
+// gives no new revision, so an intake's read that read the row before it still deletes it.
 func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead, outcome owedReadOutcome) error {
-	tag, err := pool.Exec(ctx, `
-		delete from pull_request_reads_owed
-		where repo = $1 and number = $2 and owed_at = $3
-		  and ($4::boolean or ($5::boolean and owed_at < now() - make_interval(secs => $6)))
-	`, read.Repo, read.Number, read.OwedAt, outcome == owedReadAnswered, outcome == owedReadRefused,
-		owedReadRefusalFinalAfter.Seconds())
-	if err != nil {
-		return fmt.Errorf("settle the read %s#%d is owed: %w", read.Repo, read.Number, err)
-	}
-	if tag.RowsAffected() > 0 || outcome == owedReadAnswered {
-		return nil
+	if outcome != owedReadFailed {
+		settled, err := settleOwedRead(ctx, pool, read.Repo, read.Number, read.Revision, outcome == owedReadRefused)
+		if err != nil || settled || outcome == owedReadAnswered {
+			return err
+		}
 	}
 	reason := owedFailure
 	if outcome == owedReadRefused {
@@ -216,8 +253,8 @@ func recordOwedReadOutcome(ctx context.Context, pool *store.Pool, read owedRead,
 	}
 	if _, err := pool.Exec(ctx, `
 		update pull_request_reads_owed set reason = $4, reads = reads + 1
-		where repo = $1 and number = $2 and owed_at = $3
-	`, read.Repo, read.Number, read.OwedAt, reason); err != nil {
+		where repo = $1 and number = $2 and revision = $3
+	`, read.Repo, read.Number, read.Revision, reason); err != nil {
 		return fmt.Errorf("count the read %s#%d is owed: %w", read.Repo, read.Number, err)
 	}
 	return nil

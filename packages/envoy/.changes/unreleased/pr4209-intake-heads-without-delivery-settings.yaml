@@ -24,8 +24,12 @@ body: |-
     `pull_request_heads.github_read_at`): a row an earlier release stored from an envelope, whose
     time a caller sets, no longer keeps its head and state against GitHub, and a trigger takes the
     mark away from a row that release changes while it serves beside this one. Where a read of
-    GitHub replaces such a row that is newer than its own answer, a second trigger owes the pull
-    request a read, so the next pass writes GitHub's current answer. `delivery.AttributionRuleVersion`
+    GitHub replaces such a row that is newer than its own answer, or a row of the same GitHub second
+    with other facts, a second trigger owes the pull request a read, so the next pass writes
+    GitHub's current answer. No clock decides which owed read a read answers: each owe gives the
+    record a new revision, and a read deletes the record only at the revision it read before it
+    read GitHub, so an owe made during the read stays. A stored answer spares the read of an event
+    only where its `updated_at` is a later second than the event's. `delivery.AttributionRuleVersion`
     is 3, so the reconcile reads every stored merged row from GitHub once more.
 
     Every hand-back of an envelope to NATS has a limit, so no envelope holds one of the intake's

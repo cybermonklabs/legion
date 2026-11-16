@@ -61,7 +61,7 @@ func TestRedTeamLegacyFutureRowVersusGitHub(t *testing.T) {
 			}
 			afterEvent := readHead(t, ctx, pool, "acme/widgets", 98767)
 			eventReads := gh.reads.Load()
-			err = RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", 98767, time.Now())
+			_, err = RefreshPullRequestHead(ctx, pool, client, nil, "acme/widgets", 98767, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}

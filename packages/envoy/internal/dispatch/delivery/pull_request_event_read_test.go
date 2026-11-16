@@ -24,12 +24,15 @@ import (
 // /repos/{owner}/{repo}/pulls/{number}` from the answer a row last set, and 404 for a number it
 // was never given, as GitHub answers a pull request it does not have. Each pull request's commits
 // are an empty page. It counts both reads, so a row can show what an envelope cost. limited
-// answers every pull request read with a rate limit, and failing with a 500.
+// answers every pull request read with a rate limit, and failing with a 500. holdFirst, where a
+// test sets it before any read, runs at the first pull request read after its answer is taken and
+// before it is sent: a test moves GitHub on there, or holds the answer back.
 type githubPulls struct {
 	mu          sync.Mutex
 	pulls       map[int]map[string]any
 	limited     bool
 	failing     bool
+	holdFirst   func()
 	reads       atomic.Int32
 	commitReads atomic.Int32
 }
@@ -38,15 +41,18 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 	t.Helper()
 	g := &githubPulls{pulls: map[int]map[string]any{}}
 	fake.handle("GET /repos/"+repo+"/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
-		g.reads.Add(1)
+		read := g.reads.Add(1)
 		number, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil {
 			t.Errorf("a pull request read of %s: %v", r.URL.Path, err)
 		}
 		g.mu.Lock()
 		pull, known := g.pulls[number]
-		limited, failing := g.limited, g.failing
+		limited, failing, hold := g.limited, g.failing, g.holdFirst
 		g.mu.Unlock()
+		if read == 1 && hold != nil {
+			hold()
+		}
 		switch {
 		case limited:
 			w.Header().Set("Retry-After", "120")
@@ -198,14 +204,18 @@ func TestAnEnvelopeWritesGitHubsHeadAndStateAndNotItsOwn(t *testing.T) {
 	}
 }
 
-// The events of one pull request that waited together cost one read of it. A first start
-// replays what the stream kept: here 200 pull requests, each opened and pushed twice, 600
-// envelopes, every one older than GitHub's answer, and none naming an issue, so each pull
-// request's commit messages are read too. The first envelope of each reads GitHub, and the
-// row it writes holds GitHub's answer, which answers for the other two (headReadCovers). The
-// repository is the row's own, so no commit messages another row of this test binary read
+// The events of one pull request that waited together cost one read of it, and one more for its
+// events of the second GitHub's answer holds. A first start replays what the stream kept: here 200
+// pull requests, each opened and pushed twice, 600 envelopes, the last push of each at the second
+// of GitHub's answer, and none naming an issue, so each read reads the pull request's commit
+// messages too. The first envelope of each reads GitHub, and the row it writes holds GitHub's
+// answer, which answers for the first push, ten minutes older (headReadCovers). The last push is
+// of the answer's own second, which an answer covers no event of, since GitHub's updated_at is
+// whole seconds and that answer may be one GitHub gave before the event; so it reads GitHub once
+// more.
+// The repository is the row's own, so no commit messages another row of this test binary read
 // answer for these.
-func TestABacklogOfOnePullRequestsEventsCostsOneRead(t *testing.T) {
+func TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	fake := newFakeGitHub(t)
@@ -230,8 +240,8 @@ func TestABacklogOfOnePullRequestsEventsCostsOneRead(t *testing.T) {
 			}
 		}
 	}
-	if reads, commits := github.reads.Load(), github.commitReads.Load(); reads != pulls || commits != pulls {
-		t.Errorf("600 envelopes of %d pull requests read GitHub's pull request %d times and its commits %d times; want %d of each", pulls, reads, commits, pulls)
+	if reads, commits := github.reads.Load(), github.commitReads.Load(); reads != 2*pulls || commits != 2*pulls {
+		t.Errorf("600 envelopes of %d pull requests read GitHub's pull request %d times and its commits %d times; want %d of each", pulls, reads, commits, 2*pulls)
 	}
 	t.Logf("600 envelopes: %d pull request reads, %d commit reads", github.reads.Load(), github.commitReads.Load())
 	if got := readHead(t, ctx, pool, repo, pulls); got.HeadSHA != head(pulls, 2) {

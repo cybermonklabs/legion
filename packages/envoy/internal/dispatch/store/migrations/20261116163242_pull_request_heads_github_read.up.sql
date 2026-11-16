@@ -11,8 +11,8 @@
 --
 -- The release before this one wrote a row's head, state, branch, title and event_at from a
 -- `pull_request` envelope, and any Envoy /v1 bearer can publish one. Two guards read event_at as
--- GitHub's own time: the intake spares its read of GitHub when the stored row is at least as new
--- as the event (delivery.headReadCovers), and the upsert refuses an answer older than the stored
+-- GitHub's own time: the intake spares its read of GitHub when the stored row is newer than the
+-- event (delivery.headReadCovers), and the upsert refuses an answer older than the stored
 -- time (delivery.upsertHeadRow). So a row stored from an envelope an hour ahead of GitHub's clock
 -- kept its head and its state against every read of GitHub until GitHub's clock passed it — for
 -- a closed or merged pull request, never. This release lets both guards trust only a row with

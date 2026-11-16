@@ -1,7 +1,7 @@
 package delivery
 
-// The intake's delete of the reads an earlier delivery owed (settleOwedReadsBefore) keeps every
-// read owed after this read of GitHub began, however long the delete waits for its connection.
+// The intake's delete of the read owed before its read of GitHub began (settleOwedRead) keeps
+// every read owed after that moment, however long the delete waits for its connection.
 
 import (
 	"context"
@@ -17,9 +17,9 @@ import (
 )
 
 // settleWaitTracer holds back each delete of pull_request_reads_owed for wait before pgx sends
-// it. On the intake's pool that is the delete of settleOwedReadsBefore alone, and the wait stands
-// in for an acquire of a pooled connection: it comes after the intake's read of GitHub and before
-// Postgres reads its own clock for the statement.
+// it. On the intake's pool that is the delete of settleOwedRead alone, and the wait stands in for
+// an acquire of a pooled connection: it comes after the intake's read of GitHub and before
+// Postgres runs the statement.
 type settleWaitTracer struct{ wait time.Duration }
 
 func (s settleWaitTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
@@ -37,12 +37,14 @@ func (settleWaitTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQuery
 // 3e60f25910, D1). During a roll the release before stores GitHub's newer answer, closed, from an
 // envelope; this build's slower read lands GitHub's older answer, open, over it, and the trigger
 // pull_request_heads_older_read owes the pull request a read in that same write. The delete then
-// waits 3 s, longer than the read of GitHub and owedReadSettleMargin together. At 3e60f25910 the
-// delete's line was the database's clock at the delete less the read's age as the process
-// measured it before the wait, so the wait moved the line past the trigger's row and deleted it,
-// and the older open head stayed a basis after the reconcile's next pass (the reviewer's probe,
+// waits 3 s, longer than the read of GitHub. At 3e60f25910 the delete's line was the database's
+// clock at the delete less the read's age as the process measured it before the wait, so the wait
+// moved the line past the trigger's row and deleted it, and the older open head stayed a basis
+// after the reconcile's next pass (the reviewer's probe,
 // TestReview4SettleDeletesTheOwedReadItsOwnUpsertMade: `owed_after_intake=false`,
-// `older_head_is_basis=true`). The control waits 0 s.
+// `older_head_is_basis=true`). Now the delete takes only the revision the read took before it read
+// GitHub, and here there was none, so the trigger's row stays whatever the wait. The control waits
+// 0 s.
 func TestTheReadAnOlderAnswerOwesOutlivesASlowSettle(t *testing.T) {
 	for _, wait := range []time.Duration{0, 3 * time.Second} {
 		t.Run(fmt.Sprintf("settle_waits_%s", wait), func(t *testing.T) {

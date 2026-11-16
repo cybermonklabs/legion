@@ -7,14 +7,21 @@ import (
 )
 
 // pullRequestHeadsOlderReadVersion is the migration whose trigger records a pull request as owed
-// a read when a write of GitHub's answer replaces a newer row no read of GitHub wrote.
+// a read when a write of GitHub's answer replaces a newer row no read of GitHub wrote, or a row of
+// the same GitHub second with other facts.
 const pullRequestHeadsOlderReadVersion = 20261116182209
 
 // TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow: after the migration, an
 // update that writes a mark (github_read_at) over an unmarked row whose event_at is later than
-// the update's own records the pull request as owed a read of kind failure. An update writing a
-// mark over an older unmarked row, a write of the release before (no mark) over a marked row, and
-// an update over a row that is marked already, record nothing.
+// the update's own records the pull request as owed a read of kind failure. So does an update of
+// the same event_at that changes a fact GitHub answers (the head, the state, the title) of a row
+// GitHub's answer is in before or after it: a marked answer over a marked or an unmarked row, and
+// a write of the release before (which keeps the mark) over a marked row. An update writing a mark
+// over an older unmarked row, a write of the release before over an older marked row, an update
+// over a row that is marked already with an older time, an update of the same event_at that
+// changes no fact, one that changes only the attribution (Dispatch's own judgement of GitHub's
+// facts, which a later rule changes at the same second), and a write of the release before over
+// its own row of the same second, record nothing. Each owe gives the record a new revision.
 func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
@@ -22,14 +29,15 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 		t.Fatalf("migrate to %d: %v", pullRequestHeadsOlderReadVersion, err)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	owed := func(number int) string {
+	owed := func(number int) (string, int64) {
 		t.Helper()
 		var reason string
-		err := store.Pool.QueryRow(ctx, `select reason from pull_request_reads_owed where repo = 'acme/widgets' and number = $1`, number).Scan(&reason)
+		var revision int64
+		err := store.Pool.QueryRow(ctx, `select reason, revision from pull_request_reads_owed where repo = 'acme/widgets' and number = $1`, number).Scan(&reason, &revision)
 		if err != nil {
-			return ""
+			return "", 0
 		}
-		return reason
+		return reason, revision
 	}
 	insert := func(number int, at time.Time, marked bool) {
 		t.Helper()
@@ -40,31 +48,70 @@ func TestMigrationOwesAReadWhereAnOlderAnswerReplacesANewerUnmarkedRow(t *testin
 			t.Fatalf("store #%d: %v", number, err)
 		}
 	}
-	update := func(number int, at time.Time, marked bool) {
+	update := func(number int, head, state string, at time.Time, marked bool) {
 		t.Helper()
 		if _, err := store.Pool.Exec(ctx, `
-			update pull_request_heads set head_sha = 'bbbb', state = 'closed', event_at = $2,
-				github_read_at = case when $3::boolean then clock_timestamp() else github_read_at end
+			update pull_request_heads set head_sha = $2, state = $3, event_at = $4,
+				github_read_at = case when $5::boolean then clock_timestamp() else github_read_at end
 			where repo = 'acme/widgets' and number = $1
-		`, number, at, marked); err != nil {
+		`, number, head, state, at, marked); err != nil {
 			t.Fatalf("update #%d: %v", number, err)
+		}
+	}
+	// restate writes GitHub's answer again at the row's own event_at with column set to value.
+	restate := func(number int, column, value string) {
+		t.Helper()
+		if _, err := store.Pool.Exec(ctx, `
+			update pull_request_heads set `+column+` = $2, github_read_at = clock_timestamp()
+			where repo = 'acme/widgets' and number = $1
+		`, number, value); err != nil {
+			t.Fatalf("restate #%d: %v", number, err)
 		}
 	}
 
 	insert(1, now, false)
-	update(1, now.Add(-5*time.Minute), true)
-	if got := owed(1); got != "failure" {
-		t.Errorf("#1, an older marked answer over a newer unmarked row: owed %q, want failure", got)
+	update(1, "bbbb", "closed", now.Add(-5*time.Minute), true)
+	insert(5, now, true)
+	update(5, "bbbb", "closed", now, true)
+	insert(6, now, false)
+	update(6, "bbbb", "closed", now, true)
+	insert(7, now, true)
+	update(7, "bbbb", "closed", now, false)
+	insert(11, now, true)
+	restate(11, "title", "A title GitHub changed in the same second")
+	for number, why := range map[int]string{
+		1:  "an older marked answer over a newer unmarked row",
+		5:  "a marked answer over a marked row of the same second with other facts",
+		6:  "a marked answer over an unmarked row of the same second with other facts",
+		7:  "a write of the release before over a marked row of the same second with other facts",
+		11: "a marked answer of the same second whose title alone changed",
+	} {
+		if got, _ := owed(number); got != "failure" {
+			t.Errorf("#%d, %s: owed %q, want failure", number, why, got)
+		}
 	}
+
 	insert(2, now, false)
-	update(2, now.Add(5*time.Minute), true)
+	update(2, "bbbb", "closed", now.Add(5*time.Minute), true)
 	insert(3, now, true)
-	update(3, now.Add(-5*time.Minute), false)
+	update(3, "bbbb", "closed", now.Add(-5*time.Minute), false)
 	insert(4, now, true)
-	update(4, now.Add(-5*time.Minute), true)
-	for _, number := range []int{2, 3, 4} {
-		if got := owed(number); got != "" {
+	update(4, "bbbb", "closed", now.Add(-5*time.Minute), true)
+	insert(8, now, true)
+	update(8, "aaaa", "open", now, true)
+	insert(9, now, false)
+	update(9, "bbbb", "closed", now, false)
+	insert(10, now, true)
+	restate(10, "attribution_source", "branch")
+	for _, number := range []int{2, 3, 4, 8, 9, 10} {
+		if got, _ := owed(number); got != "" {
 			t.Errorf("#%d owed %q, want nothing", number, got)
 		}
+	}
+
+	_, first := owed(5)
+	update(5, "cccc", "open", now, true)
+	if got, second := owed(5); got != "failure" || second == first {
+		t.Errorf("#5 owed again: reason %q, revision %d then %d, want failure at a new revision", got, first, second)
 	}
 }

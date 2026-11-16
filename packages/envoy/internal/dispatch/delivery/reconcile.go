@@ -90,16 +90,17 @@ func (r *Reconcile) HasApp() bool {
 	return r != nil && r.github != nil
 }
 
-// deliveryReconcileLease names the lease one reconcile pass runs under. Every pass searches and
-// lists GitHub against one installation's rate limit - a backfill is tens of thousands of
-// requests - so N processes reconciling is N times those calls for one result.
-const deliveryReconcileLease = "delivery-reconcile"
+// ReconcileLease names the lease one reconcile pass runs under. Every pass searches and lists
+// GitHub against one installation's rate limit - a backfill is tens of thousands of requests - so
+// N processes reconciling is N times those calls for one result. Exported so a test that must run
+// no pass of any process holds it (cmd/dispatch, TestTwoBuildsPassMessagesBothWays).
+const ReconcileLease = "delivery-reconcile"
 
 // Run re-imports delivery facts on the interval it ticks on (ReconcileInterval unless TickEvery
 // shortened it) until ctx is cancelled. The first tick is jittered so a restart does not stampede
 // GitHub, and a server without App credentials logs once and stops: no import can be signed.
 //
-// Each pass runs under deliveryReconcileLease for one such interval, so one process reconciles
+// Each pass runs under ReconcileLease for one such interval, so one process reconciles
 // per interval however many serve the database: the two tickers are jittered to phases of their
 // own, so the second's tick lands between the first's rather than on it, and finds the interval
 // reconciled. leases is required: unlike StartIntakes, which opens the lease pool itself
@@ -121,7 +122,7 @@ func (r *Reconcile) Run(ctx context.Context, leases duty.Leases) {
 // leasedPass runs one reconcile pass under the lease, for the interval this loop ticks on and
 // the tick due at due.
 func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, deliveryReconcileLease, due, r.tickInterval(), r.runOnce)
+	duty.Exclusive(ctx, leases, ReconcileLease, due, r.tickInterval(), r.runOnce)
 }
 
 // runOnce performs one reconcile pass: the pull-request head refresh, then — where delivery is
@@ -541,7 +542,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		_, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		if err == nil {
 			return nil
 		}
@@ -575,7 +576,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 // read, so the stored rows' list below does not take a row this has just read.
 func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time) error {
 	read := func(ctx context.Context, owed owedRead) error {
-		answered, err := refreshPullRequestHead(ctx, r.pool, r.github, r.events, owed.Repo, owed.Number, now)
+		answered, err := RefreshPullRequestHead(ctx, r.pool, r.github, r.events, owed.Repo, owed.Number, now)
 		outcome := owedReadAnswered
 		switch {
 		case err != nil:

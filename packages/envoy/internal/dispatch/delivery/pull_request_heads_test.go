@@ -843,6 +843,26 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 			"base": map[string]any{"ref": "main"},
 		})
 	})
+	// #66 is #64 as a row with an empty title and URL holds it: the release before stores the
+	// envelope's own title and url (legion-envoy-v30.35.1, pull_request_heads.go:1137), which an
+	// envelope that carries neither leaves empty. GitHub's answer of the row's own second adds
+	// both, a changed fact of GitHub's, so the read owes one more (the trigger
+	// pull_request_heads_older_read): two reads, then none.
+	var emptyReads atomic.Int32
+	fake.handle("GET /repos/acme/widgets/pulls/66", func(w http.ResponseWriter, _ *http.Request) {
+		emptyReads.Add(1)
+		mustEncode(t, w, map[string]any{
+			"number": 66, "title": "HEAD-7 the work", "body": "",
+			"html_url": "https://github.com/acme/widgets/pull/66",
+			"state":    "closed", "merged": true, "merged_at": "2026-02-06T00:00:00Z",
+			"updated_at": "2026-02-06T00:00:00Z",
+			"head": map[string]any{
+				"ref": "legion/HEAD-7", "sha": "9999999999999999999999999999999999999999",
+				"repo": map[string]any{"full_name": "stranger/widgets"},
+			},
+			"base": map[string]any{"ref": "main"},
+		})
+	})
 	// #65's pull request is gone — GitHub answers 404 — so the pass can read nothing about it
 	// and stamps the row instead (MarkPullRequestHeadChecked). The stamp carries the rule as
 	// well as the time, which is what ends this row's offer: a merged row credited to nobody is
@@ -898,11 +918,21 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}); err != nil {
 		t.Fatalf("store the merged head this rule has judged already: %v", err)
 	}
+	// The fork's merge as an envelope stored it, with the title and the URL GitHub answers: an
+	// answer of the row's own second that changed a fact of GitHub's would owe one more read
+	// (the trigger pull_request_heads_older_read), which is no part of the merged arm's bound.
 	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
 		Repo: "acme/widgets", Number: 64, HeadSHA: "ffffffffffffffffffffffffffffffffffffffff",
-		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
+		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", Title: "HEAD-7 the work",
+		URL: "https://github.com/acme/widgets/pull/64", EventAt: &eventAt,
 	}); err != nil {
 		t.Fatalf("store the merged head of a fork's pull request: %v", err)
+	}
+	if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+		Repo: "acme/widgets", Number: 66, HeadSHA: "9999999999999999999999999999999999999999",
+		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
+	}); err != nil {
+		t.Fatalf("store the merged head with an empty title and URL: %v", err)
 	}
 	// The gone pull request, as a row an older rule judged: merged, credited to nobody, and
 	// stamped read by that rule's own pass. Its offer to this rule is open, so the pass takes it.
@@ -920,8 +950,8 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}
 	// Not fatal: the pass below is the behaviour this test is for, and its own assertions say
 	// what an empty batch costs the issue.
-	if len(batch) != 3 || batch[0].Number != 61 || batch[1].Number != 64 || batch[2].Number != 65 {
-		t.Errorf("the batch = %+v, want #61, #64 and #65: an attributed merged row and one this rule has judged are not taken", batch)
+	if len(batch) != 4 || batch[0].Number != 61 || batch[1].Number != 64 || batch[2].Number != 66 || batch[3].Number != 65 {
+		t.Errorf("the batch = %+v, want #61, #64, #66 and #65: an attributed merged row and one this rule has judged are not taken", batch)
 	}
 
 	reconcile := NewReconcile(pool, client, nil)
@@ -981,6 +1011,15 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 	}
 	if reads := goneReads.Load(); reads != 1 {
 		t.Fatalf("a second pass asked GitHub for the gone #65 again (%d reads in all), want the row taken once: the stamp carries the rule as well as the time", reads)
+	}
+	if reads := emptyReads.Load(); reads != 2 {
+		t.Fatalf("#66 was read %d times by two passes, want 2: the first answer filled the empty title and URL of its own second, which owes one more read", reads)
+	}
+	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
+		t.Fatalf("reconcile a third time: %v", err)
+	}
+	if reads, owed := emptyReads.Load(), owedCount(t, ctx, pool, "acme/widgets", 66); reads != 2 || owed != 0 {
+		t.Fatalf("after a third pass #66 was read %d times and is owed %d reads, want 2 and none: the second read changed no fact", reads, owed)
 	}
 	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
 	if err != nil {
@@ -1179,7 +1218,7 @@ func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) 
 
 	const head = "4141414141414141414141414141414141414141"
 	fake := gadgetsFake(t, 521, issue+": the work, on the new name", head)
-	if err := RefreshPullRequestHead(ctx, pool, fake.newTestClient(), nil, gadgetsRepo, 521, time.Now()); err != nil {
+	if _, err := RefreshPullRequestHead(ctx, pool, fake.newTestClient(), nil, gadgetsRepo, 521, time.Now()); err != nil {
 		t.Fatalf("refresh %s#521: %v", gadgetsRepo, err)
 	}
 
@@ -1226,7 +1265,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 		t.Fatalf("#522 is stored under %v once it has arrived under both names, want both rows", repos)
 	}
 
-	if err := RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
+	if _, err := RefreshPullRequestHead(ctx, pool, client, nil, gadgetsOldRepo, 522, time.Now()); err != nil {
 		t.Fatalf("refresh the row stored under the old name: %v", err)
 	}
 	if repos := headRepos(t, ctx, pool, 522); len(repos) != 1 || repos[0] != gadgetsRepo {

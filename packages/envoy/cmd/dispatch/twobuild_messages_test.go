@@ -28,7 +28,9 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -232,7 +234,7 @@ func seedPullRequestSettings(t *testing.T, builds *twoBuilds) {
 // answer. A reconcile pass would still read some of these pull requests again, through the call
 // this row counts as a handling: this tree's merged arm offers every merged row an older rule
 // judged once (delivery.AttributionRuleVersion), which is every row the previous build writes. So
-// the row runs neither build's delivery reconcile inside it (reconcileOutsideTheRow).
+// the row runs neither build's delivery reconcile inside it (holdTheDeliveryReconcile).
 func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number int, delivery string) uint64 {
 	t.Helper()
 	payload, err := json.Marshal(map[string]string{
@@ -264,13 +266,34 @@ func publishMergedPullRequest(t *testing.T, js natsgo.JetStreamContext, number i
 	return ack.Sequence
 }
 
-// reconcileOutsideTheRow is the delivery reconcile period both builds of
-// TestTwoBuildsPassMessagesBothWays run with: a year. The loop's first tick is drawn uniformly
-// within one period (duty.RunJittered), so a pass lands inside the few minutes the row runs
-// about once in a hundred thousand runs, where the five minutes a deployment runs it at would
-// put one there in most of them. Both builds read the setting under the test hooks
-// (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL), which the harness turns on.
-const reconcileOutsideTheRow = 365 * 24 * time.Hour
+// holdTheDeliveryReconcile holds the delivery reconcile's lease (delivery.ReconcileLease) on the
+// builds' database from before either build starts until the row ends, so neither build runs a
+// reconcile pass inside the row: every pass of either build takes that lease first
+// (duty.Exclusive) and skips where another session holds it. The lease is taken with no period,
+// as the reconcile's own lease test takes it (delivery/reconcile_lease_test.go). No process of the
+// row runs yet, so a lease held elsewhere fails the row rather than being waited out.
+func holdTheDeliveryReconcile(t *testing.T, builds *twoBuilds) {
+	t.Helper()
+	leases := storetest.Leases(t, builds.database.Pool)
+	taken, release, ran := make(chan struct{}), make(chan struct{}), make(chan bool, 1)
+	go func() {
+		ran <- duty.Exclusive(context.Background(), leases, delivery.ReconcileLease, time.Time{}, 0, func(context.Context) {
+			close(taken)
+			<-release
+		})
+	}()
+	select {
+	case <-taken:
+	case <-ran:
+		t.Fatalf("the %s lease was held elsewhere, or could not be taken, before either build started", delivery.ReconcileLease)
+	case <-time.After(20 * time.Second):
+		t.Fatalf("the %s lease was not taken within 20 s", delivery.ReconcileLease)
+	}
+	t.Cleanup(func() {
+		close(release)
+		<-ran
+	})
+}
 
 // boundLines is how many times p has logged that it bound durable.
 func boundLines(p *dispatchProcess, durable string) int {
@@ -507,9 +530,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 	previousEnv, currentEnv := maps.Clone(app), maps.Clone(app)
 	previousEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.previousName())
 	currentEnv["DISPATCH_GITHUB_API_BASE"] = fake.serve(t, builds.currentName())
-	for _, env := range []map[string]string{previousEnv, currentEnv} {
-		env["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = reconcileOutsideTheRow.String()
-	}
+	holdTheDeliveryReconcile(t, builds)
 
 	// This tree creates the durables, stamped with its generation, and holds them; the previous
 	// build starts beside it as a standby, which is a rolling release's first moment.

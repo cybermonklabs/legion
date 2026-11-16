@@ -13,6 +13,14 @@
 --                 changes it.
 --   reads         how many times the reconcile has read it; the intake's own read is not one.
 --   owed_at       when the read was last owed; recording it again moves it and keeps reads.
+--                 The order a pass reads the rows in, and when a refusal becomes final: a
+--                 schedule, never the proof of what a read covers.
+--   revision      a value of the column's own sequence, new at each owe (an insert, or an update
+--                 of the row by another owe). A read takes it before it reads GitHub and deletes
+--                 the row only while it still has that value (delivery.settleOwedRead), so an
+--                 owe made after the read began, by any transaction and whatever any clock says,
+--                 stays. A sequence and not a count of the row: a row deleted and owed again
+--                 never gets back a revision a read took before.
 --
 -- R2 makes GitHub's answer the only source of a pull request's head, so an event the intake gives
 -- up on would leave its pull request with no head: the intake acknowledges an envelope after 30
@@ -33,18 +41,19 @@
 -- serves that order, so a table of forged refusals costs a pass an index scan of its budget and
 -- not a sort of every row.
 --
--- A new table that names no other: the transaction locks only it, which no other session can
--- reach before the commit, and nothing existing is read, locked or rewritten. The release before
--- this one neither reads nor writes it, so it rolls beside this one (cmd/dispatch/README.md,
--- "Database migrations"). The census answers 0. Rolling back past it is an image rollback alone;
--- the reads still owed then wait for the next event of each pull request, as they did before
--- this release.
+-- A new table and the sequence of its revision, which name no other: the transaction locks only
+-- them, which no other session can reach before the commit, and nothing existing is read, locked
+-- or rewritten. The release before this one neither reads nor writes them, so it rolls beside this
+-- one (cmd/dispatch/README.md, "Database migrations"). The census answers 0. Rolling back past it
+-- is an image rollback alone; the reads still owed then wait for the next event of each pull
+-- request, as they did before this release.
 create table pull_request_reads_owed (
     repo text not null,
     number integer not null,
     reason text not null check (reason in ('failure', 'refusal')),
     reads integer not null default 0,
     owed_at timestamptz not null default now(),
+    revision bigserial,
     primary key (repo, number)
 );
 

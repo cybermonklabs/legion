@@ -1421,13 +1421,16 @@ with no settings it writes that row and nothing else, and only a merge of the de
 The envelope says only which pull request changed.
 The intake reads that pull request from GitHub (`GET /repos/{owner}/{repo}/pulls/{number}`) and writes the head, the state, the branch and the body GitHub answers, attributed as the reconcile attributes a row (`recordPullRequestHead`).
 So a `labeled` or `edited` event of a closed pull request leaves it closed, and an envelope GitHub never sent, which any Envoy `/v1` bearer can publish on a `notifications.github.` subject, moves no head.
-A read is spared when the stored row already holds GitHub's answer for the event: the row is GitHub's answer to a read (`github_read_at`), GitHub's own `updated_at` on it is at least the event's, and later, or read at least 5 s after the event's second (`headReadCovers`).
+A read is spared when the stored row already holds GitHub's answer for the event: the row is GitHub's answer to a read (`github_read_at`), and GitHub's own `updated_at` on it is a later second than the event's (`headReadCovers`).
+An answer of the event's own second spares no read: GitHub's `updated_at` is whole seconds, so that answer may be one GitHub gave before the event.
+So the events of one pull request that waited together cost one read of it, and one more for its events of the second GitHub's answer holds:
+600 envelopes of 200 pull requests, each opened and pushed twice with the last push in the second of GitHub's answer, cost 400 reads of a pull request, where an answer that covered an event of its own second cost 200 (`TestABacklogOfOnePullRequestsEventsCostsOneReadAndOneForItsLastSecond`).
 A row no read of GitHub wrote spares no read, and GitHub's answer applies over it whatever time it holds (`upsertHeadRow`):
 a release before this one stored an envelope's `updated_at`, which a caller sets, and it still writes rows while it serves beside this one, so a write of its that changes a fact of a row this release read takes the row's mark away (the trigger `pull_request_heads_unread_write`).
 A read that failed, a rate limit included, is handed back to NATS like a head write that failed; a rate limit is handed back after the limit's own wait, during which `githubapp.Client` sends no request at all.
 A pull request GitHub does not know, and a repository the App cannot read, write no row, and the pull request is owed a read of kind `refusal` (`pull_request_reads_owed`), since GitHub's answer to a read made a moment after its own webhook may not know the pull request yet.
 The durable is created with `DeliverAll`, so its first bind in a deployment whose durable never existed is handed the 72 hours the stream keeps.
-That replay costs one read of each pull request it names, and one more of its commits where its title, body, branch and links name no issue held to its repository, at most 4 at a time (`intakeMaxAckPending`).
+That replay costs one read of each pull request it names, and a second one where events of the second GitHub's answer holds come after the first read; a read also reads the pull request's commits where its title, body, branch and links name no issue held to its repository, at most 4 at a time (`intakeMaxAckPending`).
 
 The intake checks each message's subject before it decodes anything:
 only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject
@@ -1440,7 +1443,10 @@ Every envelope is acknowledged once its handler has run, whatever the handler ma
 a `pull_request` envelope whose pull request's head row could not be stored at all is handed back to NATS instead, after `delivery.headWriteRedeliverAfter` (10 s), for as many as `delivery.headWriteMaxDeliveries` (30) deliveries of it, and acknowledged at the last of them.
 No pass over the stored rows repairs a head row that was never written, since those passes read the rows that exist.
 So at each delivery whose head write fails, the intake records the pull request in `pull_request_reads_owed` as owed a read of kind `failure`: the repository and the number, and nothing else the envelope says.
-A later delivery that writes the head deletes that record.
+A later delivery that writes the head deletes that record, unless an owe changed it after that delivery's read began:
+each owe gives the record a new revision, a value of the table's own sequence, and a read deletes the record only at the revision it read before it read GitHub (`settleOwedRead`).
+So no clock decides which owed read a read answers, and an owe made during a read, by any writer, stays for the reconcile.
+A read that cannot read that revision within `owedRevisionReadTimeout` (1 s), the table locked by another session for one, takes none and deletes nothing, so the record stays and the reconcile reads the pull request once more.
 A GitHub outage of about 5 minutes spends the 30 deliveries.
 Every hand-back has a limit, and an envelope no delivery can get past is final at its first delivery.
 An envelope that names no pull request a row can hold, a number outside 1 to 2147483647 or a repository name that is not `owner/name`, is acknowledged at its first delivery with one line, reads nothing and owes no read (`errNoPullRequestNamed`).
@@ -1452,10 +1458,12 @@ That is the one limit of R4 (dispatch://INFRA-3992): when the database takes no 
 A message whose delivery count cannot be read is taken as having spent the cap, since no count could end its hand-backs.
 Each row says why its read is owed: `failure` where GitHub did not answer (a 5xx, a timeout, a rate limit, the delivery cap), and `refusal` where GitHub answered that it cannot give the pull request (a 404 or 410, or a repository the App cannot read).
 A write of GitHub's answer that replaces a newer row no read of GitHub wrote also owes a `failure` (the trigger `pull_request_heads_older_read`, `20261116182209`): during a roll the release before stores GitHub's newer answer from an envelope, and a slower read of this build can land an older answer after it.
+So does a write that replaces a row of the same GitHub second with other facts of GitHub's (the head, its branch, the base, the state, the title or the URL), since two answers of one second say nothing of which is the newer.
+A change of the attribution alone owes nothing: it is Dispatch's own judgement of those facts, which a later rule changes at the same second.
 The reconcile's head pass reads the owed pull requests from GitHub before the stored rows: every `failure` first, at most 200 a pass, and then the `refusal` rows, at most 50 a pass (`delivery.RefusedReadsPerPass`).
 Inside each kind the row the reconcile has read the fewest times goes first, and then the one owed longest, so every row has its first read before any row has its second.
 Both lists are taken before either is read, and a read that answers the other way moves its row to the other kind.
-A read that GitHub answers writes the row, creating it where none exists and whatever its state, and settles the owed read.
+A read that GitHub answers writes the row, creating it where none exists and whatever its state, and settles the owed read where the record still has the revision the pass listed.
 A `failure` is read again every pass until GitHub answers, and a `refusal` settles at its first read once it has been owed for one reconcile period (`owedReadRefusalFinalAfter`).
 So a `refusal` is kept until the reconcile's first read of it after it has been owed for 5 minutes, and a pull request GitHub still answers 404 for at that read has no head until its next event.
 No reader of a head reads that table, so an owed read is never a head, a basis or a merge.
