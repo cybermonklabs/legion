@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # The driver of the check c-outside-path-reach (dispatch://INFRA-3862): a person from outside runs
-# it on their own device, over the path we give them, to prove that path reaches Dispatch and
-# nothing else of ours.
+# it on their own device, over the path we give them, to measure which of our listed addresses that
+# device reaches. What it measures is TCP connects from that device to the listed addresses and
+# ports, nothing more: it cannot see a service the origin itself forwards by path or by Host on its
+# own host and port, and it must run on the device itself, not in a VM, a container or a remote
+# shell, whose network is another one.
 #
 # It is handed to that person as this one file with its target list, so it sources nothing and
-# needs only bash (3.2, as macOS ships it, or later) and curl 7.40 or later: no GNU `timeout`,
-# which stock macOS lacks, since curl's own --connect-timeout and --max-time bound every probe. No
-# curl it runs reads the terminal (stdin is /dev/null), the device's curl configuration (`-q`
-# ignores ~/.curlrc, whose `header`, `proxy`, `resolve` or `connect-to` lines could send a
-# credential or aim a probe elsewhere) or a proxy (`--noproxy '*'`, since a proxy's connect is
-# not the device's): it measures what this device itself reaches.
+# needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all three on a
+# stock macOS or Linux: no GNU `timeout`, which stock macOS lacks, since curl's own
+# --connect-timeout and --max-time bound every probe. No curl it runs reads the terminal (stdin is
+# /dev/null), the device's curl configuration (`-q` ignores ~/.curlrc, whose `header`, `proxy`,
+# `resolve` or `connect-to` lines could send a credential or aim a probe elsewhere) or a proxy
+# (`--noproxy '*'`, since a proxy's connect is not the device's): it measures what this device
+# itself reaches. A run takes about 17 seconds.
 #
 # Inputs, each refused by name when missing:
 #   OUTSIDE_ORIGIN        the chosen path's origin, https://<host>[:<port>], the host a name, an
@@ -17,15 +21,18 @@
 #   OUTSIDE_PATH_TARGETS  a file of `name host port` lines, one per internal target (the hub, the
 #                         listeners, the secrets broker, the other Dispatch origin). `#` starts a
 #                         comment. `host` is a name or a literal address: an IPv4 address written
-#                         as four numbers of 0 to 255 with no leading zero, or an IPv6 address;
-#                         never a `svc:` selector, which resolves nowhere. The list must hold each
-#                         of our services' addresses on the path as lines of their own, not names
-#                         alone: a name line proves only where that name resolves on this device,
-#                         and a name that resolves elsewhere there, or nowhere, says nothing of the
-#                         address behind it. A list of names alone draws a warning.
+#                         as four numbers of 0 to 255 with no leading zero, or an IPv6 address that
+#                         holds no IPv4 one (write ::ffff:10.0.0.1 as 10.0.0.1); never a `svc:`
+#                         selector, which resolves nowhere. Lines end in LF or CRLF. The list must
+#                         hold each of our services' addresses on the path as lines of their own,
+#                         not names alone: a name line proves only where that name resolves on this
+#                         device, and a name that resolves elsewhere there, or nowhere, says nothing
+#                         of the address behind it. A list of names alone draws a warning.
 # OUTSIDE_PATH_ALLOW_HTTP=1 lets an http origin through, and only http://127.0.0.1, for this
 # script's own tests. OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>" runs the classifier
-# alone on one recorded probe, prints its class and exits 0.
+# alone on one recorded probe and prints its class; three of them separated by `;` are judged as
+# one target's three rounds, in order, and the target's class is printed. Either way it exits 4,
+# never PASS's 0, and refuses an empty value with exit 2.
 #
 # It prints the origin, this device's name and the UTC time, a line for the origin's positive
 # control and one per target, then its verdict:
@@ -34,17 +41,22 @@
 #            origin, and every target was unreachable.
 #   FAIL     exit 1: a target was reached, or the origin served a read with no credential.
 #   UNKNOWN  exit 2: anything that proved nothing, which is never a pass: an input refused, curl
-#            missing or too old, the origin not answering as Dispatch, the probe unable to connect
-#            to the origin itself, a target that did not resolve or that no rule classifies, or an
-#            empty target list.
+#            or sleep missing or curl too old, the origin not answering as Dispatch, the probe
+#            unable to connect to the origin itself, a target that did not resolve or that no rule
+#            classifies, an empty target list, or rounds that sleep could not spread apart.
 #
-# Every host and port is probed three times at once by one command and judged by whether TCP
-# connected, not by curl's exit code alone: every target this check exists for (NATS, an HTTP
-# listener, a TLS port) accepts and then holds the connection waiting for the client, so a reached
-# target ends at --max-time with exit 28, the same exit a blackholed address gives. A target is
-# REACHED when any of its three probes connected, unreachable only when all three were, and
-# otherwise takes the class of its first probe that was neither; three probes, not one, so a
-# network that loses packets does not hide a target. See `classify` for the classes.
+# Every host and port is probed in three rounds, started 0, 6 and 12 s into the probing, all hosts
+# of a round at once, by one command, and each probe is judged by whether TCP connected, not by
+# curl's exit code alone: every target this check exists for (NATS, an HTTP listener, a TLS port)
+# accepts and then holds the connection waiting for the client, so a reached target ends at
+# --max-time with exit 28, the same exit a blackholed address gives. A target is REACHED when any
+# of its rounds connected, unreachable only when all three were, and otherwise takes the class of
+# its first round that was neither. Three rounds, so a network that loses packets does not hide a
+# target; 6 s apart, so neither does a tunnel whose first handshake packet was lost: WireGuard
+# sends it again only after its RekeyTimeout of 5 s plus up to 334 ms, and probes started at once
+# would all fall inside that. Heavy loss can still miss all three: with 70% of the packets to a
+# reachable target dropped at random, about one run in 25 printed PASS; with 50%, none of 240.
+# See `classify` for the classes and `judge` for a target's rounds.
 #
 # Usage: OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
 #          bash outside-path-reach.sh
@@ -96,6 +108,16 @@ host_ok() {
     *[!0-9]*) case $last in 0[xX]*) ;; *) return 0 ;; esac ;;
   esac
   is_ipv4 "$1"
+}
+
+# v4_in_v6 HOST: HOST is an IPv6 address that holds an IPv4 one, dotted (::127.0.0.1,
+# ::ffff:127.0.0.1) or mapped in hex (::ffff:7f00:1). Each names another host than its IPv4
+# address does: ::127.0.0.1 is not loopback, and a v6-only stack reaches no mapped address.
+v4_in_v6() {
+  case $1 in
+    *:*.* | ::[fF][fF][fF][fF]:* | 0:0:0:0:0:[fF][fF][fF][fF]:*) return 0 ;;
+  esac
+  return 1
 }
 
 # pop: moves the first line of `rest` into `line`, splitting a text already in memory with no
@@ -169,14 +191,87 @@ classify() {
   printf 'UNKNOWN (curl exit %s, time_namelookup %s, time_connect %s)\n' "$code" "$lookup" "$connect"
 }
 
-if [ -n "${OUTSIDE_PATH_CLASSIFY+set}" ]; then
+# judge EXIT NAMELOOKUP CONNECT (three times, one target's rounds in order): sets `class` to the
+# target's class and `detail` to what its line says after the address. REACHED when any round
+# connected, unreachable only when all three were, and otherwise the class of the first round
+# that was neither; `detail` gives curl's answer in the round that decided, then every round's
+# class in order.
+judge() {
+  local round=0 each code lookup connect decided='' rounds=''
+  class=''
+  while [ "$round" -lt 3 ]; do
+    code=$1 lookup=$2 connect=$3
+    shift 3
+    each=$(classify "$code" "$lookup" "$connect")
+    rounds="$rounds, ${each%% *}"
+    if [ "$each" = REACHED ]; then
+      [ "$class" = REACHED ] || {
+        class=REACHED
+        decided="$code $lookup $connect"
+      }
+    elif [ "$each" != unreachable ]; then
+      case $class in '' | unreachable)
+        class=$each
+        decided="$code $lookup $connect"
+        ;;
+      esac
+    elif [ -z "$class" ]; then
+      class=$each
+      decided="$code $lookup $connect"
+    fi
+    round=$((round + 1))
+  done
+  case $class in
+    UNKNOWN*) detail="$class; probes: ${rounds#, }" ;;
+    *)
+      set -f
+      # shellcheck disable=SC2086 # split on purpose: the three fields of the deciding round
+      set -- $decided
+      set +f
+      detail="$class; curl exit ${1-}, time_namelookup ${2-}, time_connect ${3-}; probes: ${rounds#, }"
+      ;;
+  esac
+}
+
+# fields TEXT: sets f1, f2 and f3 to the fields of one recorded probe; fails on more than three.
+fields() {
   set -f
-  # shellcheck disable=SC2086 # split on purpose: the three fields of one recorded probe
-  set -- $OUTSIDE_PATH_CLASSIFY
+  # shellcheck disable=SC2086 # split on purpose: the fields of one recorded probe
+  set -- $1
   set +f
-  [ "$#" -le 3 ] || unknown "OUTSIDE_PATH_CLASSIFY holds more than '<exit> <namelookup> <connect>': $OUTSIDE_PATH_CLASSIFY"
-  classify "${1-}" "${2-}" "${3-}"
-  exit 0
+  [ "$#" -le 3 ] || return 1
+  f1=${1-} f2=${2-} f3=${3-}
+}
+
+if [ -n "${OUTSIDE_PATH_CLASSIFY+set}" ]; then
+  recorded=$OUTSIDE_PATH_CLASSIFY
+  case $recorded in *[![:space:]]*) ;; *)
+    unknown "OUTSIDE_PATH_CLASSIFY is set but empty: give it '<exit> <namelookup> <connect>', or three of them separated by ';'"
+    ;;
+  esac
+  malformed="OUTSIDE_PATH_CLASSIFY is neither '<exit> <namelookup> <connect>' nor three of them separated by ';': $recorded"
+  case $recorded in
+    *';'*';'*';'*) unknown "$malformed" ;;
+    *';'*';'*)
+      first=${recorded%%;*}
+      rest=${recorded#*;}
+      second=${rest%%;*}
+      third=${rest#*;}
+      fields "$first" || unknown "$malformed"
+      set -- "$f1" "$f2" "$f3"
+      fields "$second" || unknown "$malformed"
+      set -- "$@" "$f1" "$f2" "$f3"
+      fields "$third" || unknown "$malformed"
+      judge "$@" "$f1" "$f2" "$f3"
+      printf '%s\n' "$detail"
+      ;;
+    *';'*) unknown "$malformed" ;;
+    *)
+      fields "$recorded" || unknown "$malformed"
+      classify "$f1" "$f2" "$f3"
+      ;;
+  esac
+  exit 4
 fi
 
 [ -n "${OUTSIDE_ORIGIN:-}" ] ||
@@ -224,6 +319,8 @@ if [ -z "$origin_host" ] || ! is_port "$origin_port"; then
 fi
 host_ok "$origin_host" ||
   unknown "OUTSIDE_ORIGIN host $origin_host is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
+! v4_in_v6 "$origin_host" ||
+  unknown "OUTSIDE_ORIGIN host $origin_host is an IPv6 form of an IPv4 address; write the IPv4 address itself"
 case $origin in http://*)
   [ "$origin_host" = 127.0.0.1 ] ||
     unknown "OUTSIDE_ORIGIN may be http only at 127.0.0.1, for this script's own tests, not $origin"
@@ -262,8 +359,15 @@ while [ -n "$rest" ]; do
   number=$((number + 1))
   row=${line#L}
   [ "$number" -gt 1 ] || row=${row#"$bom"}
-  row=${row%%#*}
+  # The trailing CR of a CRLF line goes first. A CR left inside the row means the file's lines end
+  # in CR alone, which `read` takes as one line, so an inline comment would cut away every later
+  # target: such a file is refused before any comment is cut.
   row=${row%$'\r'}
+  case $row in *$'\r'*)
+    unknown "line $number of $targets holds a carriage return inside it: write one target per line, with LF or CRLF line endings"
+    ;;
+  esac
+  row=${row%%#*}
   set -f
   # shellcheck disable=SC2086 # split on purpose: the fields of one target line
   set -- $row
@@ -278,6 +382,8 @@ while [ -n "$rest" ]; do
     unknown "target $1: $2 is neither a host name nor an address"
     ;;
   esac
+  ! v4_in_v6 "$2" ||
+    unknown "target $1: $2 is an IPv6 form of an IPv4 address; write the IPv4 address itself"
   host_ok "$2" ||
     unknown "target $1: $2 is not an IPv4 address written as four numbers of 0 to 255 with no leading zero"
   is_port "$3" || unknown "target $1: $3 is not a TCP port of 1 to 65535"
@@ -290,6 +396,7 @@ done
 [ "$count" -gt 0 ] || unknown "$targets lists no target: nothing was tried, so nothing is proved"
 
 command -v curl >/dev/null 2>&1 || unknown "curl missing or too old: no curl on PATH; install curl 7.40 or later"
+command -v sleep >/dev/null 2>&1 || unknown "sleep missing: no sleep on PATH, which spaces the rounds of probes"
 version=$(curl -q --version </dev/null 2>/dev/null)
 set -f
 # shellcheck disable=SC2086 # split on purpose: `curl <version> (<platform>) ...`
@@ -353,22 +460,30 @@ probe() {
   printf '%s %s %s %s\n' "$1" "$2" "$code" "$times"
 }
 
-# Every row probed three times, all at once: a probe that reaches a holding listener takes its
-# whole --max-time, and one after another would take that per probe. Each job prints its one short
-# line in one write, so the lines do not mix, and a probe whose line never came reads UNKNOWN.
+# Three rounds, 6 s apart, every row probed at once within a round: a probe that reaches a holding
+# listener takes its whole --max-time, and one after another would take that per probe. Each job
+# prints its one short line in one write, so the lines do not mix, and a probe whose line never
+# came reads UNKNOWN. A sleep that fails would start the next round early, so it says so.
 results=$(
-  index=0
-  while [ "$index" -le "$count" ]; do
-    probe "$index" 0 &
-    probe "$index" 1 &
-    probe "$index" 2 &
-    index=$((index + 1))
+  round=0
+  while [ "$round" -lt 3 ]; do
+    if [ "$round" -gt 0 ]; then
+      sleep 6 || echo 'rounds not spread'
+    fi
+    index=0
+    while [ "$index" -le "$count" ]; do
+      probe "$index" "$round" &
+      index=$((index + 1))
+    done
+    round=$((round + 1))
   done
   wait
 )
+spread=yes
 rest=$results
 while [ -n "$rest" ]; do
   pop
+  [ "$line" != 'rounds not spread' ] || spread=no
   set -f
   # shellcheck disable=SC2086 # split on purpose: `INDEX ATTEMPT EXIT NAMELOOKUP CONNECT`
   set -- $line
@@ -380,42 +495,13 @@ while [ -n "$rest" ]; do
   connects[key]=${5-}
 done
 
-# report LABEL INDEX: judges row INDEX from its three probes, prints its line and sets `class`.
+# report LABEL INDEX: judges row INDEX from its three rounds, prints its line and sets `class`.
 report() {
-  local attempt=0 key each decisive=0 probes=''
-  class=''
-  while [ "$attempt" -lt 3 ]; do
-    key=$(($2 * 3 + attempt))
-    each=$(classify "${codes[key]-}" "${lookups[key]-}" "${connects[key]-}")
-    probes="$probes, ${each%% *}"
-    if [ "$each" = REACHED ]; then
-      [ "$class" = REACHED ] || {
-        class=REACHED
-        decisive=$key
-      }
-    elif [ "$each" != unreachable ]; then
-      case $class in '' | unreachable)
-        class=$each
-        decisive=$key
-        ;;
-      esac
-    elif [ -z "$class" ]; then
-      class=$each
-      decisive=$key
-    fi
-    attempt=$((attempt + 1))
-  done
-  case $class in
-    UNKNOWN*)
-      printf '%s %s %s; probes: %s\n' "$1" "$(address "${hosts[$2]}" "${ports[$2]}")" "$class" \
-        "${probes#, }"
-      ;;
-    *)
-      printf '%s %s %s; curl exit %s, time_namelookup %s, time_connect %s; probes: %s\n' "$1" \
-        "$(address "${hosts[$2]}" "${ports[$2]}")" "$class" "${codes[decisive]}" \
-        "${lookups[decisive]}" "${connects[decisive]}" "${probes#, }"
-      ;;
-  esac
+  local key=$(($2 * 3))
+  judge "${codes[key]-}" "${lookups[key]-}" "${connects[key]-}" \
+    "${codes[key + 1]-}" "${lookups[key + 1]-}" "${connects[key + 1]-}" \
+    "${codes[key + 2]-}" "${lookups[key + 2]-}" "${connects[key + 2]-}"
+  printf '%s %s %s\n' "$1" "$(address "${hosts[$2]}" "${ports[$2]}")" "$detail"
 }
 
 report 'control origin' 0
@@ -439,6 +525,7 @@ done
   printf 'FAIL: reached%s\n' "$reached"
   exit 1
 }
+[ "$spread" = yes ] || unknown "sleep failed between the rounds of probes, so they were not 6 s apart"
 [ "$control" = REACHED ] || unknown "the probe could not connect to the origin itself"
 [ -z "$unclear" ] || unknown "${unclear# } unresolved or unknown"
 printf 'PASS: every target is unreachable from this device, and %s answered as Dispatch\n' "$origin"

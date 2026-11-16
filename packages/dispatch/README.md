@@ -618,22 +618,29 @@ without printing it, unsetting both so no process the script starts inherits it.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
 (dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
-were given to Dispatch, to prove that path reaches Dispatch and nothing else of ours. It is handed
-to that person as the one file with its target list, so it sources nothing and needs only bash
-(3.2, as macOS ships it, or later) and curl 7.40 or later; curl's own `--connect-timeout` and
-`--max-time` bound every probe, so it needs no GNU `timeout`. Started by `sh` or zsh it prints
-`UNKNOWN: run this with bash` and stops. Its inputs:
+were given to Dispatch, to measure which of our listed addresses that device reaches. What it
+measures is TCP connects from that device to the listed addresses and ports, nothing more: it
+cannot see a service the origin itself forwards by path or by Host on its own host and port, and
+it must run on the device itself, not in a VM, a container or a remote shell, whose network is
+another one. It is handed to that person as the one file with its target list, so it sources
+nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
+three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+probe, so it needs no GNU `timeout`. A run takes about 17 seconds. Started by a shell that is not
+bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
+`sh` of macOS is bash, and runs it. Its inputs:
 
 - `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets;
 - `OUTSIDE_PATH_TARGETS`, a file of `name host port` lines, one per internal target (the hub, the
-  listeners, the secrets broker, the other Dispatch origin). `#` starts a comment. `host` is a name
-  or a literal address; an IPv4 address must be four numbers of 0 to 255 with no leading zero
-  (curl reads `172.020.000.021` in octal, another host), and a `svc:` selector, which resolves
-  nowhere, is refused. **The list must hold each of our services' addresses on the path as lines
-  of their own, not names alone**: a name line proves only where that name resolves on the
-  person's device, so a name that resolves elsewhere there says nothing of the address behind
-  it. A list of names alone prints a warning. A list holding a NUL byte is refused, since bash
-  would read another line than the one written.
+  listeners, the secrets broker, the other Dispatch origin), ending in LF or CRLF. `#` starts a
+  comment. `host` is a name or a literal address; an IPv4 address must be four numbers of 0 to
+  255 with no leading zero (curl reads `172.020.000.021` in octal, another host), an IPv6 address
+  must hold no IPv4 one (`::ffff:10.0.0.1` is refused: write `10.0.0.1`), and a `svc:` selector,
+  which resolves nowhere, is refused. **The list must hold each of our services' addresses on the
+  path as lines of their own, not names alone**: a name line proves only where that name resolves
+  on the person's device, so a name that resolves elsewhere there says nothing of the address
+  behind it. A list of names alone prints a warning. A list holding a NUL byte, or a line holding
+  a carriage return inside it (a file whose lines end in CR alone), is refused, since bash would
+  read another line than the one written.
 
 ```bash
 OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
@@ -642,9 +649,12 @@ OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt
 
 It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
 Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
-three times, all at once. Its curls ignore the device's `~/.curlrc` and any proxy, so the run
-measures what that device itself reaches. Each probe is judged by whether TCP connected, not by
-curl's exit code alone, since our services accept a connection and then wait for the client:
+in three rounds started 6 s apart, every host of a round at once. The rounds are 6 s apart because
+a tunnel whose first handshake packet was lost stays down until WireGuard sends it again, after
+its `RekeyTimeout` of 5 s plus up to 334 ms; probes started together would all fall inside that.
+Its curls ignore the device's `~/.curlrc` and any proxy, so the run measures what that device
+itself reaches. Each probe is judged by whether TCP connected, not by curl's exit code alone,
+since our services accept a connection and then wait for the client:
 
 | curl's answer | Class |
 |---|---|
@@ -656,15 +666,23 @@ curl's exit code alone, since our services accept a connection and then wait for
 | exit 6, the name does not resolve | `unresolved` |
 | anything else | `UNKNOWN` |
 
-A target is `REACHED` when any of its three probes connected and `unreachable` only when all three
-were, so a network that loses packets does not hide one. `PASS` (exit 0) needs Dispatch's
+A target is `REACHED` when any of its three rounds connected and `unreachable` only when all three
+were, so a network that loses some packets does not hide one; heavy loss still can. Measured with
+a reachable listener whose incoming packets were dropped at random, 120 runs per row, bash 3.2 and
+5.2: at 50% loss no run printed `PASS` (9 to 11% of rounds missed); at 70% loss 5 of 120 runs
+under bash 3.2 and 4 of 120 under bash 5.2 printed `PASS` (about 35% of rounds missed, so all
+three missed in about one run in 23). `PASS` (exit 0) needs Dispatch's
 answers, a connect to the origin itself and every target unreachable; `FAIL` (exit 1) names each
 target reached, or an origin that served a read with no credential; every run that proved
-nothing is `UNKNOWN` (exit 2), never a pass. The script's own header has every rule. A path that
-puts a sign-in of its own in front of Dispatch, such as an identity-aware proxy, answers a request
-with no credential with that sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
-`cd packages/dispatch && bun test --timeout 60000 e2e/__tests__/outside-path-reach.test.ts`
-drives it against real listeners.
+nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
+`OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"`, classifies one recorded probe, and three
+of them separated by `;` are judged as one target's rounds in order; that mode exits 4, never
+`PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
+of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
+sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
+`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach.test.ts` drives it against real
+listeners; each row carries its own timeout. The row that runs it under zsh skips where zsh is
+missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
 ## Acceptance run against the deployed image
 
