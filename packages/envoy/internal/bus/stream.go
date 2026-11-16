@@ -544,14 +544,20 @@ const (
 // a decision on that "" would be an older server's answer applied to whichever server the ensure
 // then writes to: on nats-server 2.15 a stream with no consumer cap, capped at 1000, would be left
 // as it is. A connection that reports no version before ctx is done or the wait passes answers the
-// error, and the caller decides nothing (TestAnEnsureAcrossAReconnectDecidesTheCapOnTheServerItReaches).
+// error, and the caller decides nothing; a ctx already done looks once
+// (TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion).
 func connectedDefaultsAnUnsetCap(ctx context.Context, conn *nats.Conn) (bool, error) {
-	version, err := natsversion.ConnectedVersion(ctx, conn)
+	version, err := connectedVersion(ctx, conn)
 	if err != nil {
 		return false, err
 	}
 	return serverDefaultsAnUnsetCap(version), nil
 }
+
+// connectedVersion is the read connectedDefaultsAnUnsetCap makes, natsversion.ConnectedVersion; a
+// test replaces it to put a second outage exactly between a reconnect and that read
+// (TestAFlapRunsTheSecondDisconnectHookAtOnce).
+var connectedVersion = natsversion.ConnectedVersion
 
 // serverDefaultsAnUnsetCap reports whether serverVersion is the version of a server that applies
 // its own default consumer cap to a stream that sets none: nats-server
