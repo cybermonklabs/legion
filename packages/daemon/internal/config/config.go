@@ -1168,16 +1168,17 @@ func checkProviderKeyFiles(file fileConfig) error {
 // checkSlackChannels refuses a project's slack_channels unless the daemon launches the
 // controller (`controller: daemon`) enrolled with the secrets broker
 // (`runtime.kubernetes.agent_secrets`): the controller answers a mention with slack_post, whose
-// bot token, LEGION_SLACK_BOT_TOKEN, is the Legion daemon service's secret, which the broker grants
-// only to that service's own pods. Anywhere else the controller would hear mentions it could never
-// answer. Projects are checked in key order, so the refusal names the same one every load.
+// bot token, LEGION_SLACK_BOT_TOKEN, is a shared agent secret the broker grants a session with a
+// broker identity, which that enrollment gives the controller. Anywhere else the controller would
+// hear mentions it could never answer. Projects are checked in key order, so the refusal names the
+// same one every load.
 func checkSlackChannels(cfg Config) error {
 	if cfg.ControllerLaunch == ControllerLaunchDaemon && cfg.Runtime.Kubernetes != nil && cfg.Runtime.Kubernetes.AgentSecrets != nil {
 		return nil
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		if len(cfg.Projects[key].SlackChannels) > 0 {
-			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants the Slack bot token (LEGION_SLACK_BOT_TOKEN) only to the Legion daemon service's own pods", key)
+			return fmt.Errorf("projects.%s.slack_channels needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)", key)
 		}
 	}
 	return nil
