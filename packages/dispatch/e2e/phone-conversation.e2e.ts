@@ -1406,3 +1406,55 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     await alice.close();
   }
 });
+
+/** Every text field on the page whose value holds `text`, visible or not: a composer under the
+ *  thread's dialog is one the person reaches with Back. */
+function fieldsHolding(page: Page, text: string): Promise<string[]> {
+  return page.evaluate((wanted) => {
+    const found: string[] = [];
+    for (const node of document.querySelectorAll("textarea, input")) {
+      if (
+        (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) &&
+        node.value.includes(wanted)
+      ) {
+        found.push(node.getAttribute("aria-label") ?? node.id);
+      }
+    }
+    return found;
+  }, text);
+}
+
+// Cancel reply is the person's own move, so a reply Dispatch refused goes with it: on a desktop
+// the docked composer keeps the text as a new comment (ConversationTab.test.tsx). On a phone the
+// thread's composer ends with Cancel reply, and the text was gone from every field of the page,
+// through Back, Reply again and a reload, on this branch and on main alike (INFRA-1503's tester,
+// 2026-11-16, in the iphone project).
+test("on a phone, a thread reply Dispatch refused keeps its typed text through Cancel reply @phone", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Phone cancel after a refusal" });
+  const earlier = await createComment(issue.key, { body: "Earlier comment" });
+  const typed = "Refused thread reply, typed by hand";
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(phone);
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await commentTurn(page, earlier.id).getByRole("button", { exact: true, name: "Reply" }).click();
+    const form = threadView(page).getByRole("form", { name: "Comment composer" });
+    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    await form.getByLabel("Comment").fill(typed);
+    await form.getByRole("button", { exact: true, name: "Send" }).click();
+    refuse();
+    await expect(page.getByText(WRITE_REFUSED.error).first()).toBeVisible();
+    // The probe sees the text where it is: in the thread's own field, before Cancel reply.
+    expect(await fieldsHolding(page, typed)).toHaveLength(1);
+
+    await form.getByRole("button", { name: "Cancel reply" }).click();
+    await expect.poll(() => fieldsHolding(page, typed).then((found) => found.length)).toBe(1);
+  } finally {
+    await alice.close();
+  }
+});
