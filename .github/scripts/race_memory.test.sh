@@ -230,6 +230,56 @@ check "its last line gives the peak and the limit" \
   "$(contains "${out##*$'\n'}" '^race memory: the peak was [0-9][0-9]* kB (Vm.*), the limit 8388608 kB$')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
+echo "case: the command's own process, named in bytes that are not UTF-8, is named in a sample"
+# b"\xff\xfeA3", set by the command on itself, so the name is the one its tree's sample names
+# rather than one beside the tree. The command waits on its stdin, which this case closes once a
+# sample has named it. The walk whose line follows the command's "renamed" may have begun before
+# the rename, but the walk after it began after, so two samples past "renamed" with no name in
+# them is a failure rather than a wait without end.
+renamed='
+import sys
+with open("/proc/self/comm", "wb") as comm:
+    comm.write(b"\xff\xfeA3")
+print("renamed", flush=True)
+sys.stdin.read()
+print("the renamed command spoke", flush=True)
+'
+coproc RENAMED { exec env -u RACE_MEM_LIMIT_KB "$sampler" python3 -c "$renamed" 2>&1; }
+run_pid=$RENAMED_PID
+to_renamed=${RENAMED[1]}
+exec {from_run}<&"${RENAMED[0]}"
+out=""
+stage=unnamed
+samples_after=0
+while :; do
+  read_status=0
+  IFS= read -r -t 60 line <&"$from_run" || read_status=$?
+  [ "$read_status" -eq 0 ] || break
+  out+=$line$'\n'
+  if [ "$stage" = unnamed ] && [ "$line" = renamed ]; then
+    stage=renamed
+  elif [ "$stage" = renamed ] && [[ $line == 'race memory: at '* ]]; then
+    samples_after=$((samples_after + 1))
+    if [[ $line == *$' in \xef\xbf\xbd\xef\xbf\xbdA3'[,\;]* ]]; then
+      stage=named
+      exec {to_renamed}>&-
+    elif [ "$samples_after" -ge 2 ]; then
+      exec {to_renamed}>&-
+      stage=unseen
+    fi
+  fi
+done
+if [ "$stage" = unnamed ] || [ "$stage" = renamed ]; then
+  exec {to_renamed}>&-
+fi
+exec {from_run}<&-
+status=0
+wait "$run_pid" || status=$?
+check "a sample names the command with U+FFFD for each byte that is not UTF-8" "$(is "$stage" named)"
+check "exits 0" "$(is "$status" 0)"
+check "passes the command's own output through" "$(contains "$out" '^the renamed command spoke$')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
 echo "case: a byte of the command's stdout that is not UTF-8 is read as U+FFFD"
 run_sampler '' printf 'before\n\377\nafter\n'
 check "exits 0" "$(is "$status" 0)"
