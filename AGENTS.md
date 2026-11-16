@@ -25,6 +25,10 @@ A measurement outranks any line here.
 - **Agents are engineers.**
   They get the privileges their work needs.
 
+- **A new or changed requirement, or a weaker check, waits for a person's approval, and no other fix needs one.**
+  Humans decide what, and agents decide how.
+  Record the exact text approved and each change after it, and start gated work only while its approval stands.
+
 - **Start with the standard answer, then make it agent-native.**
 
 - **Status quo is not an excuse.**
@@ -38,7 +42,8 @@ A measurement outranks any line here.
 
 - **Instrument and log everything.**
 
-- **A refusal names its reason, and nothing drops in silence.**
+- **Keep each bound you state, at the load it names.**
+  At the bound, refuse with the reason and drop nothing in silence.
   A silent drop looks like success, so nobody looks for it.
 
 - **Self-organization over coordination.**
@@ -68,7 +73,10 @@ A measurement outranks any line here.
 * **There are no rules, there are only reasons.**
   Explain what is not obvious, but do not turn that into law.
 
-Evidence for each line, with the issues behind it and the cases that cut against it: dispatch://INFRA-1225/artifact/principles-evidence-md.
+Evidence for each earlier line, with the issues behind it and the cases that cut against it: dispatch://INFRA-1225/artifact/principles-evidence-md.
+Four lines came later, at the owner's request (dispatch://INFRA-3757/ask/a09d1002-5970-4c1e-a2db-bad1da6ade4b): one source of truth, kept bounds, approvals and contract changes.
+The evidence of each is the `Sources` list of its statement in version 7 of dispatch://INFRA-3757/spec:
+`copies-of-a-fact-defer-to-its-owner`, `stated-bounds-are-kept`, `approval-binds-the-spec-and-work` and `services-and-clients-share-declared-contracts`.
 
 ## Architecture
 
