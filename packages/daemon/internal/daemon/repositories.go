@@ -2073,13 +2073,25 @@ func (w *workflowRuntime) unreadReasons() []string {
 // GitHub's reads for it went unanswered (the marker). A repository a pass has stopped waiting on
 // since release_children read it unread (settleRecovery) is no longer either, and a wait held on
 // it would be read by no recovery and told to no architect, so it is refused and the route falls
-// back to the child-release retry. The marker is read under recoveringMu, the lock settleRecovery
-// drops it under, so the two never interleave.
+// back to the child-release retry.
+//
+// Both readings, the mapping's and the marker, are made under recoveringMu, the lock a pass takes
+// its set and its waits under (recoverRepositories) and settleRecovery drops the marker under, so
+// the answer and the filing are one step against them. A mapped repository is published served
+// before a read of the mapping marks it to recover (refreshMapping, markRecovered), and the pass
+// that recovers it runs after: a wait whose lookup ran before that publication is filed before the
+// pass takes its set, and told by it, and one whose lookup runs after is refused. With the lookup
+// made outside the lock, a call descheduled between the two read the repository unread, then
+// filed the wait after the pass had taken its set, or after it had committed: no pass held the
+// repository to recover any longer, so the child was told to no architect and recorded by
+// nothing until the next boot. Nesting the mapping's lock (repositories.mu) inside this one is
+// sound: nothing holding the mapping's lock ever takes recoveringMu, since the mapping calls out to
+// nothing.
 func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) bool {
-	answer := w.repositories.lookup(repo)
-	repo = strings.ToLower(repo)
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
+	answer := w.repositories.lookup(repo)
+	repo = strings.ToLower(repo)
 	switch answer.source {
 	case fromMapping:
 		if !answer.unread {

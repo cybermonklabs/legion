@@ -1064,6 +1064,51 @@ func TestAReleaseWaitIsHeldOnlyWhileItsRepositoryIsUnread(t *testing.T) {
 	}
 }
 
+// A release wait for a mapped repository that is in flight while a read of the mapping publishes
+// the repository served, and its recovery's pass takes its set, is refused and holds nothing,
+// while a wait filed before the publication is in that pass's set and told by it. So every wait the
+// daemon holds is one a pass reads, and every one it refuses goes to the route's child-release
+// retry (TestWaveReleaseRetriesAChildWhoseRepositoryTheDaemonStoppedHoldingUnread, in the api
+// package, shows that retry records the child). Before, the call read the mapping before taking
+// the lock: descheduled between the two, it read the repository unread, then filed the wait after
+// the pass had taken its set, or committed, and no pass ever read it or told its architect.
+//
+// The call is held at recoveringMu by holding it here, as the pass's own lock is held while it
+// takes its set. The pause only lets the call reach that lock: with the mapping read under it,
+// there is nothing the call does before it, so the answer does not depend on the pause.
+func TestAReleaseWaitInFlightAcrossAPublicationIsRefusedRatherThanStranded(t *testing.T) {
+	const repo, tree, filed, inFlight = "zeta/tools", "LEGION-1", "LEGION-2", "LEGION-3"
+	w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger()}
+	w.repositories.set(nil, []refusedRepository{{Repo: repo, Reason: "the implement App's installation on zeta/tools could not be read: GitHub answered 502; Legion reads it again", readErr: errors.New("GitHub answered 502")}})
+	if !w.awaitRecovery(repo, tree, filed, tree) {
+		t.Fatalf("the wait for %s was refused while zeta/tools is left out for a read GitHub did not answer", filed)
+	}
+
+	w.recoveringMu.Lock()
+	answered := make(chan bool, 1)
+	go func() { answered <- w.awaitRecovery(repo, tree, inFlight, tree) }()
+	time.Sleep(100 * time.Millisecond)
+	// While the call waits: a read of the mapping publishes zeta/tools served and marks it to
+	// recover (markRecovered, which takes this lock, so it is written here), and the recovery's
+	// pass takes its set and its waits under the same lock (recoverRepositories).
+	w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse(repo)}}, nil)
+	w.recovering = map[string]bool{repo: true}
+	taken := maps.Clone(w.releaseWaits[repo])
+	w.recoveringMu.Unlock()
+	held := <-answered
+
+	if _, told := taken[filed]; !told {
+		t.Fatalf("the pass took the waits %v, want %s, filed before the publication, among them to tell", taken, filed)
+	}
+	w.recoveringMu.Lock()
+	_, stranded := w.releaseWaits[repo][inFlight]
+	w.recoveringMu.Unlock()
+	if held || stranded {
+		t.Fatalf("the wait for %s in flight across the publication was held (%v, holding it: %v) though the pass had taken its set %v: no pass will read it, so it must be refused, for the route to retry the child",
+			inFlight, held, stranded, taken)
+	}
+}
+
 // An issue the workflow does not record, such as an operator's claim, works the project's default
 // repository, as Dispatch resolves an issue that names none, at its default branch as GitHub names
 // it: a pod provisions its workspace from it, and the claim's commit identity is minted for its
