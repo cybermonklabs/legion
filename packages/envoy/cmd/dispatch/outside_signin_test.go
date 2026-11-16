@@ -113,15 +113,15 @@ func (s *outsideSignIn) inTx(t *testing.T, write func(tx pgx.Tx) error) {
 	}
 }
 
-// signInAs runs a whole sign-in through handler as a Google account with no Workspace (no hd):
-// the account a person outside the domain signs in with.
-func (s *outsideSignIn) signInAs(t *testing.T, handler http.Handler, email string) *http.Response {
+// signInAs runs a whole sign-in through handler as a Google account with no Workspace (no hd), the
+// account a person outside the domain signs in with, and returns the callback's answer.
+func (s *outsideSignIn) signInAs(t *testing.T, handler http.Handler, email string) *httptest.ResponseRecorder {
 	t.Helper()
 	return codeFlowSignIn(t, handler, s.pool, map[string]any{
 		"sub":            "google-" + email,
 		"email":          email,
 		"email_verified": true,
-	}).Result()
+	})
 }
 
 // memberKind is the member kind people records for email, or "" with no row.
@@ -138,41 +138,15 @@ func (s *outsideSignIn) memberKind(t *testing.T, email string) string {
 	return kind
 }
 
-// signedInResponse reports whether response is the callback's signed-in redirect.
-func signedInResponse(response *http.Response) bool {
-	if response.StatusCode != http.StatusFound {
-		return false
-	}
-	for _, cookie := range response.Cookies() {
-		if cookie.Name == "dsession" && cookie.Value != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// whoamiWith answers GET /auth/whoami from handler carrying the session cookie response set.
-func whoamiWith(handler http.Handler, response *http.Response) (int, string) {
-	request, _ := http.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
-	for _, cookie := range response.Cookies() {
-		if cookie.Name == "dsession" {
-			request.AddCookie(cookie)
-		}
-	}
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	return recorder.Code, recorder.Body.String()
-}
-
-// requestWith answers method path from handler carrying the session cookie response set, as the
-// dashboard's own script sends it, from the server's origin; a cookie the response deleted is not
-// sent, as a browser sends none.
-func requestWith(handler http.Handler, method, path string, response *http.Response) *httptest.ResponseRecorder {
+// requestWith answers method path from handler carrying the session cookie signIn set, as the
+// dashboard's own script sends it, from the server's origin; a cookie signIn deleted is not sent,
+// as a browser sends none.
+func requestWith(handler http.Handler, method, path string, signIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, "http://dispatch.test"+path, nil)
 	if method != http.MethodGet {
 		request.Header.Set("Origin", "http://dispatch.test")
 	}
-	for _, cookie := range response.Cookies() {
+	for _, cookie := range signIn.Result().Cookies() {
 		if cookie.Name == "dsession" && cookie.Value != "" && cookie.MaxAge >= 0 {
 			request.AddCookie(cookie)
 		}
@@ -219,15 +193,15 @@ func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.Respon
 func TestOutsideSignInAdmitsAListedAccountAsARestrictedMember(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, "Outsider@Other.example")
-	if !signedInResponse(response) {
-		t.Fatalf("the callback for %s answered %d, want a signed-in redirect", outsiderEmail, response.StatusCode)
+	if response.Code != http.StatusFound || !sessionCookieSet(response) {
+		t.Fatalf("the callback for %s answered %d, want a signed-in redirect", outsiderEmail, response.Code)
 	}
 	if kind := s.memberKind(t, outsiderEmail); kind != string(model.MemberRestricted) {
 		t.Fatalf("people.member_kind of %s = %q, want restricted", outsiderEmail, kind)
 	}
-	code, body := whoamiWith(s.handler, response)
-	if code != http.StatusOK || !strings.Contains(body, `"login":"`+outsiderEmail+`"`) || !strings.Contains(body, `"member_kind":"restricted"`) {
-		t.Fatalf("whoami answered %d %s, want %s as a restricted member", code, body, outsiderEmail)
+	whoami := requestWith(s.handler, http.MethodGet, "/auth/whoami", response)
+	if body := whoami.Body.String(); whoami.Code != http.StatusOK || !strings.Contains(body, `"login":"`+outsiderEmail+`"`) || !strings.Contains(body, `"member_kind":"restricted"`) {
+		t.Fatalf("whoami answered %d %s, want %s as a restricted member", whoami.Code, body, outsiderEmail)
 	}
 }
 
@@ -251,8 +225,8 @@ func TestOutsideSignInRefusesAnUnlistedAccountWithThePage(t *testing.T) {
 func TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, outsiderEmail)
-	if !signedInResponse(response) {
-		t.Fatalf("the callback answered %d, want a signed-in redirect", response.StatusCode)
+	if response.Code != http.StatusFound || !sessionCookieSet(response) {
+		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
 	s.unlist(t, "PRIV", outsiderEmail)
 	ageConfirmation(t, s.people, outsiderEmail)
@@ -274,8 +248,8 @@ func TestOutsideSignInEndsAtTheNextHourlyCheckOnceNoListNamesIt(t *testing.T) {
 func TestOutsideSignInSaysWhyWhicheverRequestEndedIt(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, outsiderEmail)
-	if !signedInResponse(response) {
-		t.Fatalf("the callback answered %d, want a signed-in redirect", response.StatusCode)
+	if response.Code != http.StatusFound || !sessionCookieSet(response) {
+		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
 	s.unlist(t, "PRIV", outsiderEmail)
 	ageConfirmation(t, s.people, outsiderEmail)
@@ -294,14 +268,14 @@ func TestOutsideSignInSaysWhyWhicheverRequestEndedIt(t *testing.T) {
 func TestOutsideSignInSignOutIsAPlainNoIdentity(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, outsiderEmail)
-	if !signedInResponse(response) {
-		t.Fatalf("the callback answered %d, want a signed-in redirect", response.StatusCode)
+	if response.Code != http.StatusFound || !sessionCookieSet(response) {
+		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
 	logout := requestWith(s.handler, http.MethodPost, "/auth/logout", response)
 	if logout.Code != http.StatusOK {
 		t.Fatalf("POST /auth/logout answered %d %s, want 200", logout.Code, logout.Body.String())
 	}
-	requirePlainNoIdentity(t, "whoami from the browser that signed out", requestWith(s.handler, http.MethodGet, "/auth/whoami", logout.Result()))
+	requirePlainNoIdentity(t, "whoami from the browser that signed out", requestWith(s.handler, http.MethodGet, "/auth/whoami", logout))
 	requirePlainNoIdentity(t, "whoami from another browser holding the ended session", requestWith(s.handler, http.MethodGet, "/auth/whoami", response))
 }
 
@@ -316,9 +290,9 @@ func TestOutsideSignInNeverSetAnswersAnEndedDomainMemberAsBefore(t *testing.T) {
 	}
 	s.pool.FailToken(http.StatusBadRequest, "invalid_grant")
 	ageConfirmation(t, s.people, privOwner)
-	requirePlainNoIdentity(t, "the whoami that ran the hourly check", requestWith(s.handler, http.MethodGet, "/auth/whoami", signedIn.Result()))
-	requirePlainNoIdentity(t, "the whoami after it", requestWith(s.handler, http.MethodGet, "/auth/whoami", signedIn.Result()))
-	requirePlainNoIdentity(t, "GET /api/v1/projects after it", requestWith(s.handler, http.MethodGet, "/api/v1/projects", signedIn.Result()))
+	requirePlainNoIdentity(t, "the whoami that ran the hourly check", requestWith(s.handler, http.MethodGet, "/auth/whoami", signedIn))
+	requirePlainNoIdentity(t, "the whoami after it", requestWith(s.handler, http.MethodGet, "/auth/whoami", signedIn))
+	requirePlainNoIdentity(t, "GET /api/v1/projects after it", requestWith(s.handler, http.MethodGet, "/api/v1/projects", signedIn))
 	if membership, _, err := s.people.Membership(context.Background(), privOwner); err != nil || membership.RefreshToken != "" {
 		t.Fatalf("%s's membership %+v (%v), want the refresh token the check ended gone", privOwner, membership, err)
 	}
@@ -338,8 +312,8 @@ func TestOutsideSignInIsRefusedWithTheSettingOff(t *testing.T) {
 func TestOutsideSignInTurnedOffEndsARestrictedSessionAtTheHourlyCheck(t *testing.T) {
 	s := newOutsideSignIn(t, nil)
 	response := s.signInAs(t, s.handler, outsiderEmail)
-	if !signedInResponse(response) {
-		t.Fatalf("the callback answered %d, want a signed-in redirect", response.StatusCode)
+	if response.Code != http.StatusFound || !sessionCookieSet(response) {
+		t.Fatalf("the callback answered %d, want a signed-in redirect", response.Code)
 	}
 	off := s.boot
 	off.SignInOutside = false
