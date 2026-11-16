@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  With `runtime.kubernetes.agent_secrets.exchange_audience` set, the daemon registers each role's
+  session for its pod at the secrets broker (`POST /v1/oauth/exchange/pod-sessions`, under the
+  daemon's own ServiceAccount token): an Oh My Pi role's when its agent registers, a Claude Code
+  role's at its shim's hello, and a relaunched role's for the session it resumes. It writes each
+  live registration again every 6 hours and retries a failed write at 15 seconds doubling to 5
+  minutes, `403 POD_REGISTRAR_NOT_LISTED` included. Unset, no registration is made.

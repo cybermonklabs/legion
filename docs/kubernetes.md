@@ -6193,6 +6193,15 @@ each issue's pod (every role of it alike) and the image probe's.
   Unset, no pod carries the token and no role is told either variable, so a deployment that never sets it runs exactly as before the key existed.
   The token is a volume of the pod, fixed when the pod is created, so turning the key on, or moving its audience, reads as drift of every enrolled issue pod (`agent-secrets-exchange`), which its update round replaces; until then a role started in such a pod is told no identity, so its sessions keep the credential they had rather than fail every trade on a file that is not there.
   Turning the key off replaces no pod: the next generation of each role is told no identity, though its pod still mounts the token until it is replaced.
+  With the key set, the daemon also registers each role's session for the pod it runs in, which the broker's exchange requires of a pod whose account's exchange entry fixes no session: it posts the pod's own token for the broker's audience (the one the shim's hello carries, or the one the shim reads again) and the session name to the broker's `POST /v1/oauth/exchange/pod-sessions`, under its own ServiceAccount token as the bearer, the credential that route's class checks.
+  An Oh My Pi role's session is registered when its agent registers, before the daemon answers it;
+  a Claude Code role's, whose id the daemon chose for the launch, at its shim's hello, before its agent registers;
+  and a role relaunched into a new pod is registered for the session it resumes at that pod's first hello.
+  The broker honours a registration for 24 hours past its last write, and every renewal of a session's broker token is a fresh exchange that checks it, so the daemon writes each live role's registration again every 6 hours, and stops when the role's process ends.
+  A write that fails, or that the broker refuses for a reason a retry can change, is logged naming the pod and the session and written again at 15 seconds, doubling to 5 minutes;
+  that includes `403 POD_REGISTRAR_NOT_LISTED`, which a broker answers until the deployment lists the daemon's account as a registrar for its pods' account.
+  Any other refusal is logged and not written again for that process.
+  Unset, the daemon makes no registration call.
 
 - **`provider_keys`** (top-level) maps each variable Oh My Pi reads to a key of the providers Secret, `legion-<project>-providers`, which the operator creates.
   Every pod mounts the keys `provider_keys` names and no other key of the Secret, each at a file named for its variable, and the shim exports each into Oh My Pi's environment, never its own.
