@@ -176,7 +176,7 @@ func variantOf(list, name string, index int, title string, topics []string) byte
 		return '?'
 	}
 	found := byte('?')
-	prefix := "notifications.refill." + name + ".v"
+	prefix := "notifications.team.refill." + name + ".v"
 	for _, topic := range topics {
 		rest, ok := strings.CutPrefix(topic, prefix)
 		if !ok {
