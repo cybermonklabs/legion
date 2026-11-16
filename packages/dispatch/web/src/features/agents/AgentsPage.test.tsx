@@ -1281,6 +1281,8 @@ test("a direct message refused on an Agents row is not sent to the issue the row
 
     await pickIssue(user, planner, "CORE-1");
     await waitFor(() => expect(field.value).toBe("@Planner Status please"));
+    // A submit of the form while its Send is held for another address, which user-event cannot
+    // press: the case shows that a submit sends nothing either.
     fireEvent.submit(composer);
     await act(settle);
     expect(page.createComment.mock.calls.map(([issue, input]) => [issue, input.body])).toEqual([]);

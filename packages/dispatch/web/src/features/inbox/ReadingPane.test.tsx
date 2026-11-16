@@ -1506,6 +1506,7 @@ test("the next thread's reply box shows no upload refused in the thread before i
     expect(pane.querySelector('[data-inbox-thread="comment-9"]')).not.toBeNull();
     expect(within(pane).queryByRole("alert")).toBeNull();
 
+    // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(within(pane).getByRole("textbox", { name: "Reply" }), {
       clipboardData: { files: [shot] },
     });

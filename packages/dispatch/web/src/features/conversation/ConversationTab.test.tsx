@@ -1619,6 +1619,8 @@ test("a reply the docked composer holds refused is not posted as a new comment a
 
     await user.click(within(composer).getByRole("button", { name: "Cancel reply" }));
     expect(within(composer).queryByText(/Comment A/)).not.toBeInTheDocument();
+    // A submit of the form while its Send is held for another address, which user-event cannot
+    // press: the case shows that a submit sends nothing either.
     fireEvent.submit(composer);
     await act(settle);
     expect(createComment.mock.calls.map(([, input]) => input)).toEqual([
