@@ -38,16 +38,20 @@
  * name, before its job is killed from outside.
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
- * The readings behind `short`, `listing` and `generation` are the largest cost lines on record
- * of runs of the whole lane, `bun test --parallel --timeout 60000 e2e/__tests__`, under nine busy
- * loops, three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16, all but the 78.4 s of
- * the first listing in a fresh checkout; the reading behind `twoStackBuild` was taken from cold,
- * on a pod with four cores.
+ * The readings behind `short`, `listing` and `generation` are the largest cost lines of the
+ * five-run whole-lane checks recorded on Dispatch issue INFRA-3082 at heads 32078f86 through
+ * a691dbe5, each run `bun test --parallel --timeout 60000 e2e/__tests__` under nine busy loops,
+ * three per CPU, on a pod of 3 CPUs, from 2026-11-15 to 2026-11-16. Three readings are older, and
+ * each names the run it came from: the driver's 3.59 s and the listing's 76.20 s and 78.4 s. A
+ * later run may read more: a bound holds while it stays at least three times the largest reading
+ * of its kind, and that is what a reader of a new run checks. The reading behind `twoStackBuild`
+ * was taken from cold, on a pod with four cores.
  *
  * - `short`, against 11.95 s: what the one `playwright test --help` of `playwright-argv.test.ts`
  *   cost. The other short commands, the two compare-recordings runs, the two `bun --eval`
- *   probes, and the harness and import children, read 7.06 s or less; so do the driver of
- *   `replace-blocks-guard.test.ts` and its psql and tail, at most 3.59 s, 0.803 s and 0.19 s.
+ *   probes, and the harness and import children, read 7.39 s or less; so do the driver of
+ *   `replace-blocks-guard.test.ts` and its psql and tail, at most 3.59 s (in the check at
+ *   dc68da15 on 2026-11-15), 0.803 s and 0.19 s.
  * - `listing`, against 113.61 s, one of four listings started at once, in a whole-lane run under
  *   nine busy loops, three per CPU, on a pod of 3 CPUs, on 2026-11-16; against 76.20 s, the
  *   largest of the 22 listings of two such runs on 2026-11-15; and against 78.4 s for the first
