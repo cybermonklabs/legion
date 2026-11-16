@@ -263,6 +263,30 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
 });
 
+// A thread box in the Inbox stands for its thread: its reply is the box's own address, which
+// nothing ends, so it draws no Cancel reply. Pressed, that control would do nothing and leave the
+// draft in the field (MentionComposer's `standing`).
+test("an Inbox thread box, comment or Agent, draws no Cancel reply", async () => {
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  spy("listComments", [comment("comment-1", "The retry budget is too small.")]);
+  renderCard(commentRow());
+  const thread = await screen.findByTestId("inbox-thread-comment");
+  await waitFor(() =>
+    expect(within(thread).queryAllByRole("form", { name: "Comment composer" }).length).toBe(1)
+  );
+  expect(within(thread).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+  cleanup();
+
+  spy("listAgents", [session]);
+  spy("listAgentMessages", [
+    { message: message("message-1", "Have a look at the build"), replies: [] } satisfies MessageRead,
+  ]);
+  renderCard(plannerAgentRow());
+  const agent = await screen.findByTestId("inbox-thread-agent");
+  await waitFor(() => expect(agent.querySelector("[data-inbox-agent-composer]")).not.toBeNull());
+  expect(within(agent).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+});
+
 /** A card for each of `threads`, as the Inbox lists them below 1280 px; the setter draws the list
  *  again with the threads it is handed, over the same client. */
 function renderCards(threads: readonly MyReplyRow[]): (threads: readonly MyReplyRow[]) => void {
