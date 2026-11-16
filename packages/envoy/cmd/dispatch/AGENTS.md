@@ -652,8 +652,10 @@ recorded by any process in `github_rate_limits` (then GitHub is not asked), is
 The `/api/v1` routes are one table, `api/routes_table.go` (`routes()`): `Register` mounts it and
 `GET /api/v1` (public) serves it as `{routes: [{method, path, auth, scopes, description}], docs}`
 sorted by path then method, `scopes` left out of a route that needs none. Add a route by adding a
-row — never a `mux.HandleFunc` line — and bump the pinned
-count in `api/routes_table_test.go`. `auth` is `public`, `any` (user or bearer) or
+row — never a `mux.HandleFunc` line — with, for a `GET` row, its entry in `readClasses`
+(`api/read_classes.go`), and bump the pinned count in `api/routes_table_test.go`; a pattern
+outside the table is mounted only through `readclass.Handle`, with its read classes. `auth` is
+`public`, `any` (user or bearer) or
 `bearer`; it describes the check the handler makes, the handler still enforces it. The OAuth
 scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
 which `routes()` stamps onto `apiRoute.OAuthScopes`: a positional row literal would make every
