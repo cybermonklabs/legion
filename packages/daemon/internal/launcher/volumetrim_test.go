@@ -3561,16 +3561,17 @@ func TestTheSwitchedOffReportIsHeldUntilTheConnectionIsUp(t *testing.T) {
 }
 
 // The episode number follows the volume across the marks: the first reading at the high mark
-// opens episode 1, a reading below the low mark after that opens the next, and a reading five
-// points above the reading this episode began from, here the start of its first reported sweep,
-// opens another. A reading between the marks raises nothing, and a volume oscillating between
-// them raises nothing, which is what keeps the daemon's three-notice bound from being spent on a
-// trimmer doing its job.
+// opens episode 1, a reading below the low mark after that opens the next, and two reported sweeps
+// in a row that start five points or more above the episode's anchor, here the lowest start of
+// its reported sweeps, open another. A reading between the marks raises nothing, and a volume
+// oscillating between them raises nothing, which is what keeps the daemon's three-notice bound
+// from being spent on a trimmer doing its job.
 //
-// The anchor is the pre-sweep reading and never the figure a report carried, and the ninth
-// reading of the script is the control: at 94 it is more than five points above the 88.5 the
-// last report carried and less than five above the 90 that sweep started from, so a trimmer
-// anchored on the report would raise the episode there and this case would fail.
+// The anchor is the pre-sweep reading and never the figure a report carried, and the sweep from
+// 96 is the control: the lower of its start and the one before it, 94, is more than five points
+// above the 88.5 the first report of episode 2 carried and less than five above the 90 that sweep
+// started from, so a trimmer anchored on the report would raise the episode there and this case
+// would fail.
 func TestTheEpisodeNumberFollowsTheVolumeAcrossTheMarks(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	root := f.roots[0]
@@ -3582,13 +3583,14 @@ func TestTheEpisodeNumberFollowsTheVolumeAcrossTheMarks(t *testing.T) {
 		f.addTree(filepath.Join(root.Path, fmt.Sprintf("go-build8%08d", added)), root.Entry)
 	})
 	f.useVolume(script(
-		90, 88, // the first sweep: episode 1, first
-		88, 86.5, // a second sweep of the same episode
+		90, 88, // the first sweep: episode 1, first, anchored at 90
+		88, 86.5, // a second sweep of the same episode, which lowers its anchor to 88
 		75,       // between the marks: nothing
 		69,       // below the low mark after the high one: episode 2, recovery
 		90, 88.5, // a sweep of episode 2, which anchors it at 90
-		94, 92.5, // the control: five points above the report's 88.5, under five above the 90
-		99, 97, // more than five points above the 90 the anchor stays at: episode 3, rise
+		94, 92.5, // one start more than five points above the report's 88.5 and under five above the 90: nothing
+		96, 94.5, // the control: starts of 94 and 96, the lower five points above the 88.5 and under five above the 90
+		99, 97, // starts of 96 and 99, the lower more than five points above the 90: episode 3, rise
 		86, 84.5, // back to the high mark from a post-sweep low point: nothing
 		84, // between the marks again: nothing
 	))
@@ -3597,7 +3599,7 @@ func TestTheEpisodeNumberFollowsTheVolumeAcrossTheMarks(t *testing.T) {
 	f.start(tr)
 
 	for at, ends := range []string{
-		"the sweep ended", "the sweep ended", "nothing to sweep", "nothing to sweep",
+		"the sweep ended", "the sweep ended", "nothing to sweep", "nothing to sweep", "the sweep ended",
 		"the sweep ended", "the sweep ended", "the sweep ended", "the sweep ended", "nothing to sweep",
 	} {
 		f.tick(ends)
@@ -3606,27 +3608,15 @@ func TestTheEpisodeNumberFollowsTheVolumeAcrossTheMarks(t *testing.T) {
 		}
 	}
 
-	want := []struct {
-		episode  int
-		raisedBy string
-	}{
+	assertReportEpisodes(t, f, []reportEpisode{
 		{1, shimwire.VolumeEpisodeFirst},
 		{1, shimwire.VolumeEpisodeFirst},
 		{2, shimwire.VolumeEpisodeRecovery},
 		{2, shimwire.VolumeEpisodeRecovery},
+		{2, shimwire.VolumeEpisodeRecovery},
 		{3, shimwire.VolumeEpisodeRise},
 		{3, shimwire.VolumeEpisodeRise},
-	}
-	reports := f.reports()
-	if len(reports) != len(want) {
-		t.Fatalf("the trimmer sent %d reports, want %d, one per sweep that ended above the low mark: %+v", len(reports), len(want), reports)
-	}
-	for at, report := range reports {
-		if report.Episode != want[at].episode || report.RaisedBy != want[at].raisedBy {
-			t.Errorf("report %d carries episode %d raised by %q, want %d by %q",
-				at+1, report.Episode, report.RaisedBy, want[at].episode, want[at].raisedBy)
-		}
-	}
+	})
 	if raises := f.logged("episode "); raises != 3 {
 		t.Errorf("the trimmer raised the episode %d times, want 3: the readings between the marks and the oscillation raise nothing", raises)
 	}
@@ -3643,22 +3633,24 @@ func script(percents ...float64) func(int) volumeUsage {
 	}
 }
 
-// The rise that raises an episode is five points above the anchor: a reading four and nine tenths
-// above the anchor, here the reading the first reported sweep of episode 1 started from, raises
-// nothing, and one exactly five above raises it. A smaller rise reads the roles' ordinary
-// rebuilding between the marks as a fresh deterioration and wakes the issue's architect on every
-// cycle of a volume that is merely oscillating; a larger one keeps a higher reading inside the
-// episode it is in, under that episode's three notices. The anchor stands still while the volume
-// climbs (anchorAt), so a slow fill raises the rise once it is five points above that reading,
-// which TestASlowFillIsReportedAgainOnceItIsFivePointsAboveTheFirstReportedSweepsStart drives.
+// The rise that raises an episode is a floor five points above the anchor, the floor being the
+// lower of the last two reported sweep starts: two starts four and nine tenths above the anchor,
+// here the start of episode 1's first reported sweep, raise nothing; the first start exactly
+// five above raises nothing either, since the start before it is still under five; and the
+// second raises it, one reported sweep after the volume first stood five points above the
+// anchor. A smaller rise reads the roles' ordinary rebuilding between the marks as a fresh
+// deterioration and wakes the issue's architect on every cycle of a volume that is merely
+// oscillating; a larger one keeps a higher reading inside the episode it is in, under that
+// episode's three notices; and a rise read from one start alone is raised by a peak that recurs
+// at sweep starts on every cycle (TestARecurringPeakAtSweepStartsRaisesNoEpisodeOnEveryCycle).
 //
-// The readings are put through episodeOf and anchorAt, which is where the trimmer decides this,
-// with no sweep between them. The loop's own path through the same boundary, where each of the
-// two readings starts a sweep that reports, is
-// TestTheAnchorStaysAtTheFirstReportedSweepsStartWhereverLaterSweepsStart. The points are this
+// The starts are put through episodeOf and riseAt in the order tick puts a reported sweep's start
+// through them, which is where the trimmer decides this, with no sweep between them. The loop's
+// own path through the same boundary, where each start is a sweep that reports, is
+// TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps. The points are this
 // case's own figures and not volumeRisePoints, because a case staged from the constant it tests
 // moves with it (INFRA-2009, review round 6).
-func TestAReadingFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t *testing.T) {
+func TestAFloorFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t *testing.T) {
 	const (
 		anchored = 90.0
 		under    = anchored + 4.9
@@ -3667,79 +3659,102 @@ func TestAReadingFivePointsAboveTheAnchorRaisesTheEpisodeAndOneUnderItDoesNot(t 
 	f := newTrimFixture(t, 0)
 	set := *trimSettings()
 	tr := f.trimmer()
+	reported := func(start float64) {
+		tr.episodeOf(start, set)
+		tr.riseAt(start)
+	}
 
 	// The volume reaches the high mark, which opens episode 1, and the sweep it started
-	// reported, which anchors the episode at that reading.
-	tr.episodeOf(anchored, set)
-	tr.anchorAt(anchored)
+	// reported, which anchors the episode at that start.
+	reported(anchored)
 	if tr.episode != 1 || tr.raisedBy != shimwire.VolumeEpisodeFirst {
 		t.Fatalf("the first reading at the high mark left the trimmer in episode %d (%s), want episode 1 (%s): the case would read a rise against no anchor", tr.episode, tr.raisedBy, shimwire.VolumeEpisodeFirst)
 	}
 
-	tr.episodeOf(under, set)
+	reported(under)
+	reported(under)
 	if tr.episode != 1 {
-		t.Errorf("a reading of %.1f%%, %.1f points above the %.1f%% the reported sweep started from, raised the episode to %d (%s), want episode 1 held: a volume the trimmer is keeping within a few points of where it swept from is a trimmer doing its job, and the daemon's three-notice bound is spent on it",
+		t.Errorf("two reported sweeps starting at %.1f%%, %.1f points above the %.1f%% the episode is anchored at, raised the episode to %d (%s), want episode 1 held: a volume the trimmer is keeping within a few points of where it swept from is a trimmer doing its job, and the daemon's three-notice bound is spent on it",
 			under, under-anchored, anchored, tr.episode, tr.raisedBy)
 	}
 
-	tr.episodeOf(at, set)
+	reported(at)
+	if tr.episode != 1 {
+		t.Errorf("a reported sweep starting at %.1f%%, after one that started at %.1f%%, raised the episode to %d (%s), want episode 1 held: the lower of the two starts is %.1f points above the %.1f%% anchor, under five, and one start alone is no floor",
+			at, under, tr.episode, tr.raisedBy, under-anchored, anchored)
+	}
+
+	reported(at)
 	if tr.episode != 2 || tr.raisedBy != shimwire.VolumeEpisodeRise {
-		t.Errorf("a reading of %.1f%%, %.1f points above the %.1f%% the reported sweep started from, left the trimmer in episode %d (%s), want episode 2 (%s): a reading five points above the reading the first reported sweep of the episode started from raises the episode",
+		t.Errorf("two reported sweeps in a row starting at %.1f%%, %.1f points above the %.1f%% the episode is anchored at, left the trimmer in episode %d (%s), want episode 2 (%s): a floor five points above the anchor raises the episode",
 			at, at-anchored, anchored, tr.episode, tr.raisedBy, shimwire.VolumeEpisodeRise)
 	}
 	f.assertPrefixed()
 }
 
-// A volume that keeps filling slowly is reported again: the rise is measured from the reading the
-// episode began from, for this first episode the start of its first reported sweep, and that
-// reading stands still while the volume climbs, so a climb of five points from it raises a new
-// episode however little the volume climbs from one reported sweep to the next.
+// A volume that keeps filling slowly is reported at each step of its deterioration: each five
+// points its sweep starts climb above the episode's anchor open an episode of its own, however
+// little the volume climbs from one reported sweep to the next.
 //
-// The volume climbs two tenths of a point an interval from 86%, in files no sweep may delete: the
-// fixture has no entry, so every sweep frees nothing, ends above the low mark and reports, and
-// engages the ten-interval pause, which is what spaces the sweeps out in the pod. The sweeps start
-// at 86%, 88.2%, 90.4% and 92.6%, each 2.2 points above the one before, and the reading of the
-// 26th interval, 91% and inside the third pause, is five points above the 86% the first reported
-// sweep started from. A trimmer that moved the anchor up to each reported sweep's start would have
-// it at 90.4% by the third sweep and at 92.6% by the fourth, and no reading of the case, the last
-// of which is 94.6%, is five points above either, so its four reports would carry one episode;
-// the daemon tells the architect of three reports of one episode and no more. The rise anchors
-// episode 2 at the 91% that raised it, and no later reading of the case is five points above
-// that, so the case holds one rise. The points are this case's own figures and not
-// volumeRisePoints (INFRA-2009, review round 6).
-func TestASlowFillIsReportedAgainOnceItIsFivePointsAboveTheFirstReportedSweepsStart(t *testing.T) {
+// The volume climbs two tenths of a point an interval from 86% to full, in files no sweep may
+// delete: the fixture has no entry, so every sweep frees nothing, ends above the low mark and
+// reports, and engages the ten-interval pause, which is what spaces the sweeps out in the pod.
+// The sweeps start at 86%, 88.2%, 90.4%, 92.6%, 94.8%, 97%, 99.2% and then 100%, each 2.2 points
+// above the one before until the volume is full. The fill is fourteen points of deterioration,
+// two steps of five, and each must open a rise episode: one first reported before the volume
+// reaches 96%, and one at 96% or above. A trimmer that moved the anchor up to each reported
+// sweep's start would never see five points between them, so all nine reports would carry one
+// episode, of which the daemon tells the architect three. The rule raises the first rise at the
+// sweep from 94.8%, where the starts of 92.6% and 94.8% both stand five points above the 86%,
+// and anchors episode 2 at their floor, 92.6%; the second comes at the first sweep from 100%,
+// after the one from 99.2%. The points are this case's own figures and not volumeRisePoints
+// (INFRA-2009, review round 6).
+func TestASlowFillIsReportedAgainAtEachFivePointsItsSweepStartsClimb(t *testing.T) {
 	f := newTrimFixture(t, 0)
-	// The reading of interval n, counted in tenths of a point so that the 91% the case turns on
-	// is exact: interval 1 reads 86%, and each interval after it two tenths more.
-	f.useVolume(func(interval int) volumeUsage { return usageAt(float64(858+2*interval) / 10) })
+	// The reading of interval n, counted in tenths of a point so that each start is exact:
+	// interval 1 reads 86%, and each interval after it two tenths more, up to full.
+	f.useVolume(func(interval int) volumeUsage { return usageAt(min(100, float64(858+2*interval)/10)) })
 	f.setSettings(trimSettings())
 	f.start(f.trimmer())
 
-	sweepsAndPauses(f, 4)
+	sweepsAndPauses(f, 9)
 
-	assertReportEpisodes(t, f, []reportEpisode{
-		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 86%, which anchors the episode
-		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 88.2%
-		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 90.4%
-		{2, shimwire.VolumeEpisodeRise},  // the sweep from 92.6%, after the 91% reading raised the rise
-	})
-	assertOneRise(t, f, "the volume is 91.0%", "above the 86.0%")
+	var below96, from96 bool
+	for _, first := range firstReports(f) {
+		if first.raisedBy != shimwire.VolumeEpisodeRise {
+			continue
+		}
+		switch {
+		case first.percent >= 91 && first.percent < 96:
+			below96 = true
+		case first.percent >= 96:
+			from96 = true
+		}
+	}
+	if !below96 || !from96 {
+		t.Errorf("a volume filling from 86%% to full opened a rise episode first reported under 96%%: %t, and one at 96%% or above: %t, want both, one for each five points of the fill; the reports were %q",
+			below96, from96, reportsSeen(f))
+	}
 }
 
-// The anchor of the first episode is the reading its first reported sweep started from, and a
-// later reported sweep moves it neither down nor up: not to a lower start, not to the figure a
-// report carried, and not to a higher start under five points above it. An episode a rise raised
-// is anchored at the reading that raised it instead, which
-// TestARiseAnchorsTheEpisodeItRaisesAtTheReadingThatRaisedIt holds.
+// The anchor of an episode no rise raised is the lowest start of its reported sweeps: the start
+// of its first reported sweep anchors it, a later reported sweep that starts lower lowers it, and
+// one that starts higher leaves it where it is. No reported sweep moves it to the figure its
+// report carried. An episode a rise raised is anchored at the floor that raised it instead, and
+// never lowered, which TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt holds.
 //
-// The first sweep starts at 90% and leaves 88.5%; the second starts lower, at 87%, still at the
-// high mark, and leaves 85.5%. Then a reading of 94.9%, four and nine tenths above the 90, raises
-// nothing, and a reading of 95% raises the rise. An anchor at the second sweep's start or at
-// either post-sweep figure would raise the episode at 94.9%; an anchor moved up to the 94.9% that
-// the third sweep starts from, a sweep that reports as well, would raise nothing at 95%. The case
-// runs through the loop, so each of those readings starts a sweep that reports, as it would in the
-// pod.
-func TestTheAnchorStaysAtTheFirstReportedSweepsStartWhereverLaterSweepsStart(t *testing.T) {
+// The first sweep starts at 90% and leaves 88.5%; the second starts higher, at 94.9%, four and
+// nine tenths above the 90, which raises nothing and leaves the anchor at 90; the third starts
+// lower, at 87%, still at the high mark, and leaves 85.5%, which lowers the anchor to 87. Then
+// sweeps start at 91.9%, four and nine tenths above the 87, which raises nothing, and at 92%
+// twice: the first of those has the 91.9 before it and raises nothing, and the second raises the
+// rise. An anchor left at the first sweep's 90, or at the floor of the episode's first two starts,
+// also 90, would raise nothing at 92%; one moved up to a higher start, the 94.9%, the 91.9% or
+// the 92%, would raise nothing either; and one at the lowest figure a report carried, the 85.5,
+// would raise the episode a sweep early, at the first 92%, where the 91.9 before it is more than
+// five points above the 85.5. The case runs through the loop, so each of those readings starts a
+// sweep that reports, as it would in the pod.
+func TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	root := f.roots[0]
 	added := 0
@@ -3751,16 +3766,19 @@ func TestTheAnchorStaysAtTheFirstReportedSweepsStartWhereverLaterSweepsStart(t *
 	})
 	f.useVolume(script(
 		90, 88.5, // the first reported sweep: episode 1, anchored at 90
-		87, 85.5, // a later reported sweep that starts lower, still at the high mark
-		94.9, 93.4, // four and nine tenths above the 90: nothing, and this sweep reports too
-		95, 93.5, // five above the 90: episode 2, rise
+		94.9, 93.4, // a later reported sweep that starts higher, four and nine tenths above: the anchor stays at 90
+		87, 85.5, // one that starts lower, still at the high mark: anchored at 87
+		91.9, 90.4, // four and nine tenths above the 87: nothing, and the anchor stays at 87
+		92, 90.5, // five above the 87, after the 91.9: nothing
+		92, 90.5, // five above the 87 twice in a row: episode 2, rise
 		80, // between the marks: nothing
 	))
 	f.setSettings(trimSettings())
 	f.start(f.trimmer())
 
 	for at, ends := range []string{
-		"the sweep ended", "the sweep ended", "the sweep ended", "the sweep ended", "nothing to sweep",
+		"the sweep ended", "the sweep ended", "the sweep ended", "the sweep ended", "the sweep ended", "the sweep ended",
+		"nothing to sweep",
 	} {
 		f.tick(ends)
 		if t.Failed() {
@@ -3770,20 +3788,25 @@ func TestTheAnchorStaysAtTheFirstReportedSweepsStartWhereverLaterSweepsStart(t *
 
 	assertReportEpisodes(t, f, []reportEpisode{
 		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 90%
-		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 87%
 		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 94.9%
-		{2, shimwire.VolumeEpisodeRise},  // the sweep from 95%
+		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 87%
+		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 91.9%
+		{1, shimwire.VolumeEpisodeFirst}, // the first sweep from 92%
+		{2, shimwire.VolumeEpisodeRise},  // the second sweep from 92%
 	})
-	assertOneRise(t, f, "the volume is 95.0%", "above the 90.0%")
+	assertOneRise(t, f, "the volume is 92.0%, 5.0 points above the 87.0%")
 }
 
 // The line that raises a rise names the gap the trimmer read, not the five points that make a
-// rise: a person reading the pod's log reads from it how far the volume climbed past the start
-// it is measured from. The volume reads 86% through the first sweep and its pause, then 95%,
-// nine points above the 86% that sweep started from. The negative control is the line as it was
-// at b844518c, which printed the rule's five points as the gap ("5 points above the 86.0%"), and
-// the line that printed the gap as the constant again: both the slow-fill and the anchor cases
-// rise at exactly five points, where the two figures agree, so neither could tell them apart.
+// rise: a person reading the pod's log reads from it how far the volume climbed past the anchor
+// it is measured from. The volume reads 86% through the first sweep and its pause, then 95%, so
+// the second and third sweeps start at 95%: the second has the 86 before it and raises nothing,
+// and the third raises the rise from a floor of 95%, nine points above the 86% the first sweep
+// started from. The negative control is the line as it was at b844518c, which printed the rule's
+// five points as the gap ("5 points above the 86.0%"), and the line that printed the gap as the
+// constant again: the anchor cases rise at exactly five points, where the two figures agree, so
+// none of them could tell them apart. Round 30 restaged this case with a third sweep, since a
+// floor of two starts can raise no rise at an episode's second reported sweep.
 func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 	f := newTrimFixture(t, 0)
 	f.useVolume(func(interval int) volumeUsage {
@@ -3795,11 +3818,12 @@ func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 	f.setSettings(trimSettings())
 	f.start(f.trimmer())
 
-	sweepsAndPauses(f, 2)
+	sweepsAndPauses(f, 3)
 
 	assertReportEpisodes(t, f, []reportEpisode{
 		{1, shimwire.VolumeEpisodeFirst}, // the sweep from 86%, which anchors the episode
-		{2, shimwire.VolumeEpisodeRise},  // the sweep from 95%
+		{1, shimwire.VolumeEpisodeFirst}, // the first sweep from 95%, after the one from 86%
+		{2, shimwire.VolumeEpisodeRise},  // the second sweep from 95%
 	})
 	assertOneRise(t, f, "the volume is 95.0%, 9.0 points above the 86.0%", "where 5 points raise a new episode")
 }
@@ -3890,60 +3914,69 @@ func TestOneTransientReadingDoesNotSilenceAVolumeThatThenKeepsFilling(t *testing
 	t.Errorf("no rise opened an episode while the volume filled from 90%% to 96%%: one reading of 97%% in a pause silenced the fill that followed it; the reports were %q", seen)
 }
 
-// An episode a rise raised is anchored at the reading that raised it, and a reported sweep of
-// that episode, which starts lower, leaves the anchor there. The volume reads 90% at every
-// sweep's start, so every sweep frees nothing, reports and pauses, and one reading in the middle
-// of each pause, which starts no sweep, reads higher: 95%, five points above the 90% the first
-// reported sweep started from, which raises a rise and anchors episode 2 there; 99.9%, four and
-// nine tenths above that 95%, which raises nothing; 100%, five above it, which raises a second
-// rise and anchors episode 3 there; and 100% again, which raises nothing. A trimmer that left a
-// rise-raised episode for its next reported sweep to anchor would have it back at 90% each time
-// and raise a rise at each of the last three readings, and one that anchored it anywhere above
-// the 95% would raise nothing at the first 100%. The last reading is the limit seen from the
-// other side: an anchor above 95% can never be passed, since a reading is at most 100%, so no
-// rise follows episode 3.
-func TestARiseAnchorsTheEpisodeItRaisesAtTheReadingThatRaisedIt(t *testing.T) {
-	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
-	// The reading in the middle of each pause, in order.
-	inPauses := []float64{95, 99.9, 100, 100}
-	f.useVolume(func(interval int) volumeUsage {
-		if (interval-1)%(1+volumeQuietIntervals) == 5 {
-			return usageAt(inPauses[(interval-1)/(1+volumeQuietIntervals)])
-		}
-		return usageAt(90)
-	})
-	f.setSettings(trimSettings())
-	f.start(f.trimmer())
+// An episode a rise raised is anchored at the floor that raised it, the lower of the two starts
+// the rise read, and a reported sweep of that episode that starts lower leaves the anchor there.
+// Every sweep frees nothing, reports and pauses, and each pause reads the lower of the starts
+// beside it (sweepStarts).
+//
+// From an anchor of 95%: the sweeps start at 90%, which anchors episode 1; at 95%, which raises
+// nothing, since the 90 before it is the lower of the two; and at 96%, where the starts of 95%
+// and 96% raise a rise and anchor episode 2 at their floor, 95%. A sweep from 90% follows, which
+// leaves a rise's anchor at 95, and then sweeps from 100%, 99.9%, 100% and 100%: the first three
+// each have a start under 100% beside them and raise nothing, and the fourth, the second start
+// at exactly 100.0% in a row, raises a second rise and anchors episode 3 at 100%. A trimmer that
+// anchored a rise at its own start, the 96%, would raise nothing at 100%; one that lowered a
+// rise's anchor to a lower start, the 90%, would raise the second rise at 99.9%. The last sweep
+// is the limit seen from the other side, as the second subtest is: an anchor above 95% can never
+// be passed, since a reading is at most 100%, so no rise follows episode 3, and none follows an
+// episode anchored at 95.5% however long the volume stays full.
+func TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt(t *testing.T) {
+	t.Run("from an anchor of 95%", func(t *testing.T) {
+		f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+		starts := []float64{90, 95, 96, 90, 100, 99.9, 100, 100, 100}
+		f.useVolume(sweepStarts(starts...))
+		f.setSettings(trimSettings())
+		f.start(f.trimmer())
 
-	sweepsAndPauses(f, len(inPauses))
+		sweepsAndPauses(f, len(starts))
 
-	assertReportEpisodes(t, f, []reportEpisode{
-		{1, shimwire.VolumeEpisodeFirst}, // the first sweep, which anchors episode 1 at 90%
-		{2, shimwire.VolumeEpisodeRise},  // after the 95% raised the rise
-		{2, shimwire.VolumeEpisodeRise},  // after the 99.9%, which raised nothing
-		{3, shimwire.VolumeEpisodeRise},  // after the first 100% raised the second rise
+		assertReportEpisodes(t, f, []reportEpisode{
+			{1, shimwire.VolumeEpisodeFirst}, // the sweep from 90%, which anchors episode 1 at 90%
+			{1, shimwire.VolumeEpisodeFirst}, // from 95%, after the 90%
+			{2, shimwire.VolumeEpisodeRise},  // from 96%, after the 95%: the first rise, anchored at 95%
+			{2, shimwire.VolumeEpisodeRise},  // from 90%, which leaves the anchor at 95%
+			{2, shimwire.VolumeEpisodeRise},  // from 100%, after the 90%
+			{2, shimwire.VolumeEpisodeRise},  // from 99.9%, after a 100%
+			{2, shimwire.VolumeEpisodeRise},  // from 100%, after the 99.9%
+			{3, shimwire.VolumeEpisodeRise},  // from 100%, after a 100%: the second rise, anchored at 100%
+			{3, shimwire.VolumeEpisodeRise},  // from 100% once more, which raises nothing
+		})
+		assertRises(t, f,
+			"the volume is 95.0%, 5.0 points above the 90.0%",
+			"the volume is 100.0%, 5.0 points above the 95.0%",
+		)
 	})
-	if raised := f.logged("episode "); raised != 3 {
-		t.Errorf("the trimmer raised the episode %d times, want three times, the first episode and two rises; it wrote %q", raised, f.linesWritten())
-	}
-	var rises []string
-	for _, line := range f.linesWritten() {
-		if strings.Contains(line, "("+shimwire.VolumeEpisodeRise+")") {
-			rises = append(rises, line)
-		}
-	}
-	want := []string{
-		"the volume is 95.0%, 5.0 points above the 90.0%",
-		"the volume is 100.0%, 5.0 points above the 95.0%",
-	}
-	if len(rises) != len(want) {
-		t.Fatalf("the trimmer wrote %d lines raising a rise, want %d: %q", len(rises), len(want), rises)
-	}
-	for at, says := range want {
-		if !strings.Contains(rises[at], says) {
-			t.Errorf("rise %d was raised by the line %q, want it to hold %q", at+1, rises[at], says)
-		}
-	}
+
+	t.Run("from an anchor above 95%", func(t *testing.T) {
+		f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+		starts := []float64{90, 95.5, 95.5, 100, 100, 100, 100}
+		f.useVolume(sweepStarts(starts...))
+		f.setSettings(trimSettings())
+		f.start(f.trimmer())
+
+		sweepsAndPauses(f, len(starts))
+
+		assertReportEpisodes(t, f, []reportEpisode{
+			{1, shimwire.VolumeEpisodeFirst}, // the sweep from 90%, which anchors episode 1 at 90%
+			{1, shimwire.VolumeEpisodeFirst}, // from 95.5%, after the 90%
+			{2, shimwire.VolumeEpisodeRise},  // from 95.5%, after a 95.5%: the rise, anchored at 95.5%
+			{2, shimwire.VolumeEpisodeRise},  // from 100%, four sweeps in a row, which raise nothing
+			{2, shimwire.VolumeEpisodeRise},
+			{2, shimwire.VolumeEpisodeRise},
+			{2, shimwire.VolumeEpisodeRise},
+		})
+		assertRises(t, f, "the volume is 95.5%, 5.5 points above the 90.0%")
+	})
 }
 
 // A volume that sits still above the high mark keeps one episode: a reading that does not move
@@ -3967,6 +4000,169 @@ func TestAVolumeThatSitsStillAboveTheHighMarkKeepsOneEpisode(t *testing.T) {
 	if raised := f.logged("episode "); raised != 1 {
 		t.Errorf("the trimmer raised the episode %d times, want once: a volume that sits still at 90%% is no rise; it wrote %q", raised, f.linesWritten())
 	}
+}
+
+// A transient reading at a sweep's start does not silence a volume that then keeps filling,
+// wherever the start falls. In each subtest a role's build pushes the volume to 97% for a moment,
+// which one sweep's start reads, or two at an episode's first sweeps, and the volume then falls
+// back to 86% and fills to full in steps of two points a sweep; every sweep frees nothing, reports
+// and pauses, and only the starts read 97% (sweepStarts). The fill is fourteen points of
+// deterioration from where the volume stood, and at least one step of it must open an episode of
+// its own, first reported after the fall to 86% and before the volume is full.
+//
+// On the first sweep's start, the 97% anchors episode 1, which the next start, 86%, lowers: an
+// anchor fixed at the start of the episode's first sweep waits for two starts of 102%, which no
+// reading reaches, so after its three notices the architect hears nothing while the volume fills.
+// On the first two sweeps' starts, the 86% lowers the anchor all the same, where one fixed at the
+// floor of the episode's first two starts would stay at 97%. On a later sweep's start, the 97% has
+// an 86% beside it and raises nothing. On the start of the sweep that raises a rise, after a start
+// of 91%, the rise is anchored at the floor of the two, 91%, and not at the 97%, so the fill raises
+// a second rise once two starts stand at 96% or above. A transient that two starts in a row read
+// in the middle of an episode is not among them: it raises a rise anchored at its own level, which
+// a fill from lower down passes only with two starts five points above that level, and never where
+// the level is above 95%.
+func TestATransientSweepStartDoesNotSilenceAVolumeThatThenKeepsFilling(t *testing.T) {
+	for _, staged := range []struct {
+		name   string
+		starts []float64
+		fallen int // the sweep from 86% after the 97%, counted from 0
+	}{
+		{"on the first sweep's start", []float64{97, 86, 88, 90, 92, 94, 96, 98, 100, 100}, 1},
+		{"on the first two sweeps' starts", []float64{97, 97, 86, 88, 90, 92, 94, 96, 98, 100, 100}, 2},
+		{"on a later sweep's start", []float64{86, 97, 86, 88, 90, 92, 94, 96, 98, 100}, 2},
+		{"on the start of the sweep that raises a rise", []float64{86, 91, 97, 86, 88, 90, 92, 94, 96, 98, 100, 100}, 3},
+	} {
+		t.Run(staged.name, func(t *testing.T) {
+			f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+			f.useVolume(sweepStarts(staged.starts...))
+			f.setSettings(trimSettings())
+			f.start(f.trimmer())
+
+			sweepsAndPauses(f, len(staged.starts))
+
+			for _, first := range firstReports(f) {
+				if first.raisedBy == shimwire.VolumeEpisodeRise && first.report > staged.fallen && first.percent < 100 {
+					return
+				}
+			}
+			t.Errorf("no rise opened an episode while the volume filled from 86%% to full after the 97%%: the transient silenced the fill; the reports were %q", reportsSeen(f))
+		})
+	}
+}
+
+// A peak that recurs at sweep starts over a floor that does not climb raises no episode on every
+// cycle: a rise-raised episode's reports skip the pod's hour, so a rise on every cycle is a
+// notice on every cycle with no bound at all. Every sweep frees nothing, reports and pauses, and
+// each pause reads the lower of the starts beside it (sweepStarts), so a 91% between two 86%s is
+// read at its start alone.
+//
+// Starts alternating 86% and 91% have an 86% beside every 91%, so the floor never leaves 86% and
+// no new episode is raised. A trimmer that read a rise from one start against the lowest start of
+// the episode raised one at every 91%, after the 86% before it had lowered the anchor again:
+// about 130 notices a day for one pod. Starts repeating 86%, 91% and 91% hold a floor of 91% at
+// every second 91%, which raises a rise once and anchors it at 91%; a rise's anchor never comes
+// down, so the next 91% floor is no rise, where a trimmer that lowered it to the next 86% raised a
+// rise every third sweep.
+func TestARecurringPeakAtSweepStartsRaisesNoEpisodeOnEveryCycle(t *testing.T) {
+	t.Run("starts alternating 86% and 91%", func(t *testing.T) {
+		f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+		starts := slices.Repeat([]float64{86, 91}, 6)
+		f.useVolume(sweepStarts(starts...))
+		f.setSettings(trimSettings())
+		f.start(f.trimmer())
+
+		sweepsAndPauses(f, len(starts))
+
+		if episodes := firstReports(f); len(episodes) != 1 {
+			t.Errorf("the reports of sweeps starting at 86%% and 91%% in turn carry %d episodes, want the first alone: the floor of every two starts is 86%%; the reports were %q",
+				len(episodes), reportsSeen(f))
+		}
+	})
+
+	t.Run("starts repeating 86%, 91% and 91%", func(t *testing.T) {
+		f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+		starts := slices.Repeat([]float64{86, 91, 91}, 4)
+		f.useVolume(sweepStarts(starts...))
+		f.setSettings(trimSettings())
+		f.start(f.trimmer())
+
+		sweepsAndPauses(f, len(starts))
+
+		if rises := f.logged("(" + shimwire.VolumeEpisodeRise + ")"); rises > 1 {
+			t.Errorf("four cycles of sweeps starting at 86%%, 91%% and 91%% raised %d rises, want at most one: a rise's anchor never comes down, so the next 91%% floor is no rise; the reports were %q",
+				rises, reportsSeen(f))
+		}
+	})
+}
+
+// The rises before a recovery are at most (100 − high mark) / 5, rounded down: each rise lifts the
+// anchor five points or more, a rise's anchor never comes down, every floor is a reported sweep's
+// start and so at or above the high mark, and a reading is at most 100%. The bound is the high
+// mark's, not a flat three: at a high mark of 50%, ten. The case drives the longest chain there
+// is to its end: the first sweep starts at the high mark, each next floor stands exactly five
+// points above the anchor before it, two starts in a row at 55%, at 60% and so on to 100%, and
+// three more sweeps from 100% raise nothing.
+func TestTheRisesBeforeARecoveryAreBoundedByTheRoomAboveTheHighMark(t *testing.T) {
+	const high = 50
+	starts := []float64{high}
+	for floor := high + 5; floor <= 100; floor += 5 {
+		starts = append(starts, float64(floor), float64(floor))
+	}
+	starts = append(starts, 100, 100, 100)
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	f.useVolume(sweepStarts(starts...))
+	f.setSettings(&shimwire.LauncherVolumeTrim{HighPercent: high, LowPercent: 40, MinAgeMinutes: 30, IntervalSeconds: 30})
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, len(starts))
+
+	want := (100 - high) / 5
+	if rises := f.logged("(" + shimwire.VolumeEpisodeRise + ")"); rises != want {
+		t.Errorf("a chain from a high mark of %d%% raised %d rises, want %d, one for each five points between the high mark and full; the reports were %q",
+			high, rises, want, reportsSeen(f))
+	}
+	reports := f.reports()
+	if last := reports[len(reports)-1]; last.Episode != want+1 || last.RaisedBy != shimwire.VolumeEpisodeRise {
+		t.Errorf("the last report carries episode %d (%s), want episode %d (%s): the first and %d rises",
+			last.Episode, last.RaisedBy, want+1, shimwire.VolumeEpisodeRise, want)
+	}
+}
+
+// Each recovery starts a chain of its own, which can rise again: a volume that falls below the
+// low mark and fills back past the high mark raises a recovery episode, anchored afresh at the
+// lowest start of its reported sweeps, and then a rise once two reported sweeps in a row start
+// five points or more above that anchor. In each cycle here the sweeps start at 86%, 91% and
+// 91%, and one reading in the third pause falls to 65%, below the low mark, after which the volume
+// stands at 80% until the next cycle's first sweep. Every sweep frees nothing, reports and pauses.
+// So each cycle after the first raises a recovery episode and one rise, whose reports skip the
+// pod's hour.
+func TestEachRecoveryStartsAChainThatCanRiseAgain(t *testing.T) {
+	f := newTrimFixture(t, 0) // no entry: every sweep frees nothing, reports and pauses
+	cycle := []float64{86, 91, 91}
+	f.useVolume(func(interval int) volumeUsage {
+		sweep, at := (interval-1)/(1+volumeQuietIntervals), (interval-1)%(1+volumeQuietIntervals)
+		switch {
+		case sweep%len(cycle) == len(cycle)-1 && at == 5:
+			return usageAt(65)
+		case sweep%len(cycle) == len(cycle)-1 && at > 5:
+			return usageAt(80)
+		}
+		return usageAt(cycle[sweep%len(cycle)])
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+
+	sweepsAndPauses(f, 4*len(cycle))
+
+	var want []reportEpisode
+	for at := range 4 {
+		opened := reportEpisode{2*at + 1, shimwire.VolumeEpisodeRecovery}
+		if at == 0 {
+			opened.raisedBy = shimwire.VolumeEpisodeFirst
+		}
+		want = append(want, opened, opened, reportEpisode{2*at + 2, shimwire.VolumeEpisodeRise})
+	}
+	assertReportEpisodes(t, f, want)
 }
 
 // sweepsAndPauses ticks the loop through count sweeps of a volume no sweep brings down, each
@@ -4007,8 +4203,8 @@ func assertReportEpisodes(t *testing.T, f *trimFixture, want []reportEpisode) {
 }
 
 // assertOneRise holds that the trimmer raised one episode by a rise and nothing else besides the
-// first, in a line holding each of says: the reading that raised it and the anchor it was
-// measured from.
+// first, in a line holding each of says: the floor that raised it and the anchor it was measured
+// from.
 func assertOneRise(t *testing.T, f *trimFixture, says ...string) {
 	t.Helper()
 	if raised := f.logged("episode "); raised != 2 {
@@ -4028,6 +4224,76 @@ func assertOneRise(t *testing.T, f *trimFixture, says ...string) {
 			t.Errorf("the rise was raised by the line %q, want it to hold %q", rises[0], want)
 		}
 	}
+}
+
+// assertRises holds that the trimmer wrote one line raising a rise for each of want, in order,
+// each line holding its want.
+func assertRises(t *testing.T, f *trimFixture, want ...string) {
+	t.Helper()
+	var rises []string
+	for _, line := range f.linesWritten() {
+		if strings.Contains(line, "("+shimwire.VolumeEpisodeRise+")") {
+			rises = append(rises, line)
+		}
+	}
+	if len(rises) != len(want) {
+		t.Fatalf("the trimmer wrote %d lines raising a rise, want %d: %q", len(rises), len(want), rises)
+	}
+	for at, says := range want {
+		if !strings.Contains(rises[at], says) {
+			t.Errorf("rise %d was raised by the line %q, want it to hold %q", at+1, rises[at], says)
+		}
+	}
+}
+
+// sweepStarts is a volume whose sweeps start at starts in turn, one to each sweep and its pause,
+// for a fixture whose sweeps free nothing and pause. Each pause reads the lower of the start before
+// it and the start after it, so a start above both of its neighbours is read at that start alone,
+// as a transient is; after the last start the volume stays there.
+func sweepStarts(starts ...float64) func(int) volumeUsage {
+	return func(interval int) volumeUsage {
+		sweep := min((interval-1)/(1+volumeQuietIntervals), len(starts)-1)
+		if (interval-1)%(1+volumeQuietIntervals) == 0 || sweep == len(starts)-1 {
+			return usageAt(starts[sweep])
+		}
+		return usageAt(min(starts[sweep], starts[sweep+1]))
+	}
+}
+
+// episodeFirst is the first report of one episode: its place among the reports, counted from 0,
+// the volume it carried in percent, and what raised the episode.
+type episodeFirst struct {
+	report   int
+	percent  float64
+	raisedBy string
+}
+
+// firstReports is the first report of each episode the trimmer reported, in order.
+func firstReports(f *trimFixture) []episodeFirst {
+	var firsts []episodeFirst
+	seen := map[int]bool{}
+	for at, report := range f.reports() {
+		if seen[report.Episode] {
+			continue
+		}
+		seen[report.Episode] = true
+		firsts = append(firsts, episodeFirst{at, reportPercent(report), report.RaisedBy})
+	}
+	return firsts
+}
+
+// reportsSeen is every report the trimmer sent, as a failure message names them.
+func reportsSeen(f *trimFixture) []string {
+	var seen []string
+	for _, report := range f.reports() {
+		seen = append(seen, fmt.Sprintf("episode %d (%s) at %.1f%%", report.Episode, report.RaisedBy, reportPercent(report)))
+	}
+	return seen
+}
+
+// reportPercent is the volume a report carried, in percent.
+func reportPercent(report shimwire.LauncherVolumeReport) float64 {
+	return 100 * float64(report.UsedBytes) / float64(report.UsedBytes+report.FreeBytes)
 }
 
 // One report per sweep that ends with the volume still above the low mark, and none at all from

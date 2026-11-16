@@ -108,8 +108,8 @@ const (
 	// volumeSweepMinFreedPoints is what a sweep must free, in percentage points of the volume,
 	// not to engage the pause above.
 	volumeSweepMinFreedPoints = 1.0
-	// volumeRisePoints is how far above an episode's anchor a reading must rise to raise the
-	// episode number (episodeOf).
+	// volumeRisePoints is how far above an episode's anchor the lower of the last two reported
+	// sweep starts must stand to raise the episode number (riseAt).
 	volumeRisePoints = 5.0
 	// volumeFaultLimit is how many recovered panics in a row stop the trimmer for the life of
 	// the launcher process.
@@ -230,8 +230,9 @@ type trimmer struct {
 	episode   int     // 0 until the first reading at or above the high mark
 	raisedBy  string  // which of shimwire's three raised the episode above
 	aboveHigh bool    // a reading has been at or above the high mark since the last recovery
-	anchor    float64 // the reading this episode began from, which a rise is measured against (episodeOf)
-	anchored  bool    // whether the episode has its anchor yet; one a rise raised has it from the start
+	anchor    float64 // what a rise is measured against: the lowest reported start, or a rise's floor (riseAt)
+	anchored  bool    // whether the episode has its anchor yet: from its first reported sweep, or its rise
+	lastStart float64 // the start of the last reported sweep, the first of the two a rise reads
 	pause     int     // intervals left of the pause after a sweep that freed under a point
 	last      volumeUsage
 	faults    []string // the newest recovered panics the next report carries (shimwire.VolumeReportFaults)
@@ -344,12 +345,12 @@ func (t *trimmer) run(ctx context.Context) {
 
 // awaitSettings is the wait for settings the trimmer may run by: it answers the first ones it
 // can run, or the container's stop. Nothing of the trimmer's own counting is touched here — the
-// identifier, the episode, the anchor and the pause are this pod's counting line and go on
-// across a trimmer that was turned off and on again — and no interval ticker is made, so a
-// trimmer waiting sweeps nothing and reads nothing, which is what R2 asks of settings outside
-// the ranges. The one thing it does change is a report the trimmer is still holding, which an
-// answer with no settings discards (settingsInForce) and refused settings have tried, as R2 has
-// it: the interval loop stops on either and leaves them to this wait (tick).
+// identifier, the episode, the anchor, the last reported start and the pause are this pod's
+// counting line and go on across a trimmer that was turned off and on again — and no interval
+// ticker is made, so a trimmer waiting sweeps nothing and reads nothing, which is what R2 asks of
+// settings outside the ranges. The one thing it does change is a report the trimmer is still
+// holding, which an answer with no settings discards (settingsInForce) and refused settings have
+// tried, as R2 has it: the interval loop stops on either and leaves them to this wait (tick).
 //
 // It polls rather than being woken: the seam is a read of what the latest acknowledgement left
 // in force (manager.volumeTrim) and nothing signals a change of it. It says what it is waiting
@@ -484,8 +485,9 @@ func settingsInterval(set shimwire.LauncherVolumeTrim) time.Duration {
 }
 
 // tick is one interval: the settings in force, a held report, one reading of the volume, the
-// episode that reading raises, and the sweep it asks for. restart says the interval clock must
-// be made again, and the ending what the interval loop must do now (trimEnding).
+// episode that reading raises, the sweep it asks for, and the rise that sweep's start raises
+// where the sweep reports (riseAt). restart says the interval clock must be made again, and the
+// ending what the interval loop must do now (trimEnding).
 //
 // It recovers from any panic in its own work, which is a deliberate departure from this daemon's
 // practice — no other production path of it recovers a panic it did not expect, because a
@@ -589,7 +591,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		}
 	}
 	if out.report {
-		t.anchorAt(percent)
+		t.riseAt(percent)
 		t.deliver(t.report(ctx, out))
 	} else {
 		t.carryRefused(out.refused)
@@ -597,29 +599,21 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	return true, trimGoesOn
 }
 
-// episodeOf raises the episode number on the reading, when the reading is one of the two things
-// that raise it, and leaves it alone otherwise.
+// episodeOf raises the episode number on the reading, when the reading is the first at the high
+// mark or a recovery, and leaves it alone otherwise. A rise, the third thing that raises it, is
+// read at the start of a reported sweep alone (riseAt).
 //
 // An episode is the run of readings the daemon's three-notice bound counts against, so raising it
 // starts that count over for the reports that follow and sends nothing itself: a report is still a
 // sweep's, and only of one that ends above the low mark (tick), the one the trimmer sends when it
 // switches itself off aside (switchOff). A recovery is the volume coming back under the low mark
-// after having reached the high one: the next time it fills is news. A rise is a reading five
-// points or more above the episode's anchor, and no other growth. The anchor is the reading the
-// episode began from: the start of its first reported sweep, for episode 1 and for an episode a
-// recovery raised (anchorAt), or the reading that raised it, for an episode a rise raised, which
-// is set here. The anchor stands still for the rest of the episode, so a volume that keeps filling
-// raises a new episode at each five points it climbs above the anchor of the episode it is in,
-// and a smaller climb from the anchor raises nothing. An anchor above 95% can never be passed,
-// since a reading is at most 100%, so an episode that began above 95% is told at most three times
-// and no rise follows it.
-//
-// The anchor is a reading taken before a sweep or at an interval, never the figure a report
-// carried, which is a post-sweep low point: anchored there, the ordinary growth from the low point
-// back to the high mark would read as a five-point deterioration and wake the architect on every
-// cycle. Nor does a rise leave its episode for the next reported sweep to anchor: a volume that
-// sweeps from the same reading every time and touches five points above it once in each pause
-// would then raise a rise on every cycle.
+// after having reached the high one: the next time it fills is news. Each fall below the low mark
+// starts a new chain, anchored afresh (riseAt), so a volume that cycles is told about each cycle
+// within the pod's hour and the three: its recovery episode's reports wait for the hour, and a
+// rise, raised in each cycle where two reported sweeps in a row start five points or more above
+// the lowest start of that cycle's reported sweeps before them, is told without waiting. Every
+// interval reading is read here, one inside a pause and one below the high mark included, because
+// either can be the first at the high mark or a recovery; neither raises a rise.
 func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 	switch {
 	case t.episode == 0:
@@ -633,26 +627,59 @@ func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 		t.episode, t.raisedBy, t.aboveHigh, t.anchored = t.episode+1, shimwire.VolumeEpisodeRecovery, false, false
 		t.logf(volumeTrimLog+"episode %d (%s): the volume fell to %.1f%%, below the low mark %d%%",
 			t.episode, t.raisedBy, percent, set.LowPercent)
-	case t.anchored && percent >= t.anchor+volumeRisePoints:
-		anchor := t.anchor
-		t.episode, t.raisedBy, t.anchor = t.episode+1, shimwire.VolumeEpisodeRise, percent
-		t.logf(volumeTrimLog+"episode %d (%s): the volume is %.1f%%, %.1f points above the %.1f%% the last episode began from, where %.0f points raise a new episode",
-			t.episode, t.raisedBy, percent, percent-anchor, anchor, volumeRisePoints)
 	}
 	if percent >= float64(set.HighPercent) {
 		t.aboveHigh = true
 	}
 }
 
-// anchorAt anchors the episode at the reading a reported sweep started from, where the episode
-// has no anchor yet: episode 1 and an episode a recovery raised take the start of their first
-// reported sweep. A later reported sweep leaves the anchor where it is, whether that sweep started
-// higher or lower, and so does every reported sweep of an episode a rise raised, which episodeOf
-// anchored at the reading that raised it.
-func (t *trimmer) anchorAt(percent float64) {
-	if !t.anchored {
-		t.anchor, t.anchored = percent, true
+// riseAt reads a rise at start, the reading a sweep that reported started from, before that
+// sweep's report is made, so the report carries the episode its start raised. A sweep that sends
+// no report, one that ended at or below the low mark, is not read: its start neither anchors nor
+// enters the two a rise reads, since the trimmer brought that volume down.
+//
+// A rise is read where the lower of the last two reported sweep starts, this one and the one
+// before it, stands five points or more above the episode's anchor. An episode that no rise
+// raised, the first and each after a recovery, is anchored at the lowest start of its reported
+// sweeps: the first reported sweep's start anchors it, and each later one that starts lower lowers
+// it, so its second reported sweep can never rise. An episode a rise raised is anchored at the
+// floor that raised it, the lower of the two starts read, and that anchor never moves; the rise
+// sweep's own start is the first of the two its next rise reads. So one high start raises nothing
+// by itself, which keeps a peak that recurs at sweep starts from raising a rise each time; a
+// transient reading at the first start of an episode no rise raised is lowered by the next start,
+// so it cannot silence a later climb; and an anchor is never one transient reading, since a rise's
+// is the lower of two starts. A transient that two reported starts in a row read does raise a
+// rise anchored at its own level, after which a fill from lower down is read only once two starts
+// stand five points above that level, and never where the level is above 95%. The cost of the two
+// starts is that a rise is read one reported sweep after the volume first reaches the anchor plus
+// five points: an interval later where the sweeps free a point or more, and an interval and its
+// pause, eleven intervals, where they free less.
+//
+// A chain is the run of episodes from the first, or from a recovery, to the next recovery. Its
+// anchor is lowered only before its first rise; each rise then lifts it five points or more, and
+// it never comes down. Every floor is a reported sweep's start, which is at or above the high mark
+// that sweep ran by, and a reading is at most 100%, so a chain holds at most (100 − high mark) / 5
+// rises, rounded down: three at the default high mark of 85, and nineteen at 2, the lowest high
+// mark the settings allow. An anchor above 95% can never be passed, and from one of 95% a rise
+// needs two reported sweeps in a row that start at exactly 100.0%, not one reading. Only a
+// recovery starts a new chain, anchored afresh (episodeOf).
+//
+// The anchor is a reading taken before a sweep, never the figure a report carried, which is a
+// post-sweep low point: anchored there, the ordinary growth from the low point back to the high
+// mark would read as a five-point deterioration and wake the architect on every cycle.
+func (t *trimmer) riseAt(start float64) {
+	switch floor := min(t.lastStart, start); {
+	case !t.anchored:
+		t.anchor, t.anchored = start, true
+	case floor >= t.anchor+volumeRisePoints:
+		anchor := t.anchor
+		t.episode, t.raisedBy, t.anchor = t.episode+1, shimwire.VolumeEpisodeRise, floor
+		t.logf(volumeTrimLog+"episode %d (%s): the volume is %.1f%%, %.1f points above the %.1f%% the last episode was anchored at, at the lower of the last two reported sweep starts, %.1f%% and %.1f%%, where %.0f points raise a new episode",
+			t.episode, t.raisedBy, floor, floor-anchor, anchor, t.lastStart, start, volumeRisePoints)
+	case t.raisedBy != shimwire.VolumeEpisodeRise:
+		t.anchor = min(t.anchor, start)
 	}
+	t.lastStart = start
 }
 
 // fault records one recovered panic and answers whether the trimmer must now stay off.

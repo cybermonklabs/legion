@@ -18,15 +18,22 @@ body: |-
   A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
   trimmer that switches itself off after three panics in a row, reach the issue's architect as a
   new `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
-  A report skips the hour, and not the three, where a rise raised its episode: a reading five
-  points or more above the reading the episode before it began from, which is the start of that
-  episode's first reported sweep or, where a rise raised that episode too, the reading that did.
-  That reading stands still for the rest of the episode, so a volume that keeps filling raises a
-  new episode at each five points it climbs above the reading its episode began from; a smaller
-  climb from that reading raises none. A reading is at most 100%, so an episode that began above
-  95% is told at most three times and no rise follows it. The switched-off notice is sent
-  whatever the bounds stand at. A rollback below this release has the operator delete the queued
-  notices first, as docs/kubernetes.md says.
+  A report skips the hour, and not the three, where a rise raised its episode: at the start of a
+  reported sweep, the lower of that start and the one before it five points or more above the
+  episode's anchor, never a reading inside a pause or below the high mark. The anchor is the
+  lowest start of the episode's reported sweeps where no rise raised it, and the floor that
+  raised it, which never moves, where one did, so a volume that keeps filling raises a new
+  episode at each five points its sweep starts climb, read one reported sweep after it first
+  stands there, and a peak that one start reads raises none. Until a recovery the rises are at
+  most (100 − `high_percent`) / 5, rounded down, three at the default; an anchor above 95% can
+  never be passed, and from one of 95% a rise needs two reported sweeps in a row that start at
+  exactly 100.0%. Each fall below the low mark starts a new chain of rises, its anchor taken
+  afresh, so a volume that cycles is told about each cycle within the pod's hour and the three:
+  its recovery episode's reports wait for the hour, and a rise, raised in each cycle where two
+  reported sweeps in a row start five points or more above the lowest start of that cycle's
+  reported sweeps before them, is told without waiting. The switched-off notice is sent whatever
+  the bounds stand at. A rollback below this release has the operator delete the queued notices
+  first, as docs/kubernetes.md says.
 
   A `worker-died` notice of the tree architect, and of a held phase, now names the pod's own end
   — `Evicted: The node was low on resource: ephemeral-storage. ...` above all — when the claim's
