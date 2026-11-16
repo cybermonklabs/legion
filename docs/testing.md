@@ -415,6 +415,23 @@ five runs are enough against that deadline because the rolling hold keeps a tran
 The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
 started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
 
+## A document test that waits for a room's appends
+
+`settleCurrentGeneration` (`packages/envoy/internal/dispatch/docs/service_test.go`) waits for a room's live updates to reach its persistence and land, and then settles the room.
+That wait is a queue.
+A room's appends go through the service's room-appends pool of 8 connections, and a test whose subtests run in parallel drives one room per CPU on a single service.
+So the wait is as long as that queue, which grows with the machine's CPU count, its load and the other tests running beside it.
+A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision` (2026-11-16, 288 CPUs).
+At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
+
+`awaitRoomAppends` therefore waits on the room's idle signal and sets no span of its own, so the bound is a signal rather than a clock.
+It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`, which is `ShutdownDrainBudget`, the time Shutdown gives the rooms' appends to land.
+It also fails 30 s before the run's own deadline, so that the failure names the wait.
+Two scratch tests checked it, each with the 10 s clock and with this wait:
+
+- 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3.
+- An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s, naming the stall and the room's counts.
+
 ## A writer a test holds
 
 A test that needs a live socket's writer held, so that frames queue behind it while the test
