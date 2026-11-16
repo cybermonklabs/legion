@@ -619,20 +619,22 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 // (tick), which follows an interval reading at the high mark and so can only be a recovery; none
 // of them raises a rise. A fall below the low mark while the trimmer waits for settings it can
 // run (awaitSettings) is read by neither, so when the trimmer runs again the episode and its chain
-// go on as it left them.
+// go on as it left them, unless its first reading then is below the low mark, which is a recovery.
 //
-// Each recovery starts a new chain, anchored afresh (riseAt), so a volume that cycles is told
+// Each recovery starts a new chain, anchored afresh (riseAt), so a volume that cycles can be told
 // about each cycle: its recovery episode's reports wait for the pod's hour, and a rise, raised in
 // each cycle where two reported sweeps in a row start five points or more above the lowest start
 // of that cycle's reported sweeps before them, is told without waiting. Such a cycle costs one
-// notice a cycle that the hour does not hold back, the rise, and two once it is long enough for
-// a recovery episode's report to come an hour after that rise. Measured for one pod over a day of
-// 60-second intervals, through this loop and the daemon's bounds (internal/workflow's
-// volumeNoticeHeldBy): where the sweeps pause between three reported starts of 86%, 91% and 92%
-// and a sweep then leaves 69.9%, 42 notices a day at a 35-minute cycle, the shortest that shape
-// has, 41 at 71 minutes, 33 at 45 and 8 at six hours; where each sweep frees a point and none
-// pauses, the same fill makes a shorter cycle and the figure grows as the cycle shortens, 48 a day
-// at 62 minutes and 289 at 5.
+// notice that the hour does not hold back for each report of its rise episode, up to that
+// episode's three, besides its recovery episode's reports, which come at most one an hour.
+// Measured for one pod over a day of 60-second intervals, through this loop and the daemon's
+// bounds (internal/workflow's volumeNoticeHeldBy): where the sweeps pause between three reported
+// starts of 86%, 91% and 92% and a sweep then leaves 69.9%, 42 notices a day at a 35-minute
+// cycle, the shortest that shape has, 41 at 71 minutes, 33 at 45 and 8 at six hours; where the
+// fill goes on to reported starts of 93% and 94% before that sweep, so that the rise episode has
+// three reports, 76 a day at a 57-minute cycle, the shortest that shape has, and 49 at 90
+// minutes; where each sweep frees a point and none pauses, the same fill makes a shorter cycle and
+// the figure grows as the cycle shortens, 48 a day at 62 minutes and 289 at 5.
 func (t *trimmer) episodeOf(percent float64, set shimwire.LauncherVolumeTrim) {
 	switch {
 	case t.episode == 0:

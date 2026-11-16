@@ -3804,11 +3804,12 @@ func TestTheAnchorOfAnEpisodeNoRiseRaisedIsTheLowestStartOfItsReportedSweeps(t *
 // and the third raises the rise from a floor of 95%, nine points above the 86% the first sweep
 // started from. The negative control is the line as it was at b844518c, which printed the rule's
 // five points as the gap ("5 points above the 86.0%"), and the line that printed the gap as the
-// constant again: of the other cases that read the rise line, every one but the rise from an
-// anchor above 95% (TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt, 5.5 points) rises at
-// exactly five points, where the two figures agree, so those cases could not tell the two lines
-// apart. Round 30 restaged this case with a third sweep, since a floor of two starts can raise no
-// rise at the second reported sweep of an episode no rise raised, which the first episode is.
+// constant again: of the other cases that read the rise line, every one but the subtest "from an
+// anchor above 95%" of TestARiseAnchorsTheEpisodeItRaisesAtTheFloorThatRaisedIt, which rises 5.5
+// points from 90%, rises at exactly five points, where the two figures agree, so those cases
+// could not tell the two lines apart. Round 30 restaged this case with a third sweep, since a
+// floor of two starts can raise no rise at the second reported sweep of an episode no rise
+// raised, which the first episode is.
 func TestTheRiseLineNamesTheGapTheTrimmerRead(t *testing.T) {
 	f := newTrimFixture(t, 0)
 	f.useVolume(func(interval int) volumeUsage {
@@ -4170,18 +4171,19 @@ func TestEachRecoveryStartsAChainThatCanRiseAgain(t *testing.T) {
 
 // A sweep that brings the volume below the low mark ends the episode, as a reading below it
 // between sweeps does: "an episode ends when the trimmer's own reading falls below the low mark"
-// (the spec's R4), and the sweep's last reading is the trimmer's own. The sweeps start at 86%,
-// 91% and 91%, which raises a rise and anchors episode 2 at 91%, and the episode's notices are
-// spent at once, since a rise-raised report skips the pod's hour. Then five old entries arrive
-// and the next sweep, from 97%, deletes them and leaves the volume at 69.9%, so it sends no
-// report. One interval later the roles have written three tenths of a point, and every reading
-// after it, at 70.2%, 78% and then 86%, is at or above the low mark. The sweep from 86% is the
-// second fill's first report: it must carry a new episode, raised by the recovery, which the
-// daemon counts afresh. A trimmer that reads a recovery from the interval's reading alone keeps
-// episode 2 and its spent count, and a rise is then read only once two starts stand at 96%, so
-// the architect hears nothing of the second fill from the low mark to 96%, and nothing at all
-// where the rise's anchor stood above 95%. Whether the tick after a clearing sweep reads 69.9%
-// or 70.2% is three tenths of a point the roles write in a minute.
+// (the spec's Design section, where its R4 names the interval reading alone), and the sweep's
+// last reading is the trimmer's own. The sweeps start at 86%, 91% and 91%, which raises a rise
+// and anchors episode 2 at 91%, and that episode's report is told at once, since a rise-raised
+// report skips the pod's hour. Then five old entries arrive and the next sweep, from 97%, deletes
+// them and leaves the volume at 69.9%, so it sends no report. One interval later the roles have
+// written three tenths of a point, and every reading after it, at 70.2%, 78% and then 86%, is at
+// or above the low mark. The sweep from 86% is the second fill's first report: it must carry a
+// new episode, raised by the recovery, which the daemon counts afresh. A trimmer that reads a
+// recovery from the interval's reading alone keeps episode 2: the second fill's reports spend
+// what is left of that episode's three notices, and a rise is then read only once two starts
+// stand at 96%, so once the three are spent the architect hears nothing more of the second fill
+// below 96%, and nothing at all where the rise's anchor stood above 95%. Whether the tick after a
+// clearing sweep reads 69.9% or 70.2% is three tenths of a point the roles write in a minute.
 func TestASweepThatBringsTheVolumeBelowTheLowMarkEndsTheEpisode(t *testing.T) {
 	f := newTrimFixture(t, 0)
 	var mu sync.Mutex

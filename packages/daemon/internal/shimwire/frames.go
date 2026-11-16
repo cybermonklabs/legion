@@ -387,16 +387,17 @@ const (
 	// a new episode at each five points its sweep starts climb, one reported sweep after the
 	// volume first stands there, except after two reported starts in a row read a transient high
 	// such as 97%: that raises a rise anchored there, and a fill from lower down then raises none
-	// until two starts stand five points above it, and none at all where it is above 95%. A peak
-	// that one start reads raises nothing. Each rise lifts the anchor five points or more and a
-	// reading is at most 100%, so until a recovery a chain whose anchor is A at its first rise
-	// holds at most (100 − A) / 5 rises, rounded down; every anchor is a reported sweep's start,
-	// at or above the high mark that sweep ran by, so a chain anchored at the high mark holds at
-	// most (100 − high mark) / 5, three at the default of 85. An anchor above 95% can never be
-	// passed, and from one of 95% a rise needs two reported sweeps in a row that start at exactly
-	// 100.0%. The daemon sends a report of an episode raised this way without holding it for the
-	// pod's hour, and holds it to the three of its episode like any other, which only the report
-	// of a trimmer that switched itself off passes (internal/workflow's volumeNoticeHeldBy).
+	// until two starts stand five points above it, and none at all where it is above 95%, until
+	// a recovery starts a new chain. A peak that one start reads raises nothing. Each rise lifts
+	// the anchor five points or more and a reading is at most 100%, so until a recovery a chain
+	// whose anchor is A at its first rise holds at most (100 − A) / 5 rises, rounded down; every
+	// anchor is a reported sweep's start, at or above the high mark that sweep ran by, so a chain
+	// anchored at the high mark holds at most (100 − high mark) / 5, three at the default of 85.
+	// An anchor above 95% can never be passed, and from one of 95% a rise needs two reported sweeps
+	// in a row that start at exactly 100.0%. The daemon sends a report of an episode raised this
+	// way without holding it for the pod's hour, and holds it to the three of its episode like any
+	// other, which only the report of a trimmer that switched itself off passes
+	// (internal/workflow's volumeNoticeHeldBy).
 	VolumeEpisodeRise = "rise"
 )
 
