@@ -30,6 +30,7 @@ package natsversion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -114,24 +115,33 @@ func parse(version string) (major, minor, patch int, prerelease, ok bool) {
 // sets a nearer one, its 30 s bootTimeout, the same bound its stream lookup after this has.
 const VersionWait = time.Minute
 
-// reconnectPoll is how often ConnectedRefusal looks again at a connection that reports no version.
+// reconnectPoll is how often ConnectedVersion looks again at a connection that reports no version.
 const reconnectPoll = 20 * time.Millisecond
 
-// ConnectedRefusal is Refusal of the version conn's server reports, decided on that version alone:
-// (*nats.Conn).ConnectedServerVersion answers "" whenever a connection is not CONNECTED, while it
-// reconnects and while it drains among them, which is no reading of the server at all. So an empty
-// answer is never held to Refusal: ConnectedRefusal looks again until the connection reports a
-// version, until it is closed, or until ctx is done or VersionWait passes, and in the last two
-// answers an error that the connection is not connected, naming no version. It asks nothing else
-// of the connection before it decides (IsConnected counts a draining connection, and a second
-// read could see a reconnect the first did not), so the answer it holds to Refusal is the one it
-// read. A server that is connected and reports no version is refused as not connected at the
-// deadline, which is all that can be said of it.
+// ConnectedVersion is the version conn's server reports, read only once the connection reports
+// one: (*nats.Conn).ConnectedServerVersion answers "" whenever a connection is not CONNECTED,
+// while it reconnects and while it drains among them, which is no reading of the server at all.
+// So an empty answer is never returned as a version: ConnectedVersion looks again until the
+// connection reports one, until it is closed, or until ctx is done or VersionWait passes, and in
+// the last two answers an error that the connection is not connected. It asks nothing else of the
+// connection before it answers (IsConnected counts a draining connection, and a second read could
+// see a reconnect the first did not), so the version it returns is the one it read. A server that
+// is connected and reports no version is answered as not connected at the deadline, which is all
+// that can be said of it. Every decision on a connection's server version is made on this read:
+// ConnectedRefusal's, and the Envoy stream's consumer cap (internal/bus
+// connectedDefaultsAnUnsetCap).
+func ConnectedVersion(ctx context.Context, conn *nats.Conn) (string, error) {
+	return connectedVersion(ctx, conn)
+}
+
+// ConnectedRefusal is Refusal of the version conn's server reports (ConnectedVersion), decided on
+// that version alone. A connection that reports none within the wait is refused as not connected,
+// naming no version.
 func ConnectedRefusal(ctx context.Context, conn *nats.Conn) error {
 	return connectedRefusal(ctx, conn)
 }
 
-// serverConn is what ConnectedRefusal reads of a connection, the seam its tests reach a reconnect
+// serverConn is what ConnectedVersion reads of a connection, the seam its tests reach a reconnect
 // between two reads through.
 type serverConn interface {
 	ConnectedServerVersion() string
@@ -139,18 +149,26 @@ type serverConn interface {
 }
 
 func connectedRefusal(ctx context.Context, conn serverConn) error {
+	version, err := connectedVersion(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("%w, so its server's version cannot be checked against nats-server %s", err, FixedReleases)
+	}
+	return Refusal(version)
+}
+
+func connectedVersion(ctx context.Context, conn serverConn) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, VersionWait)
 	defer cancel()
 	for {
 		if version := conn.ConnectedServerVersion(); version != "" {
-			return Refusal(version)
+			return version, nil
 		}
 		if conn.IsClosed() {
-			return fmt.Errorf("the NATS connection is closed and not connected, so its server's version cannot be checked against nats-server %s", FixedReleases)
+			return "", errors.New("the NATS connection is closed and not connected")
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("the NATS connection is not connected, so its server's version cannot be checked against nats-server %s: it reported none within the wait (%w)", FixedReleases, ctx.Err())
+			return "", fmt.Errorf("the NATS connection is not connected: it reported no server version within the wait (%w)", ctx.Err())
 		case <-time.After(reconnectPoll):
 		}
 	}

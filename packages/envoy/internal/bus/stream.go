@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/natsversion"
 )
 
 const Stream = "ENVOY_NOTIFICATIONS"
@@ -536,19 +537,34 @@ const (
 	streamMaxConsumersDefaultMinor = 15
 )
 
+// connectedDefaultsAnUnsetCap is serverDefaultsAnUnsetCap of the version conn's server reports,
+// read as natsversion.ConnectedVersion reads it: only once the connection reports one. A
+// connection that is reconnecting or draining answers "" for its server's version, and nats.go
+// holds the requests it is given while it reconnects and sends them to the server it reaches, so
+// a decision on that "" would be an older server's answer applied to whichever server the ensure
+// then writes to: on nats-server 2.15 a stream with no consumer cap, capped at 1000, would be left
+// as it is. A connection that reports no version before ctx is done or the wait passes answers the
+// error, and the caller decides nothing (TestAnEnsureAcrossAReconnectDecidesTheCapOnTheServerItReaches).
+func connectedDefaultsAnUnsetCap(ctx context.Context, conn *nats.Conn) (bool, error) {
+	version, err := natsversion.ConnectedVersion(ctx, conn)
+	if err != nil {
+		return false, err
+	}
+	return serverDefaultsAnUnsetCap(version), nil
+}
+
 // serverDefaultsAnUnsetCap reports whether serverVersion is the version of a server that applies
 // its own default consumer cap to a stream that sets none: nats-server
 // streamMaxConsumersDefaultMajor.Minor or later. serverVersion is what the connected server
-// answers, read from (*nats.Conn).ConnectedServerVersion(), and the whole question this binary
-// asks of a deployed stream whose cap is -1 or 0: on such a server that stream is capped at 1000
-// and is raised to streamMaxConsumers, on every older one it is unlimited and is left as it is
-// (ownedStream).
+// reports (connectedDefaultsAnUnsetCap), and the whole question this binary asks of a deployed
+// stream whose cap is -1 or 0: on such a server that stream is capped at 1000 and is raised to
+// streamMaxConsumers, on every older one it is unlimited and is left as it is (ownedStream).
 //
 // Only the major and the minor are read, since the first such server is a minor's own first
 // release, and each is the number its field begins with, so a pre-release (`2.15.0-RC.1`) counts
 // as the release it leads to and an optional leading `v` is taken as nats.go's own version parse
-// takes it (versionComponents). A string that carries no major and minor - the empty string a
-// client with no live connection answers among them - is no such server.
+// takes it (versionComponents). A string that carries no major and minor is no such server; the
+// empty string a connection answers outside CONNECTED never reaches here.
 func serverDefaultsAnUnsetCap(serverVersion string) bool {
 	major, rest, split := strings.Cut(strings.TrimPrefix(serverVersion, "v"), ".")
 	if !split {

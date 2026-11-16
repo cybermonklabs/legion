@@ -545,18 +545,19 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // install makes nc the client's connection, with the JetStream context taken from it, once it has
 // ensured the client's stream on nc (ensureStream) when ensure is true. The ensure is told
 // whether nc's server caps a stream that sets no consumer cap at a default of its own, read from
-// the version nc answers (serverDefaultsAnUnsetCap). Installing it is a connection event
-// (ConnectionChanged). It is also where the client enters the registry of live clients
-// (registerClient), the constructor's own step: install runs only from the constructor and only
-// a client it returns gets this far, so a caller holding a connection can find the client that
-// owns it (clientOwning) for as long as that client is a caller's to use.
+// the version nc reports (ensureStreamReported), which waits out a reconnect rather than decide
+// on the empty version one answers. Installing it is a connection event (ConnectionChanged). It is
+// also where the client enters the registry of live clients (registerClient), the constructor's
+// own step: install runs only from the constructor and only a client it returns gets this far, so
+// a caller holding a connection can find the client that owns it (clientOwning) for as long as
+// that client is a caller's to use.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
 		return err
 	}
 	if ensure {
-		if err := c.ensureStream(js, serverDefaultsAnUnsetCap(nc.ConnectedServerVersion())); err != nil {
+		if err := c.ensureStreamReported(nc, js); err != nil {
 			return err
 		}
 	}
@@ -600,17 +601,46 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 
 // ensureStreamOn is an owning client's reconnect hook: it ensures the stream on conn after each
 // connection event, so a stream lost while the process runs is created again. It reads the
-// version off the connection nats.go hands it, so the ensure asks the server it writes to
-// whether a stream with no consumer cap is one that server caps (serverDefaultsAnUnsetCap).
+// version off the connection nats.go hands it, once that connection reports one, so the ensure
+// asks the server it writes to whether a stream with no consumer cap is one that server caps
+// (ensureStreamReported).
 func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStream(js, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
+		err = c.ensureStreamReported(conn, js)
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
 	}
 	return nil
+}
+
+// ensureStreamReported ensures the stream through js with what conn's server reports it is
+// (connectedDefaultsAnUnsetCap), waiting for that report until the client stops (untilStopped) or
+// natsversion.VersionWait passes; a connection that reports none in that time ensures nothing and
+// answers the error.
+func (c *Client) ensureStreamReported(conn *nats.Conn, js nats.JetStreamContext) error {
+	ctx, cancel := c.untilStopped()
+	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, conn)
+	cancel()
+	if err != nil {
+		return err
+	}
+	return c.ensureStream(js, defaultsAnUnsetCap)
+}
+
+// untilStopped is a context that ends when the client stops (Close or Drain), for a wait that a
+// stop must not outlast; the caller cancels it when the wait is over.
+func (c *Client) untilStopped() (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-c.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // readDeployedSubjects reads the deployed stream's subjects on conn within timeout and keeps them
