@@ -70,6 +70,12 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 		b.mu.Lock()
 		b.bodies = append(b.bodies, string(raw))
 		b.mu.Unlock()
+		if len(raw) > 1<<20 {
+			// The broker's own cap on a JSON body (maxJSONBodyBytes, internal/broker/api).
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			writeJSON(w, map[string]string{"code": "REQUEST_TOO_LARGE", "error": "request body exceeds 1048576 bytes"})
+			return
+		}
 		var every struct {
 			GitHubApp *GitHubNarrowing `json:"github_app"`
 			Command   []string         `json:"command"`
@@ -206,4 +212,37 @@ func TestExecReleasesFromAnOlderBrokerWithoutTheCommand(t *testing.T) {
 			t.Fatalf("release bodies = %q, want the one release the broker refused", bodies)
 		}
 	})
+}
+
+// TestExecReleasesACommandOverTheBodyCap: a command of 9,001 arguments, about 1.1 MB and well
+// under the kernel's limit, runs as it did before the release named its command: the client
+// sends the broker the first 32 arguments alone, each cut to 256 bytes on a character's
+// boundary, which is all the broker records, so the body never reaches the broker's 1 MiB cap.
+// The command itself gets every argument.
+func TestExecReleasesACommandOverTheBodyCap(t *testing.T) {
+	binary := buildAgentSecrets(t)
+	b := newCommandBroker(t, knowsEveryField)
+	keyDir := newKeyDir(t)
+	wide := strings.Repeat("é", 500)
+	args := []string{"APP", "--", "sh", "-c", `echo "ran $APP $#"`, wide}
+	for range 9000 {
+		args = append(args, strings.Repeat("x", 120))
+	}
+	stdout, stderr, exit := runAgentSecrets(t, binary, b.srv.URL, keyDir, nil, args...)
+	if exit != 0 || stdout != "ran APP-v1 9000\n" {
+		t.Fatalf("exit %d, stdout %q, stderr %.300q; want exit 0 and the command run with all 9,000 of its arguments", exit, stdout, stderr)
+	}
+	bodies := b.take()
+	if len(bodies) != 1 {
+		t.Fatalf("the broker was sent %d releases, want 1", len(bodies))
+	}
+	var sent struct {
+		Command []string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &sent); err != nil {
+		t.Fatalf("decode the release body: %v", err)
+	}
+	if len(sent.Command) != 32 || sent.Command[3] != strings.Repeat("é", 128) || sent.Command[4] != strings.Repeat("x", 120) {
+		t.Fatalf("the release named %d arguments (the 4th %d bytes), want 32, the 4th cut to 128 whole characters", len(sent.Command), len(sent.Command[min(3, len(sent.Command)-1)]))
+	}
 }

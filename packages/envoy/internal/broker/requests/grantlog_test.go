@@ -293,7 +293,7 @@ func linedRows(t *testing.T, lines []grantLogLine) [][3]string {
 // TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse pins the volume: one line per
 // request decision and per grant end, in the order the audit table holds those rows, and none at
 // all for a release (grant.used) or for an enrollment's own row. A session that reads its grant
-// every few seconds writes one audit row per release and no line for any of them.
+// every few seconds writes one audit row per release and no grant-log line for any of them.
 func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-volume")
 	ctx := context.Background()

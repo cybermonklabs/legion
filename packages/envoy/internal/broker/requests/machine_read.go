@@ -227,12 +227,13 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 			return Release{}, err
 		}
 	}
-	use := grantUse{
-		names:      releasedNames(read),
-		command:    loggedCommand(call.Command, handedOut(read, release.Airlock)),
-		callReason: callReasonOf(call.Reason, checked.reason),
-		narrowing:  narrowing,
+	// A release with no command, every release from a client from before the field among them,
+	// collects and parses nothing for a redaction it would not make.
+	command := []string{}
+	if len(call.Command) > 0 {
+		command = loggedCommand(call.Command, handedOut(read, release.Airlock))
 	}
+	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
 		return Release{}, err
 	}

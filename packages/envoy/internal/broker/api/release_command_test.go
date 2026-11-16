@@ -1,13 +1,39 @@
 package api_test
 
 import (
+	"log/slog"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
+
+// lastRelease is the attributes of the last requests.ReleasedMessage record capture holds for
+// grantID, as the broker's handler receives them.
+func lastRelease(t *testing.T, capture *logtest.Recorder, grantID string) map[string]any {
+	t.Helper()
+	var last map[string]any
+	for _, r := range capture.Records() {
+		if r.Message != requests.ReleasedMessage {
+			continue
+		}
+		attrs := map[string]any{}
+		r.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.Any()
+			return true
+		})
+		if attrs["grant"] == grantID {
+			last = attrs
+		}
+	}
+	if last == nil {
+		t.Fatalf("no %q record names grant %s", requests.ReleasedMessage, grantID)
+	}
+	return last
+}
 
 // TestAReleaseBodyNamesTheCommandItStarts: POST /v1/grants/{id}/values takes the command the
 // release starts as "command", beside a github_app narrowing or alone, and the reason the
@@ -16,32 +42,30 @@ import (
 // not a list of strings refuses the whole body, as any field of the wrong shape does, and
 // releases nothing.
 func TestAReleaseBodyNamesTheCommandItStarts(t *testing.T) {
-	logged := policytest.CaptureLog(t)
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
 	s := newNarrowingServer(t)
 	plain := s.grant(t, "PLAIN_KEY")
 
 	for _, row := range []struct {
-		name    string
-		grantID string
-		body    map[string]any
-		logs    string
+		name       string
+		grantID    string
+		body       map[string]any
+		command    []string
+		callReason string
 	}{
-		{"alone", plain, map[string]any{"command": []string{"sh", "-c", "echo plain-v1"}}, `command="[sh -c echo [redacted]]"`},
-		{"beside a narrowing", s.grantID, map[string]any{"github_app": map[string]any{"owner": "ada"}, "command": []string{"gh", "pr", "list"}}, `command="[gh pr list]"`},
-		{"with its call's own reason", plain, map[string]any{"command": []string{"sh", "-c", "true"}, "reason": "renew the deploy key"}, `call_reason="renew the deploy key" command="[sh -c true]"`},
+		{"alone", plain, map[string]any{"command": []string{"sh", "-c", "echo plain-v1"}}, []string{"sh", "-c", "echo [redacted]"}, ""},
+		{"beside a narrowing", s.grantID, map[string]any{"github_app": map[string]any{"owner": "ada"}, "command": []string{"gh", "pr", "list"}}, []string{"gh", "pr", "list"}, ""},
+		{"with its call's own reason", plain, map[string]any{"command": []string{"sh", "-c", "true"}, "reason": "renew the deploy key"}, []string{"sh", "-c", "true"}, "renew the deploy key"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if status, body := s.values(t, row.grantID, row.body); status != http.StatusOK {
 				t.Fatalf("POST values = %d %s, want 200", status, body)
 			}
-			want := 0
-			for line := range strings.Lines(logged.String()) {
-				if strings.Contains(line, "INFO "+requests.ReleasedMessage+" grant="+row.grantID) && strings.Contains(line, `reason="need it"`) && strings.Contains(line, row.logs) {
-					want++
-				}
-			}
-			if want != 1 {
-				t.Fatalf("logged %d %q lines for the grant naming its reason and %s, want 1:\n%s", want, requests.ReleasedMessage, row.logs, logged.String())
+			last := lastRelease(t, capture, row.grantID)
+			callReason, named := last["call_reason"]
+			if last["reason"] != "need it" || !reflect.DeepEqual(last["command"], row.command) || named != (row.callReason != "") || (named && callReason != row.callReason) {
+				t.Fatalf("the release record = %v; want reason \"need it\", command %q and call_reason %q", last, row.command, row.callReason)
 			}
 		})
 	}

@@ -282,15 +282,71 @@ func validateDetails(details []AuthorizationDetail) error {
 
 // MaxReasonRunes is the longest reason a request may sign, and ReasonRefuses the runes it may
 // not carry: Unicode categories Cc, Cf, Cs, Co, Zl and Zp (bidi overrides and zero-width
-// characters are Cf). Both are exported because the model judge holds what a model writes to
-// the same bound and the same categories (judge.sanitize, judge/model.go), which drops them
-// rather than refusing; one definition there and here keeps a reason a person reads in the
-// grant log and a reason a requester signed to one rule.
+// characters are Cf). validateReason refuses a reason that breaks either rule. Text the broker
+// records with nobody to refuse it to is held to the same rules by Sanitize, which drops those
+// runes and cuts the rest: what a model judge wrote (judge/model.go, judge/judge.go) and the
+// reason a session's call gave a release (requests.callReasonOf). One definition here keeps a
+// reason a person reads in the grant log and a reason a requester signed to one rule.
 const MaxReasonRunes = 400
 
 // ReasonRefuses reports whether r is a rune no reason may carry.
 func ReasonRefuses(r rune) bool {
 	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp)
+}
+
+// Sanitize is s with every rune ReasonRefuses dropped and what is left cut to its first limit
+// runes: the reason rules applied to text that is already in hand, where validateReason would
+// refuse it.
+func Sanitize(s string, limit int) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if ReasonRefuses(r) {
+			return -1
+		}
+		return r
+	}, s)
+	count := 0
+	for i := range cleaned {
+		if count == limit {
+			return cleaned[:i]
+		}
+		count++
+	}
+	return cleaned
+}
+
+// MaxCommandArguments and MaxCommandArgumentBytes bound the command a release of a grant records
+// (requests.loggedCommand): its first 32 arguments, each cut to 256 bytes. The agent-secrets
+// client sends no more than that (ClipCommand), which keeps a release's body far under the
+// broker's 1 MiB cap whatever the command, and the broker holds every body to the same bounds
+// again, since a session may send any body.
+const (
+	MaxCommandArguments     = 32
+	MaxCommandArgumentBytes = 256
+)
+
+// ClipArgument is arg cut to its first MaxCommandArgumentBytes bytes on a character's boundary.
+func ClipArgument(arg string) string {
+	if len(arg) <= MaxCommandArgumentBytes {
+		return arg
+	}
+	cut := MaxCommandArgumentBytes
+	for cut > 0 && !utf8.RuneStart(arg[cut]) {
+		cut--
+	}
+	return arg[:cut]
+}
+
+// ClipCommand is command's first MaxCommandArguments arguments, each cut by ClipArgument: what a
+// client sends of the command a release starts. It answers nil for no command.
+func ClipCommand(command []string) []string {
+	if len(command) == 0 {
+		return nil
+	}
+	clipped := make([]string, min(len(command), MaxCommandArguments))
+	for i := range clipped {
+		clipped[i] = ClipArgument(command[i])
+	}
+	return clipped
 }
 
 // validateReason enforces: at most MaxReasonRunes runes, none a rune ReasonRefuses.

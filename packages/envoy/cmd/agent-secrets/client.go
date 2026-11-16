@@ -538,7 +538,10 @@ type AirlockName struct {
 // releaseCall is what this client says of one release to the broker, which logs it with the
 // grant's reason and decides nothing by it: the command the release starts, nil for none, and
 // the reason this call gave, "" for none. That reason can differ from the grant's, since a call
-// that asks again for names its session holds a live grant of gets that grant back.
+// that asks again for names its session holds a live grant of gets that grant back. The exec form
+// sends the command as record.ClipCommand leaves it, the 32 arguments of at most 256 bytes the
+// broker records, so no command takes the body past the broker's 1 MiB cap and fails a release
+// that would have succeeded without it.
 type releaseCall struct {
 	Command []string `json:"command,omitempty"`
 	Reason  string   `json:"reason,omitempty"`

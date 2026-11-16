@@ -271,7 +271,7 @@ func TestARawAnswerAndAReasonCarryNoRefusedRune(t *testing.T) {
 		{"a string inside both bounds", "plain words", maxReasonRunes, "plain words"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := sanitize(c.in, c.limit)
+			got := record.Sanitize(c.in, c.limit)
 			if got != c.want {
 				t.Errorf("sanitize(%q, %d) = %q; want %q", c.in, c.limit, got, c.want)
 			}

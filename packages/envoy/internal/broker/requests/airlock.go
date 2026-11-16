@@ -261,7 +261,7 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 // value that does not hold what its kind releases — no object, a missing or non-string token — is
 // an ErrAirlockValueShape rather than a release, since the one other answer would be to release
 // the real value the rules hold back.
-func airlockSplitOf(entry *airlock.SecretRule, kind, value string) (airlockSplit, error) {
+func airlockSplitOf(entryKind, kind, value string) (airlockSplit, error) {
 	var split airlockSplit
 	var err error
 	switch {
@@ -269,7 +269,7 @@ func airlockSplitOf(entry *airlock.SecretRule, kind, value string) (airlockSplit
 		split, err = githubAppSplit(value)
 	case kind == policy.KindAzureLogin:
 		split, err = objectSplit(value, map[string]string{"federated_token": SlotAzureFederated}, nil)
-	case kind == "" && entry.Kind == airlock.KindAWS:
+	case kind == "" && entryKind == airlock.KindAWS:
 		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
 	default:

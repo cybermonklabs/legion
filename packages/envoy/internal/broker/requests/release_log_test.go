@@ -3,6 +3,9 @@ package requests
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,22 +15,79 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// releasedLines are the lines a capture holds of ReleasedMessage, each without its newline, in
-// the order the broker wrote them.
-func releasedLines(captured string) []string {
-	var lines []string
-	for line := range strings.Lines(captured) {
-		if strings.Contains(line, ReleasedMessage) {
-			lines = append(lines, strings.TrimRight(line, "\r\n"))
+// captureRecords points the default logger at a recorder until t ends, so a test reads the
+// records the broker logs as its handler receives them, attributes and all.
+func captureRecords(t *testing.T) *logtest.Recorder {
+	t.Helper()
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	return capture
+}
+
+// releasedRecords are the attributes of each ReleasedMessage record capture holds, in the order
+// they were written, as the broker's handler receives them: a test reads the values the release
+// logged rather than one handler's rendering of them, since the broker's own handler
+// (logging.NewCloudHandler) writes JSON and no test's does.
+func releasedRecords(t *testing.T, capture *logtest.Recorder) []map[string]any {
+	t.Helper()
+	var records []map[string]any
+	for _, r := range capture.Records() {
+		if r.Message != ReleasedMessage {
+			continue
 		}
+		if r.Level != slog.LevelInfo {
+			t.Errorf("%q was logged at %s, want INFO", ReleasedMessage, r.Level)
+		}
+		attrs := map[string]any{}
+		r.Attrs(func(a slog.Attr) bool {
+			if _, twice := attrs[a.Key]; twice {
+				t.Fatalf("the release record carries %q twice", a.Key)
+			}
+			attrs[a.Key] = a.Value.Any()
+			return true
+		})
+		records = append(records, attrs)
 	}
-	return lines
+	return records
+}
+
+// loggedText is every record capture holds, its message and each attribute's value as Go prints
+// it, one record a line: what a check that no byte of a value was logged searches, whatever line
+// held it.
+func loggedText(capture *logtest.Recorder) string {
+	var text strings.Builder
+	for _, r := range capture.Records() {
+		text.WriteString(r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			fmt.Fprintf(&text, " %s=%v", a.Key, a.Value.Any())
+			return true
+		})
+		text.WriteByte('\n')
+	}
+	return text.String()
+}
+
+// with is fields added to base, in a new map.
+func with(base, fields map[string]any) map[string]any {
+	merged := maps.Clone(base)
+	maps.Copy(merged, fields)
+	return merged
+}
+
+// asJSON is args as a grant.used row's detail decodes them.
+func asJSON(args []string) []any {
+	out := make([]any, len(args))
+	for i, arg := range args {
+		out[i] = arg
+	}
+	return out
 }
 
 // loggedCommandOf is the command the last grant.used row of grantID records, as the strings it
-// holds; nil when the row records none.
+// holds.
 func loggedCommandOf(t *testing.T, m *Machine, grantID string) []string {
 	t.Helper()
 	details := grantUsedDetails(t, m, grantID)
@@ -46,11 +106,11 @@ func loggedCommandOf(t *testing.T, m *Machine, grantID string) []string {
 }
 
 // TestAReleaseLogsTheGrantsReasonAndItsCommand: a session's release records, in its grant.used
-// row and in one log line, the reason its request gave and the command the session said the
+// row and in one log record, the reason its request gave and the command the session said the
 // release starts. The proxy's release of the same grant records the reason too, and marks itself
 // as the airlock's in place of a command, since it starts none.
 func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
-	logged := policytest.CaptureLog(t)
+	capture := captureRecords(t)
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	const reason = "publish the docs site"
@@ -70,78 +130,67 @@ func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
 	if details := grantUsedDetails(t, m, grantID); !reflect.DeepEqual(details, want) {
 		t.Errorf("grant.used details = %v; want %v: each release records its grant's reason, and the session's the command it starts", details, want)
 	}
-	ids := " grant=" + grantID + " request=" + requestID + " enrollment=" + enr
-	wantLines := []string{
-		"INFO " + ReleasedMessage + ids + ` names="[AUTO_TOKEN SECOND_TOKEN]" reason="publish the docs site" command="[sh -c true]"`,
-		"INFO " + ReleasedMessage + ids + ` names=[AUTO_TOKEN] reason="publish the docs site" airlock=true`,
+	ids := map[string]any{"grant": grantID, "request": requestID, "enrollment": enr}
+	wantRecords := []map[string]any{
+		with(ids, map[string]any{"names": []string{"AUTO_TOKEN", "SECOND_TOKEN"}, "reason": reason, "command": []string{"sh", "-c", "true"}}),
+		with(ids, map[string]any{"names": []string{"AUTO_TOKEN"}, "reason": reason, "airlock": true}),
 	}
-	if lines := releasedLines(logged.String()); !reflect.DeepEqual(lines, wantLines) {
-		t.Errorf("the log's release lines are\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(wantLines, "\n"))
+	if records := releasedRecords(t, capture); !reflect.DeepEqual(records, wantRecords) {
+		t.Errorf("the release records are\n%v\nwant\n%v", records, wantRecords)
 	}
 }
 
 // TestAReleaseLogsTheReasonItsOwnCallGave: a session that asks again for the names it holds a
 // live grant of gets that grant back (reuseLiveGrant), and the reason its own call gave goes into
 // no request row. Its release records that reason as call_reason, beside the reason of the request
-// the grant came of, in the row and the line, when the two differ, and records nothing more when
+// the grant came of, in the row and the record, when the two differ, and records nothing more when
 // they are the same or the session sent none, as a client from before the field does. The broker
-// holds the call's reason to a request's own rules, dropping the runes no reason may carry and
-// cutting it to record.MaxReasonRunes, since nothing refused it before the release.
+// holds the call's reason to a request's own rules (record.Sanitize), dropping the runes no reason
+// may carry and cutting it to record.MaxReasonRunes, since nothing refused it before the release.
 func TestAReleaseLogsTheReasonItsOwnCallGave(t *testing.T) {
-	logged := policytest.CaptureLog(t)
+	capture := captureRecords(t)
 	m, enr, key, _ := newFixture(t)
 	const reason, again = "publish the docs site", "rebuild the search index"
 	requestID, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN")
 	if _, reused := grantOf(t, m, enr, key, again, "AUTO_TOKEN"); reused != grantID {
 		t.Fatalf("the second ask got grant %s, want the live grant %s back", reused, grantID)
 	}
-	ids := " grant=" + grantID + " request=" + requestID + " enrollment=" + enr
+	ids := map[string]any{"grant": grantID, "request": requestID, "enrollment": enr}
 	for _, row := range []struct {
-		name   string
-		call   ReleaseCall
-		detail map[string]any
-		line   string
+		name       string
+		call       ReleaseCall
+		callReason string
+		command    []string
 	}{
-		{
-			"its call's own reason", ReleaseCall{Reason: again, Command: []string{"make", "index"}},
-			map[string]any{"names": []any{"AUTO_TOKEN"}, "reason": reason, "call_reason": again, "command": []any{"make", "index"}},
-			`names=[AUTO_TOKEN] reason="publish the docs site" call_reason="rebuild the search index" command="[make index]"`,
-		},
-		{
-			"the grant's own reason", ReleaseCall{Reason: reason, Command: []string{"make"}},
-			map[string]any{"names": []any{"AUTO_TOKEN"}, "reason": reason, "command": []any{"make"}},
-			`names=[AUTO_TOKEN] reason="publish the docs site" command=[make]`,
-		},
-		{
-			"no reason of its own", ReleaseCall{},
-			map[string]any{"names": []any{"AUTO_TOKEN"}, "reason": reason, "command": []any{}},
-			`names=[AUTO_TOKEN] reason="publish the docs site" command=[]`,
-		},
-		{
-			"a reason no request could sign", ReleaseCall{Reason: "fix\u202eit" + strings.Repeat("é", 500)},
-			map[string]any{"names": []any{"AUTO_TOKEN"}, "reason": reason, "call_reason": "fixit" + strings.Repeat("é", 395), "command": []any{}},
-			`names=[AUTO_TOKEN] reason="publish the docs site" call_reason=fixit` + strings.Repeat("é", 395) + ` command=[]`,
-		},
+		{"its call's own reason", ReleaseCall{Reason: again, Command: []string{"make", "index"}}, again, []string{"make", "index"}},
+		{"the grant's own reason", ReleaseCall{Reason: reason, Command: []string{"make"}}, "", []string{"make"}},
+		{"no reason of its own", ReleaseCall{}, "", []string{}},
+		{"a reason no request could sign", ReleaseCall{Reason: "fix\u202eit" + strings.Repeat("é", 500)}, "fixit" + strings.Repeat("é", 395), []string{}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if _, err := m.Values(t.Context(), grantID, enr, nil, row.call); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
-			details := grantUsedDetails(t, m, grantID)
-			if got := details[len(details)-1]; !reflect.DeepEqual(got, row.detail) {
-				t.Errorf("the last grant.used detail = %.200v; want %.200v", got, row.detail)
+			wantDetail := map[string]any{"names": []any{"AUTO_TOKEN"}, "reason": reason, "command": asJSON(row.command)}
+			wantRecord := with(ids, map[string]any{"names": []string{"AUTO_TOKEN"}, "reason": reason, "command": row.command})
+			if row.callReason != "" {
+				wantDetail["call_reason"], wantRecord["call_reason"] = row.callReason, row.callReason
 			}
-			lines := releasedLines(logged.String())
-			if want := "INFO " + ReleasedMessage + ids + " " + row.line; len(lines) == 0 || lines[len(lines)-1] != want {
-				t.Errorf("the last release line is\n%.300s\nwant\n%.300s", lines, want)
+			details := grantUsedDetails(t, m, grantID)
+			if got := details[len(details)-1]; !reflect.DeepEqual(got, wantDetail) {
+				t.Errorf("the last grant.used detail = %.200v; want %.200v", got, wantDetail)
+			}
+			records := releasedRecords(t, capture)
+			if len(records) == 0 || !reflect.DeepEqual(records[len(records)-1], wantRecord) {
+				t.Errorf("the last release record is %.300v; want %.300v", records, wantRecord)
 			}
 		})
 	}
 }
 
 // TestAReleaseCommandHoldingAValueIsRedacted: a command that holds a value the release handed out
-// is recorded with "[redacted]" in its place, in the row and in the line, and neither holds one
-// byte of it that could say what it was: a stored value, a token inside the document a
+// is recorded with "[redacted]" in its place, in the row and in the record, and no log line holds
+// one byte of it that could say what it was: a stored value, a token inside the document a
 // github-app minter answered, and a placeholder the airlock handed out for a name it holds back.
 // The value is redacted before the argument is clipped to its 256 bytes, so a value that crosses
 // the cut leaves no prefix of itself behind. (The values below are fixtures, not credentials.)
@@ -167,7 +216,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 	}
 
 	t.Run("a-stored-value", func(t *testing.T) {
-		logged := policytest.CaptureLog(t)
+		capture := captureRecords(t)
 		m, enr, key, _ := newFixture(t)
 		retag(t, m, policytest.Secret("STORED_KEY", fixtureOperator, policy.TierAgent, storedValue))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "STORED_KEY")
@@ -179,14 +228,14 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		if got := loggedCommandOf(t, m, grantID); !reflect.DeepEqual(got, want) {
 			t.Errorf("the row's command = %q, want %q", got, want)
 		}
-		if lines := releasedLines(logged.String()); len(lines) != 1 || !strings.Contains(lines[0], `command="[curl -H Authorization: Bearer [redacted] https://api.example.com/v1]"`) {
-			t.Errorf("the release lines = %q, want one naming the redacted command", lines)
+		if records := releasedRecords(t, capture); len(records) != 1 || !reflect.DeepEqual(records[0]["command"], want) {
+			t.Errorf("the release records' commands = %v, want one record naming %q", records, want)
 		}
-		hidden(t, m, grantID, logged.String(), storedValue)
+		hidden(t, m, grantID, loggedText(capture), storedValue)
 	})
 
 	t.Run("a-token-in-a-minted-document", func(t *testing.T) {
-		logged := policytest.CaptureLog(t)
+		capture := captureRecords(t)
 		m, enr, key, _ := newFixture(t)
 		retag(t, m, requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
 		m.Minters = map[string]Minter{
@@ -205,11 +254,11 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		if got := loggedCommandOf(t, m, grantID); !reflect.DeepEqual(got, want) {
 			t.Errorf("the row's command = %q, want %q", got, want)
 		}
-		hidden(t, m, grantID, logged.String(), mintedToken)
+		hidden(t, m, grantID, loggedText(capture), mintedToken)
 	})
 
 	t.Run("a-placeholder-the-airlock-handed-out", func(t *testing.T) {
-		logged := policytest.CaptureLog(t)
+		capture := captureRecords(t)
 		m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 		_, grantID := grantOf(t, m, enr, key, "call the API", "AUTO_TOKEN")
 		first, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
@@ -225,11 +274,11 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		if got, want := loggedCommandOf(t, m, grantID), []string{"curl", "-u", "x:[redacted]"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("the row's command = %q, want %q", got, want)
 		}
-		hidden(t, m, grantID, logged.String(), strings.TrimPrefix(placeholder, PlaceholderPrefix))
+		hidden(t, m, grantID, loggedText(capture), strings.TrimPrefix(placeholder, PlaceholderPrefix))
 	})
 
 	t.Run("a-value-across-the-cut", func(t *testing.T) {
-		logged := policytest.CaptureLog(t)
+		capture := captureRecords(t)
 		m, enr, key, _ := newFixture(t)
 		retag(t, m, policytest.Secret("STORED_KEY", fixtureOperator, policy.TierAgent, storedValue))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "STORED_KEY")
@@ -242,7 +291,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		if want := strings.Repeat("a", 248) + "[redacte"; len(got) != 2 || got[1] != want {
 			t.Errorf("the row's command = %q, want echo and %q", got, want)
 		}
-		hidden(t, m, grantID, logged.String(), storedValue)
+		hidden(t, m, grantID, loggedText(capture), storedValue)
 	})
 }
 

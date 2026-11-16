@@ -8,41 +8,34 @@
 package requests
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
-	"unicode/utf8"
 
-	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // ReleasedMessage is logged, at INFO, once for each release of a grant, once its grant.used row
-// is written, followed by grant=, request=, enrollment=, names=<the names it released>,
-// reason=<the reason the grant's request gave> and then, for the session's release (Values),
-// call_reason=<the reason the session's own call gave, as callReasonOf records it> where that
-// says something the grant's reason does not, and command=<the argument vector the session said
-// the release starts, as loggedCommand records it: empty from a client from before the field>,
-// or, for the proxy's (AirlockValues), airlock=true, since that release starts no command. It is
-// the operator's line for what each grant was spent on and why, and never holds a value the
-// release handed out.
+// is written, followed by grant=, request=, enrollment= and the fields grantUse.recorded answers,
+// which the row's detail holds too: names=<the names it released>, reason=<the reason the grant's
+// request gave> and then, for the session's release (Values), call_reason=<the reason the
+// session's own call gave, as record.Sanitize leaves it> where that says something the grant's
+// reason does not, command=<the argument vector the session said the release starts, as
+// loggedCommand records it: empty from a client from before the field> and github_app=<the
+// narrowing it applied>, where it applied one; or, for the proxy's (AirlockValues), airlock=true,
+// since that release starts no command. It is the operator's line for what each grant was spent
+// on and why.
+//
+// What the command does not hold is what loggedCommand redacts (redact.go): each value this
+// release handed out of eight bytes or more, each string of eight bytes or more inside a stored
+// JSON value, each token inside a minted document, each airlock placeholder, and every credential
+// of a shape knownCredential matches, whatever its source. A secret that is none of these — a
+// value from another store, a password typed in, a token of a shape not listed — is logged as
+// the session typed it. A session passes its secrets in the command's environment, as the exec
+// form does, and never on its command line.
 const ReleasedMessage = "broker: released a grant"
-
-// The bounds of the command a release records (loggedCommand). The session names its own
-// command, so without them one release could write a row and a line of any length.
-const (
-	maxLoggedArguments     = 32
-	maxLoggedArgumentBytes = 256
-)
-
-// redactedArgument is what a release records in place of each value it handed out that the
-// command holds.
-const redactedArgument = "[redacted]"
 
 // ReleaseCall is what a session says of one release of its grant (Values): the command the
 // release starts, nil for none, and the reason its own call gave, "" for none. That reason can
@@ -71,94 +64,41 @@ type grantUse struct {
 	narrowing *secrets.GitHubNarrowing
 }
 
-// detail is the grant.used row's detail of this release of a grant whose request gave reason.
-func (u grantUse) detail(reason string) auditDetail {
-	detail := auditDetail{"names": u.names, "reason": reason}
+// recordedField is one key and value a release records, in its grant.used row's detail and in
+// its ReleasedMessage line alike.
+type recordedField struct {
+	key   string
+	value any
+}
+
+// recorded is every field this release of a grant whose request gave reason records, in the
+// order the line writes them. The row and the line both write exactly these, so a field added
+// here reaches both.
+func (u grantUse) recorded(reason string) []recordedField {
+	fields := []recordedField{{"names", u.names}, {"reason", reason}}
 	if u.airlock {
-		detail["airlock"] = true
-		return detail
+		return append(fields, recordedField{"airlock", true})
 	}
 	if u.callReason != "" {
-		detail["call_reason"] = u.callReason
+		fields = append(fields, recordedField{"call_reason", u.callReason})
 	}
-	detail["command"] = u.command
+	fields = append(fields, recordedField{"command", u.command})
 	if u.narrowing != nil {
-		detail["github_app"] = auditDetail{"owner": u.narrowing.Owner, "repositories": u.narrowing.Repositories, "read_only": u.narrowing.ReadOnly}
+		fields = append(fields, recordedField{"github_app", auditDetail{"owner": u.narrowing.Owner, "repositories": u.narrowing.Repositories, "read_only": u.narrowing.ReadOnly}})
 	}
-	return detail
+	return fields
 }
 
 // callReasonOf is the reason a session's call gave (said) as its release records it, beside
-// granted, the reason of the request the grant came of: held to a request's own rules
-// (record.validateReason), with every rune record.ReasonRefuses dropped and the rest cut to
-// record.MaxReasonRunes, since nothing refused it before the release and a field of the log must
-// not stop one. It answers "" when that leaves nothing or leaves granted itself, so the row and
-// the line name a call's reason only where it says something the grant's does not.
+// granted, the reason of the request the grant came of: held to a request's own rules by
+// record.Sanitize, since nothing refused it before the release and a field of the log must not
+// stop one. It answers "" when that leaves nothing or leaves granted itself, so the row and the
+// line name a call's reason only where it says something the grant's does not.
 func callReasonOf(said, granted string) string {
-	cleaned := strings.Map(func(r rune) rune {
-		if record.ReasonRefuses(r) {
-			return -1
-		}
-		return r
-	}, said)
-	if utf8.RuneCountInString(cleaned) > record.MaxReasonRunes {
-		cleaned = string([]rune(cleaned)[:record.MaxReasonRunes])
+	if cleaned := record.Sanitize(said, record.MaxReasonRunes); cleaned != granted {
+		return cleaned
 	}
-	if cleaned == granted {
-		return ""
-	}
-	return cleaned
-}
-
-// loggedCommand is command as a release records it: its first maxLoggedArguments arguments, in
-// each every value in handedOut replaced by redactedArgument and a NUL byte by U+FFFD, then cut
-// to its first maxLoggedArgumentBytes bytes on a character's boundary. It redacts before it
-// cuts, so a value that crosses the cut leaves no prefix of itself behind, and it replaces the
-// longest values first, so a value that holds another, such as a minted document and the token
-// inside it, is replaced whole. A NUL byte is in no argument a process runs with, and the JSON a
-// grant.used row holds refuses one, so a session that sends one has it replaced rather than
-// failing its own release over a line of the log. It answers an empty vector, never nil, for a
-// session that named no command, as a client from before the field does.
-func loggedCommand(command, handedOut []string) []string {
-	values := slices.DeleteFunc(slices.Clone(handedOut), func(v string) bool { return v == "" })
-	slices.SortFunc(values, func(a, b string) int { return cmp.Compare(len(b), len(a)) })
-	logged := make([]string, 0, min(len(command), maxLoggedArguments))
-	for _, arg := range command[:min(len(command), maxLoggedArguments)] {
-		for _, value := range values {
-			arg = strings.ReplaceAll(arg, value, redactedArgument)
-		}
-		arg = strings.ReplaceAll(arg, "\x00", "\uFFFD")
-		if len(arg) > maxLoggedArgumentBytes {
-			cut := maxLoggedArgumentBytes
-			for cut > 0 && !utf8.RuneStart(arg[cut]) {
-				cut--
-			}
-			arg = arg[:cut]
-		}
-		logged = append(logged, arg)
-	}
-	return logged
-}
-
-// handedOut is every value a session's release handed out or read, for loggedCommand to redact:
-// each released name's secret parts (secretParts), and, for the names the airlock holds back,
-// what the session holds in their place — each name's filled value, each slot's placeholder and
-// the proxy password, which is one of them — since a placeholder is what opens the proxy.
-func handedOut(read []releasedName, held *AirlockRelease) []string {
-	var values []string
-	for _, released := range read {
-		values = append(values, released.secretParts()...)
-	}
-	if held != nil {
-		values = append(values, held.ProxyPassword)
-		for _, name := range held.Names {
-			values = append(values, name.Value)
-			for _, placeholder := range name.Slots {
-				values = append(values, placeholder)
-			}
-		}
-	}
-	return values
+	return ""
 }
 
 // releaseRead is what one caller wants of the shared read. The session's release asks for every
@@ -196,27 +136,6 @@ type releasedName struct {
 // whether its split was taken.
 func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 
-// secretParts are the strings of this name's value that a command holding any of them holds a
-// secret by: the whole value, and what each slot of it holds as the airlock takes the value apart
-// (airlockSplitOf), which for a minted document is each token inside it rather than the fields
-// around it. A name the airlock holds back has its split already; any other is taken apart as
-// its kind says, with no entry, so a stored value is its whole self alone. A value its kind cannot
-// take apart is its whole self alone too.
-func (r releasedName) secretParts() []string {
-	parts := []string{r.value}
-	split := r.split
-	if !r.behindAirlock() {
-		var err error
-		if split, err = airlockSplitOf(&airlock.SecretRule{}, r.kind, r.value); err != nil {
-			return parts
-		}
-	}
-	for _, value := range split.values {
-		parts = append(parts, value)
-	}
-	return parts
-}
-
 // readRelease reads every name checked found granted — or, for the proxy, the names behind the
 // airlock alone — in the grant's own name order, and takes the split of each name the airlock
 // holds back. Once every value is read, each stored one is checked against the policy as it
@@ -236,7 +155,7 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 		released := releasedName{name: g.name, value: minted.Value, expires: minted.Expires, kind: served.Kind()}
 		if entry != nil {
-			if released.split, err = airlockSplitOf(entry, released.kind, minted.Value); err != nil {
+			if released.split, err = airlockSplitOf(entry.Kind, released.kind, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}
@@ -259,25 +178,22 @@ func releasedNames(read []releasedName) []string {
 }
 
 // auditGrantUsed writes the one grant.used row a release writes and then its ReleasedMessage
-// line, both naming the reason of the grant's request beside use, the caller's own: the names it
-// released and, for the session's release, its call's own reason, the command it starts and the
-// narrowing it applied; for the proxy's, that the values went behind the airlock. The row says
-// the values did leave the broker, so each caller writes it last, once everything that release
-// hands over is minted and recorded; the line follows the row, so a release whose row failed
-// logs nothing.
+// line, both holding the fields use records beside the reason of the grant's request
+// (grantUse.recorded). The row says the values did leave the broker, so each caller writes it
+// last, once everything that release hands over is minted and recorded; the line follows the
+// row, so a release whose row failed logs nothing.
 func (m *Machine) auditGrantUsed(ctx context.Context, grantID string, checked grantRelease, use grantUse) error {
-	if _, err := m.Store.Pool.Exec(ctx, `insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail) values ('grant.used',$1,$2,$3,$4,$5)`,
-		checked.enrollmentID, checked.requestID, grantID, "session:"+checked.enrollmentID, use.detail(checked.reason)); err != nil {
-		return err
+	fields := use.recorded(checked.reason)
+	detail := make(auditDetail, len(fields))
+	attrs := make([]any, 0, 6+2*len(fields))
+	attrs = append(attrs, "grant", grantID, "request", checked.requestID, "enrollment", checked.enrollmentID)
+	for _, field := range fields {
+		detail[field.key] = field.value
+		attrs = append(attrs, field.key, field.value)
 	}
-	attrs := []any{"grant", grantID, "request", checked.requestID, "enrollment", checked.enrollmentID, "names", use.names, "reason", checked.reason}
-	switch {
-	case use.airlock:
-		attrs = append(attrs, "airlock", true)
-	case use.callReason != "":
-		attrs = append(attrs, "call_reason", use.callReason, "command", use.command)
-	default:
-		attrs = append(attrs, "command", use.command)
+	if _, err := m.Store.Pool.Exec(ctx, `insert into audit (kind, enrollment_id, request_id, grant_id, actor, detail) values ('grant.used',$1,$2,$3,$4,$5)`,
+		checked.enrollmentID, checked.requestID, grantID, "session:"+checked.enrollmentID, detail); err != nil {
+		return err
 	}
 	slog.Info(ReleasedMessage, attrs...)
 	return nil
