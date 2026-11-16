@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // collaboratorsAnswer is GET /api/v1/issues/{key}/collaborators as a reader decodes it.
@@ -80,7 +80,7 @@ func (a collaboratorsAnswer) sessionIDs() []string {
 type legionRegistryListener struct {
 	mu      sync.Mutex
 	issue   string
-	entries []envoy.LegionAgent
+	entries []listenerwire.LegionAgentAnswer
 	status  int
 	reads   int
 }
@@ -98,11 +98,11 @@ func (l *legionRegistryListener) serve(t *testing.T) *httptest.Server {
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "nats: no responders available for request"})
 				return
 			}
-			entries := []envoy.LegionAgent{}
+			entries := []listenerwire.LegionAgentAnswer{}
 			if r.URL.Query().Get("issue") == l.issue {
 				entries = l.entries
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"entries": entries})
+			_ = json.NewEncoder(w).Encode(listenerwire.LegionAgentList{Entries: entries})
 		case strings.HasPrefix(r.URL.Path, "/v1/registry/"):
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "no live session " + strings.TrimPrefix(r.URL.Path, "/v1/registry/")})
@@ -115,7 +115,7 @@ func (l *legionRegistryListener) serve(t *testing.T) *httptest.Server {
 	return server
 }
 
-func (l *legionRegistryListener) set(issue string, entries ...envoy.LegionAgent) {
+func (l *legionRegistryListener) set(issue string, entries ...listenerwire.LegionAgentAnswer) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.issue, l.entries = issue, entries
@@ -129,20 +129,22 @@ func (l *legionRegistryListener) readCount() int {
 
 // legionAgentEntry is a registry entry as the listener answers it, under the Legion project token
 // sjawharlegion, which is not the Dispatch project.
-func legionAgentEntry(id, issue, role, started string, replacedBy, replacedAt *string) envoy.LegionAgent {
-	return envoy.LegionAgent{
-		SessionID:     id,
-		LegionProject: "sjawharlegion",
-		Issue:         issue,
-		Role:          role,
-		RoleToken:     "legion-sjawharlegion-" + strings.ToLower(issue) + "-" + role,
-		Title:         "Legion " + role + " · " + issue,
-		Harness:       "omp",
-		StartedAt:     started,
-		RecordedAt:    started,
-		ReplacedBy:    replacedBy,
-		ReplacedAt:    replacedAt,
-	}
+func legionAgentEntry(id, issue, role, started string, replacedBy, replacedAt *string) listenerwire.LegionAgentAnswer {
+	return listenerwire.LegionAgentAnswer{LegionAgent: listenerwire.LegionAgent{
+		LegionAgentEntry: listenerwire.LegionAgentEntry{
+			SessionID:     id,
+			LegionProject: "sjawharlegion",
+			Issue:         issue,
+			Role:          role,
+			RoleToken:     "legion-sjawharlegion-" + strings.ToLower(issue) + "-" + role,
+			Title:         "Legion " + role + " · " + issue,
+			Harness:       "omp",
+			StartedAt:     started,
+			RecordedAt:    started,
+		},
+		ReplacedBy: replacedBy,
+		ReplacedAt: replacedAt,
+	}}
 }
 
 func readCollaborators(t *testing.T, handler http.Handler, key string) collaboratorsAnswer {

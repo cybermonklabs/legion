@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The controller topic is the one the plugin's controller subscribes to
@@ -28,16 +30,11 @@ func TestHTTPPublisherSendsPayloadAndOutboxDedupeKey(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 			t.Fatalf("request = %s %s, want POST /v1/messages/publish", r.Method, r.URL.Path)
 		}
-		var body struct {
-			Topic     string  `json:"topic"`
-			Message   string  `json:"message"`
-			Payload   *string `json:"payload"` // the listener's messageBody (packages/envoy/cmd/listener/api.go:68-80)
-			DedupeKey string  `json:"dedupe_key"`
-			// The daemon keeps its own queue of notices, so it asks the listener to keep
-			// nothing and to answer a role nobody holds with its 404 (ErrNoHolder). A missing
-			// field would read as the listener's default, which is to keep.
-			Keep *bool `json:"keep"`
-		}
+		// The body is read as the listener's publish route reads it. The daemon keeps its own
+		// queue of notices, so it asks the listener to keep nothing and to answer a role nobody
+		// holds with its 404 (ErrNoHolder). A missing keep would read as the listener's default,
+		// which is to keep.
+		var body listenerwire.PublishRequest
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			w.WriteHeader(http.StatusBadRequest) // the listener answers "invalid json"
 			return

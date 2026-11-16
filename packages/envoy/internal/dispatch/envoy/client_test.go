@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // LEGION-271. A send whose answer misses the client's window is the one failure a retry is safe
@@ -212,13 +214,13 @@ func TestListInterestsMapsListenerRowsAndDefaultsMissingTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Interest{
-		{
+	want := []listenerwire.InterestRow{
+		{Interest: listenerwire.Interest{
 			SessionID: "s1",
 			Topics:    []string{"notifications.dispatch.issue.T-1", "notifications.dispatch.issue.T-1.>"},
 			UpdatedAt: 1700000000000,
-		},
-		{SessionID: "s2", Topics: []string{}, UpdatedAt: 1700000000001},
+		}},
+		{Interest: listenerwire.Interest{SessionID: "s2", Topics: []string{}, UpdatedAt: 1700000000001}},
 	}
 	if !reflect.DeepEqual(interests, want) {
 		t.Fatalf("interests = %#v, want %#v", interests, want)
@@ -302,7 +304,7 @@ func TestInterestReturnsOneSessionsTopics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Interest{SessionID: "s1", Topics: []string{"notifications.dispatch.issue.T-1.>"}, UpdatedAt: 42}
+	want := listenerwire.InterestRow{Interest: listenerwire.Interest{SessionID: "s1", Topics: []string{"notifications.dispatch.issue.T-1.>"}, UpdatedAt: 42}}
 	if !reflect.DeepEqual(interest, want) {
 		t.Fatalf("interest = %#v, want %#v", interest, want)
 	}
@@ -819,14 +821,17 @@ const legionAgentRow = `{"session_id":"ses-old","legion_project":"infra","issue"
 	`"started_at":"2026-10-26T01:00:00Z","recorded_at":"2026-10-26T01:00:05Z","live":false,` +
 	`"replaced_by":"ses-new","replaced_at":"2026-10-26T02:00:00Z","added_later":1}`
 
-func wantLegionAgentRow(t *testing.T, got LegionAgent) {
+func wantLegionAgentRow(t *testing.T, got listenerwire.LegionAgentAnswer) {
 	t.Helper()
 	newer, at := "ses-new", "2026-10-26T02:00:00Z"
-	want := LegionAgent{
-		SessionID: "ses-old", LegionProject: "infra", Issue: "INFRA-448", Role: "reviewer",
-		RoleToken: "legion-infra-infra-448-reviewer", Title: "Legion reviewer · INFRA-448", Harness: "omp",
-		StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z", ReplacedBy: &newer, ReplacedAt: &at,
-	}
+	want := listenerwire.LegionAgentAnswer{LegionAgent: listenerwire.LegionAgent{
+		LegionAgentEntry: listenerwire.LegionAgentEntry{
+			SessionID: "ses-old", LegionProject: "infra", Issue: "INFRA-448", Role: "reviewer",
+			RoleToken: "legion-infra-infra-448-reviewer", Title: "Legion reviewer · INFRA-448", Harness: "omp",
+			StartedAt: "2026-10-26T01:00:00Z", RecordedAt: "2026-10-26T01:00:05Z",
+		},
+		ReplacedBy: &newer, ReplacedAt: &at,
+	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent = %#v, want %#v", got, want)
 	}
@@ -892,12 +897,12 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 		name  string
 		path  string
 		query string
-		call  func(*Client) ([]LegionAgent, error)
+		call  func(*Client) ([]listenerwire.LegionAgentAnswer, error)
 	}{
-		{"by role token", "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "", func(c *Client) ([]LegionAgent, error) {
+		{"by role token", "/v1/legion/agents/roles/legion-infra-infra-448-reviewer", "", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
 		}},
-		{"by issue", "/v1/legion/agents", "issue=INFRA-448", func(c *Client) ([]LegionAgent, error) {
+		{"by issue", "/v1/legion/agents", "issue=INFRA-448", func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.IssueAgents(context.Background(), "INFRA-448")
 		}},
 	} {
@@ -930,11 +935,13 @@ func TestRoleAndIssueAgentsDecodeTheListing(t *testing.T) {
 // or that cannot be reached, is ErrUnavailable: never an empty list a caller would take for no
 // agents.
 func TestRoleAndIssueAgentsReportAnyOtherAnswerAsUnavailable(t *testing.T) {
-	calls := map[string]func(*Client) ([]LegionAgent, error){
-		"RoleAgents": func(c *Client) ([]LegionAgent, error) {
+	calls := map[string]func(*Client) ([]listenerwire.LegionAgentAnswer, error){
+		"RoleAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
 			return c.RoleAgents(context.Background(), "legion-infra-infra-448-reviewer")
 		},
-		"IssueAgents": func(c *Client) ([]LegionAgent, error) { return c.IssueAgents(context.Background(), "INFRA-448") },
+		"IssueAgents": func(c *Client) ([]listenerwire.LegionAgentAnswer, error) {
+			return c.IssueAgents(context.Background(), "INFRA-448")
+		},
 	}
 	for _, tc := range []struct {
 		status int

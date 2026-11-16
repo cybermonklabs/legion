@@ -4,11 +4,12 @@
 // notifications.agent.* topic outright (cmd/listener/api.go's publishHandler:
 // "cannot publish to agent topics; use /v1/messages/send for direct agent messages"), so this
 // targets the session directly with target_session instead of publishing to that topic. The
-// envelope's source is "envoy" — the platform's own enum (contracts.Envelope.Validate) has no
-// "agent-secrets" entry, and the broker is a backend service speaking on the platform's behalf
-// here, not an agent session, so "agent" would misrepresent it. Notify never reports failure to
-// its caller and never blocks the decision it announces on Envoy being reachable — the client's
-// own status poll is always the authority, this is only a nudge to check sooner.
+// body is the listener's own (listenerwire.SendRequest). The envelope's source is "envoy" — the
+// platform's own enum (contracts.Envelope.Validate) has no "agent-secrets" entry, and the broker
+// is a backend service speaking on the platform's behalf here, not an agent session, so "agent"
+// would misrepresent it. Notify never reports failure to its caller and never blocks the
+// decision it announces on Envoy being reachable — the client's own status poll is always the
+// authority, this is only a nudge to check sooner.
 package wake
 
 import (
@@ -18,6 +19,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // Envoy sends a "secret request <state>" notification directly to the target session.
@@ -25,13 +28,6 @@ type Envoy struct {
 	URL   string
 	Token string
 	HTTP  *http.Client
-}
-
-type sendBody struct {
-	TargetSession string `json:"target_session"`
-	Message       string `json:"message"`
-	Payload       string `json:"payload"`
-	Source        string `json:"source"`
 }
 
 type secretRequestPayload struct {
@@ -54,11 +50,14 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		slog.Warn("wake envoy: marshal payload", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
-	body, err := json.Marshal(sendBody{
+	payloadText := string(payload)
+	body, err := json.Marshal(listenerwire.SendRequest{
+		MessageBody: listenerwire.MessageBody{
+			Source:  "envoy",
+			Message: "secret request " + state,
+			Payload: &payloadText,
+		},
 		TargetSession: sessionID,
-		Message:       "secret request " + state,
-		Payload:       string(payload),
-		Source:        "envoy",
 	})
 	if err != nil {
 		slog.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
