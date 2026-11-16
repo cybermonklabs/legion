@@ -111,10 +111,11 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 // waits out of the queue with nobody to enqueue it again or send the issue back, and a merger
 // whose pod was released would learn of it only when the release's backstop wakes it
 // (backstop_minutes, an hour by default). So a released merger is woken (wakeForDelivery), and
-// the row waits on its backoff until the woken session holds the role, or for the turn the wake
-// pacing gives that resume, as it waits while the listener answers that nobody holds it
-// (notify.ErrNoHolder) or that its holder is unresponsive (notify.ErrHolderUnresponsive). A
-// merger with no claim yet, its start still owed, is no end either: the row waits for it.
+// the row waits on its backoff until the woken session holds the role, or, while the wake pacing
+// holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
+// (parkedWait), as it waits while the listener answers that nobody holds it (notify.ErrNoHolder)
+// or that its holder is unresponsive (notify.ErrHolderUnresponsive). A merger with no claim yet,
+// its start still owed, is no end either: the row waits for it.
 //
 // Each attempt reads, in this order, what ends or holds the row. The row finishes undelivered,
 // with one log line naming why, once the issue has left merging at the row's head (mergingAt, the
@@ -164,11 +165,12 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
 	// merger on every attempt and wait for a session nothing brings back. A launch of the merger
-	// the wake pacing holds is waited for by its turn, once.
+	// the wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait).
 	if waits, turn, err := r.wakeForDelivery(ctx, token, "the merge-queue removal of "+row.Issue); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return wait.Until(turn, fmt.Sprintf("the merge-queue removal of %s waits for its merger's launch, which the wake pacing holds until %s",
+		return r.parkedWait(turn, fmt.Sprintf("the merge-queue removal of %s waits for its merger's launch, which the wake pacing holds until %s",
 			row.Issue, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
 		return wait.Errorf("the merge-queue removal of %s waits for its merger's released pod to come back", row.Issue)

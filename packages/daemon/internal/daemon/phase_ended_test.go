@@ -177,12 +177,26 @@ func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T)
 }
 
 // A phase-ended message to a released role waits out the resume the wake pacing parks, as a hook
-// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): the row is due at the
-// wake's turn and publishes nothing before it, and the attempt after the turn has launched the
-// resume publishes the message with keep, once, and ends the row.
+// prompt does (TestAHookPromptWaitsOutTheParkedWakeOfItsReleasedPod): the row reads the claim
+// again at the wake's turn or parkedWakeBound on, whichever comes first, as a routine wait, and
+// publishes nothing while the park holds, and the attempt after the turn has launched the resume
+// publishes the message with keep, once, and ends the row.
 func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
 	keptAfterTheParkedWake(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
+}
+
+// An operator's resume of a released role whose resume the wake pacing parked launches the claim
+// at once (supervise's dropWakeFor), and the turn the row read goes with the dropped wake: the
+// row, which reads the claim again at the bound rather than sleeping to that turn, publishes the
+// message with keep, once, at its next attempt, and ends, as a hook prompt does
+// (TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound). A row that waited for
+// the turn would publish nothing for the two hours the turn is away, and hold the pod from idle
+// release all that time. The negative control is parkedWait without the bound, the row due at
+// the turn: the attempt at the bound then finds the row not due and publishes nothing.
+func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
+	keptAfterAnOperatorsResume(t, ended, claim.RoleTester, ended.Message("LEGION-208"))
 }
 
 // A relaunch the wake pacing parks over a process the claim still records holds no row: the
@@ -193,7 +207,7 @@ func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 // held there would hold every notice, phase-ended message, hook prompt and merge-queue removal to
 // a live session behind that session's paced refresh. The negative control is wakeForDelivery's
 // park check without its first half, the claim launching with no process: each row then waits for
-// the relaunch's turn and publishes nothing.
+// the relaunch (parkedWait) and publishes nothing.
 func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 	t.Run("a phase-ended message", func(t *testing.T) {
 		ctx := context.Background()
@@ -225,7 +239,7 @@ func TestARelaunchParkedOverALiveProcessHoldsNoRow(t *testing.T) {
 		parkedOverItsProcess(t, sup, "LEGION-1", claim.RoleArchitect)
 		publisher := &holderPublisher{}
 		row := leasedOutboxRow(t, pool, records, mustOutboxRow(t, "LEGION-1", record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing}, time.Now()))
-		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion"}
+		runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, notices: publisher, supervisor: sup, project: "legion", now: time.Now}
 
 		if err := runner.execute(ctx, row); err != nil {
 			t.Fatalf("the notice's first attempt = %v, want it published: the relaunch waits over a live session", err)

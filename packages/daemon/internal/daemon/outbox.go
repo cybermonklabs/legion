@@ -616,7 +616,8 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 
 // routineWait is a wait nobody has to act on for Legion, which ends on its own: a Dispatch claim
 // release waiting on the claim's holder or on a contended answer (claimWait), which the hour
-// claimReleaseWait caps rather than an operator.
+// claimReleaseWait caps rather than an operator, and a delivery row waiting for a launch the wake
+// pacing parked (parkedWakeWait), which that launch's turn ends.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -1404,22 +1405,25 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	// A notice whose owning architect's pod was released is that architect's still (holdsRole),
 	// and this is the wake that brings it back for it: the row waits on its backoff, as it waits
 	// for an architect that is relaunching, and publishes once the woken session holds its role.
-	// A launch of the architect the wake pacing holds is waited for by its turn, once
-	// (wakeForDelivery), and the wait is a notice held for its architect still (errNoticeWaits).
+	// A launch of the architect the wake pacing holds is waited for until it runs, the claim read
+	// again at its turn or parkedWakeBound on, whichever comes first (parkedWait), and the wait is
+	// a notice held for its architect still (errNoticeWaits).
 	if waits, turn, err := r.wakeForDelivery(ctx, architect, "a notice of "+row.Issue); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return fmt.Errorf("%w: %w", errNoticeWaits, wait.Until(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
+		return fmt.Errorf("%w: %w", errNoticeWaits, r.parkedWait(turn, fmt.Sprintf("notice row %d waits for %s's launch, which the wake pacing holds until %s",
 			row.ID, architect, turn.UTC().Format(time.RFC3339))))
 	} else if waits {
 		return fmt.Errorf("%w: %s's pod was released and is coming back for notice row %d", errNoticeWaits, architect, row.ID)
 	}
 	if earlier, due := earlierNoticeFor(tree, architect, r.holdsItsRole); earlier != 0 {
 		// The row the fence holds this one behind is due at a known moment when the wake pacing
-		// holds it (record.Notice.PacedAt): this row runs once, then, rather than climbing its
-		// backoff to it — over a hold of tens of minutes that is a Warn every attempt from the
-		// seventh (settle), about one wake's worth of noise per architect in a wave. The hold
-		// itself is right: it keeps the architect to the one wake its catch-up is.
+		// holds it: the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or its
+		// next read of the architect's parked launch, at most parkedWakeBound out (parkedWait).
+		// This row runs once, then, rather than climbing its backoff to it — over a hold of tens
+		// of minutes that is a Warn every attempt from the seventh (settle), about one wake's
+		// worth of noise per architect in a wave. The hold itself is right: it keeps the
+		// architect to the one wake its catch-up is.
 		if now := r.now().UTC(); due.After(now) {
 			return wait.Until(due, fmt.Sprintf("%s's notice row %d waits behind its row %d, due at %s",
 				architect, row.ID, earlier, due.Format(time.RFC3339)))
@@ -1502,10 +1506,11 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // with one log line, since the listener is then the message's keeper and the row holds nothing.
 // That is what reaches a released role: the row's first attempt wakes the role's pod
 // (wakeForDelivery) and waits on its backoff, an attempt that finds the wake pacing holding that
-// resume waits for its turn, and the first attempt after the resume has launched meets a woken
-// session that has not claimed the role yet, so the listener keeps the message and hands it over
-// when that session claims the role or registers again. A listener before #4079 keeps nothing for
-// a claim whose holder is not live; publishKeptToRole says what each answer does to the row.
+// resume waits for its turn, reading the claim again at most parkedWakeBound apart (parkedWait),
+// and the first attempt after the resume has launched meets a woken session that has not claimed
+// the role yet, so the listener keeps the message and hands it over when that session claims the
+// role or registers again. A listener before #4079 keeps nothing for a claim whose holder is not
+// live; publishKeptToRole says what each answer does to the row.
 //
 // The row is not held for a holder as an architect's notice is held, since the role's next task
 // from the daemon names its phase anyway, so the kept copy is the message's one keeper:
@@ -1528,14 +1533,15 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
 	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
-	// wake pacing holds is waited for by its turn, once. The kept publish raises the listener's
-	// own wake report too, but this wake is the daemon's and does not rest on what the listener
-	// does with the publish, so it brings the pod back against a listener before #4079 as well.
-	// The listener's report then meets the role's open resume, and the pod starts once.
+	// wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait). The kept publish raises the
+	// listener's own wake report too, but this wake is the daemon's and does not rest on what the
+	// listener does with the publish, so it brings the pod back against a listener before #4079 as
+	// well. The listener's report then meets the role's open resume, and the pod starts once.
 	if waits, turn, err := r.wakeForDelivery(ctx, token, "the end of "+row.Issue+"'s "+string(payload.From)+" phase"); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return wait.Until(turn, fmt.Sprintf("the end of %s's %s phase waits for its %s's launch, which the wake pacing holds until %s",
+		return r.parkedWait(turn, fmt.Sprintf("the end of %s's %s phase waits for its %s's launch, which the wake pacing holds until %s",
 			row.Issue, payload.From, payload.Role, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
 		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
@@ -1563,10 +1569,11 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 // live holder is answered kept, the listener holding the prompt on the role's kept lane for one
 // hour for the next session that holds the role live, and the row ends with one log line, the
 // listener being the prompt's keeper. A released role's woken session is that next holder: the
-// row's first attempt wakes the pod (wakeForDelivery) and waits on its backoff, or for the turn
-// the wake pacing gives that resume, and the attempt after the resume has launched publishes
-// before the woken session has claimed the role. A listener before #4079 keeps nothing for a
-// claim whose holder is not live; publishKeptToRole says what each answer does to the row.
+// row's first attempt wakes the pod (wakeForDelivery) and waits on its backoff, or, while the wake
+// pacing holds that resume, for its turn, reading the claim again at most parkedWakeBound apart
+// (parkedWait), and the attempt after the resume has launched publishes before the woken session
+// has claimed the role. A listener before #4079 keeps nothing for a claim whose holder is not
+// live; publishKeptToRole says what each answer does to the row.
 //
 // The hook wrote its words for this round, and nothing repeats them: the move back they were
 // written for has been made, and no later task of the daemon's carries them, so the kept copy is
@@ -1592,14 +1599,15 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff, and the
 	// row's first attempt after that resume has launched publishes (wakeForDelivery). A launch the
-	// wake pacing holds is waited for by its turn, once. The daemon's own wake brings the pod back
-	// whatever the listener does with the publish, a listener before #4079 included; the
+	// wake pacing holds is waited for until it runs, the claim read again at its turn or
+	// parkedWakeBound on, whichever comes first (parkedWait). The daemon's own wake brings the pod
+	// back whatever the listener does with the publish, a listener before #4079 included; the
 	// listener's own report of the kept publish meets the role's open resume, and the pod starts
 	// once.
 	if waits, turn, err := r.wakeForDelivery(ctx, token, "the "+payload.Hook+" hook's prompt for "+row.Issue); err != nil {
 		return err
 	} else if !turn.IsZero() {
-		return wait.Until(turn, fmt.Sprintf("the %s hook's prompt for %s waits for its %s's launch, which the wake pacing holds until %s",
+		return r.parkedWait(turn, fmt.Sprintf("the %s hook's prompt for %s waits for its %s's launch, which the wake pacing holds until %s",
 			payload.Hook, row.Issue, payload.Role, turn.UTC().Format(time.RFC3339)))
 	} else if waits {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
