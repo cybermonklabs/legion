@@ -168,6 +168,64 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	})
 }
 
+// TestACleanBrokersRefusalWhoseWordsAreTheMarkerStillPrintsItsCode: whether a refusal's text is
+// withheld is decided from the address where the refusal is built, and never read back from what
+// the refusal says. So a clean broker whose words are brokeraddr.WordsNotPrinted itself is a
+// clean broker still: its code and its answer id print on `agent-secrets status`'s stderr and in
+// the client's error, and its code in a pod login's refusal line.
+func TestACleanBrokersRefusalWhoseWordsAreTheMarkerStillPrintsItsCode(t *testing.T) {
+	const answerID = "answer-clean-7f3"
+	var asked atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked.Add(1)
+		body, _ := json.Marshal(map[string]string{"code": "REQUEST_INVALID", "error": brokeraddr.WordsNotPrinted, "answer_id": answerID})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AGENT_SECRETS_URL", srv.URL)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
+
+	t.Run("status", func(t *testing.T) {
+		before := asked.Load()
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"status", "req-1"}, &stdout, &stderr); code != 1 {
+			t.Fatalf("status against a broker that refuses it exited %d\nstdout: %s\nstderr: %s", code, stdout.String(), stderr.String())
+		}
+		if asked.Load() == before {
+			t.Fatalf("status never reached the broker\nstderr: %s", stderr.String())
+		}
+		_, err := newClient(brokeraddr.New(srv.URL)).do(context.Background(), http.MethodGet, srv.URL+"/v1/requests/req-1", nil, nil)
+		if err == nil {
+			t.Fatal("the client took the broker's refusal as an answer")
+		}
+		for what, text := range map[string]string{"stderr": stderr.String(), "the error": err.Error()} {
+			for _, want := range []string{"REQUEST_INVALID", answerID} {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s does not carry the clean broker's %q: %s", what, want, text)
+				}
+			}
+		}
+	})
+
+	t.Run("a pod login", func(t *testing.T) {
+		tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
+		before := asked.Load()
+		var stdout, stderr bytes.Buffer
+		if code := cmdEnroll([]string{"--pod", "--service", testPodService, "--pod-token-file", tokenFile, "--out", t.TempDir()}, &stdout, &stderr); code != 1 {
+			t.Fatalf("exit %d, want 1 (stderr %q)", code, stderr.String())
+		}
+		if asked.Load() == before {
+			t.Fatalf("the pod login never reached the broker\nstderr: %s", stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "HTTP 403 REQUEST_INVALID") {
+			t.Errorf("stderr %q does not name the clean broker's status and code", stderr.String())
+		}
+	})
+}
+
 // TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress: two refusals are told apart
 // by the broker's words as well as their code - an older broker's 400 INVALID_NARROWING naming
 // the release's command as an unknown field (callRefused), and its PROOF_INVALID saying an

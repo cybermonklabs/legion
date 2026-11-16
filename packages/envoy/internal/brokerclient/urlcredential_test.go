@@ -214,3 +214,60 @@ func TestATradeFollowsNoRedirect(t *testing.T) {
 		}
 	}
 }
+
+// TestARefusedSignInsLogNamesItsCodeOnlyBesideACleanAddress: the broker, or whoever answers at
+// its address, refuses a person's trade for good with an OAuth error whose code repeats the
+// credential the configured address carries. The sign-in falls back to this machine and its log
+// line says so, and beside that address the line holds no part of the credential: the code is
+// the answerer's own text, so the line names it as brokeraddr.WordsNotPrinted. Beside a clean
+// address the same code is what a person acts on, and the line names it as it came.
+func TestARefusedSignInsLogNamesItsCodeOnlyBesideACleanAddress(t *testing.T) {
+	repeated := strings.Join(credentialMarkers, " ")
+	var asked atomic.Int64
+	base := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		// Every path: a query or a fragment in the address moves the token path out of the
+		// URL's path, and the trade must still be refused for the refusal to be logged.
+		asked.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"` + repeated + `","error_description":"this sign-in was revoked"}`))
+	})
+	// refused is the log of one enrolment's Current under a sign-in the broker at address
+	// refuses, which must answer no authority and no error, so the session enrols under this
+	// machine.
+	refused := func(t *testing.T, address string) string {
+		t.Helper()
+		rig := newSignInRig(t, nil)
+		rig.signIn(t, "ada@example.com")
+		var logged bytes.Buffer
+		rig.authority.BrokerURL = brokeraddr.New(address)
+		rig.authority.Log = slog.New(slog.NewTextHandler(&logged, nil))
+		before := asked.Load()
+		if authority, err := rig.authority.Current(context.Background()); authority != nil || err != nil {
+			t.Fatalf("a refused sign-in answered %+v, %v; want nil and no error", authority, err)
+		}
+		if asked.Load() == before {
+			t.Fatal("the trade never reached the broker")
+		}
+		if !strings.Contains(logged.String(), "this machine's sign-in was refused") {
+			t.Fatalf("the refusal was not logged:\n%s", logged.String())
+		}
+		return logged.String()
+	}
+	for form, address := range credentialed(base) {
+		t.Run("beside "+form, func(t *testing.T) {
+			logged := refused(t, address)
+			if marker := leakedMarker(logged); marker != "" {
+				t.Errorf("the sign-in's log holds %q:\n%s", marker, logged)
+			}
+			if !strings.Contains(logged, brokeraddr.WordsNotPrinted) {
+				t.Errorf("the sign-in's log does not say its code was not printed:\n%s", logged)
+			}
+		})
+	}
+	t.Run("beside a clean address", func(t *testing.T) {
+		if logged := refused(t, base); !strings.Contains(logged, repeated) {
+			t.Errorf("the sign-in's log does not name the broker's code:\n%s", logged)
+		}
+	})
+}

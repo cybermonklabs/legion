@@ -293,7 +293,7 @@ func podRefusal(prefix, what string, identity podIdentity, base brokeraddr.Addre
 	var refused *apiError
 	if errors.As(err, &refused) {
 		answered := fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
-		if !refused.withheld() {
+		if !refused.withheld {
 			code := refused.Code
 			if code == "" {
 				code = "UNKNOWN"

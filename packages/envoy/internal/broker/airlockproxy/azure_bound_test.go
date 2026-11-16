@@ -411,10 +411,12 @@ func TestAnAccessSlotOfAnotherApplicationOrTenantIsNotExchanged(t *testing.T) {
 // of every application federated with the broker, so the token leaves the broker in an exchange
 // at the token authority and in nothing else. A request that is no token request and carries
 // its placeholder is refused before anything is sent, whether it goes to the authority or to
-// another host the entry binds, and whether or not the grant holds an access slot beside it; a
-// request that carries an access token's placeholder is swapped as every other kind's is; and
-// one that carries no placeholder, which is how az reads a tenant's OpenID configuration before
-// its first token request, goes on with nothing swapped into it.
+// another host the entry binds, whether or not the grant holds an access slot beside it, and
+// whatever the kind of the entry that binds the name - none, as a rules entry has by default, or
+// none read under Options.NoKind - since the azure-login value fills the federated slot under
+// every kind; a request that carries an access token's placeholder is swapped as every other
+// kind's is; and one that carries no placeholder, which is how az reads a tenant's OpenID
+// configuration before its first token request, goes on with nothing swapped into it.
 func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 	access := requests.PlaceholderPrefix + "slotAccessSlotAccessSlotAccess01"
 	own := azureExchange{Endpoint: "https://" + boundHost + azureTokenPath, Scope: azureScope, ClientID: azureClientID}
@@ -427,9 +429,12 @@ func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 		authority string
 		// slot is whether the grant holds an access slot of the document's own exchange, whose
 		// placeholder is access.
-		slot    bool
-		path    string
-		headers []string
+		slot bool
+		// kindless is whether the rig's entry has no kind, and noKind whether the proxy reads
+		// every entry as having none (Options.NoKind, check k6's negative control).
+		kindless, noKind bool
+		path             string
+		headers          []string
 		// refused is whether the call is refused with nothing sent. For one that is not, calls
 		// is how many calls reach the bound host, the pod's own exchange among them, and
 		// authorization the Authorization the last of them carries.
@@ -441,16 +446,26 @@ func TestTheFederatedTokenLeavesOnlyInAnExchange(t *testing.T) {
 		{name: "the federated placeholder, to the entry's other host", authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
 		{name: "the federated placeholder, beside an access slot", slot: true, path: "/v1/subscriptions", headers: federated, refused: true},
 		{name: "the federated placeholder, to a token endpoint's path but no POST", path: azureTokenPath, headers: federated, refused: true},
+		{name: "the federated placeholder, under an entry of no kind", kindless: true, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, under an entry of no kind, to the entry's other host", kindless: true, authority: azureAuthorityHost, path: "/v1/subscriptions", headers: federated, refused: true},
+		{name: "the federated placeholder, with every kind read as none", noKind: true, path: "/v1/subscriptions", headers: federated, refused: true},
 		{
 			name: "an access token's placeholder", slot: true, path: "/v1/subscriptions",
 			headers: []string{"Authorization", "Bearer " + access}, calls: 2, authorization: "Bearer " + azureRealAccess,
 		},
 		{name: "no placeholder, as az's read of the tenant's OpenID configuration", path: "/" + azureTenantID + "/v2.0/.well-known/openid-configuration", calls: 1},
+		{name: "no placeholder, under an entry of no kind", kindless: true, path: "/" + azureTenantID + "/v2.0/.well-known/openid-configuration", calls: 1},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			o := Options{}
+			o := Options{NoKind: row.noKind}
 			if row.authority != "" {
 				o = Options{AzureAuthority: row.authority, Rules: azureRulesBindingAnAuthority()}
+			}
+			if row.kindless {
+				if o.Rules.Secrets == nil {
+					o.Rules = azureRules()
+				}
+				o.Rules.Secrets[0].Kind = ""
 			}
 			r, stand := newAzureRig(t, o)
 			if row.slot {

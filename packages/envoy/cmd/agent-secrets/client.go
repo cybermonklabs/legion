@@ -101,16 +101,20 @@ func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 // struct field by field (%#v). Message and AnswerID are the words and the answer id as a message
 // may print them (brokeraddr.Address.Words): beside an address that is not clean, whoever answers
 // can repeat the credential the address carries in any text it answers, so there Message is
-// brokeraddr.WordsNotPrinted and the refusal prints as its status and Message alone (withheld),
-// with neither its code nor its answer id, as the token client prints such an answer
-// (internal/brokerclient). The one line that names a code whatever the address, renew's exit on a
-// terminal refusal, names one of terminalRenewal's, which this client matched it against.
+// brokeraddr.WordsNotPrinted, withheld is set where doStatus builds the refusal, and the refusal
+// prints as its status and Message alone, with neither its code nor its answer id, as the token
+// client prints such an answer (internal/brokerclient). The one line that names a code whatever
+// the address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this
+// client matched it against.
 type apiError struct {
 	Status   int
 	Code     string
 	Message  string
 	AnswerID string
 	said     *string
+	// withheld is whether the answer came from an address that is not clean, so that none of
+	// its text prints: the decision doStatus made, read by every printer of this refusal.
+	withheld bool
 }
 
 // Error is the broker's message and code, and the answer id to quote when it named one; where
@@ -118,7 +122,7 @@ type apiError struct {
 // the message as it came, a line ending and all (the mux's "404 page not found\n"), so the message
 // is cut at its trailing line endings before the id goes after it on the same line.
 func (e *apiError) Error() string {
-	if e.withheld() {
+	if e.withheld {
 		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
 	}
 	message := strings.TrimRight(e.Message, "\r\n")
@@ -133,11 +137,6 @@ func (e *apiError) Error() string {
 	}
 	return text
 }
-
-// withheld reports whether doStatus withheld the answer's text, its address not being clean: its
-// Message is then brokeraddr.WordsNotPrinted, and its code and answer id, which the same answerer
-// wrote, print nowhere either.
-func (e *apiError) withheld() bool { return e.Message == brokeraddr.WordsNotPrinted }
 
 // says reports whether the broker's error text holds phrase. A refusal this client made itself
 // (a redirect) holds no broker text, and says nothing.
@@ -346,6 +345,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 			Message:  c.baseURL.Words(envelope.Error),
 			AnswerID: c.baseURL.Words(envelope.AnswerID),
 			said:     &envelope.Error,
+			withheld: !c.baseURL.Clean(),
 		}
 	}
 	return resp.StatusCode, data, nil

@@ -248,14 +248,17 @@ type SignIns interface {
 // struct field by field (%#v). Message is the words as a message may print them
 // (brokeraddr.Address.Words): beside an address that is not clean, whoever answers can repeat the
 // credential the address carries in any text it answers, so there do makes Message
-// brokeraddr.WordsNotPrinted and the refusal prints as its status and Message alone (withheld),
-// without its code. A log line that names a code whatever the address names one the helper
-// matched against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
+// brokeraddr.WordsNotPrinted, sets withheld, and the refusal prints as its status and Message
+// alone, without its code. A log line that names a code whatever the address names one the
+// helper matched against its own (isLauncherInvalid, enrollmentNotLive, revokeOnce).
 type BrokerError struct {
 	Status  int
 	Code    string
 	Message string
 	said    *string
+	// withheld is whether the answer came from an address that is not clean, so that none of
+	// its text prints: the decision do made, read by Error.
+	withheld bool
 }
 
 // Error names only the fields it has: the status always, then the code where there is one, then
@@ -266,7 +269,7 @@ type BrokerError struct {
 // LAUNCHER_INVALID"). A refusal whose text is withheld names no code.
 func (e *BrokerError) Error() string {
 	s := fmt.Sprintf("broker %d", e.Status)
-	if e.Code != "" && !e.withheld() {
+	if e.Code != "" && !e.withheld {
 		s += " " + e.Code
 	}
 	if e.Message != "" {
@@ -274,11 +277,6 @@ func (e *BrokerError) Error() string {
 	}
 	return s
 }
-
-// withheld reports whether do withheld the answer's text, its address not being clean: its
-// Message is then brokeraddr.WordsNotPrinted, and its code, which the same answerer wrote, prints
-// nowhere either.
-func (e *BrokerError) withheld() bool { return e.Message == brokeraddr.WordsNotPrinted }
 
 // says reports whether the broker's words hold phrase. A BrokerError do did not make (an OAuth
 // refusal, oauthBrokerError) holds none, and says nothing.
@@ -1639,7 +1637,7 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e)
-		return &BrokerError{Status: resp.StatusCode, Code: e.Code, Message: b.URL.Words(e.Error), said: &e.Error}
+		return &BrokerError{Status: resp.StatusCode, Code: e.Code, Message: b.URL.Words(e.Error), said: &e.Error, withheld: !b.URL.Clean()}
 	}
 	if out != nil && len(data) > 0 {
 		return json.Unmarshal(data, out)
