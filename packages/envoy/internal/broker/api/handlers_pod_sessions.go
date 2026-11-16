@@ -32,6 +32,11 @@ type podSessionBody struct {
 	// proved with another. Absent, the registration is the pod's, as a session pod's one session
 	// is registered.
 	Thumbprint string `json:"thumbprint,omitempty"`
+	// The registrar's own order of its writes for this pod and session, which the Legion daemon
+	// sets to the role's launch generation: a write of a lower generation than the row's changes
+	// nothing, so a write an old incarnation sent that the broker commits after the new
+	// incarnation's leaves the new key in place. Absent is 0, as a session watch writes.
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // podSessionResponse is POST /v1/oauth/exchange/pod-sessions's answer: the registration as it now
@@ -45,6 +50,9 @@ type podSessionResponse struct {
 	// The thumbprint the registration is bound to, as it now stands; absent for one bound to the
 	// pod alone.
 	Thumbprint string `json:"thumbprint,omitempty"`
+	// The generation of the write that last set the registration, as it now stands: a write of a
+	// lower one is answered the row it did not change. 0 for one no registrar gave a generation.
+	Generation int64 `json:"generation"`
 	// When the broker stops honouring the registration unless it is written again.
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -79,8 +87,11 @@ type podSessionResponse struct {
 //
 // The body may name the thumbprint of the key the session's own role proves, which binds the
 // registration to that key (oauthstore.Store.RegisterPodSession), and a thumbprint that is not
-// 43 base64url characters is 400 THUMBPRINT_INVALID. The answer names the key the registration is
-// bound to after this write: a write naming none keeps the binding a live row already holds.
+// 43 base64url characters is 400 THUMBPRINT_INVALID. It may name the write's generation, the
+// registrar's own order of its writes for this pod and session, and a negative one is 400
+// GENERATION_INVALID. The answer is always the registration as stored after the write, its
+// generation included: a write naming no key keeps the binding a live row already holds, and a
+// write of a lower generation than the row's changes nothing and is answered the row unchanged.
 func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, registrar machine.ServiceAccount) {
 	var body podSessionBody
 	if !readJSON(w, r, &body, "INVALID_REQUEST") {
@@ -105,7 +116,12 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 			"the thumbprint must be a key's RFC 7638 SHA-256 thumbprint: 43 base64url characters, unpadded")
 		return
 	}
-	expires, bound, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session, body.Thumbprint)
+	if body.Generation < 0 {
+		writeError(w, http.StatusBadRequest, "GENERATION_INVALID",
+			fmt.Sprintf("the generation must be 0 or more, not %d", body.Generation))
+		return
+	}
+	stored, err := s.deps.OAuth.RegisterPodSession(r.Context(), claims.Subject, claims.PodUID, body.Session, body.Thumbprint, body.Generation)
 	switch {
 	case errors.Is(err, exchange.ErrNoPodBinding):
 		writeError(w, http.StatusBadRequest, "POD_NOT_BOUND", err.Error())
@@ -121,7 +137,8 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 		// The one record of who may now write under this name: the registrar is the authority
 		// here, so a write it made and a write it stopped making are both read from this line.
 		slog.Info("broker: registered a pod to write under a session name",
-			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session, "thumbprint", bound)
-		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: bound, ExpiresAt: expires})
+			"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session,
+			"thumbprint", stored.JKT, "generation", stored.Generation)
+		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: stored.JKT, Generation: stored.Generation, ExpiresAt: stored.ExpiresAt})
 	}
 }

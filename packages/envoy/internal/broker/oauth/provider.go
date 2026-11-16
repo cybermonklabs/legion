@@ -490,10 +490,10 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 }
 
 // RegisterPodSession records that the pod podUID of the service account account may exchange
-// under the session name session, bound to the key whose thumbprint is jkt when jkt is set, and
-// answers when that registration runs out (oauthstore.PodSessionRetention from now, extended by
-// every later write) and the key it is bound to after this write, since a write naming no key
-// keeps the one a live row names (oauthstore.Store.RegisterPodSession). It is what
+// under the session name session, bound to the key whose thumbprint is jkt when jkt is set, as
+// the registrar's write of the given generation, and answers the registration as it stands after
+// this write (oauthstore.Store.RegisterPodSession): a write naming no key keeps the one a live row
+// names, and a write of a lower generation than the row's changes nothing. It is what
 // POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the
 // only way a row the exchange's gate reads is written.
 //
@@ -502,11 +502,11 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 // that fixes a session are each refused, the last because the name such an entry writes under is
 // the configuration's and its pods need no registration at all. A caller maps those sentinels
 // onto its own refusals; anything else is the store's.
-func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session, jkt string) (time.Time, string, error) {
+func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session, jkt string, generation int64) (oauthstore.PodSessionRegistration, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
-		return time.Time{}, "", err
+		return oauthstore.PodSessionRegistration{}, err
 	}
-	return p.store.RegisterPodSession(ctx, podUID, session, jkt)
+	return p.store.RegisterPodSession(ctx, podUID, session, jkt, generation)
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.
