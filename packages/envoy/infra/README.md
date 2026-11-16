@@ -736,8 +736,8 @@ is reached at: an `https` origin written as a browser writes it, with a lowercas
 ends in a number only if it is an IPv4 address in its canonical form, and has every label a
 lowercase DNS label that, where `--` is its third and fourth characters, is an `xn--` label the
 IDNA lookup profile takes: RFC 5890 section 2.3.1 reserves that form, public certificate
-authorities refuse to issue for its other labels, and an `xn--` label that profile refuses is a
-Fake A-label. Dispatch compares the `Origin` a
+authorities refuse to issue for its labels that do not begin with `xn--`, and an `xn--` label that
+profile refuses is a Fake A-label. Dispatch compares the `Origin` a
 browser sends with it as a string, so another spelling of the same origin is refused rather than
 rewritten. It renders `DISPATCH_OUTSIDE_ORIGIN=<outsideOrigin>` on the app's container, right
 after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and forwards it to the
