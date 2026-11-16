@@ -80,8 +80,9 @@ func approveOnTheDormantRow(t *testing.T, svc *Service, enrollmentID uuid.UUID, 
 // TestAnEnrollmentRecordsTheOwnerItsCallerProved: the owner is read from what the caller proved
 // and from the claim a pod's launcher stated, and from nothing else the caller says. A person's
 // sessions are the person's whether or not they name a session; a pod a launcher enrols under a
-// claim is that claim's within the launcher's service; a pod that states none is its own pod's;
-// and a machine's own session is that machine's, by the subject its credential proved.
+// claim is that claim's within the launcher's service; a pod that states none is its own pod's,
+// and each slot of it its own slot's; and a machine's own session is that machine's, by the
+// subject its credential proved.
 func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	ctx := context.Background()
 	r := newPodRig(t)
@@ -94,6 +95,9 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	claimed.SessionID, claimed.Claim = str("planner-session"), plannerClaim
 	unclaimed := r.podEnrollment(t, launcher, workerPodAccount, "pod-uid-unclaimed")
 	unclaimed.SessionID = str("unclaimed-session")
+	// A second role of the same pod, stating no claim: the slot the daemon gives each role process.
+	unclaimedSlot := r.podEnrollment(t, launcher, workerPodAccount, "pod-uid-unclaimed")
+	unclaimedSlot.SessionID, unclaimedSlot.Slot, unclaimedSlot.Thumbprint = str("unclaimed-slot-session"), "planner-g1", unclaimed.Thumbprint+"-planner-g1"
 
 	for _, c := range []struct {
 		name      string
@@ -126,6 +130,12 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 			cred:  launcher,
 			in:    unclaimed,
 			owner: "machine:legion-daemon/pod-uid-unclaimed", principal: "account:" + workerPodAccount,
+		},
+		{
+			name:  "a slot of a pod that states no claim belongs to that slot of its pod",
+			cred:  launcher,
+			in:    unclaimedSlot,
+			owner: "machine:legion-daemon/pod-uid-unclaimed/planner-g1", principal: "account:" + workerPodAccount,
 		},
 		{
 			name:  "a machine's own session belongs to the machine its credential proved",
@@ -303,6 +313,9 @@ func TestAClaimIsRefusedOffAPodAndWhenMalformed(t *testing.T) {
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
 	self := r.login(t, selfAccount, "pod-uid-self")
 	person := mintCredential(t, r.svc, str("ada@example.com"), nil, "devbox")
+	// A service's login a person approved through a machine-login code: no subject, so no token
+	// proved whose launcher it is.
+	approved := mintCredential(t, r.svc, nil, str(podLoginService), "legion/legion-daemon")
 	rows := func() int {
 		t.Helper()
 		var n int
@@ -325,6 +338,11 @@ func TestAClaimIsRefusedOffAPodAndWhenMalformed(t *testing.T) {
 			in := r.podEnrollment(t, self, selfAccount, "pod-uid-self")
 			in.Claim = plannerClaim
 			return self, in
+		},
+		"a pod under a service login a person approved": func() (Credential, Enrollment) {
+			in := r.podEnrollment(t, approved, workerPodAccount, "pod-uid-approved")
+			in.Claim = plannerClaim
+			return approved, in
 		},
 		"capital letters":     func() (Credential, Enrollment) { return pod("Legion-infra-infra-2653-planner") },
 		"a leading digit":     func() (Credential, Enrollment) { return pod("2653-planner") },
@@ -357,4 +375,224 @@ func TestAClaimIsRefusedOffAPodAndWhenMalformed(t *testing.T) {
 			t.Fatalf("the enrollment records claim %q, want the one stated", claim)
 		}
 	})
+}
+
+// requestSessionOf is the session a request names for its wake (requests.session_id), "" for none.
+func requestSessionOf(t *testing.T, svc *Service, request string) string {
+	t.Helper()
+	var session string
+	if err := svc.Store.Pool.QueryRow(context.Background(), `select coalesce(session_id,'') from requests where id=$1`, request).Scan(&session); err != nil {
+		t.Fatalf("read the session of request %s: %v", request, err)
+	}
+	return session
+}
+
+// adoptedFrom is the predecessor and the rule of the one enrollment.adopted row on enrollment to.
+func adoptedFrom(t *testing.T, svc *Service, to uuid.UUID) (from uuid.UUID, rule string, dormant bool) {
+	t.Helper()
+	if err := svc.Store.Pool.QueryRow(context.Background(), `select (detail->>'from')::uuid, coalesce(detail->>'rule',''), (detail->>'dormant')::boolean
+		from audit where kind='enrollment.adopted' and enrollment_id=$1`, to).Scan(&from, &rule, &dormant); err != nil {
+		t.Fatalf("read the enrollment.adopted row of %s: %v", to, err)
+	}
+	return from, rule, dormant
+}
+
+// TestTheNextPodOfAClaimIsWokenForTheRequestItTook: a request names the session its expiry wakes
+// (requests.session_id, which agent-secrets fills with the asking process's session). The claim
+// rule moves a pending request to the next pod of the claim, which runs under a session of its
+// own, so the request then names that pod's session: the expiry wakes the pod that is waiting on
+// it, not the session of the pod whose box ended. A request that named no session still names
+// none, and its wake falls back to the session of the enrollment it hangs off, the next pod's.
+func TestTheNextPodOfAClaimIsWokenForTheRequestItTook(t *testing.T) {
+	ctx := context.Background()
+	r := newPodRig(t)
+	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+	first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+	named := insertPendingRequest(t, r.svc, first.ID)
+	if _, err := r.svc.Store.Pool.Exec(ctx, `update requests set session_id='planner-session-1' where id=$1`, named); err != nil {
+		t.Fatalf("name the asking session on request %s: %v", named, err)
+	}
+	unnamed := insertPendingRequest(t, r.svc, first.ID)
+	if err := r.svc.Revoke(ctx, launcher, first.ID.String(), "launcher"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	next := claimPod(t, r, launcher, plannerClaim, "planner-session-2", "pod-uid-b")
+	if holder := requestHolder(t, r.svc, named); holder != next.ID {
+		t.Fatalf("request %s hangs off %s, want pod B's %s: this test measures what the move does to its wake", named, holder, next.ID)
+	}
+	if got := requestSessionOf(t, r.svc, named); got != "planner-session-2" {
+		t.Fatalf("request %s names session %q after the move, want pod B's %q: its expiry would wake the session of the pod whose box ended", named, got, "planner-session-2")
+	}
+	if got := requestSessionOf(t, r.svc, unnamed); got != "" {
+		t.Fatalf("request %s names session %q after the move, want none, as it was asked", unnamed, got)
+	}
+}
+
+// TestAPodOfTheClaimUpBeforeTheLastOneEndedTakesWhatItLeft: the next pod of a claim can enrol
+// before the broker hears that the pod before it is gone — the daemon's revoke lands late, or
+// never, and the old row only lapses. The claim rule at enrolment then finds no dormant row to
+// take from, so the end of the old row, when it comes, hands what it holds to the live pod of the
+// claim instead of leaving it dormant for a pod that may never come. An approval given in between
+// lands on the old row and moves with it. A live pod of another claim takes nothing, and with no
+// live pod of the claim the end leaves the row dormant, as before.
+func TestAPodOfTheClaimUpBeforeTheLastOneEndedTakesWhatItLeft(t *testing.T) {
+	ctx := context.Background()
+	t.Run("the daemon's revoke lands after the next pod enrolled", func(t *testing.T) {
+		r := newPodRig(t)
+		launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+		first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+		request := insertPendingRequest(t, r.svc, first.ID)
+		grant := insertLiveGrant(t, r.svc, first.ID)
+		other := claimPod(t, r, launcher, implementerClaim, "implementer-session-1", "pod-uid-c")
+		next := claimPod(t, r, launcher, plannerClaim, "planner-session-2", "pod-uid-b")
+		if holder := requestHolder(t, r.svc, request); holder != first.ID {
+			t.Fatalf("request %s hangs off %s before pod A ended, want pod A's %s: a live pod of the claim keeps what it holds", request, holder, first.ID)
+		}
+
+		if err := r.svc.Revoke(ctx, launcher, first.ID.String(), "launcher"); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		if holder := requestHolder(t, r.svc, request); holder != next.ID {
+			t.Fatalf("request %s hangs off %s after pod A ended, want pod B's %s", request, holder, next.ID)
+		}
+		if holder := grantHolder(t, r.svc, grant); holder != next.ID {
+			t.Fatalf("grant %s hangs off %s after pod A ended, want pod B's %s", grant, holder, next.ID)
+		}
+		if left := readCarryState(t, r.svc, first.ID); !left.Ended || left.Dormant || left.LiveGrants != 0 || left.Pending != 0 {
+			t.Fatalf("pod A is %+v after its end, want it ended, not dormant and holding nothing", left)
+		}
+		if held := readCarryState(t, r.svc, other.ID); held.LiveGrants != 0 || held.Pending != 0 {
+			t.Fatalf("the other claim's live pod holds %+v, want nothing", held)
+		}
+		if from, rule, dormant := adoptedFrom(t, r.svc, next.ID); from != first.ID || rule != "claim" || dormant {
+			t.Fatalf("pod B's enrollment.adopted row names %s by rule %q (dormant %t), want pod A's %s by the claim rule off a row that never went dormant", from, rule, dormant, first.ID)
+		}
+		var handedTo string
+		if err := r.svc.Store.Pool.QueryRow(ctx, `select coalesce(detail->>'handed_to','') from audit where kind='enrollment.revoked' and enrollment_id=$1`, first.ID).Scan(&handedTo); err != nil || handedTo != next.ID.String() {
+			t.Fatalf("pod A's enrollment.revoked row hands to %q (%v), want pod B's %s", handedTo, err, next.ID)
+		}
+	})
+	t.Run("the revoke never lands, an approval grants onto the lapsed row and the sweep ends it", func(t *testing.T) {
+		r := newPodRig(t)
+		launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+		first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+		request := insertPendingRequest(t, r.svc, first.ID)
+		next := claimPod(t, r, launcher, plannerClaim, "planner-session-2", "pod-uid-b")
+		lapseLease(t, r.svc, first.ID)
+		grant := approveOnTheDormantRow(t, r.svc, first.ID, request)
+
+		if _, err := r.svc.EndLapsed(ctx); err != nil {
+			t.Fatalf("EndLapsed: %v", err)
+		}
+		if holder := grantHolder(t, r.svc, grant); holder != next.ID {
+			t.Fatalf("grant %s hangs off %s after the sweep ended pod A, want pod B's %s: only a third pod would take it from a dormant row", grant, holder, next.ID)
+		}
+		if left := readCarryState(t, r.svc, first.ID); !left.Ended || left.Dormant || left.LiveGrants != 0 {
+			t.Fatalf("pod A is %+v after the sweep, want it ended, not dormant and holding nothing", left)
+		}
+	})
+	t.Run("with no live pod of the claim the end leaves the row dormant", func(t *testing.T) {
+		r := newPodRig(t)
+		launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+		first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+		grant := insertLiveGrant(t, r.svc, first.ID)
+		other := claimPod(t, r, launcher, implementerClaim, "implementer-session-1", "pod-uid-c")
+		if err := r.svc.Revoke(ctx, launcher, first.ID.String(), "launcher"); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		if left := readCarryState(t, r.svc, first.ID); !left.Dormant || left.LiveGrants != 1 {
+			t.Fatalf("pod A is %+v after its end, want it dormant holding its grant for the claim's next pod", left)
+		}
+		if holder := grantHolder(t, r.svc, grant); holder != first.ID {
+			t.Fatalf("grant %s hangs off %s, want pod A's %s: another claim's live pod takes nothing", grant, holder, first.ID)
+		}
+		if held := readCarryState(t, r.svc, other.ID); held.LiveGrants != 0 {
+			t.Fatalf("the other claim's live pod holds %+v, want nothing", held)
+		}
+	})
+}
+
+// TestTheSameClaimUnderAnotherServiceTakesNothing: a claim is an owner within the service whose
+// launcher stated it, claim:<service>/<claim>, so a pod another service's launcher enrols under
+// the same claim token is another owner: it takes nothing a dormant pod of the first service's
+// claim left, at its enrolment or at that pod's end.
+func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
+	ctx := context.Background()
+	const otherService, otherPodAccount = "other-service", "system:serviceaccount:other:other-worker"
+	r := newPodRig(t)
+	r.svc.ServiceLogins[otherLauncherAccount] = otherService
+	r.svc.ServicesByAccount[otherPodAccount] = otherService
+	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+	theirs := r.login(t, otherLauncherAccount, "pod-uid-other-daemon")
+	theirPod := func(session, podUID string) Enrollment {
+		t.Helper()
+		in := r.podEnrollment(t, theirs, otherPodAccount, podUID)
+		in.SessionID, in.Claim = str(session), plannerClaim
+		enr, err := r.svc.Create(ctx, theirs, in)
+		if err != nil {
+			t.Fatalf("enrol the other service's pod %s: %v", podUID, err)
+		}
+		return enr
+	}
+
+	live := theirPod("other-planner-session-1", "pod-uid-other-a")
+	first := claimPod(t, r, launcher, plannerClaim, "planner-session-1", "pod-uid-a")
+	grant := insertLiveGrant(t, r.svc, first.ID)
+	if err := r.svc.Revoke(ctx, launcher, first.ID.String(), "launcher"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	later := theirPod("other-planner-session-2", "pod-uid-other-b")
+	if owner, _ := ownerAndClaimOf(t, r.svc, later.ID); owner != "claim:"+otherService+"/"+plannerClaim {
+		t.Fatalf("the other service's pod records owner %q, want %q", owner, "claim:"+otherService+"/"+plannerClaim)
+	}
+	if holder := grantHolder(t, r.svc, grant); holder != first.ID {
+		t.Fatalf("grant %s hangs off %s, want the dormant pod's %s: the same claim token under another service is another owner", grant, holder, first.ID)
+	}
+	for _, e := range []Enrollment{live, later} {
+		if held := readCarryState(t, r.svc, e.ID); held.LiveGrants != 0 {
+			t.Fatalf("the other service's pod %s holds %+v, want nothing", e.ID, held)
+		}
+	}
+}
+
+// TestAMachinesGrantStaysWithItsSession: a machine's own requests are the machine's to read and
+// cancel, but its grants follow the session that asked, as a person's do. A second session of the
+// same machine, live when the first one's box ends, is handed nothing, a third enrolling after
+// takes nothing, and the first session, resumed, gets its grant back by the session carry.
+func TestAMachinesGrantStaysWithItsSession(t *testing.T) {
+	ctx := context.Background()
+	r := newPodRig(t)
+	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
+	machine := machineCredentialFor(t, r.svc, subject, "tp-machine")
+	session := func(name, runtime string) Enrollment {
+		t.Helper()
+		enr, err := r.svc.Create(ctx, machine, Enrollment{Kind: "session", RuntimeID: runtime, Thumbprint: "tp-" + runtime, SessionID: str(name)})
+		if err != nil {
+			t.Fatalf("enrol the machine's session %s on %s: %v", name, runtime, err)
+		}
+		return enr
+	}
+	first := session("machine-session-1", "machine-box-1")
+	grant := insertLiveGrant(t, r.svc, first.ID)
+	sibling := session("machine-session-2", "machine-box-2")
+	if err := r.svc.Revoke(ctx, machine, first.ID.String(), "launcher"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if left := readCarryState(t, r.svc, first.ID); !left.Dormant || left.LiveGrants != 1 {
+		t.Fatalf("the first session's end left %+v, want it dormant holding its grant: a machine's grant is not handed to another session of the machine", left)
+	}
+	later := session("machine-session-3", "machine-box-3")
+	if holder := grantHolder(t, r.svc, grant); holder != first.ID {
+		t.Fatalf("grant %s hangs off %s after another session of the machine enrolled, want the dormant first session's %s", grant, holder, first.ID)
+	}
+	resumed := session("machine-session-1", "machine-box-4")
+	if holder := grantHolder(t, r.svc, grant); holder != resumed.ID {
+		t.Fatalf("grant %s hangs off %s, want the resumed session's %s", grant, holder, resumed.ID)
+	}
+	for _, other := range []Enrollment{sibling, later} {
+		if held := readCarryState(t, r.svc, other.ID); held.LiveGrants != 0 {
+			t.Fatalf("the machine's other session %s holds %+v, want no grant", other.ID, held)
+		}
+	}
 }

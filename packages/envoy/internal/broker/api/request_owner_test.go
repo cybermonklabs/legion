@@ -45,13 +45,25 @@ type enrolled struct {
 // its projected token, a session of its own and the role's claim.
 func (ts *testServer) enrolPod(t *testing.T, launcher launcherLogin, claim, session string) enrolled {
 	t.Helper()
-	podUID, key := uuid.NewString(), newSigningKey(t)
+	return ts.enrolPodWith(t, launcher, podEnrolment{account: workerAccount, podUID: uuid.NewString(), claim: claim, session: session})
+}
+
+// podEnrolment is what a launcher states for one role process of a pod: the account the pod runs
+// as, its uid, the slot of the process ("" for none), its claim ("" for none) and its session.
+type podEnrolment struct {
+	account, podUID, slot, claim, session string
+}
+
+// enrolPodWith enrols the role process p describes under launcher, with the pod's projected token.
+func (ts *testServer) enrolPodWith(t *testing.T, launcher launcherLogin, p podEnrolment) enrolled {
+	t.Helper()
+	key := newSigningKey(t)
 	status, body := ts.launcher(t, launcher.key, launcher.id, http.MethodPost, "/v1/enrollments", map[string]any{
-		"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, key),
-		"pod_token": ts.podToken(t, workerAccount, podUID), "session_id": session, "claim": claim,
+		"kind": "pod", "runtime_id": p.podUID, "slot": p.slot, "thumbprint": thumbprintOf(t, key),
+		"pod_token": ts.podToken(t, p.account, p.podUID), "session_id": p.session, "claim": p.claim,
 	})
 	if status != http.StatusCreated {
-		t.Fatalf("enrol a pod of claim %q under session %s = %d %s, want 201", claim, session, status, body)
+		t.Fatalf("enrol pod %s slot %q of claim %q under session %s = %d %s, want 201", p.podUID, p.slot, p.claim, p.session, status, body)
 	}
 	return enrolled{id: decode[wireEnrolled](t, body).EnrollmentID, key: key}
 }
@@ -313,4 +325,69 @@ func TestARequestOfAnEnrollmentWithNoOwnerIsItsAlone(t *testing.T) {
 	ownersRequest := ts.askPending(t, owned, "SHARED_KEY")
 	ts.wantNotYours(t, asker, ownersRequest.RequestID)
 	ts.wantCancelled(t, asker, created.RequestID)
+}
+
+// TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther: every role process of an issue
+// pod enrols under the pod's one uid, each in a slot of its own (<role>-g<generation>). A pod
+// whose launcher states no claim, which is every pod while the broker runs this code and the
+// daemon does not yet send one, is its own pod's, and each slot of it is its own slot's, so one
+// role of the pod is refused NOT_YOURS on the other's request on both routes, as each slot of a
+// pod holds its own requests (packages/envoy/AGENTS.md). A second enrollment of the same slot,
+// the role process enrolled again, reads its slot's request.
+func TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther(t *testing.T) {
+	ts := newTestServer(t)
+	daemon := ts.serviceLogin(t)
+	podUID := uuid.NewString()
+	slot := func(name, session string) enrolled {
+		return ts.enrolPodWith(t, daemon, podEnrolment{account: workerAccount, podUID: podUID, slot: name, session: session})
+	}
+	planner := slot("planner-g1", "planner-session-1")
+	implementer := slot("implementer-g1", "implementer-session-1")
+	created := ts.askPending(t, planner, "DEEL_API_KEY")
+
+	ts.wantNotYours(t, implementer, created.RequestID)
+	ts.wantState(t, planner, created.RequestID, "pending")
+	theirs := ts.askPending(t, implementer, "SHARED_KEY")
+	ts.wantNotYours(t, planner, theirs.RequestID)
+
+	if status, body := ts.launcher(t, daemon.key, daemon.id, http.MethodDelete, "/v1/enrollments/"+planner.id, nil); status != http.StatusNoContent {
+		t.Fatalf("the daemon revoking the planner's slot = %d %s, want 204", status, body)
+	}
+	again := slot("planner-g1", "planner-session-1")
+	ts.wantState(t, again, created.RequestID, "pending")
+	ts.wantNotYours(t, implementer, created.RequestID)
+}
+
+// TestAClaimTheBrokerRefusesIsInvalidClaim: POST /v1/enrollments answers a claim the broker
+// refuses (enroll.ErrInvalidClaim) 400 INVALID_CLAIM, a refusal the daemon does not retry without
+// the field, and enrols nothing: a claim in a shape no claim token takes, and a claim on a session.
+func TestAClaimTheBrokerRefusesIsInvalidClaim(t *testing.T) {
+	ts := newTestServer(t)
+	daemon := ts.serviceLogin(t)
+	box, boxKey := ts.mintLauncherCredential(t, testApprover, "example-host-one")
+	podUID := uuid.NewString()
+	for _, c := range []struct {
+		name       string
+		credential launcherLogin
+		body       map[string]any
+	}{
+		{"a malformed claim on a pod", daemon, map[string]any{
+			"kind": "pod", "runtime_id": podUID, "thumbprint": thumbprintOf(t, newSigningKey(t)),
+			"pod_token": ts.podToken(t, workerAccount, podUID), "session_id": "planner-session-1", "claim": "Legion/planner",
+		}},
+		{"a claim on a session", launcherLogin{id: box, key: boxKey}, map[string]any{
+			"kind": "session", "runtime_id": uuid.NewString(), "thumbprint": thumbprintOf(t, newSigningKey(t)), "claim": plannerClaim,
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			before := ts.column(t, `select id::text from enrollments`)
+			status, body := ts.launcher(t, c.credential.key, c.credential.id, http.MethodPost, "/v1/enrollments", c.body)
+			if status != http.StatusBadRequest || decode[wireError](t, body).Code != "INVALID_CLAIM" {
+				t.Fatalf("POST /v1/enrollments = %d %s, want 400 INVALID_CLAIM", status, body)
+			}
+			if after := ts.column(t, `select id::text from enrollments`); len(after) != len(before) {
+				t.Fatalf("the refusal left enrollments %v, want %v: it enrols nothing", after, before)
+			}
+		})
+	}
 }

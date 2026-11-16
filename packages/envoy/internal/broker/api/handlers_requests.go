@@ -419,7 +419,7 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	if owner != caller {
-		writeError(w, http.StatusForbidden, "NOT_YOURS", "this request belongs to another session")
+		writeError(w, http.StatusForbidden, "NOT_YOURS", requests.ErrNotOwner.Error())
 		return
 	}
 

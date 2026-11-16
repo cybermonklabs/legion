@@ -830,7 +830,13 @@ const claimOwnerPrefix = "claim:"
 //   - a machine's own session is that machine's, machine:<service>/<subject>, the subject its
 //     credential proved naming one machine and its key (exchange.MachineSubject), so two machines
 //     of one fleet are two owners;
-//   - a pod that states no claim is its own pod's, machine:<service>/<pod uid>.
+//   - a pod that states no claim is its own pod's, machine:<service>/<pod uid>, and a slot of it
+//     is that slot's, machine:<service>/<pod uid>/<slot>. Every role process of an issue pod
+//     enrols under the pod's one uid in a slot of its own (<role>-g<generation>), so without the
+//     slot one role would read and cancel another's requests, which each slot holds alone. A slot
+//     holds no slash (record.ValidSlot), and a machine's subject holds a '#' before its key's
+//     thumbprint (exchange.MachineSubject), which neither a pod uid nor a slot holds, so no two of
+//     these spell one owner.
 //
 // Anything else, and every row from before migration 0032, records none, and a request of an
 // enrollment with no owner is that enrollment's alone. Unlike carryPrincipal, an owner needs no
@@ -843,6 +849,8 @@ func ownerKey(cred Credential, in Enrollment) *string {
 		return nil
 	case in.Kind == "pod" && in.Claim != "":
 		return new(claimOwnerPrefix + *cred.Service + "/" + in.Claim)
+	case in.Kind == "pod" && in.Slot != "":
+		return new("machine:" + *cred.Service + "/" + in.RuntimeID + "/" + in.Slot)
 	case in.Kind == "pod":
 		return new("machine:" + *cred.Service + "/" + in.RuntimeID)
 	case machineCredential(cred):
@@ -1022,22 +1030,10 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 		}
 		var grants, requests, withheld int64
 		if from.Carries || !from.Session {
-			// One statement per table, each writing its own trail: every grant that moves gets its
-			// row, so the insert's own count is how many grants moved.
-			movedGrants, err := tx.Exec(ctx, `with moved as (
-					update grants set enrollment_id=$2 where enrollment_id=$1 returning id
-				)
-				insert into audit (kind, enrollment_id, grant_id, actor, detail)
-				select 'grant.moved', $2, id, $3, jsonb_build_object('from',$1::uuid,'to',$2::uuid) from moved`,
-				from.ID, in.ID, actor)
+			grants, requests, err = moveHeld(ctx, tx, from.ID, in.ID, actor, !from.Session, in.SessionID)
 			if err != nil {
 				return err
 			}
-			movedRequests, err := tx.Exec(ctx, `update requests set enrollment_id=$2 where enrollment_id=$1`, from.ID, in.ID)
-			if err != nil {
-				return err
-			}
-			grants, requests = movedGrants.RowsAffected(), movedRequests.RowsAffected()
 		}
 		if from.Session {
 			// The delete and the insert are one statement over one snapshot, so a name the
@@ -1058,14 +1054,54 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 				return err
 			}
 		}
-		if _, err := tx.Exec(ctx, `insert into audit (kind, enrollment_id, actor, detail) values ('enrollment.adopted',$1,$2,
-			jsonb_build_object('from',$3::uuid,'to',$1::uuid,'dormant',$4::boolean,'rule',$8::text,
-				'grants',$5::bigint,'requests',$6::bigint,'withheld_secrets',$7::bigint))`,
-			in.ID, actor, from.ID, from.Dormant, grants, requests, withheld, rule); err != nil {
+		if err := auditAdoption(ctx, tx, from.ID, in.ID, actor, from.Dormant, rule, grants, requests, withheld); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// moveHeld moves every grant and every request of enrollment from onto enrollment to inside tx,
+// writing one grant.moved audit row per grant, naming the grant, the enrollment it hangs off now
+// and the one it came from, and answers how many grants and requests moved. One statement per
+// table, each writing its own trail, so the insert's own count is how many grants moved.
+//
+// byClaim is a move by the claim rule, adopt's or a hand-over's (handOver), which moves a
+// request onto a pod running under a session of its own. A pending request that named a session
+// for its wake (requests.session_id, the session of the process that asked) then names session,
+// the session of the pod it moved to, or none where that pod names none, so its expiry wakes the
+// pod now waiting on it and not the session of the pod whose box ended; a request that named
+// none still names none, and its wake falls back to the enrollment it hangs off, the new one. A
+// decided request keeps the session it named, which no wake reads again. The session rule moves
+// a request to an enrollment of the same session, so it renames nothing.
+func moveHeld(ctx context.Context, tx pgx.Tx, from, to uuid.UUID, actor string, byClaim bool, session *string) (grants, requests int64, err error) {
+	movedGrants, err := tx.Exec(ctx, `with moved as (
+			update grants set enrollment_id=$2 where enrollment_id=$1 returning id
+		)
+		insert into audit (kind, enrollment_id, grant_id, actor, detail)
+		select 'grant.moved', $2, id, $3, jsonb_build_object('from',$1::uuid,'to',$2::uuid) from moved`,
+		from, to, actor)
+	if err != nil {
+		return 0, 0, err
+	}
+	movedRequests, err := tx.Exec(ctx, `update requests set enrollment_id=$2,
+			session_id = case when $3::boolean and state='pending' and session_id is not null then $4::text else session_id end
+		where enrollment_id=$1`, from, to, byClaim, session)
+	if err != nil {
+		return 0, 0, err
+	}
+	return movedGrants.RowsAffected(), movedRequests.RowsAffected(), nil
+}
+
+// auditAdoption writes the enrollment.adopted row on enrollment to: the predecessor it took from,
+// whether that predecessor was dormant, the rule it moved by (session or claim) and how many
+// grants, requests and withheld names moved.
+func auditAdoption(ctx context.Context, tx pgx.Tx, from, to uuid.UUID, actor string, dormant bool, rule string, grants, requests, withheld int64) error {
+	_, err := tx.Exec(ctx, `insert into audit (kind, enrollment_id, actor, detail) values ('enrollment.adopted',$1,$2,
+		jsonb_build_object('from',$3::uuid,'to',$1::uuid,'dormant',$4::boolean,'rule',$8::text,
+			'grants',$5::bigint,'requests',$6::bigint,'withheld_secrets',$7::bigint))`,
+		to, actor, from, dormant, grants, requests, withheld, rule)
+	return err
 }
 
 // recoverConflict resolves an insert that collided with an unrevoked enrollment of the same
@@ -1131,11 +1167,13 @@ const (
 
 // endedEnrollment is what one end did to what its enrollment held: how many live grants it
 // revoked, how many pending requests it cancelled, and whether it left both where they were
-// instead, the enrollment dormant.
+// instead, the enrollment dormant, or handed both to a live pod of its claim (HandedTo, the id of
+// that pod's enrollment).
 type endedEnrollment struct {
 	GrantsRevoked     int64
 	RequestsCancelled int
 	Dormant           bool
+	HandedTo          string
 }
 
 // endEnrollment ends enrollment id inside tx: it is marked revoked, every live grant under it is
@@ -1153,9 +1191,20 @@ type endedEnrollment struct {
 // helper restarts, a machine is rebuilt, a person signs in on a second box, a Legion pod is
 // replaced, and in each of those the box's enrollment ends while the session goes on and asks
 // the broker for the same secret again. Both kinds carry, a session's and a pod's: a pod's
-// enrollment is always ended before its successor enrols — by the daemon's launcher revoke when
-// it lets the role's process go, or by EndLapsed one lease after the pod stopped renewing — so a
-// pod carry that waited for a live predecessor would find nothing.
+// enrollment is ended before its successor enrols, as a rule — by the daemon's launcher revoke
+// when it lets the role's process go, or by EndLapsed one lease after the pod stopped renewing —
+// so a pod carry that waited for a live predecessor would find nothing.
+//
+// The exception is the next pod of a claim that comes up before the end reaches the last one: the
+// daemon's revoke lands late or not at all, and the old row lives on until its lease lapses. The
+// claim rule finds no dormant row when that pod enrols (adopt), so an end that would leave a row
+// of a claim dormant hands what it holds to the live pod of the same claim instead (handOver),
+// the most recent if there are several, and the row ends for good holding nothing: a person who
+// approves the request after the next pod came up has the grant land on that pod, and not on a
+// row only a third pod would take from. A live pod another end or a renewal holds at that moment
+// is passed over rather than waited for (skip locked), because two pods of one claim ending at
+// once would each wait on the other; with none to take it the row goes dormant as before, and the
+// claim's next enrolment takes it.
 //
 // The probe reads the principal as well as the name because dormancy is a promise that some
 // later enrolment can take what the row still holds, and adopt matches on the whole pair
@@ -1184,11 +1233,18 @@ type endedEnrollment struct {
 // BROKER_SESSION_CARRY_SECONDS has passed with no such enrollment.
 func endEnrollment(ctx context.Context, tx pgx.Tx, id, actor, kind, reason string, mode endMode) (endedEnrollment, error) {
 	var dormant bool
+	var owner *string
 	if mode == endMayCarry {
 		if err := tx.QueryRow(ctx, `select coalesce(e.session_id,'') <> '' and e.carry_principal is not null and (
-				`+holdsForItsSession+`)
-			from enrollments e where e.id=$1`, id).Scan(&dormant); err != nil {
+				`+holdsForItsSession+`), e.owner
+			from enrollments e where e.id=$1`, id).Scan(&dormant, &owner); err != nil {
 			return endedEnrollment{}, err
+		}
+	}
+	if dormant && owner != nil && strings.HasPrefix(*owner, claimOwnerPrefix) {
+		handed, err := handOver(ctx, tx, id, *owner, actor, kind, reason)
+		if err != nil || handed.HandedTo != "" {
+			return handed, err
 		}
 	}
 	if dormant {
@@ -1228,6 +1284,54 @@ func endEnrollment(ctx context.Context, tx pgx.Tx, id, actor, kind, reason strin
 	return endedEnrollment{GrantsRevoked: tag.RowsAffected(), RequestsCancelled: len(cancelled)}, nil
 }
 
+// handOver is endEnrollment's end of enrollment id, a row of claim owner that would otherwise go
+// dormant, when a pod of the same claim is live: everything id holds moves to the most recently
+// enrolled of them by the claim rule (moveHeld), id ends for good holding nothing, and the trail
+// is what adopt's claim rule writes, an enrollment.adopted row on the pod that took it (rule
+// claim, dormant false), beside id's own end row naming that pod (handed_to). Its withheld names
+// stay on id, as the claim rule leaves them: they bind a session name, and the next enrolment of
+// that name takes them (adopt). It answers an empty HandedTo and writes nothing when no live pod
+// of the claim can take it, and the caller leaves id dormant.
+//
+// The pod is locked before anything moves onto it, so its own end cannot read what it holds
+// before the move and miss the rows moved here. One held by another transaction — its own end, or
+// its renewal — is passed over (skip locked): two pods of one claim ending at once would each
+// otherwise wait on the other's row. enrollments_claim_owner_live (migration 0032) serves the
+// lookup, which spells its predicate.
+func handOver(ctx context.Context, tx pgx.Tx, id, owner, actor, kind, reason string) (endedEnrollment, error) {
+	var to uuid.UUID
+	var session *string
+	err := tx.QueryRow(ctx, `select e.id, e.session_id from enrollments e
+		where e.owner=$1 and e.owner like '`+claimOwnerPrefix+`%' and e.revoked_at is null and e.id <> $2
+			and enrollment_lease_live(e.lease_expires_at)
+		order by e.created_at desc, e.id limit 1 for update skip locked`, owner, id).Scan(&to, &session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return endedEnrollment{}, nil
+	}
+	if err != nil {
+		return endedEnrollment{}, err
+	}
+	from, err := uuid.Parse(id)
+	if err != nil {
+		return endedEnrollment{}, err
+	}
+	grants, requests, err := moveHeld(ctx, tx, from, to, actor, true, session)
+	if err != nil {
+		return endedEnrollment{}, err
+	}
+	if _, err := tx.Exec(ctx, `update enrollments set revoked_at=now(), dormant_since=null where id=$1`, id); err != nil {
+		return endedEnrollment{}, err
+	}
+	if err := auditAdoption(ctx, tx, from, to, actor, false, "claim", grants, requests, 0); err != nil {
+		return endedEnrollment{}, err
+	}
+	if _, err := tx.Exec(ctx, `insert into audit (kind, enrollment_id, actor, detail) values ($1,$2,$3,
+		jsonb_build_object('reason',$4::text,'handed_to',$5::uuid))`, kind, id, actor, reason, to); err != nil {
+		return endedEnrollment{}, err
+	}
+	return endedEnrollment{HandedTo: to.String()}, nil
+}
+
 // endLapsed ends an enrollment whose lease lapsed: endEnrollment with actor broker and an
 // enrollment.expired audit row, for recoverConflict and the sweep alike. A lapse is an end of the
 // box (endMayCarry), since a renewer that stopped is what a replaced box looks like from here.
@@ -1248,6 +1352,9 @@ type LapsedEnrollment struct {
 	// for the next enrollment of its session name to take (endEnrollment): the session is on
 	// another box, or about to be, and GrantsRevoked and RequestsCancelled are both 0.
 	Dormant bool
+	// HandedTo is the enrollment of the live pod of its claim the lapse handed what it held to
+	// instead (handOver), "" for every other lapse; GrantsRevoked and RequestsCancelled are both 0.
+	HandedTo string
 }
 
 // lapsedBatch is how many lapsed enrollments EndLapsed ends in one transaction.
@@ -1307,7 +1414,7 @@ func (s *Service) endLapsedBatch(ctx context.Context) ([]LapsedEnrollment, error
 		if err != nil {
 			return nil, err
 		}
-		batch[i].GrantsRevoked, batch[i].RequestsCancelled, batch[i].Dormant = ended.GrantsRevoked, ended.RequestsCancelled, ended.Dormant
+		batch[i].GrantsRevoked, batch[i].RequestsCancelled, batch[i].Dormant, batch[i].HandedTo = ended.GrantsRevoked, ended.RequestsCancelled, ended.Dormant, ended.HandedTo
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -1609,12 +1716,18 @@ func authorized(cred Credential, kind string, operator *string) bool {
 //
 // A credential a person approved — a person's own machine login, or a service's login approved
 // through a machine-login code, neither of which carries a subject — keeps that person's approval
-// as its authorization and is not held to either rule.
+// as its authorization and is not held to either rule, with one exception: it states no claim
+// (ErrInvalidClaim). No token proved whose launcher it is, so a claim it stated would be any
+// claim of its service, and the next pod of that claim would take what a dormant pod of it left
+// (adopt). The Legion daemon logs in with its own token, so its login carries a subject.
 //
 // It reads three fields of the enrollment, its runtime id, its session name and its claim, and
 // takes the enrollment itself rather than the values, so no caller can pair one request's pod UID
 // with another's session name.
 func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrollment) error {
+	if in.Claim != "" && cred.Subject == nil {
+		return fmt.Errorf("%w: only a launcher whose own token proved its login states a claim", ErrInvalidClaim)
+	}
 	if cred.Operator != nil || cred.Subject == nil {
 		return nil
 	}

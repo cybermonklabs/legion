@@ -759,7 +759,8 @@ That owner is the person, for a box of theirs and for their sign-in on a machine
 within the launcher's service, for a pod the Legion daemon enrols, which states the role's claim
 token (`legion-<project>-<issue>-<role>`) for every generation and every replacement pod of the
 role; and the machine itself, by the subject its credential proved, for a machine's own session.
-A pod that states no claim is its own pod's.
+A pod that states no claim is its own pod's, and each slot of it, one role process of an issue pod,
+is its own slot's, so the roles of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it
 (`agent-secrets cancel`), and every other one is refused `NOT_YOURS`
 (`packages/envoy/internal/broker/requests/machine_read.go`, `OwnerOf`): a person reads their
@@ -777,11 +778,17 @@ A role's next pod comes up under a session of its own, which the carry cannot fo
 enrollment of a claim also takes the grants and the pending requests a dormant enrollment of that
 claim still holds, after the carry has taken what its own session left; a pod of the claim that is
 still running keeps what it holds (`enroll.go`, `adopt`).
+The next pod can also come up before the pod before it is ended, when the daemon's revoke lands late
+or never and the old enrollment lives until its lease lapses.
+Then the end of the old enrollment, when it comes, hands what it holds to the running pod of the
+claim instead of leaving it dormant (`enroll.go`, `handOver`).
 So a person who approves a role's request after its pod is gone has the grant land on the role's
 next pod, which reads the value, and that pod asking for the same names again joins the request
 rather than putting a second card in the approver's Inbox.
-The move is in the audit record as the carry's is, its `enrollment.adopted` row naming the rule
-`claim`.
+A pending request that moves to the next pod names that pod's session for its wake, so the
+request's expiry wakes the pod waiting on it, not the session of the pod that is gone.
+Each move is in the audit record as the carry's is, its `enrollment.adopted` row naming the rule
+`claim`, and an end that handed over names the pod it handed to (`handed_to`).
 
 Within one principal the session name is asserted, not proved.
 The name rides in the enrollment request's body, outside the launcher proof, which signs the call's
@@ -809,9 +816,10 @@ And a person's revoke ends the grant at once.
 
 A claim is asserted the same way: it rides in the enrollment's body, and it is the launcher's word,
 so a holder of the Legion daemon's login can state any claim of the daemon's service and take what a
-dormant pod of that claim left.
+pod of that claim leaves, whether it enrols after that pod went dormant or runs when that pod ends.
 A pod enrolling itself states none, `400 INVALID_CLAIM`, because a claim it picked for itself
-would make it a sibling pod's owner
+would make it a sibling pod's owner, and neither does a pod under a service login a person
+approved, which no token proved to be the launcher's
 (`enroll.go`, `podUnderTokenLogin`).
 
 The broker never stores a value. Each time a session reads a grant, the broker checks that the

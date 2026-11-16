@@ -12,7 +12,8 @@
 --     for the Legion daemon is the role claim token, stable across role generations and pod
 --     replacements (packages/daemon/internal/claim/token.go);
 --   * machine:<credential service>/<credential subject> for a machine's own session, and
---     machine:<credential service>/<pod uid> for a pod enrollment that states no claim.
+--     machine:<credential service>/<pod uid>, with /<slot> after it for a slot of the pod, for a
+--     pod enrollment that states no claim, so the role processes of one pod are owners apart.
 -- Null on every row this migration finds, and on an enrollment whose caller proved none of those,
 -- and a null owner is owned by its own enrollment alone: requests.Machine.OwnerOf answers
 -- 'enrollment:' || id for it, which is the rule every request was held to before this column.
@@ -22,10 +23,14 @@
 --
 -- enrollments_claim_owner_dormant serves adopt's claim rule: the next enrollment of a claim takes
 -- what a dormant enrollment of the same claim still holds, which it finds by
--- "owner = $1 and owner like 'claim:%' and dormant_since is not null". It is partial on that
--- predicate because the rows it wants are a sliver of the table, which no statement ever deletes
--- from, and adopt runs on every pod enrolment. It is a plain create index for the reason 0027 gives:
--- the runner applies a migration in one transaction, where CONCURRENTLY is refused.
+-- "owner = $1 and owner like 'claim:%' and dormant_since is not null". enrollments_claim_owner_live
+-- serves the other way round, enroll.handOver: an end that would leave a row of a claim dormant
+-- hands what it holds to a live enrollment of the same claim, which it finds by
+-- "owner = $1 and owner like 'claim:%' and revoked_at is null". Each is partial on its predicate
+-- because the rows it wants are a sliver of the table, which no statement ever deletes from, and
+-- adopt runs on every pod enrolment and handOver's lookup on every end of a claim's pod. Both are
+-- plain create index for the reason 0027 gives: the runner applies a migration in one
+-- transaction, where CONCURRENTLY is refused.
 --
 -- Both columns are additive and nullable, so this rewrites no row and is safe on a fresh or an
 -- already-migrated database, and a broker from before it keeps serving while it applies: that
@@ -33,3 +38,4 @@
 alter table enrollments add column if not exists claim text;
 alter table enrollments add column if not exists owner text;
 create index if not exists enrollments_claim_owner_dormant on enrollments (owner) where owner like 'claim:%' and dormant_since is not null;
+create index if not exists enrollments_claim_owner_live on enrollments (owner) where owner like 'claim:%' and revoked_at is null;

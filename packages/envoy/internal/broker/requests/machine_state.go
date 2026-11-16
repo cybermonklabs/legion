@@ -59,9 +59,14 @@ import (
 )
 
 var (
-	ErrNotYours    = errors.New("this request or grant belongs to another session")
-	ErrNotApprover = errors.New("only the grant's approver or its enrollment's operator may revoke it")
-	ErrTerminal    = errors.New("request is already decided")
+	ErrNotYours = errors.New("this request or grant belongs to another session")
+	// ErrNotOwner is the refusal of a caller whose owner did not make the request it names
+	// (OwnerOf, EnrollmentOwner): the read route's and Cancel's. It is an ErrNotYours to
+	// errors.Is, so every caller that refuses on ErrNotYours refuses on it, in words that name the
+	// owner rule rather than one session.
+	ErrNotOwner    error = notOwnerError{}
+	ErrNotApprover       = errors.New("only the grant's approver or its enrollment's operator may revoke it")
+	ErrTerminal          = errors.New("request is already decided")
 	// ErrExpired is ApplyDecision's refusal for a record that expired undecided: the sweeper
 	// expired its request, or its pending_expires_at has passed before the sweeper got to it.
 	ErrExpired      = errors.New("request expired before its approver acted on it")
@@ -105,11 +110,18 @@ var (
 	ErrSessionIDInvalid = errors.New("session id must be at most 128 characters with no whitespace or control character")
 )
 
+// notOwnerError is ErrNotOwner: its own words, and ErrNotYours to errors.Is.
+type notOwnerError struct{}
+
+func (notOwnerError) Error() string { return "this request belongs to another owner" }
+
+func (notOwnerError) Is(target error) bool { return target == ErrNotYours }
+
 // refusals is every sentinel this package refuses a request or a grant with: the ones above and
 // the two of airlock.go. A sentinel added to this package belongs in it, which is why it sits
 // beside them rather than in a caller that reads them.
 var refusals = []error{
-	ErrNotYours, ErrNotApprover, ErrTerminal, ErrExpired, ErrGrantNotLive, ErrGrantChainInvalid,
+	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
 	ErrNarrowingNotApplicable, ErrNarrowingOwnerNotListed, ErrNarrowingBehindAirlock,
 	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
@@ -913,16 +925,21 @@ func lockPendingNames(ctx context.Context, tx pgx.Tx, enrollmentID string, sorte
 // off now (ownerOf, as OwnerOf reads it), which an adoption rewrites: any enrollment of the same
 // person, Legion claim or machine cancels it, and an enrollment that records no owner cancels its
 // own requests alone, so the moved session cancels the request that moved with it and a box it
-// moved off that records no owner is ErrNotYours.
+// moved off that records no owner is ErrNotOwner.
+//
+// The audit row EndPendingRequests writes names the enrollment the request hangs off, and the
+// grant-log line names it too, since the line carries the ids its row names; the actor on both is
+// the caller's session. The request's detail says which of the two cancelled it: its own session,
+// or another session of its owner.
 func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var owner, state string
-	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+`, r.state from requests r join enrollments e on e.id = r.enrollment_id
-		where r.id=$1 for update of r`, id).Scan(&owner, &state); err != nil {
+	var owner, state, requestEnrollment string
+	if err := tx.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, r.enrollment_id::text from requests r join enrollments e on e.id = r.enrollment_id
+		where r.id=$1 for update of r`, id).Scan(&owner, &state, &requestEnrollment); err != nil {
 		return err
 	}
 	var caller string
@@ -930,22 +947,24 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 		return err
 	}
 	if owner != caller {
-		return ErrNotYours
+		return ErrNotOwner
 	}
 	if state != "pending" {
 		return ErrTerminal
 	}
 	actor := "session:" + enrollmentID
-	end := store.RequestEnd{
-		State: "cancelled", Actor: actor, DecidedBy: &actor, Detail: "cancelled by the requesting session",
+	detail := "cancelled by the requesting session"
+	if requestEnrollment != enrollmentID {
+		detail = "cancelled by another session of the owner that made it"
 	}
+	end := store.RequestEnd{State: "cancelled", Actor: actor, DecidedBy: &actor, Detail: detail}
 	if _, err := store.EndPendingRequests(ctx, tx, store.RequestByID, id, end); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	store.LogGrantEvent(endedRequestLogEvent(end, enrollmentID, id))
+	store.LogGrantEvent(endedRequestLogEvent(end, requestEnrollment, id))
 	return nil
 }
 
@@ -1250,7 +1269,9 @@ const enrollmentHoldsForItsSession = `exists (select 1 from grants g where g.enr
 // belongs to, and still holds a live grant or a request nobody has answered. It is
 // enroll.endEnrollment's own dormancy probe — the same two tests, in the same order, around the
 // same holdsForItsSession text — because it has to answer what that probe will answer about the
-// same row a moment later.
+// same row a moment later. Where that end finds a live pod of the row's claim it hands what the
+// row holds to that pod instead of leaving it dormant (enroll.handOver), which is a carry all the
+// same: a grant minted here moves with the rest.
 const enrollmentWouldGoDormant = `coalesce(e.session_id,'') <> '' and e.carry_principal is not null and (
 				` + enrollmentHoldsForItsSession + `)`
 
