@@ -259,13 +259,24 @@ func (n valueDeadlineNotice) ends() string {
 	case n.inPaste:
 		return "this entry ends: finish the paste, then press Enter, and the create deletes it then"
 	case n.interrupt != 0:
-		key := "Ctrl-C"
-		if n.interrupt != 0x03 {
-			key = promptControlByteError{c: n.interrupt}.name()
-		}
-		return "you press Enter to end this entry, and the create deletes it then; " + key + " deletes it now"
+		return "you press Enter to end this entry, and the create deletes it then; " + keyName(n.interrupt) + " deletes it now"
 	}
 	return "you press Enter to end this entry, or end this process (close this terminal, or send it SIGTERM), and the create deletes it then"
+}
+
+// keyName is what a person calls the key that sends c: a control byte by its own name or its
+// Ctrl- chord (promptControlByteError.name, "Ctrl-C" for 0x03), a printable character as that key
+// ("the Z key", the space bar), and any other byte by its number.
+func keyName(c byte) string {
+	switch {
+	case c < 0x20 || c == 0x7f:
+		return promptControlByteError{c: c}.name()
+	case c == ' ':
+		return "the space bar"
+	case c < 0x7f:
+		return fmt.Sprintf("the %c key", c)
+	}
+	return fmt.Sprintf("the key that sends byte 0x%02x", c)
 }
 
 // valueReadWindow is how long `secret create` reads the value of the secret it made before it

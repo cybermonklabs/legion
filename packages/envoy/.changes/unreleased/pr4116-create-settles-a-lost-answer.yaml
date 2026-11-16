@@ -18,7 +18,7 @@ body: |-
   the rest of the entry, a paste through its closing mark, before it gives the terminal back, so
   none of it is echoed or reaches the shell; it deletes the empty secret when that entry ends, at
   Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed outside a paste
-  where SIGINT is not ignored, and the notice names which of those apply. A value that ends only
+  where it still sends SIGINT, and the notice names which of those apply. A value that ends only
   after the ten minutes is not stored, and a prompt waiting in the background for `fg` gives up
   then too. On AWS, where it
   makes nothing first, the read has no limit. Each `gcloud auth print-access-token` that refreshes a gcloud login's

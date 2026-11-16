@@ -41,7 +41,7 @@ const PendingMessage = "agent secret policy waiting for a value"
 // the entry typed by then ends its read and discards the secret, so no secret is pending that its
 // create has given up on. A create whose entry is under way at the deadline reads on until the
 // entry ends - at Enter, or at a signal that ends the process, such as a hang-up, or Ctrl-C typed
-// outside a paste where SIGINT is not ignored - and discards the secret only then, so the broker
+// outside a paste where it still sends SIGINT - and discards the secret only then, so the broker
 // may refuse it no-current-value before the create deletes it.
 const PendingValueWindow = 10 * time.Minute
 

@@ -312,11 +312,13 @@ func TestPromptJobHelper(t *testing.T) {
 	// window does, and names it so in the timeout's message. AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY
 	// places that deadline inside the entry: the reader's first wait lasts until input comes,
 	// however late, so the entry is under way when the deadline passes; its first wait after that
-	// input, with a bound below a paste's own (the deadline's), lasts until the deadline has passed
-	// and then ends with nothing read, as an entry, typed or pasted, that falls quiet across the
-	// deadline does. The helper prints DEADLINE_PASSED then, and READING_ON at the reader's next
-	// wait, if it waits again; where the input itself came after the deadline, the reader is
-	// already reading on, and it prints both at once.
+	// input lasts until the deadline has passed, where it has not, and then ends with nothing read,
+	// as an entry, typed or pasted, that falls quiet across the deadline does. The helper decides
+	// that by the deadline, not by the wait's bound. It prints DEADLINE_PASSED then, and READING_ON
+	// at the reader's next wait, if it waits again; where the input itself came after the
+	// deadline, the reader is already reading on, and it prints both at once. With
+	// AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has passed,
+	// so a test can send its input after it.
 	var window time.Duration
 	if d := os.Getenv("AGENT_SECRETS_JOB_DEADLINE"); d != "" {
 		var err error
@@ -346,9 +348,11 @@ func TestPromptJobHelper(t *testing.T) {
 			readOn = true
 			fmt.Println("READING_ON")
 		}
-		if midEntry && readSome && !held && timeout < int(maxPasteDrain.Milliseconds()) {
+		if midEntry && readSome && !held {
+			// The reader's first wait after input: decided by the deadline itself, not by the
+			// wait's bound, which inside a paste that began after the deadline is maxPasteDrain.
 			held = true
-			if timeout >= 0 {
+			if time.Until(deadline) > 0 {
 				time.Sleep(time.Until(deadline))
 				timeout = 0
 				fmt.Println("DEADLINE_PASSED")
@@ -368,6 +372,9 @@ func TestPromptJobHelper(t *testing.T) {
 	label := &labelCheck{}
 	if window != 0 {
 		deadline = time.Now().Add(window)
+		if os.Getenv("AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE") != "" {
+			time.AfterFunc(time.Until(deadline), func() { fmt.Println("DEADLINE_REACHED") })
+		}
 	}
 	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", deadline, label)
 	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)

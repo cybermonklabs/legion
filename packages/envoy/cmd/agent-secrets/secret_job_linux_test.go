@@ -473,32 +473,41 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 // A value deadline that passes while a bracketed paste is open refuses the entry, but the prompt
 // keeps the terminal and reads the paste on through its closing mark before it gives the terminal
 // back, so the paste's rest, arriving after the deadline, is discarded rather than run by the
-// shell. The helper places the deadline inside the paste (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY),
-// and the paste's rest goes only once the prompt has either read on past it or given the terminal
-// back to the shell, so a prompt that gives the paste up shows that rest running there. The notice
-// says the paste must end first: inside it Ctrl-C is pasted text, which deletes nothing.
+// shell. The helper places the deadline inside the paste (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY):
+// the paste begins before the deadline, or only after it (sent once the helper has said the
+// deadline passed), and the paste's rest goes only once the prompt has either read on past it or
+// given the terminal back to the shell, so a prompt that gives the paste up shows that rest
+// running there. The notice says the paste must end first: inside it Ctrl-C is pasted text, which
+// deletes nothing.
 func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
-	s := newPromptShell(t)
-	s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 "
-	s.start(false, false)
-	s.send("\x1b[200~pastehead")
-	s.wait("DEADLINE_PASSED")
-	if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
-		s.wait("PROMPT$ ")
+	for _, after := range []bool{false, true} {
+		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
+			s := newPromptShell(t)
+			s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
+			s.start(false, false)
+			if after {
+				s.wait("DEADLINE_REACHED")
+			}
+			s.send("\x1b[200~pastehead")
+			s.wait("DEADLINE_PASSED")
+			if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
+				s.wait("PROMPT$ ")
+			}
+			s.send("\recho PASTE_$((2+3))\r\x1b[201~")
+			s.wait("RETURNED nothing was stored: no value came in time, within 2s")
+			// The prompt said at the deadline that the entry is refused, and that the empty secret
+			// stays until the paste and then the entry end, so the person knows to stop.
+			notice := s.out.String()
+			if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
+				!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
+				t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
+			}
+			// Clear the shell's line, where a leaked paste mark would leave text that breaks the
+			// history check's own command, so a leak shows as the markers below.
+			s.send("\x15")
+			s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
+		})
 	}
-	s.send("\recho PASTE_$((2+3))\r\x1b[201~")
-	s.wait("RETURNED nothing was stored: no value came in time, within 2s")
-	// The prompt said at the deadline that the entry is refused, and that the empty secret stays
-	// until the paste and then the entry end, so the person knows to stop.
-	notice := s.out.String()
-	if !strings.Contains(notice, "The value deadline passed with an entry under way: no value came within 2s of the create, so none is stored. The empty secret DEMO_KEY stays in the store until this entry ends") ||
-		!strings.Contains(notice, "finish the paste, then press Enter") || strings.Contains(notice, "Ctrl-C deletes it now") {
-		t.Fatalf("the prompt's notice at its deadline inside a paste %q; want it to say the paste must end first, and never that Ctrl-C deletes the secret", notice)
-	}
-	// Clear the shell's line, where a leaked paste mark would leave text that breaks the history
-	// check's own command, so a leak shows as the markers below.
-	s.send("\x15")
-	s.noShellValue("pastehead", "PASTE_$((", "PASTE_5")
 }
 
 // TestPromptJobValueDeadlineMidEntryNoticeNamesWhatEndsTheEntry: the notice a value deadline
