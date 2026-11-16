@@ -6,6 +6,8 @@ package requests
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -27,6 +29,13 @@ type Assignees interface {
 // read that has not answered by then names nobody, and the request is listed for everyone, so a
 // slow or absent Dispatch delays a request by this much at most and hides it from no one.
 const assigneeBound = 3 * time.Second
+
+// AssigneeUnreadMessage opens the WARN claimAssignee logs when it could not read the assignee of
+// a Legion pod's issue: the read failed, ran past assigneeBound, or the pod's own requester could
+// not be read first. The request is then listed for everyone, as when the issue has no assignee,
+// and this line is what tells the two apart. Its text changes only with the operate guide that
+// documents it.
+const AssigneeUnreadMessage = "broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone"
 
 // claimToken is a Legion role claim token, legion-<project>-<issue project, lowercased>-<issue
 // number>-<role> (packages/daemon/internal/claim.NewToken). A project token holds no "-", so the
@@ -78,6 +87,12 @@ func (m *Machine) responsiblePerson(e enrollmentRow, req policy.Requester, assig
 // record.AnyoneApprover. Any failure, a Dispatch that answers nothing within assigneeBound, and an
 // issue nobody is assigned to give "". A decision inside the transaction that differs from this
 // read can only leave the request listed for everyone, never for nobody.
+//
+// A failure and a read past the bound each log one AssigneeUnreadMessage WARN, naming the issue,
+// the enrollment, the error and whether the bound was reached, so a broker whose Dispatch token is
+// refused, or whose Dispatch is slow, is seen to list every Legion pod's request for everyone. An
+// issue nobody is assigned to logs nothing: that is an answer. No error here names a token: the
+// Dispatch read's errors name the status and the issue, and a token file's the file.
 func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *policy.Set, names []string, reason string) string {
 	if e.Kind != "pod" || m.Assignees == nil {
 		return ""
@@ -86,9 +101,13 @@ func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *polic
 	if key == "" {
 		return ""
 	}
+	unread := func(err error, boundReached bool) string {
+		slog.Warn(AssigneeUnreadMessage, "issue", key, "enrollment", e.ID, "error", err.Error(), "bound_reached", boundReached)
+		return ""
+	}
 	requester, err := m.requester(ctx, m.Store.Pool, e)
 	if err != nil {
-		return ""
+		return unread(fmt.Errorf("read the pod's requester: %w", err), false)
 	}
 	if decided, err := evaluate(set, names, requester, reason); err != nil || decided.state != "pending" || decided.approver != record.AnyoneApprover {
 		return ""
@@ -98,18 +117,24 @@ func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *polic
 	// The read runs on its own goroutine so the bound holds even for a reader that does not
 	// watch its context; its answer, if it comes later, goes into the buffered channel and is
 	// dropped.
-	answered := make(chan string, 1)
+	type answer struct {
+		assignee string
+		err      error
+	}
+	answered := make(chan answer, 1)
 	go func() {
 		assignee, err := m.Assignees.Assignee(bounded, key)
-		if err != nil {
-			assignee = ""
-		}
-		answered <- assignee
+		answered <- answer{assignee, err}
 	}()
 	select {
-	case assignee := <-answered:
-		return assignee
+	case a := <-answered:
+		if a.err != nil {
+			return unread(a.err, false)
+		}
+		return a.assignee
 	case <-bounded.Done():
-		return ""
+		// The bound, and not the caller, ended the read when the caller's own context is
+		// still live.
+		return unread(bounded.Err(), ctx.Err() == nil)
 	}
 }

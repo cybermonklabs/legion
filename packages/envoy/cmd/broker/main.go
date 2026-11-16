@@ -450,11 +450,14 @@ func main() {
 		VMServicesByAccount: cfg.VMServicesByAccount,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
+	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
+	// machine and the model judge share it, its token cache and its client.
+	dispatch := judgeDispatch(cfg)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, rules, reqMachine)
+	wireJudge(ctx, cfg, rules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -1080,10 +1083,11 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which kindMinters' copies keep. Where
-// BROKER_JUDGE_DISPATCH_URL is set, the judge's read of Dispatch also names a Legion pod's issue's
-// assignee, whose Inbox lists that pod's request for a shared secret.
-func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+// unretried too: each holds the one pointer, which kindMinters' copies keep. dispatch is the
+// broker's one read of Dispatch (judgeDispatch), nil where BROKER_JUDGE_DISPATCH_URL is unset;
+// where it is set it also names a Legion pod's issue's assignee, whose Inbox lists that pod's
+// request for a shared secret.
+func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry, dispatch *judge.Dispatch) *requests.Machine {
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
@@ -1111,8 +1115,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		AirlockCACertificate: caCertificate,
 	}
 	m.Chain = requests.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second, m.Airlock)
-	if cfg.JudgeDispatchURL != "" {
-		m.Assignees = judgeDispatch(cfg)
+	if dispatch != nil {
+		m.Assignees = dispatch
 	}
 	return m
 }
@@ -1131,10 +1135,14 @@ func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
 }
 
 // judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
-// BROKER_JUDGE_DISPATCH_TOKEN_FILE holds: the model judge reads a request's issue with it, and the
-// request machine a Legion pod's issue's assignee.
-func judgeDispatch(cfg config.Config) judge.Dispatch {
-	return judge.Dispatch{
+// BROKER_JUDGE_DISPATCH_TOKEN_FILE holds, and nil where that URL is unset: the model judge reads a
+// request's issue with it, and the request machine a Legion pod's issue's assignee. main builds it
+// once and hands both the same one, so they share its token cache and its client.
+func judgeDispatch(cfg config.Config) *judge.Dispatch {
+	if cfg.JudgeDispatchURL == "" {
+		return nil
+	}
+	return &judge.Dispatch{
 		BaseURL: cfg.JudgeDispatchURL,
 		Account: brokertoken.NewAccountToken(cfg.JudgeDispatchTokenFile),
 		HTTP:    &http.Client{Timeout: judgeDispatchTimeout},
@@ -1157,7 +1165,8 @@ const judgeDispatchTimeout = 10 * time.Second
 
 // wireJudge gives m the broker's model judge, when this deployment configures one, and logs in
 // one line which of the two brokers this is. The five settings are all-or-none (config.Load
-// refuses a start that sets some of them), so the model URL alone says whether there is a judge.
+// refuses a start that sets some of them), so the model URL alone says whether there is a judge,
+// and a judge always has dispatch, the read of Dispatch main built once and gave m as well.
 //
 // ctx is main's own signal.NotifyContext, which the first SIGTERM cancels, and not boot's
 // `serving`, which outlives the drain: every run hangs off it, so one in flight when the broker
@@ -1165,7 +1174,7 @@ const judgeDispatchTimeout = 10 * time.Second
 // request pending for the person who decides it today. That is the right way round for a judge
 // where it is not for the policy reload — a half-finished reload costs a pod stale tags for its
 // drain, while a half-finished run would approve a credential as the pod goes away.
-func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine) {
+func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *requests.Machine, dispatch *judge.Dispatch) {
 	if cfg.JudgeModelURL == "" {
 		slog.Info("model judge", "state", "off",
 			"detail", "none of "+strings.Join(config.JudgeSettings, ", ")+" is set, so every human-tier request waits for the person who decides it today")
@@ -1173,7 +1182,7 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	}
 	runner := judge.New(ctx, judge.Options{
 		Rules:      rules,
-		Dispatch:   judgeDispatch(cfg),
+		Dispatch:   *dispatch,
 		Model:      judge.NewModel(cfg.JudgeModelURL, cfg.JudgeModel, cfg.JudgeModelProtocol, cfg.JudgeModelAudience),
 		Requests:   m,
 		SkipChecks: cfg.JudgeTestSkipChecks,

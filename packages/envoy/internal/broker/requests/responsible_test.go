@@ -8,12 +8,15 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 const (
@@ -26,13 +29,14 @@ const (
 	legionPlanner = "legion-acme-acme-1-planner"
 )
 
-// standInAssignees answers every issue's assignee as answer, or err, after delay, recording each
-// key it was asked for. It ignores its context on purpose, as a Dispatch that never answers does,
-// so a row that waits on it proves the caller's own bound and not the stand-in's courtesy.
+// standInAssignees answers every issue's assignee as answer, or err, recording each key it was
+// asked for. With block set it answers only once block is closed, which the row that sets it does
+// when it ends. It ignores its context on purpose, as a Dispatch that never answers does, so a row
+// that waits on it proves the caller's own bound and not the stand-in's courtesy.
 type standInAssignees struct {
 	answer string
 	err    error
-	delay  time.Duration
+	block  chan struct{}
 
 	mu    sync.Mutex
 	asked []string
@@ -42,7 +46,9 @@ func (s *standInAssignees) Assignee(_ context.Context, issueKey string) (string,
 	s.mu.Lock()
 	s.asked = append(s.asked, issueKey)
 	s.mu.Unlock()
-	time.Sleep(s.delay)
+	if s.block != nil {
+		<-s.block
+	}
 	return s.answer, s.err
 }
 
@@ -150,7 +156,10 @@ func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
 // TestASharedRequestWithNoResponsiblePersonIsListedForEveryone is case 4: wherever no step names
 // a person, the request is everyone's to see, as it was before, so no request waits where nobody
 // sees it. A Dispatch that does not answer in time names nobody too, and Create does not wait for
-// it past its bound.
+// it much past its bound. A read that failed or ran out of its bound logs one
+// AssigneeUnreadMessage WARN naming the issue, the enrollment, the error and whether the bound was
+// reached, so an operator sees that the step is off; a row that read nothing, or read an issue
+// nobody is assigned to, logs none.
 func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -158,19 +167,30 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 		assignees *standInAssignees
 		noReader  bool
 		machine   bool
+		// warned is whether the row logs the WARN, and boundReached what it says of the bound.
+		warned, boundReached bool
+		// errorText is a part of the error the WARN names.
+		errorText string
 	}{
 		{name: "a pod with no claim", assignees: &standInAssignees{answer: dave}},
 		{name: "the controller's claim", claim: "legion-infra-controller", assignees: &standInAssignees{answer: dave}},
 		{name: "no Dispatch to read", claim: legionPlanner, noReader: true},
-		{name: "Dispatch refuses", claim: legionPlanner, assignees: &standInAssignees{err: errors.New("dispatch answered 503")}},
+		{name: "Dispatch refuses", claim: legionPlanner, assignees: &standInAssignees{err: errors.New("dispatch answered 503 for issue ACME-1")},
+			warned: true, errorText: "dispatch answered 503 for issue ACME-1"},
 		{name: "the issue has no assignee", claim: legionPlanner, assignees: &standInAssignees{}},
-		{name: "Dispatch answers too late", claim: legionPlanner, assignees: &standInAssignees{answer: dave, delay: 4 * time.Second}},
+		{name: "Dispatch answers too late", claim: legionPlanner, assignees: &standInAssignees{answer: dave, block: make(chan struct{})},
+			warned: true, boundReached: true, errorText: context.DeadlineExceeded.Error()},
 		{name: "a machine whose fleet names no person", machine: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			capture := &logtest.Recorder{}
+			logtest.SetDefault(t, capture)
 			m, _, _, _ := newFixture(t)
 			if !c.noReader && c.assignees != nil {
 				m.Assignees = c.assignees
+				if c.assignees.block != nil {
+					t.Cleanup(func() { close(c.assignees.block) })
+				}
 			}
 			var enrollment string
 			var key *ecdsa.PrivateKey
@@ -182,14 +202,31 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 			}
 			start := time.Now()
 			req := askShared(t, m, enrollment, key)
-			if took := time.Since(start); took > 3500*time.Millisecond {
-				t.Errorf("Create took %s; want it back within 3.5 s, whatever Dispatch does", took)
+			if took, most := time.Since(start), assigneeBound+3*time.Second; took > most {
+				t.Errorf("Create took %s; want it back within %s, whatever Dispatch does", took, most)
 			}
 			requireListedFor(t, m, *req.RecordID, "", []string{alice, bob}, alice, bob)
 			if c.assignees != nil && (c.claim == "" || c.claim == "legion-infra-controller") {
 				if asked := c.assignees.keys(); len(asked) != 0 {
 					t.Errorf("Dispatch was asked for %v; want no read for a claim that names no issue", asked)
 				}
+			}
+			lines := loggedLines(t, capture, AssigneeUnreadMessage)
+			if !c.warned {
+				if len(lines) != 0 {
+					t.Fatalf("Create logged %d %q lines %v; want none: nothing failed", len(lines), AssigneeUnreadMessage, lines)
+				}
+				return
+			}
+			if len(lines) != 1 {
+				t.Fatalf("Create logged %d %q lines; want one", len(lines), AssigneeUnreadMessage)
+			}
+			line := lines[0]
+			errorText, _ := line.attrs["error"].(string)
+			if line.level != slog.LevelWarn || line.attrs["issue"] != "ACME-1" || line.attrs["enrollment"] != enrollment ||
+				line.attrs["bound_reached"] != c.boundReached || !strings.Contains(errorText, c.errorText) {
+				t.Fatalf("the %q line is %v at %s; want a WARN naming issue ACME-1, enrollment %s, bound_reached=%t and an error holding %q",
+					AssigneeUnreadMessage, line.attrs, line.level, enrollment, c.boundReached, c.errorText)
 			}
 		})
 	}
@@ -264,5 +301,32 @@ func TestAnAgentTierPodRequestReadsNoAssignee(t *testing.T) {
 	}
 	if asked := assignees.keys(); len(asked) != 0 {
 		t.Errorf("Dispatch was asked for %v; want no read for a request granted at once", asked)
+	}
+}
+
+// TestAWithheldSharedAgentTierRequestIsListedForTheResponsiblePerson: a shared agent-tier secret
+// is granted at once until a session's operator withholds it from that session; the session's next
+// request for it then waits on record.AnyoneApprover, as a shared human-tier secret's does, and is
+// listed by the same rule, for the person responsible for the agent. That is intended: the rule
+// chooses whose Inbox lists a request anyone may decide, whatever the secret's tier, and here that
+// person is the operator who withheld it. Anyone signed in still decides it.
+func TestAWithheldSharedAgentTierRequestIsListedForTheResponsiblePerson(t *testing.T) {
+	m, enr, key, operator := newFixture(t)
+	withSharedToken(t, m)
+	ctx := context.Background()
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "", nil)
+	if err != nil || auto.GrantID == nil {
+		t.Fatalf("Create(%s) = %+v, %v; want granted at once", sharedToken, auto, err)
+	}
+	if err := m.RevokeByApprover(ctx, *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "", nil)
+	if err != nil || again.State != "pending" || again.RecordID == nil || recordApprover(t, m, again) != record.AnyoneApprover {
+		t.Fatalf("Create(%s) after the withhold = %+v, %v; want it pending on %s", sharedToken, again, err, record.AnyoneApprover)
+	}
+	requireListedFor(t, m, *again.RecordID, operator, []string{operator, carol, bob}, operator)
+	if dec, err := m.ApplyDecision(ctx, *again.RecordID, true, carol); err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(%s) = %+v, %v; want anyone signed in to decide it", carol, dec, err)
 	}
 }

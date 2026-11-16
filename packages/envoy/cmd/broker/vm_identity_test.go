@@ -185,7 +185,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, nil)
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
@@ -196,9 +196,9 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 
 // TestTheRequestMachineCarriesWhoIsResponsible pins the two things the broker hands the request
 // decisions to find the person a shared secret's request is listed for: each fleet's person by
-// account (BROKER_VM_EXCHANGE_ACCOUNTS), an entry that names none left out, and the judge's read
-// of Dispatch, which answers a Legion pod's issue's assignee, only where BROKER_JUDGE_DISPATCH_URL
-// is set.
+// account (BROKER_VM_EXCHANGE_ACCOUNTS), an entry that names none left out, and the broker's one
+// read of Dispatch (judgeDispatch), which answers a Legion pod's issue's assignee, only where
+// BROKER_JUDGE_DISPATCH_URL is set, and is the very read main gives the model judge.
 func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
 	cfg := vmConfig(t, "example-vm-audience")
@@ -206,7 +206,10 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 		{Account: exampleVMAccount, Service: "example-fleet", Project: "ACME", Person: "ada@example.com"},
 		{Account: otherAccount, Service: "example-fleet"},
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	if dispatch := judgeDispatch(cfg); dispatch != nil {
+		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
+	}
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, judgeDispatch(cfg))
 	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
 		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
 	}
@@ -216,9 +219,13 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 
 	cfg.JudgeDispatchURL = "https://dispatch.internal.example"
 	cfg.JudgeDispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
-	m = newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
-	if dispatch, ok := m.Assignees.(judge.Dispatch); !ok || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
-		t.Fatalf("request Machine's Assignees = %#v; want the judge's Dispatch read at %s", m.Assignees, cfg.JudgeDispatchURL)
+	dispatch := judgeDispatch(cfg)
+	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
+		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
+	}
+	m = newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, dispatch)
+	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {
+		t.Fatalf("request Machine's Assignees = %#v; want the one read of Dispatch judgeDispatch built, %p", m.Assignees, dispatch)
 	}
 }
 

@@ -48,9 +48,8 @@ type Dispatch struct {
 // Issue is what the judge reads of one issue: enough to tell whether the reason's issue is open
 // and what it is about.
 type Issue struct {
-	// Key, Title and Status are the issue as Dispatch shows it, and Assignee the person it is
-	// assigned to, "" for an issue nobody is.
-	Key, Title, Status, Assignee string
+	// Key, Title and Status are the issue as Dispatch shows it.
+	Key, Title, Status string
 	// Spec is the whole markdown of the issue's spec document, and HasSpec whether Dispatch
 	// holds one at all. An issue with no spec document is judged on its key, title and
 	// status, and the data object in front of the model says the spec is absent (D14).
@@ -72,10 +71,19 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 		return Issue{}, err
 	}
 	base := issueURL(d.BaseURL, key)
-	issue, err := d.readIssue(ctx, base, token, key)
-	if err != nil {
+	// Only these three fields of the issue read are decoded. The route answers the whole
+	// issue with its artifacts, children and open asks (api.issueDetail), and the judge reads
+	// none of that, nor the assignee, which Assignee decodes on its own so the shape of one
+	// cannot break the other's read.
+	var row struct {
+		Key    string `json:"key"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+	}
+	if err := d.readIssue(ctx, base, token, key, &row); err != nil {
 		return Issue{}, err
 	}
+	issue := Issue{Key: row.Key, Title: row.Title, Status: row.Status}
 
 	var doc struct {
 		Markdown string `json:"markdown"`
@@ -99,14 +107,20 @@ func (d Dispatch) Issue(ctx context.Context, key string) (Issue, error) {
 // Assignee is the person the issue key names is assigned to, "" for an issue nobody is: the
 // broker lists a Legion pod's request for a shared secret in that person's Inbox, the pod's claim
 // naming the issue (requests.Machine.Assignees). It reads the issue alone, one GET under the
-// token Account reads, and answers ErrNoIssue and every other failure as Issue does.
+// token Account reads, decodes its assignee and nothing else, and answers ErrNoIssue and every
+// other failure as Issue does. A null assignee decodes as "".
 func (d Dispatch) Assignee(ctx context.Context, key string) (string, error) {
 	token, err := d.Account.Read()
 	if err != nil {
 		return "", err
 	}
-	issue, err := d.readIssue(ctx, issueURL(d.BaseURL, key), token, key)
-	return issue.Assignee, err
+	var row struct {
+		Assignee string `json:"assignee"`
+	}
+	if err := d.readIssue(ctx, issueURL(d.BaseURL, key), token, key, &row); err != nil {
+		return "", err
+	}
+	return row.Assignee, nil
 }
 
 // issueURL is the address of the issue key names under baseURL.
@@ -114,27 +128,18 @@ func issueURL(baseURL, key string) string {
 	return strings.TrimSuffix(baseURL, "/") + "/api/v1/issues/" + url.PathEscape(key)
 }
 
-// readIssue makes the one issue GET Issue and Assignee share: a 404 is ErrNoIssue and every other
-// answer that is not 200 an error.
-func (d Dispatch) readIssue(ctx context.Context, endpoint, token, key string) (Issue, error) {
-	// Only these four fields of the issue read are decoded. The route answers the whole
-	// issue with its artifacts, children and open asks (api.issueDetail), and the broker
-	// reads none of that. A null assignee decodes as "".
-	var row struct {
-		Key      string `json:"key"`
-		Title    string `json:"title"`
-		Status   string `json:"status"`
-		Assignee string `json:"assignee"`
-	}
-	switch status, err := d.get(ctx, endpoint, token, &row); {
+// readIssue makes the one issue GET Issue and Assignee share, decoding into what each of them
+// reads of it: a 404 is ErrNoIssue and every other answer that is not 200 an error.
+func (d Dispatch) readIssue(ctx context.Context, endpoint, token, key string, into any) error {
+	switch status, err := d.get(ctx, endpoint, token, into); {
 	case err != nil:
-		return Issue{}, err
+		return err
 	case status == http.StatusNotFound:
-		return Issue{}, fmt.Errorf("%w: %s", ErrNoIssue, key)
+		return fmt.Errorf("%w: %s", ErrNoIssue, key)
 	case status != http.StatusOK:
-		return Issue{}, fmt.Errorf("dispatch answered %d for issue %s", status, key)
+		return fmt.Errorf("dispatch answered %d for issue %s", status, key)
 	}
-	return Issue{Key: row.Key, Title: row.Title, Status: row.Status, Assignee: row.Assignee}, nil
+	return nil
 }
 
 // get makes one authorized GET and, on 200 alone, decodes as much of the answer as into names.

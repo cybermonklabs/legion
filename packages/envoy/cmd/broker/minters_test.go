@@ -115,7 +115,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "", nil, nil)
 	for _, kind := range policy.Kinds {
 		if machine.Minters[kind] == nil {
 			t.Fatalf("request machine has no minter for %s", kind)
@@ -156,7 +156,7 @@ func TestKindMintersShareOneRetryBudget(t *testing.T) {
 	retry := secrets.NewRetry(metrics.New())
 	retry.Now = func() time.Time { return now }
 	retry.Sleep = func(context.Context, time.Duration) error { return nil }
-	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, airlock.Rules{}, "", retry).Minters
+	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, airlock.Rules{}, "", retry, nil).Minters
 	app := secrets.MintRequest{Kind: policy.KindGitHubApp, Value: policytest.KindValue(policy.KindGitHubApp), GitHubOwners: []string{"acme-org"}}
 	login := secrets.MintRequest{Kind: policy.KindGoogleLogin, Value: policytest.KindValue(policy.KindGoogleLogin)}
 
@@ -190,7 +190,7 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensFailOnce}})
 	service.AnswerWith(stand.Answer)
 	registry := metrics.New()
-	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", secrets.NewRetry(registry))
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, airlock.Rules{}, "", secrets.NewRetry(registry), nil)
 
 	minted, err := machine.Minters[policy.KindGitHubApp](t.Context(), secrets.MintRequest{
 		Kind: policy.KindGitHubApp, Value: policytest.KindValue(policy.KindGitHubApp), GitHubOwners: []string{"acme-org"},

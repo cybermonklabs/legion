@@ -168,7 +168,7 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 // TestAssigneeReadsTheIssueAlone: the broker asks Dispatch whose issue a Legion pod's claim names
 // in one GET of the issue, with the projected token, and never reads its spec. The answer is the
 // issue's assignee, and an issue nobody is assigned to answers "". A 404 is ErrNoIssue and any
-// other refusal a failure of the read, as for Issue, which carries the same assignee.
+// other refusal a failure of the read, as for Issue.
 func TestAssigneeReadsTheIssueAlone(t *testing.T) {
 	stand := newDispatch(t, "doing", testSpec)
 	stand.issue["assignee"] = "ada@example.com"
@@ -178,9 +178,6 @@ func TestAssigneeReadsTheIssueAlone(t *testing.T) {
 	}
 	if calls := stand.got(); len(calls) != 1 || calls[0] != (dispatchCall{http.MethodGet, "/api/v1/issues/" + testIssue, "Bearer projected-token"}) {
 		t.Fatalf("Dispatch got %+v; want exactly the one issue read", calls)
-	}
-	if issue, err := dispatch.Issue(t.Context(), testIssue); err != nil || issue.Assignee != "ada@example.com" {
-		t.Fatalf("Issue = %+v, %v; want it to carry the assignee too", issue, err)
 	}
 
 	stand.issue["assignee"] = nil
@@ -194,5 +191,20 @@ func TestAssigneeReadsTheIssueAlone(t *testing.T) {
 	stand.issueStatus = http.StatusInternalServerError
 	if _, err := dispatch.Assignee(t.Context(), testIssue); err == nil || errors.Is(err, ErrNoIssue) {
 		t.Fatalf("Assignee with Dispatch answering 500 = %v; want a failure of the read", err)
+	}
+}
+
+// TestTheJudgesIssueReadDoesNotReadTheAssignee: the judge's Issue decodes the issue's key, title
+// and status and nothing else, so an assignee Dispatch answers in another shape than a string
+// leaves the judge's read as it is, and fails the assignee read alone.
+func TestTheJudgesIssueReadDoesNotReadTheAssignee(t *testing.T) {
+	stand := newDispatch(t, "doing", testSpec)
+	stand.issue["assignee"] = map[string]any{"login": "ada@example.com"}
+	dispatch := newDispatchClient(t, stand, "projected-token")
+	if issue, err := dispatch.Issue(t.Context(), testIssue); err != nil || issue.Key != testIssue || issue.Status != "doing" || !issue.HasSpec {
+		t.Fatalf("Issue with an assignee that is no string = %+v, %v; want the issue read as before", issue, err)
+	}
+	if got, err := dispatch.Assignee(t.Context(), testIssue); err == nil {
+		t.Fatalf("Assignee with an assignee that is no string = %q, nil; want a failure of the read", got)
 	}
 }

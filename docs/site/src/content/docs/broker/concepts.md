@@ -960,8 +960,14 @@ names; for a Legion worker pod, the assignee of the Dispatch issue its claim nam
 reads at `BROKER_JUDGE_DISPATCH_URL` and stops waiting for after three seconds. Where none of these
 names a person — a pod with no claim, a broker with no judge settings, a Dispatch that did not
 answer in time, an issue nobody is assigned to, a machine whose fleet names nobody — it waits in
-every person's Inbox, so no request waits where nobody sees it. Who is asked changes nobody's right
-to decide: anyone signed in still decides it from its page. A withheld secret is its owner's to approve for that
+every person's Inbox, so no request waits where nobody sees it. A Dispatch read that failed or ran
+out of its three seconds is logged at WARN, naming the issue
+([Health and logs](/legion/broker/operate/#health-and-logs)), so a broker that cannot read Dispatch
+is seen to list those requests for everyone. Who is asked changes nobody's right
+to decide: anyone signed in still decides it from its page. That is also why the broker takes the
+claim and the assignee as they come: a claim is the launcher's word, so a launcher that states a
+Legion claim naming some issue, and anyone who reassigns that issue in Dispatch, chooses whose
+Inbox lists the request, and neither gains a right to decide it. A withheld secret is its owner's to approve for that
 session even in a request that was already waiting when the operator withheld it: a request that
 waited on anyone for a shared human-tier secret and the operator's own withheld secret is then the
 operator's alone to approve, and anyone else's approval is refused `NOT_APPROVER`. While the broker
@@ -1063,10 +1069,12 @@ asks afresh, as a new request, which the judge refuses while the tag stands. The
 one secret, a lifetime the rules still let the judge decide for it, and a reason naming an issue
 key, so a forged record, and one a rules change left behind, release nothing either.
 
-The issue check is one of the broker's two reads of Dispatch: two GETs, the issue and the text of
+The issue check is one of the broker's reads of Dispatch: two GETs, the issue and the text of
 its spec document, with the broker's own projected ServiceAccount token, read again from its file
-once the copy it holds is 30 seconds old. The other is one GET of the issue a Legion worker pod's
-claim names, for its assignee alone ([Approvals](#approvals)). The broker writes nothing there — no
+once the copy it holds is 30 seconds old. Another, with the same token, is one GET of the issue a
+Legion worker pod's claim names, for its assignee alone ([Approvals](#approvals)); the token
+exchange's reads of a person's project access are the third, at `BROKER_PROJECT_ACCESS_URL`
+([Operating the broker](/legion/broker/operate/)). The broker writes nothing there — no
 ask, no comment, no status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
 settings name, presenting the broker machine's own Google identity token for the audience they
 name. Those settings are all-or-none, and the
