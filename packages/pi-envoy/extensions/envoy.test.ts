@@ -17831,9 +17831,10 @@ console.log(JSON.stringify(args));
   });
 
   // A failed read that gives the cached list with the same items keeps the bytes placed before,
-  // which do not say that the read failed, so the log says it, once for each such request. A
-  // read that answers logs nothing: what it gives reaches the model, or is what the model has.
-  test("a failed read whose cached list keeps the placed bytes logs why, once per read, and a read that answers logs nothing", async () => {
+  // which do not say that the read failed, so the log says it: on the first such request, and
+  // then not until a read has answered again, so a lasting failure is one line. A read that
+  // answers logs nothing: what it gives reaches the model, or is what the model has.
+  test("a failed read whose cached list keeps the placed bytes logs why once, and again only after a read has answered", async () => {
     answeringDispatch("Go the second way.");
     const answering = rowFetch();
     let failing = false;
@@ -17881,25 +17882,30 @@ console.log(JSON.stringify(args));
       const placed = first.at(-1);
       expect(JSON.stringify(placed)).toContain("Go the second way.");
       expect(unshown()).toEqual([]);
-
-      // Two failed reads: each keeps the placed bytes, and each logs once.
-      failing = true;
-      for (const rounds of [1, 2]) {
-        const conversation = [prompt, ...[1, 2].slice(0, rounds).flatMap(round)];
+      const rounds = [1, 2, 3, 4, 5].map(round);
+      /** Sends the request after `n` tool rounds, and checks that it keeps the placed bytes where
+       *  the first request put them. */
+      const keeps = async (n: number) => {
+        const conversation = [prompt, ...rounds.slice(0, n).flat()];
         const messages = contextMessages(
           await fixture.handlers.get("context")?.({ messages: conversation }, context)
         );
         expect(messages.slice(1)).toEqual([prompt, placed, ...conversation.slice(1)]);
-        expect(unshown()).toEqual(Array.from({ length: rounds }, () => failure));
-      }
+      };
 
+      // Three failed reads keep the placed bytes, and only the first logs.
+      failing = true;
+      for (const n of [1, 2, 3]) {
+        await keeps(n);
+        expect(unshown()).toEqual([failure]);
+      }
       // Dispatch answers again, with the same item: the placed bytes stay, and nothing is logged.
       failing = false;
-      const later = [prompt, ...[1, 2, 3].flatMap(round)];
-      const answered = contextMessages(
-        await fixture.handlers.get("context")?.({ messages: later }, context)
-      );
-      expect(answered.slice(1)).toEqual([prompt, placed, ...later.slice(1)]);
+      await keeps(4);
+      expect(unshown()).toEqual([failure]);
+      // The first failed read after that logs again.
+      failing = true;
+      await keeps(5);
       expect(unshown()).toEqual([failure, failure]);
     } finally {
       stopSink();

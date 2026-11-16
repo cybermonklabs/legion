@@ -1074,8 +1074,12 @@ read that answered, and a list after a placed failure line goes after the last m
 way; a failure line after a placed one keeps that one's place and bytes, its reason included. A
 read that fails but gives the cached list is a list: with the same items it keeps the placed
 bytes, so the request does not say that this read failed; the extension logs that read's reason
-with `logger.warn` instead, once per such request (`unshownFailure`), and logs no newer list, no
-retraction and no read that answers, since those reach the model. A read that gives no text
+with `logger.warn` instead (`unshownFailure`), on the session's first such request and not again
+until one of its reads has answered, so a lasting failure, such as a Dispatch with no answers
+route, is one line beside that Dispatch's own notice. The state is each session's, by
+`sessionManager` and session id as the placements are (on `globalThis` under
+`Symbol.for("legion.pi-envoy.session-answers-unshown.v1")`). The extension logs no newer list,
+no retraction and no read that answers, since those reach the model. A read that gives no text
 leaves a placed list where it is rather than taking it out, and takes a placed failure line out
 together with its place, since that read did not fail. A read whose window holds no item still
 gives its
@@ -1178,7 +1182,8 @@ two copies with an empty list making one HTTP read among them,
 `extensions/envoy.test.ts` the
 handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line),
 one with no answers route (no line, one warning for two requests), and a failed read whose cached
-list keeps the placed bytes (one warning per such read, none for a read that answers), and
+list keeps the placed bytes (one warning for three such reads, none for a read that answers, one
+for the next such read after it), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
 that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache

@@ -162,13 +162,13 @@ its read time and reason changed. A read with no list to give, the line saying t
 be read, is never hidden behind a kept list: that line goes after the last message, and the list
 goes there again once a read gives it. A read that fails but still gives the last list read, with
 the same items, keeps the kept list's place and bytes, so that request does not say that its read
-failed; the log says it instead, with the reason, once for each such request. A read that finds
-nothing for the session takes a kept list out of the request when an item it shows was taken back
-inside the 72 hours, as when a person retracts the only answer, and leaves it where it is when its
-items only aged out; it takes a kept failure line out. A Dispatch with no answers route, when no
-list read before from it has an item from the last 72 hours (none was read, or every item of it
-has aged out), or no Dispatch at all, leaves a kept list where it is. Moving the list empties its
-old place.
+failed; the log says it instead, with the reason, on the first such request and not again until a
+read has answered, so a failure that lasts is one line. A read that finds nothing for the session
+takes a kept list out of the request when an item it shows was taken back inside the 72 hours, as
+when a person retracts the only answer, and leaves it where it is when its items only aged out; it
+takes a kept failure line out. A Dispatch with no answers route, when no list read before from it
+has an item from the last 72 hours (none was read, or every item of it has aged out), or no
+Dispatch at all, leaves a kept list where it is. Moving the list empties its old place.
 After a compaction summarizes the message it followed, or in a new process, the list goes after
 the last message once more. It is never at the head, so a change in it costs only the bytes from
 its place on, and a list that keeps its place is inside the cached prefix of the next request.

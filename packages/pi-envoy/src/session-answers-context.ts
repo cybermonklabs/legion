@@ -204,13 +204,14 @@ conversionsGlobal[CONVERSIONS_KEY] = conversions;
 /** What one request's read hands on (`carriedAnswers`): its text, the list or the failure line,
  *  undefined when the read gave none; when the read gave them, what the people wrote in every item
  *  Dispatch sent inside the read's window (`SessionAnswersRead.words`) and where that window starts
- *  (`SessionAnswersRead.since`); and, when the read failed and gave the cached list instead, why
- *  it failed (`SessionAnswersRead.reason`). */
+ *  (`SessionAnswersRead.since`); when the read failed and gave the cached list instead, why it
+ *  failed (`SessionAnswersRead.reason`); and whether Dispatch answered it (`source: "fresh"`). */
 export interface CarriedAnswers {
   readonly text: string | undefined;
   readonly words?: readonly string[] | undefined;
   readonly since?: string | undefined;
   readonly reason?: string | undefined;
+  readonly answered?: boolean | undefined;
 }
 
 /** A read that gave text: what a session's list is placed with. */
@@ -220,17 +221,18 @@ type ShownAnswers = CarriedAnswers & { readonly text: string };
  * What `SessionAnswersRequest.read` hands on for `read`: its text, its `words` and `since`
  * whenever it gave them (a read that answered, or that gave the cached list), with its text or
  * without, since a read whose window holds no item still tells which items of a placed list left
- * it (`keptWithoutText`), and the `reason` of a read that gave the cached list (`source:
- * "cache"`). Undefined when it gave neither text nor words: Dispatch is off, or has no answers
- * route and no list read from it before has an item inside the 72 hours (none was read, or every
- * item of the one read has aged out). The extension's `sessionAnswersText` and the placement
- * cases of `session-answers-read.test.ts` both call it, so those cases check the extension's own
- * mapping.
+ * it (`keptWithoutText`), the `reason` of a read that gave the cached list (`source: "cache"`), and
+ * whether Dispatch answered the read (`source: "fresh"`). Undefined when it gave neither text nor
+ * words: Dispatch is off, or has no answers route and no list read from it before has an item
+ * inside the 72 hours (none was read, or every item of the one read has aged out). The
+ * extension's `sessionAnswersText` and the placement cases of `session-answers-read.test.ts` both
+ * call it, so those cases check the extension's own mapping.
  */
 export function carriedAnswers(read: SessionAnswersRead): CarriedAnswers | undefined {
   if (read.text === undefined && read.words === undefined) return undefined;
   const reason = read.source === "cache" ? read.reason : undefined;
-  return { text: read.text, words: read.words, since: read.since, reason };
+  const answered = read.source === "fresh";
+  return { text: read.text, words: read.words, since: read.since, reason, answered };
 }
 
 /** Where a session's list sits: right after the message (`messageKey`) that was the last of the
@@ -251,6 +253,17 @@ const placementsGlobal = globalThis as typeof globalThis & {
 const placements =
   placementsGlobal[PLACEMENTS_KEY] ?? new WeakMap<object, Map<string, Placement>>();
 placementsGlobal[PLACEMENTS_KEY] = placements;
+
+/** The sessions, by `sessionManager` and then session id as `placements` keys them, whose kept
+ *  bytes already hid a failed read that `SessionAnswersRequest.unshownFailure` was told of, and
+ *  that no read of theirs has answered since. A session leaves it when one of its reads answers,
+ *  so the next failure hidden that way is told again. On `globalThis` as `placements` is. */
+const UNSHOWN_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers-unshown.v1");
+const unshownGlobal = globalThis as typeof globalThis & {
+  [UNSHOWN_KEY]?: WeakMap<object, Set<string>>;
+};
+const unshown = unshownGlobal[UNSHOWN_KEY] ?? new WeakMap<object, Set<string>>();
+unshownGlobal[UNSHOWN_KEY] = unshown;
 
 /** `text` without the line naming the read that produced it, which `renderSessionAnswers` writes
  *  under the marker when it answers from the cache. Two texts whose rest is the same show the same
@@ -376,11 +389,12 @@ function keptWithoutText(
  * conversation costs the whole request behind it a prompt-cache miss. So a kept list can name a
  * read older than this request's, and a failed read that gives the cached list says nothing of
  * its failure there: the request tells its `unshownFailure` why that read failed instead, which
- * the extension logs. A kept list can also hold an item that has since aged out of the window. The
- * next item a person writes, edits or retracts, or a read that gives the failure line, takes it
- * out of that place and puts the new text after the last message; a retracted item that was the
- * last one inside the window takes it out of the request (`keptWithoutText`). A session with no
- * list placed yet, or whose list's message left the conversation (a compaction summarized it),
+ * the extension logs, on the first such request and then not until a read of the session has
+ * answered (`unshown`). A kept list can also hold an item that has since aged out of the window.
+ * The next item a person writes, edits or retracts, or a read that gives the failure line, takes
+ * it out of that place and puts the new text after the last message; a retracted item that was
+ * the last one inside the window takes it out of the request (`keptWithoutText`). A session with
+ * no list placed yet, or whose list's message left the conversation (a compaction summarized it),
  * gets it after the last message again. While a compaction may be converting the conversation
  * (`compacting`) the list goes after the last message and places nothing: a remote compaction
  * keeps only as many messages of its whole conversion as its cut's conversion holds, so a list
@@ -399,7 +413,14 @@ function placeList(
   if (placed !== undefined && !showsNew(placed.carried, carried)) {
     const kept = keepPlaced(messages, placed);
     if (kept !== undefined) {
-      if (carried.reason !== undefined) request.unshownFailure(carried.reason);
+      if (carried.reason !== undefined) {
+        const told = unshown.get(request.session) ?? new Set<string>();
+        unshown.set(request.session, told);
+        if (!told.has(request.id)) {
+          told.add(request.id);
+          request.unshownFailure(carried.reason);
+        }
+      }
       return kept;
     }
   }
@@ -424,9 +445,11 @@ export interface SessionAnswersRequest {
    *  takes a placed failure line out (`keptWithoutText`). */
   readonly read: () => Promise<CarriedAnswers | undefined>;
   /** Told why this request's read failed (`CarriedAnswers.reason`) when that read gave the cached
-   *  list and the request keeps the placed bytes, which do not say the read failed; called at
-   *  most once per request. Nothing else that a read gives is told here: a newer list, a
-   *  retraction and the failure line each reach the model. The extension logs it. */
+   *  list and the request keeps the placed bytes, which do not say the read failed: on the first
+   *  such request of the session, and not again until one of its reads has answered
+   *  (`CarriedAnswers.answered`), so a lasting failure, such as a Dispatch with no answers route,
+   *  is told once. Nothing else that a read gives is told here: a newer list, a retraction and the
+   *  failure line each reach the model. The extension logs it. */
   readonly unshownFailure: (reason: string) => void;
 }
 
@@ -496,6 +519,7 @@ export async function withSessionAnswers(
     return undefined;
   }
   const carried = await request.read();
+  if (carried?.answered === true) unshown.get(request.session)?.delete(request.id);
   const compacting = previous === "cut" || request.compacting();
   const text = carried?.text;
   const placed =
