@@ -3256,11 +3256,16 @@ rc_reads() { grep -c -- "exec runner -c runner -- cat /work/logs/$1.rc" "$fake/k
 # stop_watchdog SECONDS PID, stop_watchdog_end: a guard that kills the disk watcher PID after
 # SECONDS (a real nap: never one of FAKE_FAST_SLEEP's) and leaves $fake/stop-late behind. A
 # pg_disk_watch_stop that waits for ever on a watcher whose TERM was lost then fails this case
-# instead of hanging the suite, as the fakes' own caps do.
+# instead of hanging the suite, as the fakes' own caps do. The nap is a child the guard waits on
+# and kills when stop_watchdog_end TERMs the guard: a TERM to the subshell alone left its `sleep`
+# running, up to 240 s past the suite's own exit.
 stop_watchdog() {
   rm -f -- "$fake/stop-late"
   (
-    sleep "$1"
+    sleep "$1" &
+    nap=$!
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    wait "$nap"
     kill -KILL "$2" 2>/dev/null || true
     : >"$fake/stop-late"
   ) &
